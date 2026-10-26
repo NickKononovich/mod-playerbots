@@ -72,7 +72,11 @@ struct PullAbortTally
     bool sightOnly = true;  // [b37_sv] every abort of the tally was in range, out of sight, for the healer's sake
 };
 std::mutex pullAbortLock;
-std::unordered_map<uint64, PullAbortTally> pullAborts;  // by tank (bots of several maps abort concurrently)
+// [b46_vine] by tank, then by mob: one tally per tank reset on every change of mob, and a planner alternating two mobs
+// of one stuck spot never reached the cap. mara-h 20261026-093620-mara-h-5A-21 (1240-1498 s): Rtpalaj at
+// (1024.7,-221.5,-71.4), Constrictor Vine (Low 317) and Barbed Lasher (Low 301) 23-29 yd off up a 3.7 yd rise, out of
+// sight; 12+ "walking for range leaves the healer" aborts in turn, each logged "1 of 3", no engage-only cap, a stall.
+std::unordered_map<uint64, std::unordered_map<uint64, PullAbortTally>> pullAborts;  // [b46_vine]
 
 // [b37_sv] `sightOnly`: the abort was in the pull's range, out of the mob's sight, the step in for sight leaving the
 // healer (ReachPullAction). sv-h 20261026-044253-sv-h-5B-21 (172-410 s): Rtwarae 23 yd from a Bog Overlord (21694,
@@ -90,7 +94,16 @@ void NotePullAbort(Player* bot, Unit* target, std::string const& why, bool sight
     bool allSightOnly = false;
     {
         std::lock_guard<std::mutex> guard(pullAbortLock);
-        PullAbortTally& tally = pullAborts[bot->GetGUID().GetRawValue()];
+        // [b46_vine] the tank's expired tallies go first (a few mobs per tank at most)
+        std::unordered_map<uint64, PullAbortTally>& tallies = pullAborts[bot->GetGUID().GetRawValue()];
+        for (auto it = tallies.begin(); it != tallies.end();)
+        {
+            if (!it->second.firstMs || getMSTimeDiff(it->second.firstMs, now) > PULL_ABORT_CAP_WINDOW_MS)
+                it = tallies.erase(it);
+            else
+                ++it;
+        }
+        PullAbortTally& tally = tallies[target->GetGUID().GetRawValue()];  // [b46_vine]
         if (tally.mob != target->GetGUID() || !tally.firstMs ||
             getMSTimeDiff(tally.firstMs, now) > PULL_ABORT_CAP_WINDOW_MS)
         {
@@ -910,7 +923,43 @@ bool ReachPullAction::Execute(Event event)
                          "walk {:.1f} yd): steps in for sight", bot->GetName(), target->GetName(), straight,
                          target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk);
         }
-        reachDistance = std::max(ATTACK_DISTANCE, std::min(reachDistance, bot->GetExactDist(target) - 8.0f));
+        // [b46_vine] The step in for sight is the shortest one that opens it, not always PULL_SIGHT_STEP_MAX: mara-h
+        // 20261026-093620-mara-h-5A-21 (1240-1498 s) - Rtpalaj at (1024.7,-221.5,-71.4), Constrictor Vine 28-29 yd
+        // off on a rise (dz 3.7), in Hand of Reckoning range, out of sight. The sight opened about 2 yd on (the
+        // harness's own sight point (1024.6,-219.5,-71.0); a clean run's tank pulled from (1025.0,-218.9)), but every
+        // pull planned the fixed 8 yd step, its end over the rise out of the healer's sight 3 yd behind: "walking for
+        // range leaves the healer", 12+ aborts and a 4-minute stall. The line to the mob is probed every
+        // PULL_SIGHT_PROBE yd on its ground (a probe on another floor ends the search); the first that sees the mob,
+        // plus PULL_SIGHT_CLEARANCE, is the step. None within the cap keeps the cap.
+        constexpr float PULL_SIGHT_STEP_MAX = 8.0f;
+        constexpr float PULL_SIGHT_PROBE = 1.0f;
+        constexpr float PULL_SIGHT_CLEARANCE = 1.0f;
+        constexpr float PULL_SIGHT_PROBE_DZ = 5.0f;
+        float const straight = bot->GetExactDist(target);
+        float sightStep = PULL_SIGHT_STEP_MAX;
+        for (float step = PULL_SIGHT_PROBE; straight > 0.0f && step + PULL_SIGHT_CLEARANCE < PULL_SIGHT_STEP_MAX &&
+                                            step < straight;
+             step += PULL_SIGHT_PROBE)
+        {
+            float const k = step / straight;
+            float x = bot->GetPositionX() + (target->GetPositionX() - bot->GetPositionX()) * k;
+            float y = bot->GetPositionY() + (target->GetPositionY() - bot->GetPositionY()) * k;
+            float const lineZ = bot->GetPositionZ() + (target->GetPositionZ() - bot->GetPositionZ()) * k;
+            float z = lineZ;
+            bot->UpdateAllowedPositionZ(x, y, z);
+            if (std::fabs(z - lineZ) > PULL_SIGHT_PROBE_DZ)
+                break;
+            if (target->IsWithinLOS(x, y, z))
+            {
+                sightStep = step + PULL_SIGHT_CLEARANCE;
+                break;
+            }
+        }
+        if (sightStep < PULL_SIGHT_STEP_MAX)
+            LOG_DEBUG("playerbots", "[b46_vine] pull_sight_step: {}: {} at {:.1f} yd out of sight: steps {:.1f} yd in "
+                      "for sight (cap {:.1f})", bot->GetName(), target->GetName(), straight, sightStep,
+                      PULL_SIGHT_STEP_MAX);
+        reachDistance = std::max(ATTACK_DISTANCE, std::min(reachDistance, straight - sightStep));  // [b46_vine]
     }
 
     // The careful plan's cast spot (checked for the healer's sight, PullCastSpot): the walk for range goes there.
@@ -990,9 +1039,21 @@ bool ReachPullAction::Execute(Event event)
     if (PlayerbotAI::IsTank(bot) && distance > reachDistance && distance > 0.0f)
     {
         float const share = reachDistance / distance;
-        Position const end(target->GetPositionX() + (bot->GetPositionX() - target->GetPositionX()) * share,
-                           target->GetPositionY() + (bot->GetPositionY() - target->GetPositionY()) * share,
-                           target->GetPositionZ() + (bot->GetPositionZ() - target->GetPositionZ()) * share);
+        Position end(target->GetPositionX() + (bot->GetPositionX() - target->GetPositionX()) * share,
+                     target->GetPositionY() + (bot->GetPositionY() - target->GetPositionY()) * share,
+                     target->GetPositionZ() + (bot->GetPositionZ() - target->GetPositionZ()) * share);
+        // [b46_vine] the end on its ground (the healer's sight test is from eye height to eye height): a straight
+        // line to a mob up a rise runs under the crest, and its interpolated end sat inside the hump, out of every
+        // sight. A ground far off the line (a pit, another floor) keeps the line's height.
+        {
+            constexpr float PULL_END_GROUND_DZ = 5.0f;
+            float groundX = end.GetPositionX();
+            float groundY = end.GetPositionY();
+            float groundZ = end.GetPositionZ();
+            bot->UpdateAllowedPositionZ(groundX, groundY, groundZ);
+            if (std::fabs(groundZ - end.GetPositionZ()) <= PULL_END_GROUND_DZ)
+                end.Relocate(groundX, groundY, groundZ);
+        }
         if (!HealerSeesSpot(bot, end))
         {
             LOG_INFO("playerbots", "[pull exec] {}: aborts: walking for range leaves the healer ({} at {:.1f} yd, "

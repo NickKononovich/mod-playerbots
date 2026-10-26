@@ -7418,7 +7418,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     };
     auto const provenFits = [&proven, &weakAoeFits, this](PackEstimate const& estimate)
     {
-        if (weakAoeFits(estimate))  // [b44_packs]
+        // [b45_weakoff] off: strat-h 092306 wiped on a 10-mob "weak" pack (aoe estimate far above measured)
+        if (false && weakAoeFits(estimate))  // [b44_packs]
             return true;
         if (!ProvenFits(estimate, proven))
             return false;

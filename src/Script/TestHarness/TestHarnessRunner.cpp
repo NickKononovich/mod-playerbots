@@ -2372,12 +2372,25 @@ namespace TestHarness
                 memo.round = false;
                 memo.route = PathResult();
                 float const legWalk = PolylineLength(leg.points);
+                // [b46_strat] the way round keeps out of closed doors too (as DoorFreeRoute does): strat-n
+                // 20261026-093620-strat-n-5A-3 1382-1788 s, the round of the hopeless Market Row chain ran south
+                // through the shut King's Square Gates while PassageDetourLeg sent the leader north round the gates
+                // into that chain - the leader turned back and forth at (3710,-3465) for 6 minutes.
+                std::vector<G3D::AABox> doorBoxes;
+                for (GameObject* door : ClosedDoors(map, owner))
+                    if (door && door->m_model)
+                    {
+                        G3D::AABox const& bounds = door->m_model->GetBounds();
+                        G3D::Vector3 const margin(PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN);
+                        doorBoxes.emplace_back(bounds.low() - margin, bounds.high() + margin);
+                    }
                 for (bool const steep : {false, true})
                 {
                     Movement::PointsArray corners;
                     bool complete = false;
-                    if (!LongRoute(owner, here, goal, steep, corners, complete, nullptr, &discs) || !complete ||
-                        corners.size() < 2)
+                    if (!LongRoute(owner, here, goal, steep, corners, complete, doorBoxes.empty() ? nullptr : &doorBoxes,
+                                   &discs) ||
+                        !complete || corners.size() < 2)
                         continue;
                     float const walk = PolylineLength(corners);
                     if (walk > legWalk * HOPELESS_DETOUR_MAX_RATIO + 60.0f)
@@ -2409,6 +2422,116 @@ namespace TestHarness
             leg.steep = memo.route.steep;
             leg.straightPath = true;
             leg.type = uint32(PATHFIND_NORMAL);
+            return true;
+        }
+
+        // [b46_strat] Wing order: in a dungeon whose wings stand on their own (Stratholme: the living side Timmy ..
+        // Balnazzar, the undead side behind the Gauntlet Gates Baroness .. Baron), a next boss whose route runs into a
+        // pack the planner refused as hopeless (hopelessPacks) with no way round it (closed doors and those packs kept
+        // out) for HOPELESS_WING_HOLD_MS is deferred: the other wing's bosses come first, and the deferred ones come
+        // back once nothing else stands (or after HOPELESS_WING_DEFER_MAX_MS). strat-n 20261026-093620-strat-n-5A-3:
+        // Timmy's only way (Market Row north) ran through a 30-mob Patchwork Horror / Skeletal Berserker chain
+        // ("careful pull hopeless") from 1380 s; Timmy stayed the next boss, the Gauntlet Gate 175357 key stayed a
+        // non-priority starter (no boss "behind a closed door"), and everything behind the gate was "route through a
+        // closed door (Gauntlet Gate 175357)" until the stop at 1788 s.
+        constexpr uint32 HOPELESS_WING_HOLD_MS = MINUTE * IN_MILLISECONDS;
+        constexpr uint32 HOPELESS_WING_CHECK_MS = 10 * IN_MILLISECONDS;
+        constexpr uint32 HOPELESS_WING_DEFER_MAX_MS = 45 * MINUTE * IN_MILLISECONDS;
+        bool HopelessWingMap(uint32 mapId)
+        {
+            return mapId == 329;  // Stratholme
+        }
+        struct HopelessWingState
+        {
+            ObjectGuid checkedBoss;
+            uint32 checkedMs = 0;
+            bool checkedHeld = false;
+            std::string heldBy;
+            uint32 heldSinceMs = 0;
+            std::set<ObjectGuid> deferred;
+            uint32 deferredSinceMs = 0;
+        };
+        std::unordered_map<uint32, HopelessWingState> hopelessWings;  // Party::seq -> state, world thread only
+
+        bool HopelessWingDeferred(uint32 seq, ObjectGuid const& boss)
+        {
+            auto const found = hopelessWings.find(seq);
+            return found != hopelessWings.end() && found->second.deferred.count(boss) != 0;
+        }
+
+        // The route to `boss` enters the reach of an idle hopeless-refused mob (or the boss stands in it), and no
+        // complete way round keeps out of those reaches and of the closed doors. heldBy: that mob's name.
+        bool RouteHeldByHopelessPack(Player* leader, Creature* boss, Movement::PointsArray const& route,
+                                     std::string& heldBy)
+        {
+            heldBy.clear();
+            auto const listed = hopelessPacks.find(leader->GetGUID());
+            if (listed == hopelessPacks.end() || listed->second.empty() || route.size() < 2)
+                return false;
+            Map* map = leader->GetMap();
+            uint32 const now = getMSTime();
+            std::vector<G3D::Vector4> discs;
+            std::vector<std::string> names;
+            for (HopelessMob const& known : listed->second)
+            {
+                Creature* mob = map ? map->GetCreature(known.guid) : nullptr;
+                if (!mob || !mob->IsAlive() || mob->IsInCombat() ||
+                    getMSTimeDiff(known.sinceMs, now) > HOPELESS_AVOID_MS)
+                    continue;
+                discs.emplace_back(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ(),
+                                   mob->GetAggroRange(leader) + HOPELESS_AVOID_MARGIN);
+                names.push_back(mob->GetName());
+            }
+            if (discs.empty())
+                return false;
+            G3D::Vector3 const goal(boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ());
+            int32 hit = -1;
+            for (size_t disc = 0; disc < discs.size() && hit < 0; ++disc)
+                if (InDisc(goal, discs[disc]))
+                    hit = int32(disc);
+            for (size_t index = 1; index < route.size() && hit < 0; ++index)
+            {
+                G3D::Vector3 const& from = route[index - 1];
+                G3D::Vector3 const segment = route[index] - from;
+                float const lengthSq = segment.x * segment.x + segment.y * segment.y;
+                for (size_t disc = 0; disc < discs.size(); ++disc)
+                {
+                    float t = lengthSq > 0.0f ? ((discs[disc].x - from.x) * segment.x +
+                                                 (discs[disc].y - from.y) * segment.y) /
+                                                    lengthSq
+                                              : 0.0f;
+                    t = std::clamp(t, 0.0f, 1.0f);
+                    if (InDisc(from + segment * t, discs[disc]))
+                    {
+                        hit = int32(disc);
+                        break;
+                    }
+                }
+            }
+            if (hit < 0)
+                return false;
+            if (!InDisc(goal, discs[size_t(hit)]))
+            {
+                std::vector<G3D::AABox> doorBoxes;
+                for (GameObject* door : ClosedDoors(map, leader))
+                    if (door && door->m_model)
+                    {
+                        G3D::AABox const& bounds = door->m_model->GetBounds();
+                        G3D::Vector3 const margin(PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN);
+                        doorBoxes.emplace_back(bounds.low() - margin, bounds.high() + margin);
+                    }
+                G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+                for (bool const steep : {false, true})
+                {
+                    Movement::PointsArray corners;
+                    bool complete = false;
+                    if (LongRoute(leader, here, goal, steep, corners, complete,
+                                  doorBoxes.empty() ? nullptr : &doorBoxes, &discs) &&
+                        complete && corners.size() >= 2)
+                        return false;  // a way round: not held
+                }
+            }
+            heldBy = names[size_t(hit)];
             return true;
         }
 
@@ -6720,10 +6843,33 @@ namespace TestHarness
                     preClearBlocked.push_back(def->bossEntry);
             }
         }
+        // [b46_strat] wing order: the deferred bosses come back once no other boss stands (or after the cap)
+        if (auto const wingFound = hopelessWings.find(party.seq);
+            wingFound != hopelessWings.end() && !wingFound->second.deferred.empty())
+        {
+            HopelessWingState& wing = wingFound->second;
+            bool otherStands = false;
+            for (ObjectGuid const& guid : party.bossCreatures)
+                if (Creature* boss = map->GetCreature(guid); boss && boss->IsAlive() && !wing.deferred.count(guid))
+                    otherStands = true;
+            bool const capped = getMSTimeDiff(wing.deferredSinceMs, now) >= HOPELESS_WING_DEFER_MAX_MS;
+            if (!otherStands || capped)
+            {
+                LogEvent(party, "strat_wing_order",
+                         JsonObject().Str("action", capped ? "deferred bosses back: cap reached"
+                                                           : "deferred bosses back: no other boss stands")
+                             .Num("deferred", int64(wing.deferred.size())));
+                wing.deferred.clear();
+                wing.heldSinceMs = 0;
+                wing.checkedMs = 0;
+            }
+        }
         for (ObjectGuid const& guid : party.bossCreatures)
         {
             Creature* boss = map->GetCreature(guid);
             if (!boss || !boss->IsAlive())
+                continue;
+            if (HopelessWingDeferred(party.seq, guid))  // [b46_strat] the other wing first
                 continue;
             // Violet Hold: the prisoners come out in a random order (instance_violet_hold.cpp EVENT_SUMMON_PORTAL
             // stores urand(BOSS_MORAGG, BOSS_ZURAMAT) as PERSISTENT_DATA_FIRST_BOSS / _SECOND_BOSS), but
