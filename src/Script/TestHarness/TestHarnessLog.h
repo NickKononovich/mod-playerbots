@@ -169,6 +169,7 @@ namespace TestHarness
             std::map<std::string, uint32> lines;      // what -> count
             std::map<std::string, uint32> conflicts;  // kind -> count
             std::map<std::string, uint32> owners;     // owner -> decisions
+            std::map<std::string, uint32> nonLeader;  // [lead17] "<who kind>|<what>" -> decisions not by the leader
             std::unordered_map<ObjectGuid, MobLast> lastByMob;
         };
 

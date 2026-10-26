@@ -19828,6 +19828,16 @@ namespace TestHarness
                 return member.name + " is dead";
             if (bot->GetMap() != leader->GetMap())
                 return member.name + " is not in the instance";
+            // [lead17] LEADER_ONE_GATHER_OWNER: a member on a leader spot is placed (the spot gate judges it); one
+            // the leader marks trailing is not ready; no distance rule of its own
+            if (Leader::LEADER_ONE_GATHER_OWNER && LeaderDecidesFor(party))
+            {
+                if (party.lead.trailing.count(member.guid))
+                    return member.name + " trails the group";
+                if (bot->IsSitState())
+                    return member.name + " sits";
+                continue;
+            }
             // a far member the far wait gave up on (far_wait_dropped) holds no readiness while far, never a healer
             bool const dropped = member.apartIgnoreUntilMs && int32(getMSTime() - member.apartIgnoreUntilMs) < 0 &&
                                  !PlayerbotAI::IsHeal(bot);
@@ -20531,6 +20541,12 @@ namespace TestHarness
         Unit* mob = mobGuid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mobGuid);
         if (!mob || decision.los || decision.kind == "approach" || decision.kind == "side walk")
             return false;
+        // [lead17] slabs-h 20261026-184720: spots around a patrol (an engage: the tank walks in and meets it
+        // elsewhere) stood 30-45 yd from where the tank fought; no gate for a walk-in or a moving mob - the members
+        // walk along with the tank
+        if (decision.kind == "engage" || mob->isMoving() ||
+            (mob->ToCreature() && mob->ToCreature()->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE))
+            return false;
         Position fight = mob->GetPosition();
         if (!decision.killFor.IsEmpty() && decision.killFor == decision.planTarget)
             fight = decision.kill;
@@ -20557,6 +20573,7 @@ namespace TestHarness
             lead.spots.clear();
             lead.spotBest.clear();
             lead.spotStuck.clear();
+            lead.spotReassigns.clear();
             lead.spotsFor = mob->GetGUID();
             lead.spotsSinceMs = getMSTime();
         }
@@ -20686,6 +20703,19 @@ namespace TestHarness
             auto& best = lead.spotBest[member.guid];
             if (!best.second || gap < best.first - 0.5f)
                 best = {gap, now};
+            else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS &&
+                     lead.spotReassigns[member.guid] < Leader::LEADER_SPOT_REASSIGNS)
+            {
+                // [lead17] the leader gives a stuck member a new spot (the next LeaderAssignSpots)
+                ++lead.spotReassigns[member.guid];
+                LogEvent(party, "leader_spot_reassign",
+                         JsonObject().Str("member", member.name).Real("gap", gap)
+                             .Num("reassign", lead.spotReassigns[member.guid]));
+                lead.spots.erase(member.guid);
+                lead.spotBest.erase(member.guid);
+                waitFor += (waitFor.empty() ? "" : ", ") + member.name + " gets a new spot";
+                continue;
+            }
             else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS)
             {
                 lead.spotStuck.insert(member.guid);
@@ -20809,6 +20839,14 @@ namespace TestHarness
         {
             lead.spots.clear();
             lead.spotsFor.Clear();
+        }
+        // [lead17] an order for another mob runs (the patrol path issued it): the spots of the old pull go, its
+        // gate too
+        if (orderOpen && !lead.spotsFor.IsEmpty() && order.target != lead.spotsFor)
+        {
+            lead.spots.clear();
+            lead.spotsFor.Clear();
+            lead.spotsWaiting = false;
         }
 
         // the fight's target: the tank's, else whatever attacks a member (healer first) or the tank
@@ -21193,9 +21231,40 @@ namespace TestHarness
                          LeaderCollectHazards(bot, lead.hazardZones[bot->GetGUID()]);
                          return true;
                      });
+            if (tank->IsAlive())  // [lead17] the tank's hazards too
+                slow([&]
+                     {
+                         LeaderCollectHazards(tank, lead.hazardZones[tank->GetGUID()]);
+                         return true;
+                     });
         }
         if (!fighting)
             lead.combatSpots.clear();
+
+        // [lead17] LEADER_ONE_GATHER_OWNER: who the group waits for - a member without a leader spot farther than
+        // LEADER_TRAIL_YD from the tank (back under LEADER_TRAIL_BACK_YD); the harness's far gate reads this set
+        if (Leader::LEADER_ONE_GATHER_OWNER)
+            for (Player* bot : seats)
+            {
+                ObjectGuid const guid = bot->GetGUID();
+                bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
+                                    lead.combatSpots.count(guid);
+                float const gap = bot->GetExactDist(tank);
+                bool const was = lead.trailing.count(guid) > 0;
+                bool const trails = !fighting && !placed &&
+                                    (was ? gap > Leader::LEADER_TRAIL_BACK_YD : gap > Leader::LEADER_TRAIL_YD);
+                if (trails != was)
+                {
+                    if (trails)
+                        lead.trailing.insert(guid);
+                    else
+                        lead.trailing.erase(guid);
+                    DecisionLog::Instance().Write(run, "leader", "leader_trail", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName())
+                                                      .Str("state", trails ? "waits for it" : "with the group")
+                                                      .Real("gap", gap));
+                }
+            }
 
         uint32 seat = 0;
         for (Player* bot : seats)
@@ -21204,6 +21273,10 @@ namespace TestHarness
             PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
             bool const combat = fighting || bot->IsInCombat();
             uint32 const index = seat++;
+            // [lead17] the harness's (the leader's) own walk for this member (a link, out of the water, an event
+            // gather): it runs, the leader issues no other move meanwhile
+            TestRunner::Waypoint harnessWalk;
+            bool const walking = TestRunner::GetWaypoint(guid, harnessWalk);
 
             // 1. readiness, out of combat: Rest to whoever needs it (to full), Ready? while the pull waits for the
             // spots, Prepare (buffs, forms, a resurrection) while the group stands
@@ -21234,7 +21307,7 @@ namespace TestHarness
             }
 
             // 2. the moves: out of a cleave (keeping the heal reach), the pull's spot, along with the tank
-            bool moved = false;
+            bool moved = walking;
             if (Leader::LEADER_OWNS_DODGE && combat &&
                 DungeonTactics::InFrontalCleave(bot, botAI, 1.0f, 20.0f * float(M_PI) / 180.0f))
             {
@@ -21579,6 +21652,26 @@ namespace TestHarness
                             tell(bot, spell, member, "the burn");
                         break;
                     }
+        }
+
+        // [lead17] the tank out of a hazard (its own "move fight off hazard" is off): a short step, in heal reach
+        if (Leader::LEADER_HAZARD_SPOTS && tank->IsAlive())
+        {
+            std::vector<HazardZone> const& zones = lead.hazardZones[tank->GetGUID()];
+            if (HazardZone const* in = zones.empty() ? nullptr
+                                                     : LeaderZoneAt(zones, tank->GetPositionX(), tank->GetPositionY(),
+                                                                    tank->GetPositionZ(), 0.5f))
+            {
+                hazardSeen = true;
+                Position spot;
+                if (slow([&] { return LeaderSafeSpot(tank, GET_PLAYERBOT_AI(tank), zones, keepsHealer, spot); }) &&
+                    Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.0f,
+                                            std::string("hazard: ") + in->what))
+                    logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
+                             JsonObject().Str("why", std::string("hazard: ") + in->what).Str("who", "tank")
+                                 .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
+                                 .Real("z", spot.GetPositionZ()));
+            }
         }
 
         // 4. the heal reach in the fight: a member out of the healer's reach or sight moves the healer (a spot that

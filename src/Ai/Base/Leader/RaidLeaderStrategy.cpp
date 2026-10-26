@@ -11,6 +11,7 @@
 #include "AttackAction.h"         // [lead15] the own-decision check
 #include "GenericSpellActions.h"  // [lead15] CastBuffSpellAction / CastCrowdControlSpellAction
 #include "MovementActions.h"      // [lead15]
+#include "TestRunnerStrategy.h"   // [lead17] the harness's waypoint for a member
 #include "LeaderOrders.h"  // [lead15] the leader's member events
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
@@ -123,6 +124,34 @@ namespace
                     return true;
             return false;
         };
+        if (in({"leader external", "leader threat", "leader cc"}))
+            return false;
+        bool const prepareCmd = events.ready == Leader::ReadyEvent::Prepare ||
+                                events.ready == Leader::ReadyEvent::ReadyCheck ||
+                                events.ready == Leader::ReadyEvent::Rest;
+        // [lead17] LEADER_EXECUTOR_WHITELIST: no movement and no attack the leader did not order
+        if (Leader::LEADER_EXECUTOR_WHITELIST)
+        {
+            TestRunner::Waypoint waypoint;
+            if (name == "test runner move" && TestRunner::GetWaypoint(self->GetGUID(), waypoint))
+                return false;  // the harness's (the leader's) walk for this member
+            if (dynamic_cast<AttackAction*>(action))
+            {
+                Unit* target = action->GetTarget();
+                return !(events.attack == Leader::AttackEvent::Attack && target &&
+                         target->GetGUID() == events.target);
+            }
+            if (dynamic_cast<MovementAction*>(action))
+            {
+                if (in({"stand up"}))
+                    return false;
+                if (events.loot && in({"move to loot", "loot", "open loot"}))
+                    return false;
+                if (prepareCmd && in({"reach party member to resurrect"}))
+                    return false;
+                return true;
+            }
+        }
         if (Leader::LEADER_NO_OWN_FOLLOW && in({"follow"}))
             return true;
         // [lead16] loot only under the leader's Loot
@@ -268,6 +297,11 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
     if (!action || !RaidLeader::IsEnabled())
         return 1.0f;
 
+    // [lead17] LEADER_TANK_OWN_PICKS_OFF: the led tank's own next pack and own hazard step are off in every state
+    if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
+        (action->getName() == "chain pull" || action->getName() == "move fight off hazard"))
+        return 0.0f;
+
     // [lead16] LEADER_TANK_EXECUTES: in a fight the tank's target is the leader's Attack
     if (Leader::LEADER_TANK_EXECUTES && bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) &&
         Leader::LedBot(bot))
@@ -275,7 +309,8 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
         Leader::MemberEvents events;
         static constexpr std::string_view tankPicks[] = {"tank assist", "attack anything", "dps assist",
                                                          "tank defend on attacked group member",
-                                                         "reach healer attacker"};
+                                                         "reach healer attacker", "chain pull",
+                                                         "move fight off hazard"};
         if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack)
             for (std::string_view pick : tankPicks)
                 if (action->getName() == pick)
@@ -341,6 +376,11 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
             return 0.0f;
     }
     else if (IsLeaderOrder(name) && RaidLeader::IsLedByPerson(bot))
+        return 1.0f;
+
+    // [lead17] slabs-h 20261026-184720: the tank sat 20 s on an Issued leader order while this hold (fed by the old
+    // 40 yd readiness) blocked its pull: an open leader order was judged ready by the leader - one readiness owner
+    if (Leader::LEADER_ONE_GATHER_OWNER && Leader::Orders::IsOpen(bot->GetGUID()))
         return 1.0f;
 
     if (IsPullStarter(name))

@@ -213,6 +213,12 @@ namespace TestHarness
 
             if (decides)
                 ++state.owners[who];
+            // [lead17] ONE decider: any decision whose owner is not the leader is a blocker (non_leader_decisions)
+            if (decides && who.rfind("leader", 0) != 0)
+            {
+                ++state.nonLeader[who.substr(0, who.find(':')) + "|" + what];
+                ++state.conflicts["non_leader_decision"];
+            }
             if (decides && !mob.IsEmpty())
             {
                 MobLast& last = state.lastByMob[mob];
@@ -283,6 +289,8 @@ namespace TestHarness
         JsonObject lines;
         JsonObject conflicts;
         JsonObject owners;
+        JsonObject nonLeader;
+        uint32 nonLeaderTotal = 0;
         uint32 conflictTotal = 0;
         auto const it = _runs.find(runSeq);
         if (it != _runs.end())
@@ -296,9 +304,15 @@ namespace TestHarness
             }
             for (auto const& [who, count] : it->second.owners)
                 owners.Num(who.c_str(), count);
+            for (auto const& [key, count] : it->second.nonLeader)
+            {
+                nonLeader.Num(key.c_str(), count);
+                nonLeaderTotal += count;
+            }
         }
         return JsonObject().Bool("oneTankMover", Leader::LEADER_ONE_TANK_MOVER).Num("conflictTotal", conflictTotal)
             .Raw("conflicts", conflicts.Build()).Raw("decisionsByOwner", owners.Build()).Raw("lines", lines.Build())
+            .Num("nonLeaderDecisionTotal", nonLeaderTotal).Raw("nonLeaderDecisions", nonLeader.Build())
             .Build();
     }
 

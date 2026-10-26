@@ -22,6 +22,7 @@
 #include "GenericSpellActions.h"
 #include "HealthTriggers.h"  // [lead15] RestState (the executor's rest report)
 #include "LeaderOrders.h"    // [lead15] the leader's member commands
+#include "TestRunnerStrategy.h"  // [lead17] the harness's waypoint for a member
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
 #include "GameObjectData.h"
@@ -2052,7 +2053,9 @@ void PlayerbotAI::DoNextAction(bool min)
         Leader::ExecutorMember(bot))
     {
         Leader::MemberEvents events;
-        if (!Leader::Events::Get(bot->GetGUID(), events))
+        TestRunner::Waypoint waypoint;
+        bool const harnessWalk = TestRunner::GetWaypoint(bot->GetGUID(), waypoint);  // [lead17] the leader's walk
+        if (!Leader::Events::Get(bot->GetGUID(), events) && !harnessWalk)
             return;
         // the executions that end with a report: rested to full, standing ready on the spot
         if (events.ready == Leader::ReadyEvent::Rest && bot->IsStandState() && !RestState::WantsDrink(bot) &&

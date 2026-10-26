@@ -150,6 +150,24 @@ namespace Leader
     // enraged boss on the tank, the tank low under a boss) and tells the member to use its personal save now; the
     // bot's own saves are for critical health only (the rotation side)
     constexpr bool LEADER_PRESAVE = true;
+    // [lead17] ONE decider (user 2026-10-26: «Я ж просил убрать два решающих – оставить только один решающий»;
+    // C:/WoW/LEADER_OWNERS_INVENTORY.md): for a led member the engine runs a WHITELIST - the leader's executors, the
+    // harness's own waypoint for it ("test runner move", the leader's walk across a link / out of water), the
+    // rotation's spells, emergency personal saves; every other movement and every attack on a target the leader did
+    // not name is off (stuck recovery, pre pull cc walks, prepull sight spots, reach, flee, avoid, dungeon moves)
+    constexpr bool LEADER_EXECUTOR_WHITELIST = true;
+    // [lead17] one readiness / gather owner: for a led party the harness's far wait, compact pause, ping-pong meet and
+    // the 40 yd readiness check read the leader's own trailing set (TickLeaderEvents: a member without a leader spot
+    // farther than LEADER_TRAIL_YD from the tank); a member on its leader spot is never "far"
+    constexpr bool LEADER_ONE_GATHER_OWNER = true;
+    constexpr float LEADER_TRAIL_YD = 35.0f;
+    constexpr float LEADER_TRAIL_BACK_YD = 20.0f;
+    // [lead17] the tank's own picks off: "chain pull" (the next pack is the planner's), "move fight off hazard" (the
+    // leader's hazard MoveTo moves the tank too)
+    constexpr bool LEADER_TANK_OWN_PICKS_OFF = true;
+    // [lead17] a pull spot not reached in LEADER_SPOT_STUCK_MS is re-assigned (a new spot) up to this often, then
+    // the member is reported stuck and no longer waited for
+    constexpr uint32 LEADER_SPOT_REASSIGNS = 2;
     constexpr float LEADER_PRESAVE_HIT_PCT = 35.0f;   // a cast whose damage is this share of the victim's max health
     constexpr float LEADER_PRESAVE_TANK_PCT = 40.0f;  // the tank under a boss below this health
     constexpr uint32 LEADER_BOSS_PREPARE_MS = 4500;

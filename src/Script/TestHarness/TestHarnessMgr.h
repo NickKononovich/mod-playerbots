@@ -436,6 +436,8 @@ namespace TestHarness
             bool lastFighting = false;
             std::map<std::string, uint32> staleCommands;  // [lead16] member -> stale_command ticks
             ObjectGuid bossPrepareFor;                     // [lead16] the boss pull the tank prepares for
+            std::set<ObjectGuid> trailing;                 // [lead17] members the leader waits for (far behind)
+            std::map<ObjectGuid, uint32> spotReassigns;    // [lead17] pull spots re-assigned per member
             uint32 bossPrepareSinceMs = 0;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;

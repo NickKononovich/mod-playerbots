@@ -4171,6 +4171,11 @@ namespace TestHarness
                 // Recover before the next pull: mana, health, members far behind.
                 std::vector<std::string> low;
                 std::vector<std::string> farAway;
+                // [lead17] LEADER_ONE_GATHER_OWNER: a led party's far / compact / ping-pong gates read the leader's
+                // trailing set (TickLeaderEvents), never their own distance rules
+                bool const ledGather = Leader::LEADER_ONE_GATHER_OWNER && Leader::LEADER_PLANNER_IN_LEADER &&
+                                       party.content && !party.content->raid && party.content->size <= 5 &&
+                                       Leader::Orders::IsTracked(party.leader);
                 bool anySeated = false;
                 // [b33_cos2] A timed run (heroic Culling, Guardian of Time running): a sitter is no far wait. Above its
                 // line it stands up at that line by itself ([b33_cos] RestState::RestDone / TimedRunStandsAtLine,
@@ -4358,6 +4363,8 @@ namespace TestHarness
                               (!seatedNear && (member.farWaited || party.meeting == member.guid) &&
                                metric > FAR_RESUME_RANGE);
                     }
+                    if (ledGather && bot != leader)
+                        isFar = bot->GetMap() != leader->GetMap() || party.lead.trailing.count(member.guid) > 0;
                     // [b32_strat_gate] a member cut off behind a closed door is waited for wherever it stands (8 yd
                     // behind the shut gate is no "together"), stranded or ignored or not.
                     bool const doorCut = party.doorCutHold && party.doorCutMember == member.guid;
@@ -4448,7 +4455,7 @@ namespace TestHarness
                     }
                     party.decision = decision;
                 }
-                if (REGROUP_PING_PONG_GUARD && !wingWalking && !party.pingPongHoldUntilMs && apart &&
+                if (REGROUP_PING_PONG_GUARD && !ledGather && !wingWalking && !party.pingPongHoldUntilMs && apart &&
                     !leader->IsInCombat() &&
                     party.decisionFlips >= REGROUP_PING_PONG_FLIPS && party.flipSinceMs &&
                     getMSTimeDiff(party.flipSinceMs, now) >= REGROUP_PING_PONG_MS &&
@@ -4753,7 +4760,8 @@ namespace TestHarness
                                 getMSTimeDiff(party.compactPauseTickMs, now) > COMPACT_PAUSE_STALE_MS)
                                 party.compactPauseSinceMs = now ? now : 1;
                             party.compactPauseTickMs = now ? now : 1;
-                            bool const want = (trailing && trail > (party.compactPauseSinceMs ? FAR_RESUME_RANGE
+                            bool const want = !ledGather &&
+                                              (trailing && trail > (party.compactPauseSinceMs ? FAR_RESUME_RANGE
                                                                                               : FAR_TRAIL_RANGE)) ||
                                               (healerBehind && party.compactPauseSinceMs);
                             bool const gap = party.compactPauseEndMs &&
