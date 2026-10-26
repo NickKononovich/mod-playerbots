@@ -16,6 +16,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "PvpValues.h"
 #include "ReachTargetActions.h"
 #include "ReflectAuras.h"
 #include "ServerFacade.h"
@@ -136,6 +137,9 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
 
         return false;
     }
+
+    if (IsUnavailableCombatTarget(bot, target))
+        return false;
 
     // [rjoin-oos] A mob the group fights round a corner is attacked from here: the combat engine's reach actions
     // ("enemy out of spell range" covers sight, "reach melee") walk the bot into view of it. Without it the non-combat

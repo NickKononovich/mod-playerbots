@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "BattlegroundWS.h"
 #include "Group.h"
 #include "HealAssignmentValues.h"
 #include "Playerbots.h"
@@ -124,10 +125,15 @@ namespace HealTriage
 Unit* PartyMemberToHeal::Calculate()
 {
     Group* group = bot->GetGroup();
+    Battleground* bg = bot->GetBattleground();
+    bool isWarsong = bg && bg->GetBgTypeID(true) == BATTLEGROUND_WS;
+    ObjectGuid carrierGuid;
+    if (isWarsong && bg->GetStatus() == STATUS_IN_PROGRESS && PlayerbotAI::IsHeal(bot))
+        carrierGuid = static_cast<BattlegroundWS*>(bg)->GetFlagPickerGUID(bg->GetOtherTeamId(bot->GetTeamId()));
     if (!group)
         return bot;
 
-    bool isRaid = bot->GetGroup()->isRaidGroup();
+    bool isRaid = group->isRaidGroup();
     MinValueCalculator calc(100);
     IncomingHealMap const& incoming = context->GetValue<IncomingHealMap>("incoming heals")->RefGet();
     // A member losing health fast is ranked by the health it is heading to: a 15k-health caster under two melee
@@ -232,6 +238,12 @@ Unit* PartyMemberToHeal::Calculate()
                 }
                 if (std::find(assigned.begin(), assigned.end(), player->GetGUID()) != assigned.end())
                     probeValue -= ASSIGNED_HEAL_PRIORITY;
+                constexpr float carrierPriority = 15.0f;
+                if (!carrierGuid.IsEmpty() && player->GetGUID() == carrierGuid &&
+                    player->GetHealthPct() < sPlayerbotAIConfig.MediumHealth &&
+                    player->GetDistance2d(bot) <= sPlayerbotAIConfig.HealDistance && player->IsInWorld() &&
+                    player->GetMap() == bot->GetMap())
+                    probeValue -= carrierPriority;
                 // [b31_shared] a safe beaconed tank waits for the comparison after the loop
                 bool const beaconed = beaconHealer && !beaconTank && health >= BEACON_TANK_SAFE_PCT &&
                                       PlayerbotAI::IsTank(player) &&
@@ -281,13 +293,13 @@ Unit* PartyMemberToHeal::Calculate()
     // [b31_shared] The beaconed tank yields only to a hurt non-tank; with nobody else that low it keeps its rank.
     if (beaconTank)
     {
-        Unit* chosen = (Unit*)calc.param;
+        Unit* chosen = static_cast<Unit*>(calc.param);
         bool const otherHurt = chosen && chosen->GetHealthPct() < BEACON_OTHER_HURT_PCT;
         if (!otherHurt && (!chosen || beaconTankProbe < calc.minValue))
             return beaconTank;
     }
 
-    return (Unit*)calc.param;
+    return static_cast<Unit*>(calc.param);
 }
 
 bool PartyMemberToHeal::Check(Unit* player)
