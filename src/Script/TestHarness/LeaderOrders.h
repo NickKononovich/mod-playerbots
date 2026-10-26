@@ -139,6 +139,11 @@ namespace Leader
     // [lead15] the healer reaches EVERY member (user 2026-10-26): every spot the leader issues keeps each member
     // within LEADER_HEAL_REACH_YD (40 yd heal range minus a margin) of the healer and in its sight
     constexpr bool LEADER_HEAL_REACH = true;
+    // [lead15] the split's enforcement check (user: «рейд-лидер решает, что, когда и где; бот сам решает только как
+    // ДД-шить, танковать, хилить»): an executed member action that moves, changes the target, sits to rest, casts an
+    // external / CC / burn cooldown or a buff on another without a matching leader command is an own_decision line
+    // (who member:<name>) and counts in the run's conflicts; the goal is 0
+    constexpr bool LEADER_OWN_DECISION_CHECK = true;
     constexpr float LEADER_HEAL_REACH_YD = 35.0f;
     // [lead15] an event field lives this long without the leader refreshing it (a stopped leader: the members'
     // own rules again); the dodge cadence; a spot reached within this; a member not nearer for this long is stuck
@@ -381,6 +386,13 @@ namespace Leader
         ReadyEvent ready = ReadyEvent::None;
         uint32 readyMs = 0;
     };
+    struct OwnDecision
+    {
+        std::string action;
+        std::string kind;  // "move", "target", "rest", "cc", "external", "burn", "buff on others"
+        std::string why;
+        uint32 ms = 0;
+    };
     struct MemberAck
     {
         ObjectGuid member;
@@ -408,6 +420,9 @@ namespace Leader
         bool Get(ObjectGuid member, MemberEvents& out);
         void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why);
         bool TakeAck(ObjectGuid member, MemberAck& out);
+        // [lead15] the member's own decisions (member thread) and their drain (the leader)
+        void NoteOwn(ObjectGuid member, OwnDecision const& own);
+        bool TakeOwn(ObjectGuid member, OwnDecision& out);
     }
 }
 

@@ -422,6 +422,7 @@ namespace Leader
             {
                 MemberEvents events;
                 std::deque<MemberAck> acks;
+                std::deque<OwnDecision> owns;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
             };
@@ -624,6 +625,27 @@ namespace Leader
             if (slot.acks.size() >= MAX_ACKS)
                 slot.acks.pop_front();
             slot.acks.push_back(MemberAck{member, seq, what, why, NowMs()});
+        }
+
+        void NoteOwn(ObjectGuid member, OwnDecision const& own)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            if (slot.owns.size() >= 4 * MAX_ACKS)
+                slot.owns.pop_front();
+            slot.owns.push_back(own);
+            slot.owns.back().ms = NowMs();
+        }
+
+        bool TakeOwn(ObjectGuid member, OwnDecision& out)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || found->second.owns.empty())
+                return false;
+            out = std::move(found->second.owns.front());
+            found->second.owns.pop_front();
+            return true;
         }
 
         bool TakeAck(ObjectGuid member, MemberAck& out)

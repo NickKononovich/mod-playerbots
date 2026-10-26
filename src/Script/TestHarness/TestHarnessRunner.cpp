@@ -19639,6 +19639,18 @@ namespace TestHarness
                                               JsonObject().Str("event", ack.what).Str("why", ack.why)
                                                   .Num("seq", ack.seq),
                                               ack.ms);
+            // [lead15] LEADER_OWN_DECISION_CHECK: the member's own decisions (the split's work list)
+            Leader::OwnDecision own;
+            while (Leader::Events::TakeOwn(member.guid, own))
+            {
+                DecisionLog::Instance().Write(run, "member:" + member.name, "own_decision", member.guid, member.name,
+                                              true,
+                                              JsonObject().Str("action", own.action).Str("kind", own.kind)
+                                                  .Str("why", own.why),
+                                              own.ms);
+                DecisionLog::Instance().CountConflict(run, "own_decision");
+                ++party.lead.ownDecisions[member.name][own.action];
+            }
         }
 
         // [lead7] LEADER_PLANNER_DIFF: where the planner library's shadow look disagreed with the tank's own look

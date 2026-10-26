@@ -269,6 +269,14 @@ namespace TestHarness
         AppendLine(run.runId + ".decisions.jsonl", text);
     }
 
+    void DecisionLog::CountConflict(DecisionRun const& run, std::string const& kind)
+    {
+        if (!Leader::LEADER_DECISION_LOG || run.runId.empty())
+            return;
+        std::lock_guard<std::mutex> lock(_lock);
+        ++_runs[run.runSeq].conflicts[kind];
+    }
+
     std::string DecisionLog::SummaryJson(uint32 runSeq)
     {
         std::lock_guard<std::mutex> lock(_lock);

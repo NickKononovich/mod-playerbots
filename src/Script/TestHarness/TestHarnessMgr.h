@@ -421,6 +421,8 @@ namespace TestHarness
             std::string aoeWhy;
             // [lead15] mobs loose on a member: mob -> {victim, since}
             std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> looseMobs;
+            // [lead15] own_decision counts: member -> action -> count (the run report's work list)
+            std::map<std::string, std::map<std::string, uint32>> ownDecisions;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;
             // [lead8] where the group fought and cleared this run (the tank at each fight's end)

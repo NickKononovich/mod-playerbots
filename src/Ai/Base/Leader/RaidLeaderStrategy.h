@@ -34,6 +34,17 @@ public:
 };
 
 // Holds attacks before the ready check passes, for a few seconds after the boss pull, and after a wipe call.
+class Unit;
+
+// [lead15] LEADER_OWN_DECISION_CHECK: after the engine executed `action` for a member the dungeon leader leads, notes
+// an own decision (Leader::Events::NoteOwn) when it moved, changed the target, sat to rest, cast an external / CC /
+// burn cooldown or a buff on another without a matching leader command. Personal saves and the rotation's spells on
+// the commanded target are exempt.
+namespace RaidLeader
+{
+    void CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* victimBefore);
+}
+
 class RaidLeaderHoldMultiplier : public Multiplier
 {
 public:

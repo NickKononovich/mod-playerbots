@@ -9,6 +9,8 @@
 #include "EstimatedLifetimeValue.h"
 #include "Event.h"
 #include "InstanceScript.h"
+#include "LeaderOrders.h"        // [lead15] the own-decision check
+#include "RaidLeaderStrategy.h"  // [lead15]
 #include "MapUpdater.h"
 #include "MoveSpline.h"
 #include "PerfMonitor.h"
@@ -285,9 +287,13 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 }
 
                 PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_ACTION, action->getName(), &aiObjectContext->performanceStack);
+                Unit* const victimBefore = botAI->GetBot() ? botAI->GetBot()->GetVictim() : nullptr;  // [lead15]
                 actionExecuted = ListenAndExecute(action, event);
                 if (pmo)
                     pmo->finish();
+                // [lead15] LEADER_OWN_DECISION_CHECK: a member's action without a matching leader command
+                if (actionExecuted && Leader::LEADER_OWN_DECISION_CHECK)
+                    RaidLeader::CheckOwnDecision(botAI, action, victimBefore);
 
                 if (actionExecuted)
                 {

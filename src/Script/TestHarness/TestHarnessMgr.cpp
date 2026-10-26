@@ -5080,6 +5080,33 @@ namespace TestHarness
         if (Leader::LEADER_DECISION_LOG && party.content && party.runStartMs)
             LogEvent(party, "leader_decisions",
                      JsonObject().Raw("summary", DecisionLog::Instance().SummaryJson(party.seq)));
+        // [lead15] LEADER_OWN_DECISION_CHECK: own_decision counts per member and per action (the goal is 0; every
+        // row names an action that still decides on its own)
+        if (Leader::LEADER_OWN_DECISION_CHECK && party.content && party.runStartMs)
+        {
+            JsonObject byMember;
+            std::map<std::string, uint32> actions;
+            uint32 total = 0;
+            for (auto const& [name, counts] : party.lead.ownDecisions)
+            {
+                JsonObject rows;
+                uint32 memberTotal = 0;
+                for (auto const& [action, count] : counts)
+                {
+                    rows.Num(action.c_str(), count);
+                    actions[action] += count;
+                    memberTotal += count;
+                }
+                total += memberTotal;
+                byMember.Raw(name.c_str(), rows.Num("total", memberTotal).Build());
+            }
+            JsonObject byAction;
+            for (auto const& [action, count] : actions)
+                byAction.Num(action.c_str(), count);
+            LogEvent(party, "own_decisions",
+                     JsonObject().Num("total", total).Raw("byMember", byMember.Build())
+                         .Raw("byAction", byAction.Build()));
+        }
 
         // [lead7] LEADER_PLANNER_DIFF: the planner library's shadow looks against the tank's own (plan_diff lines in
         // <runId>.decisions.jsonl): how many looks were compared, agreed, and disagreed by kind

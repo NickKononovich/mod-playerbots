@@ -8,7 +8,9 @@
 
 #include "Action.h"
 #include "Group.h"
+#include "AttackAction.h"         // [lead15] the own-decision check
 #include "GenericSpellActions.h"  // [lead15] CastBuffSpellAction / CastCrowdControlSpellAction
+#include "MovementActions.h"      // [lead15]
 #include "LeaderOrders.h"  // [lead15] the leader's member events
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
@@ -155,6 +157,91 @@ namespace
 }
 
 bool RaidLeaderHoldMultiplier::KeepsVeto(Action* /*action*/) { return Leader::ExecutorMember(bot); }
+
+void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* victimBefore)
+{
+    if (!Leader::LEADER_OWN_DECISION_CHECK || !botAI || !action)
+        return;
+    Player* bot = botAI->GetBot();
+    if (!Leader::ExecutorMember(bot))
+        return;
+    std::string const& name = action->getName();
+    if (name == "leader move order" || name == "leader attack order")
+        return;
+    Leader::MemberEvents events;
+    Leader::Events::Get(bot->GetGUID(), events);
+    bool const combat = bot->IsInCombat();
+    bool const fights = events.attack == Leader::AttackEvent::Attack || events.attack == Leader::AttackEvent::Heal;
+    bool const prepare = events.ready == Leader::ReadyEvent::Prepare ||
+                         events.ready == Leader::ReadyEvent::ReadyCheck || events.ready == Leader::ReadyEvent::Rest;
+    auto const in = [&name](std::initializer_list<std::string_view> names)
+    {
+        for (std::string_view n : names)
+            if (name == n)
+                return true;
+        return false;
+    };
+    auto const note = [&](char const* kind, std::string const& why)
+    { Leader::Events::NoteOwn(bot->GetGUID(), Leader::OwnDecision{name, kind, why, 0}); };
+
+    // the target: a new victim that is not the leader's target
+    Unit* victim = bot->GetVictim();
+    if (victim && victim != victimBefore &&
+        !(events.attack == Leader::AttackEvent::Attack && victim->GetGUID() == events.target) &&
+        victim->GetGUID() != events.threatTarget)
+    {
+        note("target", "attacks " + victim->GetName() + " without a leader Attack on it");
+        return;
+    }
+    if (dynamic_cast<AttackAction*>(action))
+        return;
+    if (in({"drink", "food"}))
+    {
+        if (events.ready != Leader::ReadyEvent::Rest)
+            note("rest", "sits without the leader's Rest");
+        return;
+    }
+    if (dynamic_cast<MovementAction*>(action))
+    {
+        // the rotation's own range on the commanded target is its "how"
+        bool const rotationRange = combat && fights && in({"reach melee", "reach spell"});
+        bool const resurrect = prepare && in({"reach party member to resurrect"});
+        bool const plannedCc = !events.cc.IsEmpty() && in({"pre pull cc"});
+        if (!rotationRange && !resurrect && !plannedCc && !in({"stand up"}))
+            note("move", "moves without a leader MoveTo / StandAt");
+        return;
+    }
+    if (!dynamic_cast<CastSpellAction*>(action))
+        return;
+    if (dynamic_cast<CastCrowdControlSpellAction*>(action) ||
+        (name.size() > 6 && name.compare(name.size() - 6, 6, " on cc") == 0))
+    {
+        if (events.cc.IsEmpty())
+            note("cc", "crowd control without a leader CC assignment");
+        return;
+    }
+    if (in({"innervate", "power infusion", "pain suppression", "hand of sacrifice", "hand of protection",
+            "misdirection", "misdirection on party", "tricks of the trade", "tricks of the trade on main tank",
+            "hymn of hope", "divine hymn", "hand of salvation", "hand of freedom"}))
+    {
+        if (!events.externalSpell)
+            note("external", "an external without a leader assignment");
+        return;
+    }
+    if (in({"bloodlust", "heroism", "icy veins", "arcane power", "presence of mind", "avenging wrath", "death wish",
+            "recklessness", "berserk", "army of the dead", "summon gargoyle", "rapid fire", "bestial wrath",
+            "adrenaline rush", "blade flurry", "killing spree", "shadowfiend", "feral spirit", "elemental mastery",
+            "metamorphosis", "mirror image", "starfall", "force of nature", "summon infernal", "dancing rune weapon",
+            "unholy frenzy", "hysteria"}))
+    {
+        if (events.intensity != Leader::Intensity::Burn)
+            note("burn", "a burn cooldown without the leader's Intensity burn");
+        return;
+    }
+    if (dynamic_cast<CastBuffSpellAction*>(action))
+        if (Unit* target = action->GetTarget(); target && target != bot && !prepare && !combat)
+            note("buff on others", "buffs " + target->GetName() + " without Prepare / Ready?");
+}
 
 float RaidLeaderHoldMultiplier::GetValue(Action* action)
 {

@@ -150,6 +150,8 @@ namespace TestHarness
         // A conflict the caller detected (`about`: the decision line ids or a short description).
         void NoteConflict(DecisionRun const& run, std::string const& kind, ObjectGuid mob, std::string const& about,
                           JsonObject fields);
+        // [lead15] counts a conflict of `kind` without a line of its own (own_decision: the line is the decision)
+        void CountConflict(DecisionRun const& run, std::string const& kind);
         // The run's counts: lines by `what`, conflicts by kind, decisions by owner.
         std::string SummaryJson(uint32 runSeq);
         void EndRun(uint32 runSeq);
