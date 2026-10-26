@@ -16,6 +16,8 @@
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
 
+#include <map>
+#include <mutex>
 #include <string_view>
 
 namespace
@@ -111,6 +113,25 @@ void RaidConsumablesStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 namespace
 {
+    // [lead17b] a move / attack the executor whitelist blocked: a blocked_move / blocked_attack line (the step-6
+    // work list: which tactics the leader takes over first), at most once per member and action per 10 s
+    void NoteBlocked(Player* self, std::string const& name, char const* kind)
+    {
+        constexpr uint32 BLOCKED_LOG_MS = 10 * IN_MILLISECONDS;
+        static std::mutex lock;
+        static std::map<std::pair<ObjectGuid, std::string>, uint32> last;
+        uint32 const now = getMSTime();
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            uint32& at = last[{self->GetGUID(), name}];
+            if (at && getMSTimeDiff(at, now) < BLOCKED_LOG_MS)
+                return;
+            at = now ? now : 1;
+        }
+        std::string const where = self->GetMap() ? self->GetMap()->GetMapName() : "?";
+        Leader::Events::NoteOwn(self->GetGUID(), Leader::OwnDecision{name, kind, where, 0});
+    }
+
     // [lead15] the member's own decisions the executor model turns off (LeaderOrders.h LEADER_NO_OWN_*)
     bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
                         bool combat)
@@ -138,8 +159,11 @@ namespace
             if (dynamic_cast<AttackAction*>(action))
             {
                 Unit* target = action->GetTarget();
-                return !(events.attack == Leader::AttackEvent::Attack && target &&
-                         target->GetGUID() == events.target);
+                bool const blocked = !(events.attack == Leader::AttackEvent::Attack && target &&
+                                       target->GetGUID() == events.target);
+                if (blocked && name != "dps assist" && name != "attack anything")
+                    NoteBlocked(self, name, "blocked_attack");
+                return blocked;
             }
             if (dynamic_cast<MovementAction*>(action))
             {
@@ -149,6 +173,8 @@ namespace
                     return false;
                 if (prepareCmd && in({"reach party member to resurrect"}))
                     return false;
+                if (!in({"follow"}))
+                    NoteBlocked(self, name, "blocked_move");
                 return true;
             }
         }

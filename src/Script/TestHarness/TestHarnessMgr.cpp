@@ -5118,6 +5118,16 @@ namespace TestHarness
                 stale.Num(name.c_str(), count);
                 staleTotal += count;
             }
+            JsonObject blocked;
+            uint32 blockedTotal = 0;
+            for (auto const& [key, count] : party.lead.blockedMoves)
+            {
+                blocked.Num(key.c_str(), count);
+                blockedTotal += count;
+            }
+            LogEvent(party, "blocked_moves",
+                     JsonObject().Num("total", blockedTotal).Raw("byAction", blocked.Build())
+                         .Str("content", party.content ? party.content->key : ""));
             LogEvent(party, "own_decisions",
                      JsonObject().Num("total", total).Raw("byMember", byMember.Build())
                          .Raw("byAction", byAction.Build()).Num("staleCommandTotal", staleTotal)

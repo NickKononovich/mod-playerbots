@@ -107,6 +107,14 @@ namespace TestHarness
     // verdict (TestHarnessMgr::LeaderReadyWhy) built on it.
     static std::string GroupNotReadyWhy(Party const& party, Player* leader)
     {
+        // [lead17b] LEADER_ONE_GATHER_OWNER: a led party's readiness is the leader's one verdict (LeaderReadyWhy,
+        // published every 500 ms) - the harness's body pull / boss pull / skip gates read it, no lines of their own
+        if (Leader::LEADER_ONE_GATHER_OWNER && Leader::LEADER_PLANNER_IN_LEADER && party.content &&
+            !party.content->raid && party.content->size <= 5 && !party.leader.IsEmpty() &&
+            Leader::Orders::IsTracked(party.leader) && party.lead.readyCheckMs)
+            return party.lead.ready ? std::string()
+                                    : (party.lead.notReadyWhy.empty() ? std::string("the leader holds")
+                                                                      : party.lead.notReadyWhy);
         for (Member const& member : party.members)
         {
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
@@ -19645,6 +19653,17 @@ namespace TestHarness
             Leader::OwnDecision own;
             while (Leader::Events::TakeOwn(member.guid, own))
             {
+                if (own.kind == "blocked_move" || own.kind == "blocked_attack")
+                {
+                    // [lead17b] the whitelist blocked it: no decision (decides false), the step-6 work list
+                    DecisionLog::Instance().Write(run, "member:" + member.name, own.kind, member.guid, member.name,
+                                                  false,
+                                                  JsonObject().Str("action", own.action).Str("dungeon", own.why)
+                                                      .Str("content", party.content ? party.content->key : ""),
+                                                  own.ms);
+                    ++party.lead.blockedMoves[own.kind + "|" + own.action];
+                    continue;
+                }
                 DecisionLog::Instance().Write(run, "member:" + member.name, "own_decision", member.guid, member.name,
                                               true,
                                               JsonObject().Str("action", own.action).Str("kind", own.kind)

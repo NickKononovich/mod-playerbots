@@ -104,6 +104,18 @@ namespace PullPlanner
 
 namespace PullReadiness
 {
+// [lead17b] LEADER_ONE_GATHER_OWNER: a led tank's planner checks (group ready to pull, topped up, healer in reach,
+// buffs) read the leader's one readiness verdict (Leader::Readiness, TestHarnessMgr::LeaderReadyWhy) - no readiness
+// rule of their own. False: not a led tank, or no fresh verdict (the old rules then).
+bool LeaderVerdict(Player* bot, bool& ready, std::string* why)
+{
+    if (!Leader::LEADER_ONE_GATHER_OWNER || !Leader::LEADER_PLANNER_IN_LEADER || !bot ||
+        !Leader::Orders::IsTracked(bot->GetGUID()))
+        return false;
+    Group* group = bot->GetGroup();
+    return group && Leader::Readiness::Get(group->GetGUID(), ready, why);
+}
+
 bool GroupPreparing(Player* bot, std::string* why)
 {
     constexpr float PREPARING_RANGE = 50.0f;  // RestState::GROUP_RANGE: the members the next fight is fought with
@@ -1215,6 +1227,9 @@ namespace
     // out of its sight, at most HEALER_REACH_HOLD_MAX_MS per wait (a healer that cannot get there).
     bool HealerOutOfReach(Player* bot, std::string* why)
     {
+        // [lead17b] the leader's heal-reach invariant and readiness own this
+        if (bool ready = false; PullReadiness::LeaderVerdict(bot, ready, nullptr))
+            return false;
         constexpr float HEALER_PULL_REACH = 30.0f;
         constexpr uint32 HEALER_REACH_HOLD_MAX_MS = 30 * IN_MILLISECONDS;
         thread_local std::unordered_map<ObjectGuid, uint32> holdStarts;  // by tank
@@ -1276,6 +1291,9 @@ namespace
     bool IsGroupReadyToPull(Player* bot, float packDanger, PartyStrength const& strength,
                             float healerManaNeed = -1.0f)
     {
+        // [lead17b] the leader's one readiness verdict
+        if (bool ready = false; PullReadiness::LeaderVerdict(bot, ready, nullptr))
+            return ready;
         // [combat_no_damage_release] a member fights and nobody has hit anything for a while: no rest hold
         if (GroupDamage::NoDamageRelease(bot))
             return true;
@@ -4271,6 +4289,9 @@ namespace
     // mana)" for a healer 30-39 yd away and for a stale "healer dead").
     bool IsGroupToppedUp(Player* bot, std::string* why = nullptr)
     {
+        // [lead17b] the leader's one readiness verdict (its rest rule tops the group up)
+        if (bool ready = false; PullReadiness::LeaderVerdict(bot, ready, why))
+            return ready;
         // [b30_topped_up] a member short of the line that has not regenerated for REGEN_STALL_MS counts as topped up
         auto const toppedUp = [why, bot](Player* member)
         {
@@ -7328,6 +7349,9 @@ uint32 AggressiveTargetAction::PackBlockedMs(std::vector<ObjectGuid> const& mobs
 
 bool AggressiveTargetAction::WaitForBuffs()
 {
+    // [lead17b] the buff pass is the leader's (party.needBuff in its readiness)
+    if (bool ready = false; PullReadiness::LeaderVerdict(bot, ready, nullptr))
+        return false;
     uint32 const now = getMSTime();
     if (!_buffCheckMs || getMSTimeDiff(_buffCheckMs, now) >= PULL_BUFF_CHECK_MS)
     {

@@ -311,6 +311,8 @@ namespace PullCheck
 // itself, so the hold lasts no longer than the rest the bot asked for.
 namespace PullReadiness
 {
+    // [lead17b] the leader's one readiness verdict for a led tank's group (false: none - the planner's own rules)
+    bool LeaderVerdict(Player* bot, bool& ready, std::string* why);
     bool GroupPreparing(Player* bot, std::string* why = nullptr);
     // [boss_pull_ready_gate] What keeps the group from being ready for `boss` (the planner's BossReadyGap: health,
     // mana, sitting, buffing, a missing group buff); empty when ready.
