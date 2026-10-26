@@ -79,6 +79,7 @@
 #include "Timer.h"
 #include <chrono>  // [lead15] the leader cadence cost
 #include <functional>
+#include <optional>  // [lead18]
 #include "WaypointMgr.h"
 #include "WorldPacket.h"
 #include "World.h"
@@ -19644,11 +19645,27 @@ namespace TestHarness
         {
             Leader::MemberAck ack;
             while (Leader::Events::TakeAck(member.guid, ack))
+            {
                 DecisionLog::Instance().Write(run, "member:" + member.name, "member_ack", member.guid, member.name,
                                               false,
                                               JsonObject().Str("event", ack.what).Str("why", ack.why)
                                                   .Num("seq", ack.seq),
                                               ack.ms);
+                // [lead18] a refused leader walk: the leader issued an invalid move
+                if (ack.why.rfind("the walk refused", 0) == 0)
+                    DecisionLog::Instance().Write(run, "leader", "invalid_spot", member.guid, member.name, false,
+                                                  JsonObject().Str("member", member.name).Str("why", ack.why),
+                                                  ack.ms);
+            }
+            // [lead18] vetoed_eval: a vetoed strategy evaluated by the member (a blocker, goal 0)
+            std::string vetoed;
+            uint32 vetoedCount = 0;
+            while (Leader::Events::TakeVetoedEval(member.guid, vetoed, vetoedCount))
+            {
+                party.lead.vetoedEvals[member.name + "|" + vetoed] += vetoedCount;
+                for (uint32 i = 0; i < vetoedCount; ++i)
+                    DecisionLog::Instance().CountConflict(run, "vetoed_eval");
+            }
             // [lead15] LEADER_OWN_DECISION_CHECK: the member's own decisions (the split's work list)
             Leader::OwnDecision own;
             while (Leader::Events::TakeOwn(member.guid, own))
@@ -19987,6 +20004,10 @@ namespace TestHarness
     bool TestHarnessMgr::LeaderPatrolTick(Party& party, Player* leader)
     {
         auto& lead = party.lead;
+        // [lead18] LEADER_COMMIT_PULL: a committed pull owns its patrol timing (its window, runCommit); no wait by
+        // forecast meanwhile
+        if (Leader::LEADER_COMMIT_PULL && lead.commit)
+            return false;
         uint32 const now = getMSTime() ? getMSTime() : 1;
         Map* map = leader->GetMap();
         // [lead4c] build 54 hos-h: 33 "start" lines for two patrols - the forecast flickers (the scan edge, the
@@ -20293,10 +20314,86 @@ namespace TestHarness
             return Position(x, y, z);
         }
 
+        // [lead18] the spot guard of every leader spot: the idle mobs around the group (refreshed by the event tick),
+        // the group's walked ground (cleared, LEADER_PREFER_CLEARED). World thread only.
+        std::vector<Creature*> const* g_leaderIdle = nullptr;
+        std::vector<Position> const* g_leaderCleared = nullptr;
+
+        bool LeaderOnCleared(Position const& spot)
+        {
+            if (!g_leaderCleared)
+                return false;
+            for (Position const& at : *g_leaderCleared)
+                if (at.GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= 4.0f &&
+                    std::fabs(at.GetPositionZ() - spot.GetPositionZ()) < 4.0f)
+                    return true;
+            return false;
+        }
+
+        // the unpulled mob whose reach (the planner's IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN towards it)
+        // covers the spot; nullptr: none
+        Creature* LeaderAggroAt(Player* bot, Position const& spot)
+        {
+            if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
+                return nullptr;
+            for (Creature* mob : *g_leaderIdle)
+            {
+                if (!mob->IsInWorld() || !mob->IsAlive() || mob->IsInCombat())
+                    continue;
+                if (IdleMobReachesSpot(bot, mob, spot))
+                    return mob;
+                float const gap = mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
+                if (gap > 0.1f && gap < 60.0f)
+                {
+                    float const step = std::min(Leader::LEADER_SPOT_AGGRO_MARGIN, gap) / gap;
+                    Position const closer(spot.GetPositionX() + (mob->GetPositionX() - spot.GetPositionX()) * step,
+                                          spot.GetPositionY() + (mob->GetPositionY() - spot.GetPositionY()) * step,
+                                          spot.GetPositionZ());
+                    if (IdleMobReachesSpot(bot, mob, closer))
+                        return mob;
+                }
+            }
+            return nullptr;
+        }
+
+        // the walk to the spot passes no unpulled mob's reach (and there is a walk)
+        Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath)
+        {
+            noPath = false;
+            if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
+                return nullptr;
+            PathGenerator path(bot);
+            path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
+            if (path.GetPathType() & PATHFIND_NOPATH)
+            {
+                noPath = true;
+                return nullptr;
+            }
+            Movement::PointsArray const& points = path.GetPath();
+            for (size_t i = 0; i < points.size(); i += 2)
+                if (Creature* mob = LeaderAggroAt(bot, Position(points[i].x, points[i].y, points[i].z)))
+                    return mob;
+            return nullptr;
+        }
+
+        // a candidate of a spot search: 0 rejected (an unpulled mob reaches it), 1 valid on new ground (kept as the
+        // fallback), 2 valid on cleared ground (taken at once)
+        int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback)
+        {
+            if (LeaderAggroAt(bot, spot))
+                return 0;
+            if (!Leader::LEADER_PREFER_CLEARED || LeaderOnCleared(spot))
+                return 2;
+            if (!fallback)
+                fallback = spot;
+            return 1;
+        }
+
         // a free spot near the healer, out of every cleave cone, from which it reaches everyone (`keeps`)
         bool LeaderHealerRespot(Player* healer, PlayerbotAI* healerAI,
                                 std::function<bool(Position const&)> const& keeps, Position& out)
         {
+            std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
             constexpr float STEPS[] = {4.0f, 8.0f, 12.0f, 16.0f};
             constexpr uint32 DIRECTIONS = 16;
             Map* map = healer->GetMap();
@@ -20316,9 +20413,16 @@ namespace TestHarness
                     Position const spot(x, y, z);
                     if (!keeps(spot))
                         continue;
+                    if (LeaderCandidate(healer, spot, fallback) != 2)
+                        continue;
                     out = spot;
                     return true;
                 }
+            if (fallback)
+            {
+                out = *fallback;
+                return true;
+            }
             return false;
         }
 
@@ -20342,6 +20446,7 @@ namespace TestHarness
         bool LeaderCleaveExit(Player* bot, PlayerbotAI* botAI, Position& out,
                               std::function<bool(Position const&)> const& keeps)
         {
+            std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
             constexpr float STEPS[] = {4.0f, 7.0f, 10.0f, 13.0f};
             constexpr uint32 DIRECTIONS = 16;
             constexpr float DIST_MARGIN = 1.0f;
@@ -20361,9 +20466,16 @@ namespace TestHarness
                         continue;
                     if (!keeps(Position(x, y, z)))
                         continue;
+                    if (LeaderCandidate(bot, Position(x, y, z), fallback) != 2)
+                        continue;
                     out.Relocate(x, y, z);
                     return true;
                 }
+            if (fallback)
+            {
+                out = *fallback;
+                return true;
+            }
             return false;
         }
 
@@ -20436,6 +20548,7 @@ namespace TestHarness
         bool LeaderSafeSpot(Player* bot, PlayerbotAI* botAI, std::vector<HazardZone> const& zones,
                             std::function<bool(Position const&)> const& keeps, Position& out)
         {
+            std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
             constexpr float STEPS[] = {3.0f, 5.0f, 7.0f, 10.0f, 13.0f, 16.0f};
             constexpr uint32 DIRECTIONS = 16;
             Map* map = bot->GetMap();
@@ -20453,9 +20566,16 @@ namespace TestHarness
                     Position const spot(x, y, z);
                     if (!keeps(spot))
                         continue;
+                    if (LeaderCandidate(bot, spot, fallback) != 2)
+                        continue;
                     out = spot;
                     return true;
                 }
+            if (fallback)
+            {
+                out = *fallback;
+                return true;
+            }
             return false;
         }
 
@@ -20495,6 +20615,7 @@ namespace TestHarness
                               std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
                               Position& out)
         {
+            std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
             static constexpr float TURNS[] = {0.0f,  0.35f, -0.35f, 0.7f,  -0.7f, 1.05f, -1.05f, 1.4f,
                                               -1.4f, 1.75f, -1.75f, 2.1f,  -2.1f, 2.45f, -2.45f, 3.14f};
             float const base = melee ? target->GetOrientation() + float(M_PI) : target->GetAngle(bot);
@@ -20517,7 +20638,228 @@ namespace TestHarness
                 Position const spot(x, y, z);
                 if (!LeaderCombatSpotValid(bot, botAI, target, spot, melee, zones, keeps, true))
                     continue;
+                if (LeaderCandidate(bot, spot, fallback) != 2)
+                    continue;
                 out = spot;
+                return true;
+            }
+            if (fallback)
+            {
+                out = *fallback;
+                return true;
+            }
+            return false;
+        }
+
+        // [lead18] the nearest walking patrol (idle, a waypoint walker or on the move, not of the committed pull)
+        // around the pull spot or the tank; `gap`: its distance to the nearer of the two, `reach`: its aggro reach
+        Creature* LeaderPatrolNear(Player* tank, Position const& spot, PullPlanner::Decision const& d, float& gap,
+                                   float& reach)
+        {
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(tank, 90.0f);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(tank, units, check);
+            Cell::VisitObjects(tank, searcher, 90.0f);
+            Creature* best = nullptr;
+            for (Unit* unit : units)
+            {
+                Creature* creature = unit->ToCreature();
+                if (!creature || !creature->IsAlive() || creature->IsInCombat() ||
+                    !tank->IsValidAttackTarget(creature) ||
+                    creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) ||
+                    !(creature->isMoving() || creature->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE) ||
+                    creature->GetGUID() == d.planTarget || creature->GetGUID() == d.attack ||
+                    creature->GetGUID() == d.lookTarget ||
+                    std::find(d.pack.begin(), d.pack.end(), creature->GetGUID()) != d.pack.end())
+                    continue;
+                float const closest = std::min(creature->GetExactDist(spot), creature->GetExactDist(tank));
+                if (!best || closest < gap)
+                {
+                    best = creature;
+                    gap = closest;
+                    reach = creature->GetAggroRange(tank);
+                }
+            }
+            return best;
+        }
+
+        // [lead18] LEADER_EDGE_FIRST: the room around `picked` (idle mobs within 40 yd of it, patrols out) as packs
+        // (linked within 8 yd); the edge packs have the fewest other packs within 20 yd. The pick moves to the edge
+        // pack nearest the tank when `picked` is not on the edge. `order`: the room, edge first (room_order).
+        Unit* LeaderEdgePick(Player* tank, Unit* picked, std::string& why, JsonArray& order, std::string& sig)
+        {
+            std::list<Creature*> idle;
+            IdleAggroCheck check{tank};
+            Acore::CreatureListSearcher<IdleAggroCheck> searcher(picked, idle, check);
+            Cell::VisitObjects(picked, searcher, 40.0f);
+            std::vector<Creature*> mobs;
+            for (Creature* mob : idle)
+                if (!mob->isMoving() && mob->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE &&
+                    std::fabs(mob->GetPositionZ() - picked->GetPositionZ()) < 6.0f && tank->GetExactDist(mob) < 80.0f)
+                    mobs.push_back(mob);
+            if (mobs.size() < 4)
+                return nullptr;
+            std::vector<size_t> root(mobs.size());
+            for (size_t i = 0; i < root.size(); ++i)
+                root[i] = i;
+            std::function<size_t(size_t)> const find = [&](size_t i)
+            { return root[i] == i ? i : root[i] = find(root[i]); };
+            for (size_t i = 0; i < mobs.size(); ++i)
+                for (size_t j = i + 1; j < mobs.size(); ++j)
+                    if (mobs[i]->GetExactDist2d(mobs[j]) <= 8.0f)
+                        root[find(i)] = find(j);
+            std::map<size_t, std::vector<Creature*>> packs;
+            for (size_t i = 0; i < mobs.size(); ++i)
+                packs[find(i)].push_back(mobs[i]);
+            if (packs.size() < 3)
+                return nullptr;
+            struct Pack
+            {
+                std::vector<Creature*> mobs;
+                uint32 neighbors = 0;
+                float tankDist = 0.0f;
+                Creature* nearest = nullptr;
+                bool hasPicked = false;
+            };
+            std::vector<Pack> room;
+            for (auto& [key, members] : packs)
+            {
+                Pack pack;
+                pack.mobs = members;
+                for (Creature* mob : members)
+                {
+                    float const dist = tank->GetExactDist(mob);
+                    if (!pack.nearest || dist < pack.tankDist)
+                    {
+                        pack.nearest = mob;
+                        pack.tankDist = dist;
+                    }
+                    pack.hasPicked |= mob == picked;
+                }
+                room.push_back(pack);
+            }
+            for (Pack& a : room)
+                for (Pack const& b : room)
+                {
+                    if (&a == &b)
+                        continue;
+                    bool close = false;
+                    for (Creature* x : a.mobs)
+                        for (Creature* y : b.mobs)
+                            close |= x->GetExactDist2d(y) <= 20.0f;
+                    a.neighbors += close ? 1 : 0;
+                }
+            std::sort(room.begin(), room.end(), [](Pack const& a, Pack const& b)
+                      { return a.neighbors != b.neighbors ? a.neighbors < b.neighbors : a.tankDist < b.tankDist; });
+            for (Pack const& pack : room)
+            {
+                order.Raw(JsonObject().Str("first", pack.nearest->GetName()).Num("size", int64(pack.mobs.size()))
+                              .Num("neighbors", pack.neighbors).Real("dist", pack.tankDist)
+                              .Real("x", pack.nearest->GetPositionX()).Real("y", pack.nearest->GetPositionY())
+                              .Bool("picked", pack.hasPicked).Build());
+                sig += std::to_string(pack.nearest->GetGUID().GetCounter()) + ",";
+            }
+            Pack const& edge = room.front();
+            Pack const* mine = nullptr;
+            for (Pack const& pack : room)
+                if (pack.hasPicked)
+                    mine = &pack;
+            if (!mine || mine->neighbors <= edge.neighbors)
+                return nullptr;
+            why = Acore::StringFormat("{} ({} mobs, {} packs beside it) is the room's edge; {} has {}",
+                                      edge.nearest->GetName(), edge.mobs.size(), edge.neighbors, picked->GetName(),
+                                      mine->neighbors);
+            return edge.nearest;
+        }
+
+        // [lead18] a spot the member walks to: a path from where it stands, no idle mob (outside the pull) reaching it
+        bool LeaderMemberWalks(Player* bot, Position const& spot, std::list<Creature*> const& idle,
+                               std::vector<ObjectGuid> const& pack)
+        {
+            PathGenerator path(bot);
+            path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
+            if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+                return false;
+            Movement::PointsArray const& points = path.GetPath();
+            for (size_t i = 0; i < points.size(); i += 2)
+            {
+                Position const at(points[i].x, points[i].y, points[i].z);
+                for (Creature* mob : idle)
+                    if (std::find(pack.begin(), pack.end(), mob->GetGUID()) == pack.end() &&
+                        IdleMobReachesSpot(bot, mob, at))
+                        return false;
+            }
+            return true;
+        }
+
+        // [lead18] the member's spell reach to its target (a hunter 35 yd, a caster 30 yd)
+        float LeaderSpellReach(Player* bot) { return bot->getClass() == CLASS_HUNTER ? 35.0f : 30.0f; }
+
+        // [lead18] why a held combat spot no longer fits ("" = it does): out of the member's reach of the target
+        // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
+        std::string LeaderCombatSpotBreaks(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot,
+                                           bool melee, std::vector<HazardZone> const& zones,
+                                           std::function<bool(Position const&)> const& keeps, bool sight)
+        {
+            float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
+            if (melee && gap > target->GetCombatReach() + bot->GetCombatReach() + 1.5f)
+                return "out of melee reach of the target";
+            if (!melee && !PlayerbotAI::IsHeal(bot) && gap > LeaderSpellReach(bot))
+                return "out of spell range of the target";
+            if (LeaderZoneAt(zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), LEADER_HAZARD_EDGE))
+                return "a hazard covers it";
+            if (NearHazard(bot->GetMap(), bot->GetPhaseMask(), spot.GetPositionX(), spot.GetPositionY(),
+                           spot.GetPositionZ(), LEADER_TERRAIN_EDGE))
+                return "lava / a drop-off";
+            if (botAI && DungeonTactics::SpotInFrontalCleave(bot, botAI, spot.GetPositionX(), spot.GetPositionY(), 1.0f,
+                                                             20.0f * float(M_PI) / 180.0f))
+                return "a cleave covers it";
+            if (!keeps(spot))
+                return "heal reach";
+            if (sight && !melee && !PlayerbotAI::IsHeal(bot) &&
+                !target->GetMap()->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(),
+                                                   spot.GetPositionZ() + 2.0f, target->GetPositionX(),
+                                                   target->GetPositionY(), target->GetPositionZ() + 2.0f,
+                                                   target->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                   VMAP::ModelIgnoreFlags::Nothing))
+                return "no line of sight to the target";
+            return std::string();
+        }
+
+        // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
+        bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
+                                     std::vector<HazardZone> const& zones,
+                                     std::function<bool(Position const&)> const& keeps, Position& out)
+        {
+            std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
+            constexpr float RINGS[] = {0.0f, 3.0f, 6.0f, 9.0f, 12.0f};
+            constexpr uint32 DIRECTIONS = 12;
+            Map* map = bot->GetMap();
+            for (float ring : RINGS)
+                for (uint32 i = 0; i < (ring > 0.0f ? DIRECTIONS : 1u); ++i)
+                {
+                    float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                    float x = from.GetPositionX() + std::cos(angle) * ring;
+                    float y = from.GetPositionY() + std::sin(angle) * ring;
+                    float z = from.GetPositionZ();
+                    if (ring > 0.0f && (!map->CheckCollisionAndGetValidCoords(bot, from.GetPositionX(),
+                                                                              from.GetPositionY(), from.GetPositionZ(),
+                                                                              x, y, z) ||
+                                        std::fabs(z - from.GetPositionZ()) > 4.0f))
+                        continue;
+                    Position const spot(x, y, z);
+                    if (!melee && target->GetExactDist2d(x, y) < 8.0f)
+                        continue;
+                    if (!LeaderCombatSpotBreaks(bot, botAI, target, spot, melee, zones, keeps, true).empty())
+                        continue;
+                    if (LeaderCandidate(bot, spot, fallback) != 2)
+                        continue;
+                    out = spot;
+                    return true;
+                }
+            if (fallback)
+            {
+                out = *fallback;
                 return true;
             }
             return false;
@@ -20598,6 +20940,16 @@ namespace TestHarness
         }
         lead.spotsFight = fight;
         bool assigned = false;
+        // [lead18] the idle mobs around the pull (the spot guard), the group's walked ground
+        std::list<Creature*> idleNear;
+        {
+            IdleAggroCheck check{tank};
+            Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idleNear, check);
+            Cell::VisitObjects(tank, searcher, 80.0f);
+        }
+        std::vector<Creature*> const idleVector(idleNear.begin(), idleNear.end());
+        g_leaderIdle = &idleVector;
+        g_leaderCleared = &lead.clearedGround;
         uint32 index = 0;
         for (Member const& member : party.members)
         {
@@ -20611,6 +20963,7 @@ namespace TestHarness
             float const distance = healer ? 18.0f : ranged ? 22.0f : 4.0f;
             float const spread = float(int32(index % 3) - 1) * (healer || ranged ? 0.35f : 0.6f);
             ++index;
+            std::optional<Position> newGround;  // [lead18] new ground, when no cleared spot fits
             static constexpr float SHRINK[] = {1.0f, 0.75f, 0.55f};
             static constexpr float TURN[] = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f};
             bool found = false;
@@ -20621,8 +20974,24 @@ namespace TestHarness
                     float const angle = base + spread + turn;
                     Position spot(fight.GetPositionX() + std::cos(angle) * distance * shrink,
                                   fight.GetPositionY() + std::sin(angle) * distance * shrink, fight.GetPositionZ());
-                    if (!LeaderSpotOk(tank, fight, spot, pack))
+                    // [lead18] a member stands out of every unpulled mob's reach, the pulled pack's too, and walks
+                    // there without passing one
+                    if (!LeaderSpotOk(tank, fight, spot, {}) || !LeaderMemberWalks(bot, spot, idleNear, {}))
+                    {
+                        if (Creature* mob = LeaderAggroAt(bot, spot))
+                            DecisionLog::Instance().Write(
+                                DecisionRun{party.id, party.seq, party.runStartMs}, "leader", "spot_rejected_aggro",
+                                member.guid, member.name, false,
+                                JsonObject().Str("member", member.name).Str("mob", mob->GetName())
+                                    .Real("distance", mob->GetExactDist(spot)).Str("spot", "pull"));
                         continue;
+                    }
+                    if (Leader::LEADER_PREFER_CLEARED && !LeaderOnCleared(spot))
+                    {
+                        if (!newGround)
+                            newGround = spot;
+                        continue;
+                    }
                     lead.spots[member.guid] = spot;
                     assigned = true;
                     found = true;
@@ -20630,6 +20999,11 @@ namespace TestHarness
                 }
                 if (found)
                     break;
+            }
+            if (!found && newGround)
+            {
+                lead.spots[member.guid] = *newGround;
+                assigned = true;
             }
         }
         // [lead15] LEADER_HEAL_REACH: the healer's spot reaches the fight spot (the tank) and every other spot, else
@@ -20693,6 +21067,8 @@ namespace TestHarness
                                      fixed ? "the healer gets another spot" : "none");
             }
         }
+        g_leaderIdle = nullptr;
+        g_leaderCleared = nullptr;
         return !lead.spots.empty();
     }
 
@@ -20774,6 +21150,91 @@ namespace TestHarness
         bool hazardSeen = false;
         DecisionRun const run{party.id, party.seq, party.runStartMs};
         Map* map = tank->GetMap();
+        // [lead18] the group's walked ground (cleared): a sample per member and the tank every 3 yd
+        for (Member const& member : party.members)
+            if (Player* walker = ObjectAccessor::FindPlayer(member.guid);
+                walker && walker->IsAlive() && walker->GetMap() == map)
+            {
+                Position& last = lead.clearedLast[member.guid];
+                if (last.GetExactDist(walker->GetPosition()) >= 3.0f)
+                {
+                    last = walker->GetPosition();
+                    lead.clearedGround.push_back(last);
+                    if (lead.clearedGround.size() > 800)
+                        lead.clearedGround.erase(lead.clearedGround.begin(), lead.clearedGround.begin() + 100);
+                }
+            }
+        // [lead18] the spot guard's idle mobs (refreshed every 500 ms: the slow layer)
+        if (!lead.idleScanMs || getMSTimeDiff(lead.idleScanMs, now) >= 500)
+        {
+            lead.idleScanMs = now;
+            std::list<Creature*> idle;
+            IdleAggroCheck check{tank};
+            Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idle, check);
+            Cell::VisitObjects(tank, searcher, 80.0f);
+            lead.idleGuids.clear();
+            for (Creature* mob : idle)
+                lead.idleGuids.push_back(mob->GetGUID());
+        }
+        std::vector<Creature*> idleMobs;
+        for (ObjectGuid const& guid : lead.idleGuids)
+            if (Creature* mob = map->GetCreature(guid); mob && mob->IsAlive() && !mob->IsInCombat())
+                idleMobs.push_back(mob);
+        g_leaderIdle = &idleMobs;
+        g_leaderCleared = &lead.clearedGround;
+        struct GuardReset
+        {
+            ~GuardReset()
+            {
+                g_leaderIdle = nullptr;
+                g_leaderCleared = nullptr;
+            }
+        } guardReset;
+        // [lead18] every MoveTo / StandAt the leader issues: the spot and the walk out of every unpulled mob's reach;
+        // a rejected one is not issued (the member stays) and logged as spot_rejected_aggro
+        auto const checkedMove = [&](ObjectGuid member, Leader::MoveEvent move, Position const& spot, float tolerance,
+                                     std::string const& why) -> bool
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member);
+            if (bot && move != Leader::MoveEvent::Hold && Leader::LEADER_SPOT_AGGRO_GUARD)
+            {
+                auto& checked = lead.spotChecked[member];
+                bool const again = checked.first.GetExactDist(spot) > 1.0f || !checked.second ||
+                                   getMSTimeDiff(checked.second, now) > 2 * IN_MILLISECONDS;
+                std::string reject;
+                Creature* mob = LeaderAggroAt(bot, spot);
+                bool noPath = false;
+                if (!mob && again)
+                    mob = LeaderAggroOnWalk(bot, spot, noPath);
+                if (mob)
+                    reject = "the spot or its walk is in the reach of " + mob->GetName();
+                else if (noPath)
+                    reject = "no walk to the spot";
+                if (!reject.empty())
+                {
+                    uint32& last = lead.spotRejectLogMs[member];
+                    if (!last || getMSTimeDiff(last, now) >= 3 * IN_MILLISECONDS)
+                    {
+                        last = now;
+                        DecisionLog::Instance().Write(run, "leader", "spot_rejected_aggro", member, bot->GetName(),
+                                                      false,
+                                                      JsonObject().Str("member", bot->GetName()).Str("why", why)
+                                                          .Str("reject", reject)
+                                                          .Str("mob", mob ? mob->GetName() : "-")
+                                                          .Real("distance", mob ? mob->GetExactDist(spot) : -1.0f));
+                    }
+                    return false;
+                }
+                if (again)
+                    checked = {spot, now};
+            }
+            bool const changed = Leader::Events::SetMove(member, move, spot, tolerance, why);
+            if (changed && bot && move != Leader::MoveEvent::Hold)
+                DecisionLog::Instance().Write(run, "leader", "leader_spot", member, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("why", why)
+                                                  .Str("ground", LeaderOnCleared(spot) ? "cleared" : "new"));
+            return changed;
+        };
         // a slow-layer call, timed
         auto const slow = [&](auto&& call)
         {
@@ -20861,7 +21322,8 @@ namespace TestHarness
         }
         // [lead17] an order for another mob runs (the patrol path issued it): the spots of the old pull go, its
         // gate too
-        if (orderOpen && !lead.spotsFor.IsEmpty() && order.target != lead.spotsFor)
+        if (orderOpen && !lead.spotsFor.IsEmpty() && order.target != lead.spotsFor &&
+            !(lead.commit && lead.commitIssued))
         {
             lead.spots.clear();
             lead.spotsFor.Clear();
@@ -20944,7 +21406,9 @@ namespace TestHarness
         // the healer at `spot` reaches every member (where it will stand) and the tank
         auto const healerKeeps = [&](Position const& spot)
         {
-            if (!reaches(spot, tank->GetPosition()))
+            // [lead18] the tank first: within LEADER_HEALER_TANK_YD of its current position and in sight
+            if (!reaches(spot, tank->GetPosition()) ||
+                spot.GetExactDist(tank->GetPosition()) > Leader::LEADER_HEALER_TANK_YD)
                 return false;
             for (Player* other : seats)
                 if (other != healer && !reaches(spot, plannedAt(other)))
@@ -21258,7 +21722,17 @@ namespace TestHarness
                      });
         }
         if (!fighting)
+        {
             lead.combatSpots.clear();
+            lead.combatSpotAnchor.clear();
+            lead.fightAnchorSerial = 0;
+        }
+        else if (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD)
+        {
+            // [lead18] the fight spot: where the tank holds the mobs; a new anchor re-spots every member once
+            lead.fightAnchor = tank->GetPosition();
+            ++lead.fightAnchorSerial;
+        }
 
         // [lead17] LEADER_ONE_GATHER_OWNER: who the group waits for - a member without a leader spot farther than
         // LEADER_TRAIL_YD from the tank (back under LEADER_TRAIL_BACK_YD); the harness's far gate reads this set
@@ -21348,7 +21822,7 @@ namespace TestHarness
                                                        : std::function<bool(Position const&)>(keepsHealer));
                                  }))
                 {
-                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, exit, 1.5f, "out of a cleave cone"))
+                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, exit, 1.5f, "out of a cleave cone"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                  JsonObject().Str("why", "out of a cleave cone").Real("x", exit.GetPositionX())
                                      .Real("y", exit.GetPositionY()).Real("z", exit.GetPositionZ()));
@@ -21394,7 +21868,7 @@ namespace TestHarness
                     {
                         lead.hazardSpots[guid] = spot;
                         std::string const why = std::string("hazard: ") + (in ? in->what : "held out of it");
-                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, spot, 1.0f, why))
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.0f, why))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                      JsonObject().Str("why", why).Real("x", spot.GetPositionX())
                                          .Real("y", spot.GetPositionY()).Real("z", spot.GetPositionZ()));
@@ -21425,7 +21899,7 @@ namespace TestHarness
                                                          tank->GetPositionZ(), x, y, z) &&
                     (bot == healer ? healerKeeps(Position(x, y, z)) : keepsHealer(Position(x, y, z))))
                     spot.Relocate(x, y, z);
-                if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank"))
+                if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank"))
                     logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "aggro loss: to the tank").Str("mob", loose->second->GetName())
                                  .Real("gap", bot->GetExactDist(tank)));
@@ -21447,22 +21921,65 @@ namespace TestHarness
                 bool const sight = !losMs || getMSTimeDiff(losMs, now) >= LEADER_SPOT_LOS_MS;
                 if (sight)
                     losMs = now;
-                bool const valid = found != lead.combatSpots.end() && found->second.first == target->GetGUID() &&
-                                   LeaderCombatSpotValid(bot, botAI, target, found->second.second, melee, zones,
-                                                         keeps, sight);
-                if (!valid)
+                if (Leader::LEADER_ANCHORED_SPOTS)
                 {
-                    Position spot;
-                    if (slow([&] { return LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot); }))
-                        lead.combatSpots[guid] = {target->GetGUID(), spot};
+                    // [lead18] anchored: kept for the whole fight while it fits; a target change alone never moves
+                    // anyone; a new spot is the nearest that fits (from where the member stands), else a fresh one
+                    std::string breaks;
+                    if (found == lead.combatSpots.end())
+                        breaks = "first spot";
+                    else if (lead.combatSpotAnchor[guid] != lead.fightAnchorSerial)
+                        breaks = "the fight spot moved";
                     else
-                        lead.combatSpots.erase(guid);
-                    found = lead.combatSpots.find(guid);
+                        breaks = LeaderCombatSpotBreaks(bot, botAI, target, found->second.second, melee, zones,
+                                                        keeps, sight);
+                    if (!breaks.empty())
+                    {
+                        Position spot;
+                        bool const got =
+                            slow([&]
+                                 {
+                                     return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(), melee,
+                                                                    zones, keeps, spot) ||
+                                            LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot);
+                                 });
+                        if (got)
+                        {
+                            if (breaks != "first spot")
+                                DecisionLog::Instance().Write(
+                                    run, "leader", "combat_respot", guid, bot->GetName(), true,
+                                    JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                        .Str("target", target->GetName())
+                                        .Real("walk", bot->GetExactDist(spot)));
+                            lead.combatSpots[guid] = {target->GetGUID(), spot};
+                            lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                        }
+                        else if (found != lead.combatSpots.end() && breaks == "the fight spot moved")
+                            lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;  // keep it, nothing better
+                        else
+                            lead.combatSpots.erase(guid);
+                        found = lead.combatSpots.find(guid);
+                    }
+                }
+                else
+                {
+                    bool const valid = found != lead.combatSpots.end() && found->second.first == target->GetGUID() &&
+                                       LeaderCombatSpotValid(bot, botAI, target, found->second.second, melee, zones,
+                                                             keeps, sight);
+                    if (!valid)
+                    {
+                        Position spot;
+                        if (slow([&] { return LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot); }))
+                            lead.combatSpots[guid] = {target->GetGUID(), spot};
+                        else
+                            lead.combatSpots.erase(guid);
+                        found = lead.combatSpots.find(guid);
+                    }
                 }
                 if (found != lead.combatSpots.end())
                 {
                     Position const& spot = found->second.second;
-                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, spot, melee ? 1.0f : 2.0f,
+                    if (checkedMove(guid, Leader::MoveEvent::StandAt, spot, melee ? 1.0f : 2.0f,
                                                 melee ? "combat spot: behind the target" : "combat spot"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
                                  JsonObject().Str("why", melee ? "combat spot: behind the target" : "combat spot")
@@ -21479,7 +21996,7 @@ namespace TestHarness
             if (!moved && spotsHeld)
                 if (auto const spot = lead.spots.find(guid); spot != lead.spots.end())
                 {
-                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, spot->second,
+                    if (checkedMove(guid, Leader::MoveEvent::StandAt, spot->second,
                                                 Leader::LEADER_SPOT_TOLERANCE, "its spot for the pull"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
                                  JsonObject().Str("why", "its spot for the pull")
@@ -21494,7 +22011,7 @@ namespace TestHarness
                 ((!lead.waitPatrol.IsEmpty() && !tank->isMoving()) ||
                  botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT)))
             {
-                if (Leader::Events::SetMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the group holds"))
+                if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the group holds"))
                     logEvent(bot, "Hold", JsonObject().Str("why", lead.waitPatrol.IsEmpty() ? "stay (regroup)"
                                                                                           : "patrol wait"));
                 moved = true;
@@ -21514,7 +22031,7 @@ namespace TestHarness
                     else
                     {
                         lead.following.insert(guid);
-                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, spot, LEADER_FOLLOW_TOLERANCE,
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, LEADER_FOLLOW_TOLERANCE,
                                                     "along with the tank"))
                         {
                             if (!following)
@@ -21564,7 +22081,8 @@ namespace TestHarness
                 }
                 // the aggro-loss victim stops its damage until the tank has the mob back; the others leave the
                 // loose mob alone
-                bool const victim = loose != looseOn.end();
+                // [lead18] a healer is never stopped: Stop is no offensive cast, its heals go on
+                bool const victim = loose != looseOn.end() && bot != healer && !PlayerbotAI::IsHeal(bot);
                 Leader::Intensity const mine = victim ? Leader::Intensity::Stop : intensity;
                 if (Leader::Events::SetIntensity(guid, mine) && mine != Leader::Intensity::Normal)
                     logEvent(bot, "Intensity",
@@ -21684,7 +22202,7 @@ namespace TestHarness
                 hazardSeen = true;
                 Position spot;
                 if (slow([&] { return LeaderSafeSpot(tank, GET_PLAYERBOT_AI(tank), zones, keepsHealer, spot); }) &&
-                    Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.0f,
+                    checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.0f,
                                             std::string("hazard: ") + in->what))
                     logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", std::string("hazard: ") + in->what).Str("who", "tank")
@@ -21696,7 +22214,7 @@ namespace TestHarness
         // 4. the heal reach in the fight: a member out of the healer's reach or sight moves the healer (a spot that
         // reaches everyone), else it is reported
         if (Leader::LEADER_HEAL_REACH && healer && fighting &&
-            (!lead.healReachMs || getMSTimeDiff(lead.healReachMs, now) >= LEADER_HEAL_REACH_CHECK_MS))
+            (!lead.healReachMs || getMSTimeDiff(lead.healReachMs, now) >= 0))
         {
             lead.healReachMs = now;
             std::vector<Player*> out;
@@ -21710,7 +22228,7 @@ namespace TestHarness
                 Position fix;
                 bool const fixed =
                     slow([&] { return LeaderHealerRespot(healer, GET_PLAYERBOT_AI(healer), healerKeeps, fix); });
-                if (fixed && Leader::Events::SetMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
+                if (fixed && checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
                                                      "heal reach"))
                     logEvent(healer, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "heal reach").Real("x", fix.GetPositionX())
@@ -21722,6 +22240,15 @@ namespace TestHarness
         }
 
         lead.hazardActive = hazardSeen;
+        // [lead18] healer_lost_tank_s: the fight's time with the healer out of sight or LEADER_HEALER_LOST_YD of the
+        // tank (the heal-reach check above re-spots it the same update)
+        if (fighting && healer && tank->IsAlive())
+        {
+            uint32 const step = lead.lostCheckMs ? std::min<uint32>(getMSTimeDiff(lead.lostCheckMs, now), 500) : 0;
+            if (healer->GetExactDist(tank) > Leader::LEADER_HEALER_LOST_YD || !healer->IsWithinLOSInMap(tank))
+                lead.healerLostTankMs += step;
+        }
+        lead.lostCheckMs = now;
         uint64 const totalUs = uint64(std::chrono::duration_cast<std::chrono::microseconds>(
                                           std::chrono::steady_clock::now() - tickStart).count());
         lead.cadenceSlowUs += lead.slowUsTick;
@@ -21873,6 +22400,20 @@ namespace TestHarness
                 lead.issuedKind = decision.kind;
                 lead.issuedSpot = spot;
                 lead.issuedMs = now;
+                // [lead18] the whole plan, latched: from where the tank stands now, the fight spot, the target
+                lead.issuedFrom = tank->GetPosition();
+                if (!decision.killFor.IsEmpty() && decision.killFor == decision.planTarget)
+                    lead.issuedFight = decision.kill;
+                else if (!decision.fightFor.IsEmpty() && decision.fightFor == decision.planTarget)
+                    lead.issuedFight = decision.fight;
+                else if (decision.pullBack)
+                    lead.issuedFight = tank->GetPosition();
+                else
+                    lead.issuedFight = spot;
+                if (Unit* unit = mob.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mob))
+                    lead.issuedTargetAt = unit->GetPosition();
+                else
+                    lead.issuedTargetAt = spot;
             }
             struct IssueLog
             {
@@ -21918,6 +22459,127 @@ namespace TestHarness
             DecisionLog::Instance().Write(run, "leader", "pull_order", mobGuid, mob ? mob->GetName() : std::string(),
                                           true, fields);
         };
+
+        // [lead18] LEADER_COMMIT_PULL: the committed pull's gate, window and order; true: the look ends here
+        auto const runCommit = [&]() -> bool
+        {
+            if (!lead.commit)
+                return false;
+            PullPlanner::Decision const& committed = *lead.commit;
+            Unit* mob = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+            std::string broken;
+            if (party.inCombat || tank->IsInCombat())
+                broken = "the fight is on";
+            else if (!mob || !mob->IsAlive())
+                broken = "the mob is dead";
+            else if (mob->IsInCombat())
+                broken = "the mob is in a fight";
+            else if (!lead.commitMoving && mob->GetExactDist(lead.commitPos) > Leader::LEADER_COMMIT_MOVED_YD)
+                broken = "the mob moved away";
+            else if (getMSTimeDiff(lead.commitSinceMs, now) > Leader::LEADER_COMMIT_MAX_MS)
+                broken = "committed too long";
+            float patrolGap = 0.0f;
+            float patrolReach = 0.0f;
+            Creature* patrol = broken.empty()
+                                   ? LeaderPatrolNear(tank, lead.commitSpot, committed, patrolGap, patrolReach)
+                                   : nullptr;
+            bool const windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
+            if (broken.empty() && windowOpen != lead.patrolWindowOpen)
+            {
+                lead.patrolWindowOpen = windowOpen;
+                DecisionLog::Instance().Write(run, "leader", "patrol_window", lead.commitMob,
+                                              mob ? mob->GetName() : std::string(), true,
+                                              JsonObject().Str("state", windowOpen ? "open" : "close")
+                                                  .Str("patrol", patrol ? patrol->GetName() : "-")
+                                                  .Real("gap", patrolGap).Real("reach", patrolReach));
+            }
+            if (broken.empty() && lead.commitIssued && patrol &&
+                patrolGap <= patrolReach + Leader::LEADER_PATROL_AREA_MARGIN)
+                broken = "a patrol enters the pull area: " + patrol->GetName();
+            Leader::PullOrder order;
+            bool const open = broken.empty() && lead.commitIssued && Leader::Orders::GetOpen(party.leader, order);
+            if (broken.empty() && lead.commitIssued && !open)
+            {
+                if (lead.commitOrderSeen)
+                    broken = "the order ended";
+                else if (getMSTimeDiff(lead.commitIssuedMs, now) > Leader::LEADER_COMMIT_TAKE_MS)
+                    broken = "the tank did not take it";
+            }
+            if (!broken.empty())
+            {
+                DecisionLog::Instance().Write(run, "leader", "commit_released", lead.commitMob,
+                                              mob ? mob->GetName() : std::string(), true,
+                                              JsonObject().Str("why", broken).Str("kind", committed.kind)
+                                                  .Real("sec", getMSTimeDiff(lead.commitSinceMs, now) / 1000.0f)
+                                                  .Bool("issued", lead.commitIssued));
+                lead.commit.reset();
+                lead.commitIssued = false;
+                lead.commitOrderSeen = false;
+                lead.patrolWindowOpen = true;
+                return false;
+            }
+            if (!lead.commitIssued)
+            {
+                std::string waitFor;
+                bool const gate = Leader::LEADER_MEMBER_EVENTS && Leader::LEADER_ASSIGNS_SPOTS &&
+                                  LeaderAssignSpots(party, tank, committed);
+                if (gate)
+                    waitFor = LeaderSpotsWait(party, tank);
+                if (waitFor.empty() && !windowOpen)
+                    waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
+                                                  patrolGap, patrolReach);
+                Creature* boss = mob ? mob->ToCreature() : nullptr;
+                if (waitFor.empty() && Leader::LEADER_BOSS_PREPARE && boss && boss->IsDungeonBoss() &&
+                    tank->getClass() == CLASS_DEATH_KNIGHT && tank->HasSpell(42650) && !tank->HasSpellCooldown(42650))
+                {
+                    if (lead.bossPrepareFor != boss->GetGUID())
+                    {
+                        lead.bossPrepareFor = boss->GetGUID();
+                        lead.bossPrepareSinceMs = now;
+                        LogEvent(party, "leader_boss_prepare",
+                                 JsonObject().Str("boss", boss->GetName())
+                                     .Str("why", "Army of the Dead before the pull")
+                                     .Num("waitMs", Leader::LEADER_BOSS_PREPARE_MS));
+                    }
+                    if (getMSTimeDiff(lead.bossPrepareSinceMs, now) < Leader::LEADER_BOSS_PREPARE_MS)
+                        waitFor = "Army of the Dead";
+                }
+                if (!waitFor.empty())
+                {
+                    lead.spotsWaiting = gate;
+                    if (!lead.spotsLogMs || getMSTimeDiff(lead.spotsLogMs, now) >= 10 * IN_MILLISECONDS)
+                    {
+                        lead.spotsLogMs = now;
+                        LogEvent(party, "leader_spots_wait",
+                                 JsonObject().Str("name", mob ? mob->GetName() : "?").Str("kind", committed.kind)
+                                     .Str("waitFor", waitFor).Num("spots", int64(lead.spots.size()))
+                                     .Bool("committed", true));
+                    }
+                    return true;
+                }
+                lead.spotsWaiting = false;
+                lead.spotsIssuedMs = now;
+                issue(committed, "committed: " + lead.commitWhy);
+                lead.commitIssued = true;
+                lead.commitIssuedMs = now;
+                return true;
+            }
+            if (open)
+            {
+                lead.commitOrderSeen = true;
+                return true;
+            }
+            // the issued slot expired before the tank took it (it never opened an order): issued again
+            PullPlanner::Decision peek;
+            if (getMSTimeDiff(lead.commitIssuedMs, now) > Leader::LEADER_ISSUE_FRESH_MS &&
+                !PullPlanner::TakeIssued(party.leader, Leader::LEADER_ISSUE_FRESH_MS, peek, false))
+            {
+                PullPlanner::Issue(party.leader, committed);
+            }
+            return true;
+        };
+        if (decides && Leader::LEADER_COMMIT_PULL && runCommit())
+            return;
 
         // [lead3] LEADER_NO_BODY_FALLBACK: a boss pull the leader decided (Steer, LeaderBossPull) is issued at once
         if (decides && Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && fresh(lead.bossPullMs))
@@ -21996,6 +22658,29 @@ namespace TestHarness
                     {
                         inputs.pick = picked->GetGUID();
                         pickWhy = picked->GetGUID() == party.target ? "route target" : "nearest pick";
+                        // [lead18] LEADER_EDGE_FIRST: a room of linked packs is pulled from its edge inward
+                        if (Leader::LEADER_EDGE_FIRST)
+                        {
+                            std::string edgeWhy;
+                            std::string sig;
+                            JsonArray order;
+                            Unit* edge = LeaderEdgePick(tank, picked, edgeWhy, order, sig);
+                            if (!sig.empty() && sig != lead.roomSig)
+                            {
+                                lead.roomSig = sig;
+                                DecisionLog::Instance().Write(run, "leader", "room_order", picked->GetGUID(),
+                                                              picked->GetName(), true,
+                                                              JsonObject().Raw("packs", order.Build())
+                                                                  .Str("edge", edge ? edge->GetName() : "-")
+                                                                  .Str("why", edge ? edgeWhy
+                                                                                   : "the pick is on the edge"));
+                            }
+                            if (edge)
+                            {
+                                inputs.pick = edge->GetGUID();
+                                pickWhy = "edge first: " + edgeWhy;
+                            }
+                        }
                     }
                     else
                         pickWhy = party.target.IsEmpty() ? "no route target" : "the route target out of the pick";
@@ -22187,6 +22872,37 @@ namespace TestHarness
                 lead.doorInvalidLooks = 0;
             }
 
+            // [lead18] LEADER_COMMIT_PULL: the Go decision is the leader's commitment; its gate, window and order
+            // run in runCommit from now on (the next looks do not re-plan)
+            if (decides && Leader::LEADER_COMMIT_PULL)
+            {
+                ObjectGuid const mobGuid = !decision.planTarget.IsEmpty() ? decision.planTarget
+                                           : !decision.attack.IsEmpty()   ? decision.attack
+                                                                          : decision.lookTarget;
+                Unit* mob = mobGuid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mobGuid);
+                if (mob)
+                {
+                    lead.commit = std::make_shared<PullPlanner::Decision>(decision);
+                    lead.commitMob = mobGuid;
+                    lead.commitPos = mob->GetPosition();
+                    lead.commitSpot = decision.side ? decision.sideSpot
+                                      : decision.los ? decision.losSpot
+                                      : decision.hasCast ? decision.castSpot
+                                                         : mob->GetPosition();
+                    lead.commitSinceMs = now;
+                    lead.commitIssued = false;
+                    lead.commitOrderSeen = false;
+                    lead.commitMoving = mob->isMoving() || (mob->ToCreature() &&
+                                                            mob->ToCreature()->GetDefaultMovementType() ==
+                                                                WAYPOINT_MOTION_TYPE);
+                    lead.commitWhy = pickWhy;
+                    DecisionLog::Instance().Write(run, "leader", "pull_commit", mobGuid, mob->GetName(), true,
+                                                  JsonObject().Str("kind", decision.kind).Str("pick", pickWhy)
+                                                      .Str("reason", decision.reason));
+                    runCommit();
+                    return;
+                }
+            }
             // [lead15] LEADER_ASSIGNS_SPOTS: before the pull every member gets its spot (StandAt), and the pull
             // is issued only once everyone stands on it, nobody sits, the healer sees the fight spot from its
             // spot in heal range (checked when assigned). No time cap; a member stuck is reported and not waited.
@@ -22615,9 +23331,9 @@ namespace TestHarness
                 case VizKind::NextBoss:
                     return 2.0f;
                 case VizKind::PullPath:
-                    return 1.2f;
+                    return 3.0f;  // [lead18] the red display (16587) is half the blue one's size: x2.5
                 case VizKind::PullSpot:
-                    return 1.8f;
+                    return 4.5f;
             }
             return 1.0f;
         }
@@ -22753,10 +23469,11 @@ namespace TestHarness
                 return false;
             Leader::PullOrder order;
             bool const open = Leader::Orders::GetOpen(party.leader, order) && order.target == lead.issuedMob;
-            if (!open && getMSTimeDiff(lead.issuedMs, getMSTime()) > ROUTE_VIZ_PULL_FRESH_MS)
+            // [lead18] drawn until the pull ends: its order runs, or its fight is on
+            if (!open && !party.inCombat && getMSTimeDiff(lead.issuedMs, getMSTime()) > ROUTE_VIZ_PULL_FRESH_MS)
                 return false;
             mob = ObjectAccessor::GetUnit(*leader, lead.issuedMob);
-            if (!mob || !mob->IsAlive())
+            if (!mob || (!mob->IsAlive() && !party.inCombat))
                 return false;
             spot = lead.issuedSpot;
             kind = lead.issuedKind + (open ? std::string(" (order ") + Leader::StateName(order.state) + ")" : "");
@@ -22803,23 +23520,40 @@ namespace TestHarness
             std::string pullKind;
             if (IssuedPull(party, leader, pullMob, pullSpot, pullKind))
             {
-                G3D::Vector3 const at(pullSpot.GetPositionX(), pullSpot.GetPositionY(), pullSpot.GetPositionZ());
-                SpawnRouteColumn(viz, map, phaseMask, at, VizKind::PullSpot, 3, durationMs);
-                Movement::PointsArray points;
+                // [lead18] the whole latched plan: the tank's stand at the issue -> the tag spot -> the fight spot,
+                // a column at the fight spot and one at the target
+                auto const vec = [](Position const& p)
+                { return G3D::Vector3(p.GetPositionX(), p.GetPositionY(), p.GetPositionZ()); };
+                auto const leg = [&](Position const& from, Position const& to)
                 {
+                    if (from.GetExactDist(to) < 1.0f)
+                        return;
+                    Movement::PointsArray points;
                     PathGenerator path(leader);
-                    path.CalculatePath(at.x, at.y, at.z, false);
+                    path.CalculatePath(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ(),
+                                       to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
                     if (!(path.GetPathType() & PATHFIND_NOPATH))
                         points = path.GetPath();
-                }
-                if (points.size() < 2)
-                    points = {G3D::Vector3(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()), at};
-                size_t const budget = std::min(ROUTE_VIZ_PATH_MAX, ROUTE_VIZ_MAX_MARKERS - viz.markers.size());
-                SpawnRoutePoints(viz, map, phaseMask, SamplePolyline(points, ROUTE_VIZ_WALK_STEP, budget),
-                                 VizKind::PullPath, durationMs);
-                redText = Acore::StringFormat("pull order {} {} from ({:.1f},{:.1f},{:.1f}) ({:.0f} yd)", pullKind,
-                                              pullMob->GetName(), at.x, at.y, at.z,
-                                              leader->GetExactDist(pullSpot));
+                    if (points.size() < 2)
+                        points = {vec(from), vec(to)};
+                    size_t const budget = std::min(ROUTE_VIZ_PATH_MAX, ROUTE_VIZ_MAX_MARKERS - viz.markers.size());
+                    SpawnRoutePoints(viz, map, phaseMask, SamplePolyline(points, ROUTE_VIZ_WALK_STEP, budget),
+                                     VizKind::PullPath, durationMs);
+                };
+                Position const& from = party.lead.issuedFrom;
+                Position const& fightAt = party.lead.issuedFight;
+                Position const& targetAt = party.lead.issuedTargetAt;
+                SpawnRouteColumn(viz, map, phaseMask, vec(fightAt), VizKind::PullSpot, 3, durationMs);
+                SpawnRouteColumn(viz, map, phaseMask, vec(targetAt), VizKind::PullSpot, 3, durationMs);
+                leg(from, pullSpot);
+                leg(pullSpot, fightAt);
+                redText = Acore::StringFormat(
+                    "pull order {} {}: tag spot ({:.1f},{:.1f}) {:.0f} yd from the tank's stand -> fight spot "
+                    "({:.1f},{:.1f}) {:.0f} yd -> target ({:.1f},{:.1f}) {:.0f} yd from the fight spot",
+                    pullKind, pullMob->GetName(), pullSpot.GetPositionX(), pullSpot.GetPositionY(),
+                    from.GetExactDist(pullSpot), fightAt.GetPositionX(), fightAt.GetPositionY(),
+                    pullSpot.GetExactDist(fightAt), targetAt.GetPositionX(), targetAt.GetPositionY(),
+                    fightAt.GetExactDist(targetAt));
             }
 
             // blue: the backbone and the next main goal

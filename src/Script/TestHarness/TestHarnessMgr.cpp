@@ -5125,6 +5125,17 @@ namespace TestHarness
                 blocked.Num(key.c_str(), count);
                 blockedTotal += count;
             }
+            JsonObject vetoedJson;
+            uint32 vetoedTotal = 0;
+            for (auto const& [key, count] : party.lead.vetoedEvals)
+            {
+                vetoedJson.Num(key.c_str(), count);
+                vetoedTotal += count;
+            }
+            // [lead18] vetoed_eval: a blocker unless 0
+            LogEvent(party, "vetoed_evals", JsonObject().Num("total", vetoedTotal).Raw("byMember", vetoedJson.Build()));
+            LogEvent(party, "healer_lost_tank",
+                     JsonObject().Real("healer_lost_tank_s", float(party.lead.healerLostTankMs) / 1000.0f));
             LogEvent(party, "blocked_moves",
                      JsonObject().Num("total", blockedTotal).Raw("byAction", blocked.Build())
                          .Str("content", party.content ? party.content->key : ""));

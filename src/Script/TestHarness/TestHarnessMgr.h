@@ -439,6 +439,37 @@ namespace TestHarness
             std::set<ObjectGuid> trailing;                 // [lead17] members the leader waits for (far behind)
             std::map<ObjectGuid, uint32> spotReassigns;    // [lead17] pull spots re-assigned per member
             std::map<std::string, uint32> blockedMoves;    // [lead17b] "<kind>|<action>" -> blocked (10 s windows)
+            // [lead18] the committed pull (LEADER_COMMIT_PULL)
+            std::shared_ptr<PullPlanner::Decision> commit;
+            ObjectGuid commitMob;
+            Position commitPos;
+            Position commitSpot;
+            uint32 commitSinceMs = 0;
+            uint32 commitIssuedMs = 0;
+            bool commitIssued = false;
+            bool commitOrderSeen = false;
+            bool commitMoving = false;
+            std::string commitWhy;
+            bool patrolWindowOpen = true;
+            std::string roomSig;  // [lead18] the last room_order logged
+            // [lead18] the fight's anchor (LEADER_ANCHORED_SPOTS) and each spot's anchor serial
+            Position fightAnchor;
+            uint32 fightAnchorSerial = 0;
+            std::map<ObjectGuid, uint32> combatSpotAnchor;
+            // [lead18] the spot guard: cleared ground, idle mobs, the last checked spot per member, reject log
+            std::vector<Position> clearedGround;
+            std::map<ObjectGuid, Position> clearedLast;
+            std::vector<ObjectGuid> idleGuids;
+            uint32 idleScanMs = 0;
+            std::map<ObjectGuid, std::pair<Position, uint32>> spotChecked;
+            std::map<ObjectGuid, uint32> spotRejectLogMs;
+            std::map<std::string, uint32> vetoedEvals;  // "<member>|<what>" -> count (vetoed_eval)
+            // [lead18] the issued pull's whole plan for the red view (latched at the issue)
+            Position issuedFrom;
+            Position issuedFight;
+            Position issuedTargetAt;
+            uint32 healerLostTankMs = 0;  // [lead18] healer_lost_tank_s
+            uint32 lostCheckMs = 0;
             uint32 bossPrepareSinceMs = 0;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;

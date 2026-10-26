@@ -133,8 +133,17 @@ namespace
     }
 
     // [lead15] the member's own decisions the executor model turns off (LeaderOrders.h LEADER_NO_OWN_*)
+    // [lead18] the action casts on an enemy, by its target value's name (no target computed)
+    bool EnemyTargetName(Action* action)
+    {
+        std::string const target = action->GetTargetName();
+        return target == "current target" || target == "dps target" || target == "enemy player target" ||
+               target.find("attacker") != std::string::npos || target.find("cc target") != std::string::npos ||
+               target.find("enemy") != std::string::npos || target.find("aoe") != std::string::npos;
+    }
+
     bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
-                        bool combat)
+                        bool combat, bool gate = false)
     {
         if (name == "leader move order" || name == "leader attack order")
             return false;
@@ -158,6 +167,11 @@ namespace
                 return false;  // the harness's (the leader's) walk for this member
             if (dynamic_cast<AttackAction*>(action))
             {
+                // [lead18] gate: by name only - the basic attacks run on the leader's target (its Attack switched
+                // the current target), every own target pick is off
+                if (gate)
+                    return !(events.attack == Leader::AttackEvent::Attack &&
+                             in({"melee", "shoot", "auto shot", "attack"}));
                 Unit* target = action->GetTarget();
                 bool const blocked = !(events.attack == Leader::AttackEvent::Attack && target &&
                                        target->GetGUID() == events.target);
@@ -179,6 +193,12 @@ namespace
             }
         }
         if (Leader::LEADER_NO_OWN_FOLLOW && in({"follow"}))
+            return true;
+        // [lead18] LEADER_HEALER_HEALS_ONLY: a led healer casts nothing on an enemy
+        if (Leader::LEADER_HEALER_HEALS_ONLY && PlayerbotAI::IsHeal(self) &&
+            !dynamic_cast<CastHealingSpellAction*>(action) &&
+            (dynamic_cast<AttackAction*>(action) || dynamic_cast<CastShootAction*>(action) ||
+             (dynamic_cast<CastSpellAction*>(action) && EnemyTargetName(action))))
             return true;
         // [lead16] loot only under the leader's Loot
         if (Leader::LEADER_LOOT_EVENTS && !events.loot &&
@@ -214,8 +234,15 @@ namespace
         // [lead16] rot2: only a buff on ANOTHER member waits for Prepare; a self buff (a shapeshift form, Inner Fire,
         // an armor, a seal, a presence) is the bot's own upkeep
         if (Leader::LEADER_NO_OWN_BUFF_TIMING && !combat && !prepare && dynamic_cast<CastBuffSpellAction*>(action))
-            if (Unit* buffTarget = action->GetTarget(); buffTarget && buffTarget != self)
+        {
+            if (gate)
+            {
+                if (action->GetTargetName() != "self target")
+                    return true;
+            }
+            else if (Unit* buffTarget = action->GetTarget(); buffTarget && buffTarget != self)
                 return true;
+        }
         // out of combat a member told only to walk / stand does just that
         if (!combat && !prepare && !events.loot && events.attack == Leader::AttackEvent::None &&
             (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
@@ -224,6 +251,22 @@ namespace
             return true;
         return false;
     }
+}
+
+bool RaidLeader::GateVetoes(PlayerbotAI* botAI, Leader::MemberEvents const& events,
+                            std::vector<NextAction> const& handlers)
+{
+    if (handlers.empty())
+        return false;
+    Player* bot = botAI->GetBot();
+    bool const combat = bot->IsInCombat();
+    for (NextAction handler : handlers)  // getName is not const
+    {
+        Action* action = botAI->GetAiObjectContext()->GetAction(handler.getName());
+        if (!action || !OwnDecisionOff(bot, action, handler.getName(), events, combat, true))
+            return false;
+    }
+    return true;
 }
 
 bool RaidLeaderHoldMultiplier::KeepsVeto(Action* /*action*/)
@@ -343,13 +386,19 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
                     return 0.0f;
     }
 
-    // [lead15] LEADER_MEMBER_EXECUTOR: the member executes the leader's command, its own decisions are off
-    if (Leader::ExecutorMember(bot))
+    // [lead15] LEADER_MEMBER_EXECUTOR: the member executes the leader's command, its own decisions are off (alive:
+    // a dead member's release / corpse run are its own)
+    if (bot->IsAlive() && Leader::ExecutorMember(bot))
     {
         Leader::MemberEvents events;
         Leader::Events::Get(bot->GetGUID(), events);  // none: every field None
         if (OwnDecisionOff(bot, action, action->getName(), events, bot->IsInCombat()))
+        {
+            // [lead18] a vetoed action reached the multiplier: its trigger / chain was evaluated (vetoed_eval)
+            if (Leader::LEADER_EXECUTOR_TRIGGER_GATE)
+                Leader::Events::NoteVetoedEval(bot->GetGUID(), action->getName());
             return 0.0f;
+        }
     }
 
     // [lead15] the leader's member events: while its MoveTo / StandAt holds, the member's own moves (the dodges it

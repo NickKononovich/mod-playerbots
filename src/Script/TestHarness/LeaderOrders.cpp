@@ -17,6 +17,7 @@
 #include "Unit.h"
 
 #include <deque>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -424,6 +425,7 @@ namespace Leader
                 std::deque<MemberAck> acks;
                 std::deque<OwnDecision> owns;
                 uint32 stale = 0;
+                std::map<std::string, uint32> vetoedEvals;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
             };
@@ -668,6 +670,25 @@ namespace Leader
                 slot.owns.pop_front();
             slot.owns.push_back(own);
             slot.owns.back().ms = NowMs();
+        }
+
+        void NoteVetoedEval(ObjectGuid member, std::string const& what)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            ++eventSlots[member].vetoedEvals[what];
+        }
+
+        bool TakeVetoedEval(ObjectGuid member, std::string& what, uint32& count)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || found->second.vetoedEvals.empty())
+                return false;
+            auto const first = found->second.vetoedEvals.begin();
+            what = first->first;
+            count = first->second;
+            found->second.vetoedEvals.erase(first);
+            return true;
         }
 
         void NoteStale(ObjectGuid member)

@@ -16,6 +16,7 @@
 #include "MotionMaster.h"
 #include "PartyStrengthValue.h"
 #include "PlayerbotAIConfig.h"
+#include "LeaderOrders.h"  // [lead18] LEADER_HEALER_HEALS_ONLY
 #include "Playerbots.h"
 #include "RtiTargetValue.h"
 #include "RtiValue.h"
@@ -438,6 +439,12 @@ namespace KillOrder
         if (sPlayerbotAIConfig.DpsGroupFightRadius <= 0.0f || !map || !map->IsNonRaidDungeon() ||
             PlayerbotAI::IsTank(bot))
             return;
+        // [lead18] LEADER_HEALER_HEALS_ONLY: a led healer evaluates no dps target (vetoed_eval when asked)
+        if (Leader::LEADER_HEALER_HEALS_ONLY && PlayerbotAI::IsHeal(bot) && Leader::ExecutorMember(bot))
+        {
+            Leader::Events::NoteVetoedEval(bot->GetGUID(), "dps range (KillOrder)");
+            return;
+        }
 
         Player* tank = FindFightTank(bot);
         if (!tank)

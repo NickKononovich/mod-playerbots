@@ -663,10 +663,18 @@ void Engine::ProcessTriggers(bool minimal)
 {
     std::unordered_map<Trigger*, Event> fires;
     uint32 now = getMSTime();
+    // [lead18] LEADER_EXECUTOR_TRIGGER_GATE: a led member evaluates no trigger whose every action is vetoed
+    Leader::MemberEvents gateEvents;
+    bool const gate = Leader::LEADER_EXECUTOR_TRIGGER_GATE && botAI && botAI->GetBot()->IsAlive() &&
+                      Leader::ExecutorMember(botAI->GetBot());
+    if (gate)
+        Leader::Events::Get(botAI->GetBot()->GetGUID(), gateEvents);
     for (std::vector<TriggerNode*>::iterator i = triggers.begin(); i != triggers.end(); i++)
     {
         TriggerNode* node = *i;
         if (!node)
+            continue;
+        if (gate && RaidLeader::GateVetoes(botAI, gateEvents, node->getHandlers()))
             continue;
 
         Trigger* trigger = node->getTrigger();
@@ -726,13 +734,25 @@ void Engine::ProcessTriggers(bool minimal)
 
 void Engine::PushDefaultActions()
 {
+    // [lead18] LEADER_EXECUTOR_TRIGGER_GATE: a led member pushes no default action the executor model vetoes
+    Leader::MemberEvents gateEvents;
+    bool const gate = Leader::LEADER_EXECUTOR_TRIGGER_GATE && botAI && botAI->GetBot()->IsAlive() &&
+                      Leader::ExecutorMember(botAI->GetBot());
+    if (gate)
+        Leader::Events::Get(botAI->GetBot()->GetGUID(), gateEvents);
     for (std::map<std::string, Strategy*>::iterator i = strategies.begin(); i != strategies.end(); i++)
     {
         Strategy* strategy = i->second;
         Event emptyEvent;
         if (intentTick)
             intentPushBy = "default / " + strategy->getName();
-        MultiplyAndPush(strategy->getDefaultActions(), 0.0f, false, emptyEvent, "default");
+        std::vector<NextAction> defaults = strategy->getDefaultActions();
+        if (gate)
+            defaults.erase(std::remove_if(defaults.begin(), defaults.end(),
+                                          [&](NextAction const& next)
+                                          { return RaidLeader::GateVetoes(botAI, gateEvents, {next}); }),
+                           defaults.end());
+        MultiplyAndPush(defaults, 0.0f, false, emptyEvent, "default");
     }
 }
 

@@ -168,6 +168,40 @@ namespace Leader
     // [lead17] a pull spot not reached in LEADER_SPOT_STUCK_MS is re-assigned (a new spot) up to this often, then
     // the member is reported stuck and no longer waited for
     constexpr uint32 LEADER_SPOT_REASSIGNS = 2;
+    // [lead18] slabs-h 20261026-190629: the leader re-planned every look (Familiar -> Warlock -> Guardhound ->
+    // Deathsworn -> Familiar, 10 pull orders in 130 s), each reassigning every spot, so the spot gate never closed.
+    // COMMITMENT: a Go decision becomes the leader's commitment; its spot gate, its patrol window and its order run
+    // until the order ends or the plan is truly broken (the mob dead / moved away / in a fight, a patrol entering the
+    // pull area, too old) - no re-plan meanwhile, no patrol wait by forecast
+    constexpr bool LEADER_COMMIT_PULL = true;
+    constexpr uint32 LEADER_COMMIT_MAX_MS = 90000;
+    constexpr uint32 LEADER_COMMIT_TAKE_MS = 10000;   // an issued commitment the tank did not take
+    constexpr float LEADER_COMMIT_MOVED_YD = 12.0f;
+    constexpr float LEADER_PATROL_AREA_MARGIN = 5.0f;  // a patrol this far inside its reach of the pull area breaks it
+    // [lead18] user: «подождал бы, покуда патруль отбежит, и запулил бы самых левых» - in a room of linked packs the
+    // leader pulls from the edge (the pack with the fewest other packs beside it, nearest the group) inward
+    constexpr bool LEADER_EDGE_FIRST = true;
+    // [lead18] combat spots are anchored to the fight spot: kept while the member reaches every target from it (its
+    // spell range, sight) and it stays safe; a target change alone never moves anyone
+    constexpr bool LEADER_ANCHORED_SPOTS = true;
+    constexpr float LEADER_ANCHOR_MOVE_YD = 8.0f;
+    // [lead18] user «ровно 0»: a led member's engine evaluates no trigger and no default action whose every action the
+    // executor model vetoes (Engine::ProcessTriggers / PushDefaultActions, RaidLeader::GateVetoes); any veto still
+    // reached (a trigger fired, a value computed) counts as vetoed_eval - a blocker, the goal is 0
+    constexpr bool LEADER_EXECUTOR_TRIGGER_GATE = true;
+    // [lead18] a led healer only heals (and its personal saves): no offensive cast, no dps target evaluation
+    constexpr bool LEADER_HEALER_HEALS_ONLY = true;
+    // [lead18] every spot the leader issues and the walk to it stay out of every unpulled mob's reach (the planner's
+    // IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN); none valid: the member stays (spot_rejected_aggro)
+    constexpr bool LEADER_SPOT_AGGRO_GUARD = true;
+    constexpr float LEADER_SPOT_AGGRO_MARGIN = 5.0f;
+    // [lead18] user «всегда безопасно стоять там, где мы уже были»: the group's walked ground is preferred for every
+    // spot (cleared first, new ground only when no cleared spot fits)
+    constexpr bool LEADER_PREFER_CLEARED = true;
+    // [lead18] the healer keeps the tank: a healer spot is within LEADER_HEALER_TANK_YD of the tank's current position
+    // and in its sight; the healer counts as having lost the tank beyond LEADER_HEALER_LOST_YD or out of sight
+    constexpr float LEADER_HEALER_TANK_YD = 30.0f;
+    constexpr float LEADER_HEALER_LOST_YD = 36.0f;
     constexpr float LEADER_PRESAVE_HIT_PCT = 35.0f;   // a cast whose damage is this share of the victim's max health
     constexpr float LEADER_PRESAVE_TANK_PCT = 40.0f;  // the tank under a boss below this health
     constexpr uint32 LEADER_BOSS_PREPARE_MS = 4500;
@@ -481,6 +515,9 @@ namespace Leader
         // [lead16] a member tick in a fight with no fresh Attack / Heal (the rotation's stale_command fallback)
         void NoteStale(ObjectGuid member);
         uint32 TakeStale(ObjectGuid member);
+        // [lead18] a vetoed strategy's trigger / value / action evaluated by a led member (vetoed_eval, goal 0)
+        void NoteVetoedEval(ObjectGuid member, std::string const& what);
+        bool TakeVetoedEval(ObjectGuid member, std::string& what, uint32& count);
     }
 }
 

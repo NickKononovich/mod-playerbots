@@ -3402,6 +3402,17 @@ bool MovementAction::ClampToFightZone(float& x, float& y, float& z, Leader::Safe
     std::string const name = getName();
     if (Leader::FightZone::ExemptMover(bot, name))
         return true;
+    // [lead18] the clamp never overrides the leader's command for a led bot: the leader issues only safe spots, an
+    // unsafe one is its bug - logged, not clamped
+    if ((name == "leader move order" || name == "test runner move") && Leader::LedBot(bot))
+    {
+        std::string why;
+        Position const here = bot->GetPosition();
+        if (!zone.Contains(Position(x, y, z), Leader::FightZone::RoleOf(bot), &here, &why))
+            LOG_INFO("playerbots", "[lead18] leader_spot_unsafe: {}: {} to ({:.1f},{:.1f},{:.1f}): {}",
+                     bot->GetName(), name, x, y, z, why);
+        return true;
+    }
 
     applied = true;
     // the same ask again within a second: no new search (a stay stays, a clamped walk goes on to its spot)
