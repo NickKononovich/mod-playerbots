@@ -9,6 +9,7 @@
 #include "Group.h"
 #include "KillOrder.h"
 #include "Playerbots.h"
+#include "PvpValues.h"
 #include "Unit.h"
 
 #include <algorithm>
@@ -16,8 +17,11 @@
 bool InvalidTargetValue::Calculate()
 {
     Unit* target = AI_VALUE(Unit*, qualifier);
+    if (IsUnavailableCombatTarget(bot, target))
+        return true;
+
     // [b44_st] a charmed member of the group / team is dropped as a target, whoever chose it (AttackersValue)
-    if (target && AttackersValue::IsCharmedAlly(target, bot))
+    if (AttackersValue::IsCharmedAlly(target, bot))
         return true;
 
     Unit* enemy = AI_VALUE(Unit*, "enemy player target");

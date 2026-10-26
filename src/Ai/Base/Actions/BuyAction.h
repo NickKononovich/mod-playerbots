@@ -18,7 +18,9 @@ class Player;
 class PlayerbotAI;
 
 struct ItemTemplate;
+struct VendorItem;
 struct VendorItemData;
+class Creature;
 
 class BuyAction : public InventoryAction
 {
@@ -29,6 +31,8 @@ public:
 
 private:
     bool BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, ItemTemplate const* proto);
+    /** True if the vendor has stock and the bot can pay the extended cost; gold is checked by the core. */
+    bool CanAfford(VendorItem const* tItem, ItemTemplate const* proto, Creature* vendor) const;
     bool TradeItem(FindItemVisitor* visitor, int8 slot);
     bool TradeItem(Item const* item, int8 slot);
 };

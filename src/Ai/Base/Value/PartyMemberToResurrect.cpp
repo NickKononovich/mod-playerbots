@@ -6,6 +6,7 @@
 
 #include "PartyMemberToResurrect.h"
 
+#include "Battleground.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
@@ -96,6 +97,10 @@ bool PartyMemberToResurrect::Check(Unit* player)
 // After a wipe: healers who can resurrect first, then other resurrecters, tanks, the leader, and the rest.
 Unit* PartyMemberToResurrect::Calculate()
 {
+    Battleground* bg = bot->GetBattleground();
+    if (bg && bg->GetBgTypeID(true) == BATTLEGROUND_WS)
+        return nullptr;
+
     FindDeadPlayer finder(this);
     Group* group = bot->GetGroup();
     if (!group)

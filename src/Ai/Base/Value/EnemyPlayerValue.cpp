@@ -8,6 +8,7 @@
 #include "AttackersValue.h"
 #include "CombatManager.h"
 #include "Playerbots.h"
+#include "PvpValues.h"
 #include "ServerFacade.h"
 #include "Vehicle.h"
 
@@ -64,7 +65,9 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        if (!pTarget || pTarget == pVictim || !pTarget->IsPlayer() || AttackersValue::IsCharmedAlly(pTarget, bot) ||
+        if (IsUnavailableCombatTarget(bot, pTarget))
+            continue;
+        if (pTarget == pVictim || !pTarget->IsPlayer() || AttackersValue::IsCharmedAlly(pTarget, bot) ||
             !(bot->InBattleground() ? bot->CanSeeOrDetect(pTarget) : pTarget->CanSeeOrDetect(bot)) ||
             !bot->IsWithinDist(pTarget, VISIBILITY_DISTANCE_NORMAL))
             continue;
@@ -92,7 +95,7 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& gTarget : players)
     {
         Unit* pUnit = botAI->GetUnit(gTarget);
-        if (!pUnit)
+        if (!pUnit || IsUnavailableCombatTarget(bot, pUnit))
             continue;
 
         Player* pTarget = dynamic_cast<Player*>(pUnit);
@@ -143,9 +146,10 @@ Unit* EnemyPlayerValue::Calculate()
 
                 if (Unit* pAttacker = pMember->getAttackerForHelper())
                     // [b44_st] a charmed member attacking another is no enemy player
-                    if (pAttacker->IsPlayer() && !AttackersValue::IsCharmedAlly(pAttacker, bot) &&
-                        bot->IsWithinDist(pAttacker, maxAggroDistance * 2.0f) &&
-                        bot->IsWithinLOSInMap(pAttacker) && pAttacker != pVictim &&
+                    if (!IsUnavailableCombatTarget(bot, pAttacker) && pAttacker->IsPlayer() &&
+                        !AttackersValue::IsCharmedAlly(pAttacker, bot) &&
+                        bot->IsWithinDist(pAttacker, maxAggroDistance * 2.0f) && bot->IsWithinLOSInMap(pAttacker) &&
+                        pAttacker != pVictim &&
                         (bot->InBattleground() ? bot->CanSeeOrDetect(pAttacker) : pAttacker->CanSeeOrDetect(bot)))
                         return pAttacker;
             }
