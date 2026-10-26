@@ -677,11 +677,33 @@ bool DungeonFrontalCleaveTrigger::IsActive()
                                            DungeonTactics::CLEAVE_TRIGGER_ANGLE_MARGIN);
 }
 
+namespace
+{
+    // [lead14] when each bot last stepped out of a cleave (DungeonAvoidFrontalCleaveAction), for the multiplier's
+    // hysteresis: no lower-priority walk takes it back into the cones for CLEAVE_STEP_OUT_HOLD_MS
+    constexpr uint32 CLEAVE_STEP_OUT_HOLD_MS = 4 * IN_MILLISECONDS;
+    std::mutex cleaveStepOutLock;
+    std::unordered_map<uint64, uint32> cleaveStepOutMs;
+
+    bool SteppedOutOfCleave(Player* bot)
+    {
+        std::lock_guard<std::mutex> lock(cleaveStepOutLock);
+        auto const found = cleaveStepOutMs.find(bot->GetGUID().GetRawValue());
+        return found != cleaveStepOutMs.end() && getMSTimeDiff(found->second, getMSTime()) < CLEAVE_STEP_OUT_HOLD_MS;
+    }
+}
+
 bool DungeonAvoidFrontalCleaveAction::Execute(Event /*event*/)
 {
     auto const cleavers = DungeonTactics::CollectCleavers(bot, botAI);
     if (cleavers.empty())
         return false;
+
+    {
+        std::lock_guard<std::mutex> lock(cleaveStepOutLock);
+        uint32 const now = getMSTime();
+        cleaveStepOutMs[bot->GetGUID().GetRawValue()] = now ? now : 1;  // [lead14]
+    }
 
     {
         static std::mutex mutex;
@@ -763,6 +785,17 @@ bool DungeonAvoidFrontalCleaveAction::Execute(Event /*event*/)
 
 float DungeonFrontalCleaveMultiplier::GetValue(Action* action)
 {
+    // [lead14] hysteresis: a bot that just stepped out of a cleave is not walked back by a lower-priority move (the
+    // los pull gather, its follow, formation or ranged spot) for CLEAVE_STEP_OUT_HOLD_MS; its casts go on
+    if (action && action->getName() != "dungeon avoid frontal cleave" && bot->IsInCombat() && SteppedOutOfCleave(bot))
+    {
+        std::string const& name = action->getName();
+        if (name == "move to los pull spot" || name == "follow" || name == "combat formation move" ||
+            name == "rear flank" || name == "move to ranged position" ||
+            (!PlayerbotAI::IsMelee(bot) && (name == "reach melee" || name == "set behind")))
+            return 0.0f;
+    }
+
     if (!dynamic_cast<SetBehindTargetAction*>(action))
         return 1.0f;
 

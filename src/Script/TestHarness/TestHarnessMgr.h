@@ -377,6 +377,11 @@ namespace TestHarness
             // since when every member stands above its own rest lines (the boss pull's old [ready_hold_30s] rule)
             uint32 lastLookMs = 0;
             uint32 atLinesSinceMs = 0;
+            // [lead14] the leader's last issued pull (the route view's red line): its mob, kind and stand spot
+            ObjectGuid issuedMob;
+            std::string issuedKind;
+            Position issuedSpot;
+            uint32 issuedMs = 0;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;
             // [lead8] where the group fought and cleared this run (the tank at each fight's end)

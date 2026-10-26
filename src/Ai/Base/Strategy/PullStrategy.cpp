@@ -325,6 +325,13 @@ namespace LosPull
 
     bool Holds(Player* bot, Plan const& plan)
     {
+        // [lead14] the gather ends for every member once the pack is on the tank (the fight is on at the corner):
+        // the ranged and healers stand at their own ranged spot, which keeps out of the cleaves (RangedPosition-
+        // Value). b58 strat-h-5C-1: the owl and the mage held the gather after the pack arrived and ran between it
+        // and "dungeon avoid frontal cleave" (Plague Ghoul / Skeletal Berserker cones at the corner): "dungeon avoid
+        // frontal cleave:10, move to los pull spot:9, move to ranged position:3" in 15 s, 30 of 77 ticks no cast.
+        if (Leader::LEADER_PLANNER_IN_LEADER)
+            return !plan.arrived || plan.tank == bot->GetGUID();
         return !plan.arrived || plan.tank == bot->GetGUID() || PlayerbotAI::IsRanged(bot) ||
                PlayerbotAI::IsHeal(bot) || PlayerbotAI::IsTank(bot);
     }

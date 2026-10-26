@@ -14320,7 +14320,13 @@ namespace TestHarness
                     if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
                         bot && bot->IsAlive() && bot->GetMap() == map)
                         ++(useSide(bot) ? onUse : onFar);
-                bool const useStays = onUse != onFar ? onUse > onFar : useSide(leader);
+                // [lead14] the leader's side stays, whatever the count: the tank passes first ([b35_ss]), so a gate
+                // that shut behind it strands the others on the use side, and the old majority rule sent the leader
+                // back through (b58 strat-h-5C-1, King's Square Gate 175352, 1117-1172 s: "stays use side, useSide 4 farSide
+                // 1", strat_key_pass "sent Rtdekaa" again and again, keys used 5 -> 9). User rule: once through, the
+                // group stays; only the stranded come through, nobody who is through walks back.
+                bool const useStays = LeaderDecidesFor(party) ? useSide(leader)
+                                                              : (onUse != onFar ? onUse > onFar : useSide(leader));
                 stay = useStays ? 1 : 2;
                 Player* cutBot = ObjectAccessor::FindPlayer(party.doorCutMember);
                 LogEvent(party, "door_reopen_for",
@@ -19974,8 +19980,13 @@ namespace TestHarness
         // waiting for it (gaps under LEADER_PATROL_WAIT_GAP_MS kept) ends in the pull: the leader's planner plans it
         // where it is, no blind walk.
         constexpr uint32 LEADER_LANE_WAIT_MAX_MS = 30 * IN_MILLISECONDS;
+        // [lead14] ... and so is every patrol wait, not only a lane's: b58 mech-h (Mechanar Tinkerer pacing 35-36 yd
+        // "beside idle Sunseeker Astromage", the step back "no clear spot"), sfk-h (Tormented Officer at "38.0 yd
+        // (reach 38.0): it comes"), mgt-h (Wretched Skulker) each held the leader 4 minutes ("no walk / not
+        // arrived") on a wait whose patrol never came nor left. LEADER_LANE_WAIT_MAX_MS of waiting for one patrol
+        // ends in its pull, wherever it stands.
         bool laneWaitedOut = false;
-        if (hold.lane && !plannerPulls)
+        if (!plannerPulls)
         {
             if (lead.laneWaitPatrol != patrol->GetGUID() || !lead.laneWaitSeenMs ||
                 getMSTimeDiff(lead.laneWaitSeenMs, now) > LEADER_PATROL_WAIT_GAP_MS)
@@ -19996,13 +20007,38 @@ namespace TestHarness
             else
                 lead.interceptBanned.erase(ban);
         }
-        if (banned && hold.lane && !patrolNear && leader->GetExactDist(patrol) > 2.0f * reach)
+        // [lead14] a banned patrol (its pull failed or never came) holds nothing but the timed lane crossing: the
+        // group walks on, and meets it as a fight if it comes (the old path after its wait budget and handover)
+        if (banned && (!hold.lane || (!patrolNear && leader->GetExactDist(patrol) > 2.0f * reach)))
         {
-            endWait("its lane is crossed while it is far (no pull of it fits)");
+            endWait(hold.lane ? "its lane is crossed while it is far (no pull of it fits)"
+                              : "no pull of it came: the group walks on");
+            return false;
+        }
+        // [lead14] an intercept that brought no order for LEADER_INTERCEPT_MAX_MS (the planner holds it, cannot reach
+        // it, or plans another mob): the patrol is banned, the group walks on
+        constexpr uint32 LEADER_INTERCEPT_MAX_MS = 20 * IN_MILLISECONDS;
+        if (lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
+            getMSTimeDiff(lead.interceptSinceMs, now) >= LEADER_INTERCEPT_MAX_MS &&
+            !Leader::Orders::IsOpen(party.leader))
+        {
+            constexpr uint32 LEADER_INTERCEPT_BAN_MS = 5 * MINUTE * IN_MILLISECONDS;
+            lead.interceptBanned[patrol->GetGUID()] = now + LEADER_INTERCEPT_BAN_MS;
+            LOG_INFO("playerbots", "[lead14] leader_patrol_pull {}: patrol {} {}: no order in {} s, banned; the "
+                     "group walks on ({})", party.id, patrol->GetName(), patrol->GetEntry(),
+                     getMSTimeDiff(lead.interceptSinceMs, now) / IN_MILLISECONDS, why);
+            LogEvent(party, "leader_patrol_pull",
+                     JsonObject().Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
+                         .Str("state", "no order: banned, the group walks on").Str("why", why)
+                         .Real("distance", leader->GetExactDist(patrol)));
+            lead.intercept.Clear();
+            lead.interceptMs = 0;
+            lead.interceptSinceMs = 0;
+            endWait("its pull brought no order");
             return false;
         }
         bool const pull = !banned && !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) &&
-                          (hold.lane || !window);
+                          (hold.lane || !window || laneWaitedOut);
         auto const halt = [&](char const* kind)
         {
             if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
@@ -20132,6 +20168,25 @@ namespace TestHarness
         auto const issue = [&](PullPlanner::Decision const& decision, std::string const& pickWhy)
         {
             PullPlanner::Issue(party.leader, decision);
+            // [lead14] the route view's red line: the issued pull's mob and the spot the tank pulls from
+            {
+                ObjectGuid const mob = !decision.planTarget.IsEmpty()
+                                           ? decision.planTarget
+                                           : (!decision.attack.IsEmpty() ? decision.attack : decision.lookTarget);
+                Position spot;
+                if (decision.side)
+                    spot = decision.sideSpot;
+                else if (decision.los)
+                    spot = decision.losSpot;
+                else if (decision.hasCast)
+                    spot = decision.castSpot;
+                else if (Unit* unit = mob.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mob))
+                    spot = unit->GetPosition();
+                lead.issuedMob = mob;
+                lead.issuedKind = decision.kind;
+                lead.issuedSpot = spot;
+                lead.issuedMs = now;
+            }
             struct IssueLog
             {
                 std::string sig;
@@ -20799,8 +20854,17 @@ namespace TestHarness
             TargetRoute = 4,
             Waypoint = 5,
             Target = 6,
-            NextBoss = 7
+            NextBoss = 7,
+            // [lead14] the default view (ROUTE_VIZ_AUTO): blue = the backbone to the next main goal, red = the path of
+            // the leader's current pull order to its stand spot, and a red column at that spot
+            PullPath = 8,
+            PullSpot = 9
         };
+        // [lead14] the marker displays, from CreatureDisplayInfo.dbc / CreatureModelData.dbc (model 207
+        // Creature\Wisp\Wisp.mdx): 10045 = VISUAL_WAYPOINT's own (creature_template_model of entry 1; textures
+        // "Wisp" / "WispGlow", the blue-white wisp), 16587 = the same model with "WispRed" / "WispGlowRed"
+        constexpr uint32 ROUTE_VIZ_DISPLAY_BLUE = 10045;
+        constexpr uint32 ROUTE_VIZ_DISPLAY_RED = 16587;
 
         float VizScale(VizKind kind)
         {
@@ -20820,6 +20884,10 @@ namespace TestHarness
                     return 1.6f;
                 case VizKind::NextBoss:
                     return 2.0f;
+                case VizKind::PullPath:
+                    return 1.2f;
+                case VizKind::PullSpot:
+                    return 1.8f;
             }
             return 1.0f;
         }
@@ -20835,6 +20903,7 @@ namespace TestHarness
             // ROUTE_VIZ_AUTO: shown because a GM is inside the run's instance (no command); ends when none is.
             bool automatic = false;
             std::string drawnBackbone;  // BackboneSignature of the last draw
+            std::string drawnPull;      // [lead14] the red line's signature of the last draw (issued pull, order)
         };
         std::unordered_map<uint32, RouteViz> routeViz;  // party seq -> markers; world thread only
 
@@ -20895,6 +20964,9 @@ namespace TestHarness
             marker->SetImmuneToAll(true);
             marker->SetObjectScale(VizScale(kind));
             marker->SetLevel(uint8(kind), false);
+            // [lead14] red for the leader's pull order, blue (the waypoint's own display) for everything else
+            marker->SetDisplayId(kind == VizKind::PullPath || kind == VizKind::PullSpot ? ROUTE_VIZ_DISPLAY_RED
+                                                                                         : ROUTE_VIZ_DISPLAY_BLUE);
             viz.markers.push_back(marker->GetGUID());
             return true;
         }
@@ -20941,8 +21013,120 @@ namespace TestHarness
 
         // Despawns the old markers of the run and draws the current route; the summary line, empty when nothing
         // could be drawn (error says why). key: what changed for the GM chat line (route type, next boss, target).
+        // [lead14] the red line's source: the leader's last issued pull (its stand spot), while the tank's order for
+        // it runs or for ROUTE_VIZ_PULL_FRESH_MS after the issue (the planned next pull); none otherwise
+        constexpr uint32 ROUTE_VIZ_PULL_FRESH_MS = 30 * IN_MILLISECONDS;
+        bool IssuedPull(Party const& party, Player* leader, Unit*& mob, Position& spot, std::string& kind)
+        {
+            auto const& lead = party.lead;
+            if (!lead.issuedMs || lead.issuedMob.IsEmpty())
+                return false;
+            Leader::PullOrder order;
+            bool const open = Leader::Orders::GetOpen(party.leader, order) && order.target == lead.issuedMob;
+            if (!open && getMSTimeDiff(lead.issuedMs, getMSTime()) > ROUTE_VIZ_PULL_FRESH_MS)
+                return false;
+            mob = ObjectAccessor::GetUnit(*leader, lead.issuedMob);
+            if (!mob || !mob->IsAlive())
+                return false;
+            spot = lead.issuedSpot;
+            kind = lead.issuedKind + (open ? std::string(" (order ") + Leader::StateName(order.state) + ")" : "");
+            return true;
+        }
+
+        std::string PullSignature(Party const& party)
+        {
+            Leader::PullOrder order;
+            bool const open = Leader::Orders::GetOpen(party.leader, order);
+            return Acore::StringFormat("{}|{}|{}", party.lead.issuedMs, open ? order.id : 0,
+                                       open ? uint32(order.state) : 0);
+        }
+
+        // [lead14] The default view of a GM inside the run (ROUTE_VIZ_AUTO), two lines (user 2026-10-26: «по
+        // умолчанию одну линию… можно 2 цвета: следующая основная цель синим и красным следующий пул»): blue, the
+        // backbone to the next main goal (boss / required spot / starter) with a column at its end; red, the path from
+        // the tank to the stand spot of the leader's issued pull, with a red column at the spot. The full legend
+        // stays with "playerbots route show".
+        std::string DrawCompactRouteViz(Party const& party, RouteViz& viz, uint32 now, std::string& key,
+                                        std::string& error)
+        {
+            ClearRouteMarkers(viz);
+            Player* leader = ObjectAccessor::FindPlayer(party.leader);
+            if (!party.instanceId || !leader || !leader->IsInWorld() || !leader->GetMap() ||
+                leader->GetMap()->GetInstanceId() != party.instanceId)
+            {
+                error = "the leader is not inside the run's instance";
+                return std::string();
+            }
+            Map* map = leader->GetMap();
+            viz.mapId = map->GetId();
+            viz.instanceId = map->GetInstanceId();
+            uint32 const phaseMask = leader->GetPhaseMask();
+            uint32 const remainingMs = int32(viz.untilMs - now) > 0 ? viz.untilMs - now : 0;
+            uint32 const durationMs = std::max<uint32>(IN_MILLISECONDS, std::min(remainingMs, ROUTE_VIZ_LINGER_MS));
+            auto const found = routeSnapshots.find(party.seq);
+            RouteSnapshot const* snapshot = found != routeSnapshots.end() ? &found->second : nullptr;
+
+            // red first (the cap never drops it): the issued pull's path and its spot
+            std::string redText = "none";
+            Unit* pullMob = nullptr;
+            Position pullSpot;
+            std::string pullKind;
+            if (IssuedPull(party, leader, pullMob, pullSpot, pullKind))
+            {
+                G3D::Vector3 const at(pullSpot.GetPositionX(), pullSpot.GetPositionY(), pullSpot.GetPositionZ());
+                SpawnRouteColumn(viz, map, phaseMask, at, VizKind::PullSpot, 3, durationMs);
+                Movement::PointsArray points;
+                {
+                    PathGenerator path(leader);
+                    path.CalculatePath(at.x, at.y, at.z, false);
+                    if (!(path.GetPathType() & PATHFIND_NOPATH))
+                        points = path.GetPath();
+                }
+                if (points.size() < 2)
+                    points = {G3D::Vector3(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()), at};
+                size_t const budget = std::min(ROUTE_VIZ_PATH_MAX, ROUTE_VIZ_MAX_MARKERS - viz.markers.size());
+                SpawnRoutePoints(viz, map, phaseMask, SamplePolyline(points, ROUTE_VIZ_WALK_STEP, budget),
+                                 VizKind::PullPath, durationMs);
+                redText = Acore::StringFormat("pull order {} {} from ({:.1f},{:.1f},{:.1f}) ({:.0f} yd)", pullKind,
+                                              pullMob->GetName(), at.x, at.y, at.z,
+                                              leader->GetExactDist(pullSpot));
+            }
+
+            // blue: the backbone and the next main goal
+            std::string blueText = "none";
+            if (snapshot && !snapshot->legs.empty())
+            {
+                float const length = BackboneLength(snapshot->legs);
+                size_t const room = ROUTE_VIZ_MAX_MARKERS - viz.markers.size();
+                size_t const ends = 2 * snapshot->legs.size();
+                float step = ROUTE_VIZ_BACKBONE_STEP;
+                float const spread = float(room > ends + 4 ? room - ends - 4 : 1);
+                if (length / step > spread)
+                    step = length / spread;
+                for (Movement::PointsArray const& leg : snapshot->legs)
+                    SpawnRoutePoints(viz, map, phaseMask,
+                                     SamplePolyline(leg, step, ROUTE_VIZ_MAX_MARKERS - viz.markers.size()),
+                                     VizKind::Backbone, durationMs);
+                G3D::Vector3 const& end = snapshot->legs.back().back();
+                SpawnRouteColumn(viz, map, phaseMask, end, VizKind::NextBoss, 3, durationMs);
+                Creature* nextBoss = snapshot->nextBoss.IsEmpty() ? nullptr : map->GetCreature(snapshot->nextBoss);
+                blueText = Acore::StringFormat(
+                    "next {} {} ({:.0f} yd)", nextBoss ? "boss" : "goal",
+                    nextBoss ? nextBoss->GetName()
+                             : (snapshot->nextBossName.empty() ? snapshot->routeType : snapshot->nextBossName),
+                    length);
+            }
+            key = (snapshot ? snapshot->routeType + "|" + snapshot->nextBoss.ToString() : std::string("-")) + "|" +
+                  PullSignature(party);
+            return Acore::StringFormat("route {} [{}] {}: blue: {}; red: {} ({} markers, {}s left)", party.seq,
+                                       party.id, party.content ? party.content->key : "?", blueText, redText,
+                                       viz.markers.size(), remainingMs / IN_MILLISECONDS);
+        }
+
         std::string DrawRouteViz(Party const& party, RouteViz& viz, uint32 now, std::string& key, std::string& error)
         {
+            if (viz.automatic)  // [lead14] the default view: two lines
+                return DrawCompactRouteViz(party, viz, now, key, error);
             ClearRouteMarkers(viz);
             Player* leader = ObjectAccessor::FindPlayer(party.leader);
             if (!party.instanceId || !leader || !leader->IsInWorld() || !leader->GetMap() ||
@@ -21232,12 +21416,19 @@ namespace TestHarness
             std::string const signature =
                 snapshot != routeSnapshots.end() ? BackboneSignature(snapshot->second) : std::string();
             bool const rebuilt = ROUTE_VIZ_AUTO && signature != viz.drawnBackbone;
-            if (int32(now - viz.nextDrawMs) < 0 && !rebuilt)
+            // [lead14] the red line is redrawn whenever the leader issues or an order changes / ends
+            std::string pullSignature;
+            for (auto const& candidate : _parties)
+                if (candidate->seq == itr->first)
+                    pullSignature = PullSignature(*candidate);
+            bool const pullChanged = viz.automatic && pullSignature != viz.drawnPull;
+            if (int32(now - viz.nextDrawMs) < 0 && !rebuilt && !pullChanged)
             {
                 ++itr;
                 continue;
             }
             viz.drawnBackbone = signature;
+            viz.drawnPull = pullSignature;
 
             Party const* party = nullptr;
             for (auto const& candidate : _parties)

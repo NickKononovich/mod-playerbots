@@ -4994,7 +4994,9 @@ namespace TestHarness
                                 if (leader->IsInCombat())
                                     add(Acore::StringFormat("leader flagged in combat, {} attackers",
                                                             leader->getAttackers().size()));
-                                if (!party.harnessHoldWhy.empty())
+                                // [lead14] only while it still holds: b58 mgt-h read "last hold: leader in combat with
+                                // attackers" for 4 minutes out of combat
+                                if (!party.harnessHoldWhy.empty() && leader->IsInCombat())
                                     add("last hold: " + party.harnessHoldWhy);
                                 if (state.empty())
                                     add("unexplained: Steer set no waypoint");
@@ -5009,6 +5011,37 @@ namespace TestHarness
                                              .Real("distance", held ? leader->GetExactDist(held) : -1.0f)
                                              .Num("sec", getMSTimeDiff(party.noWalkSinceMs, now) / IN_MILLISECONDS)
                                              .Str("routeRule", party.targetRouteRule));
+                                // [lead14] the general breaker: the leader stood LEADER_NO_WALK_BREAK_MS out of combat
+                                // with no order open, no door gather and no escort - the hold that holds it is named
+                                // and, when it is a patrol (a wait or a pull that never ends), broken: the patrol is
+                                // banned from waits and pulls for 5 minutes, the group walks on (the old patrol
+                                // budget's end). Other holds are reported (leader_unstuck), their own rules end them.
+                                constexpr uint32 LEADER_NO_WALK_BREAK_MS = 60 * IN_MILLISECONDS;
+                                if (LeaderDecides(party) && !leader->IsInCombat() && !party.doorGatherHeld &&
+                                    party.escort.IsEmpty() && !Leader::Orders::IsOpen(party.leader) &&
+                                    getMSTimeDiff(party.noWalkSinceMs, now) >= LEADER_NO_WALK_BREAK_MS)
+                                {
+                                    auto& lead = party.lead;
+                                    ObjectGuid const patrol = !lead.waitPatrol.IsEmpty() ? lead.waitPatrol
+                                                                                         : lead.intercept;
+                                    std::string broke = "nothing to break: reported";
+                                    if (!patrol.IsEmpty())
+                                    {
+                                        lead.interceptBanned[patrol] = now + 5 * MINUTE * IN_MILLISECONDS;
+                                        lead.intercept.Clear();
+                                        lead.interceptMs = 0;
+                                        lead.interceptSinceMs = 0;
+                                        lead.waitPatrol.Clear();
+                                        broke = "the patrol hold: banned, the group walks on";
+                                    }
+                                    LOG_INFO("playerbots", "[lead14] leader_unstuck {}: {} s without a walk ({}): {}",
+                                             party.id, getMSTimeDiff(party.noWalkSinceMs, now) / IN_MILLISECONDS,
+                                             state, broke);
+                                    LogEvent(party, "leader_unstuck",
+                                             JsonObject().Str("state", state).Str("action", broke)
+                                                 .Num("sec", getMSTimeDiff(party.noWalkSinceMs, now) /
+                                                                 IN_MILLISECONDS));
+                                }
                             }
                         }
                         PrePot(party, players);
