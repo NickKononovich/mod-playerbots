@@ -452,6 +452,11 @@ namespace
     // a mob in combat with a member of the bot's group, close and on the bot's floor, stays a target out of sight, and
     // the combat engine's reach actions ("enemy out of spell range" covers sight) bring the bot into view of it.
     constexpr float GROUP_FIGHT_SIGHT_RANGE = 35.0f;
+    // [b47_idle] mgt-h 20261026-104908-mgt-h-5E-14 (300-480 s): a Sunblade Warlock stood still at (181.9,-5.7) for
+    // 180 s on the priest (64.7 yd), out of sight of the tank, the warlock and the hunter at 46.1 yd: past the 35 yd
+    // above, none of them listed it ("non combat, 0 attackers" while in combat), only the rogue saw it. A standing
+    // caster on the group is the group's to walk to from farther (the reach actions' idle-pack guards still apply).
+    constexpr float GROUP_FIGHT_STATIONARY_SIGHT_RANGE = 50.0f;
     constexpr float GROUP_FIGHT_SIGHT_MAX_DZ = 6.0f;
     constexpr uint32 GROUP_FIGHT_SIGHT_LOG_MS = 10 * IN_MILLISECONDS;
 
@@ -462,7 +467,7 @@ namespace
         Map* map = bot->GetMap();
         if (!mob || !group || !map || !map->IsDungeon() || !mob->IsInCombat() || mob->GetMap() != map ||
             std::fabs(mob->GetPositionZ() - bot->GetPositionZ()) > GROUP_FIGHT_SIGHT_MAX_DZ ||
-            !bot->IsWithinDist(mob, GROUP_FIGHT_SIGHT_RANGE))
+            !bot->IsWithinDist(mob, GROUP_FIGHT_STATIONARY_SIGHT_RANGE))
             return false;
 
         // Fighting the member in melee: a mob still running to the tank of a line-of-sight pull, or a caster nuking
@@ -510,7 +515,7 @@ namespace
             if (mob->isMoving() || standingMs < STATIONARY_CASTER_MS)
                 return false;
         }
-        else if (owner == bot)
+        else if (owner == bot || !bot->IsWithinDist(mob, GROUP_FIGHT_SIGHT_RANGE))  // [b47_idle] melee: 35 yd
             return false;
 
         static std::mutex logLock;

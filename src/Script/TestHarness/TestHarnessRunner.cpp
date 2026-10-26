@@ -54,6 +54,7 @@
 #include "Playerbots.h"
 #include "PullStrategy.h"
 #include "PullActions.h"  // [b39_strat] FightHold: the opening fight held on the use side of a key gate
+#include "ChooseTargetActions.h"  // [b47_door] PullReadiness::GroupPreparing
 #include "SmartAI.h"
 #include "SmartScriptMgr.h"
 #include "Spell.h"
@@ -3818,6 +3819,65 @@ namespace TestHarness
             return nullptr;
         }
 
+        // [b47_patrol] PATROL_WAIT_BUDGET: the waits for one patrol (ROUTE_PATROL_HOLD "it comes to the group" and
+        // PATROL_STEP_BACK) add up to at most PATROL_WAIT_BUDGET_MS, or PATROL_WAIT_BUDGET_STARTS hold / step-back
+        // starts; then the patrol is handed to the tank's planner as the route target (TestHarnessMgr::PatrolStepBack:
+        // the careful pull decides, a pull back / los pull to the cleared spot, or the meet) and neither waits for it
+        // for PATROL_HANDOVER_MS. sm-arm-n 20261026-104908-sm-arm-n-5B-19 (759-1147 s, build 46, stopped): patrol_hold
+        // "patrol Scarlet Evoker ... it comes to the group" ~17 s, then patrol_step_back "it walks beside idle Scarlet
+        // Defender, out of its walk, 30 yd back" ~6-18 s, "walked on", and again, 16 times; the Evoker was never
+        // pulled.
+        constexpr uint32 PATROL_WAIT_BUDGET_MS = 60 * IN_MILLISECONDS;
+        constexpr uint8 PATROL_WAIT_BUDGET_STARTS = 4;   // about two hold + step-back cycles
+        constexpr uint32 PATROL_WAIT_TICK_CAP_MS = 3 * IN_MILLISECONDS;  // a longer gap is no wait of this patrol
+        constexpr uint32 PATROL_HANDOVER_MS = 4 * MINUTE * IN_MILLISECONDS;
+        struct PatrolWaitBudget
+        {
+            uint32 spentMs = 0;
+            uint32 lastMs = 0;
+            uint8 starts = 0;
+            uint32 handedUntilMs = 0;
+        };
+        // per instance, per patrol (world thread); the patrol handed over and not taken yet, per instance
+        std::unordered_map<uint32, std::map<ObjectGuid, PatrolWaitBudget>> patrolWaitBudgets;
+        std::unordered_map<uint32, ObjectGuid> patrolHandOvers;
+
+        bool PatrolHandedOver(uint32 instanceId, ObjectGuid patrol, uint32 now)
+        {
+            auto const instance = patrolWaitBudgets.find(instanceId);
+            if (instance == patrolWaitBudgets.end())
+                return false;
+            auto const budget = instance->second.find(patrol);
+            return budget != instance->second.end() && budget->second.handedUntilMs &&
+                   int32(now - budget->second.handedUntilMs) < 0;
+        }
+
+        // One tick of waiting for `patrol` (start: a hold or step-back begins). True when its budget is spent: the
+        // patrol is handed over now (patrolHandOvers) or already was.
+        bool ChargePatrolWait(uint32 instanceId, ObjectGuid patrol, uint32 now, bool start)
+        {
+            PatrolWaitBudget& budget = patrolWaitBudgets[instanceId][patrol];
+            if (budget.handedUntilMs)
+            {
+                if (int32(now - budget.handedUntilMs) < 0)
+                    return true;
+                budget = PatrolWaitBudget();
+            }
+            if (budget.lastMs && getMSTimeDiff(budget.lastMs, now) <= PATROL_WAIT_TICK_CAP_MS)
+                budget.spentMs += getMSTimeDiff(budget.lastMs, now);
+            budget.lastMs = now ? now : 1;
+            if (start && budget.starts < 255)
+                ++budget.starts;
+            if (budget.spentMs < PATROL_WAIT_BUDGET_MS && budget.starts <= PATROL_WAIT_BUDGET_STARTS)
+                return false;
+            budget.handedUntilMs = now + PATROL_HANDOVER_MS;
+            patrolHandOvers[instanceId] = patrol;
+            LOG_INFO("playerbots", "[b47_patrol] patrol_wait_budget: instance {}: {} s of waits, {} starts for "
+                     "patrol {}: handed to the tank's planner", instanceId, budget.spentMs / IN_MILLISECONDS,
+                     budget.starts, patrol.ToString());
+            return true;
+        }
+
         // [b43_harn] ROUTE_PATROL_HOLD: no route walk while a patrol comes to the group. hos-h
         // 20261026-071042-hos-h-5A-21 (283-289 s): the planner had logged "[pull patrol] Rtpalaj: patrol Dark Rune
         // Theurgist comes to the group (22.1 yd, eta 0 s): pulls it first" and planned a los pull on it, yet the
@@ -3857,10 +3917,13 @@ namespace TestHarness
             Acore::CreatureListSearcher<IdleAggroCheck> searcher(leader, idle, check);
             Cell::VisitObjects(leader, searcher, PATROL_HOLD_SCAN);
             std::string why;
+            Creature* comesMob = nullptr;  // [b47_patrol] the patrol of a "comes to the group" hold
             for (Creature* mob : idle)
             {
                 if (party.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
                     continue;
+                if (PatrolHandedOver(party.instanceId, mob->GetGUID(), now))
+                    continue;  // [b47_patrol] the tank's planner has it (PATROL_WAIT_BUDGET)
                 bool accepted = false;
                 uint32 mobs = 0;
                 if (CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, mobs) && accepted)
@@ -3879,6 +3942,7 @@ namespace TestHarness
                     {
                         why = Acore::StringFormat("patrol {} {:.1f} yd from {} (reach {:.1f}): it comes to the group",
                                                   mob->GetName(), gap, member.name, reach);
+                        comesMob = mob;  // [b47_patrol]
                         break;
                     }
                 }
@@ -3886,6 +3950,12 @@ namespace TestHarness
                     break;
             }
             if (why.empty())
+            {
+                hold.sinceMs = 0;
+                return std::string();
+            }
+            // [b47_patrol] PATROL_WAIT_BUDGET: spent, no more hold for it (PatrolStepBack hands it over)
+            if (comesMob && ChargePatrolWait(party.instanceId, comesMob->GetGUID(), now, !hold.sinceMs))
             {
                 hold.sinceMs = 0;
                 return std::string();
@@ -9758,6 +9828,111 @@ namespace TestHarness
             party.driveAnchor = leader->GetPosition();
         };
 
+        // [b47_patrol] No step back where something else owns the group's spot. mgt-n 20261026-104908-mgt-n-5H-13
+        // (286-341 s, build 46): a Wretched Skulker "walks beside idle Selin Fireheart" sent the group 80 yd back to
+        // (120.7,-6.1) while "mgt selin room to rally" held every member at (200,-3): move_conflict 'stuck recovery'
+        // vs the rally (180 deg) for all five, 55 s lost, six "no clear spot" tries, then the wipe on Selin. Owned:
+        // a boss encounter in progress, a dungeon room tactic holding the group (Selin's room, the Krik'thir watcher
+        // room, Jedoga's initiates), an event started within PATROL_STEP_BACK_EVENT_MS, or a live boss within
+        // PATROL_STEP_BACK_BOSS_RANGE of the leader (its room: the boss logic and the room tactics own the rally).
+        {
+            constexpr float PATROL_STEP_BACK_BOSS_RANGE = 60.0f;
+            constexpr uint32 PATROL_STEP_BACK_EVENT_MS = 60 * IN_MILLISECONDS;  // a starter (event, key) used
+            char const* owned = nullptr;
+            for (BossTrack const& boss : party.bosses)
+                if (boss.lastState == IN_PROGRESS)
+                {
+                    owned = "a boss encounter is in progress";
+                    break;
+                }
+            if (!owned && party.lastStarterUseMs &&
+                getMSTimeDiff(party.lastStarterUseMs, now) < PATROL_STEP_BACK_EVENT_MS)
+                owned = "an event was started";
+            if (!owned)
+                if (PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader))
+                {
+                    if (leader->GetMapId() == MagistersTerrace::MAP_MAGISTERS_TERRACE &&
+                        (MagistersTerrace::SelinRoom::HoldsGroup(leaderAI) ||
+                         MagistersTerrace::SelinRoom::OwnsPull(leaderAI) ||
+                         MagistersTerrace::SelinRoom::EntryHolds(leader)))
+                        owned = "Selin's room tactic holds the group";
+                    else if (leader->GetMapId() == ANWatcherRoom::MAP_AZJOL_NERUB &&
+                             (ANWatcherRoom::OwnsPull(leaderAI) || ANWatcherRoom::HoldsRally(leaderAI)))
+                        owned = "the watcher room tactic holds the group";
+                    else if (leader->GetMapId() == AKJedogaRoom::MAP_AHNKAHET && AKJedogaRoom::OwnsPull(leaderAI))
+                        owned = "Jedoga's room tactic holds the group";
+                }
+            if (!owned)
+            {
+                std::list<Creature*> nearBy;
+                ShadowMobCheck bossCheck{leader};
+                Acore::CreatureListSearcher<ShadowMobCheck> bossSearcher(leader, nearBy, bossCheck);
+                Cell::VisitObjects(leader, bossSearcher, PATROL_STEP_BACK_BOSS_RANGE);
+                for (Creature* mob : nearBy)
+                    if (mob->IsDungeonBoss() || party.bossCreatures.count(mob->GetGUID()))
+                    {
+                        owned = "a live boss is near (its room)";
+                        break;
+                    }
+            }
+            if (owned)
+            {
+                if (!state.patrol.IsEmpty())
+                {
+                    LOG_INFO("playerbots", "[b47_patrol] patrol_step_back {}: ends, {}", leader->GetName(), owned);
+                    LogEvent(party, "patrol_step_back", JsonObject().Str("state", "done").Str("why", owned));
+                    state.patrol.Clear();
+                    state.arrived = false;
+                    state.cooldownUntilMs = now + PATROL_STEP_BACK_COOLDOWN_MS;
+                }
+                return false;
+            }
+        }
+
+        // [b47_patrol] PATROL_WAIT_BUDGET spent (ChargePatrolWait): the patrol becomes the route target, held as one
+        // (boss_neighbour_target's way: Retarget keeps it while it lives, is not skipped and its time runs); the
+        // tank's careful pull decides how (a patrol pull back / los pull to the cleared spot, the meet), a hopeless or
+        // refused one is skipped as any trash. This tick only clears the walk; Steer approaches it on the next.
+        if (auto const pending = patrolHandOvers.find(party.instanceId); pending != patrolHandOvers.end())
+        {
+            ObjectGuid const handed = pending->second;
+            patrolHandOvers.erase(pending);
+            Creature* patrol = map->GetCreature(handed);
+            if (patrol && patrol->IsAlive() && !patrol->IsInCombat() && !leader->IsInCombat() && !party.inCombat &&
+                !party.skipUntil.count(handed))
+            {
+                if (!state.patrol.IsEmpty())
+                {
+                    state.patrol.Clear();
+                    state.arrived = false;
+                    state.cooldownUntilMs = now + PATROL_STEP_BACK_COOLDOWN_MS;
+                }
+                LOG_INFO("playerbots", "[b47_patrol] patrol_handover {}: patrol {} {} ({:.1f} yd) waited for long "
+                         "enough: the route target, the tank's planner pulls it", leader->GetName(), patrol->GetName(),
+                         patrol->GetEntry(), leader->GetExactDist(patrol));
+                LogEvent(party, "patrol_handover",
+                         JsonObject().Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
+                             .Real("distance", leader->GetExactDist(patrol))
+                             .Str("previousTarget", party.target.IsEmpty() ? std::string() : party.target.ToString()));
+                party.neighbourTarget = handed;
+                party.neighbourTargetUntilMs = now + PATROL_HANDOVER_MS;
+                party.target = handed;
+                party.targetIsBoss = false;
+                party.targetIsStarter = false;
+                party.targetRouteRule.clear();
+                party.targetSinceMs = now;
+                party.guaranteeHolding = false;
+                party.arrivedMs = 0;
+                party.approach = 0;
+                party.approachBlocker.Clear();
+                party.stopSinceMs = 0;
+                RouteTarget::Set(party.leader, handed);
+                TestRunner::ClearWaypoint(party.leader);
+                holdClocks();
+                return true;
+            }
+        }
+
         if (!state.patrol.IsEmpty())
         {
             Creature* patrol = map->GetCreature(state.patrol);
@@ -9771,6 +9946,8 @@ namespace TestHarness
                 end = "timeout";
             else if (state.arrived && gap > state.reach + PATROL_STEP_BACK_GONE)
                 end = "walked on";
+            else if (ChargePatrolWait(party.instanceId, state.patrol, now, false))
+                end = "wait budget spent";  // [b47_patrol] handed over on the next tick
             if (end)
             {
                 LOG_INFO("playerbots", "[b46_patrol] patrol_step_back {}: ends ({}) after {} s, patrol {:.1f} yd from "
@@ -9810,7 +9987,8 @@ namespace TestHarness
         float nearGap = 0.0f;
         for (Creature* mob : idle)
         {
-            if (party.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
+            if (party.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob) ||
+                PatrolHandedOver(party.instanceId, mob->GetGUID(), now))  // [b47_patrol]
                 continue;
             bool accepted = false;
             uint32 mobs = 0;
@@ -9868,6 +10046,9 @@ namespace TestHarness
         float const reach = AggroReach(patrol, leader) + PATROL_STEP_BACK_SPREAD;
         G3D::Vector3 spot;
         std::string how;
+        // [b47_patrol] a new wait for the same patrol counts against its budget; spent: handed over next tick
+        if (ChargePatrolWait(party.instanceId, patrol->GetGUID(), now, true))
+            return false;
         if (!PatrolStepBackSpot(leader, patrol, reach, spot, how))
         {
             state.noSpotMs = now ? now : 1;
@@ -11309,6 +11490,40 @@ namespace TestHarness
                 }
             }
 
+        // [b47_plan] The walk to an event starter (a key door, a lever) had no idle-mob guard at all: the approach stop
+        // above skips starters, and so does the walk guard below. scholo-h 20261026-093620-scholo-h-5G-4 (2359 s):
+        // the walk to the Viewing Room Door 175167 (256 yd, through the Aberration / Ghoul rooms) sent the tank to
+        // (192.0,99.3,104.7), 5 yd from the wandering Diseased Ghoul 48768 - pull 42 "unplanned (no planner pull)",
+        // the Risen Aberrations with it, three deaths in 9 s; scholo-n 093620-5E-5 the same at ~2849 s. An idle mob
+        // whose reach the next stretch of that walk enters becomes the target (TargetRouteBlocker): the tank's
+        // planner pulls it like any route blocker, then the walk goes on.
+        if (!arrived && party.targetIsStarter && !leader->IsInCombat() && !GroupDamage::NoDamageRelease(leader))
+        {
+            if (!legBuilt)
+            {
+                SteerLeg(leader, goal, leg);
+                legBuilt = true;
+            }
+            Creature* blocker = nullptr;
+            bool unseen = false;
+            G3D::Vector3 stop;
+            if (!(leg.type & PATHFIND_NOPATH) &&
+                ApproachStop(leader, object, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, stop, blocker,
+                             unseen) &&
+                blocker && !blocker->IsInCombat())
+            {
+                static std::set<std::pair<uint32, ObjectGuid>> starterBlockerLogged;  // world thread
+                if (starterBlockerLogged.insert({party.seq, blocker->GetGUID()}).second)
+                    LogEvent(party, "starter_walk_blocker",
+                             JsonObject().Str("starter", object->GetName()).Num("starterEntry", object->GetEntry())
+                                 .Str("blocker", blocker->GetName()).Num("blockerEntry", blocker->GetEntry())
+                                 .Real("blockerDistance", leader->GetExactDist(blocker)).Real("x", stop.x)
+                                 .Real("y", stop.y).Real("z", stop.z));
+                if (TargetRouteBlocker(party, leader, blocker, object,
+                                       "[b47_plan] stands on the walk to the event starter"))
+                    return;
+            }
+        }
         // ROUTE_HARNESS_WALK_GUARD: a body pull walks into its own pack only. The approach stop above skips a body
         // pull, and its 30-yd waypoint ran through every pack on the boss's route (wave 7: scholo-h pulls 9-12 on the
         // 325-yd route to Jandice, the refused Dark Summoner pack, the Adepts behind the opened Iron Gate; mt-h / mt-n
@@ -11558,6 +11773,32 @@ namespace TestHarness
                              .Real("hp", leader->GetHealthPct()).Real("distance", distance)
                              .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
                              .Real("z", leader->GetPositionZ()));
+        }
+        // [b47_door] A member still preparing (its rebuff round open: a warlock's Create Spellstone / Soulstone casts
+        // after the run-start buffing step closed at its 15 s bound; or sitting below its line) holds the tank's pull
+        // and its walk (PullReadiness::GroupPreparing) - no lack of progress either. brd-h 20261026-104908-brd-h-5D-6:
+        // the bear stood 27-48 s at the entrance while Rtlocaa made its stones, "own walk made no progress", the
+        // Anvilrage Overseer was skipped as a route end for 300 s, every mob behind it "behind skipped", and the route
+        // went to the Shadowforge Gate 170559, whose key starter waits for Roccor (afterDead): 2+ min idle. Bounded by
+        // PREPARING_NOT_STUCK_MAX_MS per stand, so a member whose window never closes still ends in the old skip.
+        {
+            constexpr uint32 PREPARING_NOT_STUCK_MAX_MS = 45 * IN_MILLISECONDS;
+            static std::unordered_map<uint32, std::pair<uint32, uint32>> preparingSince;  // seq -> since, seen
+            std::pair<uint32, uint32>& prep = preparingSince[party.seq];
+            if (!arrived && !leader->IsInCombat() && PullReadiness::GroupPreparing(leader))
+            {
+                if (!prep.first || getMSTimeDiff(prep.second, now) > STEER_GAP_MS + 3 * IN_MILLISECONDS)
+                    prep.first = now ? now : 1;
+                prep.second = now ? now : 1;
+                if (getMSTimeDiff(prep.first, now) < PREPARING_NOT_STUCK_MAX_MS)
+                {
+                    party.steerSinceMs = now;
+                    party.steerAnchor = leader->GetPosition();
+                    party.steerNoNearerMs = 0;
+                    party.driveSinceMs = now;
+                    party.driveAnchor = leader->GetPosition();
+                }
+            }
         }
         // [queue-pull-hold-not-stuck] the harness withholds the waypoint for the tank's own pull (GiveWaypoint): no
         // route stall, up to PULL_HOLD_STALL_MS in place; then pull_hold_stall, the waypoint released.

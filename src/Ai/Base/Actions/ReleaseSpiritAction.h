@@ -62,6 +62,9 @@ private:
     // The resurrecters have found no spot out of the pack's reach to resurrect us from (CorpseRes) this long: release
     // at once instead of waiting INSTANCE_RESURRECT_WAIT_MS for a resurrection that cannot come.
     static constexpr uint32 CORPSE_RES_BLOCKED_MS = 6 * IN_MILLISECONDS;
+    // [b47_plan] blocked this long: released even while a member is still "in combat"; and the dungeon's last bound
+    static constexpr uint32 CORPSE_RES_BLOCKED_LONG_MS = 30 * IN_MILLISECONDS;
+    static constexpr uint32 INSTANCE_NO_RES_MAX_MS = 150 * IN_MILLISECONDS;
     bool _noResSpot = false;
     // [b32_bfd] The death the clocks above belong to: the death count PlayerbotAI raises on each death, and where the
     // corpse lies (isUseful restarts them for a new death; the dead engine never asks this action while alive).

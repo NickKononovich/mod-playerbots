@@ -3217,6 +3217,53 @@ bool MovementAction::HoldFightSpot(float& x, float& y, float& z)
                                         (victim->ToPlayer() && victim->ToPlayer()->IsInSameGroupWith(bot)));
         if (chased->IsAlive() && onGroup && !chased->isMoving() && chased->GetExactDist2d(x, y) <= 10.0f)
             return true;
+
+        // [b47_idle] ... nor a chase that ReachCombatTo halved: from 25+ yd its walk ends half way ("avoid walking too
+        // far when moving towards each other"), never within the 10 yd above. mgt-h 20261026-104908-mgt-h-5E-14
+        // (300-480 s, "trash fight idle"): a Sunblade Warlock 24686 stood at (181.9,-5.7) for 180 s on the priest,
+        // out of everyone's sight but the rogue's; the rogue's "reach melee" to (164.7,-5.5), 17 yd short of it, was
+        // held 28 yd from the tank's fight spot ("waits for the mob to come") every tick, and it never came. A mob on
+        // the group that has stood still STAY_CHASE_MS lets the chase toward it through (the 15 s of [b34_mgt]).
+        constexpr uint32 STAY_CHASE_MS = 15 * IN_MILLISECONDS;
+        constexpr float STAY_CHASE_DRIFT = 2.0f;
+        if (chased->IsAlive() && onGroup && !chased->isMoving() &&
+            chased->GetExactDist2d(x, y) + 1.0f < bot->GetExactDist2d(chased))
+        {
+            struct Stand
+            {
+                uint32 sinceMs;
+                uint32 lastMs;
+                float x;
+                float y;
+            };
+            static std::mutex standLock;
+            static std::unordered_map<uint64, Stand> stands;  // mob -> since when it stands there
+            uint32 const nowMs = getMSTime() | 1u;
+            uint32 standingMs = 0;
+            {
+                std::lock_guard<std::mutex> guard(standLock);
+                if (stands.size() > 4096)
+                    stands.clear();
+                Stand& entry = stands[chased->GetGUID().GetRawValue()];
+                if (!entry.sinceMs || getMSTimeDiff(entry.lastMs, nowMs) > 5000 ||
+                    chased->GetExactDist2d(entry.x, entry.y) > STAY_CHASE_DRIFT)
+                    entry = {nowMs, nowMs, chased->GetPositionX(), chased->GetPositionY()};
+                entry.lastMs = nowMs;
+                standingMs = getMSTimeDiff(entry.sinceMs, nowMs);
+            }
+            if (standingMs >= STAY_CHASE_MS)
+            {
+                uint32 const now = getMSTime();
+                if (!_fightHoldLogMs || getMSTimeDiff(_fightHoldLogMs, now) >= 5 * IN_MILLISECONDS)
+                {
+                    _fightHoldLogMs = now ? now : 1;
+                    LOG_INFO("playerbots", "[b47_idle] stay_chase: {}: {} to ({:.1f},{:.1f}) toward {} {}, standing "
+                             "{:.0f} s on {}: not held at the fight spot", bot->GetName(), name, x, y,
+                             chased->GetName(), chased->GetEntry(), standingMs / 1000.0f, victim->GetName());
+                }
+                return true;
+            }
+        }
     }
 
     float const dx = x - anchor.GetPositionX();

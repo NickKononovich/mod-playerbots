@@ -71,6 +71,13 @@ enum DungeonTacticsIds : uint32
     // the room came with it (Aberrations, a Ghoul, a Corpse: 26-40 attackers), the priest, the paladin and the
     // lock died. It dies first: each one alive adds a mob every few seconds.
     NPC_SCHOLOMANCE_DARK_SUMMONER = 11582,
+    // [b47_plan] Blackfathom Deeps, Twilight Shadowmage 4813 (SmartAI 4813): Dominate Mind 7645 (2 s cast every
+    // 15-30 s, Spell.dbc InterruptFlags 13: kickable) turns a member on the group; Shadow Bolt 9613 stands still
+    // (cast flag 64). bfd-n 20261026-093620-bfd-n-5B-19 (3493-3710 s): the tank, the paladin and the priest died to
+    // it one by one over 60 s. It dies first in the group's fight, and its Dominate Mind is kicked.
+    MAP_BLACKFATHOM_DEEPS = 48,
+    NPC_TWILIGHT_SHADOWMAGE = 4813,
+    SPELL_TWILIGHT_SHADOWMAGE_DOMINATE_MIND = 7645,
     // The Oculus, Ring-Lord packs on Varos' rings (SmartAI 27639 / 27640, RESEARCH_TACTICS.md section 13): the
     // Sorceress' Blizzard 50715 / 59278 (8 yd, picked on ranged and healers) and Flamestrike 16102 / 61402 deal the
     // group damage, the Conjurer's Charged Skin 50717 / 59276 pulses 760 arcane on whoever stands within 5 yd, the
@@ -246,7 +253,7 @@ bool PlagueGhoulsDown(Unit* /*unit*/, Player* bot) { return !EntryInGroupFight(b
 // Rookery Hatchers walk to the eggs and hatch them (npc_rookery_hatcher, 6-8 s): every one alive adds whelps. A
 // Slad'ran snake or a Steamrager on a member the tank does not hold is killed before it kills that member. Kill
 // orders of mixed packs are a chain: the second entry is only first once none of the first is left in the fight.
-constexpr std::array<KillFirstSpec, 20> KILL_FIRST = {{  // [b33_ok] 16 -> 17, [b35_gnomer] 17 -> 19, [b42_scholo] 20
+constexpr std::array<KillFirstSpec, 21> KILL_FIRST = {{  // [b42_scholo] 20, [b47_plan] 21
     {MAP_GNOMEREGAN, NPC_MOBILE_ALERT_SYSTEM, nullptr, true},          // [b35_gnomer]
     {MAP_GNOMEREGAN, NPC_MOBILE_ALERT_SYSTEM_HEROIC, nullptr, true},   // [b35_gnomer]
     {MAP_BLACKROCK_SPIRE, NPC_ROOKERY_HATCHER, nullptr, true},
@@ -257,6 +264,7 @@ constexpr std::array<KillFirstSpec, 20> KILL_FIRST = {{  // [b33_ok] 16 -> 17, [
     {MAP_SCHOLOMANCE, NPC_SCHOLOMANCE_ACOLYTE, &AcolyteThreat},
     {MAP_SCHOLOMANCE, NPC_SPECTRAL_RESEARCHER, &ResearcherThreat},
     {MAP_SCHOLOMANCE, NPC_SCHOLOMANCE_DARK_SUMMONER, nullptr},  // [b42_scholo]
+    {MAP_BLACKFATHOM_DEEPS, NPC_TWILIGHT_SHADOWMAGE, nullptr},  // [b47_plan]
     {MAP_OCULUS, NPC_RING_LORD_SORCERESS, &OnFoot},
     {MAP_OCULUS, NPC_RING_LORD_CONJURER, &SorceressesDown},
     {MAP_AHNKAHET, NPC_AHNKAHAR_SPELL_FLINGER, nullptr},
@@ -866,7 +874,8 @@ struct PriorityInterruptSpec
     std::array<uint32, 6> spells;
 };
 
-constexpr std::array<PriorityInterruptSpec, 10> PRIORITY_INTERRUPTS = {{
+constexpr std::array<PriorityInterruptSpec, 11> PRIORITY_INTERRUPTS = {{  // [b47_plan] 10 -> 11
+    {MAP_BLACKFATHOM_DEEPS, NPC_TWILIGHT_SHADOWMAGE, {SPELL_TWILIGHT_SHADOWMAGE_DOMINATE_MIND}},  // [b47_plan]
     {MAP_HALLS_OF_REFLECTION, NPC_PHANTOM_MAGE,
      {SPELL_PHANTOM_FIREBALL, SPELL_PHANTOM_FIREBALL_H, SPELL_PHANTOM_FROSTBOLT, SPELL_PHANTOM_FROSTBOLT_H,
       SPELL_PHANTOM_FLAMESTRIKE, SPELL_PHANTOM_FLAMESTRIKE_H}},

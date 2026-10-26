@@ -11,6 +11,7 @@
 #include "Event.h"
 #include "GridNotifiers.h"      // [b33_move]
 #include "GridNotifiersImpl.h"  // [b33_move]
+#include "GameObject.h"  // [b47_plan]
 #include "GenericSpellActions.h"
 #include "Group.h"
 #include "LastMovementValue.h"
@@ -25,6 +26,7 @@
 #include "SpellInfo.h"  // [b32_arc]
 #include "SpellMgr.h"   // [b32_arc]
 #include "TankAoeThreat.h"  // [b32_peel]
+#include "TerrainHazard.h"  // [b47_plan] PathThroughClosedDoor for the corpse res spot
 #include "Timer.h"
 
 #include <algorithm>
@@ -1020,6 +1022,23 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
     PathGenerator path(bot);
     path.CalculatePath(corpsePos.x, corpsePos.y, corpsePos.z, false);
     Movement::PointsArray const& points = path.GetPath();
+    // [b47_plan] A spot past a closed door is no spot: the bot's own walk stops 2 yd before the door ([closed door]
+    // -> stay) and the cast then fails on the door's model. strat-h 20261026-104908-strat-h-5B-2: the tank died on
+    // the far side of the Service Entrance Gate 175368 (161 s); paladin, priest and shaman "resurrect Rtwaraa from
+    // ... 1.4 yd: first spot of the walk that sees the corpse" every few seconds for 170 s, each "redemption on
+    // Rtwaraa 0.4 yd - no line of sight", and the corpse waited for them for good. The walk is cut at the door; with
+    // no spot left the search is BLOCKED (named for the door), so the dead releases and comes back honestly.
+    GameObject* door = nullptr;
+    float doorWalk = 0.0f;
+    if (points.size() >= 2)
+    {
+        ClosedDoorHit const hit = PathThroughClosedDoor(bot, std::vector<G3D::Vector3>(points.begin(), points.end()));
+        if (hit.Found())
+        {
+            door = hit.door;
+            doorWalk = hit.walked;
+        }
+    }
     if ((path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && points.size() >= 2)
     {
         float walkedTotal = 0.0f;
@@ -1037,6 +1056,12 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
             {
                 walked = std::min(walked + RES_PATH_STEP, segment);
                 G3D::Vector3 const point = from + (to - from) * (walked / segment);
+                if (door && walkedTotal + walked >= doorWalk - 1.0f)  // [b47_plan] the door ends the walk
+                {
+                    done = true;
+                    break;
+                }
+
                 if (Creature* mob = InResReach(reaches, point))
                 {
                     blocker = mob;
@@ -1123,6 +1148,14 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
             continue;
         }
 
+        // [b47_plan] nor a ring spot whose walk runs through a closed door
+        if (ClosedDoorHit const hit = PathThroughClosedDoor(bot, std::vector<G3D::Vector3>(walk.begin(), walk.end()));
+            hit.Found())
+        {
+            door = door ? door : hit.door;
+            continue;
+        }
+
         if (_search != SpotSearch::FOUND || length < bestWalk)
         {
             _search = SpotSearch::FOUND;
@@ -1146,6 +1179,13 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
         _spotReason = blocker ? Acore::StringFormat("every spot in sight of the corpse or its walk is in {}'s reach",
                                                     blocker->GetName())
                               : "no spot in sight of the corpse within range";
+    }
+    // [b47_plan] the corpse lies behind a closed door the bot cannot walk through: no spot either
+    if (door && _search != SpotSearch::FOUND && !bot->IsWithinLOSInMap(corpse))
+    {
+        _search = SpotSearch::BLOCKED;
+        _spotReason = Acore::StringFormat("[b47_plan] the corpse lies behind the closed door {} {}", door->GetName(),
+                                          door->GetEntry());
     }
 
     return _search;

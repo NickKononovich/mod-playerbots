@@ -25,6 +25,7 @@
 #include "Timer.h"
 
 #include <algorithm>
+#include <unordered_map>  // [b47_plan]
 
 namespace
 {
@@ -230,6 +231,50 @@ bool AutoReleaseSpiritAction::isUseful()
         FightIsOver())
     {
         _noResSpot = true;
+        return ReleaseDelayElapsed();
+    }
+
+    // Not while the living still fight something that hits them, nor during a boss encounter (its own waits hold).
+    auto const nobodyHit = [this]() -> bool
+    {
+        for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsAlive() && member->GetMap() == bot->GetMap() &&
+                !member->getAttackers().empty())
+                return false;
+        }
+        return true;
+    };
+    InstanceScript* const instance = bot->GetInstanceScript();
+
+    // [b47_plan] Blocked that long, the fight's end is not waited for: a member held in a fight that never ends (a
+    // summoned minion standing at its idle master, the living "in combat" with it, nobody hit: bfd-n 20261026-093620-
+    // bfd-n-5B-19, 3648-3855 s) kept FightIsOver false for good. Releasing draws nothing; the ghost walks back in.
+    if (bot->GetGroup() && bot->GetMap()->IsDungeon() && !bot->isResurrectRequested() &&
+        CorpseRes::Blocked(bot, CORPSE_RES_BLOCKED_LONG_MS) && !(instance && instance->IsEncounterInProgress()) &&
+        nobodyHit())
+    {
+        _noResSpot = true;
+        return ReleaseDelayElapsed();
+    }
+
+    // [b47_plan] The honest end of every wait: in a dungeon a resurrection that has not come within
+    // INSTANCE_NO_RES_MAX_MS of the death will not come (a resurrecter stuck behind a closed door, in a phantom fight,
+    // or casting into a line of sight it never gets: strat-h 20261026-104908-strat-h-5B-2, 170 s of "no line of
+    // sight" Redemptions). The bot releases and runs back as a ghost, as a player would.
+    if (bot->GetGroup() && bot->GetMap()->IsDungeon() && !bot->isResurrectRequested() &&
+        GetMSTimeDiffToNow(_deadSince) >= INSTANCE_NO_RES_MAX_MS &&
+        !(instance && instance->IsEncounterInProgress()) && nobodyHit())
+    {
+        thread_local std::unordered_map<uint64, uint32> loggedFor;  // per dead bot, the death it was logged for
+        uint32& logged = loggedFor[bot->GetGUID().GetRawValue()];
+        if (logged != _deadSince)
+        {
+            logged = _deadSince;
+            LOG_INFO("playerbots", "[b47_plan] release_no_res: {} dead {} s in a dungeon, no resurrection came: "
+                     "releases and runs back", bot->GetName(), GetMSTimeDiffToNow(_deadSince) / IN_MILLISECONDS);
+        }
         return ReleaseDelayElapsed();
     }
 

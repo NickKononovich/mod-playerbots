@@ -181,6 +181,12 @@ namespace
     // tank's spells hold and by the melee the group can heal, and a crowded spot is pulled at range instead.
     constexpr float CAREFUL_AGGRO_MARGIN = 3.0f;         // the fight drifts a few yards around the mob
     constexpr float CAREFUL_PATROL_MARGIN = 10.0f;       // a patrol this far beyond its aggro range walks in
+    // [b47_plan] A pull back is fought round its kill spot, not on it: the tank's fight hold keeps 15 yd round it, the
+    // ranged step out of melee and the healer walks for sight. An idle static mob whose aggro reach comes within this
+    // much more of the kill spot joins (the measured fight spread). brd-h 20261026-093620-brd-h-5B-6 pull 54: "one
+    // ... Anvilrage Soldier, 6 mobs, cost 1.75" fought at (612.7,46.4), 25.6 yd from the idle Anvilrage Officer
+    // 45845 (reach 24 = aggro 21 + 3): its pack (2 Medics, 2 Soldiers) joined, 11 engaged, the wipe at 2196-2210 s.
+    constexpr float KILL_SPOT_DRIFT = 5.0f;
     constexpr float CAREFUL_EYE_HEIGHT = 2.0f;
     constexpr size_t FLEE_CHAIN_MAX_MOBS = 16;  // CollectPack stops following a flee-for-assistance chain here
     // User, 2026-10-24 («на склоне стояло 3 моба ... почему они считаются одним паком?»): a mob that flees for
@@ -464,6 +470,11 @@ namespace
     // Uldaman, Magister's Terrace) and stalled the runs; wave 44 took such packs (Searing Blade 4 mobs, 1.37)
     // without a death. 3.0 still blocks the 8+ mob pulls (4.36-15.41).
     constexpr float CAREFUL_LAST_RESORT_HARD_CAP = 3.0f;
+    // [b47_plan] The hard minimum's lone mob that costs more than this while a mover it brings (a patrol walking in,
+    // a wanderer) can walk off waits for it first, as long as the stand's mover wait runs (2 x CAREFUL_BLOCK_
+    // ESCALATE_MS): brd-h 20261026-093620-brd-h-5B-6 took "one ... Anvilrage Soldier, 6 mobs, cost 1.75" with the
+    // Blazing Fireguard patrol 28.7 yd off counted in it; 11 came, the wipe.
+    constexpr float CAREFUL_LAST_RESORT_SOFT_COST = 1.25f;
     // The escalation of that cap (x2, then x3 after twice this) while the tank stands topped up without a pull; the
     // stand ends with a fight or a gap this long without such a look (the tank walked on, the group sat down).
     constexpr uint32 CAREFUL_BLOCK_ESCALATE_MS = 30 * IN_MILLISECONDS;
@@ -1806,7 +1817,8 @@ namespace
     // timeless test of a path through the spot up to CAREFUL_PATROL_RANGE away when its walk cannot be forecast).
     bool IsPacer(std::vector<G3D::Vector3> const& track);
 
-    bool ReachesSpot(Player* bot, Unit* mob, Position const& spot)
+    // `drift` ([b47_plan]): extra yards of the fight's spread round `spot` (a pull back's kill spot), for a static mob.
+    bool ReachesSpot(Player* bot, Unit* mob, Position const& spot, float drift = 0.0f)
     {
         Creature* creature = mob->ToCreature();
         if (!creature || !creature->HasReactState(REACT_AGGRESSIVE))
@@ -1834,6 +1846,8 @@ namespace
                 reach += CAREFUL_PATROL_MARGIN;
             else if (movement == RANDOM_MOTION_TYPE)
                 reach += creature->GetWanderDistance();
+            else
+                reach += drift;  // [b47_plan]
 
             bool const wanders = !patrol && movement == RANDOM_MOTION_TYPE &&
                                  creature->GetHomePosition().GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <=
@@ -2663,6 +2677,8 @@ namespace
     {
         Position const kill = killSpot ? *killSpot : spot;
         bool const killApart = killSpot && kill.GetExactDist(spot) > CAREFUL_AGGRO_MARGIN;
+        // [b47_plan] the fight's spread round a pull back's kill spot (the spot itself when they coincide)
+        float const killDrift = killSpot ? KILL_SPOT_DRIFT : 0.0f;
         pack.clear();
         pack.push_back(target);
         // parallel to `pack`: how a mob joins - 0 by itself (the target, its neighbours, what reaches the spot, a
@@ -2896,7 +2912,7 @@ namespace
                 kind = PackWhyKind::PullPath;
                 from = &spot;
             }
-            else if (ReachesSpot(bot, mob, spot) && !walksBy(mob))
+            else if (ReachesSpot(bot, mob, spot, killApart ? 0.0f : killDrift) && !walksBy(mob))
             {
                 kind = why ? spotKind(mob) : PackWhyKind::SpotAggro;
                 from = &spot;
@@ -2906,7 +2922,7 @@ namespace
                 kind = PackWhyKind::KillPath;
                 from = &kill;
             }
-            else if (killApart && ReachesSpot(bot, mob, kill) && !walksBy(mob))
+            else if (killApart && ReachesSpot(bot, mob, kill, killDrift) && !walksBy(mob))
             {
                 kind = PackWhyKind::KillSpot;
                 from = &kill;
@@ -4924,6 +4940,91 @@ namespace
                           corner->spot.GetPositionZ(), pack.size(), x, y, z, cast.GetExactDist(candidate));
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    // [b47_plan] The way in as the corner: players clear a caster hall by pulling each group back to the doorway or the
+    // corridor they came through, out of the casters' sight, and fight there. lbrs-n 20261026-093620-lbrs-n-5G-11 /
+    // brs-h 093620-5H-10, the Firebrand hall by Voone (Invokers / Darkweavers cast Fireball / Shadow Bolt where they
+    // stand, SmartAI cast flag 64): every split search ended "round a corner 4 tried, fewest 0" - "no hidden spot near
+    // the cast spot" (the ring of FindLosPullSpot lies in the open hall) and no corner noted yet (a first los pull of
+    // the run) - so "no split in 19 searches", the run stalled 4 min at (-63,-405.7). The tank's own trail (the way
+    // it walked in, cleared) is walked back from the newest point: the first point that is hidden from the pack, out
+    // of its aggro, reached by no other idle mob, farther from the pack than the cast spot, on its floor, a walk of at
+    // most LOS_CORNER_MAX_PATH from the cast spot, with a group spot behind it.
+    constexpr float LOS_TRAIL_MAX_BACK = 70.0f;  // along the trail from the tank
+    constexpr float LOS_TRAIL_SAMPLE = 4.0f;
+    bool FindLosPullTrailSpot(Player* bot, std::vector<Unit*> const& pack, std::vector<Unit*> const& others,
+                              Position const& cast, Position& spot, Position& gather)
+    {
+        if (!bot || pack.empty())
+            return false;
+
+        std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(bot);
+        if (trail.size() < 2)
+            return false;
+
+        float centerX = 0.0f;
+        float centerY = 0.0f;
+        for (Unit* mob : pack)
+        {
+            centerX += mob->GetPositionX();
+            centerY += mob->GetPositionY();
+        }
+
+        centerX /= float(pack.size());
+        centerY /= float(pack.size());
+        float const castFromPack = cast.GetExactDist2d(centerX, centerY);
+        uint32 budget = LOS_CORNER_MAX_PATHS;
+        float back = 0.0f;
+        float tried = -LOS_TRAIL_SAMPLE;
+        G3D::Vector3 previous(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        for (auto point = trail.rbegin(); point != trail.rend(); ++point)
+        {
+            back += (*point - previous).length();
+            previous = *point;
+            if (back > LOS_TRAIL_MAX_BACK)
+                break;
+
+            if (back < tried + LOS_TRAIL_SAMPLE)  // one look every LOS_TRAIL_SAMPLE yd of the way back
+                continue;
+
+            tried = back;
+            float const x = point->x;
+            float const y = point->y;
+            float z = point->z;
+            if (!GroundNear(bot, x, y, point->z, LOS_PULL_FLOOR, z))
+                continue;
+
+            Position const candidate(x, y, z);
+            if (std::fabs(z - cast.GetPositionZ()) > LOS_CORNER_FLOOR ||
+                candidate.GetExactDist2d(centerX, centerY) <= castFromPack || !OutOfPackAggro(bot, pack, x, y, z) ||
+                !HiddenFromPack(pack, x, y, z) || ReachedByOthers(bot, others, candidate))
+                continue;
+
+            if (!ShortWalk(bot, cast, candidate, LOS_CORNER_MAX_PATH, budget))
+            {
+                if (!budget)
+                    return false;
+
+                continue;
+            }
+
+            if (!FindLosPullGatherSpot(bot, pack, others, candidate, centerX, centerY, budget, gather))
+            {
+                if (!budget)
+                    return false;
+
+                continue;
+            }
+
+            spot = candidate;
+            LOG_DEBUG("playerbots", "[b47_plan] los_trail: {}: the way in hides the pack ({} mobs): tank spot ({:.1f} "
+                      "{:.1f} {:.1f}), {:.0f} yd back along its trail, {:.0f} yd from the cast spot", bot->GetName(),
+                      pack.size(), x, y, z, back, cast.GetExactDist(candidate));
+            return true;
         }
 
         return false;
@@ -7612,8 +7713,26 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         kill = bot->GetPosition();
         CollectPack(botAI, bot, candidate, castSpot, possible, pack, measured, false, overlapsOut, &kill);
         Creature* creature = candidate->ToCreature();
+        // [b47_plan] a kill spot that brings a neighbour pack (KILL_SPOT_DRIFT: the fight's spread reaches it) is
+        // moved back too, as the scripted calls' and flights' spots are: a player pulls to a clear spot behind
+        bool const killSpotBrings = [&]() -> bool
+        {
+            if (pack.size() <= 1 || !creature || !killSearches || kill.GetExactDist(castSpot) <= CAREFUL_AGGRO_MARGIN)
+                return false;
+
+            std::vector<Unit*> const atKill(pack);
+            auto const atKillHops = lastPackHops;
+            std::vector<PackOverlap> const atKillOverlaps(overlaps);
+            std::vector<Unit*> atCast;
+            CollectPack(botAI, bot, candidate, castSpot, possible, atCast, measured, false, nullptr);
+            pack = atKill;
+            lastPackHops = atKillHops;
+            if (overlapsOut)
+                overlaps = atKillOverlaps;
+            return atKill.size() > atCast.size();
+        }();
         if (pack.size() <= 1 || !creature || !killSearches ||
-            (GetScriptedHelp(creature).callRadius <= 0.0f && !FleesForHelp(creature)))
+            (GetScriptedHelp(creature).callRadius <= 0.0f && !FleesForHelp(creature) && !killSpotBrings))
         {
             addCasterStands();  // [b32_pull]
             return;
@@ -9113,6 +9232,49 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                             one->GetName(), single.size(), capCost, hardCap);
                     }
                 }
+                // [b47_plan] within the hard cap but well over a tank health: a mover it brings walks off first
+                if (one && !oneEstimate.boss && !refusedSingle && !quickOne &&
+                    capCost > CAREFUL_LAST_RESORT_SOFT_COST && blockedMs < 2 * CAREFUL_BLOCK_ESCALATE_MS)
+                {
+                    Unit* mover = nullptr;
+                    for (Unit* mob : single)
+                    {
+                        Creature* creature = mob ? mob->ToCreature() : nullptr;
+                        if (mob != one && creature && !IsBossMob(creature) &&
+                            MotionOf(creature) != MobMotion::Static)
+                        {
+                            mover = mob;
+                            break;
+                        }
+                    }
+
+                    // its own bound too: the stand's clock restarts when the nearest target flips between packs
+                    constexpr uint32 SOFT_WAIT_MAX_MS = 45 * IN_MILLISECONDS;
+                    constexpr uint32 SOFT_WAIT_GAP_MS = 10 * IN_MILLISECONDS;
+                    thread_local std::unordered_map<uint64, std::pair<uint32, uint32>> softWaits;  // since, seen
+                    std::pair<uint32, uint32>& softWait = softWaits[bot->GetGUID().GetRawValue()];
+                    if (mover)
+                    {
+                        if (!softWait.first || getMSTimeDiff(softWait.second, now) > SOFT_WAIT_GAP_MS)
+                            softWait.first = now ? now : 1;
+                        softWait.second = now ? now : 1;
+                        if (getMSTimeDiff(softWait.first, now) >= SOFT_WAIT_MAX_MS)
+                            mover = nullptr;  // waited long enough: taken as before
+                    }
+
+                    if (mover)
+                    {
+                        std::string const why = Acore::StringFormat(
+                            "[b47_plan] last_resort_soft: the lone mob {} brings {} mobs at cost {:.2f} (over {:.2f}, "
+                            "blocked {} s); waits for {} ({}) to walk off", one->GetName(), single.size(), capCost,
+                            CAREFUL_LAST_RESORT_SOFT_COST, blockedMs / 1000, mover->GetName(),
+                            MobMotionName(MotionOf(mover->ToCreature())));
+                        LogPullHold(bot, why.c_str(), one);
+                        _planNotReadyWhy = "spacing wait: " + why;
+                        one = nullptr;
+                    }
+                }
+
                 if (one && !oneEstimate.boss && refusedSingle && !guarantee)  // [b32_pull] was capCost > hardCap
                 {
                     std::string const capWhy =
@@ -9636,7 +9798,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             Position losGather;
             // [b40_mgt] ... else the corner this group already pulled round (FindLosPullCornerSpot)
             if (!FindLosPullSpot(bot, pack, others, losCast, losSpot, losGather) &&
-                !FindLosPullCornerSpot(bot, pack, others, losCast, losSpot, losGather))
+                !FindLosPullCornerSpot(bot, pack, others, losCast, losSpot, losGather) &&
+                !FindLosPullTrailSpot(bot, pack, others, losCast, losSpot, losGather))  // [b47_plan]
             {
                 LOG_DEBUG("playerbots", "[b35_lbrs2] split_los: {}: no hidden spot near the cast spot for {} ({} mobs)",
                           bot->GetName(), candidate->GetName(), pack.size());
@@ -11301,7 +11464,8 @@ bool AggressiveTargetAction::PlanLosPull(Unit* candidate, GuidVector const& seen
                 others.push_back(mob);
         }
 
-        found = FindLosPullSpot(bot, pack, others, castSpot, spot, gather);
+        found = FindLosPullSpot(bot, pack, others, castSpot, spot, gather) ||
+                FindLosPullTrailSpot(bot, pack, others, castSpot, spot, gather);  // [b47_plan]
 
         if (_losMemo.size() >= LOS_PULL_MEMO_SIZE)
             _losMemo.erase(_losMemo.begin());

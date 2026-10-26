@@ -9,11 +9,14 @@
 
 #include <algorithm>
 
+#include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
+#include "ANTriggers.h"   // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
 #include "CoSTriggers.h"  // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
 #include "CreatureGroups.h"   // [b46_patrol]
 #include "Group.h"
 #include "GenericSpellActions.h"
 #include "HealAssignmentValues.h"
+#include "MgTShared.h"        // [b47_patrol] MagistersTerrace::SelinRoom
 #include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
@@ -201,6 +204,28 @@ Creature* PatrolComes(Player* bot, float* gap)
     if (!botAI || !bot->GetGroup() || !botAI->IsInNonRaidDungeon())
         return nullptr;
 
+    // [b47_patrol] Not where the boss logic or a room tactic owns the group's spot (mgt-n 20261026-104908-mgt-n-5H-13:
+    // Selin's Wretched Skulker walks past the rally the room tactic holds the group at; the tactic times the pulls):
+    // an encounter in progress, Selin's / the Krik'thir watcher / Jedoga's room tactic, a live boss within
+    // PATROL_REST_BOSS_RANGE (its room).
+    constexpr float PATROL_REST_BOSS_RANGE = 60.0f;
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    if (context->GetValue<bool>("encounter in progress")->Get() ||
+        (bot->GetMapId() == MagistersTerrace::MAP_MAGISTERS_TERRACE &&
+         (MagistersTerrace::SelinRoom::HoldsGroup(botAI) || MagistersTerrace::SelinRoom::OwnsPull(botAI))) ||
+        (bot->GetMapId() == ANWatcherRoom::MAP_AZJOL_NERUB &&
+         (ANWatcherRoom::OwnsPull(botAI) || ANWatcherRoom::HoldsRally(botAI))) ||
+        (bot->GetMapId() == AKJedogaRoom::MAP_AHNKAHET && AKJedogaRoom::OwnsPull(botAI)))
+        return nullptr;
+
+    GuidVector const& nearMobs = context->GetValue<GuidVector>("possible targets no los")->Get();
+    for (ObjectGuid const guid : nearMobs)
+    {
+        Creature* mob = botAI->GetCreature(guid);
+        if (mob && mob->IsAlive() && mob->IsDungeonBoss() && bot->GetExactDist(mob) <= PATROL_REST_BOSS_RANGE)
+            return nullptr;
+    }
+
     auto const walksPatrol = [](Creature* mob)
     {
         if (mob->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
@@ -211,8 +236,7 @@ Creature* PatrolComes(Player* bot, float* gap)
                leader->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE;
     };
 
-    for (ObjectGuid const guid :
-         botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
+    for (ObjectGuid const guid : nearMobs)
     {
         Creature* mob = botAI->GetCreature(guid);
         if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->HasReactState(REACT_AGGRESSIVE) ||
