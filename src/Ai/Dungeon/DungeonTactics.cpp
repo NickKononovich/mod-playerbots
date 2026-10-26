@@ -71,6 +71,15 @@ enum DungeonTacticsIds : uint32
     // the room came with it (Aberrations, a Ghoul, a Corpse: 26-40 attackers), the priest, the paladin and the
     // lock died. It dies first: each one alive adds a mob every few seconds.
     NPC_SCHOLOMANCE_DARK_SUMMONER = 11582,
+    // [b48_scholo] Summon Risen Lackey 17618 (2 s cast, Spell.dbc InterruptFlags 9, PreventionType 1: kickable)
+    // targets TARGET_DEST_NEARBY_ENTRY with no conditions row, so Spell::SelectImplicitNearbyTargets puts the Lackey
+    // on the nearest unit in 2D within its range (WorldObjectSpellNearbyTargetCheck: GetDistance2d) - from the
+    // Necrolyte gallery (z 110) that can be a Risen Aberration on the pit floor 14 yd below: Dark Summoner 48791
+    // stands 0.8 yd (2D) over Aberration 48810. The Lackey's SmartAI attacks the nearest player within 30 yd out of
+    // combat (no Z gate) and its CallAssistance wakes the pit. scholo-h 20261026-111724-scholo-h-5C-4 (pull 10):
+    // "[far engage] Risen Lackey (0) at 252.9 98.7 95.8 engaged Rtwarab", then a Corpse, three Aberrations and a
+    // Ghoul at dz 14.1; all five died to Risen Aberration (443-453 s). The cast is kicked.
+    SPELL_DARK_SUMMONER_SUMMON_RISEN_LACKEY = 17618,
     // [b47_plan] Blackfathom Deeps, Twilight Shadowmage 4813 (SmartAI 4813): Dominate Mind 7645 (2 s cast every
     // 15-30 s, Spell.dbc InterruptFlags 13: kickable) turns a member on the group; Shadow Bolt 9613 stands still
     // (cast flag 64). bfd-n 20261026-093620-bfd-n-5B-19 (3493-3710 s): the tank, the paladin and the priest died to
@@ -874,8 +883,9 @@ struct PriorityInterruptSpec
     std::array<uint32, 6> spells;
 };
 
-constexpr std::array<PriorityInterruptSpec, 11> PRIORITY_INTERRUPTS = {{  // [b47_plan] 10 -> 11
+constexpr std::array<PriorityInterruptSpec, 12> PRIORITY_INTERRUPTS = {{  // [b47_plan] 10 -> 11, [b48_scholo] 12
     {MAP_BLACKFATHOM_DEEPS, NPC_TWILIGHT_SHADOWMAGE, {SPELL_TWILIGHT_SHADOWMAGE_DOMINATE_MIND}},  // [b47_plan]
+    {MAP_SCHOLOMANCE, NPC_SCHOLOMANCE_DARK_SUMMONER, {SPELL_DARK_SUMMONER_SUMMON_RISEN_LACKEY}},  // [b48_scholo]
     {MAP_HALLS_OF_REFLECTION, NPC_PHANTOM_MAGE,
      {SPELL_PHANTOM_FIREBALL, SPELL_PHANTOM_FIREBALL_H, SPELL_PHANTOM_FROSTBOLT, SPELL_PHANTOM_FROSTBOLT_H,
       SPELL_PHANTOM_FLAMESTRIKE, SPELL_PHANTOM_FLAMESTRIKE_H}},
