@@ -77,9 +77,9 @@ namespace LeaderCommandState
                      what, getMSTimeDiff(fresh->second, now));
     }
 
-    // [rot3] The leader's pre-emptive personal save (PreSave: "a big boss hit is coming"). Wired to
-    // LeaderCommand::AssignedPreSave(bot) once the leader side has the getter; until then no command, false.
-    inline bool PreSaveAssigned(Player* /*bot*/) { return false; }
+    // [rot3] The leader's pre-emptive personal save (PreSave: "a big boss hit is coming"), fresh commands only
+    // (LeaderCommand::AssignedPreSave, [lead16]).
+    inline bool PreSaveAssigned(Player* bot) { return LeaderCommand::AssignedPreSave(bot); }
 }
 
 #endif
