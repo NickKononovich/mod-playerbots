@@ -7,6 +7,10 @@
 #include "InterruptActions.h"
 #include "Event.h"
 #include "InterruptValues.h"
+#include "LeaderCommand.h"  // [rot2]
+#include "Log.h"
+#include "RtiValue.h"        // [rot2] FindCrowdControl
+#include "TargetValue.h"     // [rot2] IsCrowdControlled
 #include "Playerbots.h"
 #include "Spell.h"
 #include "SpellInfo.h"
@@ -81,5 +85,128 @@ bool InterruptAssignedCastAction::Execute(Event /*event*/)
     // the assignment is spent; recompute it at once instead of re-firing on a cached answer
     if (UntypedValue* value = context->GetUntypedValue("interrupt assignment"))
         value->Reset();
+    return true;
+}
+
+namespace
+{
+    // [rot2] a unit of the bot's map, alive
+    Unit* LeaderCommandUnit(PlayerbotAI* botAI, ObjectGuid guid)
+    {
+        if (guid.IsEmpty())
+            return nullptr;
+
+        Player* bot = botAI->GetBot();
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsAlive() || !unit->IsInWorld() || unit->GetMap() != bot->GetMap())
+            return nullptr;
+
+        return unit;
+    }
+
+    void AckLeader(Player* bot, std::string const& what, std::string const& why)
+    {
+        Leader::MemberEvents command;
+        if (LeaderCommand::CurrentCommand(bot, command))
+            Leader::Events::Ack(bot->GetGUID(), command.seq, what, why);
+    }
+}
+
+bool LeaderExternalAction::isUseful()
+{
+    uint32 spell = 0;
+    ObjectGuid target;
+    return LeaderCommand::AssignedExternal(bot, spell, target) && spell && bot->HasSpell(spell) &&
+           (target.IsEmpty() || LeaderCommandUnit(botAI, target));
+}
+
+bool LeaderExternalAction::isPossible()
+{
+    uint32 spell = 0;
+    ObjectGuid target;
+    if (!LeaderCommand::AssignedExternal(bot, spell, target) || bot->HasSpellCooldown(spell))
+        return false;
+
+    Unit* unit = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
+    return unit && botAI->CanCastSpell(spell, unit, true);
+}
+
+bool LeaderExternalAction::Execute(Event /*event*/)
+{
+    uint32 spell = 0;
+    ObjectGuid target;
+    if (!LeaderCommand::AssignedExternal(bot, spell, target))
+        return false;
+
+    Unit* unit = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+    if (!unit || !info || !botAI->CastSpell(spell, unit))
+        return false;
+
+    LOG_INFO("playerbots", "[rot2] [leader external] {} casts {} ({}) on {}", bot->GetName(), info->SpellName[0], spell,
+             unit->GetName());
+    AckLeader(bot, "external", std::string(info->SpellName[0]) + " on " + unit->GetName());
+    return true;
+}
+
+bool LeaderThreatAction::isUseful()
+{
+    uint32 spell = 0;
+    ObjectGuid mob;
+    return LeaderCommand::AssignedThreat(bot, spell, mob) && LeaderCommandUnit(botAI, mob);
+}
+
+bool LeaderThreatAction::Execute(Event /*event*/)
+{
+    uint32 spell = 0;
+    ObjectGuid mob;
+    if (!LeaderCommand::AssignedThreat(bot, spell, mob))
+        return false;
+
+    Unit* unit = LeaderCommandUnit(botAI, mob);
+    if (!unit)
+        return false;
+
+    // the rotation goes on against the mob taken back
+    context->GetValue<Unit*>("current target")->Set(unit);
+
+    SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+    bool cast = false;
+    if (info && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell))
+    {
+        Unit* spellTarget = info->NeedsExplicitUnitTarget() ? unit : bot;
+        if (botAI->CanCastSpell(spell, spellTarget, true))
+            cast = botAI->CastSpell(spell, spellTarget);
+    }
+
+    LOG_INFO("playerbots", "[rot2] [leader threat] {} takes back {} {}: {}", bot->GetName(), unit->GetName(),
+             unit->GetEntry(), cast ? info->SpellName[0] : "attacks it");
+    AckLeader(bot, "threat", std::string(cast ? info->SpellName[0] : "attack") + " on " + unit->GetName());
+    return true;
+}
+
+bool LeaderCcAction::isUseful()
+{
+    Unit* unit = LeaderCommandUnit(botAI, LeaderCommand::AssignedCc(bot));
+    return unit && !IsCrowdControlled(unit);
+}
+
+bool LeaderCcAction::isPossible()
+{
+    Unit* unit = LeaderCommandUnit(botAI, LeaderCommand::AssignedCc(bot));
+    CrowdControlOption const* option = unit ? FindCrowdControl(botAI, unit, false) : nullptr;
+    return option && option->spell && botAI->CanCastSpell(option->spell, unit);
+}
+
+bool LeaderCcAction::Execute(Event /*event*/)
+{
+    Unit* unit = LeaderCommandUnit(botAI, LeaderCommand::AssignedCc(bot));
+    CrowdControlOption const* option = unit ? FindCrowdControl(botAI, unit, false) : nullptr;
+    if (!option || !option->spell || !botAI->CastSpell(option->spell, unit))
+        return false;
+
+    LOG_INFO("playerbots", "[rot2] [leader cc] {} casts {} on {} {}", bot->GetName(), option->spell, unit->GetName(),
+             unit->GetEntry());
+    AckLeader(bot, "cc", std::string(option->spell) + " on " + unit->GetName());
     return true;
 }

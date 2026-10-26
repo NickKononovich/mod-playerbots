@@ -124,6 +124,12 @@ bool CastMarkOfBloodAction::isUseful()
 
 Unit* CastHysteriaAction::GetTarget()
 {
+    // [rot2] a led bot casts Hysteria on another member only by the leader's assignment ("leader external"): its own
+    // pick is itself
+    bool burn = false;
+    if (LeaderBurnRule(bot, burn))
+        return bot->HasAura(49016) ? nullptr : bot;
+
     Group* group = bot->GetGroup();
     if (!group)
     {

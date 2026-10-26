@@ -8,6 +8,7 @@
 #include "AiFactory.h"
 #include "DruidTriggers.h"  // [rot1] DruidGroupNeedsHeal, BALANCE_HEAL_PCT
 #include "FeralDruidStrategy.h"
+#include "LeaderCommand.h"  // [rot2]
 #include "Playerbots.h"
 #include "RezzedTankHoldMultiplier.h"
 #include "Log.h"    // [rot1]
@@ -249,6 +250,25 @@ float BalanceGroupSupportMultiplier::GetValue(Action* action)
         return 1.0f;
 
     Player* bot = botAI->GetBot();
+
+    // [rot2] a led moonkin heals or buffs another member only under the leader's Heal command (the leader's call for
+    // heal help); its externals come as "leader external"
+    Leader::MemberEvents command;
+    if (LeaderCommand::CurrentCommand(bot, command))
+    {
+        if (command.attack == Leader::AttackEvent::Heal)
+            return 1.0f;
+
+        uint32 const now = getMSTime();
+        if (!_loggedMs || getMSTimeDiff(_loggedMs, now) >= LOG_MS)
+        {
+            _loggedMs = now ? now : 1;
+            LOG_INFO("playerbots", "[rot2] [moonkin support] {} skips {}: led, no Heal command from the leader",
+                     bot->GetName(), name);
+        }
+        return 0.0f;
+    }
+
     bool healerAlive = false;
     DruidGroupNeedsHeal(bot, &healerAlive);
     if (!healerAlive)

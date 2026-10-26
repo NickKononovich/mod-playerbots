@@ -6,9 +6,40 @@
 
 #include "InterruptTriggers.h"
 #include "InterruptValues.h"
+#include "LeaderCommand.h"  // [rot2]
+#include "TargetValue.h"    // [rot2] IsCrowdControlled
 #include "Playerbots.h"
 
 bool AssignedInterruptTrigger::IsActive()
 {
     return !AI_VALUE(InterruptAssignment, "interrupt assignment").caster.IsEmpty();
+}
+
+bool LeaderExternalTrigger::IsActive()
+{
+    uint32 spell = 0;
+    ObjectGuid target;
+    return LeaderCommand::AssignedExternal(bot, spell, target) && spell && bot->HasSpell(spell) &&
+           !bot->HasSpellCooldown(spell);
+}
+
+bool LeaderThreatTrigger::IsActive()
+{
+    uint32 spell = 0;
+    ObjectGuid mob;
+    if (!LeaderCommand::AssignedThreat(bot, spell, mob))
+        return false;
+
+    Unit* unit = botAI->GetUnit(mob);
+    return unit && unit->IsAlive() && unit->GetMap() == bot->GetMap();
+}
+
+bool LeaderCcTrigger::IsActive()
+{
+    ObjectGuid const mob = LeaderCommand::AssignedCc(bot);
+    if (mob.IsEmpty())
+        return false;
+
+    Unit* unit = botAI->GetUnit(mob);
+    return unit && unit->IsAlive() && unit->GetMap() == bot->GetMap() && !IsCrowdControlled(unit);
 }

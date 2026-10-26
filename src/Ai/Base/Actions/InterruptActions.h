@@ -28,4 +28,40 @@ private:
     SpellInfo const* GetAssignedSpell();
 };
 
+// [rot2] The dungeon leader's assigned casts (LeaderCommand.h). Each does exactly what the command names and
+// reports it to the leader (Leader::Events::Ack); with no fresh command for the bot each is useless.
+
+// The external save / buff the leader assigns (spell id, on whom): Innervate, Hymn of Hope, Divine Hymn, Pain
+// Suppression, Power Infusion, the Hand spells, Misdirection, Tricks, Bloodlust / Heroism.
+class LeaderExternalAction : public Action
+{
+public:
+    LeaderExternalAction(PlayerbotAI* botAI) : Action(botAI, "leader external") {}
+
+    bool isUseful() override;
+    bool isPossible() override;
+    bool Execute(Event event) override;
+};
+
+// The tank takes back the mob the leader names: its taunt or AoE threat spell, else just attacks it.
+class LeaderThreatAction : public Action
+{
+public:
+    LeaderThreatAction(PlayerbotAI* botAI) : Action(botAI, "leader threat") {}
+
+    bool isUseful() override;
+    bool Execute(Event event) override;
+};
+
+// The crowd control the leader assigns: the bot's own hold spell for that mob (FindCrowdControl).
+class LeaderCcAction : public Action
+{
+public:
+    LeaderCcAction(PlayerbotAI* botAI) : Action(botAI, "leader cc") {}
+
+    bool isUseful() override;
+    bool isPossible() override;
+    bool Execute(Event event) override;
+};
+
 #endif

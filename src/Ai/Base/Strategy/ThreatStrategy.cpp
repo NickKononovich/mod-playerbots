@@ -9,6 +9,7 @@
 #include "Creature.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
+#include "LeaderCommand.h"  // [rot2]
 #include "Log.h"
 #include "Map.h"
 #include "PartyStrengthValue.h"
@@ -482,6 +483,165 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
     }
 
     return false;
+}
+
+namespace
+{
+    // [rot2] Casts on another member that the leader assigns now (Leader::MemberEvents::externalSpell): a led bot no
+    // longer picks them itself. Its personal saves (Barkskin, Ice Block, its own Pain Suppression) are not here.
+    bool IsAutonomousExternal(std::string const& name)
+    {
+        static std::vector<std::string> const names = {
+            "innervate on healer", "hymn of hope", "divine hymn", "power infusion", "pain suppression on party",
+            "pain suppression on spiking tank", "hand of sacrifice on main tank", "hand of sacrifice on spiking tank",
+            "hand of salvation on party", "hand of freedom on party", "blessing of protection on party",
+            "misdirection on main tank", "tricks of the trade on main tank"};
+        return std::find(names.begin(), names.end(), name) != names.end();
+    }
+
+    // [rot2] The long offensive cooldowns (2 min and more) that wait for the leader's Burn. A cooldown of 90 s or less
+    // (Dancing Rune Weapon, Starfall) stays on cooldown, as the sim APLs cast it: with the leader's burn windows on the
+    // bosses (5+ min apart) holding it would lose uses, holding a 2-5 min one loses none. The death knight's cooldowns
+    // (Hysteria, Raise Dead, Empower Rune Weapon, Army of the Dead, Summon Gargoyle) take the same rule in their
+    // triggers (IsDKBossFight, IsGargoyleFight): their action names are shared with defensive uses.
+    bool IsBurnCooldown(std::string const& name)
+    {
+        static std::vector<std::string> const names = {"icy veins", "combustion", "arcane power", "force of nature",
+                                                       "berserk", "bloodlust", "heroism"};
+        return std::find(names.begin(), names.end(), name) != names.end();
+    }
+
+    // [rot2] Where an area action lands and how far it reaches (the rules of ThreatMultiplier::AreaHolds).
+    bool AreaFootprint(Player* bot, CastSpellAction* action, SpellInfo const* info, Unit* mainTarget, Position& center,
+                       float& radius)
+    {
+        bool const selfCentred = !info || info->GetMaxRange(false, bot) <= 0.0f;
+        Unit* target = action->GetTarget();
+        WorldObject const* origin = selfCentred ? static_cast<WorldObject const*>(bot)
+                                                : static_cast<WorldObject const*>(target ? target : mainTarget);
+        if (!origin)
+            return false;
+
+        center.Relocate(origin->GetPositionX(), origin->GetPositionY(), origin->GetPositionZ());
+        radius = AreaRadius(bot, info, action->getSpell());
+        return true;
+    }
+}
+
+bool LeaderCommandMultiplier::Refresh()
+{
+    uint32 const now = getMSTime();
+    if (_readMs && getMSTimeDiff(_readMs, now) < COMMAND_CACHE_MS)
+        return _hasCommand;
+
+    _readMs = now ? now : 1;
+    _led = LeaderCommand::Led(bot);
+    _hasCommand = _led && LeaderCommand::CurrentCommand(bot, _command);
+    return _hasCommand;
+}
+
+void LeaderCommandMultiplier::Log(Action* action, char const* why)
+{
+    uint32 const now = getMSTime();
+    if (_loggedMs && getMSTimeDiff(_loggedMs, now) < LOG_MS && _loggedAction == action->getName())
+        return;
+
+    _loggedMs = now ? now : 1;
+    _loggedAction = action->getName();
+    LOG_INFO("playerbots", "[rot2] [leader command] {} holds {}: {}", bot->GetName(), action->getName(), why);
+}
+
+float LeaderCommandMultiplier::GetValue(Action* action)
+{
+    // the name tests first, the command read (cached) next, the spell and area lookups last
+    if (!action)
+        return 1.0f;
+
+    std::string const& name = action->getName();
+    if (name == "leader external" || name == "leader cc" || name == "leader threat" ||
+        name == "interrupt assigned cast")
+        return 1.0f;
+
+    // no fresh command (not led, or a leader that stopped): the bot's own rules
+    if (!Refresh())
+        return 1.0f;
+
+    if (IsAutonomousExternal(name))
+    {
+        Log(action, "an external on another member waits for the leader's assignment");
+        return 0.0f;
+    }
+
+    bool const ccAction = dynamic_cast<CastCrowdControlSpellAction*>(action) ||
+                          (name.size() > 6 && name.compare(name.size() - 6, 6, " on cc") == 0);
+    if (ccAction && !_command.cc.IsEmpty())
+    {
+        Unit* target = action->GetTarget();
+        if (!target || target->GetGUID() != _command.cc)
+        {
+            Log(action, "crowd control only on the leader's assigned mob");
+            return 0.0f;
+        }
+    }
+
+    bool const stop = _command.attack == Leader::AttackEvent::StopDps || _command.intensity == Leader::Intensity::Stop;
+    bool const burn = _command.intensity == Leader::Intensity::Burn;
+    if (IsBurnCooldown(name) && !burn)
+    {
+        Log(action, stop ? "the leader's Stop" : "a long cooldown waits for the leader's Burn");
+        return 0.0f;
+    }
+
+    CastSpellAction* spellAction = dynamic_cast<CastSpellAction*>(action);
+    if (!spellAction)
+        return 1.0f;
+
+    bool const aoe = action->getThreatType() == Action::ActionThreatType::Aoe;
+    Unit* target = action->GetTarget();
+    bool const hostile = target && target != bot && bot->IsHostileTo(target);
+    if (!aoe && !hostile)
+        return 1.0f;
+
+    if (stop)
+    {
+        Log(action, "the leader's Stop");
+        return 0.0f;
+    }
+
+    if (hostile && !_command.dontAttack.IsEmpty() && target->GetGUID() == _command.dontAttack)
+    {
+        Log(action, "the leader's DontAttack mob");
+        return 0.0f;
+    }
+
+    if (!aoe)
+        return 1.0f;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    Position center;
+    float radius = 0.0f;
+    if (!AreaFootprint(bot, spellAction, info, AI_VALUE(Unit*, "current target"), center, radius))
+        return 1.0f;
+
+    if (!LeaderCommand::AoeAllowed(bot, center))
+    {
+        Log(action,
+            _command.aoe == Leader::AoeRule::Forbidden ? "the leader forbids AoE" : "AoE outside the leader's pack");
+        return 0.0f;
+    }
+
+    if (!_command.dontAttack.IsEmpty())
+    {
+        Unit* spared = botAI->GetUnit(_command.dontAttack);
+        if (spared && spared->IsAlive() && spared->GetExactDist(&center) <= radius + spared->GetCombatReach())
+        {
+            Log(action, "the area holds the leader's DontAttack mob");
+            return 0.0f;
+        }
+    }
+
+    return 1.0f;
 }
 
 void ThreatStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

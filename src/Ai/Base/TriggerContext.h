@@ -109,6 +109,9 @@ public:
         creators["emergency cc"] = &TriggerContext::emergency_cc;
         creators["need tank kill marks"] = &TriggerContext::need_tank_kill_marks;
         creators["assigned interrupt"] = &TriggerContext::assigned_interrupt;
+        creators["leader external"] = &TriggerContext::leader_external;  // [rot2]
+        creators["leader threat"] = &TriggerContext::leader_threat;      // [rot2]
+        creators["leader cc"] = &TriggerContext::leader_cc;              // [rot2]
 
         creators["light rage available"] = &TriggerContext::LightRageAvailable;
         creators["medium rage available"] = &TriggerContext::MediumRageAvailable;
@@ -558,6 +561,9 @@ private:
     static Trigger* emergency_cc(PlayerbotAI* botAI) { return new EmergencyCcTrigger(botAI); }
     static Trigger* need_tank_kill_marks(PlayerbotAI* botAI) { return new NeedTankKillMarksTrigger(botAI); }
     static Trigger* assigned_interrupt(PlayerbotAI* botAI) { return new AssignedInterruptTrigger(botAI); }
+    static Trigger* leader_external(PlayerbotAI* botAI) { return new LeaderExternalTrigger(botAI); }  // [rot2]
+    static Trigger* leader_threat(PlayerbotAI* botAI) { return new LeaderThreatTrigger(botAI); }      // [rot2]
+    static Trigger* leader_cc(PlayerbotAI* botAI) { return new LeaderCcTrigger(botAI); }              // [rot2]
     static Trigger* no_pet(PlayerbotAI* botAI) { return new NoPetTrigger(botAI); }
     static Trigger* has_pet(PlayerbotAI* botAI) { return new HasPetTrigger(botAI); }
     static Trigger* pet_attack(PlayerbotAI* botAI) { return new PetAttackTrigger(botAI); }

@@ -7,9 +7,11 @@
 #ifndef PLAYERBOTS_THREATSTRATEGY_H
 #define PLAYERBOTS_THREATSTRATEGY_H
 
+#include "LeaderOrders.h"  // [rot2] Leader::MemberEvents
 #include "ObjectGuid.h"
 #include "Strategy.h"
 
+#include <string>
 #include <unordered_map>
 
 class CastSpellAction;
@@ -43,6 +45,37 @@ private:
     uint32 _aoeLoggedMs = 0;  // [rot1]
     std::unordered_map<ObjectGuid, uint32> _freshSeen;  // mob, when this bot first wanted to hit it in the fight
     ObjectGuid _freshLogged;
+};
+
+// [rot2] The rotation side of the dungeon leader's commands (LeaderCommand.h) for a led bot; inert (1.0) for any
+// bot the leader does not lead. Registered by InterruptStrategy (every combat engine outside battlegrounds).
+// - AoE: an Aoe action only where LeaderCommand::AoeAllowed says so (the per-mob threat gate still applies);
+// - Stop: no offensive cast; Normal: the long offensive cooldowns (2 min and more) wait for Burn;
+// - DontAttack: no cast on that mob, no area spell whose area holds it;
+// - the autonomous externals on others (Innervate on a healer, Hymns, Power Infusion, Pain Suppression on others,
+//   the Hand / Blessing of Protection spells, Misdirection, Tricks, Bloodlust / Heroism) only by the leader's
+//   assignment ("leader external");
+// - crowd control: with a leader assignment, only on the assigned mob.
+class LeaderCommandMultiplier : public Multiplier
+{
+public:
+    LeaderCommandMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "leader command") {}
+
+    float GetValue(Action* action) override;
+
+private:
+    static constexpr uint32 COMMAND_CACHE_MS = 100;  // one command read per bot this often (a lock)
+    static constexpr uint32 LOG_MS = 5000;
+
+    bool Refresh();
+    void Log(Action* action, char const* why);
+
+    uint32 _readMs = 0;
+    bool _led = false;
+    bool _hasCommand = false;
+    Leader::MemberEvents _command;
+    uint32 _loggedMs = 0;
+    std::string _loggedAction;
 };
 
 class ThreatStrategy : public Strategy

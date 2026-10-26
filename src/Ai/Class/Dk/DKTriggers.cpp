@@ -6,6 +6,7 @@
 
 #include "DKTriggers.h"
 #include "GenericTriggers.h"
+#include "LeaderCommand.h"  // [rot2]
 #include "Map.h"  // [b35_uh] IsGargoyleFight
 #include "Pet.h"  // [b31_deep] GhoulFrenzyTrigger
 #include "Playerbots.h"
@@ -14,6 +15,17 @@
 #include "Spell.h"
 #include "SpellInfo.h"
 #include <string>
+
+// [rot2]
+bool LeaderBurnRule(Player* bot, bool& burn)
+{
+    Leader::MemberEvents command;
+    if (!LeaderCommand::CurrentCommand(bot, command))
+        return false;
+
+    burn = command.intensity == Leader::Intensity::Burn && command.attack != Leader::AttackEvent::StopDps;
+    return true;
+}
 
 bool DKPresenceTrigger::IsActive()
 {
@@ -121,6 +133,11 @@ bool ArmyOfTheDeadTrigger::IsActive()
     if (!spellId || bot->HasSpellCooldown(spellId) || !bot->IsInCombat() || !HasReadyRunes(bot, 1, 1, 1))
         return false;
 
+    // [rot2] a led bot: under the leader's Burn only
+    bool burn = false;
+    if (LeaderBurnRule(bot, burn))
+        return burn;
+
     Unit* target = AI_VALUE(Unit*, "current target");
     Creature* creature = target && target->IsAlive() ? target->ToCreature() : nullptr;
     return creature && (creature->IsDungeonBoss() || creature->isWorldBoss() ||
@@ -216,6 +233,11 @@ bool IsGargoyleFight(PlayerbotAI* botAI)
     if (!bot->IsInCombat())
         return false;
 
+    // [rot2] a led bot: the leader's Burn is the cooldown window (LeaderBurnRule)
+    bool burn = false;
+    if (LeaderBurnRule(bot, burn))
+        return burn;
+
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
     if (!target || !target->IsAlive())
         return false;
@@ -283,6 +305,11 @@ bool IsDKBossFight(PlayerbotAI* botAI)
     Player* bot = botAI->GetBot();
     if (!bot->IsInCombat())
         return false;
+
+    // [rot2] a led bot: the leader's Burn is the cooldown window (LeaderBurnRule)
+    bool burn = false;
+    if (LeaderBurnRule(bot, burn))
+        return burn;
 
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
     if (!target || !target->IsAlive())
@@ -415,6 +442,11 @@ bool IsDKCooldownFight(PlayerbotAI* botAI)
     Player* bot = botAI->GetBot();
     if (!bot->IsInCombat())
         return false;
+
+    // [rot2] a led bot: the leader's Burn only (IsDKBossFight answers it), not the old burst window
+    bool burn = false;
+    if (LeaderBurnRule(bot, burn))
+        return burn;
 
     return IsDKBossFight(botAI) || ai::raidutil::IsBurstWindow(botAI);
 }

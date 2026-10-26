@@ -9,6 +9,7 @@
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "InstanceScript.h"
+#include "LeaderCommand.h"  // [rot2]
 #include "Log.h"  // [rot1]
 #include "Player.h"
 #include "Playerbots.h"
@@ -51,19 +52,30 @@ namespace
     {
         return target && !botAI->HasAura("mark of the wild", target) && !botAI->HasAura("gift of the wild", target);
     }
+
+    // [rot2] a led druid buffs only under the leader's Prepare / Ready? / Rest (the leader times the buffs)
+    bool LeaderAllowsBuffs(Player* bot)
+    {
+        Leader::MemberEvents command;
+        if (!LeaderCommand::CurrentCommand(bot, command))
+            return true;
+
+        return command.ready == Leader::ReadyEvent::Prepare || command.ready == Leader::ReadyEvent::ReadyCheck ||
+               command.ready == Leader::ReadyEvent::Rest;
+    }
 }
 
 // [rot1] Out of combat only (and the group out of combat) and only when missing.
 bool MarkOfTheWildTrigger::IsActive()
 {
     Unit* target = GetTarget();
-    return MissingMark(botAI, target) && !DruidGroupInCombat(bot) && BuffTrigger::IsActive();
+    return MissingMark(botAI, target) && !DruidGroupInCombat(bot) && LeaderAllowsBuffs(bot) && BuffTrigger::IsActive();
 }
 
 bool MarkOfTheWildOnPartyTrigger::IsActive()
 {
     Unit* target = GetTarget();
-    return MissingMark(botAI, target) && !target->IsInCombat() && !DruidGroupInCombat(bot) &&
+    return MissingMark(botAI, target) && !target->IsInCombat() && !DruidGroupInCombat(bot) && LeaderAllowsBuffs(bot) &&
            BuffOnPartyTrigger::IsActive();
 }
 

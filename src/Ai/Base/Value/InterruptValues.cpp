@@ -9,6 +9,7 @@
 #include "DBCStructure.h"
 #include "Group.h"
 #include "InterruptStrategy.h"
+#include "LeaderCommand.h"  // [rot2]
 #include "Map.h"
 #include "Playerbots.h"
 #include "Spell.h"
@@ -356,6 +357,23 @@ namespace InterruptCoordination
         if (!bot || !bot->IsInCombat() || !bot->IsInWorld())
             return {};
 
+        // [rot2] A bot the dungeon leader leads interrupts only the caster the leader assigns it, with its best ready
+        // interrupt for that cast; it picks no cast of its own (no assignment: none). A leader that stopped (no fresh
+        // command) leaves the group rotation below in charge again.
+        Leader::MemberEvents command;
+        if (LeaderCommand::CurrentCommand(bot, command))
+        {
+            Unit* caster = command.interrupt.IsEmpty() ? nullptr : botAI->GetUnit(command.interrupt);
+            if (!caster || !caster->IsAlive() || caster->GetMap() != bot->GetMap() || !GetInterruptibleCast(caster))
+                return {};
+
+            Candidate candidate{nullptr, "", 0.0f};
+            if (!EvaluateMember(bot, botAI, caster, true, candidate))
+                return {};
+
+            return {caster->GetGUID(), candidate.spell};
+        }
+
         GuidVector const attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get();
         std::vector<CastInfo> casts;
         std::vector<Unit*> controlled;
@@ -518,6 +536,14 @@ namespace InterruptCoordination
         Player* bot = botAI->GetBot();
         if (!bot || !caster)
             return true;
+
+        // [rot2] a led bot: only the caster the leader assigned it (its own interrupt picking is off)
+        if (LeaderCommand::Led(bot))
+        {
+            Leader::MemberEvents command;
+            if (LeaderCommand::CurrentCommand(bot, command))
+                return command.interrupt == caster->GetGUID();
+        }
 
         // keeps the registry current for this tick
         botAI->GetAiObjectContext()->GetValue<InterruptAssignment>("interrupt assignment")->Get();

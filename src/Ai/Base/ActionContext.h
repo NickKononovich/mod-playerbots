@@ -95,6 +95,9 @@ public:
         creators["emergency cc"] = &ActionContext::emergency_cc;
         creators["tank kill marks"] = &ActionContext::tank_kill_marks;
         creators["interrupt assigned cast"] = &ActionContext::interrupt_assigned_cast;
+        creators["leader external"] = &ActionContext::leader_external;  // [rot2]
+        creators["leader threat"] = &ActionContext::leader_threat;      // [rot2]
+        creators["leader cc"] = &ActionContext::leader_cc;              // [rot2]
         creators["set return position"] = &ActionContext::set_return_position;
         creators["rpg"] = &ActionContext::rpg;
         creators["crpg"] = &ActionContext::crpg;
@@ -344,6 +347,9 @@ private:
     static Action* auto_cc_mark(PlayerbotAI* botAI) { return new AutoCcMarkAction(botAI); }
     static Action* tank_kill_marks(PlayerbotAI* botAI) { return new TankKillMarksAction(botAI); }
     static Action* interrupt_assigned_cast(PlayerbotAI* botAI) { return new InterruptAssignedCastAction(botAI); }
+    static Action* leader_external(PlayerbotAI* botAI) { return new LeaderExternalAction(botAI); }  // [rot2]
+    static Action* leader_threat(PlayerbotAI* botAI) { return new LeaderThreatAction(botAI); }      // [rot2]
+    static Action* leader_cc(PlayerbotAI* botAI) { return new LeaderCcAction(botAI); }              // [rot2]
     static Action* clear_auto_cc_mark(PlayerbotAI* botAI) { return new ClearAutoCcMarkAction(botAI); }
     static Action* cast_auto_cc(PlayerbotAI* botAI) { return new CastAutoCcAction(botAI); }
     static Action* control_charmed_member(PlayerbotAI* botAI) { return new ControlCharmedMemberAction(botAI); }

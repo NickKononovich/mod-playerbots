@@ -20,4 +20,32 @@ public:
     bool IsActive() override;
 };
 
+// [rot2] The dungeon leader assigns this bot an external save / buff now (LeaderCommand::AssignedExternal), the spell
+// known and off cooldown.
+class LeaderExternalTrigger : public Trigger
+{
+public:
+    LeaderExternalTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader external") {}
+
+    bool IsActive() override;
+};
+
+// [rot2] The tank: the leader names a mob to take back (LeaderCommand::AssignedThreat).
+class LeaderThreatTrigger : public Trigger
+{
+public:
+    LeaderThreatTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader threat") {}
+
+    bool IsActive() override;
+};
+
+// [rot2] The leader assigns this bot a mob to crowd-control (LeaderCommand::AssignedCc) that is not held yet.
+class LeaderCcTrigger : public Trigger
+{
+public:
+    LeaderCcTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader cc") {}
+
+    bool IsActive() override;
+};
+
 #endif

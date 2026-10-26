@@ -20,6 +20,8 @@ public:
 
     std::string const getName() override { return "interrupt"; }
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    // [rot2] the leader-command multiplier (LeaderCommandMultiplier, ThreatStrategy.h)
+    void InitMultipliers(std::vector<Multiplier*>& multipliers) override;
 
     // Whether this bot takes part in the group interrupt rotation.
     static bool IsCoordinating(PlayerbotAI* botAI);
