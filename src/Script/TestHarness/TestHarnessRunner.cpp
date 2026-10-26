@@ -19961,7 +19961,23 @@ namespace TestHarness
             lead.laneWaitSeenMs = now;
             laneWaitedOut = getMSTimeDiff(lead.laneWaitSinceMs, now) >= LEADER_LANE_WAIT_MAX_MS;
         }
-        bool const pull = !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) && (hold.lane || !window);
+        // [lead12] a patrol the planner cannot pull (interceptBanned): no intercept; its lane is crossed while it is
+        // farther than twice its reach from the leader (the walk timed against its loop), else the group waits
+        bool banned = false;
+        if (auto const ban = lead.interceptBanned.find(patrol->GetGUID()); ban != lead.interceptBanned.end())
+        {
+            if (int32(ban->second - now) > 0)
+                banned = true;
+            else
+                lead.interceptBanned.erase(ban);
+        }
+        if (banned && hold.lane && !patrolNear && leader->GetExactDist(patrol) > 2.0f * reach)
+        {
+            endWait("its lane is crossed while it is far (no pull of it fits)");
+            return false;
+        }
+        bool const pull = !banned && !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) &&
+                          (hold.lane || !window);
         auto const halt = [&](char const* kind)
         {
             if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
@@ -20243,6 +20259,18 @@ namespace TestHarness
                 pack.push_back(decision.lookTarget);
             return pack;
         };
+        // [lead12] the boss a look's pack brings (a dungeon boss or a tracked encounter boss, idle): the planner
+        // never pulls him, his pull is the leader's (BossPull at its stop, as the old ROUTE_BOSS_PULL_IMMEDIATE)
+        auto const packBoss = [&]() -> Creature*
+        {
+            std::vector<ObjectGuid> pack = decision.pack.empty() ? decision.verdictPack : decision.pack;
+            pack.push_back(decision.lookTarget);
+            for (ObjectGuid const& guid : pack)
+                if (Creature* creature = idleAlive(guid);
+                    creature && (creature->IsDungeonBoss() || party.bossCreatures.count(guid)))
+                    return creature;
+            return nullptr;
+        };
         bool const requestCovers = decides && !lead.wholePack.IsEmpty() && fresh(lead.wholeSeenMs) &&
                                    (decision.lookTarget == lead.wholePack ||
                                     std::find(decision.pack.begin(), decision.pack.end(), lead.wholePack) !=
@@ -20389,7 +20417,13 @@ namespace TestHarness
         // count.
         if (decides && decision.verdict == PullPlanner::Verdict::Held && lookMob)
         {
-            bool const declaredWait = decision.why.find("patrol wait") != std::string::npos ||
+            // [lead12] sfk-h b56: Rethilgore "held 75 s ... (a boss pull: no fallback plan)" while the leader stood in
+            // its own patrol waits, 50 yd short of its stop: a boss's pack is the leader's boss pull at its stop (no
+            // planner hold to time out), and the clock runs only while the leader stands at its stop, no patrol wait
+            bool const bossPack = packBoss() != nullptr;
+            bool const atStop = party.arrivedMs && lead.waitPatrol.IsEmpty();
+            bool const declaredWait = bossPack || !atStop ||
+                                      decision.why.find("patrol wait") != std::string::npos ||
                                       decision.why.find("overlap wait") != std::string::npos ||
                                       decision.why.find("pre-pull cc") != std::string::npos ||
                                       decision.why.find("the leader:") != std::string::npos ||
@@ -20431,14 +20465,56 @@ namespace TestHarness
         // no option (the route crosses its walk, or it never leaves the group's spot: no wait is valid either)
         // [lead4b] only a hopeless refusal is no option: "refused for now" (the stand's guarantee still to come, its
         // verdict wait running) is a hold, re-asked on the next look - build 53 stopped ac-h / dme-n / uk-h on it
+        // [lead12] ... and a hopeless one stops nothing either: a patrol is no pack the leader must clear (b55 sh-h:
+        // "the patrol pull refused: ... Shattered Hand Heathen brings 11 mobs over the cap 9"; the old path waited it
+        // out and walked on after its budget). The patrol is banned from intercepts for LEADER_INTERCEPT_BAN_MS and
+        // its lane is crossed while it is far from the leader (LeaderPatrolTick); logged, not stopping.
         if (decides && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && fresh(lead.interceptMs) &&
             decision.lookTarget == lead.intercept && decision.hopeless && decision.toppedUp && lead.ready &&
             getMSTimeDiff(lead.interceptSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS)
         {
-            LeaderNoOption(party, tank, lookMob, packOf(), "the patrol pull refused: " + decision.why, true,
-                           JsonObject().Str("kind", "patrol").Str("patrolWhy", lead.interceptWhy));
+            constexpr uint32 LEADER_INTERCEPT_BAN_MS = 5 * MINUTE * IN_MILLISECONDS;
+            lead.interceptBanned[lead.intercept] = now + LEADER_INTERCEPT_BAN_MS;
+            LeaderNoOption(party, tank, lookMob, packOf(), "the patrol pull refused: " + decision.why, false,
+                           JsonObject().Str("kind", "patrol").Str("patrolWhy", lead.interceptWhy)
+                               .Str("action", "no intercept; its lane is crossed while it is far"));
+            lead.intercept.Clear();
+            lead.interceptMs = 0;
             return;
         }
+
+        // [lead12] dmn-n b56: "the whole pack offered, refused: refused for now: the pack of Gordok Mastiff brings a
+        // boss, pulled as his fight once the group is ready for him" stopped the run. That refusal is the planner's
+        // deferral to the boss's fight, no answer: the boss is the next pull (the old [b51_dme] boss_on_the_way_first
+        // rule), and the leader pulls him at his stop once ready (Steer: LeaderBossPull).
+        if (decides && !decision.hopeless)
+            if (Creature* boss = packBoss())
+            {
+                if (party.target != boss->GetGUID())
+                {
+                    LogEvent(party, "boss_on_the_way_first",
+                             JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
+                                 .Real("firstDistance", tank->GetExactDist(boss)).Str("via", lookMob->GetName())
+                                 .Num("viaEntry", lookMob->GetEntry())
+                                 .Str("why", "[lead12] the planner defers the pack to its boss's fight: " +
+                                                 decision.why));
+                    party.target = boss->GetGUID();
+                    party.targetIsBoss = true;
+                    party.targetIsStarter = false;
+                    party.targetRouteRule = "boss on the way";
+                    party.targetSinceMs = now;
+                    party.arrivedMs = 0;
+                    party.stopSinceMs = 0;
+                    party.approachBlocker.Clear();
+                    party.orderHoldSinceMs.erase(boss->GetGUID());
+                }
+                if (requestCovers)
+                {
+                    lead.wholePack.Clear();
+                    lead.wholeSeenMs = 0;
+                }
+                return;
+            }
 
         // planner_no_option (user decision 1): a hopeless refusal (no pull of the pack fits at all), or [lead3] any
         // refusal of the pack the leader asked for whole (LEADER_REQUEST_ANSWER_MS after the ask: the planner's 1 s

@@ -341,6 +341,9 @@ namespace TestHarness
             ObjectGuid intercept;
             uint32 interceptMs = 0;
             uint32 interceptSinceMs = 0;
+            // [lead12] patrols the planner cannot pull (a hopeless intercept): no intercept of them for a while; the
+            // route crosses their lane while they are far from the leader (timed against the loop), never into them
+            std::map<ObjectGuid, uint32> interceptBanned;
             std::string interceptWhy;
             ObjectGuid waitPatrol;
             uint32 waitSinceMs = 0;
