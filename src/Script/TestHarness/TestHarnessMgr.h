@@ -373,6 +373,10 @@ namespace TestHarness
             bool ready = false;
             std::string notReadyWhy;
             uint32 readyCheckMs = 0;
+            // [lead13] the leader's last look (it keeps a decision ready while the tank stands without a target), and
+            // since when every member stands above its own rest lines (the boss pull's old [ready_hold_30s] rule)
+            uint32 lastLookMs = 0;
+            uint32 atLinesSinceMs = 0;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;
             // [lead8] where the group fought and cleared this run (the tank at each fight's end)

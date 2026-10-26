@@ -681,8 +681,13 @@ namespace Leader
                                                           "reach pull",           "move to los pull spot",
                                                           "move fight spot back", "return to pull position",
                                                           "pre pull cc"};
+            // [lead13] ... and a dungeon room tactic's own pull walk ("mgt selin room pull": MgT's Selin room owns
+            // the pull, SelinRoom::OwnsPull): mgt-n / mgt-h b56 stood 113 s+ at "no walk / not arrived" while this
+            // guard refused the walk to the tactic's pull spot ("would wake Wretched Bruiser (17.7 yd of reach
+            // 20.5) -> stay", every tick); the tactic checks its spot against the other packs' reach itself
             if (std::find(std::begin(EXEMPT), std::end(EXEMPT), action) != std::end(EXEMPT) ||
-                action.find("escort") != std::string::npos)
+                action.find("escort") != std::string::npos ||
+                (action.size() > 5 && action.compare(action.size() - 5, 5, " pull") == 0))
                 return false;
 
             return true;

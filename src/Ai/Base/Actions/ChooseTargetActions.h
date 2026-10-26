@@ -211,6 +211,9 @@ namespace PullPlanner
     // one newer than `maxAgeMs` and not taken yet) and issues a Go decision; the tank takes it once while fresh.
     void Ask(Player* tank);
     bool TakeAsk(ObjectGuid tank, uint32 maxAgeMs);
+    // [lead13] the tank asked within `ms` (taken or not): it stands without a target, the leader keeps a decision
+    // ready for its next look
+    bool AskedWithin(ObjectGuid tank, uint32 ms);
     void Issue(ObjectGuid tank, Decision const& decision);
     // [lead4c] `consume` false: a peek (isUseful may run without its Execute following); ConsumeIssued(ms) takes the
     // issued decision of that stamp once it is executed

@@ -4977,8 +4977,11 @@ namespace TestHarness
                                     uint32 arrivedSec = 0;
                                     if (int32(now - party.arrivedMs) > 0)
                                         arrivedSec = getMSTimeDiff(party.arrivedMs, now) / IN_MILLISECONDS;
+                                    // [lead13] the leader owns the pull: its planner decides, not the tank
                                     add(Acore::StringFormat(
-                                        "arrived {} s ago at {} (the tank's pull decides){}", arrivedSec,
+                                        "arrived {} s ago at {} ({}){}", arrivedSec,
+                                        LeaderDecides(party) ? "the leader's planner decides"
+                                                             : "the tank's pull decides",
                                         stopBy ? Acore::StringFormat("the stop by {} {:.1f} yd", stopBy->GetName(),
                                                                      leader->GetExactDist(stopBy))
                                                : std::string("the target's stop"),

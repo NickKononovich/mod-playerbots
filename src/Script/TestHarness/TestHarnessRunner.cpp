@@ -12709,7 +12709,32 @@ namespace TestHarness
             if (ROUTE_BOSS_PULL_IMMEDIATE && party.targetIsBoss && !party.approach && !party.content->raid &&
                 !neighbourStop)
             {
-                bool const ready = GroupFullyReady(party, leader) && !party.needBuff &&
+                // [lead13] arc-n / arc-h b56 (Zereketh: "held for now: Rtpalbe at 70 % mana" for good): a member
+                // above its own rest line does not drink, so the 80 % lines alone never let the boss pull come. In
+                // leader mode the boss is pulled ready by the old gate, or - the RaidLeader's old [ready_hold_30s]
+                // rule - after PULL_HOLD_READY_MAX_MS with the leader ready and every member above its own lines.
+                bool levelsReady = GroupFullyReady(party, leader);
+                if (!levelsReady && LeaderDecidesFor(party) && party.lead.ready)
+                {
+                    bool atLines = true;
+                    for (Member const& member : party.members)
+                        if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                            bot && bot->IsAlive() && GET_PLAYERBOT_AI(bot) &&
+                            (RestState::WantsDrink(bot) || RestState::WantsFood(bot) || RestState::IsDrinking(bot) ||
+                             RestState::IsEating(bot)))
+                            atLines = false;
+                    if (!atLines)
+                        party.lead.atLinesSinceMs = 0;
+                    else if (!party.lead.atLinesSinceMs)
+                        party.lead.atLinesSinceMs = now ? now : 1;
+                    levelsReady = party.lead.atLinesSinceMs &&
+                                  getMSTimeDiff(party.lead.atLinesSinceMs, now) >= RaidLeader::PULL_HOLD_READY_MAX_MS;
+                    if (levelsReady)
+                        LOG_INFO("playerbots", "[lead13] boss_ready_at_lines {}: {} - every member above its own "
+                                 "rest lines {} s, the leader ready: the boss pull", party.id, object->GetName(),
+                                 getMSTimeDiff(party.lead.atLinesSinceMs, now) / IN_MILLISECONDS);
+                }
+                bool const ready = levelsReady && !party.needBuff &&
                                    (party.bossBuffed.count(party.target) || distance >= BOSS_BUFF_DISTANCE) &&
                                    !PrePullCc::IsHolding(leader);
                 BossReady& boss = bossReady[party.leader];
@@ -20068,8 +20093,21 @@ namespace TestHarness
                 Leader::Readiness::Publish(group->GetGUID(), lead.ready, lead.notReadyWhy);
         }
 
-        if (!PullPlanner::TakeAsk(party.leader, Leader::LEADER_ASK_FRESH_MS))
+        // [lead13] toc5-n b56 (2/4, stalled): the tank's engine looked at "aggressive target" only now and then ("not
+        // evaluated: toc mounted (66.00) ran first" 37 of 53 looks), each look asked, and the decision answering it
+        // was stale (5 s) by the next one: 0 tank lines in the whole run, the Argent Monk pull_order never executed.
+        // The leader keeps a decision ready: besides answering an ask, it looks once per LEADER_LOOK_PERIOD_MS while
+        // the tank asked within LEADER_ASKING_MS (it stands out of combat without a target), so whenever the tank
+        // looks a fresh decision waits.
+        constexpr uint32 LEADER_LOOK_PERIOD_MS = 1000;
+        constexpr uint32 LEADER_ASKING_MS = 30 * IN_MILLISECONDS;
+        bool const asked = PullPlanner::TakeAsk(party.leader, Leader::LEADER_ASK_FRESH_MS);
+        bool const keepReady = !asked && decides && !tank->IsInCombat() &&
+                               (!lead.lastLookMs || getMSTimeDiff(lead.lastLookMs, now) >= LEADER_LOOK_PERIOD_MS) &&
+                               PullPlanner::AskedWithin(party.leader, LEADER_ASKING_MS);
+        if (!asked && !keepReady)
             return;
+        lead.lastLookMs = now;
 
         DecisionRun const run{party.id, party.seq, party.runStartMs};
         auto const spot = [](JsonObject& fields, char const* key, Position const& at)

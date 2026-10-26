@@ -12800,6 +12800,14 @@ namespace PullPlanner
         return true;
     }
 
+    bool AskedWithin(ObjectGuid tank, uint32 ms)
+    {
+        std::lock_guard<std::mutex> lock(leaderLock);
+        auto const found = leaderSlots.find(tank);
+        return found != leaderSlots.end() && found->second.askMs &&
+               getMSTimeDiff(found->second.askMs, getMSTime()) <= ms;
+    }
+
     void Issue(ObjectGuid tank, Decision const& decision)
     {
         std::lock_guard<std::mutex> lock(leaderLock);
