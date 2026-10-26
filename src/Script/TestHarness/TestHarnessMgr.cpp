@@ -4236,7 +4236,12 @@ namespace TestHarness
                         getMSTimeDiff(member.seatedSinceMs, now) < REST_SIT_GRACE_MS &&
                         ((RestState::IsDrinking(bot) && mana && manaPct < REST_SIT_GRACE_MAX_PCT) ||
                          (RestState::IsEating(bot) && healthPct < REST_SIT_GRACE_MAX_PCT));
-                    bool const regenerating = REGEN_WAIT_BELOW_LINE ? (seatedBelowLine || freshSitter) : seated;
+                    // [lead15] LEADER_ONE_REST_RULE: in a group the leader leads every sitter is waited for
+                    bool const leaderRest = Leader::Leads(Leader::LEADER_ONE_REST_RULE) && party.content &&
+                                            !party.content->raid && party.content->size <= 5 &&
+                                            Leader::Orders::IsTracked(party.leader);
+                    bool const regenerating =
+                        REGEN_WAIT_BELOW_LINE && !leaderRest ? (seatedBelowLine || freshSitter) : seated;
                     bool const waitedFor = !REGEN_WAIT_BELOW_LINE || regenerating || hardLine;
                     anySeated |= regenerating;
                     if (seated && !regenerating && !hardLine && !member.regenAboveLineLogged)

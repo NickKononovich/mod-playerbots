@@ -64,6 +64,7 @@
 #include "SpellMgr.h"
 #include "StuckWatchdog.h"
 #include "DamageTaken.h"
+#include "DungeonTactics.h"  // [lead15] the leader's cleave dodge (InFrontalCleave)
 #include "InstanceScript.h"
 #include "InstanceSaveMgr.h"
 #include "SelfTravelActions.h"
@@ -74,6 +75,7 @@
 #include "UKTriggers.h"
 #include "UPTriggers.h"
 #include "Timer.h"
+#include <chrono>  // [lead15] the leader cadence cost
 #include <functional>
 #include "WaypointMgr.h"
 #include "WorldPacket.h"
@@ -643,7 +645,11 @@ namespace TestHarness
                 hold.graceSinceMs = 0;
                 return std::string();
             }
-            if (hold.cooldownUntilMs && int32(now - hold.cooldownUntilMs) < 0)
+            // [lead15] the leader judges the rest (LEADER_ONE_REST_RULE): no cooldown either
+            bool const leaderJudgesRest = party.content && !party.content->raid && party.content->size <= 5 &&
+                                          Leader::Orders::IsTracked(party.leader);
+            if (!(Leader::Leads(Leader::LEADER_ONE_REST_RULE) && leaderJudgesRest) && hold.cooldownUntilMs &&
+                int32(now - hold.cooldownUntilMs) < 0)
                 return std::string();
             // The grace is once per fight: a member below the rest line who does not sit down holds the group
             // REST_HOLD_SIT_GRACE_MS after it, not again and again (the regen wait logs such a member as a stall).
@@ -672,9 +678,13 @@ namespace TestHarness
                 // WantsFood), a member about to sit only below the hard lines (45 % health, 20 % mana)
                 bool const hardLine = bot->GetHealthPct() < 45.0f ||
                                       (bot->GetMaxPower(POWER_MANA) && bot->GetPowerPct(POWER_MANA) < 20.0f);
-                if (RestState::IsDrinking(bot) && (!REST_HOLD_BELOW_LINE || hardLine || RestState::WantsDrink(bot)))
+                // [lead15] LEADER_ONE_REST_RULE: a member that sits is waited for, whatever its line
+                bool const anySitter = Leader::Leads(Leader::LEADER_ONE_REST_RULE) && leaderJudgesRest;
+                if (RestState::IsDrinking(bot) &&
+                    (anySitter || !REST_HOLD_BELOW_LINE || hardLine || RestState::WantsDrink(bot)))
                     state = "drinking";
-                else if (RestState::IsEating(bot) && (!REST_HOLD_BELOW_LINE || hardLine || RestState::WantsFood(bot)))
+                else if (RestState::IsEating(bot) &&
+                         (anySitter || !REST_HOLD_BELOW_LINE || hardLine || RestState::WantsFood(bot)))
                     state = "eating";
                 else if (inGrace && (!REST_HOLD_BELOW_LINE || hardLine))
                 {
@@ -19619,6 +19629,18 @@ namespace TestHarness
                                           fields, report.ms);
         }
 
+        // [lead15] the members' acks of the leader's events (executions, decides false)
+        for (Member const& member : party.members)
+        {
+            Leader::MemberAck ack;
+            while (Leader::Events::TakeAck(member.guid, ack))
+                DecisionLog::Instance().Write(run, "member:" + member.name, "member_ack", member.guid, member.name,
+                                              false,
+                                              JsonObject().Str("event", ack.what).Str("why", ack.why)
+                                                  .Num("seq", ack.seq),
+                                              ack.ms);
+        }
+
         // [lead7] LEADER_PLANNER_DIFF: where the planner library's shadow look disagreed with the tank's own look
         PullPlanner::DiffLine diff;
         while (PullPlanner::TakeDiff(party.leader, diff))
@@ -20095,6 +20117,1053 @@ namespace TestHarness
         return true;
     }
 
+    // [lead15] C:/WoW/LEADER_REFACTOR_PLAN.md section 9 / user 2026-10-26: the leader issues events to EVERY member
+    // (LeaderOrders.h Events), on every update while urgent (else every 250 ms), and the members decide only how.
+    // A changed event is a decision line (leader_event, the member named) and wakes the member's AI at once
+    // (member_wake); the members' acks are drained by DrainOrderReports (member_ack). Events this step issues:
+    // - Rest (eat / drink to full) to whoever needs it, Ready? while the pull waits for the assigned spots, Prepare
+    //   (buffs, forms, a resurrection) while the group stands;
+    // - StandAt (the pull's spots), MoveTo along with the tank (the member's own follow is off), MoveTo out of a
+    //   cleave cone (DungeonTactics::InFrontalCleave), MoveTo of the healer for the heal reach;
+    // - in the fight: Heal(group) to the healer, Attack(target, killOrder, aoe rule) and Intensity to every damage
+    //   dealer, Interrupt (one kicker per casting mob), External (Misdirection / Tricks, Pain Suppression, Hand of
+    //   Sacrifice / Protection, Innervate, Hymn of Hope, Divine Hymn, Power Infusion: who and when).
+    // The executor side: LeaderTriggers / LeaderActions, RaidLeaderHoldMultiplier, PlayerbotAI::DoNextAction (no
+    // command, out of combat: no engine), Ai/Base/Util/LeaderCommand.h (the rotation's getters).
+    namespace
+    {
+        constexpr uint32 LEADER_WAKE_LOG_MS = 60 * IN_MILLISECONDS;
+        constexpr uint32 LEADER_TANK_STILL_MS = 3 * IN_MILLISECONDS;   // the tank stands this long: Prepare
+        constexpr uint32 LEADER_CALM_TICK_MS = 250;                    // the calm cadence (out of combat)
+        constexpr uint32 LEADER_AOE_RECHECK_MS = 500;
+        constexpr float LEADER_LOOSE_TANK_YD = 2.5f;                   // the victim's spot next to the tank
+        // the tank's taunts and AoE threat spells (3.3.5a; every rank the leader may assign, highest last)
+        constexpr uint32 TANK_TAUNTS[] = {355, 6795, 62124, 56222, 31789};
+        constexpr uint32 TANK_AOE_THREAT[] = {43265, 49936, 49937, 49938, 48721, 49939, 49940, 49941, 26573, 20116,
+                                              20922, 20923, 20924, 27173, 48818, 48819, 6343, 8198, 8204, 8205,
+                                              11580, 11581, 25264, 47501, 47502, 779, 780, 769, 9754, 9908, 26997,
+                                              48561, 48562};
+        constexpr float LEADER_FOLLOW_START_YD = 6.0f;                 // farther from the tank: walked along
+        constexpr float LEADER_FOLLOW_TOLERANCE = 2.5f;
+        constexpr uint32 LEADER_HEAL_REACH_CHECK_MS = 1000;
+        constexpr uint32 LEADER_HEAL_REACH_LOG_MS = 5 * IN_MILLISECONDS;
+        constexpr float LEADER_AOE_RADIUS = 10.0f;     // the AoE rule's radius around the target
+        constexpr float LEADER_AOE_GUARD_YD = 3.0f;    // ... and the margin for a mob the AoE must not touch
+        constexpr uint32 LEADER_OPENING_MS = 6 * IN_MILLISECONDS;
+        constexpr float LEADER_SAVE_HP_PCT = 30.0f;
+        constexpr float LEADER_SAVE_MANA_PCT = 30.0f;
+        // the external saves / buffs the leader assigns (3.3.5a ids; any known rank of Hand of Protection)
+        constexpr uint32 SPELL_MISDIRECTION = 34477;
+        constexpr uint32 SPELL_TRICKS_OF_THE_TRADE = 57934;
+        constexpr uint32 SPELL_PAIN_SUPPRESSION = 33206;
+        constexpr uint32 SPELL_HAND_OF_SACRIFICE = 6940;
+        constexpr uint32 SPELL_HAND_OF_PROTECTION_1 = 1022;
+        constexpr uint32 SPELL_HAND_OF_PROTECTION_2 = 5599;
+        constexpr uint32 SPELL_HAND_OF_PROTECTION_3 = 10278;
+        constexpr uint32 SPELL_INNERVATE = 29166;
+        constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
+        constexpr uint32 SPELL_DIVINE_HYMN = 64843;
+        constexpr uint32 SPELL_POWER_INFUSION = 10060;
+
+        // the first of `spells` the bot knows and has off cooldown (the highest rank listed last); 0: none
+        uint32 LeaderReadySpell(Player* bot, std::initializer_list<uint32> spells)
+        {
+            uint32 ready = 0;
+            for (uint32 spell : spells)
+                if (bot->HasSpell(spell) && !bot->HasSpellCooldown(spell))
+                    ready = spell;
+            return ready;
+        }
+
+        // the bot's interrupt with no cooldown running (Kick, Pummel, Shield Bash, Counterspell, Wind Shear, Mind
+        // Freeze, Silence); 0: none
+        uint32 LeaderReadyInterrupt(Player* bot)
+        {
+            static constexpr uint32 INTERRUPTS[] = {1766,  1767, 1768,  1769,  38768, 6552,  6554, 72,
+                                                    1671,  1672, 29704, 2139,  57994, 47528, 15487};
+            uint32 ready = 0;
+            for (uint32 spell : INTERRUPTS)
+                if (bot->HasSpell(spell) && !bot->HasSpellCooldown(spell))
+                    ready = spell;
+            return ready;
+        }
+
+        // the healer at `from` heals `to`: in range (LEADER_HEAL_REACH_YD) and in sight
+        bool HealReaches(Player* tank, Position const& from, Position const& to)
+        {
+            return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD &&
+                   tank->GetMap()->isInLineOfSight(from.GetPositionX(), from.GetPositionY(),
+                                                   from.GetPositionZ() + 2.0f, to.GetPositionX(), to.GetPositionY(),
+                                                   to.GetPositionZ() + 2.0f, tank->GetPhaseMask(),
+                                                   LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+        }
+
+        // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
+        // unpulled pack) stands within the AoE radius (plus a margin) of it
+        Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, std::string& why)
+        {
+            std::list<Unit*> nearUnits;
+            float const range = LEADER_AOE_RADIUS + LEADER_AOE_GUARD_YD;
+            Acore::AnyUnitInObjectRangeCheck check(target, range);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, nearUnits, check);
+            Cell::VisitObjects(target, searcher, range);
+            for (Unit* unit : nearUnits)
+            {
+                if (unit == target || !unit->ToCreature() || !tank->IsValidAttackTarget(unit))
+                    continue;
+                if (unit->HasBreakableByDamageCrowdControlAura())
+                {
+                    why = Acore::StringFormat("{} is crowd-controlled {:.0f} yd from the target", unit->GetName(),
+                                              target->GetExactDist(unit));
+                    return Leader::AoeRule::Forbidden;
+                }
+                if (!unit->IsInCombat())
+                {
+                    why = Acore::StringFormat("{} is not pulled, {:.0f} yd from the target", unit->GetName(),
+                                              target->GetExactDist(unit));
+                    return Leader::AoeRule::Forbidden;
+                }
+            }
+            why = "the pack only";
+            return Leader::AoeRule::AllowedOnPack;
+        }
+
+        // the member's walk-along spot behind the tank (two rows of two), on reachable ground
+        Position LeaderFollowSpot(Player* tank, uint32 index)
+        {
+            float const back = 3.0f + 2.5f * float((index / 2) % 2);
+            float const side = (index % 2 ? 1.5f : -1.5f);
+            float const o = tank->GetOrientation();
+            float x = tank->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
+            float y = tank->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;
+            float z = tank->GetPositionZ();
+            if (!tank->GetMap()->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
+                                                                  tank->GetPositionZ(), x, y, z))
+                return tank->GetPosition();
+            return Position(x, y, z);
+        }
+
+        // a free spot near the healer, out of every cleave cone, from which it reaches everyone (`keeps`)
+        bool LeaderHealerRespot(Player* healer, PlayerbotAI* healerAI,
+                                std::function<bool(Position const&)> const& keeps, Position& out)
+        {
+            constexpr float STEPS[] = {4.0f, 8.0f, 12.0f, 16.0f};
+            constexpr uint32 DIRECTIONS = 16;
+            Map* map = healer->GetMap();
+            for (float step : STEPS)
+                for (uint32 i = 0; i < DIRECTIONS; ++i)
+                {
+                    float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                    float x = healer->GetPositionX() + std::cos(angle) * step;
+                    float y = healer->GetPositionY() + std::sin(angle) * step;
+                    float z = healer->GetPositionZ();
+                    if (!map->CheckCollisionAndGetValidCoords(healer, healer->GetPositionX(), healer->GetPositionY(),
+                                                              healer->GetPositionZ(), x, y, z))
+                        continue;
+                    if (healerAI && DungeonTactics::SpotInFrontalCleave(healer, healerAI, x, y, 1.0f,
+                                                                        20.0f * float(M_PI) / 180.0f))
+                        continue;
+                    Position const spot(x, y, z);
+                    if (!keeps(spot))
+                        continue;
+                    out = spot;
+                    return true;
+                }
+            return false;
+        }
+
+        char const* MoveEventName(Leader::MoveEvent move)
+        {
+            switch (move)
+            {
+                case Leader::MoveEvent::MoveTo:
+                    return "MoveTo";
+                case Leader::MoveEvent::StandAt:
+                    return "StandAt";
+                case Leader::MoveEvent::Hold:
+                    return "Hold";
+                default:
+                    return "None";
+            }
+        }
+
+        // A free spot out of every cleave cone near the member, nearest first (DungeonTactics's exit steps), that
+        // `keeps` (the heal reach).
+        bool LeaderCleaveExit(Player* bot, PlayerbotAI* botAI, Position& out,
+                              std::function<bool(Position const&)> const& keeps)
+        {
+            constexpr float STEPS[] = {4.0f, 7.0f, 10.0f, 13.0f};
+            constexpr uint32 DIRECTIONS = 16;
+            constexpr float DIST_MARGIN = 1.0f;
+            constexpr float ANGLE_MARGIN = 20.0f * float(M_PI) / 180.0f;
+            Map* map = bot->GetMap();
+            for (float step : STEPS)
+                for (uint32 i = 0; i < DIRECTIONS; ++i)
+                {
+                    float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                    float x = bot->GetPositionX() + std::cos(angle) * step;
+                    float y = bot->GetPositionY() + std::sin(angle) * step;
+                    float z = bot->GetPositionZ();
+                    if (!map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
+                                                              bot->GetPositionZ(), x, y, z))
+                        continue;
+                    if (DungeonTactics::SpotInFrontalCleave(bot, botAI, x, y, DIST_MARGIN, ANGLE_MARGIN))
+                        continue;
+                    if (!keeps(Position(x, y, z)))
+                        continue;
+                    out.Relocate(x, y, z);
+                    return true;
+                }
+            return false;
+        }
+
+        // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack
+        // reaching it, a walk to it.
+        bool LeaderSpotOk(Player* tank, Position const& fight, Position& spot, std::vector<ObjectGuid> const& pack)
+        {
+            Map* map = tank->GetMap();
+            float const ground = map->GetHeight(tank->GetPhaseMask(), spot.GetPositionX(), spot.GetPositionY(),
+                                                fight.GetPositionZ() + 5.0f, true, 15.0f);
+            if (ground <= INVALID_HEIGHT || std::fabs(ground - fight.GetPositionZ()) > 6.0f)
+                return false;
+            spot.Relocate(spot.GetPositionX(), spot.GetPositionY(), ground);
+            if (!map->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + 2.0f,
+                                      fight.GetPositionX(), fight.GetPositionY(), fight.GetPositionZ() + 2.0f,
+                                      tank->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+                return false;
+            std::list<Creature*> idle;
+            IdleAggroCheck check{tank};
+            Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idle, check);
+            Cell::VisitObjects(tank, searcher, tank->GetExactDist(spot) + 30.0f);
+            for (Creature* mob : idle)
+                if (std::find(pack.begin(), pack.end(), mob->GetGUID()) == pack.end() &&
+                    IdleMobReachesSpot(tank, mob, spot))
+                    return false;
+            PathGenerator path(tank);
+            path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
+            return !(path.GetPathType() & PATHFIND_NOPATH);
+        }
+    }
+
+    // [lead15] the spots of the pull `decision` (healer near enough to heal the FIGHT spot, ranged 22 yd behind it,
+    // melee just behind it, all away from the pulled pack); false: the pull needs no gate (no fight spot / pack).
+    bool TestHarnessMgr::LeaderAssignSpots(Party& party, Player* tank, PullPlanner::Decision const& decision)
+    {
+        auto& lead = party.lead;
+        ObjectGuid const mobGuid = !decision.planTarget.IsEmpty() ? decision.planTarget : decision.attack;
+        Unit* mob = mobGuid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mobGuid);
+        if (!mob || decision.los || decision.kind == "approach" || decision.kind == "side walk")
+            return false;
+        Position fight = mob->GetPosition();
+        if (!decision.killFor.IsEmpty() && decision.killFor == decision.planTarget)
+            fight = decision.kill;
+        else if (!decision.fightFor.IsEmpty() && decision.fightFor == decision.planTarget)
+            fight = decision.fight;
+        else if (decision.pullBack || decision.single)
+            fight = tank->GetPosition();
+        // "behind": away from the pack, along mob -> fight spot, else mob -> tank
+        float dx = fight.GetPositionX() - mob->GetPositionX();
+        float dy = fight.GetPositionY() - mob->GetPositionY();
+        if (std::hypot(dx, dy) < 3.0f)
+        {
+            dx = tank->GetPositionX() - mob->GetPositionX();
+            dy = tank->GetPositionY() - mob->GetPositionY();
+        }
+        float const length = std::hypot(dx, dy);
+        if (length < 1.0f)
+            return false;
+        float const base = std::atan2(dy, dx);
+        std::vector<ObjectGuid> pack = decision.pack;
+        pack.push_back(mob->GetGUID());
+        if (lead.spotsFor != mob->GetGUID())
+        {
+            lead.spots.clear();
+            lead.spotBest.clear();
+            lead.spotStuck.clear();
+            lead.spotsFor = mob->GetGUID();
+            lead.spotsSinceMs = getMSTime();
+        }
+        lead.spotsFight = fight;
+        bool assigned = false;
+        uint32 index = 0;
+        for (Member const& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot || bot == tank || !bot->IsAlive() || bot->GetMap() != tank->GetMap())
+                continue;
+            if (lead.spots.count(member.guid))
+                continue;  // kept while the pull stands (no reshuffle)
+            bool const healer = PlayerbotAI::IsHeal(bot);
+            bool const ranged = !healer && PlayerbotAI::IsRanged(bot);
+            float const distance = healer ? 18.0f : ranged ? 22.0f : 4.0f;
+            float const spread = float(int32(index % 3) - 1) * (healer || ranged ? 0.35f : 0.6f);
+            ++index;
+            static constexpr float SHRINK[] = {1.0f, 0.75f, 0.55f};
+            static constexpr float TURN[] = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f};
+            bool found = false;
+            for (float shrink : SHRINK)
+            {
+                for (float turn : TURN)
+                {
+                    float const angle = base + spread + turn;
+                    Position spot(fight.GetPositionX() + std::cos(angle) * distance * shrink,
+                                  fight.GetPositionY() + std::sin(angle) * distance * shrink, fight.GetPositionZ());
+                    if (!LeaderSpotOk(tank, fight, spot, pack))
+                        continue;
+                    lead.spots[member.guid] = spot;
+                    assigned = true;
+                    found = true;
+                    break;
+                }
+                if (found)
+                    break;
+            }
+        }
+        // [lead15] LEADER_HEAL_REACH: the healer's spot reaches the fight spot (the tank) and every other spot, else
+        // the healer gets another spot that does (near the group's middle), else each gap is a heal_reach record
+        Player* healer = nullptr;
+        for (Member const& member : party.members)
+            if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                bot && bot != tank && bot->IsAlive() && PlayerbotAI::IsHeal(bot) && lead.spots.count(member.guid))
+            {
+                healer = bot;
+                break;
+            }
+        if (Leader::LEADER_HEAL_REACH && assigned && healer)
+        {
+            auto const keeps = [&](Position const& from, std::vector<ObjectGuid>* out)
+            {
+                bool all = HealReaches(tank, from, fight);
+                if (!all && out)
+                    out->push_back(tank->GetGUID());
+                for (auto const& [guid, spot] : lead.spots)
+                    if (guid != healer->GetGUID() && !HealReaches(tank, from, spot))
+                    {
+                        all = false;
+                        if (out)
+                            out->push_back(guid);
+                    }
+                return all;
+            };
+            std::vector<ObjectGuid> gaps;
+            if (!keeps(lead.spots[healer->GetGUID()], &gaps))
+            {
+                float cx = fight.GetPositionX();
+                float cy = fight.GetPositionY();
+                for (auto const& [guid, spot] : lead.spots)
+                {
+                    cx += spot.GetPositionX();
+                    cy += spot.GetPositionY();
+                }
+                cx /= float(lead.spots.size() + 1);
+                cy /= float(lead.spots.size() + 1);
+                bool fixed = false;
+                static constexpr float RINGS[] = {0.0f, 4.0f, 8.0f, 12.0f, 16.0f};
+                for (float ring : RINGS)
+                {
+                    for (uint32 i = 0; i < (ring > 0.0f ? 16u : 1u) && !fixed; ++i)
+                    {
+                        float const angle = 2.0f * float(M_PI) * float(i) / 16.0f;
+                        Position spot(cx + std::cos(angle) * ring, cy + std::sin(angle) * ring, fight.GetPositionZ());
+                        if (spot.GetExactDist2d(fight.GetPositionX(), fight.GetPositionY()) < 10.0f ||
+                            !LeaderSpotOk(tank, fight, spot, pack) || !keeps(spot, nullptr))
+                            continue;
+                        lead.spots[healer->GetGUID()] = spot;
+                        fixed = true;
+                    }
+                    if (fixed)
+                        break;
+                }
+                for (ObjectGuid const guid : gaps)
+                    if (Player* other = ObjectAccessor::FindPlayer(guid))
+                        LogHealReach(party, other, healer, "the healer's pull spot does not reach its spot",
+                                     fixed ? "the healer gets another spot" : "none");
+            }
+        }
+        return !lead.spots.empty();
+    }
+
+    // [lead15] every member on its spot (within LEADER_SPOT_TOLERANCE), nobody sitting, the healer in heal range and
+    // sight of the fight spot; a member not nearer for LEADER_SPOT_STUCK_MS is reported once and no longer waited for
+    std::string TestHarnessMgr::LeaderSpotsWait(Party& party, Player* tank)
+    {
+        auto& lead = party.lead;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        std::string waitFor;
+        for (Member const& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot || bot == tank || !bot->IsAlive())
+                continue;
+            if (bot->IsSitState())
+            {
+                waitFor += (waitFor.empty() ? "" : ", ") + member.name + " sits";
+                continue;
+            }
+            auto const spot = lead.spots.find(member.guid);
+            if (spot == lead.spots.end() || lead.spotStuck.count(member.guid))
+                continue;
+            float const gap = bot->GetExactDist2d(spot->second.GetPositionX(), spot->second.GetPositionY());
+            if (gap <= Leader::LEADER_SPOT_TOLERANCE)
+                continue;
+            auto& best = lead.spotBest[member.guid];
+            if (!best.second || gap < best.first - 0.5f)
+                best = {gap, now};
+            else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS)
+            {
+                lead.spotStuck.insert(member.guid);
+                LogEvent(party, "member_stuck",
+                         JsonObject().Str("member", member.name).Real("gap", gap)
+                             .Real("x", spot->second.GetPositionX()).Real("y", spot->second.GetPositionY())
+                             .Real("z", spot->second.GetPositionZ()).Str("why", "not nearer its spot for 15 s"));
+                continue;
+            }
+            waitFor += (waitFor.empty() ? "" : ", ") + Acore::StringFormat("{} {:.0f} yd", member.name, gap);
+        }
+        return waitFor;
+    }
+
+    void TestHarnessMgr::TickLeaderEvents(Party& party, Player* tank)
+    {
+        auto& lead = party.lead;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        if (!Leader::LEADER_MEMBER_EVENTS || !tank || !tank->IsInWorld())
+            return;
+        // [lead15] the cadence (user: «чем быстрее у него реакция, тем лучше»): the FAST layer runs on every update
+        // while the group fights, a pull waits for its spots or a hazard is active; calm, every LEADER_CALM_TICK_MS.
+        // The SLOW layer (exit / re-spot searches, the AoE rule's grid visit) runs only on a change (cached).
+        bool anyCombat = party.inCombat || tank->IsInCombat();
+        for (Member const& member : party.members)
+            if (!anyCombat)
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid); bot && bot->IsInCombat())
+                    anyCombat = true;
+        bool const prePull = lead.spotsWaiting || !lead.spots.empty();
+        uint32 const state = lead.hazardActive ? 3 : anyCombat ? 2 : prePull ? 1 : 0;
+        if (!state && lead.eventTickMs && getMSTimeDiff(lead.eventTickMs, now) < LEADER_CALM_TICK_MS)
+            return;
+        lead.eventTickMs = now;
+        auto const tickStart = std::chrono::steady_clock::now();
+        lead.slowUsTick = 0;
+        ++lead.cadenceTicks[state];
+        bool hazardSeen = false;
+        DecisionRun const run{party.id, party.seq, party.runStartMs};
+        Map* map = tank->GetMap();
+        // a slow-layer call, timed
+        auto const slow = [&](auto&& call)
+        {
+            auto const start = std::chrono::steady_clock::now();
+            auto result = call();
+            lead.slowUsTick += uint32(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - start).count());
+            return result;
+        };
+        auto const wake = [&](Player* bot)
+        {
+            if (!Leader::LEADER_FAST_REACT)
+                return;
+            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+            {
+                botAI->SetNextCheckDelay(0);  // the event is executed on its next update, not 1-3 s later
+                ++lead.wakeCount;
+            }
+        };
+        auto const logEvent = [&](Player* bot, char const* kind, JsonObject fields)
+        {
+            fields.Str("member", bot->GetName()).Str("event", kind);
+            DecisionLog::Instance().Write(run, "leader", "leader_event", bot->GetGUID(), bot->GetName(), true,
+                                          fields);
+            wake(bot);
+        };
+        // where a member will stand: its fresh MoveTo / StandAt spot, else where it is
+        auto const plannedAt = [](Player* bot)
+        {
+            Leader::MemberEvents events;
+            if (Leader::Events::Get(bot->GetGUID(), events) &&
+                (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt))
+                return events.spot;
+            return bot->GetPosition();
+        };
+
+        // the tank stands (the group is held): the members prepare
+        if (!lead.tankStillSinceMs || tank->GetExactDist(lead.tankStillPos) > 1.0f)
+        {
+            lead.tankStillPos = tank->GetPosition();
+            lead.tankStillSinceMs = now;
+        }
+        bool const tankStill = getMSTimeDiff(lead.tankStillSinceMs, now) >= LEADER_TANK_STILL_MS;
+
+        std::vector<Player*> seats;
+        Player* healer = nullptr;
+        bool anySitting = false;
+        bool anyDead = false;
+        bool rebuff = false;
+        bool fighting = party.inCombat || tank->IsInCombat();
+        for (Member const& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot || bot == tank || bot->GetMap() != map)
+                continue;
+            if (!bot->IsAlive())
+            {
+                anyDead = true;
+                continue;
+            }
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (!botAI)
+                continue;
+            if (!healer && PlayerbotAI::IsHeal(bot))
+                healer = bot;
+            anySitting |= bot->IsSitState();
+            rebuff |= botAI->forceRebuff.IsPending();
+            fighting |= bot->IsInCombat();
+            seats.push_back(bot);
+        }
+        // the healer first: the others' moves keep the reach to where the healer will stand
+        std::stable_partition(seats.begin(), seats.end(), [healer](Player* bot) { return bot == healer; });
+
+        Leader::PullOrder order;
+        bool const orderOpen = Leader::Orders::GetOpen(party.leader, order);
+        constexpr uint32 LEADER_SPOTS_AFTER_ISSUE_MS = 6 * IN_MILLISECONDS;  // the tank's commit comes after
+        bool const spotsHeld = Leader::LEADER_ASSIGNS_SPOTS && !lead.spots.empty() && !party.inCombat &&
+                               (lead.spotsWaiting || (orderOpen && order.target == lead.spotsFor) ||
+                                (lead.spotsIssuedMs &&
+                                 getMSTimeDiff(lead.spotsIssuedMs, now) < LEADER_SPOTS_AFTER_ISSUE_MS));
+        if (!spotsHeld && !lead.spots.empty())
+        {
+            lead.spots.clear();
+            lead.spotsFor.Clear();
+        }
+
+        // the fight's target: the tank's, else whatever attacks a member (healer first) or the tank
+        Unit* target = nullptr;
+        if (fighting)
+        {
+            if (Unit* victim = tank->GetVictim();
+                victim && victim->IsAlive() && victim->IsInCombat() && victim->GetMap() == map)
+                target = victim;
+            std::vector<Player*> attacked = seats;
+            attacked.push_back(tank);
+            for (Player* bot : attacked)
+            {
+                if (target)
+                    break;
+                for (Unit* attacker : bot->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->IsInWorld() && attacker->GetMap() == map &&
+                        bot->IsValidAttackTarget(attacker))
+                    {
+                        target = attacker;
+                        break;
+                    }
+            }
+        }
+
+        // the fight's rules around the target: the kill order (the target, then the rest of what fights the group,
+        // nearest to the target first), the AoE rule, the intensity, the casting mobs
+        std::vector<ObjectGuid> killOrder;
+        std::vector<Unit*> casters;
+        Leader::AoeRule aoe = Leader::AoeRule::Forbidden;
+        std::string aoeWhy;
+        Leader::Intensity intensity = Leader::Intensity::Normal;
+        if (target)
+        {
+            std::vector<Unit*> fightingMobs;
+            std::set<ObjectGuid> seen;
+            std::vector<Player*> attacked = seats;
+            attacked.push_back(tank);
+            for (Player* bot : attacked)
+                for (Unit* attacker : bot->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->GetMap() == map &&
+                        seen.insert(attacker->GetGUID()).second)
+                        fightingMobs.push_back(attacker);
+            if (seen.insert(target->GetGUID()).second)
+                fightingMobs.push_back(target);
+            std::sort(fightingMobs.begin(), fightingMobs.end(),
+                      [target](Unit* a, Unit* b)
+                      {
+                          if ((a == target) != (b == target))
+                              return a == target;
+                          return target->GetExactDist(a) < target->GetExactDist(b);
+                      });
+            for (Unit* mob : fightingMobs)
+            {
+                killOrder.push_back(mob->GetGUID());
+                if (Spell* spell = mob->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                    spell && spell->GetSpellInfo() &&
+                    (spell->GetSpellInfo()->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT))
+                    casters.push_back(mob);
+            }
+            if (lead.aoeTarget != target->GetGUID() || !lead.aoeMs ||
+                getMSTimeDiff(lead.aoeMs, now) >= LEADER_AOE_RECHECK_MS)
+            {
+                lead.aoeRule = uint8(slow([&] { return LeaderAoeRule(tank, target, lead.aoeWhy); }));
+                lead.aoeTarget = target->GetGUID();
+                lead.aoeMs = now;
+            }
+            aoe = Leader::AoeRule(lead.aoeRule);
+            aoeWhy = lead.aoeWhy;
+            if (Creature* creature = target->ToCreature(); creature && creature->IsDungeonBoss())
+                intensity = Leader::Intensity::Burn;
+        }
+
+        Position healerAt = healer ? plannedAt(healer) : Position();
+        auto const reaches = [tank](Position const& from, Position const& to) { return HealReaches(tank, from, to); };
+        // the healer at `spot` reaches every member (where it will stand) and the tank
+        auto const healerKeeps = [&](Position const& spot)
+        {
+            if (!reaches(spot, tank->GetPosition()))
+                return false;
+            for (Player* other : seats)
+                if (other != healer && !reaches(spot, plannedAt(other)))
+                    return false;
+            return true;
+        };
+        auto const keepsHealer = [&](Position const& spot)
+        {
+            return !Leader::LEADER_HEAL_REACH || !healer || reaches(healerAt, spot);
+        };
+
+        // [lead15] the aggro-loss rule (user: «если кто-то кого-то сагрил - подбегай к танку, пусть танк АОЕ делает и
+        // снимает агр с тебя»): a mob on a member (not the tank) - the victim runs next to the tank (in its taunt /
+        // AoE reach, in heal reach) and stops its damage, the tank takes the mob back (a taunt when ready, else an
+        // AoE threat spell, else it attacks it), the others leave the mob alone until the tank has it; the healer
+        // keeps the victim up (Heal(group)). Logged: leader_aggro_loss -> the commands -> leader_aggro_recovered.
+        std::map<ObjectGuid, Unit*> looseOn;  // victim -> the loose mob on it
+        std::set<ObjectGuid> looseMobs;
+        if (fighting)
+        {
+            for (Player* bot : seats)
+                for (Unit* attacker : bot->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot && attacker->ToCreature() &&
+                        !looseOn.count(bot->GetGUID()))
+                    {
+                        looseOn[bot->GetGUID()] = attacker;
+                        looseMobs.insert(attacker->GetGUID());
+                    }
+            for (auto const& [victimGuid, mob] : looseOn)
+                if (!lead.looseMobs.count(mob->GetGUID()))
+                {
+                    lead.looseMobs[mob->GetGUID()] = {victimGuid, now};
+                    Player* victim = ObjectAccessor::FindPlayer(victimGuid);
+                    DecisionLog::Instance().Write(run, "leader", "leader_aggro_loss", mob->GetGUID(), mob->GetName(),
+                                                  true,
+                                                  JsonObject().Str("mob", mob->GetName()).Num("entry", mob->GetEntry())
+                                                      .Str("victim", victim ? victim->GetName() : "?")
+                                                      .Real("tankDistance",
+                                                            victim ? victim->GetExactDist(tank) : -1.0f));
+                }
+        }
+        for (auto it = lead.looseMobs.begin(); it != lead.looseMobs.end();)
+        {
+            if (looseMobs.count(it->first))
+            {
+                ++it;
+                continue;
+            }
+            Unit* mob = ObjectAccessor::GetUnit(*tank, it->first);
+            char const* how = !mob || !mob->IsAlive()       ? "the mob died"
+                              : mob->GetVictim() == tank    ? "the tank has it back"
+                              : !mob->IsInCombat()          ? "the fight ended"
+                                                            : "it left the member";
+            DecisionLog::Instance().Write(run, "leader", "leader_aggro_recovered", it->first,
+                                          mob ? mob->GetName() : std::string("?"), true,
+                                          JsonObject().Str("how", how)
+                                              .Real("seconds", float(getMSTimeDiff(it->second.second, now)) / 1000.0f));
+            it = lead.looseMobs.erase(it);
+        }
+        if (!looseOn.empty())
+        {
+            // the tank: the first loose mob (its taunt when ready, else its AoE threat, else an attack)
+            Unit* mob = looseOn.begin()->second;
+            uint32 spell = LeaderReadySpell(tank, {TANK_TAUNTS[0], TANK_TAUNTS[1], TANK_TAUNTS[2], TANK_TAUNTS[3],
+                                                   TANK_TAUNTS[4]});
+            char const* how = "taunt";
+            if (!spell)
+            {
+                for (uint32 aoeSpell : TANK_AOE_THREAT)
+                    if (tank->HasSpell(aoeSpell) && !tank->HasSpellCooldown(aoeSpell))
+                        spell = aoeSpell;
+                how = spell ? "aoe threat" : "attack";
+            }
+            bool const threatChanged = Leader::Events::SetThreat(tank->GetGUID(), spell, mob->GetGUID());
+            bool const attackChanged =
+                Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {});
+            if (threatChanged || attackChanged)
+                logEvent(tank, "Taunt", JsonObject().Str("mob", mob->GetName()).Num("spell", spell).Str("how", how));
+            // the others' target is never a loose mob
+            if (target && looseMobs.count(target->GetGUID()))
+            {
+                target = nullptr;
+                for (ObjectGuid const guid : killOrder)
+                    if (!looseMobs.count(guid))
+                        if (Unit* other = ObjectAccessor::GetUnit(*tank, guid))
+                        {
+                            target = other;
+                            break;
+                        }
+            }
+            killOrder.erase(std::remove_if(killOrder.begin(), killOrder.end(),
+                                           [&looseMobs](ObjectGuid guid) { return looseMobs.count(guid) > 0; }),
+                            killOrder.end());
+        }
+
+        uint32 seat = 0;
+        for (Player* bot : seats)
+        {
+            ObjectGuid const guid = bot->GetGUID();
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            bool const combat = fighting || bot->IsInCombat();
+            uint32 const index = seat++;
+
+            // 1. readiness, out of combat: Rest to whoever needs it (to full), Ready? while the pull waits for the
+            // spots, Prepare (buffs, forms, a resurrection) while the group stands
+            if (!combat)
+            {
+                std::string restWhy;
+                bool const needsRest = RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
+                                       RestState::WantsDrink(bot, &restWhy) || RestState::WantsFood(bot, &restWhy);
+                if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
+                {
+                    if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Rest))
+                        logEvent(bot, "Rest", JsonObject().Str("why", restWhy.empty() ? "sits: to full" : restWhy));
+                }
+                else if (lead.spotsWaiting)
+                {
+                    if (Leader::Events::SetReady(guid, Leader::ReadyEvent::ReadyCheck))
+                        logEvent(bot, "Ready?", JsonObject().Str("why", "the pull waits for the spots"));
+                }
+                else if (party.needBuff || rebuff || anyDead || anySitting || tankStill)
+                {
+                    char const* why = party.needBuff || rebuff ? "the buff pass"
+                                      : anyDead                ? "a member is dead"
+                                      : anySitting             ? "a member rests: the group waits"
+                                                               : "the tank stands";
+                    if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Prepare))
+                        logEvent(bot, "Prepare", JsonObject().Str("why", why));
+                }
+            }
+
+            // 2. the moves: out of a cleave (keeping the heal reach), the pull's spot, along with the tank
+            bool moved = false;
+            if (Leader::LEADER_OWNS_DODGE && combat &&
+                DungeonTactics::InFrontalCleave(bot, botAI, 1.0f, 20.0f * float(M_PI) / 180.0f))
+            {
+                hazardSeen = true;
+                Position exit;
+                Leader::MemberEvents current;
+                bool const kept = Leader::Events::Get(guid, current) && current.move == Leader::MoveEvent::MoveTo &&
+                                  current.moveWhy == "out of a cleave cone" &&
+                                  !DungeonTactics::SpotInFrontalCleave(bot, botAI, current.spot.GetPositionX(),
+                                                                       current.spot.GetPositionY(), 1.0f,
+                                                                       20.0f * float(M_PI) / 180.0f);
+                if (kept)
+                    exit = current.spot;
+                if (kept || slow([&]
+                                 {
+                                     return LeaderCleaveExit(
+                                         bot, botAI, exit,
+                                         bot == healer ? std::function<bool(Position const&)>(healerKeeps)
+                                                       : std::function<bool(Position const&)>(keepsHealer));
+                                 }))
+                {
+                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, exit, 1.5f, "out of a cleave cone"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "out of a cleave cone").Real("x", exit.GetPositionX())
+                                     .Real("y", exit.GetPositionY()).Real("z", exit.GetPositionZ()));
+                    if (bot == healer)
+                        healerAt = exit;
+                    moved = true;
+                }
+                else if (Leader::LEADER_HEAL_REACH && healer)
+                    LogHealReach(party, bot, bot == healer ? tank : healer, "no cleave exit keeps the heal reach",
+                                 "none");
+            }
+            // the aggro-loss victim runs next to the tank (between it and the tank, in heal reach)
+            auto const loose = looseOn.find(guid);
+            if (!moved && loose != looseOn.end())
+            {
+                float const dx = bot->GetPositionX() - tank->GetPositionX();
+                float const dy = bot->GetPositionY() - tank->GetPositionY();
+                float const length = std::max(0.1f, std::hypot(dx, dy));
+                float x = tank->GetPositionX() + dx / length * LEADER_LOOSE_TANK_YD;
+                float y = tank->GetPositionY() + dy / length * LEADER_LOOSE_TANK_YD;
+                float z = tank->GetPositionZ();
+                Position spot = tank->GetPosition();
+                if (map->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
+                                                         tank->GetPositionZ(), x, y, z) &&
+                    (bot == healer ? healerKeeps(Position(x, y, z)) : keepsHealer(Position(x, y, z))))
+                    spot.Relocate(x, y, z);
+                if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank"))
+                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                             JsonObject().Str("why", "aggro loss: to the tank").Str("mob", loose->second->GetName())
+                                 .Real("gap", bot->GetExactDist(tank)));
+                if (bot == healer)
+                    healerAt = spot;
+                moved = true;
+            }
+            if (!moved && spotsHeld)
+                if (auto const spot = lead.spots.find(guid); spot != lead.spots.end())
+                {
+                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, spot->second,
+                                                Leader::LEADER_SPOT_TOLERANCE, "its spot for the pull"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
+                                 JsonObject().Str("why", "its spot for the pull")
+                                     .Real("x", spot->second.GetPositionX()).Real("y", spot->second.GetPositionY())
+                                     .Real("z", spot->second.GetPositionZ()));
+                    moved = true;
+                }
+            // the member's own follow is off (LEADER_NO_OWN_FOLLOW): the leader walks it along with the tank; a
+            // member the harness holds ("stay", a regroup) or one that sits is not moved
+            if (!moved && !combat && Leader::LEADER_NO_OWN_FOLLOW && Leader::ExecutorMember(bot) &&
+                !bot->IsSitState() && !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
+            {
+                bool const following = lead.following.count(guid) > 0;
+                float const gap = bot->GetExactDist(tank);
+                if (following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
+                {
+                    Position const spot = LeaderFollowSpot(tank, index);
+                    if (following && !tank->isMoving() &&
+                        bot->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= LEADER_FOLLOW_TOLERANCE &&
+                        gap <= LEADER_FOLLOW_START_YD)
+                        lead.following.erase(guid);  // arrived: no command, idle
+                    else
+                    {
+                        lead.following.insert(guid);
+                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, spot, LEADER_FOLLOW_TOLERANCE,
+                                                    "along with the tank"))
+                        {
+                            if (!following)
+                                logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                         JsonObject().Str("why", "along with the tank").Real("gap", gap));
+                            else
+                                wake(bot);
+                        }
+                        moved = true;
+                    }
+                }
+            }
+            if (!moved || combat)
+                lead.following.erase(guid);
+
+            // 3. the fight: the healer heals the group, every damage dealer attacks the leader's target
+            if (combat && Leader::LEADER_ATTACK_EVENTS)
+            {
+                if (bot == healer || PlayerbotAI::IsHeal(bot))
+                {
+                    if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
+                        logEvent(bot, "Heal", JsonObject().Str("why", "the group fights"));
+                }
+                else if (target)
+                {
+                    bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
+                                                                   target->GetGUID(), killOrder);
+                    bool const aoeChanged = Leader::Events::SetAoe(guid, aoe, target->GetPosition(),
+                                                                   LEADER_AOE_RADIUS);
+                    if (changed || aoeChanged)
+                        logEvent(bot, "Attack", JsonObject().Str("target", target->GetName())
+                                                    .Num("targetEntry", target->GetEntry())
+                                                    .Num("killOrder", int64(killOrder.size()))
+                                                    .Str("aoe", aoe == Leader::AoeRule::Forbidden ? "forbidden"
+                                                                                                  : "allowed-on-pack")
+                                                    .Str("aoeWhy", aoeWhy));
+                }
+                // the aggro-loss victim stops its damage until the tank has the mob back; the others leave the
+                // loose mob alone
+                bool const victim = loose != looseOn.end();
+                Leader::Intensity const mine = victim ? Leader::Intensity::Stop : intensity;
+                if (Leader::Events::SetIntensity(guid, mine) && mine != Leader::Intensity::Normal)
+                    logEvent(bot, "Intensity",
+                             JsonObject().Str("intensity", victim ? "stop" : "burn")
+                                 .Str("why", victim ? "aggro loss: the tank takes the mob back" : "a dungeon boss"));
+                if (!victim && !looseOn.empty() && bot != healer &&
+                    Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
+                    logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
+                                                    .Str("why", "loose on a member until the tank has it"));
+            }
+        }
+
+        // 3b. interrupts: one kicker per casting mob, the member with an interrupt ready (kept while it holds)
+        if (fighting && Leader::LEADER_ATTACK_EVENTS)
+        {
+            std::set<ObjectGuid> busy;
+            for (Unit* caster : casters)
+            {
+                Player* kicker = nullptr;
+                if (auto const kept = lead.kickers.find(caster->GetGUID()); kept != lead.kickers.end())
+                    if (Player* bot = ObjectAccessor::FindPlayer(kept->second);
+                        bot && bot->IsAlive() && LeaderReadyInterrupt(bot))
+                        kicker = bot;
+                for (Player* bot : seats)
+                {
+                    if (kicker)
+                        break;
+                    if (bot != healer && !busy.count(bot->GetGUID()) && LeaderReadyInterrupt(bot) &&
+                        bot->GetExactDist(caster) <= 30.0f)
+                        kicker = bot;
+                }
+                if (!kicker || busy.count(kicker->GetGUID()))
+                    continue;
+                busy.insert(kicker->GetGUID());
+                lead.kickers[caster->GetGUID()] = kicker->GetGUID();
+                if (Leader::Events::SetInterrupt(kicker->GetGUID(), caster->GetGUID()))
+                    logEvent(kicker, "Interrupt", JsonObject().Str("caster", caster->GetName())
+                                                      .Num("casterEntry", caster->GetEntry())
+                                                      .Num("spell", LeaderReadyInterrupt(kicker)));
+            }
+        }
+        else
+            lead.kickers.clear();
+
+        // 3c. external saves and buffs on a target: the leader picks who and when, the member casts when told
+        if (fighting && Leader::LEADER_ATTACK_EVENTS)
+        {
+            std::vector<Player*> everyone = seats;
+            everyone.push_back(tank);
+            std::set<ObjectGuid> told;
+            auto const tell = [&](Player* caster, uint32 spell, Unit* on, char const* why)
+            {
+                if (!caster || !spell || told.count(caster->GetGUID()))
+                    return false;
+                told.insert(caster->GetGUID());
+                if (Leader::Events::SetExternal(caster->GetGUID(), spell, on ? on->GetGUID() : ObjectGuid::Empty))
+                    logEvent(caster, "External", JsonObject().Num("spell", spell)
+                                                     .Str("on", on ? on->GetName() : "group").Str("why", why));
+                return true;
+            };
+            auto const withSpell = [&](std::initializer_list<uint32> spells, Player* except)
+            {
+                for (Player* bot : seats)
+                    if (bot != except && !told.count(bot->GetGUID()))
+                        if (uint32 const spell = LeaderReadySpell(bot, spells))
+                            return std::make_pair(bot, spell);
+                return std::make_pair(static_cast<Player*>(nullptr), uint32(0));
+            };
+            bool const opening = party.pullStartMs && getMSTimeDiff(party.pullStartMs, now) <= LEADER_OPENING_MS;
+            float const healerMana = healer && healer->GetMaxPower(POWER_MANA) ? healer->GetPowerPct(POWER_MANA)
+                                                                              : 100.0f;
+            uint32 hurt = 0;
+            for (Player* bot : everyone)
+                hurt += bot->GetHealthPct() < 50.0f ? 1 : 0;
+            if (opening)
+                if (auto const [bot, spell] = withSpell({SPELL_MISDIRECTION, SPELL_TRICKS_OF_THE_TRADE}, tank); bot)
+                    tell(bot, spell, tank, "the pull's threat onto the tank");
+            if (tank->GetHealthPct() < LEADER_SAVE_HP_PCT)
+                if (auto const [bot, spell] = withSpell({SPELL_PAIN_SUPPRESSION, SPELL_HAND_OF_SACRIFICE}, tank); bot)
+                    tell(bot, spell, tank, "the tank is low");
+            for (Player* member : seats)
+                if (member != healer && !PlayerbotAI::IsTank(member) && !member->getAttackers().empty() &&
+                    member->GetHealthPct() < LEADER_SAVE_HP_PCT)
+                    if (auto const [bot, spell] = withSpell({SPELL_HAND_OF_PROTECTION_1, SPELL_HAND_OF_PROTECTION_2,
+                                                             SPELL_HAND_OF_PROTECTION_3},
+                                                            member);
+                        bot)
+                        tell(bot, spell, member, "a member is attacked and low");
+            if (healer && healerMana < LEADER_SAVE_MANA_PCT)
+            {
+                if (auto const [bot, spell] = withSpell({SPELL_INNERVATE}, nullptr); bot)
+                    tell(bot, spell, healer, "the healer is out of mana");
+                else if (auto const [priest, hymn] = withSpell({SPELL_HYMN_OF_HOPE}, nullptr); priest)
+                    tell(priest, hymn, nullptr, "the healer is out of mana");
+            }
+            if (hurt >= 3)
+                if (auto const [bot, spell] = withSpell({SPELL_DIVINE_HYMN}, nullptr); bot)
+                    tell(bot, spell, nullptr, "three members under half health");
+            if (intensity == Leader::Intensity::Burn)
+                for (Player* member : seats)
+                    if (member != healer && member->getPowerType() == POWER_MANA && !PlayerbotAI::IsTank(member))
+                    {
+                        if (auto const [bot, spell] = withSpell({SPELL_POWER_INFUSION}, member); bot)
+                            tell(bot, spell, member, "the burn");
+                        break;
+                    }
+        }
+
+        // 4. the heal reach in the fight: a member out of the healer's reach or sight moves the healer (a spot that
+        // reaches everyone), else it is reported
+        if (Leader::LEADER_HEAL_REACH && healer && fighting &&
+            (!lead.healReachMs || getMSTimeDiff(lead.healReachMs, now) >= LEADER_HEAL_REACH_CHECK_MS))
+        {
+            lead.healReachMs = now;
+            std::vector<Player*> out;
+            if (!reaches(healerAt, tank->GetPosition()))
+                out.push_back(tank);
+            for (Player* other : seats)
+                if (other != healer && !reaches(healerAt, plannedAt(other)))
+                    out.push_back(other);
+            if (!out.empty())
+            {
+                Position fix;
+                bool const fixed =
+                    slow([&] { return LeaderHealerRespot(healer, GET_PLAYERBOT_AI(healer), healerKeeps, fix); });
+                if (fixed && Leader::Events::SetMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
+                                                     "heal reach"))
+                    logEvent(healer, MoveEventName(Leader::MoveEvent::MoveTo),
+                             JsonObject().Str("why", "heal reach").Real("x", fix.GetPositionX())
+                                 .Real("y", fix.GetPositionY()).Real("z", fix.GetPositionZ()));
+                for (Player* other : out)
+                    LogHealReach(party, other, healer, "out of the healer's reach in the fight",
+                                 fixed ? "the healer re-spots" : "none");
+            }
+        }
+
+        lead.hazardActive = hazardSeen;
+        uint64 const totalUs = uint64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - tickStart).count());
+        lead.cadenceSlowUs += lead.slowUsTick;
+        lead.cadenceFastUs += totalUs > lead.slowUsTick ? totalUs - lead.slowUsTick : 0;
+        lead.cadenceMaxUs = std::max(lead.cadenceMaxUs, totalUs);
+
+        if (!lead.wakeLogMs)
+            lead.wakeLogMs = now;
+        else if (getMSTimeDiff(lead.wakeLogMs, now) >= LEADER_WAKE_LOG_MS)
+        {
+            uint32 const sinceMs = getMSTimeDiff(lead.wakeLogMs, now);
+            float const minutes = float(sinceMs) / float(MINUTE * IN_MILLISECONDS);
+            uint32 ticks = 0;
+            for (uint32 count : lead.cadenceTicks)
+                ticks += count;
+            LogEvent(party, "member_wake", JsonObject().Num("count", lead.wakeCount)
+                                               .Num("sinceSec", sinceMs / IN_MILLISECONDS)
+                                               .Num("total", lead.wakeTotal + lead.wakeCount));
+            // the leader's cadence per state (ticks per minute) and the layers' cost per tick (µs)
+            LogEvent(party, "leader_cadence",
+                     JsonObject().Num("sinceSec", sinceMs / IN_MILLISECONDS)
+                         .Real("calmPerMin", float(lead.cadenceTicks[0]) / minutes)
+                         .Real("prePullPerMin", float(lead.cadenceTicks[1]) / minutes)
+                         .Real("combatPerMin", float(lead.cadenceTicks[2]) / minutes)
+                         .Real("hazardPerMin", float(lead.cadenceTicks[3]) / minutes)
+                         .Real("fastUsPerTick", ticks ? float(lead.cadenceFastUs) / float(ticks) : 0.0f)
+                         .Real("slowUsPerTick", ticks ? float(lead.cadenceSlowUs) / float(ticks) : 0.0f)
+                         .Num("maxUs", int64(lead.cadenceMaxUs)).Num("ticks", ticks)
+                         .Real("usPerSec", float(lead.cadenceFastUs + lead.cadenceSlowUs) /
+                                               (float(sinceMs) / 1000.0f)));
+            lead.wakeTotal += lead.wakeCount;
+            lead.wakeCount = 0;
+            lead.wakeLogMs = now;
+            for (uint32& count : lead.cadenceTicks)
+                count = 0;
+            lead.cadenceFastUs = lead.cadenceSlowUs = lead.cadenceMaxUs = 0;
+        }
+    }
+
+    // [lead15] a heal_reach violation as a decision record (per member at most every LEADER_HEAL_REACH_LOG_MS)
+    void TestHarnessMgr::LogHealReach(Party& party, Player* member, Player* healer, std::string const& why,
+                                      std::string const& fix)
+    {
+        auto& lead = party.lead;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        uint32& last = lead.healReachLogMs[member->GetGUID()];
+        if (last && getMSTimeDiff(last, now) < LEADER_HEAL_REACH_LOG_MS)
+            return;
+        last = now;
+        DecisionRun const run{party.id, party.seq, party.runStartMs};
+        DecisionLog::Instance().Write(run, "leader", "heal_reach", member->GetGUID(), member->GetName(), true,
+                                      JsonObject().Str("member", member->GetName())
+                                          .Str("healer", healer ? healer->GetName() : "?")
+                                          .Real("distance", healer ? healer->GetExactDist(member) : -1.0f)
+                                          .Bool("los", healer && healer->IsWithinLOSInMap(member))
+                                          .Str("why", why).Str("fix", fix));
+    }
+
     // [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7, LEADER_PLANNER_IN_LEADER: the leader plans the tank's pull.
     // Called on every world update (the world thread, after the map updates: no map thread runs), it looks only when
     // the tank asked (its engine looked at "aggressive target", as it looked at the tank's own planner before). The
@@ -20135,6 +21204,8 @@ namespace TestHarness
         // The leader keeps a decision ready: besides answering an ask, it looks once per LEADER_LOOK_PERIOD_MS while
         // the tank asked within LEADER_ASKING_MS (it stands out of combat without a target), so whenever the tank
         // looks a fresh decision waits.
+        if (decides)
+            TickLeaderEvents(party, tank);  // [lead15] the events to every member
         constexpr uint32 LEADER_LOOK_PERIOD_MS = 1000;
         constexpr uint32 LEADER_ASKING_MS = 30 * IN_MILLISECONDS;
         bool const asked = PullPlanner::TakeAsk(party.leader, Leader::LEADER_ASK_FRESH_MS);
@@ -20500,6 +21571,32 @@ namespace TestHarness
                 lead.doorInvalidLooks = 0;
             }
 
+            // [lead15] LEADER_ASSIGNS_SPOTS: before the pull every member gets its spot (StandAt), and the pull
+            // is issued only once everyone stands on it, nobody sits, the healer sees the fight spot from its
+            // spot in heal range (checked when assigned). No time cap; a member stuck is reported and not waited.
+            if (decides && Leader::LEADER_MEMBER_EVENTS && Leader::LEADER_ASSIGNS_SPOTS &&
+                LeaderAssignSpots(party, tank, decision))
+            {
+                std::string const waitFor = LeaderSpotsWait(party, tank);
+                if (!waitFor.empty())
+                {
+                    lead.spotsWaiting = true;
+                    if (!lead.spotsLogMs || getMSTimeDiff(lead.spotsLogMs, now) >= 10 * IN_MILLISECONDS)
+                    {
+                        lead.spotsLogMs = now;
+                        LogEvent(party, "leader_spots_wait",
+                                 JsonObject().Str("name", lookMob ? lookMob->GetName() : "?")
+                                     .Str("kind", decision.kind).Str("waitFor", waitFor)
+                                     .Num("spots", int64(lead.spots.size()))
+                                     .Real("fightX", lead.spotsFight.GetPositionX())
+                                     .Real("fightY", lead.spotsFight.GetPositionY())
+                                     .Real("fightZ", lead.spotsFight.GetPositionZ()));
+                    }
+                    return;
+                }
+                lead.spotsWaiting = false;
+                lead.spotsIssuedMs = now;
+            }
             issue(decision, pickWhy);
             return;
         }

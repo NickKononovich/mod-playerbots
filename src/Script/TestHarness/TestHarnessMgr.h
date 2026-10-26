@@ -27,6 +27,10 @@ class InstanceScript;
 class Map;
 class Player;
 class Unit;  // [lead3]
+namespace PullPlanner
+{
+    struct Decision;  // [lead15] ChooseTargetActions.h
+}
 class WorldObject;
 struct AreaTrigger;
 
@@ -382,6 +386,41 @@ namespace TestHarness
             std::string issuedKind;
             Position issuedSpot;
             uint32 issuedMs = 0;
+            // [lead15] the member events: the pull's assigned spots (per member), the gate's progress per member, the
+            // event tick and the member wakes it caused
+            std::map<ObjectGuid, Position> spots;
+            std::map<ObjectGuid, std::pair<float, uint32>> spotBest;
+            std::set<ObjectGuid> spotStuck;
+            ObjectGuid spotsFor;
+            Position spotsFight;
+            uint32 spotsSinceMs = 0;
+            bool spotsWaiting = false;
+            uint32 spotsIssuedMs = 0;
+            uint32 spotsLogMs = 0;
+            uint32 eventTickMs = 0;
+            uint32 wakeCount = 0;
+            uint32 wakeTotal = 0;
+            uint32 wakeLogMs = 0;
+            std::set<ObjectGuid> following;               // walked along with the tank (the member's follow is off)
+            Position tankStillPos;
+            uint32 tankStillSinceMs = 0;
+            uint32 healReachMs = 0;
+            std::map<ObjectGuid, uint32> healReachLogMs;  // heal_reach records per member
+            std::map<ObjectGuid, ObjectGuid> kickers;     // casting mob -> its assigned interrupter
+            // [lead15] the cadence: ticks per state (calm / pre-pull / combat / hazard) and the layers' cost
+            uint32 cadenceTicks[4] = {};
+            uint64 cadenceFastUs = 0;
+            uint64 cadenceSlowUs = 0;
+            uint64 cadenceMaxUs = 0;
+            uint32 slowUsTick = 0;
+            bool hazardActive = false;
+            // [lead15] the AoE rule's cache (the grid visit is the slow layer)
+            ObjectGuid aoeTarget;
+            uint32 aoeMs = 0;
+            uint8 aoeRule = 0;
+            std::string aoeWhy;
+            // [lead15] mobs loose on a member: mob -> {victim, since}
+            std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> looseMobs;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;
             // [lead8] where the group fought and cleared this run (the tank at each fight's end)
@@ -1025,6 +1064,13 @@ namespace TestHarness
         // [lead4] the one patrol owner: the harness's hold / lane hold / step-back and the planner's patrol waits as
         // one decision, a declared wait or an intercept; true: the leader holds this tick
         bool LeaderPatrolTick(Party& party, Player* leader);
+        // [lead15] the leader's events to every member (LeaderOrders.h Events), every LEADER_EVENT_TICK_MS
+        void TickLeaderEvents(Party& party, Player* tank);
+        // [lead15] the spots of a pull (false: no gate for it) and what the pull still waits for ("" = everyone there)
+        bool LeaderAssignSpots(Party& party, Player* tank, PullPlanner::Decision const& decision);
+        std::string LeaderSpotsWait(Party& party, Player* tank);
+        void LogHealReach(Party& party, Player* member, Player* healer, std::string const& why,
+                          std::string const& fix);
         // [lead5] the leader planner's own verdict memory, aoe plan and required marks, the tank's view with the
         // leader's route target: free helpers in TestHarnessRunner.cpp (PartyRefusal, PartyVerdict, PartyAoePlanned,
         // PartyMarkRequired, PartyTankView).

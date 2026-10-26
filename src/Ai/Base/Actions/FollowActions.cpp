@@ -5,6 +5,7 @@
  */
 
 #include "FollowActions.h"
+#include "LeaderOrders.h"  // [lead15]
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "EscortProtect.h"
@@ -298,8 +299,10 @@ bool FollowAction::isUseful()
             return false;
 
         // Keep eating/drinking while the one we follow is still close; a selfbot leader waits for us.
+        // [lead15] LEADER_ONE_REST_RULE: not in a group the dungeon leader leads (the leader waits for a sitter and
+        // moves the members itself; no own 40 yd rule)
         if (!bot->IsInCombat() && !bot->IsStandState() && fTarget->GetMapId() == bot->GetMapId() &&
-            bot->GetDistance(fTarget) < 40.0f)
+            bot->GetDistance(fTarget) < 40.0f && !(Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot)))
             return false;
     }
 

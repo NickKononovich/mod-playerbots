@@ -16,6 +16,7 @@
 #include "Group.h"
 #include "GenericSpellActions.h"
 #include "HealAssignmentValues.h"
+#include "LeaderOrders.h"  // [lead15] LEADER_ONE_REST_RULE
 #include "MgTShared.h"        // [b47_patrol] MagistersTerrace::SelinRoom
 #include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
 #include "PartyMemberToHeal.h"
@@ -350,7 +351,9 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
         float const need = realBoss ? -1.0f : PredictedManaNeed(bot, fight, fightSec);
         if (realBoss)
         {
-            line = BOSS_TOPUP_PCT;
+            // [lead15] LEADER_ONE_REST_RULE: the boss line is the leader's (= its boss ready gate)
+            line = Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) ? Leader::LEADER_BOSS_REST_PCT
+                                                                         : BOSS_TOPUP_PCT;
             fightNote = Acore::StringFormat("top-up {:.0f} % before a boss ({} mobs)", line, fight.mobs);
         }
         else if (need >= 0.0f)
@@ -398,6 +401,18 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
             line = std::max(cap, float(sPlayerbotAIConfig.LowMana));
             fightNote = Acore::StringFormat("timed run line {:.0f} % (Guardian of Time running)", line);
         }
+    }
+
+    // [lead15] LEADER_ONE_REST_RULE: no sit-down for a deficit under LEADER_REST_MIN_DEFICIT_PCT to the line (one
+    // drink = 15-25 s of the group waiting); the boss line is a gate and takes any deficit; a sitter drinks on
+    if (mana < line && Leader::LEADER_ONE_REST_RULE && !(fight.boss && fight.realBoss) && !IsDrinking(bot) &&
+        line - mana < Leader::LEADER_REST_MIN_DEFICIT_PCT && mana >= sPlayerbotAIConfig.LowMana &&
+        Leader::LedGroup(bot))
+    {
+        if (skip)
+            *skip = Acore::StringFormat("mana {:.0f} %: {:.0f} % under its line {:.0f} % (min deficit {:.0f} %)", mana,
+                                        line - mana, line, Leader::LEADER_REST_MIN_DEFICIT_PCT);
+        return false;
     }
 
     if (mana < line)
@@ -506,6 +521,9 @@ bool RestDone(Player* bot)
                             })
             : GroupResting(bot);
     if (!REST_STAND_AT_LINE || (othersSit && !TimedRunStandsAtLine(bot)))  // [b33_cos]
+        return false;
+    // [lead15] LEADER_ONE_REST_RULE: the leader's Rest is eat / drink to full (the group waits for every sitter)
+    if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) && !TimedRunStandsAtLine(bot))
         return false;
 
     bool const healthAtLine = healthDone || !WantsFood(bot);

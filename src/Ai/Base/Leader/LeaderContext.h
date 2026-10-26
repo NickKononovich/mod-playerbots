@@ -52,6 +52,8 @@ public:
         creators["burst end"] = &LeaderActionContext::burst_end;
         creators["wipe escape"] = &LeaderActionContext::wipe_escape;
         creators["wipe escape end"] = &LeaderActionContext::wipe_escape_end;
+        creators["leader move order"] = &LeaderActionContext::leader_move_order;      // [lead15]
+        creators["leader attack order"] = &LeaderActionContext::leader_attack_order;  // [lead15]
     }
 
 private:
@@ -73,6 +75,8 @@ private:
     static Action* burst_end(PlayerbotAI* botAI) { return new BurstEndAction(botAI); }
     static Action* wipe_escape(PlayerbotAI* botAI) { return new WipeEscapeAction(botAI); }
     static Action* wipe_escape_end(PlayerbotAI* botAI) { return new WipeEscapeEndAction(botAI); }
+    static Action* leader_move_order(PlayerbotAI* botAI) { return new LeaderMoveOrderAction(botAI); }
+    static Action* leader_attack_order(PlayerbotAI* botAI) { return new LeaderAttackOrderAction(botAI); }
 };
 
 class LeaderTriggerContext : public NamedObjectContext<Trigger>
@@ -91,6 +95,8 @@ public:
         creators["soulwell available"] = &LeaderTriggerContext::soulwell_available;
         creators["soul portal available"] = &LeaderTriggerContext::soul_portal_available;
         creators["burst over"] = &LeaderTriggerContext::burst_over;
+        creators["leader move order"] = &LeaderTriggerContext::leader_move_order;      // [lead15]
+        creators["leader attack order"] = &LeaderTriggerContext::leader_attack_order;  // [lead15]
         creators["wipe escape"] = &LeaderTriggerContext::wipe_escape;
         creators["wipe escape over"] = &LeaderTriggerContext::wipe_escape_over;
 
@@ -115,6 +121,8 @@ private:
     static Trigger* soulwell_available(PlayerbotAI* botAI) { return new SoulwellAvailableTrigger(botAI); }
     static Trigger* soul_portal_available(PlayerbotAI* botAI) { return new SoulPortalAvailableTrigger(botAI); }
     static Trigger* burst_over(PlayerbotAI* botAI) { return new BurstOverTrigger(botAI); }
+    static Trigger* leader_move_order(PlayerbotAI* botAI) { return new LeaderMoveOrderTrigger(botAI); }
+    static Trigger* leader_attack_order(PlayerbotAI* botAI) { return new LeaderAttackOrderTrigger(botAI); }
     static Trigger* wipe_escape(PlayerbotAI* botAI) { return new WipeEscapeTrigger(botAI); }
     static Trigger* wipe_escape_over(PlayerbotAI* botAI) { return new WipeEscapeOverTrigger(botAI); }
     static Trigger* pause(PlayerbotAI* botAI) { return new ChatCommandTrigger(botAI, "pause"); }

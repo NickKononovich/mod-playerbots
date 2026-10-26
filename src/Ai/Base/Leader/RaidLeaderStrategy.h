@@ -40,6 +40,8 @@ public:
     RaidLeaderHoldMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "raid leader hold") {}
 
     float GetValue(Action* action) override;
+    // [lead15] the executor's vetoes are the leader's: no no-damage release of them
+    bool KeepsVeto(Action* action) override;
 };
 
 #endif

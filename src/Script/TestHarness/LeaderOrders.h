@@ -13,6 +13,7 @@
 #include "SafeZone.h"  // [lead9] Leader::FightPlan / SafeZone (Ai/Base/Util)
 
 #include <string>
+#include <vector>  // [lead15]
 
 class Player;
 class Unit;
@@ -102,6 +103,53 @@ namespace Leader
     constexpr uint32 LEADER_DOOR_INVALID_LOOKS = 10;
     // [lead6] A published readiness verdict is fresh this long.
     constexpr uint32 LEADER_READY_FRESH_MS = 3000;
+
+    // [lead15] Step 15 (user 2026-10-26: «рейд-лидер должен давать ивенты, а игроки решать, что с ними делать»): the
+    // leader issues events to EVERY member (Events below), the members decide only how (rotation, own threat).
+    // Each switch rolls its part back to the member's own rule. All only for a group the leader leads (LedGroup).
+    constexpr bool LEADER_MEMBER_EVENTS = true;   // the channel itself (off: no event is issued or read)
+    constexpr bool LEADER_ASSIGNS_SPOTS = true;   // spots before a pull, the pull only once everyone stands on his
+    constexpr bool LEADER_ONE_REST_RULE = true;   // sit = the group waits; one line for sit / ready; min deficit
+    constexpr bool LEADER_ATTACK_EVENTS = true;   // the pull's first target to every damage dealer at once
+    constexpr bool LEADER_FAST_REACT = true;      // out of combat in a led instance group: ~300 ms ticks, not 1-3 s
+    constexpr bool LEADER_OWNS_DODGE = true;      // the leader moves a member out of a cleave (the member's own
+                                                  // avoid / follow / ranged moves yield to the leader's MoveTo)
+    // [lead15] user correction 2026-10-26 («Бот сам не должен думать... Все команды выдаёт рейд-лидер»): in a group
+    // the leader leads, a member (not the tank) is a pure EXECUTOR of the leader's current command (ExecutorMember).
+    // Attack(X): the rotation on X with its own threat control; Heal(group): the heal rotation; MoveTo / StandAt:
+    // walk there and stand; Rest: eat / drink to full, then "ready"; Prepare / Ready?: own buffs, forms, imbues;
+    // Hold / StopDps: nothing. With no command and out of combat the strategy engine does not run at all.
+    // Each switch below turns one of the member's own decisions off (false: the member's own rule again).
+    constexpr bool LEADER_MEMBER_EXECUTOR = true;       // master switch of the executor model
+    constexpr bool LEADER_IDLE_WITHOUT_COMMAND = true;  // no command, out of combat: the engine is skipped
+    constexpr bool LEADER_NO_OWN_FOLLOW = true;         // "follow" off: the leader's MoveTo walks the member along
+    constexpr bool LEADER_NO_OWN_ASSIST = true;         // "dps assist" / "dps aoe" / "attack anything" off: Attack(X)
+    constexpr bool LEADER_NO_OWN_REST = true;           // "drink" / "food" only under the leader's Rest
+    constexpr bool LEADER_NO_OWN_POSITIONS = true;      // ranged / melee / formation / flee moves off
+    constexpr bool LEADER_NO_OWN_CLEAVE_DODGE = true;   // "dungeon avoid frontal cleave" off: the leader's MoveTo
+    constexpr bool LEADER_NO_OWN_LOS_GATHER = true;     // "move to los pull spot" off: the leader's StandAt
+    // own crowd control picks off ("pre pull cc" runs the leader's published plan and stays). OFF until the leader
+    // fills the CC assignments (MemberEvents::cc): the CC marks are still the members' own ("auto cc mark")
+    constexpr bool LEADER_NO_OWN_CC = false;
+    constexpr bool LEADER_NO_OWN_BUFF_TIMING = true;    // out of combat buffs only under Prepare / Ready? / Rest
+    // step 2 / 3 of the correction, NOT built yet: the leader does not detect these hazards / tactics itself, so the
+    // member's own rules stay until it does (true would leave the members standing in them)
+    constexpr bool LEADER_NO_OWN_AOE_DODGE = false;       // "avoid aoe", "avoid dungeon hazard"
+    constexpr bool LEADER_NO_OWN_DUNGEON_MOVES = false;   // the dungeon tactics' own moves
+    // [lead15] the healer reaches EVERY member (user 2026-10-26): every spot the leader issues keeps each member
+    // within LEADER_HEAL_REACH_YD (40 yd heal range minus a margin) of the healer and in its sight
+    constexpr bool LEADER_HEAL_REACH = true;
+    constexpr float LEADER_HEAL_REACH_YD = 35.0f;
+    // [lead15] an event field lives this long without the leader refreshing it (a stopped leader: the members'
+    // own rules again); the dodge cadence; a spot reached within this; a member not nearer for this long is stuck
+    constexpr uint32 LEADER_EVENT_TTL_MS = 1500;
+    constexpr uint32 LEADER_EVENT_TICK_MS = 200;
+    constexpr float LEADER_SPOT_TOLERANCE = 3.0f;
+    constexpr uint32 LEADER_SPOT_STUCK_MS = 15000;
+    // [lead15] the one rest line (audit fix 1): before a real boss sit below 90 % (= the boss ready gate), and never
+    // sit for less than this deficit to the line
+    constexpr float LEADER_BOSS_REST_PCT = 90.0f;
+    constexpr float LEADER_REST_MIN_DEFICIT_PCT = 10.0f;
     // [lead7] The leader plans on an ask at most this old; the tank takes an issued decision at most this old.
     constexpr uint32 LEADER_ASK_FRESH_MS = 1000;
     // [lead4c] build 54 (every run stalled at 0 bosses): the tank's AI ticks every 1-3 s out of combat (Playerbots.
@@ -250,6 +298,116 @@ namespace Leader
         void Clear(ObjectGuid group);
         // false: no fresh verdict (not a harness group, or the run ended)
         bool Get(ObjectGuid group, bool& ready, std::string* why = nullptr);
+    }
+
+    // [lead15] The member's group is led by the dungeon leader (a fresh readiness verdict for it).
+    bool LedGroup(Player* member);
+    // [lead15] LEADER_MEMBER_EXECUTOR: a member of a led group inside a dungeon, not the tank (the tank executes its
+    // PullOrder and walks the route itself): it executes the leader's commands only.
+    bool ExecutorMember(Player* member);
+    // [lead15] any bot of a led 5-man dungeon group, the tank included (the command getters, LeaderCommand.h)
+    bool LedBot(Player* bot);
+
+    // [lead15] The leader -> member event channel. One record per member, written by the leader (world thread) every
+    // LEADER_EVENT_TICK_MS while it holds, read by the member on its own tick (map thread): behind a lock. A field
+    // older than LEADER_EVENT_TTL_MS is no event. The member reports what it executed (Ack): drained by the leader
+    // into the decision log (member_ack, decides false).
+    enum class MoveEvent : uint8
+    {
+        None,
+        MoveTo,   // go to `spot` now (a dodge, a reposition): above the member's own moves
+        StandAt,  // stand at `spot` (the pull's assigned spot) until told otherwise
+        Hold      // do not move
+    };
+    enum class AttackEvent : uint8
+    {
+        None,
+        Attack,      // attack `target` (the kill order after it)
+        DontAttack,  // no new target
+        StopDps,     // stop damage now
+        Heal         // [lead15] the healer: the heal rotation on the whole group (whom and how: its own rotation)
+    };
+    enum class ReadyEvent : uint8
+    {
+        None,
+        ReadyCheck,  // "Ready?": the leader is about to pull
+        Prepare,     // [lead15] the group stands: own buffs, forms, imbues, a resurrection
+        Rest         // the group rests: sit if you need it, nobody walks off
+    };
+    // [lead15] the responsibility split (user 2026-10-26): what needs the whole group's view is the leader's,
+    // only per-GCD self-state stays with the bot (rotation, the AoE spell when AoE is allowed, own threat, personal
+    // saves, the healer's whom / how). The rotation reads these through Ai/Base/Util/LeaderCommand.h.
+    enum class AoeRule : uint8
+    {
+        Unset,          // no leader rule (the bot's own AoE choice, as before)
+        Forbidden,      // a crowd-controlled mob or an unpulled pack within the AoE radius of the target
+        AllowedOnPack   // AoE on the pack at `aoeCenter` within `aoeRadius`
+    };
+    enum class Intensity : uint8
+    {
+        Normal,
+        Burn,  // press the cooldowns (Bloodlust / Heroism included)
+        Stop   // no damage
+    };
+    struct MemberEvents
+    {
+        uint32 seq = 0;  // bumped on every change of any field
+        MoveEvent move = MoveEvent::None;
+        Position spot;
+        float tolerance = LEADER_SPOT_TOLERANCE;
+        std::string moveWhy;
+        uint32 moveMs = 0;
+        AttackEvent attack = AttackEvent::None;
+        ObjectGuid target;
+        std::vector<ObjectGuid> killOrder;
+        uint32 attackMs = 0;
+        AoeRule aoe = AoeRule::Unset;  // with Attack: the AoE rule around the target
+        Position aoeCenter;
+        float aoeRadius = 0.0f;
+        Intensity intensity = Intensity::Normal;
+        uint32 intensityMs = 0;
+        ObjectGuid cc;  // the mob this member crowd-controls (the leader's assignment)
+        uint32 ccMs = 0;
+        ObjectGuid interrupt;  // the caster this member interrupts
+        uint32 interruptMs = 0;
+        uint32 externalSpell = 0;  // an external save / buff the leader tells this member to cast, and on whom
+        ObjectGuid externalTarget;
+        uint32 externalMs = 0;
+        uint32 threatSpell = 0;  // the tank: take `threatTarget` back with this (a taunt, else an AoE threat spell;
+        ObjectGuid threatTarget; // 0 with a target: just attack it)
+        uint32 threatMs = 0;
+        ObjectGuid dontAttack;  // a mob loose on a member: no damage on it until the tank has it back
+        uint32 dontAttackMs = 0;
+        ReadyEvent ready = ReadyEvent::None;
+        uint32 readyMs = 0;
+    };
+    struct MemberAck
+    {
+        ObjectGuid member;
+        uint32 seq = 0;
+        std::string what;  // "move", "stand", "hold", "attack", "stop dps"
+        std::string why;
+        uint32 ms = 0;
+    };
+    namespace Events
+    {
+        // Leader side (world thread). Each returns true when the field changed (a new event to log).
+        bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why);
+        bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
+                       std::vector<ObjectGuid> const& killOrder);
+        bool SetIntensity(ObjectGuid member, Intensity intensity);
+        bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius);
+        bool SetCc(ObjectGuid member, ObjectGuid mob);
+        bool SetInterrupt(ObjectGuid member, ObjectGuid caster);
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target);
+        bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target);
+        bool SetDontAttack(ObjectGuid member, ObjectGuid mob);
+        bool SetReady(ObjectGuid member, ReadyEvent ready);
+        void Clear(ObjectGuid member);
+        // Member side: the member's fresh events (stale fields come back None); false: none at all.
+        bool Get(ObjectGuid member, MemberEvents& out);
+        void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why);
+        bool TakeAck(ObjectGuid member, MemberAck& out);
     }
 }
 

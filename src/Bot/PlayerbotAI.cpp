@@ -20,6 +20,8 @@
 #include "EscortProtect.h"
 #include "Engine.h"
 #include "GenericSpellActions.h"
+#include "HealthTriggers.h"  // [lead15] RestState (the executor's rest report)
+#include "LeaderOrders.h"    // [lead15] the leader's member commands
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
 #include "GameObjectData.h"
@@ -2031,6 +2033,26 @@ void PlayerbotAI::DoNextAction(bool min)
         {
             aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
         }
+    }
+
+    // [lead15] LEADER_IDLE_WITHOUT_COMMAND: a member the dungeon leader leads executes its commands only; with no
+    // command and out of combat it does not wake up to look for something to do (the leader's event wakes it,
+    // TestHarnessMgr::TickLeaderEvents). A buff pass the harness opened (forceRebuff) is the leader's command too.
+    if (Leader::LEADER_IDLE_WITHOUT_COMMAND && isBotAlive && !bot->IsInCombat() &&
+        currentEngine == engines[BOT_STATE_NON_COMBAT] && !forceRebuff.IsPending() && !bot->IsInWater() &&
+        Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (!Leader::Events::Get(bot->GetGUID(), events))
+            return;
+        // the executions that end with a report: rested to full, standing ready on the spot
+        if (events.ready == Leader::ReadyEvent::Rest && bot->IsStandState() && !RestState::WantsDrink(bot) &&
+            !RestState::WantsFood(bot))
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "rest", "rested: ready");
+        if (events.ready == Leader::ReadyEvent::ReadyCheck && bot->IsStandState() &&
+            (events.move != Leader::MoveEvent::StandAt ||
+             bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) <= events.tolerance))
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "ready", "ready on its spot");
     }
 
     bool minimal = !this->AllowActivity();
@@ -7623,6 +7645,25 @@ uint32 PlayerbotAI::GetReactDelay()
             return base * 2;
 
         return base * 5;
+    }
+
+    // [lead15] LEADER_FAST_REACT: a member of a led dungeon group runs fast only while it executes a leader command
+    // (the event itself woke it at once); idle it keeps the slow random 10-30 x base (the random staggers the
+    // members' idle ticks, and an idle member skips its engine anyway, DoNextAction)
+    if (Leader::LEADER_FAST_REACT && Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events))
+        {
+            bool const walking = (events.move == Leader::MoveEvent::MoveTo ||
+                                  events.move == Leader::MoveEvent::StandAt) &&
+                                 (bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) >
+                                      events.tolerance ||
+                                  !bot->IsStandState());
+            if (walking || events.attack != Leader::AttackEvent::None ||
+                events.ready == Leader::ReadyEvent::Prepare || events.ready == Leader::ReadyEvent::ReadyCheck)
+                return base * 2;
+        }
     }
 
     // When not resting, return 10-30 times the base

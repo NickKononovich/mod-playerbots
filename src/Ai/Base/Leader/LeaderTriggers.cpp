@@ -7,6 +7,7 @@
 #include "LeaderTriggers.h"
 
 #include "Group.h"
+#include "LeaderOrders.h"  // [lead15] the leader's member events
 #include "LeaderValues.h"
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
@@ -195,6 +196,32 @@ bool WipeEscapeOverTrigger::IsActive()
 {
     return (AI_VALUE(uint32, "wipe escape at") || bot->HasAura(SPELL_DIVINE_INTERVENTION_AURA)) &&
            !AI_VALUE(bool, "wipe escape hold");
+}
+
+// [lead15] The leader's member events (the members decide only how: their rotation and their own threat).
+bool LeaderMoveOrderTrigger::IsActive()
+{
+    if (!Leader::LEADER_MEMBER_EVENTS || !bot->IsAlive())
+        return false;
+    Leader::MemberEvents events;
+    if (!Leader::Events::Get(bot->GetGUID(), events) ||
+        (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt))
+        return false;
+    return bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) > events.tolerance ||
+           !bot->IsStandState();
+}
+
+bool LeaderAttackOrderTrigger::IsActive()
+{
+    if (!Leader::LEADER_MEMBER_EVENTS || !Leader::LEADER_ATTACK_EVENTS || !bot->IsAlive())
+        return false;
+    Leader::MemberEvents events;
+    if (!Leader::Events::Get(bot->GetGUID(), events) || events.attack != Leader::AttackEvent::Attack)
+        return false;
+    Unit* target = botAI->GetUnit(events.target);
+    // only a mob already in the fight (the leader's pull opened it): the event never opens a pull of its own
+    return target && target->IsAlive() && target->IsInCombat() && bot->GetVictim() != target &&
+           target->GetMap() == bot->GetMap();
 }
 
 bool BurstOverTrigger::IsActive()

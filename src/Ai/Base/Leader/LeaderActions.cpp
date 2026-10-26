@@ -11,6 +11,7 @@
 #include "HealthTriggers.h"
 #include "InterruptValues.h"
 #include "LeaderValues.h"
+#include "LeaderOrders.h"  // [lead15]
 #include "Log.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
@@ -575,4 +576,41 @@ bool BurstEndAction::Execute(Event /*event*/)
 
     burst->addedBoost = false;
     return true;
+}
+
+// [lead15] the leader's member events
+bool LeaderMoveOrderAction::Execute(Event /*event*/)
+{
+    Leader::MemberEvents events;
+    if (!Leader::Events::Get(bot->GetGUID(), events) ||
+        (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt))
+        return false;
+    if (!bot->IsStandState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    if (bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) <= events.tolerance)
+    {
+        Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
+                            "on the spot");
+        return true;
+    }
+    bool const moved = MoveTo(bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
+                              events.spot.GetPositionZ(), false, false, false, false,
+                              MovementPriority::MOVEMENT_COMBAT, true);
+    Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
+                        moved ? "walks to the spot: " + events.moveWhy : "the walk refused: " + events.moveWhy);
+    return moved;
+}
+
+bool LeaderAttackOrderAction::Execute(Event /*event*/)
+{
+    Leader::MemberEvents events;
+    if (!Leader::Events::Get(bot->GetGUID(), events) || events.attack != Leader::AttackEvent::Attack)
+        return false;
+    Unit* target = botAI->GetUnit(events.target);
+    if (!target || !target->IsAlive() || !target->IsInCombat())
+        return false;
+    bool const attacked = Attack(target);
+    Leader::Events::Ack(bot->GetGUID(), events.seq, "attack",
+                        (attacked ? "attacks " : "the attack refused: ") + target->GetName());
+    return attacked;
 }

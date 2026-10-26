@@ -137,4 +137,22 @@ public:
     bool IsActive() override;
 };
 
+// [lead15] The dungeon leader's MoveTo / StandAt event for this member (LeaderOrders.h Events), its spot not reached.
+class LeaderMoveOrderTrigger : public Trigger
+{
+public:
+    LeaderMoveOrderTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader move order") {}
+
+    bool IsActive() override;
+};
+
+// [lead15] The leader's Attack event: its target is in the fight and the member attacks something else / nothing.
+class LeaderAttackOrderTrigger : public Trigger
+{
+public:
+    LeaderAttackOrderTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader attack order") {}
+
+    bool IsActive() override;
+};
+
 #endif

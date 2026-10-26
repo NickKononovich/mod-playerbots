@@ -10,6 +10,8 @@
 
 #include "LeaderOrders.h"
 
+#include "Group.h"
+#include "Map.h"
 #include "Player.h"
 #include "Timer.h"
 #include "Unit.h"
@@ -382,6 +384,256 @@ namespace Leader
             ready = found->second.ready;
             if (why)
                 *why = found->second.why;
+            return true;
+        }
+    }
+
+    // [lead15] LedGroup / Events (LeaderOrders.h)
+    bool LedGroup(Player* member)
+    {
+        Group* group = member ? member->GetGroup() : nullptr;
+        bool ready = false;
+        return group && Readiness::Get(group->GetGUID(), ready);
+    }
+
+    bool LedBot(Player* bot)
+    {
+        if (!LEADER_MEMBER_EVENTS || !bot || !bot->IsInWorld())
+            return false;
+        Map* map = bot->GetMap();
+        return map && map->IsDungeon() && !map->IsRaid() && LedGroup(bot);
+    }
+
+    bool ExecutorMember(Player* member)
+    {
+        if (!LEADER_MEMBER_EVENTS || !LEADER_MEMBER_EXECUTOR || !member || !member->IsInWorld())
+            return false;
+        Map* map = member->GetMap();
+        if (!map || !map->IsDungeon() || map->IsRaid() || Orders::IsTracked(member->GetGUID()))
+            return false;
+        return LedGroup(member);
+    }
+
+    namespace Events
+    {
+        namespace
+        {
+            struct Slot
+            {
+                MemberEvents events;
+                std::deque<MemberAck> acks;
+                uint32 lastAckSeq = 0;
+                std::string lastAckWhat;
+            };
+            std::mutex eventLock;
+            std::unordered_map<ObjectGuid, Slot> eventSlots;
+            constexpr size_t MAX_ACKS = 32;
+
+            bool Stale(uint32 ms, uint32 now) { return !ms || getMSTimeDiff(ms, now) > LEADER_EVENT_TTL_MS; }
+        }
+
+        bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.move != move || e.spot.GetExactDist(spot) > 1.0f || Stale(e.moveMs, getMSTime());
+            e.move = move;
+            e.spot = spot;
+            e.tolerance = tolerance;
+            e.moveWhy = why;
+            e.moveMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
+                       std::vector<ObjectGuid> const& killOrder)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.attack != attack || e.target != target || Stale(e.attackMs, getMSTime());
+            e.attack = attack;
+            e.target = target;
+            e.killOrder = killOrder;
+            e.attackMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetIntensity(ObjectGuid member, Intensity intensity)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.intensity != intensity || Stale(e.intensityMs, getMSTime());
+            e.intensity = intensity;
+            e.intensityMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        // the AoE rule rides on the Attack field's freshness (set together with it)
+        bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed =
+                e.aoe != aoe || (aoe == AoeRule::AllowedOnPack && e.aoeCenter.GetExactDist(center) > 3.0f);
+            e.aoe = aoe;
+            e.aoeCenter = center;
+            e.aoeRadius = radius;
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetCc(ObjectGuid member, ObjectGuid mob)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.cc != mob || Stale(e.ccMs, getMSTime());
+            e.cc = mob;
+            e.ccMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetInterrupt(ObjectGuid member, ObjectGuid caster)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.interrupt != caster || Stale(e.interruptMs, getMSTime());
+            e.interrupt = caster;
+            e.interruptMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.threatSpell != spell || e.threatTarget != target || Stale(e.threatMs, getMSTime());
+            e.threatSpell = spell;
+            e.threatTarget = target;
+            e.threatMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetDontAttack(ObjectGuid member, ObjectGuid mob)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.dontAttack != mob || Stale(e.dontAttackMs, getMSTime());
+            e.dontAttack = mob;
+            e.dontAttackMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed =
+                e.externalSpell != spell || e.externalTarget != target || Stale(e.externalMs, getMSTime());
+            e.externalSpell = spell;
+            e.externalTarget = target;
+            e.externalMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetReady(ObjectGuid member, ReadyEvent ready)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.ready != ready || Stale(e.readyMs, getMSTime());
+            e.ready = ready;
+            e.readyMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        void Clear(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            eventSlots.erase(member);
+        }
+
+        bool Get(ObjectGuid member, MemberEvents& out)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end())
+                return false;
+            out = found->second.events;
+            uint32 const now = getMSTime();
+            if (Stale(out.moveMs, now))
+                out.move = MoveEvent::None;
+            if (Stale(out.attackMs, now))
+                out.attack = AttackEvent::None;
+            if (Stale(out.attackMs, now))
+                out.aoe = AoeRule::Unset;
+            if (Stale(out.intensityMs, now))
+                out.intensity = Intensity::Normal;
+            if (Stale(out.ccMs, now))
+                out.cc.Clear();
+            if (Stale(out.interruptMs, now))
+                out.interrupt.Clear();
+            if (Stale(out.threatMs, now))
+            {
+                out.threatSpell = 0;
+                out.threatTarget.Clear();
+            }
+            if (Stale(out.dontAttackMs, now))
+                out.dontAttack.Clear();
+            if (Stale(out.externalMs, now))
+            {
+                out.externalSpell = 0;
+                out.externalTarget.Clear();
+            }
+            if (Stale(out.readyMs, now))
+                out.ready = ReadyEvent::None;
+            return out.move != MoveEvent::None || out.attack != AttackEvent::None ||
+                   out.intensity != Intensity::Normal || out.ready != ReadyEvent::None || !out.cc.IsEmpty() ||
+                   !out.interrupt.IsEmpty() || out.externalSpell || !out.threatTarget.IsEmpty() ||
+                   !out.dontAttack.IsEmpty();
+        }
+
+        void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end())
+                return;
+            Slot& slot = found->second;
+            if (slot.lastAckSeq == seq && slot.lastAckWhat == what)
+                return;  // one ack per event and kind
+            slot.lastAckSeq = seq;
+            slot.lastAckWhat = what;
+            if (slot.acks.size() >= MAX_ACKS)
+                slot.acks.pop_front();
+            slot.acks.push_back(MemberAck{member, seq, what, why, NowMs()});
+        }
+
+        bool TakeAck(ObjectGuid member, MemberAck& out)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || found->second.acks.empty())
+                return false;
+            out = std::move(found->second.acks.front());
+            found->second.acks.pop_front();
             return true;
         }
     }

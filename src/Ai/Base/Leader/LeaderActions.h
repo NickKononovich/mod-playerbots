@@ -8,6 +8,7 @@
 #define PLAYERBOTS_LEADERACTIONS_H
 
 #include "Action.h"
+#include "AttackAction.h"  // [lead15] the leader's move / attack events (MovementAction, AttackAction)
 #include "ObjectGuid.h"
 #include "UseItemAction.h"
 
@@ -136,6 +137,25 @@ class BurstEndAction : public Action
 {
 public:
     BurstEndAction(PlayerbotAI* botAI) : Action(botAI, "burst end") {}
+
+    bool Execute(Event event) override;
+};
+
+// [lead15] Executes the dungeon leader's MoveTo / StandAt event (LeaderOrders.h Events): the member walks to the spot
+// the leader chose (a dodge out of a cleave, its spot before a pull); a sitter stands up for it.
+class LeaderMoveOrderAction : public MovementAction
+{
+public:
+    LeaderMoveOrderAction(PlayerbotAI* botAI) : MovementAction(botAI, "leader move order") {}
+
+    bool Execute(Event event) override;
+};
+
+// [lead15] Executes the leader's Attack event: attacks the leader's target (the pull's first mob) at once.
+class LeaderAttackOrderAction : public AttackAction
+{
+public:
+    LeaderAttackOrderAction(PlayerbotAI* botAI) : AttackAction(botAI, "leader attack order") {}
 
     bool Execute(Event event) override;
 };
