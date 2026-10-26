@@ -6,9 +6,12 @@
 
 #include "GenericDruidNonCombatStrategy.h"
 #include "AiFactory.h"
+#include "DruidTriggers.h"  // [rot1] DruidGroupNeedsHeal, BALANCE_HEAL_PCT
 #include "FeralDruidStrategy.h"
 #include "Playerbots.h"
 #include "RezzedTankHoldMultiplier.h"
+#include "Log.h"    // [rot1]
+#include "Timer.h"  // [rot1]
 
 class GenericDruidNonCombatStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
 {
@@ -31,7 +34,7 @@ private:
     static ActionNode* thorns([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("thorns",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -39,7 +42,7 @@ private:
     static ActionNode* thorns_on_party([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("thorns on party",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -47,7 +50,7 @@ private:
     static ActionNode* mark_of_the_wild([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("mark of the wild",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -55,7 +58,7 @@ private:
     static ActionNode* mark_of_the_wild_on_party([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("mark of the wild on party",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -76,14 +79,14 @@ private:
     static ActionNode* remove_curse_on_party([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("remove curse on party",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
     static ActionNode* abolish_poison_on_party([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("abolish poison on party",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -120,6 +123,11 @@ void GenericDruidNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trig
     // (registered twice with the same actions) is merged into this block.
     int const specTab = AiFactory::GetPlayerSpecTab(botAI->GetBot());
     bool const bearTank = specTab == DRUID_TAB_FERAL && DruidHasThickHide(botAI->GetBot());
+
+    // [rot1] the moonkin back in form out of combat (MoonkinFormUpkeepTrigger): below Mark of the Wild (13-14) and the
+    // heals, above the harness waypoint walk (11.0) and Thorns (10-11)
+    if (specTab == DRUID_TAB_BALANCE)
+        triggers.push_back(new TriggerNode("no moonkin form", { NextAction("moonkin form", ACTION_NORMAL + 1.5f) }));
 
     if (!bearTank)
         triggers.push_back(new TriggerNode("party member cure poison",
@@ -222,4 +230,42 @@ void GenericDruidNonCombatStrategy::InitMultipliers(std::vector<Multiplier*>& mu
     // the non-combat engine runs right after a resurrection, also while the group still fights
     if (PlayerbotAI::IsTank(botAI->GetBot(), true))
         multipliers.push_back(new RezzedTankHoldMultiplier(botAI));
+    // [rot1]
+    if (AiFactory::GetPlayerSpecTab(botAI->GetBot()) == DRUID_TAB_BALANCE)
+        multipliers.push_back(new BalanceGroupSupportMultiplier(botAI));
+}
+
+float BalanceGroupSupportMultiplier::GetValue(Action* action)
+{
+    // the name first (string compares), the group pass last
+    if (!action)
+        return 1.0f;
+
+    std::string const& name = action->getName();
+    bool const heal = name == "rejuvenation on party" || name == "regrowth on party" ||
+                      name == "wild growth on party" || name == "healing touch on party";
+    bool const thorns = name == "thorns on party" || name == "thorns on main tank";
+    if (!heal && !thorns)
+        return 1.0f;
+
+    Player* bot = botAI->GetBot();
+    bool healerAlive = false;
+    DruidGroupNeedsHeal(bot, &healerAlive);
+    if (!healerAlive)
+        return 1.0f;
+
+    Unit* target = action->GetTarget();
+    if (heal && (!target || target->GetHealthPct() < BALANCE_HEAL_PCT))
+        return 1.0f;
+
+    uint32 const now = getMSTime();
+    if (!_loggedMs || getMSTimeDiff(_loggedMs, now) >= LOG_MS)
+    {
+        _loggedMs = now ? now : 1;
+        LOG_INFO("playerbots", "[rot1] [moonkin support] {} skips {} on {} ({:.0f} % health): a healer lives, the "
+                 "moonkin heals only below {:.0f} % and keeps Thorns to itself", bot->GetName(), name,
+                 target ? target->GetName() : "nobody", target ? target->GetHealthPct() : 0.0f, BALANCE_HEAL_PCT);
+    }
+
+    return 0.0f;
 }

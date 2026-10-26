@@ -13,6 +13,7 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "TargetValue.h"
+#include "Timer.h"  // [rot1]
 
 constexpr uint32 SPELL_ECLIPSE_SOLAR = 48517;
 constexpr uint32 SPELL_ECLIPSE_LUNAR = 48518;
@@ -256,6 +257,45 @@ Value<Unit*>* CastEntanglingRootsCcAction::GetTargetValue()
 Value<Unit*>* CastHibernateCcAction::GetTargetValue() { return context->GetValue<Unit*>("rti cc target"); }
 
 Value<Unit*>* CastCycloneCcAction::GetTargetValue() { return context->GetValue<Unit*>("rti cc target"); }
+
+// [rot1] WotLK 5-man play uses Cyclone only as a pull-side hold: a mob in the fight under Cyclone is immune, the tank
+// builds no threat on it and it comes back to the druid (strat-h pull 3: 6 Cyclones, 3 aggro losses; the auto-cc
+// had held Roots on the same mob, "within a tank's area damage"). In a raid group the ThreatMultiplier gate decides.
+bool CastCycloneCcAction::isUseful()
+{
+    Unit* target = GetTarget();
+    if (!target)
+        return false;
+
+    Group* group = bot->GetGroup();
+    if (group && !group->isRaidGroup() && target->IsInCombat())
+    {
+        uint32 const now = getMSTime();
+        if (!_loggedMs || getMSTimeDiff(_loggedMs, now) >= LOG_MS)
+        {
+            _loggedMs = now ? now : 1;
+            LOG_INFO("playerbots", "[rot1] [cyclone] {} keeps Cyclone off {} {}: in the fight, a 5-man Cyclone is "
+                     "pre-pull only", bot->GetName(), target->GetName(), target->GetEntry());
+        }
+        return false;
+    }
+
+    return CastCrowdControlSpellAction::isUseful();
+}
+
+bool CastMoonfireOnTheMoveAction::isUseful()
+{
+    if (!bot->isMoving() || !CastSpellAction::isUseful())
+        return false;
+
+    Unit* target = GetTarget();
+    if (!target)
+        return false;
+
+    // the druid's own Moonfire only: another druid's does not stack with it and is no reason to wait
+    Aura* own = botAI->GetAura("moonfire", target, true);
+    return !own || (own->GetDuration() >= 0 && own->GetDuration() < MOONFIRE_TICK_MS);
+}
 
 bool CastTyphoonAction::isUseful()
 {

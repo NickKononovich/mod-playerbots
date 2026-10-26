@@ -44,7 +44,11 @@ uint8 ThreatValue::Calculate()
     return Calculate(target);
 }
 
-uint8 ThreatValue::Calculate(Unit* target)
+uint8 ThreatValue::Calculate(Unit* target) { return ThreatLead::TankShare(bot, target); }
+
+// [rot1] The body of ThreatValue::Calculate(Unit*), free so that the spell-aware AoE gate (ThreatMultiplier) reads
+// the same share for every mob in a spell's radius, not only for the "attackers" the "aoe" value walks.
+uint8 ThreatLead::TankShare(Player* bot, Unit* target)
 {
     if (!target)
         return 0;

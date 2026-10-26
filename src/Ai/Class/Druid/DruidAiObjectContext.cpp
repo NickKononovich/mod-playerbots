@@ -107,6 +107,7 @@ public:
         creators["hibernate"] = &DruidTriggerFactoryInternal::hibernate;
         creators["bear form"] = &DruidTriggerFactoryInternal::bear_form;
         creators["bear tank form"] = &DruidTriggerFactoryInternal::bear_tank_form;  // [b32_tank_aoe]
+        creators["no moonkin form"] = &DruidTriggerFactoryInternal::no_moonkin_form;  // [rot1]
         creators["cat form"] = &DruidTriggerFactoryInternal::cat_form;
         creators["tree form"] = &DruidTriggerFactoryInternal::tree_form;
         creators["eclipse (solar)"] = &DruidTriggerFactoryInternal::eclipse_solar;
@@ -187,6 +188,7 @@ private:
     static Trigger* hibernate(PlayerbotAI* botAI) { return new HibernateTrigger(botAI); }
     static Trigger* bear_form(PlayerbotAI* botAI) { return new BearFormTrigger(botAI); }
     static Trigger* bear_tank_form(PlayerbotAI* botAI) { return new BearTankFormTrigger(botAI); }  // [b32_tank_aoe]
+    static Trigger* no_moonkin_form(PlayerbotAI* botAI) { return new MoonkinFormUpkeepTrigger(botAI); }  // [rot1]
     static Trigger* cat_form(PlayerbotAI* botAI) { return new CatFormTrigger(botAI); }
     static Trigger* tree_form(PlayerbotAI* botAI) { return new TreeFormTrigger(botAI); }
     static Trigger* bash_on_enemy_healer(PlayerbotAI* botAI) { return new BashInterruptEnemyHealerSpellTrigger(botAI); }
@@ -263,6 +265,7 @@ public:
         creators["travel form"] = &DruidAiObjectContextInternal::travel_form;
         creators["aquatic form"] = &DruidAiObjectContextInternal::aquatic_form;
         creators["caster form"] = &DruidAiObjectContextInternal::caster_form;
+        creators["leave animal form"] = &DruidAiObjectContextInternal::leave_animal_form;  // [rot1]
         creators["cancel tree form"] = &DruidAiObjectContextInternal::cancel_tree_form;
         creators["cancel travel form"] = &DruidAiObjectContextInternal::cancel_travel_form;
         creators["cancel bear form"] = &DruidAiObjectContextInternal::cancel_bear_form;
@@ -390,6 +393,7 @@ private:
     static Action* travel_form(PlayerbotAI* botAI) { return new CastTravelFormAction(botAI); }
     static Action* aquatic_form(PlayerbotAI* botAI) { return new CastAquaticFormAction(botAI); }
     static Action* caster_form(PlayerbotAI* botAI) { return new CastCasterFormAction(botAI); }
+    static Action* leave_animal_form(PlayerbotAI* botAI) { return new CastLeaveAnimalFormAction(botAI); }  // [rot1]
     static Action* cancel_tree_form(PlayerbotAI* botAI) { return new CastCancelTreeFormAction(botAI); }
     static Action* cancel_travel_form(PlayerbotAI* botAI) { return new CastCancelTravelFormAction(botAI); }
     static Action* cancel_bear_form(PlayerbotAI* botAI) { return new CastCancelBearFormAction(botAI); }

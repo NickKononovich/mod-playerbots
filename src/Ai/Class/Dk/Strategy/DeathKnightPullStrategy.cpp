@@ -5,6 +5,8 @@
  */
 
 #include "DeathKnightPullStrategy.h"
+#include "Creature.h"
+#include "Log.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -28,4 +30,27 @@ std::string DeathKnightPullStrategy::GetPullActionName() const
     }
 
     return PullStrategy::GetPullActionName();
+}
+
+// [rot1] wowsims blood_aggro casts Army of the Dead before the pull (prepull at -6 s, a 4 s channel); the bots never
+// cast it as Blood (sim 1.28/min, bots 0). PullAction runs this at the pull commit, once per pull, before the pull
+// spell: a boss target only (10 min cooldown, 1 Blood + 1 Frost + 1 Unholy rune, all ready out of combat). The pull
+// waits the channel (inside PullStrategy::GetMaxPullTime); the 8 ghouls join the fight with the tank.
+std::string DeathKnightPullStrategy::GetPrePullBuffActionName() const
+{
+    if (!botAI->HasStrategy("blood", BOT_STATE_COMBAT) && !botAI->HasStrategy("blood", BOT_STATE_NON_COMBAT))
+        return "";
+
+    Unit* target = GetTarget();
+    Creature* creature = target ? target->ToCreature() : nullptr;
+    if (!creature || !creature->IsAlive() || !(creature->IsDungeonBoss() || creature->isWorldBoss()))
+        return "";
+
+    uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "army of the dead")->Get();
+    if (!spellId || botAI->GetBot()->HasSpellCooldown(spellId))
+        return "";
+
+    LOG_INFO("playerbots", "[rot1] [army prepull] {} asks for Army of the Dead before the pull of {} {}",
+             botAI->GetBot()->GetName(), creature->GetName(), creature->GetEntry());
+    return "army of the dead";
 }

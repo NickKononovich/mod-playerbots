@@ -105,6 +105,11 @@ public:
         creators["frost strike runic power"] = &DeathKnightTriggerFactoryInternal::frost_strike_runic_power;
         creators["ghoul frenzy"] = &DeathKnightTriggerFactoryInternal::ghoul_frenzy;
         creators["raise dead boost"] = &DeathKnightTriggerFactoryInternal::raise_dead_boost;
+        // [rot1]
+        creators["dancing rune weapon ready"] = &DeathKnightTriggerFactoryInternal::dancing_rune_weapon_ready;
+        creators["hysteria boss"] = &DeathKnightTriggerFactoryInternal::hysteria_boss;
+        creators["raise dead boss"] = &DeathKnightTriggerFactoryInternal::raise_dead_boss;
+        creators["no rune low health"] = &DeathKnightTriggerFactoryInternal::no_rune_low_health;
         creators["unholy presence after gargoyle"] =
             &DeathKnightTriggerFactoryInternal::unholy_presence_after_gargoyle;
         // [b35_uh]
@@ -179,6 +184,11 @@ private:
     static Trigger* frost_strike_runic_power(PlayerbotAI* botAI) { return new FrostStrikeRunicPowerTrigger(botAI); }
     static Trigger* ghoul_frenzy(PlayerbotAI* botAI) { return new GhoulFrenzyTrigger(botAI); }
     static Trigger* raise_dead_boost(PlayerbotAI* botAI) { return new RaiseDeadBoostTrigger(botAI); }
+    // [rot1]
+    static Trigger* dancing_rune_weapon_ready(PlayerbotAI* botAI) { return new DancingRuneWeaponReadyTrigger(botAI); }
+    static Trigger* hysteria_boss(PlayerbotAI* botAI) { return new HysteriaCooldownFightTrigger(botAI); }
+    static Trigger* raise_dead_boss(PlayerbotAI* botAI) { return new RaiseDeadBossTrigger(botAI); }
+    static Trigger* no_rune_low_health(PlayerbotAI* botAI) { return new NoRuneLowHealthTrigger(botAI); }
     static Trigger* unholy_presence_after_gargoyle(PlayerbotAI* botAI)
     {
         return new UnholyPresenceAfterGargoyleTrigger(botAI);

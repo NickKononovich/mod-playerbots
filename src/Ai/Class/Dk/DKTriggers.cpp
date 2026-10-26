@@ -408,3 +408,37 @@ bool HornOfWinterReadyTrigger::IsActive()
     uint32 const spellId = AI_VALUE2(uint32, "spell id", "horn of winter");
     return spellId && !bot->HasSpellCooldown(spellId);
 }
+
+// [rot1]
+bool IsDKCooldownFight(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    if (!bot->IsInCombat())
+        return false;
+
+    return IsDKBossFight(botAI) || ai::raidutil::IsBurstWindow(botAI);
+}
+
+bool DancingRuneWeaponReadyTrigger::IsActive()
+{
+    // the spell, cooldown and power first (map reads), the target last
+    if (!bot->IsInCombat() || !bot->HasSpell(SPELL_DK_DANCING_RUNE_WEAPON) ||
+        bot->HasSpellCooldown(SPELL_DK_DANCING_RUNE_WEAPON) ||
+        bot->GetPower(POWER_RUNIC_POWER) < DANCING_RUNE_WEAPON_RUNIC_POWER)
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    return target && target->IsAlive() && bot->IsWithinMeleeRange(target);
+}
+
+bool HysteriaCooldownFightTrigger::IsActive()
+{
+    return HysteriaNoCooldownTrigger::IsActive() && IsDKCooldownFight(botAI);
+}
+
+bool RaiseDeadBossTrigger::IsActive() { return RaiseDeadBoostTrigger::IsActive() && IsDKCooldownFight(botAI); }
+
+bool NoRuneLowHealthTrigger::IsActive()
+{
+    return bot->IsInCombat() && bot->GetHealthPct() < sPlayerbotAIConfig.LowHealth && NoRuneTrigger::IsActive();
+}

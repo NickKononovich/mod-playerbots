@@ -92,7 +92,9 @@ class CastPestilenceAction : public CastSpellAction
 {
 public:
     CastPestilenceAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "pestilence") {}
-    ActionThreatType getThreatType() override { return ActionThreatType::None; }
+    // [rot1] the diseases it spreads tick on every mob within its radius of the target: for a dps death knight the
+    // area threat gate reads them all (a tank is never held by ThreatMultiplier)
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
     bool isUseful() override;
 };
 
@@ -100,6 +102,7 @@ class CastHowlingBlastAction : public CastSpellAction
 {
 public:
     CastHowlingBlastAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "howling blast") {}
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }  // [rot1] 10 yd around the target
 };
 
 class CastIcyTouchAction : public CastSpellAction
@@ -250,13 +253,15 @@ class CastBloodBoilAction : public CastMeleeSpellAction
 {
 public:
     CastBloodBoilAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "blood boil") {}
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }  // [rot1] 10 yd around the knight
 };
 
 class CastDeathAndDecayAction : public CastSpellAction
 {
 public:
     CastDeathAndDecayAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "death and decay") {}
-    // ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
+    // [rot1] every mob in the pool: the area threat gate (a tank is never held)
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
     // [b36_tankaoe] a tank lays it on its own pile: the ground spell lands on the target's spot, and the target can be
     // a caster at range or empty while the pack stands on the tank
     Unit* GetTarget() override;

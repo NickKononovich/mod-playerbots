@@ -190,6 +190,9 @@ void BalanceDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     GenericDruidStrategy::InitTriggers(triggers);
 
     triggers.push_back(new TriggerNode("faerie fire", { NextAction("faerie fire", 29.5f) }));
+    // [rot1] Moonkin Form back as soon as nothing the form forbids is being cast (MoonkinFormUpkeepTrigger): above the
+    // nukes and DoTs (19.9-20.5), below Faerie Fire / Innervate (29+), which take the form as their prerequisite anyway
+    triggers.push_back(new TriggerNode("no moonkin form", { NextAction("moonkin form", ACTION_HIGH + 5.0f) }));
     // [b31_deep] The DoTs go up only when they are missing from the main target: the old "insect swarm" (19.5) and
     // "moonfire" (19.4) refresh nodes had the same condition (DebuffTrigger with no refresh window) and never won.
     // wowsims balance APL: Moonfire missing ranks above the eclipse nukes (20.0); Insect Swarm only outside an

@@ -44,6 +44,14 @@ bool CastCasterFormAction::isUseful()
            AI_VALUE2(uint8, "mana", "self target") > sPlayerbotAIConfig.MediumHealth;
 }
 
+bool CastLeaveAnimalFormAction::isUseful()
+{
+    // [rot1] the caster-form gate without Moonkin Form (same mana gate as "caster form")
+    return botAI->HasAnyAuraOf(GetTarget(), "dire bear form", "bear form", "cat form", "travel form", "aquatic form",
+                               "flight form", "swift flight form", nullptr) &&
+           AI_VALUE2(uint8, "mana", "self target") > sPlayerbotAIConfig.MediumHealth;
+}
+
 bool CastCancelDruidAction::Execute(Event /*event*/)
 {
     botAI->RemoveAura(auraName);

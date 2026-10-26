@@ -74,6 +74,10 @@ namespace ThreatLead
     // (the bot's threat + its next cast) / HolderThreat; -1 when there is no holder threat to compare with.
     float ProjectedShare(PlayerbotAI* botAI, Unit* target);
 
+    // [rot1] The bot's threat on the mob in percent of the highest living tank's (0-255; 100 when the mob fights and no
+    // tank has threat on it yet, 0 for a fleeing mob or one a friendly NPC keeps). ThreatValue's per-unit share.
+    uint8 TankShare(Player* bot, Unit* target);
+
     // MELEE_PULL_OVER when the bot is in melee range of the mob, else RANGED_PULL_OVER.
     float PullOverPoint(Player* bot, Unit* target);
 

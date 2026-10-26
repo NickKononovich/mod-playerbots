@@ -72,6 +72,19 @@ public:
     bool isPossible() override { return true; }
 };
 
+// [rot1] The prerequisite of a buff or cure a druid casts in Moonkin Form (Mark of the Wild, Thorns, Remove Curse,
+// Abolish Poison, the crowd control spells): it leaves an animal or travel form, never Moonkin Form. 3.3.5 Moonkin Form
+// forbids only healing and resurrection spells; "caster form" took the moonkin out of form for each of these
+// (AUDIT_COHESION_STRAT.md B3: >= 14 % of a Stratholme run out of form).
+class CastLeaveAnimalFormAction : public CastCasterFormAction
+{
+public:
+    CastLeaveAnimalFormAction(PlayerbotAI* botAI) : CastCasterFormAction(botAI) {}
+
+    std::string const getName() override { return "leave animal form"; }
+    bool isUseful() override;
+};
+
 class CastCancelDruidAction : public CastBuffSpellAction
 {
 public:

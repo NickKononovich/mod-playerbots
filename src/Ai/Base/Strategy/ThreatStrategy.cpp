@@ -6,17 +6,23 @@
 
 #include "ThreatStrategy.h"
 #include "AttackerCountValues.h"
+#include "Creature.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
 #include "Log.h"
 #include "Map.h"
 #include "PartyStrengthValue.h"
 #include "Playerbots.h"
+#include "RtiValue.h"  // [rot1] CrowdControlWouldBreak
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "ThreatManager.h"
 #include "ThreatValues.h"
 #include "Timer.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace
 {
@@ -34,18 +40,29 @@ namespace
 
     // [ranged_audit_b30] An interrupt or silence (Counterspell, Wind Shear, Kick, Silence, Silencing Shot), or a
     // crowd control that deals no damage (Fear, Polymorph, Hex, Hammer of Justice, Shackle Undead).
-    bool IsCastStopperOrCrowdControl(SpellInfo const* info)
+    // [rot1] Split: an interrupt / silence or a damage-free stun (Hammer of Justice, the stun interrupts) is still
+    // never held; a damage-free fear or confuse (Polymorph, Fear, Hex, Blind, Scare Beast) takes the crowd-control
+    // threat gate (CrowdControlHolds) instead of skipping every threat rule.
+    enum class StopperKind
+    {
+        None,
+        Stopper,  // interrupt, silence, damage-free stun
+        Control   // damage-free fear / confuse
+    };
+
+    StopperKind ClassifyStopper(SpellInfo const* info)
     {
         if (!info)
-            return false;
+            return StopperKind::None;
 
+        bool stun = false;
         bool control = false;
         bool damage = false;
         for (SpellEffectInfo const& effect : info->GetEffects())
         {
             // Silencing Shot carries weapon damage as well: the stop of the cast decides
             if (effect.Effect == SPELL_EFFECT_INTERRUPT_CAST)
-                return true;
+                return StopperKind::Stopper;
 
             if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE || effect.Effect == SPELL_EFFECT_WEAPON_DAMAGE ||
                 effect.Effect == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE ||
@@ -60,10 +77,12 @@ namespace
             {
                 case SPELL_AURA_MOD_SILENCE:
                 case SPELL_AURA_MOD_PACIFY_SILENCE:
-                    return true;
+                    return StopperKind::Stopper;
+                case SPELL_AURA_MOD_STUN:
+                    stun = true;
+                    break;
                 case SPELL_AURA_MOD_FEAR:
                 case SPELL_AURA_MOD_CONFUSE:
-                case SPELL_AURA_MOD_STUN:
                     control = true;
                     break;
                 case SPELL_AURA_PERIODIC_DAMAGE:
@@ -75,7 +94,51 @@ namespace
         }
 
         // a stun or fear that also hits (Shadowfury) is a damage spell and keeps the threat rule
-        return control && !damage;
+        if (damage)
+            return StopperKind::None;
+        if (stun)
+            return StopperKind::Stopper;
+        return control ? StopperKind::Control : StopperKind::None;
+    }
+
+    // [rot1] Crowd control that the group's own damage never breaks: Cyclone makes the mob immune, Banish too.
+    bool IsDamageProofCrowdControl(std::string const& spell) { return spell == "cyclone" || spell == "banish"; }
+
+    // [rot1] The threat the bot commits before it decides again: a cast runs to its end (a channel to its last tick),
+    // an instant holds the global cooldown, and the bot checks threat only at the next decision. NEXT_CAST_SECONDS
+    // (2.5 s) was one size for all: a 3 s Starfire and a 1.5 s Moonfire read the same projection. Floor 1 s (the
+    // shortest global cooldown); no spell (melee, wand) keeps the 2.5 s.
+    constexpr uint32 COMMIT_FLOOR_MS = 1000;
+
+    float CommitSeconds(Player* bot, SpellInfo const* info)
+    {
+        if (!info)
+            return NextCastThreatValue::NEXT_CAST_SECONDS;
+
+        uint32 ms = info->IsChanneled() ? static_cast<uint32>(std::max(info->GetDuration(), 0))
+                                        : info->CalcCastTime(bot);
+        ms = std::max({ ms, info->StartRecoveryTime, COMMIT_FLOOR_MS });
+        return static_cast<float>(ms) / IN_MILLISECONDS;
+    }
+
+    // [rot1] Where an area spell lands and how far it reaches. A spell with no range of its own (Starfall, Blood Boil,
+    // Arcane Explosion, Dragon's Breath, Typhoon) is centred on the caster; any other on its target (Blizzard,
+    // Flamestrike, Hurricane, Death and Decay, Pestilence, Howling Blast). The radius is the largest effect radius;
+    // Starfall's stars come from a triggered spell, the 30 yd of its tooltip. Nothing known: the configured AoeRadius.
+    constexpr float STARFALL_RADIUS = 30.0f;
+
+    float AreaRadius(Player* bot, SpellInfo const* info, std::string const& spell)
+    {
+        if (spell == "starfall")
+            return STARFALL_RADIUS;
+
+        float radius = 0.0f;
+        if (info)
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.IsEffect())
+                    radius = std::max(radius, effect.CalcRadius(bot));
+
+        return radius > 0.0f ? radius : sPlayerbotAIConfig.AoeRadius;
     }
 
     // [b35_lock] A wand (Shoot 5019), a bow / gun / crossbow Shoot (3018) or Throw (2764) repeats by itself once
@@ -107,7 +170,15 @@ float ThreatMultiplier::GetValue(Action* action)
         return 1.0f;
     }
 
-    if (!action || action->getThreatType() == Action::ActionThreatType::None)
+    if (!action)
+        return 1.0f;
+
+    // [rot1] The crowd control actions (Cyclone, Entangling Roots, Hibernate, Polymorph, Fear, Banish on the cc mark)
+    // are ActionThreatType::None and skipped every rule below: Cyclone on a mob the tank held (strat-h pull 3, 6 casts,
+    // 3 aggro losses), Roots from 30.8 yd on a fresh Plague Ghoul (pull 6, a 15 s loss). They get their own gate.
+    CastSpellAction* spellAction = dynamic_cast<CastSpellAction*>(action);
+    bool const ccAction = dynamic_cast<CastCrowdControlSpellAction*>(action) != nullptr;
+    if (!ccAction && action->getThreatType() == Action::ActionThreatType::None)
         return 1.0f;
 
     if (!AI_VALUE(bool, "group"))
@@ -117,14 +188,24 @@ float ThreatMultiplier::GetValue(Action* action)
     if (PlayerbotAI::IsTank(bot))
         return 1.0f;
 
+    bool const careful = AI_VALUE(PartyStrength, "party strength").CarefulThreat();
+    SpellInfo const* spellInfo = nullptr;
+
     // [ranged_audit_b30] A kick or a crowd control is never held for threat: it stops the cast that kills the group,
     // and its own threat is small. Build 30 logged the hold on counterspell 84, fear 82, silencing shot 78,
     // kick 59 and wind shear 57 times (one line per bot per 10 s); brs-h: a Mana Burn killed the elemental shaman.
-    if (CastSpellAction* spellAction = dynamic_cast<CastSpellAction*>(action))
+    // [rot1] Still so for an interrupt, a silence and a damage-free stun. A damage-free fear / confuse takes the
+    // crowd-control gate.
+    if (spellAction)
     {
         uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
-        if (IsCastStopperOrCrowdControl(sSpellMgr->GetSpellInfo(spellId)))
+        spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        StopperKind const kind = ccAction ? StopperKind::Control : ClassifyStopper(spellInfo);
+        if (kind == StopperKind::Stopper)
             return 1.0f;
+
+        if (kind == StopperKind::Control)
+            return CrowdControlHolds(spellAction, action->GetTarget()) ? 0.0f : 1.0f;
 
         // [b31_shared] The Art of War makes Exorcism instant for 15 s: a held proc is lost. 199 of 203 L80 Exorcism
         // refusals were this multiplier.
@@ -132,12 +213,19 @@ float ThreatMultiplier::GetValue(Action* action)
             return 1.0f;
     }
 
-    bool const careful = AI_VALUE(PartyStrength, "party strength").CarefulThreat();
     if (action->getThreatType() == Action::ActionThreatType::Aoe)
     {
-        uint8 threat = AI_VALUE2(uint8, "threat", "aoe");
-        if (threat >= (careful ? CAREFUL_AOE_THREAT_LIMIT : AOE_THREAT_LIMIT))
-            return 0.0f;
+        if (spellAction)
+        {
+            if (AreaHolds(spellAction, spellInfo, careful))
+                return 0.0f;
+        }
+        else
+        {
+            uint8 threat = AI_VALUE2(uint8, "threat", "aoe");
+            if (threat >= (careful ? CAREFUL_AOE_THREAT_LIMIT : AOE_THREAT_LIMIT))
+                return 0.0f;
+        }
     }
 
     // A mob already hitting this bot is not held off by its silence: the bot fights it until the tank takes it.
@@ -163,11 +251,19 @@ float ThreatMultiplier::GetValue(Action* action)
     // next cast ("next cast threat") stays under HOLD_SHARE of its pull-over point (110 % of the holder's threat in
     // melee range of the mob, 130 % out of it), and stops only close to it. The flat 80 % (ranged) of the old rule
     // held a ranged dps idle with 50 points of room left before the mob would turn.
+    // [rot1] Soft throttle: "the next cast" is this action's own commitment (CommitSeconds), not a flat 2.5 s. Near
+    // the limit a long cast (Starfire 3 s, Fireball 3 s, a channel) stops first while the instants and short casts
+    // (Moonfire, Fire Blast, Living Bomb, Wrath) still fit: the bot hits softer before it stops dead, and the threat it
+    // reaches at its next decision stays the same projection the old rule used.
     if (target && target->IsAlive() && !target->GetGUID().IsPlayer())
     {
-        float const projected = ThreatLead::ProjectedShare(botAI, target);
-        if (projected >= 0.0f)
+        float const holder = ThreatLead::HolderThreat(bot, target);
+        if (holder > 0.0f)
         {
+            float const commit = spellAction ? CommitSeconds(bot, spellInfo) : NextCastThreatValue::NEXT_CAST_SECONDS;
+            float const next =
+                AI_VALUE(float, "next cast threat") * commit / NextCastThreatValue::NEXT_CAST_SECONDS;
+            float const projected = (target->GetThreatMgr().GetThreat(bot) + next) / holder;
             float const limit = ThreatLead::PullOverPoint(bot, target) *
                                 (careful ? ThreatLead::CAREFUL_HOLD_SHARE : ThreatLead::HOLD_SHARE);
             if (projected < limit)
@@ -178,8 +274,8 @@ float ThreatMultiplier::GetValue(Action* action)
             {
                 _loggedMs = now;
                 LOG_INFO("playerbots", "[threat-hold] {} holds {} on {} {}: {:.0f} % of the holder's threat after the "
-                         "next cast, limit {:.0f} %", bot->GetName(), action->getName(), target->GetName(),
-                         target->GetEntry(), projected * 100.0f, limit * 100.0f);
+                         "next cast, limit {:.0f} % [rot1] commit {:.1f} s", bot->GetName(), action->getName(),
+                         target->GetName(), target->GetEntry(), projected * 100.0f, limit * 100.0f, commit);
             }
 
             StopRepeatingShotOnHold(bot, target);  // [b35_lock]
@@ -271,6 +367,121 @@ bool ThreatMultiplier::HoldsForFreshAdd(Unit* target)
     }
 
     return true;
+}
+
+// [rot1] A crowd control in a fight is a threat decision, as a player's sheep or Cyclone is (Omen, the tank's
+// pickup): before the pull it is the pull itself (pre-pull cc), on a mob beating the caster it is self-defence; else
+// it is never cast on a mob a tank holds (it takes the mob off the tank: Cyclone makes it immune, a break sends it to
+// the highest threat, the caster's), never where the group's own damage breaks it at once (CrowdControlWouldBreak,
+// the rule "cast auto cc" already keeps), and never past the single-target hold point.
+bool ThreatMultiplier::CrowdControlHolds(CastSpellAction* action, Unit* target)
+{
+    if (!target || !target->IsAlive() || target->GetGUID().IsPlayer() || !target->IsInCombat())
+        return false;
+
+    if (target->GetVictim() == bot)
+        return false;
+
+    std::string const& spell = action->getSpell();
+    char const* why = nullptr;
+    char const* breaks = nullptr;
+    float share = 0.0f;
+
+    Unit* victim = target->GetVictim();
+    Player* holder = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    if (holder && holder != bot && holder->GetGroup() == bot->GetGroup() && PlayerbotAI::IsTank(holder))
+        why = "a tank holds it";
+    else if (!IsDamageProofCrowdControl(spell) && CrowdControlWouldBreak(botAI, target, &breaks))
+        why = breaks ? breaks : "the group's damage breaks it";
+    else
+    {
+        bool const careful = AI_VALUE(PartyStrength, "party strength").CarefulThreat();
+        share = ThreatLead::ProjectedShare(botAI, target);
+        float const limit = ThreatLead::PullOverPoint(bot, target) *
+                            (careful ? ThreatLead::CAREFUL_HOLD_SHARE : ThreatLead::HOLD_SHARE);
+        if (share >= limit)
+            why = "over the hold point";
+    }
+
+    if (!why)
+        return false;
+
+    uint32 const now = getMSTime();
+    if (!_ccLoggedMs || getMSTimeDiff(_ccLoggedMs, now) >= HOLD_LOG_MS)
+    {
+        _ccLoggedMs = now ? now : 1;
+        LOG_INFO("playerbots", "[rot1] [cc-threat] {} holds {} on {} {} in the fight: {} (on {}, share {:.0f} %)",
+                 bot->GetName(), spell, target->GetName(), target->GetEntry(), why,
+                 victim ? victim->GetName() : "nobody", share * 100.0f);
+    }
+
+    return true;
+}
+
+// [rot1] An area spell hits every mob in its radius, not only the bot's target: the old gate read the "aoe" value
+// (the "attackers" within 12 yd of the bot or its target) and Starfall, a Single spell, only its target. strat-h pull
+// 10 (8 of the druid's 16 aggro losses): Starfall and Hurricane on adds of the boss pack the tank had no lead on yet.
+// Every mob the group fights (on a member's threat list) inside the spell's area is read; the current target is left
+// to the single-target hold below (the tank's focus is on it), every other mob takes the area limit.
+bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info, bool careful)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    std::string const& spell = action->getSpell();
+    Unit* mainTarget = AI_VALUE(Unit*, "current target");
+    Unit* actionTarget = action->GetTarget();
+    bool const selfCentred = !info || info->GetMaxRange(false, bot) <= 0.0f;
+    WorldObject const* center = selfCentred ? static_cast<WorldObject const*>(bot)
+                                            : static_cast<WorldObject const*>(actionTarget ? actionTarget : mainTarget);
+    if (!center)
+        return false;
+
+    float const radius = AreaRadius(bot, info, spell);
+    uint8 const limit = careful ? CAREFUL_AOE_THREAT_LIMIT : AOE_THREAT_LIMIT;
+
+    std::vector<ObjectGuid> seen;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->IsAlive() || !member->IsInWorld() || member->GetMap() != bot->GetMap())
+            continue;
+
+        for (auto const& entry : member->GetThreatMgr().GetThreatenedByMeList())
+        {
+            Creature* mob = entry.second ? entry.second->GetOwner() : nullptr;
+            if (!mob || mob == mainTarget || !mob->IsAlive() || !mob->IsInWorld() || mob->GetMap() != bot->GetMap())
+                continue;
+
+            if (std::find(seen.begin(), seen.end(), mob->GetGUID()) != seen.end())
+                continue;
+            seen.push_back(mob->GetGUID());
+
+            if (mob->IsControlledByPlayer() || mob->IsInEvadeMode() || mob->GetVictim() == bot ||
+                FledMobs::IsRunning(mob) || !center->IsWithinDist(mob, radius, false))
+                continue;
+
+            uint8 const share = ThreatLead::TankShare(bot, mob);
+            if (share < limit)
+                continue;
+
+            uint32 const now = getMSTime();
+            if (!_aoeLoggedMs || getMSTimeDiff(_aoeLoggedMs, now) >= HOLD_LOG_MS)
+            {
+                _aoeLoggedMs = now ? now : 1;
+                Unit* victim = mob->GetVictim();
+                LOG_INFO("playerbots", "[rot1] [aoe-threat] {} holds {}: {} {} ({:.1f} yd from the {} centre, on {}) "
+                         "at {} % of the tank's threat, limit {} % in {:.0f} yd", bot->GetName(), spell, mob->GetName(),
+                         mob->GetEntry(), center->GetExactDist2d(mob), selfCentred ? "own" : "target",
+                         victim ? victim->GetName() : "nobody", share, limit, radius);
+            }
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void ThreatStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

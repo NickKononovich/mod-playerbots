@@ -485,4 +485,57 @@ public:
     }
 };
 
+// [rot1] Blood's long cooldowns as the wowsims blood_aggro APL uses them (tools/simpct_data/vendor/apl/
+// tank_deathknight__blood_aggro.apl.json): Hysteria and Dancing Rune Weapon on cooldown above Death Strike / Heart
+// Strike, Raise Dead below them, Empower Rune Weapon below Raise Dead (no rune left), Army of the Dead pre-pull.
+// The sim scores one boss fight; the bots ran Hysteria (3 min), Raise Dead (3 min) and Empower Rune Weapon (5 min) on
+// any trash pack that qualified and met the boss with them on cooldown (sim: 1.28/min each, bots 0.30 / 0 / 0.39,
+// abilities_blood_dk.md). A dungeon's bosses are 5+ min apart in the usual run: saving these for a boss fight (or the
+// leader's burn window) loses no use, and the boss fight is where the kill time is scored.
+bool IsDKCooldownFight(PlayerbotAI* botAI);
+
+// [rot1] Dancing Rune Weapon (49028, 60 runic power, 1.5 min) ready with the runic power for it and a target in
+// melee. PlayerbotAI::CanCastSpell ignores the runic power cost.
+inline constexpr uint32 SPELL_DK_DANCING_RUNE_WEAPON = 49028;
+inline constexpr uint32 DANCING_RUNE_WEAPON_RUNIC_POWER = 600;  // internal units (x10)
+
+class DancingRuneWeaponReadyTrigger : public Trigger
+{
+public:
+    DancingRuneWeaponReadyTrigger(PlayerbotAI* botAI) : Trigger(botAI, "dancing rune weapon ready") {}
+
+    bool IsActive() override;
+};
+
+// [rot1] Hysteria off cooldown in a cooldown fight (IsDKCooldownFight).
+class HysteriaCooldownFightTrigger : public HysteriaNoCooldownTrigger
+{
+public:
+    HysteriaCooldownFightTrigger(PlayerbotAI* botAI) : HysteriaNoCooldownTrigger(botAI) {}
+
+    std::string const getName() override { return "hysteria boss"; }
+    bool IsActive() override;
+};
+
+// [rot1] The glyphed Raise Dead (RaiseDeadBoostTrigger) in a cooldown fight only.
+class RaiseDeadBossTrigger : public RaiseDeadBoostTrigger
+{
+public:
+    RaiseDeadBossTrigger(PlayerbotAI* botAI) : RaiseDeadBoostTrigger(botAI) {}
+
+    std::string const getName() override { return "raise dead boss"; }
+    bool IsActive() override;
+};
+
+// [rot1] Empower Rune Weapon outside a boss fight only as the tank's last defence: every rune down and the knight
+// below low health (the runes go to Death Strike / Rune Tap).
+class NoRuneLowHealthTrigger : public NoRuneTrigger
+{
+public:
+    NoRuneLowHealthTrigger(PlayerbotAI* botAI) : NoRuneTrigger(botAI) {}
+
+    std::string const getName() override { return "no rune low health"; }
+    bool IsActive() override;
+};
+
 #endif

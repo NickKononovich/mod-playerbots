@@ -259,6 +259,8 @@ public:
     CastStarfallAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "starfall") {}
 
     bool isUseful() override;
+    // [rot1] the stars hit every enemy within 30 yd of the druid: the area threat gate reads them all
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
 };
 
 class CastHurricaneAction : public CastSpellAction
@@ -282,13 +284,19 @@ public:
     CastMoonfireAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "moonfire", true) {}
 };
 
-// Moving, Starfire and Wrath wait for the druid to stand: Moonfire is the instant nuke, cast even over its own DoT.
+// Moving, Starfire and Wrath wait for the druid to stand: Moonfire is the instant nuke.
+// [rot1] Not over its own running DoT: 3.3.5 has no pandemic, a recast throws away the remaining ticks. Loken: 20.9
+// Moonfire/min against the sim's 4.0 (abilities_balance_druid.md). Recast only when the own DoT is missing or has
+// less than one tick (MOONFIRE_TICK_MS) left: at most one tick lost against the new direct hit and a full DoT.
+// With Moonfire up, Insect Swarm ("insect swarm missing") or nothing is the moving cast.
+inline constexpr int32 MOONFIRE_TICK_MS = 3 * IN_MILLISECONDS;
+
 class CastMoonfireOnTheMoveAction : public CastSpellAction
 {
 public:
     CastMoonfireOnTheMoveAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "moonfire") {}
 
-    bool isUseful() override { return bot->isMoving() && CastSpellAction::isUseful(); }
+    bool isUseful() override;
 };
 
 class CastInsectSwarmAction : public CastDebuffSpellAction
@@ -335,6 +343,12 @@ class CastCycloneCcAction : public CastCrowdControlSpellAction
 public:
     CastCycloneCcAction(PlayerbotAI* botAI) : CastCrowdControlSpellAction(botAI, "cyclone") {}
     Value<Unit*>* GetTargetValue() override;
+    // [rot1] in a 5-man group only before the pull (a mob not in combat yet)
+    bool isUseful() override;
+
+private:
+    static constexpr uint32 LOG_MS = 10 * IN_MILLISECONDS;
+    uint32 _loggedMs = 0;
 };
 
 class CastNaturesGraspAction : public CastBuffSpellAction

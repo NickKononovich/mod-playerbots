@@ -15,6 +15,8 @@ public:
     DeathKnightPullStrategy(PlayerbotAI* botAI) : PullStrategy(botAI, "icy touch") {}
 
     std::string GetPullActionName() const override;
+    // [rot1] Blood: Army of the Dead before a boss pull (wowsims blood_aggro prepull, -6 s)
+    std::string GetPrePullBuffActionName() const override;
 };
 
 #endif

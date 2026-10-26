@@ -23,7 +23,7 @@ private:
     static ActionNode* entangling_roots_on_cc([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("entangling roots on cc",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -31,7 +31,7 @@ private:
     static ActionNode* cyclone_on_cc([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("cyclone on cc",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -39,7 +39,7 @@ private:
     static ActionNode* hibernate_on_cc([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode("hibernate on cc",
-                              /*P*/ { NextAction("caster form") },
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }

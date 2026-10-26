@@ -9,6 +9,7 @@
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "InstanceScript.h"
+#include "Log.h"  // [rot1]
 #include "Player.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -20,9 +21,118 @@
 #include "SpellMgr.h"            // [b32_brez]
 #include "TankAoeThreat.h"       // [b32_brez] TankPeel, TankAoePackTrigger
 
+namespace
+{
+    // [rot1] The bot or a member of its group on the bot's map is in combat (the non-combat engine also runs between
+    // the mobs of a pull).
+    bool DruidGroupInCombat(Player* bot)
+    {
+        if (bot->IsInCombat())
+            return true;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            return false;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsAlive() && member->GetMap() == bot->GetMap() &&
+                member->IsInCombat())
+                return true;
+        }
+
+        return false;
+    }
+
+    // [rot1] Mark of the Wild only when it is missing (no Mark, no Gift): a refresh before it runs out is a GCD and
+    // mana for an hour-long buff.
+    bool MissingMark(PlayerbotAI* botAI, Unit* target)
+    {
+        return target && !botAI->HasAura("mark of the wild", target) && !botAI->HasAura("gift of the wild", target);
+    }
+}
+
+// [rot1] Out of combat only (and the group out of combat) and only when missing.
 bool MarkOfTheWildTrigger::IsActive()
 {
-    return BuffTrigger::IsActive() && !botAI->HasAura("gift of the wild", GetTarget());
+    Unit* target = GetTarget();
+    return MissingMark(botAI, target) && !DruidGroupInCombat(bot) && BuffTrigger::IsActive();
+}
+
+bool MarkOfTheWildOnPartyTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    return MissingMark(botAI, target) && !target->IsInCombat() && !DruidGroupInCombat(bot) &&
+           BuffOnPartyTrigger::IsActive();
+}
+
+bool DruidGroupNeedsHeal(Player* bot, bool* healerAlive)
+{
+    bool low = false;
+    bool healer = false;
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || !member->IsAlive() || !member->IsInWorld() || member->GetMap() != bot->GetMap())
+                continue;
+
+            if (member != bot && PlayerbotAI::IsHeal(member) && bot->IsWithinDistInMap(member, 60.0f))
+                healer = true;
+            if (member->GetHealthPct() < BALANCE_HEAL_PCT)
+                low = true;
+        }
+    }
+    else
+        low = bot->GetHealthPct() < BALANCE_HEAL_PCT;
+
+    if (healerAlive)
+        *healerAlive = healer;
+    return low;
+}
+
+bool MoonkinFormUpkeepTrigger::IsActive()
+{
+    // flags and one aura read first, the group pass last
+    if (!bot->IsAlive() || !bot->HasSpell(SPELL_MOONKIN_FORM))
+        return false;
+
+    uint32 const now = getMSTime();
+    if (bot->HasAura(SPELL_MOONKIN_FORM))
+    {
+        _inFormMs = now ? now : 1;
+        return false;
+    }
+
+    if (_inFormMs && getMSTimeDiff(_inFormMs, now) < LEFT_FORM_GRACE_MS)
+        return false;
+
+    if (bot->IsMounted() || bot->IsInFlight() || bot->IsNonMeleeSpellCast(false, true, true))
+        return false;
+
+    if (botAI->HasAnyAuraOf(bot, "travel form", "aquatic form", "flight form", "swift flight form", nullptr))
+        return false;
+
+    if (bot->IsSitState() || RestState::IsDrinking(bot) || RestState::IsEating(bot))
+        return false;
+
+    if (!bot->IsInCombat() && (RestState::WantsDrink(bot) || RestState::WantsFood(bot)))
+        return false;
+
+    if (!bot->IsInCombat() && DruidGroupNeedsHeal(bot))
+        return false;
+
+    if (!_loggedMs || getMSTimeDiff(_loggedMs, now) >= LOG_MS)
+    {
+        _loggedMs = now ? now : 1;
+        LOG_INFO("playerbots", "[rot1] [moonkin upkeep] {} back to Moonkin Form ({}, out of form {} ms)",
+                 bot->GetName(), bot->IsInCombat() ? "combat" : "no combat",
+                 _inFormMs ? getMSTimeDiff(_inFormMs, now) : 0u);
+    }
+
+    return true;
 }
 
 bool ThornsOnPartyTrigger::IsActive()

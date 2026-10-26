@@ -101,7 +101,7 @@ std::vector<NextAction> BloodDKStrategy::getDefaultActions()
         NextAction("rune strike", ACTION_DEFAULT + 0.6f),
         NextAction("heart strike", ACTION_DEFAULT + 0.5f),
         NextAction("death strike", ACTION_DEFAULT + 0.4f),
-        NextAction("dancing rune weapon", ACTION_DEFAULT + 0.3f),
+        // [rot1] Dancing Rune Weapon moved to the "dancing rune weapon ready" trigger (above Rune Strike)
         NextAction("death coil", ACTION_DEFAULT + 0.2f),
         NextAction("horn of winter", ACTION_DEFAULT + 0.1f),
         NextAction("melee", ACTION_DEFAULT)
@@ -228,18 +228,31 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     // [b35_uh] moved here from GenericDKStrategy, unchanged: the tank spends Empower Rune Weapon in any fight once
     // every rune is down (wowsims blood_aggro: on cooldown; blood_dps: with no rune of any type left)
-    triggers.push_back(new TriggerNode("no rune", { NextAction("empower rune weapon", ACTION_HIGH + 1) }));
+    // [rot1] in a boss fight (IsDKBossFight, NoRuneBossTrigger as Frost): spent on trash the 5 min cooldown met the
+    // boss on cooldown (sim 1.28/min, bots 0.39; 246 "on cooldown" refusals in the 2026-10-26 logs). Elsewhere only as
+    // the tank's last defence, with every rune down below low health.
+    triggers.push_back(new TriggerNode("no rune boss", { NextAction("empower rune weapon", ACTION_HIGH + 1) }));
+    triggers.push_back(new TriggerNode("no rune low health", { NextAction("empower rune weapon", ACTION_HIGH + 1) }));
+
+    // [rot1] Dancing Rune Weapon on cooldown above Rune Strike (13), Death Strike and Heart Strike (wowsims
+    // blood_aggro: Rune Strike only while it is not ready or at 80+ runic power). As a default action (+0.3) it ran
+    // only when Rune Strike, Heart Strike and Death Strike were all impossible (0.89/min against the sim's 1.28).
+    triggers.push_back(
+        new TriggerNode("dancing rune weapon ready", { NextAction("dancing rune weapon", ACTION_NORMAL + 3.5f) }));
 
     // [b44_cast] Raise Dead on cooldown in a boss / long elite fight (wowsims blood_aggro: after Death Strike and Heart
     // Strike, before Empower Rune Weapon and Death Coil), the Blood template's Glyph of Raise Dead needing no corpse
     // (RaiseDeadBoostTrigger, as Frost). Below Dancing Rune Weapon / Death Strike / Heart Strike (+0.3..+0.5), above
     // Death Coil (+0.2). Sim A/B on the bots' 13 counted Blood boss fights: no Raise Dead 2812 DPS vs 2974 (-5.4 %).
     // The critical-health Raise Dead + Death Pact then uses this ghoul while it lives.
-    triggers.push_back(new TriggerNode("raise dead boost", { NextAction("raise dead", ACTION_DEFAULT + 0.25f) }));
+    // [rot1] a boss fight or the leader's burn window only (RaiseDeadBossTrigger): the 3 min cooldown is not spent on
+    // a long trash pack before the boss
+    triggers.push_back(new TriggerNode("raise dead boss", { NextAction("raise dead", ACTION_DEFAULT + 0.25f) }));
 
+    // [rot1] Hysteria likewise (HysteriaCooldownFightTrigger, 3 min): bots 0.30/min against the sim's 1.28
     triggers.push_back(
         new TriggerNode(
-            "hysteria no cd",
+            "hysteria boss",
             {
                 NextAction("hysteria", ACTION_NORMAL + 4)
             }

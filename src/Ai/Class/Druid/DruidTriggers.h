@@ -34,6 +34,8 @@ class MarkOfTheWildOnPartyTrigger : public BuffOnPartyTrigger
 public:
     MarkOfTheWildOnPartyTrigger(PlayerbotAI* botAI)
         : BuffOnPartyTrigger(botAI, "mark of the wild", 8 * IN_MILLISECONDS) {}
+
+    bool IsActive() override;  // [rot1] out of combat, missing only
 };
 
 class MarkOfTheWildTrigger : public BuffTrigger
@@ -341,6 +343,34 @@ public:
 private:
     uint32 _inFormMs = 0;
 };
+
+// [rot1] A Balance druid is in Moonkin Form whenever it is not casting a spell the form forbids. Nothing brought the
+// form back but the "moonkin form" prerequisite of the next Balance spell (AUDIT_COHESION_STRAT.md A3): out of combat
+// the druid walked on in caster form after a heal (1100-1214 s of strat-h, to the end of the run). Waits while a cast
+// runs, LEFT_FORM_GRACE_MS after leaving the form (the heal that took caster form starts in that window), while a
+// party member is below BALANCE_HEAL_PCT (the druid is about to heal), on a mount, in a travel form, and while the
+// druid sits or is about to sit for food / drink (the 13 % base mana of the shift is not spent before a drink).
+inline constexpr uint32 SPELL_MOONKIN_FORM = 24858;
+inline constexpr float BALANCE_HEAL_PCT = 50.0f;
+
+class MoonkinFormUpkeepTrigger : public Trigger
+{
+public:
+    static constexpr uint32 LEFT_FORM_GRACE_MS = 3000;
+    static constexpr uint32 LOG_MS = 10 * IN_MILLISECONDS;
+
+    MoonkinFormUpkeepTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no moonkin form", 1) {}
+
+    bool IsActive() override;
+
+private:
+    uint32 _inFormMs = 0;
+    uint32 _loggedMs = 0;
+};
+
+// [rot1] A group member below BALANCE_HEAL_PCT, and whether a healer other than the bot is alive in reach. One pass
+// over the group (at most 40 members, no unit scan).
+bool DruidGroupNeedsHeal(Player* bot, bool* healerAlive = nullptr);
 
 class BearFormTrigger : public BuffTrigger
 {
