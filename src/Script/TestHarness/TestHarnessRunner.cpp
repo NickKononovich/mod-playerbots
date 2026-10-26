@@ -20652,6 +20652,15 @@ namespace TestHarness
             return false;
         }
 
+        // [lead21] a mob of the fight: a hostile creature the tank may attack, never a player's summon or guardian
+        // (slabs-h 20261026-195203: the tank was told to take back the mage's Mirror Image 1187 times)
+        bool LeaderFightMob(Player* tank, Unit* unit)
+        {
+            Creature* creature = unit ? unit->ToCreature() : nullptr;
+            return creature && tank->IsValidAttackTarget(creature) && !creature->IsCharmedOwnedByPlayerOrPlayer() &&
+                   !creature->GetOwnerGUID().IsPlayer() && !creature->GetCharmerOrOwnerPlayerOrPlayerItself();
+        }
+
         // [lead18] the nearest walking patrol (idle, a waypoint walker or on the move, not of the committed pull)
         // around the pull spot or the tank; `gap`: its distance to the nearer of the two, `reach`: its aggro reach
         Creature* LeaderPatrolNear(Player* tank, Position const& spot, PullPlanner::Decision const& d, float& gap,
@@ -21423,7 +21432,7 @@ namespace TestHarness
                     break;
                 for (Unit* attacker : bot->getAttackers())
                     if (attacker && attacker->IsAlive() && attacker->IsInWorld() && attacker->GetMap() == map &&
-                        bot->IsValidAttackTarget(attacker))
+                        bot->IsValidAttackTarget(attacker) && LeaderFightMob(tank, attacker))
                     {
                         target = attacker;
                         break;
@@ -21446,7 +21455,7 @@ namespace TestHarness
             attacked.push_back(tank);
             for (Player* bot : attacked)
                 for (Unit* attacker : bot->getAttackers())
-                    if (attacker && attacker->IsAlive() && attacker->GetMap() == map &&
+                    if (attacker && attacker->IsAlive() && attacker->GetMap() == map && LeaderFightMob(tank, attacker) &&
                         seen.insert(attacker->GetGUID()).second)
                         fightingMobs.push_back(attacker);
             if (seen.insert(target->GetGUID()).second)
@@ -21526,6 +21535,7 @@ namespace TestHarness
             for (Player* bot : seats)
                 for (Unit* attacker : bot->getAttackers())
                     if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot && attacker->ToCreature() &&
+                        LeaderFightMob(tank, attacker) &&
                         !looseOn.count(bot->GetGUID()))
                     {
                         looseOn[bot->GetGUID()] = attacker;
@@ -21786,6 +21796,24 @@ namespace TestHarness
                         logEvent(looter, "Loot", JsonObject().Str("why", "the fight is over"));
         }
         lead.lastFighting = fighting;
+        // [lead21] slabs-h 20261026-195203: the tank executing a leader PullOrder out of combat had no fresh command -
+        // rot3's stale mode ("keeps to its current target, no area spell") vetoed its pull: 17 orders "nothing came".
+        // While an order runs, its target is the tank's fresh Attack, an area pull allowed on that pack
+        if (!fighting && Leader::LEADER_TANK_EXECUTES)
+        {
+            Leader::PullOrder order;
+            if (Leader::Orders::GetOpen(party.leader, order) && !order.target.IsEmpty())
+                if (Unit* pullMob = ObjectAccessor::GetUnit(*tank, order.target); pullMob && pullMob->IsAlive())
+                {
+                    bool const changed = Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack,
+                                                                   order.target, {order.target});
+                    Leader::Events::SetAoe(tank->GetGUID(), Leader::AoeRule::AllowedOnPack, pullMob->GetPosition(),
+                                           LEADER_AOE_RADIUS);
+                    if (changed)
+                        logEvent(tank, "Attack", JsonObject().Str("target", pullMob->GetName()).Str("who", "tank")
+                                                     .Str("why", "the leader's pull order runs"));
+                }
+        }
         // [lead16] LEADER_BOSS_PREPARE: the tank's Prepare until the pull is on (and a moment after the commit)
         if (fighting)
             lead.bossPrepareFor.Clear();
