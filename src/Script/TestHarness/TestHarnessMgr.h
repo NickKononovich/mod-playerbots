@@ -469,6 +469,10 @@ namespace TestHarness
             Position issuedFight;
             Position issuedTargetAt;
             uint32 healerLostTankMs = 0;  // [lead18] healer_lost_tank_s
+            std::set<ObjectGuid> restingToFull;  // [lead20] Rest holds until full (no Prepare meanwhile)
+            uint32 spotGateProgressMs = 0;       // [lead20] the spot gate's last progress (a sitter counts)
+            std::string spotGateLast;
+            uint32 commitTickMs = 0;              // [lead20] rest time does not age a commitment
             uint32 lostCheckMs = 0;
             uint32 bossPrepareSinceMs = 0;
             ObjectGuid heldReadyMob;

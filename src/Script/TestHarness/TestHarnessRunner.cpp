@@ -21001,10 +21001,44 @@ namespace TestHarness
                 if (found)
                     break;
             }
+            // [lead20] user: «где он стоял - там тоже можно стоять»: with no cleared candidate, a member (not the
+            // healer) stays where it stands when it is safe there - ready, no new ground walk before the pull
+            if (!found && !healer && !LeaderAggroAt(bot, bot->GetPosition()))
+            {
+                lead.spots[member.guid] = bot->GetPosition();
+                found = true;
+                DecisionLog::Instance().Write(DecisionRun{party.id, party.seq, party.runStartMs}, "leader",
+                                              "spot_current", member.guid, member.name, true,
+                                              JsonObject().Str("member", member.name)
+                                                  .Str("why", "no cleared spot: it stays where it stands"));
+            }
             if (!found && newGround)
             {
                 lead.spots[member.guid] = *newGround;
                 assigned = true;
+                found = true;
+            }
+            // [lead20] no candidate passes: where the member stands is its spot when it is safe there and fits its
+            // role (the healer reaches the fight spot, a ranged member is in range of it); else it is not waited for
+            // (spot_unfit) - the gate never holds on a member without a spot
+            if (!found)
+            {
+                Position const here = bot->GetPosition();
+                Creature* mob = LeaderAggroAt(bot, here);
+                bool const fits = healer ? HealReaches(tank, here, fight)
+                                         : (!ranged || here.GetExactDist(fight) <= LeaderSpellReach(bot));
+                if (!mob && fits)
+                    lead.spots[member.guid] = here;
+                else
+                    lead.spotStuck.insert(member.guid);
+                DecisionLog::Instance().Write(DecisionRun{party.id, party.seq, party.runStartMs}, "leader",
+                                              !mob && fits ? "spot_current" : "spot_unfit", member.guid, member.name,
+                                              true,
+                                              JsonObject().Str("member", member.name)
+                                                  .Str("why", mob ? "an unpulled mob reaches where it stands: " +
+                                                                        mob->GetName()
+                                                           : fits ? "no candidate passes: it stays where it is"
+                                                                  : "where it stands does not fit its role"));
             }
         }
         // [lead15] LEADER_HEAL_REACH: the healer's spot reaches the fight spot (the tank) and every other spot, else
@@ -21123,6 +21157,24 @@ namespace TestHarness
             }
             waitFor += (waitFor.empty() ? "" : ", ") + Acore::StringFormat("{} {:.0f} yd", member.name, gap);
         }
+        // [lead20] LEADER_SPOT_GATE_STUCK_MS: no progress (the same wait, nobody sitting) this long - spot_gate_stuck,
+        // everyone counts placed where they stand
+        bool const sitting = waitFor.find(" sits") != std::string::npos;
+        if (waitFor.empty() || sitting || waitFor != lead.spotGateLast || !lead.spotGateProgressMs)
+        {
+            lead.spotGateProgressMs = now;
+            lead.spotGateLast = waitFor;
+        }
+        else if (getMSTimeDiff(lead.spotGateProgressMs, now) >= Leader::LEADER_SPOT_GATE_STUCK_MS)
+        {
+            LogEvent(party, "spot_gate_stuck", JsonObject().Str("waitFor", waitFor)
+                                                   .Num("sec", getMSTimeDiff(lead.spotGateProgressMs, now) / 1000));
+            for (Member const& member : party.members)
+                if (lead.spots.count(member.guid))
+                    lead.spotStuck.insert(member.guid);
+            lead.spotGateProgressMs = now;
+            return std::string();
+        }
         return waitFor;
     }
 
@@ -21228,7 +21280,9 @@ namespace TestHarness
                                                       JsonObject().Str("member", bot->GetName()).Str("why", why)
                                                           .Str("reject", reject)
                                                           .Str("mob", mob ? mob->GetName() : "-")
-                                                          .Real("distance", mob ? mob->GetExactDist(spot) : -1.0f));
+                                                          .Real("distance", mob ? mob->GetExactDist(spot) : -1.0f)
+                                                          .Real("aggroRange", mob ? mob->GetAggroRange(bot) : -1.0f)
+                                                          .Real("margin", Leader::LEADER_SPOT_AGGRO_MARGIN));
                     }
                     return false;
                 }
@@ -21783,8 +21837,16 @@ namespace TestHarness
             if (!combat)
             {
                 std::string restWhy;
-                bool const needsRest = RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
-                                       RestState::WantsDrink(bot, &restWhy) || RestState::WantsFood(bot, &restWhy);
+                bool needsRest = RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
+                                 RestState::WantsDrink(bot, &restWhy) || RestState::WantsFood(bot, &restWhy);
+                // [lead20] Rest holds until full: no Prepare in between (a buff stood the drinker up every 5 s)
+                bool const full = bot->GetHealthPct() >= 99.0f &&
+                                  (!bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 99.0f);
+                if (needsRest)
+                    lead.restingToFull.insert(guid);
+                else if (full || !RestState::CanRest(bot))
+                    lead.restingToFull.erase(guid);
+                needsRest |= lead.restingToFull.count(guid) > 0;
                 if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
                     if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Rest))
@@ -22474,6 +22536,16 @@ namespace TestHarness
                 return false;
             PullPlanner::Decision const& committed = *lead.commit;
             Unit* mob = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+            // [lead20] a member resting: the commitment's clock stands still (rest time is no stuck time)
+            {
+                bool resting = false;
+                for (Member const& member : party.members)
+                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid); bot && bot->IsSitState())
+                        resting = true;
+                if (resting && lead.commitTickMs)
+                    lead.commitSinceMs += getMSTimeDiff(lead.commitTickMs, now);
+                lead.commitTickMs = now;
+            }
             std::string broken;
             if (party.inCombat || tank->IsInCombat())
                 broken = "the fight is on";

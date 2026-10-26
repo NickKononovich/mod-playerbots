@@ -156,9 +156,9 @@ namespace
         };
         if (in({"leader external", "leader threat", "leader cc"}))
             return false;
+        // [lead20] Rest is eat / drink only: a buff stands the drinker up
         bool const prepareCmd = events.ready == Leader::ReadyEvent::Prepare ||
-                                events.ready == Leader::ReadyEvent::ReadyCheck ||
-                                events.ready == Leader::ReadyEvent::Rest;
+                                events.ready == Leader::ReadyEvent::ReadyCheck;
         // [lead17] LEADER_EXECUTOR_WHITELIST: no movement and no attack the leader did not order
         if (Leader::LEADER_EXECUTOR_WHITELIST)
         {
@@ -229,8 +229,11 @@ namespace
              (name.size() > 6 && name.compare(name.size() - 6, 6, " on cc") == 0)))
             return true;
         bool const prepare = events.ready == Leader::ReadyEvent::Prepare ||
-                             events.ready == Leader::ReadyEvent::ReadyCheck ||
-                             events.ready == Leader::ReadyEvent::Rest;
+                             events.ready == Leader::ReadyEvent::ReadyCheck;
+        // [lead20] Rest is eat / drink only: no buff under it (a buff stands the drinker up)
+        if (Leader::LEADER_NO_OWN_BUFF_TIMING && events.ready == Leader::ReadyEvent::Rest &&
+            dynamic_cast<CastBuffSpellAction*>(action))
+            return true;
         // [lead16] rot2: only a buff on ANOTHER member waits for Prepare; a self buff (a shapeshift form, Inner Fire,
         // an armor, a seal, a presence) is the bot's own upkeep
         if (Leader::LEADER_NO_OWN_BUFF_TIMING && !combat && !prepare && dynamic_cast<CastBuffSpellAction*>(action))

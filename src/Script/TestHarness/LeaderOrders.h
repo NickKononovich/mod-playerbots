@@ -194,7 +194,12 @@ namespace Leader
     // [lead18] every spot the leader issues and the walk to it stay out of every unpulled mob's reach (the planner's
     // IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN); none valid: the member stays (spot_rejected_aggro)
     constexpr bool LEADER_SPOT_AGGRO_GUARD = true;
-    constexpr float LEADER_SPOT_AGGRO_MARGIN = 5.0f;
+    // [lead20] slabs-h 20261026-193920: every pull spot of the shaman was rejected at 24.6-29.5 yd from a Cabal
+    // Deathsworn - the planner's IdleMobReachesSpot already is the real (level-adjusted) reach; the margin only
+    // covers the walk's sampling now
+    constexpr float LEADER_SPOT_AGGRO_MARGIN = 2.0f;
+    // [lead20] a spot gate with no progress this long: spot_gate_stuck, everyone where they stand counts placed
+    constexpr uint32 LEADER_SPOT_GATE_STUCK_MS = 20000;
     // [lead18] user «всегда безопасно стоять там, где мы уже были»: the group's walked ground is preferred for every
     // spot (cleared first, new ground only when no cleared spot fits)
     constexpr bool LEADER_PREFER_CLEARED = true;
