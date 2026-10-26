@@ -7,11 +7,16 @@
 #include "WarlockActions.h"
 #include "Event.h"
 #include "Item.h"
+#include "KillOrder.h"  // [b44_hos]
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "RaidLeaderState.h"
+#include "RtiValue.h"     // [b44_hos]
 #include "ServerFacade.h"
+#include "Strategy.h"     // [b44_hos] TargetValueExclusionType
+#include "TargetValue.h"  // [b44_hos]
 #include "Timer.h"
 #include "Unit.h"
 #include <mutex>
@@ -21,8 +26,67 @@
 
 const int ITEM_SOUL_SHARD = 6265;
 
+// [b44_hos]
+Unit* CastSeedOfCorruptionOnAttackerAction::GetTarget()
+{
+    Unit* pick = CastDebuffSpellOnAttackerAction::GetTarget();
+    if (!botAI->HasStrategy("affli", BOT_STATE_COMBAT) || !pick || !botAI->HasAura("corruption", pick, false, true))
+        return pick;
+
+    GuidSet const exclusions = GatherStrategyTargetExclusions(botAI, TargetValueExclusionType::DebuffTarget);
+    float const range = botAI->GetRange("spell");
+    Unit* best = nullptr;
+    for (ObjectGuid const guid : AI_VALUE(GuidVector, "attackers"))
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsAlive() || exclusions.count(guid) || IsCrowdControlled(unit) ||
+            HasCrowdControlIcon(bot, unit) || !bot->IsWithinCombatRange(unit, range) ||
+            !KillOrder::IsInGroupFight(bot, unit) || botAI->HasAura("seed of corruption", unit, false, true) ||
+            botAI->HasAura("corruption", unit, false, true))
+            continue;
+
+        if (!best || unit->GetHealth() > best->GetHealth())
+            best = unit;
+    }
+    return best;
+}
+
+// [b44_hos] The rule and its numbers: WarlockActions.h, above CastSeedOfCorruptionAction.
+bool AfflictionSeedWaits(PlayerbotAI* botAI, Unit* seedTarget)
+{
+    if (!seedTarget || !botAI->HasStrategy("affli", BOT_STATE_COMBAT))
+        return false;
+
+    // the Seed would replace this warlock's Corruption on that unit
+    if (botAI->HasAura("corruption", seedTarget, false, true))
+        return true;
+
+    Unit* main = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (!main || !main->IsAlive() || !main->IsInWorld())
+        return false;
+
+    // Haunt first while it is ready and not on the target
+    if (botAI->HasSpell("haunt") && !botAI->HasAura("haunt", main, false, true) && botAI->CanCastSpell("haunt", main))
+        return true;
+
+    // then Corruption on a target that lives long enough for it ("corruption", CORRUPTION_MIN_TARGET_LIFETIME); a
+    // Seed of this warlock already on it stands (the two are exclusive)
+    float const groupDps = botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get();
+    bool const lives = groupDps > 0.0f && main->GetHealth() / groupDps >= CORRUPTION_MIN_TARGET_LIFETIME;
+    return lives && !botAI->HasAura("corruption", main, false, true) &&
+           !botAI->HasAura("seed of corruption", main, false, true) && botAI->CanCastSpell("corruption", main);
+}
+
 // Checks if the bot has less than 26 soul shards, and if so, allows casting Drain Soul
-bool CastDrainSoulAction::isUseful() { return AI_VALUE2(uint32, "item count", "soul shard") < 26; }
+bool CastDrainSoulAction::isUseful()
+{
+    // In the execute range Drain Soul is the damage filler, whatever the soul shard count
+    Unit* target = GetTarget();
+    if (target && target->IsAlive() && !target->HealthAbovePct(DRAIN_SOUL_EXECUTE_HEALTH_PCT))
+        return true;
+
+    return AI_VALUE2(uint32, "item count", "soul shard") < 26;
+}
 
 // Checks if the bot's health is above a certain threshold, and if so, allows casting Life Tap
 bool CastLifeTapAction::isUseful() { return AI_VALUE2(uint8, "health", "self target") > sPlayerbotAIConfig.LowHealth; }
@@ -409,6 +473,76 @@ bool UseSoulstoneHealerAction::Execute(Event /*event*/)
 
     bot->SetSelection(healer->GetGUID());
     return UseItem(items[0], ObjectGuid::Empty, nullptr, healer);
+}
+
+// Use the soulstone item with nc strategy "ss auto" (default): a healer who can resurrect, else the main tank
+bool UseSoulstoneAutoAction::Execute(Event /*event*/)
+{
+    CleanupSoulstoneReservations();
+
+    std::vector<Item*> items = AI_VALUE2(std::vector<Item*>, "inventory items", "soulstone");
+    if (items.empty())
+        return false;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+    {
+        if (HasSoulstoneAura(bot))
+            return false;
+
+        bot->SetSelection(bot->GetGUID());
+        return UseItem(items[0], ObjectGuid::Empty, nullptr, bot);
+    }
+
+    uint32 const now = getMSTime();
+    Player* resHealer = nullptr;
+    Player* mainTank = nullptr;
+    bool preferredInGroup = false;
+    for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
+    {
+        Player* member = gref->GetSource();
+        if (!member || member->GetMap() != bot->GetMap())
+            continue;
+
+        // Resurrection, Redemption, Ancestral Spirit, Revive (druids, level 12) or Rebirth, by the spells known
+        bool const canResurrect = RaidLeader::CanResurrect(member);
+        bool const isResHealer = canResurrect && PlayerbotAI::IsHeal(member);
+        bool const isMainTank = PlayerbotAI::IsMainTank(member);
+        preferredInGroup = preferredInGroup || isResHealer || isMainTank;
+
+        if (!member->IsAlive() || !member->IsInWorld() || HasSoulstoneAura(member) ||
+            ((!isResHealer || resHealer) && (!isMainTank || mainTank)))
+            continue;
+
+        {
+            std::lock_guard<std::mutex> lock(soulstoneReservationsMutex);
+            auto const reservation = soulstoneReservations.find(member->GetGUID());
+            if (reservation != soulstoneReservations.end() && reservation->second > now)
+                continue;  // Already being soulstoned
+        }
+
+        if (ServerFacade::instance().GetDistance2d(bot, member) >= 30.0f || !bot->IsWithinLOSInMap(member))
+            continue;
+
+        if (isResHealer && !resHealer)
+            resHealer = member;
+        else if (isMainTank && !mainTank)
+            mainTank = member;
+    }
+
+    Player* target = resHealer ? resHealer : mainTank;
+    if (!target && !preferredInGroup && !HasSoulstoneAura(bot))
+        target = bot;  // nobody in the group can use it better
+    if (!target)
+        return false;
+
+    {
+        std::lock_guard<std::mutex> lock(soulstoneReservationsMutex);
+        soulstoneReservations[target->GetGUID()] = now + 2500;  // Reserve for 2.5 seconds
+    }
+
+    bot->SetSelection(target->GetGUID());
+    return UseItem(items[0], ObjectGuid::Empty, nullptr, target);
 }
 
 const std::vector<uint32> CastCreateFirestoneAction::firestoneSpellIds = {

@@ -20,6 +20,9 @@ public:
     }
 
     Unit* Calculate() override;
+
+private:
+    Unit* Pick(GuidSet const& exclusions);
 };
 
 class DpsAoeTargetValue : public RtiTargetValue

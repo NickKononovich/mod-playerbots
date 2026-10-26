@@ -6,9 +6,11 @@
 
 #include "TOCMultipliers.h"
 #include "Action.h"
+#include "DungeonHoldFire.h"
 #include "MovementActions.h"
 #include "Playerbots.h"
 #include "TOCActions.h"
+#include "TOCShared.h"
 #include "TOCTriggers.h"
 #include "Timer.h"
 #include "WipeAction.h"
@@ -53,4 +55,20 @@ bool ToCJoustMultiplier::SpareMountNearby()
     }
 
     return spareMount;
+}
+
+float ToCHoldFireMultiplier::GetValue(Action* action)
+{
+    if (!bot->IsInCombat() || dynamic_cast<ToCHoldFireAction*>(action))
+        return 1.0f;
+
+    if (Creature* paletress = ToCShared::GetShieldedPaletress(bot))
+        return DungeonHoldFire::IsDamageAction(bot, action, paletress) ? 0.0f : 1.0f;
+
+    Creature* eadric = ToCShared::GetArgentChampion(bot, ToCIds::NPC_EADRIC_BOSS);
+    if (eadric && eadric->FindCurrentSpellBySpellId(ToCIds::SPELL_EADRIC_RADIANCE) &&
+        DungeonHoldFire::IsDamageAction(bot, action, eadric))
+        return 0.0f;
+
+    return 1.0f;
 }

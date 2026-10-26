@@ -11,6 +11,7 @@
 #include "Opcodes.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
+#include "Transport.h"
 #include "World.h"
 #include "WorldPacket.h"
 
@@ -59,7 +60,7 @@ uint32 LfgJoinAction::GetRoles()
         case CLASS_DRUID:
             if (spec == 2)
                 return PLAYER_ROLE_HEALER;
-            else if (spec == 1 && bot->HasAura(16931) /* thick hide */)
+            else if (spec == 1 && (bot->HasAura(16929) || bot->HasAura(16930) || bot->HasAura(16931)))  // Thick Hide, any rank
                 return PLAYER_ROLE_TANK;
             else
                 return PLAYER_ROLE_DAMAGE;
@@ -222,6 +223,23 @@ bool LfgRoleCheckAction::Execute(Event /*event*/)
 
 bool LfgAcceptAction::Execute(Event event)
 {
+    // The Dungeon Finder teleport fails from a moving boat or zeppelin: keep the proposal, answer it ashore.
+    if (Transport* transport = bot->GetTransport(); transport && transport->IsMotionTransport())
+    {
+        if (!event.getPacket().empty())
+        {
+            WorldPacket p(event.getPacket());
+            uint32 dungeonId = 0;
+            uint8 state = 0;
+            uint32 proposalId = 0;
+            p >> dungeonId >> state >> proposalId;
+            if (proposalId)
+                botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(proposalId);
+        }
+
+        return false;
+    }
+
     uint32 id = AI_VALUE(uint32, "lfg proposal");
 
     // Try accept if already stored
@@ -350,10 +368,6 @@ bool LfgJoinAction::isUseful()
     if (bot->GetLevel() < 15)
         return false;
 
-    // Don't use for SelfBots (a real player is at the keyboard).
-    if (IsSelfBot(bot))
-        return false;
-
     if (bot->GetGroup() && bot->GetGroup()->GetLeaderGUID() != bot->GetGUID())
     {
         // botAI->ChangeStrategy("-lfg", BOT_STATE_NON_COMBAT);
@@ -372,7 +386,8 @@ bool LfgJoinAction::isUseful()
     if (bot->isDead())
         return false;
 
-    if (!RandomPlayerbotMgr::instance().IsRandomBot(bot))
+    // A selfbot only gets the lfg strategy when its owner adds it, so that is its opt-in.
+    if (!RandomPlayerbotMgr::instance().IsRandomBot(bot) && !IsSelfBot(bot))
         return false;
 
     Map* map = bot->GetMap();

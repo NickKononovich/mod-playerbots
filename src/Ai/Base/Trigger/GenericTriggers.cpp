@@ -5,22 +5,35 @@
  */
 
 #include "GenericTriggers.h"
+#include "AttackerCountValues.h"
+#include "BuyAction.h"
+#include "ChooseTargetActions.h"
 #include "Corpse.h"
 #include "CreatureAI.h"
 #include "GenericBuffUtils.h"
+#include "GenericSpellActions.h"
+#include "InterruptValues.h"
 #include "ItemVisitors.h"
 #include "LastSpellCastValue.h"
+#include "PartyStrengthValue.h"
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
+#include "RaidUtilityAssignment.h"
+#include "SetBonusTriggers.h"
 #include "SharedDefines.h"
+#include "SpellAuraEffects.h"  // [b44_cos] AuraEffect::GetBase (LossOfControlTrigger)
+#include "SpellAuras.h"
+#include "TankAoeThreat.h"  // [b32_peel]
 #include "TargetValue.h"
 #include "TemporarySummon.h"
 #include "ThreatManager.h"
+#include "ThreatValues.h"  // [b44_hos]
 #include "Timer.h"
+#include <algorithm>
 #include <string>
 
 bool LowManaTrigger::IsActive()
@@ -116,6 +129,133 @@ bool LoseAggroTrigger::IsActive()
 
 bool HasAggroTrigger::IsActive() { return AI_VALUE2(bool, "has aggro", "current target"); }
 
+bool MobAttackingGroupMemberTrigger::IsActive()
+{
+    // Also for a mob beyond taunt range on a friend within Righteous Defense range (wave 6 Utgarde Keep: Forge
+    // Masters out of taunt range killed casters 20-29 yd from the tank six times).
+    return PlayerbotAI::IsTank(bot) &&
+           (AI_VALUE(Unit*, "group member attacker") || AI_VALUE(Unit*, "attacked group member"));
+}
+
+bool MobsAttackingGroupMembersTrigger::IsActive()
+{
+    return PlayerbotAI::IsTank(bot) && AI_VALUE2(uint8, "group member attacker count", range) >= minAttackers;
+}
+
+bool GroupMemberAttackerNearTrigger::IsActive()
+{
+    if (sPlayerbotAIConfig.TankPeelWalkRange <= 0.0f || !PlayerbotAI::IsTank(bot))
+        return false;
+
+    Unit* mob = AI_VALUE(Unit*, "group member attacker");
+    return mob && bot->IsWithinDistInMap(mob, sPlayerbotAIConfig.TankPeelWalkRange) && !bot->IsWithinMeleeRange(mob);
+}
+
+bool GroupMemberAttackersFarTrigger::IsActive()
+{
+    if (!PlayerbotAI::IsTank(bot))
+        return false;
+
+    // Even one mob on the healer, also out of taunt range: wave 8 Slave Pens / Ahn'kahet healers died with the
+    // tank 40-50 yd away and nothing bringing it back.
+    if (AI_VALUE(Unit*, "far healer attacker"))
+        return true;
+
+    // within taunt range, but not all within the reach of Consecration / Thunder Clap / Swipe / Death and Decay
+    uint8 const inRange = AI_VALUE2(uint8, "group member attacker count", "30");
+    return inRange >= MobsAttackingGroupMembersTrigger::PEEL_AOE_MIN_ATTACKERS &&
+           AI_VALUE2(uint8, "group member attacker count", "8") < inRange;
+}
+
+bool TauntReactionTrigger::IsActive()
+{
+    if (!bot->IsInCombat() || !PlayerbotAI::IsTank(bot))
+        return false;
+
+    TauntReactionAction::Spells const* spells = TauntReactionAction::ClassSpells(bot);
+    if (!spells)
+        return false;
+
+    if (!AI_VALUE(Unit*, "group member attacker") && !AI_VALUE(Unit*, "attacked group member"))
+        return false;
+
+    // [b32_peel] more than 3 mobs in reach and one not held: the area threat ("tank aoe crowd") goes first and the
+    // peel steps of the class strategy follow it; a mob on the healer or a boss is taken here at once, as before
+    if (TankPeel::CrowdFirst(botAI))
+        return false;
+
+    return TauntReactionAction::SpellReady(botAI, spells->taunt) ||
+           TauntReactionAction::SpellReady(botAI, spells->ranged) ||
+           TauntReactionAction::SpellReady(botAI, spells->swarm);
+}
+
+bool FleeingMobTrigger::IsActive()
+{
+    if (!bot->IsInCombat() || PlayerbotAI::IsHeal(bot))
+        return false;
+
+    Unit* mob = AI_VALUE(Unit*, "fleeing mob");
+    return mob && !FledMobs::StoppedRecently(mob->GetGUID());
+}
+
+bool FledSurvivorNearTrigger::IsActive()
+{
+    if (bot->IsInCombat() || !bot->IsAlive() || !PlayerbotAI::IsTank(bot) || !bot->GetMap() ||
+        !bot->GetMap()->IsDungeon())
+        return false;
+
+    return AI_VALUE(Unit*, "fled survivor") != nullptr;
+}
+
+bool HealerAttackedFarTrigger::IsActive()
+{
+    return PlayerbotAI::IsTank(bot) && AI_VALUE(Unit*, "far healer attacker");
+}
+
+bool GroupMemberAttackedTrigger::IsActive()
+{
+    if (bot->IsInCombat() || !bot->IsAlive() || !PlayerbotAI::IsTank(bot))
+        return false;
+
+    Unit* mob = AI_VALUE(Unit*, "defend member target");
+    return mob && bot->GetVictim() != mob;
+}
+
+bool IdleBossAtTankTrigger::IsActive()
+{
+    constexpr float IDLE_BOSS_RANGE = 10.0f;
+    constexpr uint32 IDLE_BOSS_MS = 10 * IN_MILLISECONDS;
+    if (bot->IsInCombat() || !bot->IsAlive() || !PlayerbotAI::IsTank(bot) || !bot->GetMap() ||
+        !bot->GetMap()->IsDungeon())
+    {
+        _sinceMs = 0;
+        return false;
+    }
+
+    // the current target, else the planner's pick: the body-pulled boss is often neither attacked nor the current
+    // target (occ-h build 15: "careful pull: engage ... Drakos" every second, no swing, no current target)
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target)
+        target = AI_VALUE(Unit*, "aggressive target");
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !(boss->IsDungeonBoss() || boss->isWorldBoss()) || !boss->IsAlive() || boss->IsInCombat() ||
+        !bot->IsWithinDistInMap(boss, IDLE_BOSS_RANGE) || !bot->IsValidAttackTarget(boss))
+    {
+        _sinceMs = 0;
+        return false;
+    }
+
+    uint32 const now = getMSTime();
+    if (!_sinceMs || _boss != boss->GetGUID())
+    {
+        _boss = boss->GetGUID();
+        _sinceMs = now;
+        return false;
+    }
+
+    return getMSTimeDiff(_sinceMs, now) >= IDLE_BOSS_MS;
+}
+
 bool BuffTrigger::IsActive()
 {
     Unit* target = GetTarget();
@@ -191,31 +331,74 @@ bool LowTankThreatTrigger::IsActive()
     return tankThreat == 0.0f || threat > tankThreat * 0.5f;
 }
 
+bool HighThreatTrigger::IsActive()
+{
+    // Percent of the tank's threat on the bot's target at which a real dps drops threat before the mob turns.
+    constexpr uint8 HIGH_THREAT_PERCENT = 90;
+
+    if (PlayerbotAI::IsTank(bot) || !bot->GetGroup())
+        return false;
+
+    if (_raidOnly)
+    {
+        Map* map = bot->GetMap();
+        if (!map || !map->IsRaid())
+            return false;
+    }
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    // a mob nobody has threat on (the tank has not reached it yet) reads as 100 too: nothing to drop then
+    if (!target || target->IsPlayer() || target->GetThreatMgr().GetThreat(bot) <= 0.0f)
+        return false;
+
+    if (AI_VALUE2(uint8, "threat", "current target") < HIGH_THREAT_PERCENT)
+        return false;
+
+    // the group's dps outgear its tank in practice: the others give it more margin for a while
+    // [b44_hos] Not a mob on a friendly NPC (Brann, an escort): its threat lead says nothing about the group's tank,
+    // and the careful limits it switches on held the whole group (AoE 30, single 70, melee 85) for 60 s at a time.
+    if (!ThreatLead::NpcHolder(bot, target))
+        PartyStrengthShared::NoteThreatScare(bot);
+    return true;
+}
+
 bool AoeTrigger::IsActive()
 {
     Unit* current_target = AI_VALUE(Unit*, "current target");
+    uint32 const minCount = static_cast<uint32>(amount);
+    // [b36_tankaoe] A tank in combat counts the mobs around itself too: its pile stands on the tank, not around the
+    // current target (a caster at range, a fresh add walking in, none between tank assist picks). The tank AoE
+    // spells (Thunder Clap, Swipe, Blood Boil, Death and Decay, Consecration) hit around the tank. hos-h-5G-25
+    // Tribunal: the death knight's target was empty or a lone Protector while 3-8 mobs stood on it.
+    if (bot->IsInCombat() && PlayerbotAI::IsTank(bot) &&
+        HasEnoughAoeTargets(botAI, bot->GetPosition(), range, minCount))
+        return true;
+
     if (!current_target)
         return false;
 
-    return HasEnoughAoeTargets(botAI, current_target->GetPosition(), range, static_cast<uint32>(amount));
+    return HasEnoughAoeTargets(botAI, current_target->GetPosition(), range, minCount);
 }
 
 bool NoFoodTrigger::IsActive()
 {
-    bool isRandomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
-    if (isRandomBot && botAI->HasCheat(BotCheatMask::food))
-        return false;
-
     return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured food").empty();
 }
 
 bool NoDrinkTrigger::IsActive()
 {
-    bool isRandomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
-    if (isRandomBot && botAI->HasCheat(BotCheatMask::food))
+    return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water").empty();
+}
+
+bool NeedFoodRestockTrigger::IsActive()
+{
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->InBattleground() || bot->IsInFlight() || IsSelfBot(bot))
         return false;
 
-    return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water").empty();
+    if (CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < RESTOCK_FOOD_MIN)
+        return true;
+
+    return bot->GetMaxPower(POWER_MANA) > 0 && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < RESTOCK_FOOD_MIN;
 }
 
 bool TargetInSightTrigger::IsActive() { return AI_VALUE(Unit*, "grind target"); }
@@ -321,6 +504,13 @@ bool BoostTrigger::IsActive()
     if (target && target->ToPlayer())
         return true;
 
+    // Offensive cooldowns line up with Bloodlust/Heroism (or a boss pull with no lust coming), and wait a few
+    // seconds on a boss pull while a shaman of the group can still cast it.
+    if (ai::raidutil::IsBurstWindow(botAI))
+        return true;
+    if (ai::raidutil::ShouldHoldBurstForLust(botAI))
+        return false;
+
     return AI_VALUE(uint8, "balance") <= balance;
 }
 
@@ -329,6 +519,11 @@ bool GenericBoostTrigger::IsActive()
     Unit* target = AI_VALUE(Unit*, "current target");
     if (target && target->ToPlayer())
         return true;
+
+    if (ai::raidutil::IsBurstWindow(botAI))
+        return true;
+    if (ai::raidutil::ShouldHoldBurstForLust(botAI))
+        return false;
 
     return AI_VALUE(uint8, "balance") <= balance;
 }
@@ -367,11 +562,44 @@ bool ItemCountTrigger::IsActive() { return AI_VALUE2(uint32, "item count", item)
 
 bool InterruptSpellTrigger::IsActive()
 {
-    return SpellTrigger::IsActive() && botAI->IsInterruptableSpellCasting(GetTarget(), getName());
+    // The group interrupt rotation may have given this cast to another member: one kick per cast.
+    return SpellTrigger::IsActive() && botAI->IsInterruptableSpellCasting(GetTarget(), getName()) &&
+           InterruptCoordination::Allows(botAI, GetTarget(), spell);
 }
 
 bool DeflectSpellTrigger::IsActive()
 {
+    // [bear_aoe_threat] Spell Reflection takes a bolt from any caster, not only the tank's current target: hos-h
+    // build 30 (20261025-184229-hos-h-5F-39, Tribunal of Ages) the Prot Warrior reflected once in 158 s and died to a
+    // Dark Rune Stormcaller's Lightning Bolt (7560) while it held a Protector.
+    if (spell == "spell reflection")
+    {
+        Unit* current = GetTarget();
+        bool const currentCasts =
+            current && current->IsNonMeleeSpellCast(true) && current->GetTarget() == bot->GetGUID();
+        if (!currentCasts)
+        {
+            bool casterOnBot = false;
+            for (ObjectGuid const& guid : AI_VALUE(GuidVector, "attackers"))
+            {
+                Unit* mob = botAI->GetUnit(guid);
+                if (!mob || !mob->IsAlive() || !mob->IsNonMeleeSpellCast(false, false, true))
+                    continue;
+
+                Spell* cast = mob->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                if (cast && cast->m_targets.GetUnitTargetGUID() == bot->GetGUID())
+                {
+                    casterOnBot = true;
+                    break;
+                }
+            }
+            if (!casterOnBot)
+                return false;
+        }
+
+        return context->GetValue<uint32>("spell id", spell)->Get() != 0;
+    }
+
     Unit* target = GetTarget();
     if (!target || !target->IsNonMeleeSpellCast(true) || target->GetTarget() != bot->GetGUID())
         return false;
@@ -400,7 +628,7 @@ bool DeflectSpellTrigger::IsActive()
         if (SpellInfo const* tarSpellInfo = spell->GetSpellInfo())
         {
             attackSchool = tarSpellInfo->GetSchoolMask();
-            if (deflectSchool == attackSchool)
+            if (attackSchool != SPELL_SCHOOL_MASK_NONE && (deflectSchool & attackSchool))
                 return true;
         }
     }
@@ -414,11 +642,20 @@ bool HasAuraTrigger::IsActive() { return botAI->HasAura(getName(), GetTarget(), 
 
 bool LossOfControlTrigger::IsActive()
 {
-    return bot->HasAuraType(SPELL_AURA_MOD_STUN) ||
-           bot->HasAuraType(SPELL_AURA_MOD_FEAR) ||
-           bot->HasAuraType(SPELL_AURA_MOD_ROOT) ||
-           bot->HasAuraType(SPELL_AURA_MOD_CONFUSE) ||
-           bot->HasAuraType(SPELL_AURA_MOD_CHARM);
+    // [b44_cos] Only a control that still lasts: cos-h spent Every Man for Himself (2 min cooldown) on Epoch's
+    // heroic Time Stop, a 2 s stun that ends before the trinket-like break pays off. A control of unknown length
+    // (permanent / no duration) still counts.
+    constexpr int32 MIN_CONTROL_LEFT_MS = 3000;
+    static AuraType const controls[] = {SPELL_AURA_MOD_STUN, SPELL_AURA_MOD_FEAR, SPELL_AURA_MOD_ROOT,
+                                        SPELL_AURA_MOD_CONFUSE, SPELL_AURA_MOD_CHARM};
+    for (AuraType const type : controls)
+        for (AuraEffect const* effect : bot->GetAuraEffectsByType(type))
+        {
+            Aura const* aura = effect ? effect->GetBase() : nullptr;
+            if (aura && (aura->GetDuration() < 0 || aura->GetDuration() >= MIN_CONTROL_LEFT_MS))
+                return true;
+        }
+    return false;
 }
 
 bool FearCharmSleepTrigger::IsActive()
@@ -482,9 +719,46 @@ bool TimerBGTrigger::IsActive()
 
 bool HasNoAuraTrigger::IsActive() { return !botAI->HasAura(getName(), GetTarget()); }
 
+namespace
+{
+    constexpr float TANK_ASSIST_AOE_REACH = 8.0f;      // Consecration, Thunder Clap, Swipe around the tank
+    constexpr uint8 TANK_ASSIST_AOE_PEEL_MOBS = 2;     // as "mobs attacking group members nearby" (10 yd)
+    constexpr uint32 TANK_ASSIST_AOE_GRACE_MS = 1500;  // ~1.5 Consecration ticks: loose longer, the AoE is not enough
+    constexpr float TANK_ASSIST_SECURE_LEAD = 1.3f;    // the current target stays on the tank with this margin
+    constexpr float TANK_ASSIST_SLIPPING_LEAD = 1.1f;  // a mob held by less than this needs the tank's attention
+
+    // The tank's threat on `mob` over the highest threat anyone else has on it (2.0: nobody else has any).
+    float TankThreatLead(Player* bot, Unit* mob)
+    {
+        if (!mob->CanHaveThreatList())
+            return 2.0f;
+
+        float mine = 0.0f;
+        float others = 0.0f;
+        for (ThreatReference const* ref : mob->GetThreatMgr().GetUnsortedThreatList())
+        {
+            if (ref->GetVictim() == bot)
+                mine = ref->GetThreat();
+            else
+                others = std::max(others, ref->GetThreat());
+        }
+
+        if (others <= 0.0f)
+            return mine > 0.0f ? 2.0f : 0.0f;
+
+        return mine / others;
+    }
+}
+
+// Wave 6: re-targeting the lowest-threat mob every time another one dipped below the current target was a third
+// of a tank's combat ticks (relevance 50, above the peel taunts). The tank now keeps a target it holds, and moves
+// on for a mob on the healer, for a mob on a damage dealer that its area threat does not reach, for a mob in melee
+// when the current target is not, or for a mob slipping off while the current target is held with a safe margin.
 bool TankAssistTrigger::IsActive()
 {
-    if (!AI_VALUE(uint8, "attacker count"))
+    // Out of combat a mob on a member counts even before the cached threat-list "attackers" lists it.
+    bool const idle = !bot->IsInCombat();
+    if (!AI_VALUE(uint8, "attacker count") && (!idle || !AI_VALUE(Unit*, "defend member target")))
         return false;
 
     Unit* currentTarget = AI_VALUE(Unit*, "current target");
@@ -492,10 +766,63 @@ bool TankAssistTrigger::IsActive()
         return true;
 
     Unit* tankTarget = AI_VALUE(Unit*, "tank target");
-    if (!tankTarget || currentTarget == tankTarget)
+    if (!tankTarget)
         return false;
 
-    return AI_VALUE2(bool, "has aggro", "current target");
+    // Out of combat "current target" is only a selection: the non-combat engine has no rotation to act on it.
+    if (currentTarget == tankTarget)
+        return idle && tankTarget->IsInCombat() && bot->GetVictim() != tankTarget;
+
+    Unit* victim = tankTarget->GetVictim();
+    Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+    bool const onGroupMember = victimPlayer && victimPlayer != bot && bot->IsInSameRaidWith(victimPlayer) &&
+                               !PlayerbotAI::IsTank(victimPlayer);
+    bool const onHealer = onGroupMember && PlayerbotAI::IsHeal(victimPlayer);
+
+    // A current target loose on a damage dealer is still worked on, but not while another mob hits the healer
+    // (wave 8 Slave Pens: the tank kept a mob on the hunter while four mobs were already on the healer).
+    bool const currentInMelee = bot->IsWithinMeleeRange(currentTarget);
+    if (!AI_VALUE2(bool, "has aggro", "current target"))
+    {
+        if (!onGroupMember)
+            return false;
+
+        // a loose boss is taunted back ("lose aggro"); a raid's main tank leaves the adds to the off-tanks
+        Creature* currentCreature = currentTarget->ToCreature();
+        if ((currentCreature && (currentCreature->IsDungeonBoss() || currentCreature->isWorldBoss())) ||
+            (bot->GetMap() && bot->GetMap()->IsRaid() && PlayerbotAI::IsMainTank(bot)))
+            return false;
+
+        Unit* currentVictim = currentTarget->GetVictim();
+        Player* currentVictimPlayer = currentVictim ? currentVictim->ToPlayer() : nullptr;
+        bool const currentOnMember = currentVictimPlayer && currentVictimPlayer != bot &&
+                                     bot->IsInSameRaidWith(currentVictimPlayer) &&
+                                     !PlayerbotAI::IsTank(currentVictimPlayer);
+        if (onHealer)
+            return !currentOnMember || !PlayerbotAI::IsHeal(currentVictimPlayer);
+
+        // Wave 25: a current target on a pet, a totem or nobody kept the tank while a mob hit a damage dealer; one
+        // out of melee kept it while the loose mob stood in reach of the tank's swings.
+        return !currentOnMember || (!currentInMelee && bot->IsWithinMeleeRange(tankTarget));
+    }
+
+    if (onGroupMember)
+    {
+        // Consecration ticks lose to a healer's heal threat: a mob on the healer is taken by hand. The area threat
+        // covers a damage dealer's mob only for a moment: on cooldown it holds nothing (wave 25: two mobs on the
+        // hunter 0-3 yd from the tank for 5-11 s while the tank kept swinging at its held target).
+        bool const coveredByAreaThreat =
+            !onHealer && bot->IsWithinDist(tankTarget, TANK_ASSIST_AOE_REACH) &&
+            AI_VALUE2(uint8, "group member attacker count", "10") >= TANK_ASSIST_AOE_PEEL_MOBS &&
+            GroupMemberAttackerValue::LooseForMs(botAI, tankTarget->GetGUID()) < TANK_ASSIST_AOE_GRACE_MS;
+        return !coveredByAreaThreat || !currentInMelee;
+    }
+
+    if (!currentInMelee && bot->IsWithinMeleeRange(tankTarget))
+        return true;
+
+    return TankThreatLead(bot, currentTarget) >= TANK_ASSIST_SECURE_LEAD &&
+           TankThreatLead(bot, tankTarget) < TANK_ASSIST_SLIPPING_LEAD;
 }
 
 bool IsBehindTargetTrigger::IsActive()
@@ -518,7 +845,17 @@ bool IsNotFacingTargetTrigger::IsActive()
     if (botAI->HasStrategy("stay", botAI->GetState()))
         return false;
 
-    return !AI_VALUE2(bool, "facing", "current target");
+    // A moving bot's spline rewrites its orientation every update, so a turn made now is undone at once and the
+    // trigger fired again on the next tick (a Balance druid made 265 turns on Gruul). A cast turns the bot by itself
+    // (PlayerbotAI::CastSpell); this trigger only keeps auto-attack and auto-repeat shots facing.
+    if (bot->isMoving())
+        return false;
+
+    // A melee swing needs the target within 120 degrees in front (Player::Update), a spell within 180: the narrower
+    // 90-degree "facing" value turned the bot each time the target drifted a little.
+    constexpr float MELEE_FACING_ARC = 2.0f * static_cast<float>(M_PI) / 3.0f;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    return target && !bot->HasInArc(MELEE_FACING_ARC, target);
 }
 
 bool HasCcTargetTrigger::IsActive()
@@ -557,6 +894,11 @@ bool PossibleAddsTrigger::IsActive()
 
 bool NotDpsTargetActiveTrigger::IsActive()
 {
+    // [healer_heals_first] A healer with healing to do does not chase the "dps target" (see
+    // DpsAssistAction::HealerHasHealingWork); with the group topped up it may help kill again.
+    if (DpsAssistAction::HealerHasHealingWork(botAI))
+        return false;
+
     Unit* target = AI_VALUE(Unit*, "current target");
     if (target && target->IsAlive())
     {
@@ -711,3 +1053,450 @@ bool ForceRebuffPendingTrigger::IsActive()
 {
     return botAI->forceRebuff.IsPending();
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h)
+// ---------------------------------------------------------------------------------------------------------------
+
+namespace
+{
+bool HasAnyAura(Player* bot, std::vector<uint32> const& ids)
+{
+    for (uint32 id : ids)
+        if (bot->HasAura(id))
+            return true;
+
+    return false;
+}
+
+float HealGatePct(ai::setbonus::HealGate gate)
+{
+    switch (gate)
+    {
+        case ai::setbonus::HealGate::ALMOST_FULL:
+            return float(sPlayerbotAIConfig.AlmostFullHealth);
+        case ai::setbonus::HealGate::MEDIUM:
+            return float(sPlayerbotAIConfig.MediumHealth);
+        case ai::setbonus::HealGate::LOW:
+            return float(sPlayerbotAIConfig.LowHealth);
+        default:
+            return 100.0f;
+    }
+}
+}  // namespace
+
+bool SetBonusTrigger::IsWorn()
+{
+    if (_spec.worn.empty())
+        return true;
+
+    uint32 const now = getMSTime();
+    if (!_wornCheckMs || getMSTimeDiff(_wornCheckMs, now) >= ai::setbonus::WORN_RECHECK_MS)
+    {
+        _wornCheckMs = now;
+        _worn = HasAnyAura(bot, _spec.worn);
+    }
+
+    return _worn;
+}
+
+bool SetBonusTrigger::Conditions()
+{
+    if (!_spec.auras.empty() && !HasAnyAura(bot, _spec.auras))
+        return false;
+
+    if (!_spec.absent.empty() && HasAnyAura(bot, _spec.absent))
+        return false;
+
+    if (_spec.stackAura)
+    {
+        Aura const* aura = bot->GetAura(_spec.stackAura);
+        if (!aura || aura->GetStackAmount() < _spec.minStacks)
+            return false;
+    }
+
+    if (_spec.icdAura)
+    {
+        uint32 const now = getMSTime();
+        if (bot->HasAura(_spec.icdAura))
+        {
+            _icdSeenMs = now;
+            return false;
+        }
+
+        if (_icdSeenMs && getMSTimeDiff(_icdSeenMs, now) < _spec.icdMs)
+            return false;
+    }
+
+    if (_spec.selfHealthBelow && bot->GetHealthPct() >= float(_spec.selfHealthBelow))
+        return false;
+
+    if (_spec.selfHealthAbove && bot->GetHealthPct() <= float(_spec.selfHealthAbove))
+        return false;
+
+    if (_spec.maxManaPct &&
+        (bot->GetMaxPower(POWER_MANA) == 0 || bot->GetPowerPct(POWER_MANA) >= float(_spec.maxManaPct)))
+    {
+        return false;
+    }
+
+    if (_spec.minRage || _spec.maxRage)
+    {
+        uint32 const rage = bot->GetPower(POWER_RAGE) / 10;
+        if (rage < _spec.minRage || (_spec.maxRage && rage > _spec.maxRage))
+            return false;
+    }
+
+    if (!_spec.readySpell.empty())
+    {
+        uint32 const spellId = context->GetValue<uint32>("spell id", _spec.readySpell)->Get();
+        if (!spellId || bot->HasSpellCooldown(spellId))
+            return false;
+    }
+
+    if (_spec.minComboPoints || _spec.tankingBoss)
+    {
+        Unit* target = context->GetValue<Unit*>("current target")->Get();
+        if (!target || !target->IsAlive())
+            return false;
+
+        if (_spec.minComboPoints && bot->GetComboPoints(target) < _spec.minComboPoints)
+            return false;
+
+        if (_spec.tankingBoss)
+        {
+            Creature* creature = target->ToCreature();
+            if (!bot->IsInCombat() || !creature || !(creature->IsDungeonBoss() || creature->isWorldBoss()) ||
+                target->GetVictim() != bot)
+            {
+                return false;
+            }
+        }
+    }
+
+    if (_spec.healGate != ai::setbonus::HealGate::NONE)
+    {
+        Unit* healTarget = context->GetValue<Unit*>("party member to heal")->Get();
+        if (!healTarget || !healTarget->IsAlive() || healTarget->GetHealthPct() >= HealGatePct(_spec.healGate))
+            return false;
+    }
+
+    if (_spec.aoeHealCount && context->GetValue<uint8>("aoe heal", "almost full")->Get() < _spec.aoeHealCount)
+        return false;
+
+    return true;
+}
+
+bool SetBonusTrigger::IsActive()
+{
+    if (!IsWorn() || !Conditions())
+        return false;
+
+    uint32 const now = getMSTime();
+    if (!_lastLogMs || getMSTimeDiff(_lastLogMs, now) >= ai::setbonus::LOG_INTERVAL_MS)
+    {
+        _lastLogMs = now;
+        LOG_INFO("playerbots", "[setbonus-rot] {} '{}': {}", bot->GetName(), getName(), _spec.note);
+    }
+
+    return true;
+}
+
+namespace ai::setbonus
+{
+namespace
+{
+// Set bonus passives (the aura the item set applies).
+std::vector<uint32> const WARRIOR_TANK_SHIELD_WALL_4P = { 124011, 125011, 126011, 127011 };
+constexpr uint32 WARRIOR_TANK_E2_2P = 127510;
+constexpr uint32 WARRIOR_TANK_E2_4P = 127511;
+constexpr uint32 PALADIN_HOLY_E2_2P = 127520;
+constexpr uint32 PALADIN_PROT_E1_4P = 127031;
+std::vector<uint32> const DK_TANK_VAMPIRIC_BLOOD = { 124101, 125101, 126101, 127100 };
+std::vector<uint32> const DK_TANK_ICEBOUND_FORTITUDE = { 124101, 125101, 126101, 127101 };
+constexpr uint32 DK_TANK_E2_2P = 127600;
+constexpr uint32 DK_TANK_E2_4P = 127601;
+constexpr uint32 PRIEST_HEAL_E1_4P = 127071;
+std::vector<uint32> const SHAMAN_ENH_MAELSTROM_2P = { 127130, 127630 };
+constexpr uint32 MAGE_E2_2P = 127640;
+constexpr uint32 WARLOCK_E2_2P = 127650;
+constexpr uint32 DRUID_FERAL_E1_4P = 127181;
+constexpr uint32 DRUID_FERAL_E1_2P = 127180;
+std::vector<uint32> const HUNTER_HARD_4P = { 124051, 125051, 126051 };
+
+// Proc and charge auras the bonuses put on the bot ("native" = the Blizzard spell, else a clone).
+constexpr uint32 SPELL_SLAM_INSTANT = 46916;           // Slam! (native)
+constexpr uint32 SPELL_SUDDEN_DEATH = 52437;           // native
+constexpr uint32 SPELL_TASTE_FOR_BLOOD = 60503;        // native
+constexpr uint32 SPELL_ASCENDANT_WHIRL = 127504;
+constexpr uint32 SPELL_ASCENDANT_WARD = 127604;
+constexpr uint32 SPELL_DIVINE_FAVOR = 20216;           // native
+std::vector<uint32> const SPELL_SHOCKING_LIGHT = { 124024, 125024, 126024 };
+constexpr uint32 SPELL_TITANS_LIGHT = 127024;
+constexpr uint32 SPELL_TITANIC_JUDGEMENT = 127034;
+constexpr uint32 SPELL_RIGHTEOUS_AEGIS = 127534;
+std::vector<uint32> const SPELL_DIVINE_STORM_RESET = { 124044, 125044, 126044, 127044 };
+constexpr uint32 SPELL_WRATH_OF_THE_TITANS = 127045;
+constexpr uint32 SPELL_IMPROVED_STEADY_SHOT = 53220;   // native
+constexpr uint32 SPELL_TITANS_FOCUS = 127054;
+constexpr uint32 SPELL_LOCK_AND_LOAD = 56453;          // native
+constexpr uint32 SPELL_ASCENDANT_EXECUTION = 127554;
+constexpr uint32 SPELL_TITANIC_FLOW = 127064;
+constexpr uint32 SPELL_SURGE_OF_LIGHT = 33151;         // native
+constexpr uint32 SPELL_ASCENDANT_PRAYER = 127574;
+constexpr uint32 SPELL_TITANIC_INSIGHT = 127084;
+constexpr uint32 SPELL_ASCENDANT_VOID = 127584;
+constexpr uint32 SPELL_ASCENDANT_POWER = 127594;
+std::vector<uint32> const SPELL_TIDAL_SURGE = { 124114, 125114, 126114 };
+constexpr uint32 SPELL_TITANIC_TIDE = 127114;
+constexpr uint32 SPELL_ASCENDANT_TIDE = 127614;
+constexpr uint32 SPELL_LAVA_SURGE = 127124;
+constexpr uint32 SPELL_ASCENDANT_STORM = 127624;
+constexpr uint32 SPELL_TITANIC_STRIKE = 127134;
+constexpr uint32 SPELL_MAELSTROM_WEAPON = 53817;       // native
+constexpr uint32 SPELL_ARCANE_SURGE = 127144;
+constexpr uint32 SPELL_HOT_STREAK = 48108;             // native
+constexpr uint32 SPELL_FINGERS_OF_FROST = 44544;       // native
+constexpr uint32 SPELL_ARCANE_BLAST_STACK = 36032;     // native
+constexpr uint32 SPELL_MISSILE_BARRAGE = 44401;        // native
+constexpr uint32 SPELL_BACKLASH = 34936;               // native
+constexpr uint32 SPELL_ASCENDANT_PACT = 127654;
+constexpr uint32 ASCENDANT_PACT_ICD_MS = 15 * IN_MILLISECONDS;
+constexpr uint32 SPELL_LUNAR_SURGE = 127174;
+constexpr uint32 SPELL_ASCENDANT_FRENZY = 127684;
+constexpr uint32 SPELL_CLEARCASTING_FERAL = 16870;     // native (Omen of Clarity)
+constexpr uint32 SPELL_TITANIC_BLOOM = 127164;
+constexpr uint32 SPELL_ASCENDANT_BLOOM = 127664;
+
+// Health / rage / mana windows of the bonus-driven actions.
+constexpr uint8 TASTE_FOR_BLOOD_MIN_RAGE = 5;    // Overpower cost
+constexpr uint8 TASTE_FOR_BLOOD_MAX_RAGE = 30;   // a stance swap keeps 10 rage: do not throw away more than 20
+constexpr uint8 LAST_STAND_BELOW_HEALTH = 80;
+constexpr uint8 RUNE_TAP_BELOW_HEALTH = 85;
+constexpr uint8 ASCENDANT_PRAYER_MIN_INJURED = 3;
+constexpr uint8 TITANIC_TIDE_MIN_INJURED = 2;
+constexpr uint8 MAELSTROM_WEAPON_MIN_STACKS = 4;
+constexpr uint8 ARCANE_BLAST_MAX_STACKS = 4;
+constexpr uint8 LIFE_TAP_ABOVE_HEALTH = 60;
+constexpr uint8 LIFE_TAP_BELOW_MANA = 95;
+constexpr uint8 FEROCIOUS_BITE_MIN_COMBO_POINTS = 4;
+
+TriggerSpec Proc(std::vector<uint32> auras, std::string note)
+{
+    TriggerSpec spec;
+    spec.auras = std::move(auras);
+    spec.note = std::move(note);
+    return spec;
+}
+
+TriggerSpec HealProc(std::vector<uint32> auras, HealGate gate, std::string note)
+{
+    TriggerSpec spec = Proc(std::move(auras), std::move(note));
+    spec.healGate = gate;
+    return spec;
+}
+
+TriggerSpec WornReady(std::vector<uint32> worn, std::string spell, std::string note)
+{
+    TriggerSpec spec;
+    spec.worn = std::move(worn);
+    spec.readySpell = std::move(spell);
+    spec.note = std::move(note);
+    return spec;
+}
+
+TriggerSpec TankCooldown(std::vector<uint32> worn, std::string spell, std::string note)
+{
+    TriggerSpec spec = WornReady(std::move(worn), std::move(spell), std::move(note));
+    spec.tankingBoss = true;
+    return spec;
+}
+}  // namespace
+
+void RegisterTriggers(TriggerCreatorMap& creators)
+{
+    auto add = [&creators](std::string const& name, TriggerSpec const& spec)
+    {
+        creators[name] = [name, spec](PlayerbotAI* botAI) { return new SetBonusTrigger(botAI, name, spec); };
+    };
+
+    // Warrior dps: Slam! (hard 4p, E1 4p) also for Arms, Sudden Death (E1 2p) and Taste for Blood (E2 2p) also for
+    // Fury, the Whirlwind charge (E2 2p).
+    add("set bonus slam!", Proc({ SPELL_SLAM_INSTANT }, "instant Slam"));
+    add("set bonus sudden death", Proc({ SPELL_SUDDEN_DEATH }, "Execute on Sudden Death"));
+    {
+        TriggerSpec spec = Proc({ SPELL_TASTE_FOR_BLOOD }, "battle stance -> Overpower on Taste for Blood");
+        spec.readySpell = "overpower";
+        spec.minRage = TASTE_FOR_BLOOD_MIN_RAGE;
+        spec.maxRage = TASTE_FOR_BLOOD_MAX_RAGE;
+        add("set bonus taste for blood", spec);
+    }
+    add("set bonus ascendant whirl", Proc({ SPELL_ASCENDANT_WHIRL }, "Whirlwind without cooldown"));
+
+    // Warrior tank: Shield Wall (hard 4p, E1 4p) and Last Stand (E2 4p) on cooldown on a boss, Revenge first (E2 2p).
+    add("set bonus shield wall tank",
+        TankCooldown(WARRIOR_TANK_SHIELD_WALL_4P, "shield wall", "Shield Wall on cooldown while tanking a boss"));
+    {
+        TriggerSpec spec =
+            TankCooldown({ WARRIOR_TANK_E2_4P }, "last stand", "Last Stand on cooldown while tanking a boss");
+        spec.selfHealthBelow = LAST_STAND_BELOW_HEALTH;
+        add("set bonus last stand tank", spec);
+    }
+    add("set bonus revenge", WornReady({ WARRIOR_TANK_E2_2P }, "revenge", "Revenge first (Ascendant Block)"));
+
+    // Paladin holy: Divine Favor (hard 4p, E2 2p), Shocking Light (hard 2p), Titan's Light (E1 2p), Judgement on
+    // cooldown for Divine Favor (E2 2p).
+    add("set bonus divine favor", HealProc({ SPELL_DIVINE_FAVOR }, HealGate::MEDIUM, "Holy Light on Divine Favor"));
+    add("set bonus shocking light", HealProc(SPELL_SHOCKING_LIGHT, HealGate::MEDIUM, "Holy Light on Shocking Light"));
+    add("set bonus titan's light", HealProc({ SPELL_TITANS_LIGHT }, HealGate::MEDIUM, "instant Holy Light"));
+    add("set bonus judgement divine favor",
+        WornReady({ PALADIN_HOLY_E2_2P }, "judgement of light", "Judgement on cooldown for Divine Favor"));
+
+    // Paladin protection: the Judgement charge (E1 2p), Avenger's Shield on cooldown (E1 4p), Righteous Aegis (E2 4p).
+    add("set bonus titanic judgement", Proc({ SPELL_TITANIC_JUDGEMENT }, "Judgement without cooldown"));
+    add("set bonus avenger's shield",
+        WornReady({ PALADIN_PROT_E1_4P }, "avenger's shield", "Avenger's Shield on cooldown"));
+    add("set bonus righteous aegis", Proc({ SPELL_RIGHTEOUS_AEGIS }, "Shield of Righteousness on Righteous Aegis"));
+
+    // Paladin retribution: the Divine Storm charge (hard 4p, E1 2p), Hammer of Wrath on any target (E1 4p).
+    add("set bonus divine storm reset", Proc(SPELL_DIVINE_STORM_RESET, "Divine Storm without cooldown"));
+    add("set bonus wrath of the titans", Proc({ SPELL_WRATH_OF_THE_TITANS }, "Hammer of Wrath on any target"));
+
+    // Hunter: Improved Steady Shot (hard 4p), the Aimed / Chimera / Explosive charge (E1 2p), Lock and Load outside
+    // Survival (E1 4p), Kill Shot on any target (E2 2p).
+    {
+        // Gated on the set: the Marksmanship talent procs the same aura, its stock rotation stays as it is.
+        TriggerSpec spec = Proc({ SPELL_IMPROVED_STEADY_SHOT }, "Aimed / Chimera / Arcane Shot on Improved Steady");
+        spec.worn = HUNTER_HARD_4P;
+        add("set bonus improved steady shot", spec);
+    }
+    add("set bonus titan's focus", Proc({ SPELL_TITANS_FOCUS }, "Aimed / Chimera / Explosive Shot without cooldown"));
+    add("set bonus lock and load", Proc({ SPELL_LOCK_AND_LOAD }, "Arcane Shot on Lock and Load"));
+    add("set bonus ascendant execution", Proc({ SPELL_ASCENDANT_EXECUTION }, "Kill Shot on any target"));
+
+    // Rogue: the free combo point builder (E1 4p).
+    add("set bonus titanic flow", Proc({ SPELL_TITANIC_FLOW }, "free combo point builder"));
+
+    // Priest healer: Surge of Light (hard 4p) also for Discipline, instant Prayer of Healing (E2 4p), Guardian Spirit
+    // and Pain Suppression earlier with the shorter cooldown (E1 4p).
+    add("set bonus surge of light",
+        HealProc({ SPELL_SURGE_OF_LIGHT }, HealGate::ALMOST_FULL, "Flash Heal on Surge of Light"));
+    {
+        TriggerSpec spec = Proc({ SPELL_ASCENDANT_PRAYER }, "instant Prayer of Healing");
+        spec.aoeHealCount = ASCENDANT_PRAYER_MIN_INJURED;
+        add("set bonus ascendant prayer", spec);
+    }
+    {
+        TriggerSpec spec;
+        spec.worn = { PRIEST_HEAL_E1_4P };
+        spec.healGate = HealGate::LOW;
+        spec.note = "Guardian Spirit / Pain Suppression at low health";
+        add("set bonus guardian spirit", spec);
+    }
+
+    // Priest shadow: the Mind Blast charge (E1 2p) and the Shadow Word: Death charge (E2 2p).
+    add("set bonus titanic insight", Proc({ SPELL_TITANIC_INSIGHT }, "Mind Blast without cooldown"));
+    add("set bonus ascendant void", Proc({ SPELL_ASCENDANT_VOID }, "Shadow Word: Death without cooldown"));
+
+    // Death knight dps: the free Frost Strike / Death Coil (E2 2p).
+    add("set bonus ascendant power", Proc({ SPELL_ASCENDANT_POWER }, "free Frost Strike / Death Coil"));
+
+    // Death knight tank: Vampiric Blood (hard 4p, E1 2p) and Icebound Fortitude (hard 4p, E1 4p) on cooldown on a
+    // boss, Rune Tap earlier (E2 4p), Death Strike for Ascendant Ward (E2 2p).
+    add("set bonus vampiric blood tank",
+        TankCooldown(DK_TANK_VAMPIRIC_BLOOD, "vampiric blood", "Vampiric Blood on cooldown while tanking a boss"));
+    add("set bonus icebound fortitude tank", TankCooldown(DK_TANK_ICEBOUND_FORTITUDE, "icebound fortitude",
+                                                          "Icebound Fortitude on cooldown while tanking a boss"));
+    {
+        TriggerSpec spec = TankCooldown({ DK_TANK_E2_4P }, "rune tap", "Rune Tap on cooldown while tanking a boss");
+        spec.selfHealthBelow = RUNE_TAP_BELOW_HEALTH;
+        add("set bonus rune tap tank", spec);
+    }
+    {
+        TriggerSpec spec = WornReady({ DK_TANK_E2_2P }, "death strike", "Death Strike for Ascendant Ward");
+        spec.absent = { SPELL_ASCENDANT_WARD };
+        add("set bonus death strike ward", spec);
+    }
+
+    // Shaman restoration: the Riptide charge (hard 4p), instant Chain Heal (E1 4p), instant Healing Wave (E2 4p).
+    add("set bonus tidal surge", HealProc(SPELL_TIDAL_SURGE, HealGate::ALMOST_FULL, "Riptide without cooldown"));
+    {
+        TriggerSpec spec = Proc({ SPELL_TITANIC_TIDE }, "instant Chain Heal");
+        spec.aoeHealCount = TITANIC_TIDE_MIN_INJURED;
+        add("set bonus titanic tide", spec);
+    }
+    add("set bonus ascendant tide", HealProc({ SPELL_ASCENDANT_TIDE }, HealGate::MEDIUM, "instant Healing Wave"));
+
+    // Shaman elemental: the Lava Burst charge (E1 2p), instant Chain Lightning on a single target too (E2 2p).
+    add("set bonus lava surge", Proc({ SPELL_LAVA_SURGE }, "Lava Burst without cooldown"));
+    add("set bonus ascendant storm", Proc({ SPELL_ASCENDANT_STORM }, "instant Chain Lightning"));
+
+    // Shaman enhancement: the Stormstrike charge (E1 4p), Lightning Bolt from 4 Maelstrom Weapon stacks with the
+    // extra stacks of E1 2p / E2 2p.
+    add("set bonus titanic strike", Proc({ SPELL_TITANIC_STRIKE }, "Stormstrike without cooldown"));
+    {
+        TriggerSpec spec;
+        spec.worn = SHAMAN_ENH_MAELSTROM_2P;
+        spec.stackAura = SPELL_MAELSTROM_WEAPON;
+        spec.minStacks = MAELSTROM_WEAPON_MIN_STACKS;
+        spec.note = "Lightning Bolt at 4 Maelstrom Weapon stacks";
+        add("set bonus maelstrom weapon 4", spec);
+    }
+
+    // Mage: the instant nuke (E1 2p); Fire Blast for Hot Streak, Ice Lance on Fingers of Frost for Brain Freeze and
+    // Arcane Barrage for Missile Barrage (E2 2p).
+    add("set bonus arcane surge", Proc({ SPELL_ARCANE_SURGE }, "instant main nuke"));
+    {
+        TriggerSpec spec = WornReady({ MAGE_E2_2P }, "fire blast", "Fire Blast for Hot Streak");
+        spec.absent = { SPELL_HOT_STREAK };
+        add("set bonus fire blast", spec);
+    }
+    {
+        TriggerSpec spec = Proc({ SPELL_FINGERS_OF_FROST }, "Ice Lance on Fingers of Frost for Brain Freeze");
+        spec.worn = { MAGE_E2_2P };
+        add("set bonus ice lance", spec);
+    }
+    {
+        TriggerSpec spec =
+            WornReady({ MAGE_E2_2P }, "arcane barrage", "Arcane Barrage at 4 Arcane Blast stacks for Missile Barrage");
+        spec.stackAura = SPELL_ARCANE_BLAST_STACK;
+        spec.minStacks = ARCANE_BLAST_MAX_STACKS;
+        spec.absent = { SPELL_MISSILE_BARRAGE };
+        add("set bonus arcane barrage", spec);
+    }
+
+    // Warlock: instant Shadow Bolt / Incinerate on Backlash (E1 2p) or Ascendant Pact (E2 2p), Life Tap for the pact
+    // whenever its internal cooldown is over (E2 2p).
+    add("set bonus backlash", Proc({ SPELL_BACKLASH, SPELL_ASCENDANT_PACT }, "instant Shadow Bolt / Incinerate"));
+    {
+        TriggerSpec spec;
+        spec.worn = { WARLOCK_E2_2P };
+        spec.icdAura = SPELL_ASCENDANT_PACT;
+        spec.icdMs = ASCENDANT_PACT_ICD_MS;
+        spec.selfHealthAbove = LIFE_TAP_ABOVE_HEALTH;
+        spec.maxManaPct = LIFE_TAP_BELOW_MANA;
+        spec.note = "Life Tap for Ascendant Pact";
+        add("set bonus ascendant pact", spec);
+    }
+
+    // Druid: instant Starfire (E1 2p), the free Ferocious Bite / Maul (E2 2p), Maul on Clearcasting for the bear
+    // (E1 2p), Survival Instincts on cooldown on a boss (E1 4p), the Swiftmend (E1 2p) and Regrowth (E2 2p) charges.
+    add("set bonus lunar surge", Proc({ SPELL_LUNAR_SURGE }, "instant Starfire"));
+    {
+        TriggerSpec spec = Proc({ SPELL_ASCENDANT_FRENZY }, "free Ferocious Bite");
+        spec.minComboPoints = FEROCIOUS_BITE_MIN_COMBO_POINTS;
+        add("set bonus ascendant frenzy bite", spec);
+    }
+    add("set bonus ascendant frenzy maul", Proc({ SPELL_ASCENDANT_FRENZY }, "free Maul"));
+    {
+        // Gated on the set: Omen of Clarity procs the same aura, the stock bear rotation stays as it is.
+        TriggerSpec spec = Proc({ SPELL_CLEARCASTING_FERAL }, "Maul on Clearcasting");
+        spec.worn = { DRUID_FERAL_E1_2P };
+        add("set bonus clearcasting maul", spec);
+    }
+    add("set bonus survival instincts tank", TankCooldown({ DRUID_FERAL_E1_4P }, "survival instincts",
+                                                          "Survival Instincts on cooldown while tanking a boss"));
+    add("set bonus titanic bloom", HealProc({ SPELL_TITANIC_BLOOM }, HealGate::MEDIUM, "Swiftmend without cooldown"));
+    add("set bonus ascendant bloom", HealProc({ SPELL_ASCENDANT_BLOOM }, HealGate::MEDIUM, "instant Regrowth"));
+}
+}  // namespace ai::setbonus

@@ -7,7 +7,9 @@
 #ifndef PLAYERBOTS_ROGUEACTIONS_H
 #define PLAYERBOTS_ROGUEACTIONS_H
 
+#include "AiObjectContext.h"
 #include "GenericSpellActions.h"
+#include "RogueFinishingActions.h"
 #include "UseItemAction.h"
 
 class PlayerbotAI;
@@ -24,12 +26,24 @@ public:
     CastCloakOfShadowsAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "cloak of shadows") {}
 };
 
+// [b31_wr] Hunger for Blood (51662) is cast on the ENEMY: Spell.dbc ImplicitTargetA TARGET_UNIT_TARGET_ENEMY and
+// TargetAuraState AURA_STATE_BLEEDING; its script effect then puts the self buff (63848, 60 s) on the rogue. So the
+// target stays "current target" (cast on self it fails CheckCast); usefulness reads the self buff, refreshed below
+// HUNGER_FOR_BLOOD_REFRESH_MS (RogueFinishingActions.h) like the trigger.
 class CastHungerForBloodAction : public CastBuffSpellAction
 {
 public:
     CastHungerForBloodAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "hunger for blood") {}
 
     std::string const GetTargetName() override { return "current target"; }
+    bool isUseful() override;
+};
+
+// [b31_wr] Subtlety: 2 combo points on the target, off the global cooldown; needs Stealth or Shadow Dance
+class CastPremeditationAction : public CastSpellAction
+{
+public:
+    CastPremeditationAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "premeditation") {}
 };
 
 class CastSprintAction : public CastBuffSpellAction
@@ -56,6 +70,7 @@ public:
     UnstealthAction(PlayerbotAI* botAI) : Action(botAI, "unstealth") {}
 
     bool Execute(Event event) override;
+    bool isPossible() override;  // [b31_wr] only in stealth
 };
 
 class CheckStealthAction : public Action
@@ -77,6 +92,7 @@ class CastFeintAction : public CastBuffSpellAction
 {
 public:
     CastFeintAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "feint") {}
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
 class CastColdBloodAction : public CastBuffSpellAction
@@ -103,6 +119,7 @@ public:
     CastVanishAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "vanish") {}
 
     bool isUseful() override;
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
 class CastBlindAction : public CastDebuffSpellAction
@@ -115,12 +132,21 @@ class CastBladeFlurryAction : public CastBuffSpellAction
 {
 public:
     CastBladeFlurryAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "blade flurry") {}
+    // [b33_aoe_class] Combat talent: Assassination/Subtlety took "light aoe" here (gd-h-5F-51: 84 x "spell not known")
+    bool isUseful() override { return botAI->HasSpell("blade flurry") && CastBuffSpellAction::isUseful(); }
 };
 
 class CastAdrenalineRushAction : public CastBuffSpellAction
 {
 public:
     CastAdrenalineRushAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "adrenaline rush") {}
+};
+
+// Subtlety: Ambush and Garrote without stealth for 6 s; used with energy pooled for the Ambushes
+class CastShadowDanceAction : public CastBuffSpellAction
+{
+public:
+    CastShadowDanceAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "shadow dance") {}
 };
 
 class CastKillingSpreeAction : public CastMeleeSpellAction
@@ -135,6 +161,8 @@ public:
     CastKickOnEnemyHealerAction(PlayerbotAI* botAI) : CastSpellOnEnemyHealerAction(botAI, "kick") {}
 };
 
+// [b31_wr] Envenom eats the rogue's own Deadly Poison doses; without one on the target it is "impossible" and the
+// node's alternative (Eviscerate) goes instead.
 class CastEnvenomAction : public CastMeleeSpellAction
 {
 public:
@@ -149,35 +177,28 @@ class CastTricksOfTheTradeOnMainTankAction : public BuffOnMainTankAction
 public:
     CastTricksOfTheTradeOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "tricks of the trade", true) {}
 
+    // Raid utility coordinator: the tank holding the current pull, else the main tank.
+    std::string const GetTargetName() override { return "threat redirect target"; }
+    Value<Unit*>* GetTargetValue() override { return context->GetValue<Unit*>("threat redirect target"); }
     bool isUseful() override;
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
-class UseDeadlyPoisonAction : public UseItemAction
+// [b31_wr] One poison action per hand; RoguePoisons decides the kind (spec, Wound next to another rogue's Deadly)
+// and falls back to what is in the bags (replaces the hard-wired Instant MH / Deadly OH / Instant OH actions).
+class UseRoguePoisonAction : public UseItemAction
 {
 public:
-    UseDeadlyPoisonAction(PlayerbotAI* botAI) : UseItemAction(botAI, "deadly poison") {}
+    UseRoguePoisonAction(PlayerbotAI* botAI, std::string const name, uint8 slot)
+        : UseItemAction(botAI, name), slot(slot)
+    {
+    }
 
     bool Execute(Event event) override;
     bool isPossible() override { return true; }
-};
 
-class UseInstantPoisonAction : public UseItemAction
-{
-public:
-    UseInstantPoisonAction(PlayerbotAI* botAI) : UseItemAction(botAI, "instant poison") {}
-
-    bool Execute(Event event) override;
-    bool isPossible() override { return true; }
-};
-
-class UseInstantPoisonOffHandAction : public UseItemAction
-{
-public:
-    UseInstantPoisonOffHandAction(PlayerbotAI* botAI)
-        : UseItemAction(botAI, "instant poison off hand") {}
-
-    bool Execute(Event event) override;
-    bool isPossible() override { return true; }
+private:
+    uint8 const slot;
 };
 
 class FanOfKnivesAction : public CastMeleeSpellAction

@@ -5,13 +5,18 @@
  */
 
 #include "BuyAction.h"
+#include "Bag.h"
 #include "BudgetValues.h"
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "Playerbots.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StatsWeightCalculator.h"
+#include <algorithm>
+#include <cmath>
 
 bool BuyAction::Execute(Event event)
 {
@@ -229,14 +234,8 @@ bool BuyAction::BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, Ite
         if (tItems->GetItem(slot)->item != itemId)
             continue;
 
-        uint32 botMoney = bot->GetMoney();
-        if (botAI->HasCheat(BotCheatMask::gold))
-            bot->SetMoney(10000000);
-
+        // Paid from the bot's own gold; the core refuses the purchase when it cannot afford it.
         bot->BuyItemFromVendorSlot(vendorguid, slot, itemId, 1, NULL_BAG, NULL_SLOT);
-
-        if (botAI->HasCheat(BotCheatMask::gold))
-            bot->SetMoney(botMoney);
 
         uint32 newCount = bot->GetItemCount(itemId, false);
         if (newCount > oldCount)
@@ -251,4 +250,196 @@ bool BuyAction::BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, Ite
     }
 
     return false;
+}
+
+namespace
+{
+// Real food heals over time (aura 20), real drink restores mana (aura 21); this skips alcohol and novelty items.
+bool IsRestockFood(ItemTemplate const* proto, uint32 spellCategory)
+{
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+        (proto->SubClass != ITEM_SUBCLASS_CONSUMABLE && proto->SubClass != ITEM_SUBCLASS_FOOD) ||
+        proto->Spells[0].SpellCategory != spellCategory)
+        return false;
+
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
+    if (!spellInfo)
+        return false;
+
+    AuraType const wanted =
+        spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_OBS_MOD_HEALTH : SPELL_AURA_OBS_MOD_POWER;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (spellInfo->Effects[i].ApplyAuraName == wanted)
+            return true;
+
+    return false;
+}
+
+// Best (highest required level the bot meets) gold-priced food/drink in the vendor list, or -1.
+int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory)
+{
+    VendorItemData const* items = vendor->GetVendorItems();
+    if (!items)
+        return -1;
+
+    int32 bestSlot = -1;
+    uint32 bestLevel = 0;
+    for (uint32 slot = 0; slot < items->GetItemCount(); ++slot)
+    {
+        VendorItem const* vItem = items->GetItem(slot);
+        if (!vItem || vItem->ExtendedCost)
+            continue;
+
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vItem->item);
+        if (!IsRestockFood(proto, spellCategory) || proto->BuyPrice == 0)
+            continue;
+
+        if (proto->RequiredLevel > bot->GetLevel() || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+            continue;
+
+        if (vItem->maxcount && vendor->GetVendorItemCurrentCount(vItem) == 0)
+            continue;
+
+        if (bestSlot < 0 || proto->RequiredLevel > bestLevel)
+        {
+            bestSlot = static_cast<int32>(slot);
+            bestLevel = proto->RequiredLevel;
+        }
+    }
+
+    return bestSlot;
+}
+}  // namespace
+
+uint32 CountBagFood(Player* bot, uint32 spellCategory)
+{
+    uint32 count = 0;
+    auto countItem = [&](Item* item)
+    {
+        if (!item)
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (proto && proto->Class == ITEM_CLASS_CONSUMABLE &&
+            (proto->SubClass == ITEM_SUBCLASS_CONSUMABLE || proto->SubClass == ITEM_SUBCLASS_FOOD) &&
+            proto->Spells[0].SpellCategory == spellCategory && bot->CanUseItem(proto) == EQUIP_ERR_OK)
+            count += item->GetCount();
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        countItem(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = bot->GetBagByPos(bagSlot);
+        if (!bag)
+            continue;
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+            countItem(bag->GetItemByPos(static_cast<uint8>(slot)));
+    }
+
+    return count;
+}
+
+bool RestockFoodAction::isUseful()
+{
+    // The user's own character (selfbot) never spends gold on its own.
+    return bot->IsAlive() && !bot->IsInCombat() && !bot->InBattleground() && !bot->IsInFlight() &&
+           !bot->IsBeingTeleported() && !bot->GetVehicle() && !IsSelfBot(bot);
+}
+
+bool RestockFoodAction::Execute(Event /*event*/)
+{
+    bool const usesMana = bot->GetMaxPower(POWER_MANA) > 0;
+    uint32 const food = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
+    uint32 const drink = usesMana ? CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) : RESTOCK_FOOD_TARGET;
+    bool const needFood = food < RESTOCK_FOOD_MIN;
+    bool const needDrink = drink < RESTOCK_FOOD_MIN;
+    if (!needFood && !needDrink)
+        return false;
+
+    Creature* vendor = nullptr;
+    int32 foodSlot = -1;
+    int32 drinkSlot = -1;
+    float bestDist = RESTOCK_VENDOR_RANGE;
+
+    GuidVector const npcs = AI_VALUE(GuidVector, "nearest npcs");
+    for (ObjectGuid const& guid : npcs)
+    {
+        Creature* creature = botAI->GetCreature(guid);
+        if (!creature || !creature->IsAlive() || !creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) ||
+            creature->IsHostileTo(bot))
+            continue;
+
+        float const dist = bot->GetExactDist(creature);
+        if (dist > bestDist)
+            continue;
+
+        int32 const f = needFood ? PickVendorFood(bot, creature, RESTOCK_SPELL_CATEGORY_FOOD) : -1;
+        int32 const d = needDrink ? PickVendorFood(bot, creature, RESTOCK_SPELL_CATEGORY_DRINK) : -1;
+        if (f < 0 && d < 0)
+            continue;
+
+        vendor = creature;
+        foodSlot = f;
+        drinkSlot = d;
+        bestDist = dist;
+    }
+
+    if (!vendor)
+        return false;
+
+    if (!bot->GetNPCIfCanInteractWith(vendor->GetGUID(), UNIT_NPC_FLAG_VENDOR))
+        return MoveNear(vendor, INTERACTION_DISTANCE - 1.0f);
+
+    bool bought = false;
+    if (drinkSlot >= 0)
+        bought |= Buy(vendor, drinkSlot, drink);
+    if (foodSlot >= 0)
+        bought |= Buy(vendor, foodSlot, food);
+
+    return bought;
+}
+
+bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have)
+{
+    if (have >= RESTOCK_FOOD_TARGET)
+        return false;
+
+    VendorItemData const* items = vendor->GetVendorItems();
+    VendorItem const* vItem = items ? items->GetItem(static_cast<uint32>(vendorSlot)) : nullptr;
+    ItemTemplate const* proto = vItem ? sObjectMgr->GetItemTemplate(vItem->item) : nullptr;
+    if (!proto)
+        return false;
+
+    uint32 const perBuy = std::max<uint32>(1, proto->BuyCount);
+    uint32 const unitPrice =
+        std::max<uint32>(1, uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(vendor))));
+    uint32 const budget = AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables));
+
+    uint32 purchases = (RESTOCK_FOOD_TARGET - have + perBuy - 1) / perBuy;
+    purchases = std::min(purchases, budget / unitPrice);
+    if (!purchases)
+        return false;
+
+    uint32 const stackPurchases = std::max<uint32>(1, proto->GetMaxStackSize() / perBuy);
+    uint32 const before = bot->GetItemCount(proto->ItemId, false);
+    while (purchases > 0)
+    {
+        uint32 const chunk = std::min<uint32>(std::min(purchases, stackPurchases), 255);
+        uint32 const was = bot->GetItemCount(proto->ItemId, false);
+        bot->BuyItemFromVendorSlot(vendor->GetGUID(), static_cast<uint32>(vendorSlot), proto->ItemId,
+                                   static_cast<uint8>(chunk), NULL_BAG, NULL_SLOT);
+        if (bot->GetItemCount(proto->ItemId, false) <= was)
+            break;  // no money, no bag space or sold out
+        purchases -= chunk;
+    }
+
+    uint32 const gained = bot->GetItemCount(proto->ItemId, false) - before;
+    if (!gained)
+        return false;
+
+    std::ostringstream out;
+    out << "Buying " << gained << "x " << ChatHelper::FormatItem(proto);
+    botAI->TellMaster(out.str());
+    return true;
 }

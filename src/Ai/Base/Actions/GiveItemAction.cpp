@@ -7,6 +7,7 @@
 #include "GiveItemAction.h"
 #include "Event.h"
 #include "ItemCountValue.h"
+#include "Map.h"
 #include "Playerbots.h"
 
 std::vector<std::string> split(std::string const s, char delim);
@@ -46,6 +47,9 @@ bool GiveItemAction::Execute(Event /*event*/)
             receiver->MoveItemToInventory(dest, item, true);
 
             receiverAi->TellMasterNoFacing(out.str());
+            // [give_one_stack] one stack per receiver: the loop handed every conjured stack to the first member,
+            // the giver had none left and conjured again at once (hor-h-5A-1, 50 s of conjure / give at the start)
+            break;
         }
         else
         {
@@ -66,26 +70,26 @@ bool GiveItemAction::isUseful()
     return GetTarget() && AI_VALUE2(uint8, "mana", "self target") > sPlayerbotAIConfig.LowMana;
 }
 
+namespace
+{
+// [conjure_outside_instances] food / water is handed out before the run, not in a dungeon or raid out of combat
+bool GiveBlockedInInstance(Player* bot)
+{
+    Map* map = bot->GetMap();
+    return map && map->Instanceable() && !map->IsBattlegroundOrArena() && !bot->IsInCombat();
+}
+}  // namespace
+
 Unit* GiveFoodAction::GetTarget() { return AI_VALUE(Unit*, "party member without food"); }
 
 bool GiveFoodAction::isUseful()
 {
-    if (!GetTarget())
-        return false;
-
-    bool isRandomBot = GetTarget()->IsPlayer() && sRandomPlayerbotMgr.IsRandomBot((Player*)GetTarget());
-
-    return !isRandomBot || (isRandomBot && !botAI->HasCheat(BotCheatMask::food));
+    return !GiveBlockedInInstance(bot) && GetTarget() != nullptr;
 }
 
 Unit* GiveWaterAction::GetTarget() { return AI_VALUE(Unit*, "party member without water"); }
 
 bool GiveWaterAction::isUseful()
 {
-    if (!GetTarget())
-        return false;
-
-    bool isRandomBot = GetTarget()->IsPlayer() && sRandomPlayerbotMgr.IsRandomBot((Player*)GetTarget());
-
-    return !isRandomBot || (isRandomBot && !botAI->HasCheat(BotCheatMask::food));
+    return !GiveBlockedInInstance(bot) && GetTarget() != nullptr;
 }

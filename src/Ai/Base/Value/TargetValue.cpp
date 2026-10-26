@@ -5,14 +5,18 @@
  */
 
 #include "TargetValue.h"
+#include "TerrainHazard.h"
 #include "CombatManager.h"
 #include "LastMovementValue.h"
 #include "ObjectGuid.h"
+#include "PathGenerator.h"
 #include "Playerbots.h"
 #include "RtiTargetValue.h"
 #include "ScriptedCreature.h"
 #include "Strategy.h"
 #include "ThreatManager.h"
+
+#include <algorithm>
 
 GuidSet GatherStrategyTargetExclusions(PlayerbotAI* botAI, TargetValueExclusionType type)
 {
@@ -32,17 +36,53 @@ GuidSet GatherStrategyTargetExclusions(PlayerbotAI* botAI, TargetValueExclusionT
     return exclusions;
 }
 
+namespace
+{
+    constexpr uint64 BREAKABLE_CROWD_CONTROL_MECHANICS =
+        (1ULL << MECHANIC_POLYMORPH) | (1ULL << MECHANIC_SAPPED) | (1ULL << MECHANIC_FREEZE) |
+        (1ULL << MECHANIC_SHACKLE) | (1ULL << MECHANIC_SLEEP) | (1ULL << MECHANIC_BANISH) |
+        (1ULL << MECHANIC_KNOCKOUT) | (1ULL << MECHANIC_CHARM);
+    // Charm is Seduction. Not disorient: Dragon's Breath and Scatter Shot put it on mobs the group still kills.
+    // A spell this small is placed on or around its target, so a crowd-controlled unit inside means it breaks.
+    // Larger ranges are target counts around the caster (channel cancel checks), not the spell area.
+    constexpr float AOE_CROWD_CONTROL_VETO_RANGE = 20.0f;
+}
+
+bool IsCrowdControlled(Unit const* unit)
+{
+    if (!unit || !unit->IsAlive())
+        return false;
+
+    // cheap pre-check: every mechanic above applies a stun, confuse or transform aura
+    if (!unit->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED) && !unit->HasAuraType(SPELL_AURA_TRANSFORM))
+        return false;
+
+    return unit->HasAuraWithMechanic(BREAKABLE_CROWD_CONTROL_MECHANICS);
+}
+
 bool HasEnoughAoeTargets(PlayerbotAI* botAI, Position const& center, float range, uint32 minCount)
 {
     GuidVector attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get();
     auto const isInRange = [&center, range](Unit* unit)
     { return unit && unit->IsAlive() && unit->GetDistance(center) <= range; };
+    bool const vetoOnCrowdControl = range <= AOE_CROWD_CONTROL_VETO_RANGE;
 
     uint32 count = 0;
     for (ObjectGuid const guid : attackers)
     {
-        if (isInRange(botAI->GetUnit(guid)))
-            ++count;
+        Unit* unit = botAI->GetUnit(guid);
+        if (!isInRange(unit))
+            continue;
+
+        if (IsCrowdControlled(unit))
+        {
+            if (vetoOnCrowdControl)
+                return false;
+
+            continue;
+        }
+
+        ++count;
     }
 
     if (count < minCount || !botAI->HasTargetExclusions())
@@ -51,7 +91,11 @@ bool HasEnoughAoeTargets(PlayerbotAI* botAI, Position const& center, float range
     GuidSet const exclusions = GatherStrategyTargetExclusions(botAI, TargetValueExclusionType::Aoe);
     for (ObjectGuid const guid : attackers)
     {
-        if (exclusions.find(guid) != exclusions.end() && isInRange(botAI->GetUnit(guid)))
+        if (exclusions.find(guid) == exclusions.end())
+            continue;
+
+        Unit* unit = botAI->GetUnit(guid);
+        if (isInRange(unit) && !IsCrowdControlled(unit))
             --count;
     }
 
@@ -220,4 +264,59 @@ Unit* BossTargetValue::Calculate()
 {
     FindBossTargetStrategy strategy(botAI);
     return FindTarget(&strategy);
+}
+
+namespace
+{
+    constexpr uint32 REACHABILITY_CACHE_MS = 10 * IN_MILLISECONDS;
+    constexpr size_t REACHABILITY_CACHE_MAX = 64;
+    constexpr float REACHABILITY_END_SLACK = 5.0f;    // the path may stop this far short of the mob
+    constexpr float DETOUR_FACTOR = 3.0f;             // a path this many times the straight line goes round a floor
+    constexpr float DETOUR_SLACK = 40.0f;
+}
+
+bool TargetReachability::IsReachable(Player* bot, Unit* unit)
+{
+    if (!bot || !unit)
+        return false;
+
+    uint32 const now = getMSTime();
+    auto const it = _cache.find(unit->GetGUID());
+    if (it != _cache.end() && getMSTimeDiff(it->second.checkedAt, now) < REACHABILITY_CACHE_MS)
+        return it->second.reachable;
+
+    if (_cache.size() >= REACHABILITY_CACHE_MAX)
+        _cache.clear();
+
+    bool reachable = true;
+    // Flying or swimming movers do not use the navmesh; the height filter of the caller covers them.
+    if (!unit->IsFlying() && !bot->IsFlying() && !bot->IsInWater() && !unit->IsInWater())
+    {
+        PathGenerator path(bot);
+        path.CalculatePath(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(), false);
+        PathType const type = path.GetPathType();
+        if (type & PATHFIND_NOT_USING_PATH)
+            reachable = true;
+        else if (type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT))
+            reachable = false;
+        else
+        {
+            G3D::Vector3 const& end = path.GetActualEndPosition();
+            float const straight = bot->GetExactDist(unit);
+            float const reach = bot->GetCombatReach() + unit->GetCombatReach() + REACHABILITY_END_SLACK;
+            reachable = unit->GetExactDist(end.x, end.y, end.z) <= reach &&
+                        path.getPathLength() <= std::max(straight * DETOUR_FACTOR, straight + DETOUR_SLACK);
+        }
+
+        // [ledge_drop] a mob below the bot is reachable only by a ground path or a justified drop (JudgeLedgeDrop:
+        // the landing joined to the rest, a fall the group takes): dtk-n 20261025-163758-62, the tank walked off
+        // the upper level after a Death Knight on a navmesh island 18-34 yd below.
+        if (reachable && bot->GetPositionZ() - unit->GetPositionZ() > LEDGE_DROP_DZ &&
+            !JudgeLedgeDrop(bot, unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(), "pull target")
+                 .allowed)
+            reachable = false;
+    }
+
+    _cache[unit->GetGUID()] = {reachable, now};
+    return reachable;
 }

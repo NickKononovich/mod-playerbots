@@ -156,6 +156,9 @@ public:
         creators["frost shock snare"] = &ShamanATriggerFactoryInternal::frost_shock_snare;
         creators["heroism"] = &ShamanATriggerFactoryInternal::heroism;
         creators["bloodlust"] = &ShamanATriggerFactoryInternal::bloodlust;
+        creators["party healer low mana"] = &ShamanATriggerFactoryInternal::party_healer_low_mana;
+        creators["totem assignment"] = &ShamanATriggerFactoryInternal::totem_assignment;
+        creators["water totem choice"] = &ShamanATriggerFactoryInternal::water_totem_choice;  // [b31_sd]
         creators["elemental mastery"] = &ShamanATriggerFactoryInternal::elemental_mastery;
         creators["wind shear on enemy healer"] = &ShamanATriggerFactoryInternal::wind_shear_on_enemy_healer;
         creators["earth shield on main tank"] = &ShamanATriggerFactoryInternal::earth_shield_on_main_tank;
@@ -163,15 +166,32 @@ public:
         creators["maelstrom weapon 4"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_4;
         creators["maelstrom weapon 5"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_5;
         creators["flame shock"] = &ShamanATriggerFactoryInternal::flame_shock;
+        creators["flame shock on attacker"] = &ShamanATriggerFactoryInternal::flame_shock_on_attacker;  // [b31_deep]
         creators["fire elemental totem"] = &ShamanATriggerFactoryInternal::fire_elemental_totem;
+        creators["feral spirit boost"] = &ShamanATriggerFactoryInternal::feral_spirit_boost;
+        creators["shamanistic rage for mana"] = &ShamanATriggerFactoryInternal::shamanistic_rage_for_mana;
         creators["earth shock execute"] = &ShamanATriggerFactoryInternal::earth_shock_execute;
         creators["spirit walk ready"] = &ShamanATriggerFactoryInternal::spirit_walk_ready;
-        creators["chain lightning no cd"] = &ShamanATriggerFactoryInternal::chain_lightning_no_cd;
+        creators["chain lightning filler"] = &ShamanATriggerFactoryInternal::chain_lightning_filler;
+        creators["chain lightning aoe"] = &ShamanATriggerFactoryInternal::chain_lightning_aoe;
+        creators["thunderstorm for mana"] = &ShamanATriggerFactoryInternal::thunderstorm_for_mana;
+        creators["thunderstorm knockback"] = &ShamanATriggerFactoryInternal::thunderstorm_knockback;
+        creators["riptide on main tank"] = &ShamanATriggerFactoryInternal::riptide_on_main_tank;
+        creators["battle resurrected member"] = &ShamanATriggerFactoryInternal::battle_resurrected_member;
+        creators["battle resurrected member low health"] =
+            &ShamanATriggerFactoryInternal::battle_resurrected_member_low_health;
+        creators["tank peel"] = &ShamanATriggerFactoryInternal::tank_peel;
+        creators["nature's swiftness active"] = &ShamanATriggerFactoryInternal::natures_swiftness_active;
+        creators["tidal waves healing wave"] = &ShamanATriggerFactoryInternal::tidal_waves_healing_wave;  // [b31_sd]
+        creators["chain heal targets"] = &ShamanATriggerFactoryInternal::chain_heal_targets;
         creators["call of the elements and enemy within melee"] = &ShamanATriggerFactoryInternal::call_of_the_elements_and_enemy_within_melee;
         creators["maelstrom weapon 5 and medium aoe"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_5_and_medium_aoe;
         creators["maelstrom weapon 4 and medium aoe"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_4_and_medium_aoe;
         creators["call of the elements"] = &ShamanATriggerFactoryInternal::call_of_the_elements;
+        // Overrides the shared trigger: holds Reincarnation while the mobs are still on the corpse.
+        creators["can self resurrect"] = &ShamanATriggerFactoryInternal::can_self_resurrect;
         creators["totemic recall"] = &ShamanATriggerFactoryInternal::totemic_recall;
+        creators["idle hostile totem"] = &ShamanATriggerFactoryInternal::idle_hostile_totem;  // [rot_b31_heal]
         creators["no earth totem"] = &ShamanATriggerFactoryInternal::no_earth_totem;
         creators["no fire totem"] = &ShamanATriggerFactoryInternal::no_fire_totem;
         creators["no water totem"] = &ShamanATriggerFactoryInternal::no_water_totem;
@@ -201,6 +221,9 @@ private:
     static Trigger* maelstrom_weapon_5(PlayerbotAI* botAI) { return new MaelstromWeaponTrigger(botAI, 5); }
     static Trigger* heroism(PlayerbotAI* botAI) { return new HeroismTrigger(botAI); }
     static Trigger* bloodlust(PlayerbotAI* botAI) { return new BloodlustTrigger(botAI); }
+    static Trigger* party_healer_low_mana(PlayerbotAI* botAI) { return new PartyHealerLowManaTrigger(botAI); }
+    static Trigger* totem_assignment(PlayerbotAI* botAI) { return new TotemAssignmentTrigger(botAI); }
+    static Trigger* water_totem_choice(PlayerbotAI* botAI) { return new WaterTotemChoiceTrigger(botAI); }  // [b31_sd]
     static Trigger* elemental_mastery(PlayerbotAI* botAI) { return new ElementalMasteryTrigger(botAI); }
     static Trigger* party_member_cleanse_disease(PlayerbotAI* botAI) { return new PartyMemberCleanseSpiritDiseaseTrigger(botAI); }
     static Trigger* party_member_cleanse_curse(PlayerbotAI* botAI) { return new PartyMemberCleanseSpiritCurseTrigger(botAI); }
@@ -223,15 +246,39 @@ private:
     static Trigger* wind_shear_on_enemy_healer(PlayerbotAI* botAI) { return new WindShearInterruptEnemyHealerSpellTrigger(botAI); }
     static Trigger* earth_shield_on_main_tank(PlayerbotAI* botAI) { return new EarthShieldOnMainTankTrigger(botAI); }
     static Trigger* flame_shock(PlayerbotAI* botAI) { return new FlameShockTrigger(botAI); }
+    static Trigger* flame_shock_on_attacker(PlayerbotAI* botAI) { return new FlameShockOnAttackerTrigger(botAI); }
     static Trigger* fire_elemental_totem(PlayerbotAI* botAI) { return new FireElementalTotemTrigger(botAI); }
+    static Trigger* feral_spirit_boost(PlayerbotAI* botAI) { return new FeralSpiritBoostTrigger(botAI); }
+    static Trigger* shamanistic_rage_for_mana(PlayerbotAI* botAI) { return new ShamanisticRageForManaTrigger(botAI); }
     static Trigger* earth_shock_execute(PlayerbotAI* botAI) { return new EarthShockExecuteTrigger(botAI); }
     static Trigger* spirit_walk_ready(PlayerbotAI* botAI) { return new SpiritWalkTrigger(botAI); }
-    static Trigger* chain_lightning_no_cd(PlayerbotAI* botAI) { return new ChainLightningNoCdTrigger(botAI); }
+    static Trigger* chain_lightning_filler(PlayerbotAI* botAI) { return new ChainLightningFillerTrigger(botAI); }
+    static Trigger* chain_lightning_aoe(PlayerbotAI* botAI) { return new ChainLightningAoeTrigger(botAI); }
+    static Trigger* thunderstorm_for_mana(PlayerbotAI* botAI) { return new ThunderstormForManaTrigger(botAI); }
+    static Trigger* thunderstorm_knockback(PlayerbotAI* botAI) { return new ThunderstormKnockbackTrigger(botAI); }
+    static Trigger* riptide_on_main_tank(PlayerbotAI* botAI) { return new RiptideOnMainTankTrigger(botAI); }
+    static Trigger* natures_swiftness_active(PlayerbotAI* botAI)
+    {
+        return new ShamanNaturesSwiftnessActiveTrigger(botAI);
+    }
+    static Trigger* tidal_waves_healing_wave(PlayerbotAI* botAI)  // [b31_sd]
+    {
+        return new TidalWavesHealingWaveTrigger(botAI);
+    }
+    static Trigger* chain_heal_targets(PlayerbotAI* botAI) { return new ChainHealTargetsTrigger(botAI); }
     static Trigger* call_of_the_elements_and_enemy_within_melee(PlayerbotAI* botAI) { return new CallOfTheElementsAndEnemyWithinMeleeTrigger(botAI); }
     static Trigger* maelstrom_weapon_5_and_medium_aoe(PlayerbotAI* botAI) { return new MaelstromWeapon5AndMediumAoeTrigger(botAI); }
     static Trigger* maelstrom_weapon_4_and_medium_aoe(PlayerbotAI* botAI) { return new MaelstromWeapon4AndMediumAoeTrigger(botAI); }
     static Trigger* call_of_the_elements(PlayerbotAI* botAI) { return new CallOfTheElementsTrigger(botAI); }
+    static Trigger* can_self_resurrect(PlayerbotAI* botAI) { return new ShamanReincarnationTrigger(botAI); }
+    static Trigger* battle_resurrected_member(PlayerbotAI* botAI) { return new BattleResurrectedMemberTrigger(botAI); }
+    static Trigger* battle_resurrected_member_low_health(PlayerbotAI* botAI)
+    {
+        return new BattleResurrectedMemberLowHealthTrigger(botAI);
+    }
+    static Trigger* tank_peel(PlayerbotAI* botAI) { return new TankPeelTrigger(botAI); }
     static Trigger* totemic_recall(PlayerbotAI* botAI) { return new TotemicRecallTrigger(botAI); }
+    static Trigger* idle_hostile_totem(PlayerbotAI* botAI) { return new IdleHostileTotemTrigger(botAI); }
     static Trigger* no_earth_totem(PlayerbotAI* botAI) { return new NoEarthTotemTrigger(botAI); }
     static Trigger* no_fire_totem(PlayerbotAI* botAI) { return new NoFireTotemTrigger(botAI); }
     static Trigger* no_water_totem(PlayerbotAI* botAI) { return new NoWaterTotemTrigger(botAI); }
@@ -293,24 +340,40 @@ public:
         creators["cleanse spirit disease on party"] = &ShamanAiObjectContextInternal::cleanse_spirit_disease_on_party;
         creators["cleanse spirit curse on party"] = &ShamanAiObjectContextInternal::cleanse_spirit_curse_on_party;
         creators["flame shock"] = &ShamanAiObjectContextInternal::flame_shock;
+        creators["flame shock on attacker"] = &ShamanAiObjectContextInternal::flame_shock_on_attacker;  // [b31_deep]
         creators["earth shock"] = &ShamanAiObjectContextInternal::earth_shock;
+        creators["earth shock on the move"] = &ShamanAiObjectContextInternal::earth_shock_on_the_move;
+        // [b31_sd]
+        creators["earth shock between flame shocks"] = &ShamanAiObjectContextInternal::earth_shock_between_flame_shocks;
         creators["frost shock"] = &ShamanAiObjectContextInternal::frost_shock;
         creators["chain lightning"] = &ShamanAiObjectContextInternal::chain_lightning;
         creators["lightning bolt"] = &ShamanAiObjectContextInternal::lightning_bolt;
         creators["thunderstorm"] = &ShamanAiObjectContextInternal::thunderstorm;
         creators["heroism"] = &ShamanAiObjectContextInternal::heroism;
         creators["bloodlust"] = &ShamanAiObjectContextInternal::bloodlust;
+        creators["apply totem assignment"] = &ShamanAiObjectContextInternal::apply_totem_assignment;
+        // [b31_sd]
+        creators["apply water totem choice"] = &ShamanAiObjectContextInternal::apply_water_totem_choice;
         creators["elemental mastery"] = &ShamanAiObjectContextInternal::elemental_mastery;
         creators["cure toxins"] = &ShamanAiObjectContextInternal::cure_toxins;
         creators["cure toxins poison on party"] = &ShamanAiObjectContextInternal::cure_toxins_poison_on_party;
         creators["cure toxins disease on party"] = &ShamanAiObjectContextInternal::cure_toxins_disease_on_party;
         creators["lava burst"] = &ShamanAiObjectContextInternal::lava_burst;
         creators["earth shield on main tank"] = &ShamanAiObjectContextInternal::earth_shield_on_main_tank;
+        creators["riptide on main tank"] = &ShamanAiObjectContextInternal::riptide_on_main_tank;
+        creators["riptide on battle resurrected"] = &ShamanAiObjectContextInternal::riptide_on_rezzed;
+        creators["lesser healing wave on battle resurrected"] = &ShamanAiObjectContextInternal::lhw_on_rezzed;
+        creators["earth shield on battle resurrected"] = &ShamanAiObjectContextInternal::earth_shield_on_rezzed;
+        creators["riptide on peeling tank"] = &ShamanAiObjectContextInternal::riptide_on_peeling_tank;
+        creators["lesser healing wave on peeling tank"] = &ShamanAiObjectContextInternal::lhw_on_peeling_tank;
+        creators["nature's swiftness"] = &ShamanAiObjectContextInternal::natures_swiftness;
+        creators["tidal force"] = &ShamanAiObjectContextInternal::tidal_force;
         creators["shamanistic rage"] = &ShamanAiObjectContextInternal::shamanistic_rage;
         creators["feral spirit"] = &ShamanAiObjectContextInternal::feral_spirit;
         creators["spirit walk"] = &ShamanAiObjectContextInternal::spirit_walk;
         creators["call of the elements"] = &ShamanAiObjectContextInternal::call_of_the_elements;
         creators["totemic recall"] = &ShamanAiObjectContextInternal::totemic_recall;
+        creators["dismiss hostile totems"] = &ShamanAiObjectContextInternal::dismiss_hostile_totems;  // [rot_b31_heal]
         creators["strength of earth totem"] = &ShamanAiObjectContextInternal::strength_of_earth_totem;
         creators["stoneskin totem"] = &ShamanAiObjectContextInternal::stoneskin_totem;
         creators["tremor totem"] = &ShamanAiObjectContextInternal::tremor_totem;
@@ -330,6 +393,7 @@ public:
         creators["fire resistance totem"] = &ShamanAiObjectContextInternal::fire_resistance_totem;
         creators["wrath of air totem"] = &ShamanAiObjectContextInternal::wrath_of_air_totem;
         creators["windfury totem"] = &ShamanAiObjectContextInternal::windfury_totem;
+        creators["grounding totem"] = &ShamanAiObjectContextInternal::grounding_totem;
         creators["nature resistance totem"] = &ShamanAiObjectContextInternal::nature_resistance_totem;
         creators["set strength of earth totem"] = &ShamanAiObjectContextInternal::set_strength_of_earth_totem;
         creators["set stoneskin totem"] = &ShamanAiObjectContextInternal::set_stoneskin_totem;
@@ -353,13 +417,24 @@ public:
 private:
     static Action* heroism(PlayerbotAI* botAI) { return new CastHeroismAction(botAI); }
     static Action* bloodlust(PlayerbotAI* botAI) { return new CastBloodlustAction(botAI); }
+    static Action* apply_totem_assignment(PlayerbotAI* botAI) { return new ApplyTotemAssignmentAction(botAI); }
+    static Action* apply_water_totem_choice(PlayerbotAI* botAI)  // [b31_sd]
+    {
+        return new ApplyWaterTotemChoiceAction(botAI);
+    }
     static Action* elemental_mastery(PlayerbotAI* botAI) { return new CastElementalMasteryAction(botAI); }
     static Action* thunderstorm(PlayerbotAI* botAI) { return new CastThunderstormAction(botAI); }
     static Action* lightning_bolt(PlayerbotAI* botAI) { return new CastLightningBoltAction(botAI); }
     static Action* chain_lightning(PlayerbotAI* botAI) { return new CastChainLightningAction(botAI); }
     static Action* frost_shock(PlayerbotAI* botAI) { return new CastFrostShockAction(botAI); }
     static Action* earth_shock(PlayerbotAI* botAI) { return new CastEarthShockAction(botAI); }
+    static Action* earth_shock_on_the_move(PlayerbotAI* botAI) { return new CastEarthShockOnTheMoveAction(botAI); }
+    static Action* earth_shock_between_flame_shocks(PlayerbotAI* botAI)  // [b31_sd]
+    {
+        return new CastEarthShockBetweenFlameShocksAction(botAI);
+    }
     static Action* flame_shock(PlayerbotAI* botAI) { return new CastFlameShockAction(botAI); }
+    static Action* flame_shock_on_attacker(PlayerbotAI* botAI) { return new CastFlameShockOnAttackerAction(botAI); }
     static Action* cleanse_spirit(PlayerbotAI* botAI) { return new CastCleanseSpiritAction(botAI); }
     static Action* cleanse_spirit_poison_on_party(PlayerbotAI* botAI) { return new CastCleanseSpiritPoisonOnPartyAction(botAI); }
     static Action* cleanse_spirit_disease_on_party(PlayerbotAI* botAI) { return new CastCleanseSpiritDiseaseOnPartyAction(botAI); }
@@ -397,11 +472,39 @@ private:
     static Action* cure_toxins_disease_on_party(PlayerbotAI* botAI) { return new CastCureToxinsDiseaseOnPartyActionSham(botAI); }
     static Action* lava_burst(PlayerbotAI* botAI) { return new CastLavaBurstAction(botAI); }
     static Action* earth_shield_on_main_tank(PlayerbotAI* botAI) { return new CastEarthShieldOnMainTankAction(botAI); }
+    static Action* riptide_on_main_tank(PlayerbotAI* botAI) { return new CastRiptideOnMainTankAction(botAI); }
+    static Action* riptide_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "riptide", "battle resurrected member", "battle resurrected",
+                                               15.0f, HealingManaEfficiency::VERY_HIGH);
+    }
+    static Action* lhw_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "lesser healing wave", "battle resurrected member",
+                                               "battle resurrected", 25.0f, HealingManaEfficiency::LOW);
+    }
+    static Action* earth_shield_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastEarthShieldOnBattleResurrectedTankAction(botAI);
+    }
+    static Action* riptide_on_peeling_tank(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "riptide", "peeling tank", "peeling tank", 15.0f,
+                                               HealingManaEfficiency::VERY_HIGH);
+    }
+    static Action* lhw_on_peeling_tank(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "lesser healing wave", "peeling tank", "peeling tank", 25.0f,
+                                               HealingManaEfficiency::LOW, true, ai::healer::PEEL_TANK_TOP_UP_PCT);
+    }
+    static Action* natures_swiftness(PlayerbotAI* botAI) { return new CastShamanNaturesSwiftnessAction(botAI); }
+    static Action* tidal_force(PlayerbotAI* botAI) { return new CastTidalForceAction(botAI); }
     static Action* shamanistic_rage(PlayerbotAI* botAI) { return new CastShamanisticRageAction(botAI); }
     static Action* feral_spirit(PlayerbotAI* botAI) { return new CastFeralSpiritAction(botAI); }
     static Action* spirit_walk(PlayerbotAI* botAI) { return new CastSpiritWalkAction(botAI); }
     static Action* call_of_the_elements(PlayerbotAI* botAI) { return new CastCallOfTheElementsAction(botAI); }
     static Action* totemic_recall(PlayerbotAI* botAI) { return new CastTotemicRecallAction(botAI); }
+    static Action* dismiss_hostile_totems(PlayerbotAI* botAI) { return new DismissHostileTotemsAction(botAI); }
     static Action* strength_of_earth_totem(PlayerbotAI* botAI) { return new CastStrengthOfEarthTotemAction(botAI); }
     static Action* stoneskin_totem(PlayerbotAI* botAI) { return new CastStoneskinTotemAction(botAI); }
     static Action* tremor_totem(PlayerbotAI* botAI) { return new CastTremorTotemAction(botAI); }
@@ -421,6 +524,7 @@ private:
     static Action* fire_resistance_totem(PlayerbotAI* botAI) { return new CastFireResistanceTotemAction(botAI); }
     static Action* wrath_of_air_totem(PlayerbotAI* botAI) { return new CastWrathOfAirTotemAction(botAI); }
     static Action* windfury_totem(PlayerbotAI* botAI) { return new CastWindfuryTotemAction(botAI); }
+    static Action* grounding_totem(PlayerbotAI* botAI) { return new CastGroundingTotemAction(botAI); }
     static Action* nature_resistance_totem(PlayerbotAI* botAI) { return new CastNatureResistanceTotemAction(botAI); }
     static Action* set_strength_of_earth_totem(PlayerbotAI* botAI) { return new SetStrengthOfEarthTotemAction(botAI); }
     static Action* set_stoneskin_totem(PlayerbotAI* botAI) { return new SetStoneskinTotemAction(botAI); }
@@ -482,7 +586,25 @@ void ShamanAiObjectContext::BuildSharedTriggerContexts(SharedNamedObjectContextL
     triggerContexts.Add(new ShamanATriggerFactoryInternal());
 }
 
+class ShamanValueContextInternal : public NamedObjectContext<UntypedValue>
+{
+public:
+    ShamanValueContextInternal()
+    {
+        creators["battle resurrected member"] = &ShamanValueContextInternal::battle_resurrected_member;
+        creators["peeling tank"] = &ShamanValueContextInternal::peeling_tank;
+    }
+
+private:
+    static UntypedValue* battle_resurrected_member(PlayerbotAI* botAI)
+    {
+        return new BattleResurrectedMemberValue(botAI);
+    }
+    static UntypedValue* peeling_tank(PlayerbotAI* botAI) { return new PeelingTankValue(botAI); }
+};
+
 void ShamanAiObjectContext::BuildSharedValueContexts(SharedNamedObjectContextList<UntypedValue>& valueContexts)
 {
     AiObjectContext::BuildSharedValueContexts(valueContexts);
+    valueContexts.Add(new ShamanValueContextInternal());
 }

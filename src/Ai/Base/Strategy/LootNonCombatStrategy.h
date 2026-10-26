@@ -29,6 +29,15 @@ public:
     std::string const getName() override { return "gather"; }
 };
 
+class AutoCraftStrategy : public Strategy
+{
+public:
+    AutoCraftStrategy(PlayerbotAI* botAI) : Strategy(botAI) {}
+
+    void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    std::string const getName() override { return "auto craft"; }
+};
+
 class RevealStrategy : public Strategy
 {
 public:

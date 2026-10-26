@@ -11,9 +11,11 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 class Item;
+class StatsWeightCalculator;
 
 namespace Trainer
 {
@@ -82,14 +84,24 @@ public:
     void InitAmmo();
     static uint32 CalcMixedGearScore(uint32 gs, uint32 quality);
     static void DestroyEquippedGear(Player* bot);
+    // ilvlTargetedMode: gear toward the ilvl limit deterministically (SetIlvlTargeted); random bots keep the default.
+    // excludedItems: item ids InitEquipment never picks (the test harness: the loot of the dungeon about to be run).
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
-                        bool applyFinishers = true);
+                        bool applyFinishers = true, bool ilvlTargetedMode = false,
+                        std::unordered_set<uint32> const* excludedItems = nullptr);
+    // InitEquipment then searches every quality from green up to itemQuality without the 25-candidate stop or the
+    // random skips, keeps the wearable candidates within 12 item levels of the best one of their kind, and for
+    // trinkets, relics, wands, shields and off-hand items takes the highest item level scoring within 85% of the best.
+    void SetIlvlTargeted(bool targeted) { _ilvlTargeted = targeted; }
+    void SetExcludedItems(std::unordered_set<uint32> const* excludedItems) { _excludedItems = excludedItems; }
     void InitPetTalents();
     void CleanupConsumables();
     void InitReagents();
     void InitConsumables();
     void InitPotions();
     void InitGlyphs(bool increment = false);
+    // Premade spec index (PremadeSpecGlyph.<class>.<index>) whose glyph list fits the bot's talents.
+    static uint8 GetGlyphSpecIndex(Player* bot);
     void InitFood();
     void InitMounts();
     void InitBags(bool destroyOld = true);
@@ -237,9 +249,19 @@ private:
     static std::vector<uint32> ccBreakTrinketCache;
 
 protected:
+    void FilterIlvlTargetedCandidates(uint8 slot, std::vector<std::pair<uint32, int32>>& ids,
+                                      StatsWeightCalculator& calculator);
+    bool PickIlvlTargetedCandidate(uint8 slot, std::vector<std::pair<uint32, int32>> const& ids,
+                                   StatsWeightCalculator& calculator, uint32& itemId, int32& randomPropertyId,
+                                   float& score);
+
     EnchantContainer m_EnchantContainer;
     Player* bot;
     PlayerbotAI* botAI;
+
+private:
+    bool _ilvlTargeted = false;
+    std::unordered_set<uint32> const* _excludedItems = nullptr;
 };
 
 #endif

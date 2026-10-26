@@ -6,12 +6,43 @@
 
 #include "Engine.h"
 #include "Action.h"
+#include "EstimatedLifetimeValue.h"
 #include "Event.h"
+#include "InstanceScript.h"
+#include "MapUpdater.h"
+#include "MoveSpline.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
 #include "Timer.h"
+#include "Value.h"
+
+namespace
+{
+    // The intention sink runs at most this often per engine (the harness reads it every 2 s).
+    constexpr uint32 INTENT_SINK_MS = 1000;
+    constexpr size_t INTENT_MAX_CANDIDATES = 64;
+}
+
+Engine::IntentSink Engine::intentSink = nullptr;
+
+bool Engine::IsNoDamageReleased(Action* action)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !bot->IsInWorld() || !bot->GetMap() || !bot->GetMap()->IsDungeon())
+        return false;
+
+    if (InstanceScript* instance = bot->GetInstanceScript())
+        if (instance->IsEncounterInProgress())
+            return false;
+
+    if (!GroupDamage::NoDamageRelease(bot))
+        return false;
+
+    Unit* target = action->GetTarget();
+    return target && target != bot && target->IsAlive() && bot->IsValidAttackTarget(target);
+}
 
 Engine::Engine(PlayerbotAI* botAI, AiObjectContext* factory) : PlayerbotAIAware(botAI), aiObjectContext(factory)
 {
@@ -119,6 +150,7 @@ void Engine::Init()
     Reset();
 
     hasTargetExclusions = false;
+    triggerOwners.clear();
     for (std::map<std::string, Strategy*>::iterator i = strategies.begin(); i != strategies.end(); i++)
     {
         Strategy* strategy = i->second;
@@ -126,6 +158,7 @@ void Engine::Init()
         hasTargetExclusions |= strategy->HasTargetExclusions();
         strategy->InitMultipliers(multipliers);
         strategy->InitTriggers(triggers);
+        triggerOwners.emplace_back(triggers.size(), strategy);
         for (auto &iter : strategy->actionNodeFactories.creators)
         {
             actionNodeFactories.creators[iter.first] = iter.second;
@@ -154,7 +187,17 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     if (!minimal)
         botAI->forceRebuff.RollBuffPendingCycle();
 
+    intentTick = IsIntentWatched();
+    if (intentTick)
+    {
+        intentCandidates.clear();
+        intentMinimal = minimal;
+        intentTickExecuted = false;
+        intentTickMs = getMSTime();
+    }
+
     // Update triggers and push default actions
+    MapWorkerTrace::SetStage("triggers", nullptr);
     ProcessTriggers(minimal);
     PushDefaultActions();
 
@@ -171,15 +214,23 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         bool skipPrerequisites = basket->isSkipPrerequisites();
 
         if (minimal && (relevance < 100))
+        {
+            if (intentTick)
+                IntentMark(basket->getAction()->getName(), INTENT_MINIMAL, relevance, nullptr);
             continue;
+        }
 
         Event event = basket->getEvent();
         ActionNode* actionNode = queue.Pop();  // NOTE: Pop() deletes basket
         Action* action = InitializeAction(actionNode);
+        if (intentTick)
+            intentPushBy.clear();
 
         if (!action)
         {
             LogAction("A:%s - UNKNOWN", actionNode->getName().c_str());
+            if (intentTick)
+                IntentMark(actionNode->getName(), INTENT_UNKNOWN, relevance, nullptr);
         }
         else if (action->isUseful())
         {
@@ -192,6 +243,15 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                     value = multiplier->GetValue(action);
                 }
 
+                // [combat_no_damage_release] A veto (a multiplier of 0) on an action aimed at an enemy the bot may
+                // attack lifts while its group fights and nobody has hit anything for a while; outside an encounter
+                // only (a boss' own mechanics keep their vetoes), and only attacks: movement vetoes stay.
+                // [b41_mgt] ... except a veto its multiplier keeps (KeepsVeto): mgt-n 20261026-063902-mgt-n-5A-14
+                // (360 s) lifted the Selin room's leash on the tank's "reach melee" to an inert Selin (her encounter
+                // not in progress yet), the tank walked into her room alone and the door shut on the other four.
+                if (value <= 0.0f && !multiplier->KeepsVeto(action) && IsNoDamageReleased(action))
+                    value = 1.0f;
+
                 relevance *= value;
                 action->setRelevance(relevance);
 
@@ -201,6 +261,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                         multiplier->NoteBlock();
 
                     LogAction("Multiplier %s made action %s useless", multiplier->getName().c_str(), action->getName().c_str());
+                    if (intentTick)
+                        IntentMarkMultiplier(action, relevance, multiplier->getName(), value);
                     break;
                 }
             }
@@ -211,8 +273,12 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 {
                     LogAction("A:%s - PREREQ", action->getName().c_str());
 
+                    if (intentTick)
+                        intentPushBy = "prereq of " + action->getName();
                     if (MultiplyAndPush(actionNode->getPrerequisites(), relevance + 0.002f, false, event, "prereq"))
                     {
+                        if (intentTick)
+                            IntentMark(action->getName(), INTENT_PREREQ, relevance, action);
                         PushAgain(actionNode, relevance + 0.001f, event);
                         continue;
                     }
@@ -226,6 +292,12 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 if (actionExecuted)
                 {
                     LogAction("A:%s - OK", action->getName().c_str());
+                    if (intentTick)
+                    {
+                        IntentMark(action->getName(), INTENT_EXECUTED, relevance, action);
+                        intentTickExecuted = true;
+                        intentPushBy = "cont of " + action->getName();
+                    }
                     MultiplyAndPush(actionNode->getContinuers(), relevance, false, event, "cont");
                     lastRelevance = relevance;
                     delete actionNode;  // Safe memory management
@@ -234,18 +306,32 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 else
                 {
                     LogAction("A:%s - FAILED", action->getName().c_str());
+                    if (intentTick)
+                    {
+                        IntentMark(action->getName(), INTENT_FAILED, relevance, action);
+                        intentPushBy = "alt of " + action->getName();
+                    }
                     MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
                 }
             }
             else
             {
                 LogAction("A:%s - IMPOSSIBLE", action->getName().c_str());
+                if (intentTick)
+                {
+                    // A multiplier that scaled it to 0 stays the reason (isPossible() still ran first).
+                    if (relevance > 0)
+                        IntentMark(action->getName(), INTENT_IMPOSSIBLE, relevance, action);
+                    intentPushBy = "alt of " + action->getName();
+                }
                 MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
             }
         }
         else
         {
             LogAction("A:%s - USELESS", action->getName().c_str());
+            if (intentTick)
+                IntentMark(action->getName(), INTENT_USELESS, relevance, action);
             lastRelevance = relevance;
         }
 
@@ -262,7 +348,124 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 
     queue.RemoveExpired();
 
+    if (intentTick)
+    {
+        intentTick = false;
+        intentPushBy.clear();
+        if (intentSink && getMSTimeDiff(intentSinkMs, intentTickMs) >= INTENT_SINK_MS)
+        {
+            intentSinkMs = intentTickMs;
+            intentSink(botAI, this);
+        }
+    }
+
     return actionExecuted;
+}
+
+bool Engine::IsIntentWatched()
+{
+    uint32 const until = aiObjectContext->intentWatchUntilMs.load(std::memory_order_relaxed);
+    if (!until)
+        return false;
+
+    if (int32(getMSTime() - until) >= 0)
+    {
+        aiObjectContext->intentWatchUntilMs.store(0, std::memory_order_relaxed);
+        return false;
+    }
+
+    return intentSink != nullptr;
+}
+
+void Engine::IntentPush(std::string const& name, float relevance)
+{
+    for (IntentCandidate& candidate : intentCandidates)
+        if (candidate.name == name)
+        {
+            // The queue keeps one basket per name with the higher relevance (Queue::Push).
+            if (candidate.outcome == INTENT_PENDING && relevance > candidate.relevance)
+                candidate.relevance = relevance;
+            return;
+        }
+
+    if (intentCandidates.size() >= INTENT_MAX_CANDIDATES)
+        return;
+
+    IntentCandidate candidate;
+    candidate.name = name;
+    candidate.by = intentPushBy;
+    candidate.relevance = relevance;
+    intentCandidates.push_back(std::move(candidate));
+}
+
+IntentCandidate* Engine::IntentFind(std::string const& name)
+{
+    for (IntentCandidate& candidate : intentCandidates)
+        if (candidate.name == name)
+            return &candidate;
+
+    if (intentCandidates.size() >= INTENT_MAX_CANDIDATES)
+        return nullptr;
+
+    // Still queued from an earlier tick.
+    intentCandidates.emplace_back();
+    IntentCandidate* added = &intentCandidates.back();
+    added->name = name;
+    added->by = "earlier tick";
+    return added;
+}
+
+void Engine::IntentMark(std::string const& name, uint8 outcome, float relevance, Action* action)
+{
+    IntentCandidate* found = IntentFind(name);
+    if (!found)
+        return;
+
+    found->outcome = outcome;
+    found->relevance = relevance;
+    if (action)
+        found->action = action;
+
+    if (outcome != INTENT_EXECUTED || !action)
+        return;
+
+    intentExecuted.name = name;
+    intentExecuted.by = found->by;
+    intentExecuted.relevance = relevance;
+    intentExecuted.ms = getMSTime();
+    intentExecuted.target.clear();
+    intentExecuted.targetDistance = -1.0f;
+    // The action's own target value (not a GetTarget() override, so an unknown value name cannot crash).
+    if (Value<Unit*>* targetValue = action->GetTargetValue())
+        if (Unit* target = targetValue->Get())
+        {
+            intentExecuted.target = target->GetName();
+            Player* bot = botAI->GetBot();
+            if (target->IsInWorld() && target->GetMap() == bot->GetMap())
+                intentExecuted.targetDistance = bot->GetDistance(target);
+        }
+}
+
+void Engine::IntentMarkMultiplier(Action* action, float relevance, std::string const& multiplier, float value)
+{
+    IntentCandidate* found = IntentFind(action->getName());
+    if (!found)
+        return;
+
+    found->outcome = INTENT_MULTIPLIER;
+    found->relevance = relevance;
+    found->action = action;
+    found->multiplier = multiplier;
+    found->multiplierValue = value;
+}
+
+std::string Engine::IntentTriggerOwner(size_t triggerIndex)
+{
+    for (std::pair<size_t, Strategy*> const& owner : triggerOwners)
+        if (triggerIndex < owner.first)
+            return owner.second->getName();
+
+    return "";
 }
 
 ActionNode* Engine::CreateActionNode(std::string const name)
@@ -303,6 +506,8 @@ bool Engine::MultiplyAndPush(
         if (k > 0)
         {
             this->LogAction("PUSH:%s - %f (%s)", action->getName().c_str(), k, pushType);
+            if (intentTick)
+                IntentPush(action->getName(), k);
             queue.Push(new ActionBasket(action, k, skipPrerequisites, event));
             pushed = true;
 
@@ -501,6 +706,8 @@ void Engine::ProcessTriggers(bool minimal)
             continue;
 
         Event event = fires[trigger];
+        if (intentTick)
+            intentPushBy = "trigger " + trigger->getName() + " / " + IntentTriggerOwner(size_t(i - triggers.begin()));
         MultiplyAndPush(node->getHandlers(), 0.0f, false, event, "trigger");
     }
 
@@ -517,6 +724,8 @@ void Engine::PushDefaultActions()
     {
         Strategy* strategy = i->second;
         Event emptyEvent;
+        if (intentTick)
+            intentPushBy = "default / " + strategy->getName();
         MultiplyAndPush(strategy->getDefaultActions(), 0.0f, false, emptyEvent, "default");
     }
 }
@@ -597,9 +806,20 @@ bool Engine::ListenAndExecute(Action* action, Event event)
         return actionExecuted;
     }
 
+    // Intention diagnostics: which action started the bot's current movement spline.
+    Player* intentBot = intentTick ? botAI->GetBot() : nullptr;
+    uint32 const splineBefore = intentBot ? intentBot->movespline->GetId() : 0;
+
     if (actionExecutionListeners.Before(action, event))
     {
+        MapWorkerTrace::SetStage("action ", action->getName().c_str());
         actionExecuted = actionExecutionListeners.AllowExecution(action, event) ? action->Execute(event) : true;
+    }
+
+    if (intentBot && intentBot->movespline->GetId() != splineBefore)
+    {
+        intentMover = action->getName();
+        intentMoverMs = getMSTime();
     }
 
     if (botAI->HasStrategy("debug", BOT_STATE_NON_COMBAT))
@@ -633,8 +853,10 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 void Engine::LogAction(char const* format, ...)
 {
     Player* bot = botAI->GetBot();
-    if (sPlayerbotAIConfig.LogInGroupOnly && (!bot->GetGroup() || !botAI->HasGameClientMaster()) && !testMode)
-        return;
+    // The short in-memory trail (GetLastAction, used by `playerbots diag` and the test harness) is kept for every
+    // bot; only the debug log is limited to groups with a game client.
+    bool const quiet = sPlayerbotAIConfig.LogInGroupOnly && (!bot->GetGroup() || !botAI->HasGameClientMaster()) &&
+                       !testMode;
 
     char buf[1024];
 
@@ -659,7 +881,7 @@ void Engine::LogAction(char const* format, ...)
         fprintf(file, "\n");
         fclose(file);
     }
-    else
+    else if (!quiet)
     {
         LOG_DEBUG("playerbots", "{} {}", bot->GetName().c_str(), buf);
     }

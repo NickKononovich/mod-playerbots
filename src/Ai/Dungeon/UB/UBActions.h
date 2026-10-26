@@ -8,6 +8,7 @@
 #define PLAYERBOTS_UBACTIONS_H
 
 #include "MovementActions.h"
+#include "TbcHazard.h"
 
 class UBRetreatFromFoulSporesAction : public MovementAction
 {
@@ -31,6 +32,18 @@ public:
 
 private:
     uint32 _lastReposition = 0;
+};
+
+// Ghaz'an's lake: swim to the nearest dry, reachable spot (a shore spot nearby, a dry group member, the walkway or
+// Ghaz'an's platform). The swim-only Frenzies cannot follow; Ghaz'an walks out to the tank.
+class UBLeaveLakeAction : public TbcHazardMoveAction
+{
+public:
+    UBLeaveLakeAction(PlayerbotAI* botAI) : TbcHazardMoveAction(botAI, "ub leave lake") {}
+    bool Execute(Event event) override;
+
+private:
+    bool PathOk(float x, float y, float z, float maxLength);
 };
 
 #endif

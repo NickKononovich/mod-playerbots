@@ -11,19 +11,13 @@
 
 class PlayerbotAI;
 
-enum class BotCheatMask : uint32;
-
 class CheatAction : public Action
 {
 public:
     CheatAction(PlayerbotAI* botAI) : Action(botAI, "cheat") {}
 
+    // Changes nothing: bots have no cheats (see the .cpp); it only tells the master so.
     bool Execute(Event event) override;
-
-private:
-    static BotCheatMask GetCheatMask(std::string const cheat);
-    static std::string const GetCheatName(BotCheatMask cheatMask);
-    void ListCheats();
 };
 
 #endif

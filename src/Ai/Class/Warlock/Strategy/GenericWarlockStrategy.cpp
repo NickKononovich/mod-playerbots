@@ -38,6 +38,14 @@ void GenericWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
+            "high threat",
+            {
+                NextAction("soulshatter", 55.0f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
             "spell lock",
             {
                 NextAction("spell lock", 40.0f)
@@ -76,6 +84,13 @@ void GenericWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // Raid utility coordinator: the curse assigned to this warlock (the spec curse strategy yields to it).
+    triggers.push_back(
+        new TriggerNode("assigned curse of the elements", { NextAction("curse of the elements", 29.0f) }));
+    triggers.push_back(new TriggerNode("assigned curse of weakness", { NextAction("curse of weakness", 29.0f) }));
+    triggers.push_back(new TriggerNode("assigned curse of tongues", { NextAction("curse of tongues", 29.0f) }));
+    triggers.push_back(new TriggerNode("assigned curse of agony", { NextAction("curse of agony", 18.5f) }));
 }
 
 // ===== AoE Strategy, 3+ enemies =====
@@ -86,11 +101,14 @@ void AoEWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "medium aoe",
             {
+                // [b33_aoe_class] Seed of Corruption first (every spec has it); Shadowfury (Destruction talent,
+                // gated by HasSpell) and Shadowflame after it; Rain of Fire last, the stationary option.
+                // gd-h-5F-51: a Demonology warlock tried Shadowfury ("bot lacks spell 47847") and Shadowflame first.
                 NextAction("immolation aura", 26.0f),
+                NextAction("seed of corruption on attacker", 23.5f),
+                NextAction("seed of corruption", 23.4f),
                 NextAction("shadowfury", 23.0f),
                 NextAction("shadowflame", 22.5f),
-                NextAction("seed of corruption on attacker", 22.0f),
-                NextAction("seed of corruption", 21.5f),
                 NextAction("rain of fire", 21.0f)
             }
         )
@@ -145,7 +163,7 @@ void WarlockCurseOfAgonyStrategy::InitTriggers(std::vector<TriggerNode*>& trigge
         new TriggerNode(
             "curse of agony on attacker",
             {
-                NextAction("curse of agony on attacker", 18.5f)
+                NextAction("curse of agony on attacker", 17.0f)
             }
         )
     );
@@ -153,7 +171,7 @@ void WarlockCurseOfAgonyStrategy::InitTriggers(std::vector<TriggerNode*>& trigge
         new TriggerNode(
             "curse of agony",
             {
-                NextAction("curse of agony", 17.0f)
+                NextAction("curse of agony", 18.5f)
             }
         )
     );

@@ -9,6 +9,8 @@
 
 #include "BotStateTriggers.h"
 #include "CureTriggers.h"
+#include "DamageSpikeTriggers.h"
+#include "FearCounterTriggers.h"  // [fear_counter]
 #include "FishingTriggers.h"
 #include "GenericTriggers.h"
 #include "GuildTriggers.h"
@@ -20,10 +22,18 @@
 #include "NewRpgTriggers.h"
 #include "PullTriggers.h"
 #include "PvpTriggers.h"
+#include "RaidUtilityAssignment.h"
 #include "RangeTriggers.h"
 #include "RpgTriggers.h"
+#include "InterruptTriggers.h"
 #include "RtiTriggers.h"
+#include "SetBonusTriggers.h"
 #include "StuckTriggers.h"
+#include "StuckWatchdog.h"
+#include "PullActions.h"
+#include "TerrainHazardActions.h"
+#include "RangedPositionActions.h"
+#include "CheckMountStateAction.h"
 #include "TravelTriggers.h"
 #include "WaitForAttackTriggers.h"
 
@@ -61,21 +71,44 @@ public:
         creators["high mana"] = &TriggerContext::HighMana;
         creators["almost full mana"] = &TriggerContext::AlmostFullMana;
         creators["enough mana"] = &TriggerContext::EnoughMana;
+        creators["rest mana"] = &TriggerContext::RestMana;
+        creators["rest health"] = &TriggerContext::RestHealth;
+        creators["rested"] = &TriggerContext::Rested;
 
         creators["party member critical health"] = &TriggerContext::PartyMemberCriticalHealth;
+        creators["party member emergency health"] = &TriggerContext::PartyMemberEmergencyHealth;
         creators["party member low health"] = &TriggerContext::PartyMemberLowHealth;
         creators["party member medium health"] = &TriggerContext::PartyMemberMediumHealth;
         creators["party member almost full health"] = &TriggerContext::PartyMemberAlmostFullHealth;
+        creators["party member losing health fast"] = &TriggerContext::party_member_losing_health_fast;
         creators["healer low mana"] = &TriggerContext::HealerLowMana;
 
         creators["generic boost"] = &TriggerContext::generic_boost;
+        creators["pull imminent"] = &ai::raidutil::CreatePullImminentTrigger;
         creators["loss of control"] = &TriggerContext::loss_of_control;
         creators["fear charm sleep"] = &TriggerContext::fear_charm_sleep;
+        // [fear_counter]
+        creators["party member feared"] = &TriggerContext::party_member_feared;
+        creators["fear threat"] = &TriggerContext::fear_threat;
+        creators["fear ward needed"] = &TriggerContext::fear_ward_needed;
+        creators["fear incoming"] = &TriggerContext::fear_incoming;
         creators["fear sleep sap"] = &TriggerContext::fear_sleep_sap;
         creators["poison disease bleed"] = &TriggerContext::poison_disease_bleed;
         creators["movement impaired"] = &TriggerContext::movement_impaired;
 
         creators["protect party member"] = &TriggerContext::protect_party_member;
+        creators["damage spike"] = &TriggerContext::damage_spike;
+        creators["tank damage spike"] = &TriggerContext::tank_damage_spike;
+        creators["tank pressure"] = &TriggerContext::tank_pressure;
+        creators["need auto cc mark"] = &TriggerContext::need_auto_cc_mark;
+        creators["charmed group member"] = &TriggerContext::charmed_group_member;  // [b44_st]
+        creators["stale auto cc mark"] = &TriggerContext::stale_auto_cc_mark;
+        creators["auto cc target free"] = &TriggerContext::auto_cc_target_free;
+        creators["pre pull cc"] = &TriggerContext::pre_pull_cc;
+        creators["stale pre pull cc mark"] = &TriggerContext::stale_pre_pull_cc_mark;
+        creators["emergency cc"] = &TriggerContext::emergency_cc;
+        creators["need tank kill marks"] = &TriggerContext::need_tank_kill_marks;
+        creators["assigned interrupt"] = &TriggerContext::assigned_interrupt;
 
         creators["light rage available"] = &TriggerContext::LightRageAvailable;
         creators["medium rage available"] = &TriggerContext::MediumRageAvailable;
@@ -97,6 +130,24 @@ public:
         creators["tank assist"] = &TriggerContext::TankAssist;
         creators["lose aggro"] = &TriggerContext::LoseAggro;
         creators["has aggro"] = &TriggerContext::HasAggro;
+        creators["mob attacking group member"] = &TriggerContext::mob_attacking_group_member;
+        creators["mobs attacking group members"] = &TriggerContext::mobs_attacking_group_members;
+        creators["mobs attacking group members nearby"] = &TriggerContext::mobs_attacking_group_members_nearby;
+        creators["group member attackers far"] = &TriggerContext::group_member_attackers_far;
+        creators["mob attacking group member nearby"] = &TriggerContext::mob_attacking_group_member_nearby;
+        creators["group member attacker near"] = &TriggerContext::group_member_attacker_near;
+        creators["healer attacked far"] = &TriggerContext::healer_attacked_far;
+        creators["taunt reaction"] = &TriggerContext::taunt_reaction;
+        creators["fleeing mob"] = &TriggerContext::fleeing_mob;
+        creators["fled survivor near"] = &TriggerContext::fled_survivor_near;
+        creators["fight spot back"] = &TriggerContext::fight_spot_back;
+        creators["fight near hazard"] = &TriggerContext::fight_near_hazard;
+        creators["group member attacked"] = &TriggerContext::group_member_attacked;
+        creators["idle boss at tank"] = &TriggerContext::idle_boss_at_tank;
+        creators["party member urgent cure poison"] = &TriggerContext::party_member_urgent_cure_poison;
+        creators["party member urgent cure disease"] = &TriggerContext::party_member_urgent_cure_disease;
+        creators["party member urgent cure curse"] = &TriggerContext::party_member_urgent_cure_curse;
+        creators["party member urgent cure magic"] = &TriggerContext::party_member_urgent_cure_magic;
 
         creators["light aoe"] = &TriggerContext::LightAoe;
         creators["medium aoe"] = &TriggerContext::MediumAoe;
@@ -129,6 +180,8 @@ public:
         creators["being attacked"] = &TriggerContext::BeingAttacked;
         creators["medium threat"] = &TriggerContext::MediumThreat;
         creators["low tank threat"] = &TriggerContext::low_tank_threat;
+        creators["high threat"] = &TriggerContext::high_threat;
+        creators["high threat in raid"] = &TriggerContext::high_threat_in_raid;
 
         creators["dead"] = &TriggerContext::Dead;
         creators["corpse near"] = &TriggerContext::corpse_near;
@@ -144,9 +197,12 @@ public:
         creators["pull start"] = &TriggerContext::pull_start;
         creators["pull end"] = &TriggerContext::pull_end;
         creators["return to pull position"] = &TriggerContext::return_to_pull_position;
+        creators["los pull gather"] = &TriggerContext::los_pull_gather;
+        creators["chain pull"] = &TriggerContext::chain_pull;
 
         creators["no drink"] = &TriggerContext::no_drink;
         creators["no food"] = &TriggerContext::no_food;
+        creators["need food restock"] = &TriggerContext::need_food_restock;
 
         creators["behind target"] = &TriggerContext::behind_target;
         creators["not behind target"] = &TriggerContext::not_behind_target;
@@ -164,6 +220,8 @@ public:
 
         creators["group heal setting"] = &TriggerContext::group_heal_occasion;
         creators["medium group heal setting"] = &TriggerContext::medium_group_heal_occasion;
+        creators["group damage"] = &TriggerContext::group_damage;
+        creators["group critical damage"] = &TriggerContext::group_critical_damage;
         creators["invalid target"] = &TriggerContext::invalid_target;
         creators["lfg proposal active"] = &TriggerContext::lfg_proposal_active;
 
@@ -213,6 +271,14 @@ public:
         creators["move long stuck"] = &TriggerContext::move_long_stuck;
         creators["combat stuck"] = &TriggerContext::combat_stuck;
         creators["combat long stuck"] = &TriggerContext::combat_long_stuck;
+        creators["stuck watchdog"] = &TriggerContext::stuck_watchdog;
+        creators["ranged in melee danger"] = &TriggerContext::ranged_in_melee_danger;
+        creators["healer too far from tank"] = &TriggerContext::healer_too_far_from_tank;
+        creators["chased away from tank"] = &TriggerContext::chased_away_from_tank;
+        creators["healer stops to heal"] = &TriggerContext::healer_stops_to_heal;
+        creators["tank lost healer sight"] = &TriggerContext::tank_lost_healer_sight;
+        creators["prepull sight spot"] = &TriggerContext::prepull_sight_spot;
+        creators["leader mount state"] = &TriggerContext::leader_mount_state;
 
         creators["petition signed"] = &TriggerContext::petition_signed;
         creators["buy tabard"] = &TriggerContext::buy_tabard;
@@ -237,6 +303,11 @@ public:
         creators["rpg trade useful"] = &TriggerContext::rpg_trade_useful;
         creators["rpg duel"] = &TriggerContext::rpg_duel;
         creators["go grind status"] = &TriggerContext::go_grind_status;
+        creators["new rpg group not ready"] = &TriggerContext::new_rpg_group_not_ready;
+        creators["quest game object pending"] = &TriggerContext::quest_game_object_pending;
+        creators["new rpg taxi stalled"] = &TriggerContext::new_rpg_taxi_stalled;
+        creators["new rpg leader afk"] = &TriggerContext::new_rpg_leader_afk;
+        creators["new rpg unknown flight master"] = &TriggerContext::new_rpg_unknown_flight_master;
         creators["go camp status"] = &TriggerContext::go_camp_status;
         creators["wander random status"] = &TriggerContext::wander_random_status;
         creators["wander npc status"] = &TriggerContext::wander_npc_status;
@@ -249,6 +320,9 @@ public:
         creators["can use fishing bobber"] = &TriggerContext::can_use_fishing_bobber;
         creators["new pet"] = &TriggerContext::new_pet;
         creators["wait for attack safe distance"] = &TriggerContext::wait_for_attack_safe_distance;
+
+        // Rotation reactions to the custom tier set bonuses: every "set bonus ..." trigger (SetBonusTriggers.h).
+        ai::setbonus::RegisterTriggers(creators);
     }
 
 private:
@@ -289,6 +363,17 @@ private:
     {
         return new AoeInGroupTrigger(botAI, "medium group heal setting", "medium");
     }
+    // [heal_triage] Group-wide damage, the AoE heal call (3 of a party, half a raid up to 5/10/15): "group damage"
+    // below 70 % (Wild Growth, Circle of Healing, Prayer of Healing, Chain Heal), "group critical damage" below 40 %
+    // (Tranquility, Divine Hymn).
+    static Trigger* group_damage(PlayerbotAI* botAI)
+    {
+        return new AoeInGroupTrigger(botAI, "group damage", "70");
+    }
+    static Trigger* group_critical_damage(PlayerbotAI* botAI)
+    {
+        return new AoeInGroupTrigger(botAI, "group critical damage", "40");
+    }
     static Trigger* target_changed(PlayerbotAI* botAI) { return new TargetChangedTrigger(botAI); }
     static Trigger* swimming(PlayerbotAI* botAI) { return new IsSwimmingTrigger(botAI); }
     static Trigger* no_possible_targets(PlayerbotAI* botAI) { return new NoPossibleTargetsTrigger(botAI); }
@@ -296,6 +381,8 @@ private:
     static Trigger* pull_start(PlayerbotAI* botAI) { return new PullStartTrigger(botAI); }
     static Trigger* pull_end(PlayerbotAI* botAI) { return new PullEndTrigger(botAI); }
     static Trigger* return_to_pull_position(PlayerbotAI* botAI) { return new ReturnToPullPositionTrigger(botAI); }
+    static Trigger* los_pull_gather(PlayerbotAI* botAI) { return new LosPullGatherTrigger(botAI); }
+    static Trigger* chain_pull(PlayerbotAI* botAI) { return new ChainPullTrigger(botAI); }
     static Trigger* can_loot(PlayerbotAI* botAI) { return new CanLootTrigger(botAI); }
     static Trigger* far_from_loot_target(PlayerbotAI* botAI) { return new FarFromCurrentLootTrigger(botAI); }
     static Trigger* far_from_master(PlayerbotAI* botAI) { return new FarFromMasterTrigger(botAI); }
@@ -304,6 +391,7 @@ private:
     static Trigger* not_facing_target(PlayerbotAI* botAI) { return new IsNotFacingTargetTrigger(botAI); }
     static Trigger* no_drink(PlayerbotAI* botAI) { return new NoDrinkTrigger(botAI); }
     static Trigger* no_food(PlayerbotAI* botAI) { return new NoFoodTrigger(botAI); }
+    static Trigger* need_food_restock(PlayerbotAI* botAI) { return new NeedFoodRestockTrigger(botAI); }
     static Trigger* LightAoe(PlayerbotAI* botAI) { return new LightAoeTrigger(botAI); }
     static Trigger* MediumAoe(PlayerbotAI* botAI) { return new MediumAoeTrigger(botAI); }
     static Trigger* HighAoe(PlayerbotAI* botAI) { return new HighAoeTrigger(botAI); }
@@ -313,6 +401,45 @@ private:
     static Trigger* combat_start(PlayerbotAI* botAI) { return new CombatStartTrigger(botAI); }
     static Trigger* LoseAggro(PlayerbotAI* botAI) { return new LoseAggroTrigger(botAI); }
     static Trigger* HasAggro(PlayerbotAI* botAI) { return new HasAggroTrigger(botAI); }
+    static Trigger* mob_attacking_group_member(PlayerbotAI* botAI) { return new MobAttackingGroupMemberTrigger(botAI); }
+    static Trigger* mobs_attacking_group_members(PlayerbotAI* botAI)
+    {
+        return new MobsAttackingGroupMembersTrigger(botAI, "mobs attacking group members", "30");
+    }
+    static Trigger* mobs_attacking_group_members_nearby(PlayerbotAI* botAI)
+    {
+        return new MobsAttackingGroupMembersTrigger(botAI, "mobs attacking group members nearby", "10");
+    }
+    static Trigger* group_member_attackers_far(PlayerbotAI* botAI) { return new GroupMemberAttackersFarTrigger(botAI); }
+    static Trigger* mob_attacking_group_member_nearby(PlayerbotAI* botAI)
+    {
+        return new MobsAttackingGroupMembersTrigger(botAI, "mob attacking group member nearby", "8", 1);
+    }
+    static Trigger* group_member_attacker_near(PlayerbotAI* botAI) { return new GroupMemberAttackerNearTrigger(botAI); }
+    static Trigger* healer_attacked_far(PlayerbotAI* botAI) { return new HealerAttackedFarTrigger(botAI); }
+    static Trigger* taunt_reaction(PlayerbotAI* botAI) { return new TauntReactionTrigger(botAI); }
+    static Trigger* fleeing_mob(PlayerbotAI* botAI) { return new FleeingMobTrigger(botAI); }
+    static Trigger* fled_survivor_near(PlayerbotAI* botAI) { return new FledSurvivorNearTrigger(botAI); }
+    static Trigger* fight_spot_back(PlayerbotAI* botAI) { return new FightSpotBackTrigger(botAI); }
+    static Trigger* fight_near_hazard(PlayerbotAI* botAI) { return new FightNearHazardTrigger(botAI); }
+    static Trigger* group_member_attacked(PlayerbotAI* botAI) { return new GroupMemberAttackedTrigger(botAI); }
+    static Trigger* idle_boss_at_tank(PlayerbotAI* botAI) { return new IdleBossAtTankTrigger(botAI); }
+    static Trigger* party_member_urgent_cure_poison(PlayerbotAI* botAI)
+    {
+        return new PartyMemberNeedUrgentCureTrigger(botAI, "party member urgent cure poison", DISPEL_POISON);
+    }
+    static Trigger* party_member_urgent_cure_disease(PlayerbotAI* botAI)
+    {
+        return new PartyMemberNeedUrgentCureTrigger(botAI, "party member urgent cure disease", DISPEL_DISEASE);
+    }
+    static Trigger* party_member_urgent_cure_curse(PlayerbotAI* botAI)
+    {
+        return new PartyMemberNeedUrgentCureTrigger(botAI, "party member urgent cure curse", DISPEL_CURSE);
+    }
+    static Trigger* party_member_urgent_cure_magic(PlayerbotAI* botAI)
+    {
+        return new PartyMemberNeedUrgentCureTrigger(botAI, "party member urgent cure magic", DISPEL_MAGIC);
+    }
     static Trigger* LowHealth(PlayerbotAI* botAI) { return new LowHealthTrigger(botAI); }
     static Trigger* MediumHealth(PlayerbotAI* botAI) { return new MediumHealthTrigger(botAI); }
     static Trigger* AlmostFullHealth(PlayerbotAI* botAI) { return new AlmostFullHealthTrigger(botAI); }
@@ -324,6 +451,9 @@ private:
     static Trigger* HighMana(PlayerbotAI* botAI) { return new HighManaTrigger(botAI); }
     static Trigger* AlmostFullMana(PlayerbotAI* botAI) { return new AlmostFullManaTrigger(botAI); }
     static Trigger* EnoughMana(PlayerbotAI* botAI) { return new EnoughManaTrigger(botAI); }
+    static Trigger* RestMana(PlayerbotAI* botAI) { return new RestManaTrigger(botAI); }
+    static Trigger* RestHealth(PlayerbotAI* botAI) { return new RestHealthTrigger(botAI); }
+    static Trigger* Rested(PlayerbotAI* botAI) { return new RestedTrigger(botAI); }
     static Trigger* LightRageAvailable(PlayerbotAI* botAI) { return new LightRageAvailableTrigger(botAI); }
     static Trigger* MediumRageAvailable(PlayerbotAI* botAI) { return new MediumRageAvailableTrigger(botAI); }
     static Trigger* HighRageAvailable(PlayerbotAI* botAI) { return new HighRageAvailableTrigger(botAI); }
@@ -373,6 +503,8 @@ private:
     static Trigger* BeingAttacked(PlayerbotAI* botAI) { return new BeingAttackedTrigger(botAI); }
     static Trigger* MediumThreat(PlayerbotAI* botAI) { return new MediumThreatTrigger(botAI); }
     static Trigger* low_tank_threat(PlayerbotAI* botAI) { return new LowTankThreatTrigger(botAI); }
+    static Trigger* high_threat(PlayerbotAI* botAI) { return new HighThreatTrigger(botAI); }
+    static Trigger* high_threat_in_raid(PlayerbotAI* botAI) { return new HighThreatTrigger(botAI, true); }
     // static Trigger* MediumThreat(PlayerbotAI* botAI) { return new MediumThreatTrigger(botAI); }
     static Trigger* Dead(PlayerbotAI* botAI) { return new DeadTrigger(botAI); }
     static Trigger* corpse_near(PlayerbotAI* botAI) { return new CorpseNearTrigger(botAI); }
@@ -387,15 +519,40 @@ private:
     static Trigger* generic_boost(PlayerbotAI* botAI) { return new GenericBoostTrigger(botAI); }
     static Trigger* loss_of_control(PlayerbotAI* botAI) { return new LossOfControlTrigger(botAI); }
     static Trigger* fear_charm_sleep(PlayerbotAI* botAI) { return new FearCharmSleepTrigger(botAI); }
+    // [fear_counter]
+    static Trigger* party_member_feared(PlayerbotAI* botAI) { return new PartyMemberFearedTrigger(botAI); }
+    static Trigger* fear_threat(PlayerbotAI* botAI) { return new FearThreatTrigger(botAI); }
+    static Trigger* fear_ward_needed(PlayerbotAI* botAI) { return new FearWardNeededTrigger(botAI); }
+    static Trigger* fear_incoming(PlayerbotAI* botAI) { return new FearIncomingTrigger(botAI); }
     static Trigger* fear_sleep_sap(PlayerbotAI* botAI) { return new FearSleepSapTrigger(botAI); }
     static Trigger* poison_disease_bleed(PlayerbotAI* botAI) { return new PoisonDiseaseBleedTrigger(botAI); }
     static Trigger* movement_impaired(PlayerbotAI* botAI) { return new MovementImpairedTrigger(botAI); }
+    static Trigger* PartyMemberEmergencyHealth(PlayerbotAI* botAI)
+    {
+        return new PartyMemberEmergencyHealthTrigger(botAI);
+    }
     static Trigger* PartyMemberCriticalHealth(PlayerbotAI* botAI)
     {
         return new PartyMemberCriticalHealthTrigger(botAI);
     }
     static Trigger* HealerLowMana(PlayerbotAI* botAI) { return new HealerLowManaTrigger(botAI); }
     static Trigger* protect_party_member(PlayerbotAI* botAI) { return new ProtectPartyMemberTrigger(botAI); }
+    static Trigger* party_member_losing_health_fast(PlayerbotAI* botAI)
+    {
+        return new PartyMemberLosingHealthFastTrigger(botAI);
+    }
+    static Trigger* damage_spike(PlayerbotAI* botAI) { return new DamageSpikeTrigger(botAI); }
+    static Trigger* tank_damage_spike(PlayerbotAI* botAI) { return new TankDamageSpikeTrigger(botAI); }
+    static Trigger* tank_pressure(PlayerbotAI* botAI) { return new TankPressureTrigger(botAI); }
+    static Trigger* need_auto_cc_mark(PlayerbotAI* botAI) { return new NeedAutoCcMarkTrigger(botAI); }
+    static Trigger* charmed_group_member(PlayerbotAI* botAI) { return new CharmedGroupMemberTrigger(botAI); }
+    static Trigger* stale_auto_cc_mark(PlayerbotAI* botAI) { return new StaleAutoCcMarkTrigger(botAI); }
+    static Trigger* auto_cc_target_free(PlayerbotAI* botAI) { return new AutoCcTargetFreeTrigger(botAI); }
+    static Trigger* pre_pull_cc(PlayerbotAI* botAI) { return new PrePullCcTrigger(botAI); }
+    static Trigger* stale_pre_pull_cc_mark(PlayerbotAI* botAI) { return new StalePrePullCcMarkTrigger(botAI); }
+    static Trigger* emergency_cc(PlayerbotAI* botAI) { return new EmergencyCcTrigger(botAI); }
+    static Trigger* need_tank_kill_marks(PlayerbotAI* botAI) { return new NeedTankKillMarksTrigger(botAI); }
+    static Trigger* assigned_interrupt(PlayerbotAI* botAI) { return new AssignedInterruptTrigger(botAI); }
     static Trigger* no_pet(PlayerbotAI* botAI) { return new NoPetTrigger(botAI); }
     static Trigger* has_pet(PlayerbotAI* botAI) { return new HasPetTrigger(botAI); }
     static Trigger* pet_attack(PlayerbotAI* botAI) { return new PetAttackTrigger(botAI); }
@@ -427,6 +584,14 @@ private:
     static Trigger* move_long_stuck(PlayerbotAI* botAI) { return new MoveLongStuckTrigger(botAI); }
     static Trigger* combat_stuck(PlayerbotAI* botAI) { return new CombatStuckTrigger(botAI); }
     static Trigger* combat_long_stuck(PlayerbotAI* botAI) { return new CombatLongStuckTrigger(botAI); }
+    static Trigger* stuck_watchdog(PlayerbotAI* botAI) { return new StuckWatchdogTrigger(botAI); }
+    static Trigger* ranged_in_melee_danger(PlayerbotAI* botAI) { return new RangedInMeleeDangerTrigger(botAI); }
+    static Trigger* healer_too_far_from_tank(PlayerbotAI* botAI) { return new HealerTooFarFromTankTrigger(botAI); }
+    static Trigger* chased_away_from_tank(PlayerbotAI* botAI) { return new ChasedAwayFromTankTrigger(botAI); }
+    static Trigger* healer_stops_to_heal(PlayerbotAI* botAI) { return new HealerStopsToHealTrigger(botAI); }
+    static Trigger* tank_lost_healer_sight(PlayerbotAI* botAI) { return new TankLostHealerSightTrigger(botAI); }
+    static Trigger* prepull_sight_spot(PlayerbotAI* botAI) { return new PrePullSightSpotTrigger(botAI); }
+    static Trigger* leader_mount_state(PlayerbotAI* botAI) { return new LeaderMountStateTrigger(botAI); }
     static Trigger* player_wants_in_bg(PlayerbotAI* botAI) { return new PlayerWantsInBattlegroundTrigger(botAI); }
     static Trigger* petition_signed(PlayerbotAI* botAI) { return new PetitionTurnInTrigger(botAI); }
     static Trigger* buy_tabard(PlayerbotAI* botAI) { return new BuyTabardTrigger(botAI); }
@@ -450,6 +615,14 @@ private:
     static Trigger* rpg_trade_useful(PlayerbotAI* botAI) { return new RpgTradeUsefulTrigger(botAI); }
     static Trigger* rpg_duel(PlayerbotAI* botAI) { return new RpgDuelTrigger(botAI); }
     static Trigger* go_grind_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_GO_GRIND); }
+    static Trigger* new_rpg_group_not_ready(PlayerbotAI* botAI) { return new NewRpgGroupNotReadyTrigger(botAI); }
+    static Trigger* quest_game_object_pending(PlayerbotAI* botAI) { return new QuestGameObjectPendingTrigger(botAI); }
+    static Trigger* new_rpg_taxi_stalled(PlayerbotAI* botAI) { return new NewRpgTaxiStalledTrigger(botAI); }
+    static Trigger* new_rpg_leader_afk(PlayerbotAI* botAI) { return new NewRpgLeaderAfkTrigger(botAI); }
+    static Trigger* new_rpg_unknown_flight_master(PlayerbotAI* botAI)
+    {
+        return new NewRpgUnknownFlightMasterTrigger(botAI);
+    }
     static Trigger* go_camp_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_GO_CAMP); }
     static Trigger* wander_random_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_WANDER_RANDOM); }
     static Trigger* wander_npc_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_WANDER_NPC); }

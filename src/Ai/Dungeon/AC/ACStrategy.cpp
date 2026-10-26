@@ -24,4 +24,6 @@ void TbcDungeonAuchenaiCryptsStrategy::InitTriggers(std::vector<TriggerNode*>& t
 void TbcDungeonAuchenaiCryptsStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     multipliers.push_back(new ShirrakFleeFocusFireMultiplier(botAI));
+    multipliers.push_back(new ShirrakHoldLongRangeMultiplier(botAI));          // [b35_lock]
+    multipliers.push_back(new ShirrakInhibitMagicInstantsMultiplier(botAI));   // [b35_lock]
 }

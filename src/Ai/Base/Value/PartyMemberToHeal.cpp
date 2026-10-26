@@ -5,38 +5,135 @@
  */
 
 #include "PartyMemberToHeal.h"
+
+#include <algorithm>
+
+#include "Group.h"
+#include "HealAssignmentValues.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 
-class IsTargetOfHealingSpell : public SpellEntryPredicate
+namespace
 {
-public:
-    bool Check(SpellInfo const* spellInfo) override
+    constexpr float TANK_HEAL_PRIORITY = 10.0f;      // health percent a tank counts as already missing
+    constexpr float ASSIGNED_HEAL_PRIORITY = 15.0f;  // same for a member of this healer's raid assignment
+    constexpr float PREDICTED_FULL_HEALTH = 95.0f;   // a member the heals already being cast will top off
+
+    // [rot_b31_heal] Threat-of-death triage. dme-n-5H-29 18:48:25-18:48:40: the bear tank went 88 -> 46 -> 3 % while
+    // the disc priest's Flash Heals went to the mage under 35 %; the plain health rank let a dps that had stopped
+    // taking damage outrank a tank dropping ~10 % per 2 s. Both terms read the cached "group health loss" map
+    // (HealthLossTracker, net loss over the last 2 s), nothing new is sampled.
+    constexpr float TANK_LOSS_WEIGHT = 1.0f;      // extra rank per % a tank lost in the window, on top of lossWeight
+    constexpr float STABLE_LOSS_PCT = 2.0f;       // a non-tank losing less than this in the window is not under attack
+    constexpr float STABLE_WAIT_PRIORITY = 8.0f;  // ... and can wait one GCD for a member who is
+    constexpr float STABLE_WAIT_FLOOR = 20.0f;    // below this health nobody waits, stable or not
+
+    // [b31_shared] A tank carrying this paladin's own Beacon of Light gets every heal the paladin lands on someone
+    // else. 36-39 % of Holy Flash of Light / Holy Light went to the beaconed tank: while that tank is at or above
+    // BEACON_TANK_SAFE_PCT, a non-tank under BEACON_OTHER_HURT_PCT is healed first.
+    constexpr uint32 SPELL_BEACON_OF_LIGHT = 53563;
+    constexpr float BEACON_TANK_SAFE_PCT = 50.0f;
+    constexpr float BEACON_OTHER_HURT_PCT = 90.0f;
+
+    // Another living healer in the group, so a member it is already healing can be left to it.
+    bool HasOtherHealer(Group* group, Player* bot)
     {
-        for (uint8 i = 0; i < 3; ++i)
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
-            if (spellInfo->Effects[i].Effect == SPELL_EFFECT_HEAL ||
-                spellInfo->Effects[i].Effect == SPELL_EFFECT_HEAL_MAX_HEALTH ||
-                spellInfo->Effects[i].Effect == SPELL_EFFECT_HEAL_MECHANICAL)
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
+                PlayerbotAI::IsHeal(member))
                 return true;
         }
 
         return false;
     }
-};
+}
 
 inline bool compareByHealth(Unit const* u1, Unit const* u2) { return u1->GetHealthPct() < u2->GetHealthPct(); }
 
+namespace HealTriage
+{
+    bool IsHealImmune(Player* healer, Unit* target)
+    {
+        if (!target)
+            return false;
+
+        // Rank 1 of a plain direct heal of the healer's school: Ice Block and Cyclone block every school, so one
+        // probe answers for all the healer's spells.
+        uint32 probeSpell = 2050;  // Lesser Heal (Holy)
+        switch (healer ? healer->getClass() : 0)
+        {
+            case CLASS_DRUID:
+                probeSpell = 5185;  // Healing Touch (Nature)
+                break;
+            case CLASS_SHAMAN:
+                probeSpell = 331;  // Healing Wave (Nature)
+                break;
+            case CLASS_PALADIN:
+                probeSpell = 635;  // Holy Light (Holy)
+                break;
+            default:
+                break;
+        }
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(probeSpell);
+        return spellInfo && target->IsImmunedToSpell(spellInfo);
+    }
+
+    bool TankUpkeepYields(PlayerbotAI* botAI, Unit* tank)
+    {
+        Player* bot = botAI->GetBot();
+        if (!tank || !tank->IsAlive() || !bot->IsInCombat() || !bot->GetGroup())
+            return false;
+
+        // A tank that is itself hurt keeps its HoTs.
+        if (tank->GetHealthPct() < sPlayerbotAIConfig.AlmostFullHealth)
+            return false;
+
+        Unit* toHeal = botAI->GetAiObjectContext()->GetValue<Unit*>("party member to heal")->Get();
+        return toHeal && toHeal != tank && toHeal->IsAlive() &&
+               toHeal->GetHealthPct() < sPlayerbotAIConfig.MediumHealth;
+    }
+
+    bool HasImmuneMemberToHeal(PlayerbotAI* botAI)
+    {
+        Player* bot = botAI->GetBot();
+        Group* group = bot->GetGroup();
+        if (!group)
+            return false;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || !member->IsInMap(bot) ||
+                member->GetHealthPct() >= sPlayerbotAIConfig.MediumHealth ||
+                bot->GetDistance(member) > sPlayerbotAIConfig.HealDistance * 2)
+                continue;
+
+            if (IsHealImmune(bot, member))
+                return true;
+        }
+
+        return false;
+    }
+}
+
 Unit* PartyMemberToHeal::Calculate()
 {
-    IsTargetOfHealingSpell predicate;
-
     Group* group = bot->GetGroup();
     if (!group)
         return bot;
 
     bool isRaid = bot->GetGroup()->isRaidGroup();
     MinValueCalculator calc(100);
+    IncomingHealMap const& incoming = context->GetValue<IncomingHealMap>("incoming heals")->RefGet();
+    // A member losing health fast is ranked by the health it is heading to: a 15k-health caster under two melee
+    // mobs goes from 90 % to dead in about four seconds, faster than the health bands react.
+    float const lossWeight = sPlayerbotAIConfig.HealerHealthLossWeight;
+    HealthLossMap const& losses = context->GetValue<HealthLossMap>("group health loss")->RefGet();
 
     // If focus heal targets strategy is active, only heal those targets
     if (botAI->HasStrategy("focus heal targets", BOT_STATE_COMBAT))
@@ -51,15 +148,20 @@ Unit* PartyMemberToHeal::Calculate()
                 continue;
 
             float health = player->GetHealthPct();
-            if (isRaid || health < sPlayerbotAIConfig.MediumHealth ||
-                !IsTargetOfSpellCast(player, predicate))
+            bool const beingHealed = incoming.find(player->GetGUID()) != incoming.end();
+            if (isRaid || health < sPlayerbotAIConfig.MediumHealth || !beingHealed)
             {
+                float const predicted = PredictedHealthPct(player, incoming);
+                if (beingHealed && predicted >= PREDICTED_FULL_HEALTH)
+                    continue;
+
                 float probeValue = 100.0f;
                 if (player->GetDistance2d(bot) > sPlayerbotAIConfig.HealDistance)
-                    probeValue = health + 30.0f;
+                    probeValue = predicted + 30.0f;
                 else
-                    probeValue = health + player->GetDistance2d(bot) / 10.0f;
+                    probeValue = predicted + player->GetDistance2d(bot) / 10.0f;
 
+                probeValue -= RecentHealthLossPct(player, losses) * lossWeight;
                 if (probeValue < calc.minValue && Check(player))
                     calc.probe(probeValue, player);
             }
@@ -68,27 +170,79 @@ Unit* PartyMemberToHeal::Calculate()
         return (Unit*)calc.param;
     }
 
+    // Automatic raid assignment is a preference, not a restriction: anyone else low enough is still healed.
+    std::list<ObjectGuid> const& assigned =
+        context->GetValue<std::list<ObjectGuid>>("auto focus heal targets")->RefGet();
+
+    // Leaving a member to the heal already on its way only makes sense when another healer is there to finish
+    // the job. The only healer of a party would otherwise ignore a tank down to medium health each time a hybrid
+    // (a paladin tank's Flash of Light, an enhancement shaman's Healing Wave) started a small heal on it.
+    bool const spreadHeals = HasOtherHealer(group, bot);
+
+    // [b31_shared] this paladin's beaconed tank, ranked after the loop (see BEACON_TANK_SAFE_PCT)
+    bool const beaconHealer = bot->getClass() == CLASS_PALADIN;
+    Player* beaconTank = nullptr;
+    float beaconTankProbe = 0.0f;
+
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
-        if (player->IsGameMaster())
+        if (!player || player->IsGameMaster())
             continue;
-        if (player && player->IsAlive())
+        if (player->IsAlive())
         {
             float health = player->GetHealthPct();
-            if (isRaid || health < sPlayerbotAIConfig.MediumHealth || !IsTargetOfSpellCast(player, predicate))
+            bool const beingHealed = incoming.find(player->GetGUID()) != incoming.end();
+            // Someone already being healed is left to that healer until they drop to medium health, so in a
+            // raid the healers spread out instead of all landing on the same target.
+            if (health < sPlayerbotAIConfig.MediumHealth || !beingHealed || !spreadHeals)
             {
+                // Heals already in flight decide the rank, so a second big heal does not land on a member
+                // another healer is about to fill.
+                float const predicted = PredictedHealthPct(player, incoming);
+                if (beingHealed && predicted >= PREDICTED_FULL_HEALTH)
+                    continue;
+
                 float probeValue = 100.0f;
                 if (player->GetDistance2d(bot) > sPlayerbotAIConfig.HealDistance)
                 {
-                    probeValue = health + 30.0f;
+                    probeValue = predicted + 30.0f;
                 }
                 else
                 {
-                    probeValue = health + player->GetDistance2d(bot) / 10.0f;
+                    probeValue = predicted + player->GetDistance2d(bot) / 10.0f;
+                }
+
+                float const recentLoss = RecentHealthLossPct(player, losses);
+                probeValue -= recentLoss * lossWeight;
+                // a tank losing health is the more urgent heal
+                if (PlayerbotAI::IsTank(player))
+                {
+                    probeValue -= TANK_HEAL_PRIORITY;
+                    // [rot_b31_heal] A tank dropping fast is heading to death sooner than its health says: a tank at
+                    // 46 % losing 10 %/2 s ranks ~12, a dps at 30 % taking nothing ranks ~39.
+                    probeValue -= recentLoss * TANK_LOSS_WEIGHT;
+                }
+                else if (recentLoss < STABLE_LOSS_PCT && health >= STABLE_WAIT_FLOOR && bot->IsInCombat())
+                {
+                    // [rot_b31_heal] Low but no longer hit (its mob was taunted off): one GCD of waiting costs
+                    // nothing, so it yields to a member actually losing health. With nobody else hurt it is still
+                    // the lowest probe and gets the heal.
+                    probeValue += STABLE_WAIT_PRIORITY;
+                }
+                if (std::find(assigned.begin(), assigned.end(), player->GetGUID()) != assigned.end())
+                    probeValue -= ASSIGNED_HEAL_PRIORITY;
+                // [b31_shared] a safe beaconed tank waits for the comparison after the loop
+                bool const beaconed = beaconHealer && !beaconTank && health >= BEACON_TANK_SAFE_PCT &&
+                                      PlayerbotAI::IsTank(player) &&
+                                      player->HasAura(SPELL_BEACON_OF_LIGHT, bot->GetGUID());
+                if (beaconed && probeValue < 100.0f && Check(player))
+                {
+                    beaconTank = player;
+                    beaconTankProbe = probeValue;
                 }
                 // delay Check player to here for better performance
-                if (probeValue < calc.minValue && Check(player))
+                else if (!beaconed && probeValue < calc.minValue && Check(player))
                 {
                     calc.probe(probeValue, player);
                 }
@@ -123,6 +277,16 @@ Unit* PartyMemberToHeal::Calculate()
             }
         }
     }
+
+    // [b31_shared] The beaconed tank yields only to a hurt non-tank; with nobody else that low it keeps its rank.
+    if (beaconTank)
+    {
+        Unit* chosen = (Unit*)calc.param;
+        bool const otherHurt = chosen && chosen->GetHealthPct() < BEACON_OTHER_HURT_PCT;
+        if (!otherHurt && (!chosen || beaconTankProbe < calc.minValue))
+            return beaconTank;
+    }
+
     return (Unit*)calc.param;
 }
 
@@ -131,8 +295,13 @@ bool PartyMemberToHeal::Check(Unit* player)
     // return player && player != bot && player->GetMapId() == bot->GetMapId() && player->IsInWorld() &&
     //     ServerFacade::instance().GetDistance2d(bot, player) < (player->IsPlayer() && PlayerbotAI::IsTank((Player*)player) ? 50.0f
     //     : 40.0f);
+    // Line of sight is not required: a member behind a pillar stays the heal target, so the out-of-range
+    // trigger moves the healer to them instead of the healer never seeing them.
+    // [heal_triage] A member no heal can land on is not the heal target: HoR heroic Falric 2026-10-25 (waves 26 and
+    // 27), the Ice Blocked mage at 18-29 % stayed "party member to heal" for 10 s, every "... on party" heal failed
+    // with "target immune", and the resto druid rolled HoTs on a 96 % tank while the hunter and shaman sat at 39 %.
     return player->GetMapId() == bot->GetMapId() && !player->IsCharmed() &&
-           bot->GetDistance2d(player) < sPlayerbotAIConfig.HealDistance * 2 && bot->IsWithinLOSInMap(player);
+           bot->GetDistance2d(player) < sPlayerbotAIConfig.HealDistance * 2 && !HealTriage::IsHealImmune(bot, player);
 }
 
 Unit* HealerLowMana::Calculate()
@@ -163,7 +332,6 @@ Unit* HealerLowMana::Calculate()
 
 Unit* PartyMemberToProtect::Calculate()
 {
-    return nullptr;
     Group* group = bot->GetGroup();
     if (!group)
         return nullptr;

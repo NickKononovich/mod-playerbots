@@ -5,15 +5,138 @@
  */
 
 #include "MageTriggers.h"
+#include "Creature.h"
 #include "DynamicObject.h"
+#include "GameObject.h"
+#include "Map.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "RaidConsumables.h"
+#include "RaidUtilityAssignment.h"
+#include "RtiValue.h"
 #include "ServerFacade.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "TargetValue.h"
 #include "Value.h"
+
+namespace
+{
+    constexpr float FROST_NOVA_CC_CHECK_RANGE = 12.0f;  // the nova reaches 10 yd around the mage
+    constexpr uint32 SPELL_RITUAL_OF_REFRESHMENT_RANK_1 = 43987;
+    constexpr uint32 SPELL_RITUAL_OF_REFRESHMENT_RANK_2 = 58659;
+    constexpr uint32 ITEM_ARCANE_POWDER = 17020;
+    constexpr uint32 GO_REFRESHMENT_PORTAL_RANK_1 = 186811;
+    constexpr uint32 GO_REFRESHMENT_TABLE_RANK_1 = 186812;
+    constexpr uint32 GO_REFRESHMENT_TABLE_RANK_2 = 193061;
+    constexpr uint32 GO_REFRESHMENT_PORTAL_RANK_2 = 193062;
+    constexpr float REFRESHMENT_TABLE_SEARCH_DISTANCE = 30.0f;
+    constexpr float RITUAL_OF_REFRESHMENT_BOSS_DISTANCE = 45.0f;
+    // [ritual_needs_helpers] the ritual's portal needs two other members to click it (RaidConsumables IsSoulPortal):
+    // a mage that starts it alone channels on (mgt-h 2026-10-25, 20261025-115805-mgt-h-5A-40, 653-706 s: alone at the
+    // entrance after the corpse run, the group 190 yd on at Selin's room, "ritual of refreshment" channelled 50 s and
+    // the harness regroup read it as "meet_stuck" three times, then sent the whole group out to the entrance).
+    constexpr float RITUAL_HELPER_RANGE = 20.0f;
+    constexpr uint32 RITUAL_HELPERS_NEEDED = 2;
+
+    constexpr uint32 ARCANE_POWDER_RANK_1 = 2;  // Spell.dbc reagent counts
+    constexpr uint32 ARCANE_POWDER_RANK_2 = 5;
+
+    bool CanStartRitualOfRefreshment(Player* player)
+    {
+        if (player->HasSpell(SPELL_RITUAL_OF_REFRESHMENT_RANK_2))
+            return !player->HasSpellCooldown(SPELL_RITUAL_OF_REFRESHMENT_RANK_2) &&
+                   player->HasItemCount(ITEM_ARCANE_POWDER, ARCANE_POWDER_RANK_2);
+
+        return player->HasSpell(SPELL_RITUAL_OF_REFRESHMENT_RANK_1) &&
+               !player->HasSpellCooldown(SPELL_RITUAL_OF_REFRESHMENT_RANK_1) &&
+               player->HasItemCount(ITEM_ARCANE_POWDER, ARCANE_POWDER_RANK_1);
+    }
+}
+
+bool RitualOfRefreshmentTrigger::IsActive()
+{
+    if (!bot->IsAlive() || bot->IsInCombat() || !CanStartRitualOfRefreshment(bot))
+        return false;
+
+    Group* group = bot->GetGroup();
+    Map* map = bot->GetMap();
+    if (!group || !map || !map->IsDungeon())
+        return false;
+
+    // [ritual_needs_helpers] two other living members close enough to click the portal
+    uint32 helpers = 0;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (member && member != bot && member->IsAlive() && member->GetMap() == map &&
+            bot->GetExactDist(member) <= RITUAL_HELPER_RANGE)
+            ++helpers;
+    }
+    if (helpers < RITUAL_HELPERS_NEEDED)
+        return false;
+
+    // One caster per group: the bot mage with the lowest GUID among those who can start the ritual now
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || member->getClass() != CLASS_MAGE || !member->IsAlive() ||
+            member->IsInCombat() || member->GetMap() != map || !GET_PLAYERBOT_AI(member) ||
+            !CanStartRitualOfRefreshment(member))
+            continue;
+
+        if (member->GetGUID() < bot->GetGUID())
+            return false;
+    }
+
+    if (!AI_VALUE(bool, "ready check in progress"))
+    {
+        bool bossNear = false;
+        for (ObjectGuid const guid : AI_VALUE(GuidVector, "possible targets"))
+        {
+            Unit* unit = botAI->GetUnit(guid);
+            if (unit && unit->IsAlive() && !unit->IsInCombat() && ai::raidutil::IsBossUnit(unit) &&
+                bot->GetDistance(unit) <= RITUAL_OF_REFRESHMENT_BOSS_DISTANCE)
+            {
+                bossNear = true;
+                break;
+            }
+        }
+
+        if (!bossNear)
+            return false;
+    }
+
+    // Not while a Refreshment Table, or the portal of a ritual in progress, is already up nearby
+    for (ObjectGuid const guid : AI_VALUE(GuidVector, "nearest game objects"))
+    {
+        GameObject* go = botAI->GetGameObject(guid);
+        if (!go || !go->isSpawned() || bot->GetDistance(go) > REFRESHMENT_TABLE_SEARCH_DISTANCE)
+            continue;
+
+        switch (go->GetEntry())
+        {
+            case GO_REFRESHMENT_PORTAL_RANK_1:
+            case GO_REFRESHMENT_TABLE_RANK_1:
+            case GO_REFRESHMENT_TABLE_RANK_2:
+            case GO_REFRESHMENT_PORTAL_RANK_2:
+                return false;
+            default:
+                break;
+        }
+    }
+
+    // [b43_class] not at "pull imminent" or next to a pack: only at a real rest or the run start
+    std::string const blocked = RaidConsumables::RitualBlockedReason(botAI);
+    if (!blocked.empty())
+    {
+        LOG_DEBUG("playerbots", "[b43_class] {}: ritual of refreshment waits: {}", bot->GetName(), blocked);
+        return false;
+    }
+
+    return true;
+}
 
 bool NoManaGemTrigger::IsActive()
 {
@@ -39,20 +162,58 @@ bool ArcaneIntellectTrigger::IsActive()
     return BuffTrigger::IsActive() && !botAI->HasAura("arcane brilliance", GetTarget());
 }
 
+namespace
+{
+    // [b31_deep] any mage armor self-buff up
+    bool HasAnyMageArmor(PlayerbotAI* botAI, Unit* target)
+    {
+        return botAI->HasAura("molten armor", target) || botAI->HasAura("mage armor", target) ||
+               botAI->HasAura("ice armor", target) || botAI->HasAura("frost armor", target);
+    }
+}
+
 bool MageArmorTrigger::IsActive()
 {
     Unit* target = GetTarget();
-    return botAI->HasSpell("mage armor") && !botAI->HasAura("mage armor", target) &&
-           !botAI->HasAura("ice armor", target) && !botAI->HasAura("frost armor", target) &&
-           !botAI->HasAura("molten armor", target);
+    if (!target)
+        return false;
+
+    // [b31_deep] below level 34 (Mage Armor r1) the bot had no armor at all: the action falls back through its
+    // alternatives (Ice Armor, then Frost Armor)
+    if (!botAI->HasSpell("mage armor"))
+        return !HasAnyMageArmor(botAI, target);
+
+    if (botAI->HasAura("mage armor", target) || botAI->HasAura("ice armor", target) ||
+        botAI->HasAura("frost armor", target))
+        return false;
+
+    if (!botAI->HasAura("molten armor", target))
+        return true;
+
+    // Molten stays up in raids; elsewhere it gives way to Mage Armor once mana runs low
+    return !bot->GetMap()->IsRaid() && AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana;
 }
 
 bool MoltenArmorTrigger::IsActive()
 {
     Unit* target = GetTarget();
-    return botAI->HasSpell("molten armor") && !botAI->HasAura("molten armor", target) &&
-           !botAI->HasAura("ice armor", target) && !botAI->HasAura("frost armor", target) &&
-           !botAI->HasAura("mage armor", target);
+    if (!target)
+        return false;
+
+    // [b31_deep] below level 62 (Molten Armor r1) "bdps" mages had no armor at all (0 Ice / Frost Armor casts in
+    // two days): the action falls back through its alternatives (Mage Armor, Ice Armor, Frost Armor)
+    if (!botAI->HasSpell("molten armor"))
+        return !HasAnyMageArmor(botAI, target);
+
+    if (botAI->HasAura("molten armor", target) || botAI->HasAura("ice armor", target) ||
+        botAI->HasAura("frost armor", target))
+        return false;
+
+    uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
+    if (!botAI->HasAura("mage armor", target))
+        return bot->GetMap()->IsRaid() || mana >= sPlayerbotAIConfig.LowMana;
+
+    return bot->GetMap()->IsRaid() || mana >= sPlayerbotAIConfig.HighMana;
 }
 
 bool FrostNovaOnTargetTrigger::IsActive()
@@ -62,6 +223,23 @@ bool FrostNovaOnTargetTrigger::IsActive()
         return false;
 
     return botAI->HasAura(spell, target);
+}
+
+bool HealerAttackerInFrostNovaRangeTrigger::IsActive()
+{
+    // the qualifier stays inside the nova's 10 yd so the combat reach of a big mob does not decide it
+    Unit* mob = AI_VALUE2(Unit*, "healer attacker near", "9");
+    Creature* creature = mob ? mob->ToCreature() : nullptr;
+    // creature_immunities is indexed by mechanic (Creature::IsImmunedToSpell); the nova's damage breaks any
+    // crowd control within its 10 yd
+    if (!creature || creature->IsDungeonBoss() || creature->isWorldBoss() || mob->isFrozen() ||
+        mob->HasUnitState(UNIT_STATE_ROOT) ||
+        creature->HasMechanicTemplateImmunity((1ULL << MECHANIC_FREEZE) | (1ULL << MECHANIC_ROOT)) ||
+        IsCrowdControlledMobNear(botAI, bot, FROST_NOVA_CC_CHECK_RANGE))
+        return false;
+
+    Unit* victim = mob->GetVictim();
+    return victim && mob->IsWithinMeleeRange(victim);
 }
 
 bool FrostbiteOnTargetTrigger::IsActive()
@@ -95,11 +273,21 @@ bool NoFocusMagicTrigger::IsActive()
     return true;
 }
 
-bool DeepFreezeCooldownTrigger::IsActive()
+// [b31_deep] Cold Snap right after the first Icy Veins has run out (wowsims: haste cooldowns back to back)
+bool ColdSnapTrigger::IsActive()
 {
-    constexpr uint32 SPELL_DEEP_FREEZE = 44572;
-    return !bot->HasSpell(SPELL_DEEP_FREEZE) ||
-           SpellCooldownTrigger::IsActive();
+    constexpr uint32 SPELL_ICY_VEINS = 12472;
+    constexpr uint32 SPELL_COLD_SNAP = 11958;
+    if (!bot->HasSpell(SPELL_COLD_SNAP) || bot->HasSpellCooldown(SPELL_COLD_SNAP) ||
+        !bot->HasSpell(SPELL_ICY_VEINS) || !bot->HasSpellCooldown(SPELL_ICY_VEINS) || bot->HasAura(SPELL_ICY_VEINS))
+        return false;
+
+    // the 8 min cooldown is kept for bosses (or an ordered / lust burst), never spent on trash
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!(target && target->ToPlayer()) && !ai::raidutil::IsBossUnit(target) && !ai::raidutil::IsBurstWindow(botAI))
+        return false;
+
+    return BoostTrigger::IsActive();
 }
 
 const std::unordered_set<uint32> FlamestrikeNearbyTrigger::FLAMESTRIKE_SPELL_IDS = {
@@ -108,13 +296,11 @@ const std::unordered_set<uint32> FlamestrikeNearbyTrigger::FLAMESTRIKE_SPELL_IDS
 
 bool FlamestrikeNearbyTrigger::IsActive()
 {
+    // [b31_deep] the own Flamestrike is a dynamic object of the caster, never an aura on it (Unit::GetAura reads
+    // m_appliedAuras only): the old lookup never fired, "flamestrike active and medium aoe" was a dead node
     for (uint32 spellId : FLAMESTRIKE_SPELL_IDS)
     {
-        Aura* aura = bot->GetAura(spellId, bot->GetGUID());
-        if (!aura)
-            continue;
-
-        DynamicObject* dynObj = aura->GetDynobjOwner();
+        DynamicObject* dynObj = bot->GetDynObject(spellId);
         if (!dynObj)
             continue;
 
@@ -127,6 +313,10 @@ bool FlamestrikeNearbyTrigger::IsActive()
 
 bool ImprovedScorchTrigger::IsActive()
 {
+    // [guide_b31_dead] maintain the debuff only with the Improved Scorch talent (ranks 1-3)
+    if (!bot->HasAura(11095) && !bot->HasAura(12872) && !bot->HasAura(12873))
+        return false;
+
     Unit* target = GetTarget();
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return false;
@@ -134,9 +324,7 @@ bool ImprovedScorchTrigger::IsActive()
     static const uint32 ImprovedScorchExclusiveDebuffs[] = {// Shadow Mastery
                                                             17794, 17797, 17798, 17799, 17800,
                                                             // Winter's Chill
-                                                            12579,
-                                                            // Improved Scorch
-                                                            22959};
+                                                            12579};
 
     for (uint32 spellId : ImprovedScorchExclusiveDebuffs)
     {
@@ -144,7 +332,25 @@ bool ImprovedScorchTrigger::IsActive()
             return false;
     }
 
-    return DebuffTrigger::IsActive();
+    // [b31_deep] wowsims fire APL: Scorch when the own Improved Scorch has <= 4 s left (maxOverlap 4 s). It used to
+    // wait for the debuff to fall off completely, a gap of cast + travel every 30 s. Another caster's debuff: false.
+    constexpr uint32 SPELL_IMPROVED_SCORCH_DEBUFF = 22959;
+    constexpr int32 IMPROVED_SCORCH_REFRESH_MS = 4 * IN_MILLISECONDS;
+    Aura* own = nullptr;
+    auto const range = target->GetAppliedAuras().equal_range(SPELL_IMPROVED_SCORCH_DEBUFF);
+    for (auto itr = range.first; itr != range.second; ++itr)
+    {
+        Aura* aura = itr->second->GetBase();
+        if (aura->GetCasterGUID() != bot->GetGUID())
+            return false;
+        own = aura;
+    }
+
+    if (!own)
+        return DebuffTrigger::IsActive();
+
+    return own->GetDuration() >= 0 && own->GetDuration() <= IMPROVED_SCORCH_REFRESH_MS &&
+           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
 }
 
 const std::unordered_set<uint32> BlizzardChannelCheckTrigger::BLIZZARD_SPELL_IDS = {
@@ -164,7 +370,14 @@ bool BlizzardChannelCheckTrigger::IsActive()
     if (Spell* spell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
         spell && BLIZZARD_SPELL_IDS.count(spell->m_spellInfo->Id))
     {
-        return !HasEnoughAoeTargets(botAI, bot->GetPosition(), sPlayerbotAIConfig.SightDistance, minEnemies);
+        // [b31_deep] count the mobs inside the Blizzard (8 yd round its dynamic object), not within sight of the
+        // mage: the old count cancelled the channel only once everything around was dead
+        constexpr float BLIZZARD_RADIUS = 8.0f;
+        DynamicObject* dynObj = bot->GetDynObject(spell->m_spellInfo->Id);
+        if (!dynObj)
+            return false;
+
+        return !HasEnoughAoeTargets(botAI, dynObj->GetPosition(), BLIZZARD_RADIUS, minEnemies);
     }
 
     return false;

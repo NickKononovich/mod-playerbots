@@ -10,6 +10,9 @@ void NonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     triggers.push_back(new TriggerNode("random", { NextAction("clean quest log", 1.0f) }));
     triggers.push_back(new TriggerNode("timer", { NextAction("check mount state", 1.0f) }));
+    // Both actions are no-ops for random bots and the self-bot, and rescan the bags at most every 30 s.
+    triggers.push_back(new TriggerNode("random", { NextAction("learn glyph", 1.0f) }));
+    triggers.push_back(new TriggerNode("random", { NextAction("give glyph", 1.0f) }));
 }
 
 void CollisionStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -18,8 +21,10 @@ void CollisionStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode("collision", { NextAction("move out of collision", 2.0f) }));
 }
 
-void MountStrategy::InitTriggers(std::vector<TriggerNode*>& /*triggers*/)
+void MountStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // Above follow (1.0) so the mount cast starts with the leader's, below eating and drinking (3.0).
+    triggers.push_back(new TriggerNode("leader mount state", { NextAction("check mount state", 2.0f) }));
 }
 
 void WorldBuffStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

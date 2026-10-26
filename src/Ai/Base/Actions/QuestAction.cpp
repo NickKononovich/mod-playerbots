@@ -72,101 +72,6 @@ bool QuestAction::Execute(Event event)
     return result;
 }
 
-bool QuestAction::CompleteQuest(Player* player, uint32 entry)
-{
-    Quest const* pQuest = sObjectMgr->GetQuestTemplate(entry);
-
-    // If player doesn't have the quest
-    if (!pQuest || player->GetQuestStatus(entry) == QUEST_STATUS_NONE)
-    {
-        return false;
-    }
-
-    // Add quest items for quests that require items
-    for (uint8 x = 0; x < QUEST_ITEM_OBJECTIVES_COUNT; ++x)
-    {
-        uint32 id = pQuest->RequiredItemId[x];
-        uint32 count = pQuest->RequiredItemCount[x];
-        if (!id || !count)
-        {
-            continue;
-        }
-
-        uint32 curItemCount = player->GetItemCount(id, true);
-
-        ItemPosCountVec dest;
-        uint8 msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, id, count - curItemCount);
-        if (msg == EQUIP_ERR_OK)
-        {
-            Item* item = player->StoreNewItem(dest, id, true);
-            player->SendNewItem(item, count - curItemCount, true, false);
-        }
-    }
-
-    // All creature/GO slain/casted (not required, but otherwise it will display "Creature slain 0/10")
-    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
-    {
-        int32 creature = pQuest->RequiredNpcOrGo[i];
-        uint32 creaturecount = pQuest->RequiredNpcOrGoCount[i];
-
-        // TODO check if we need a REQSPELL condition, this methods and sql entry dosent seem implemented ?
-        /*if (uint32 spell_id = pQuest->GetReqSpell[i])
-        {
-            for (uint16 z = 0; z < creaturecount; ++z)
-            {
-                player->CastedCreatureOrGO(creature, ObjectGuid(), spell_id);
-            }
-        }*/
-        /*else*/
-        if (creature > 0)
-        {
-            if (CreatureTemplate const* cInfo = sObjectMgr->GetCreatureTemplate(creature))
-                for (uint16 z = 0; z < creaturecount; ++z)
-                {
-                    player->KilledMonster(cInfo, ObjectGuid::Empty);
-                }
-        }
-        else if (creature < 0)
-        {
-            for (uint16 z = 0; z < creaturecount; ++z)
-            {
-                player->KillCreditGO(-creature);
-            }
-        }
-    }
-
-    // If the quest requires reputation to complete
-    if (uint32 repFaction = pQuest->GetRepObjectiveFaction())
-    {
-        uint32 repValue = pQuest->GetRepObjectiveValue();
-        uint32 curRep = player->GetReputationMgr().GetReputation(repFaction);
-        if (curRep < repValue)
-            if (FactionEntry const* factionEntry = sFactionStore.LookupEntry(repFaction))
-            {
-                player->GetReputationMgr().SetReputation(factionEntry, repValue);
-            }
-    }
-
-    // If the quest requires money
-    int32 ReqOrRewMoney = pQuest->GetRewOrReqMoney();
-    if (ReqOrRewMoney < 0)
-    {
-        player->ModifyMoney(-ReqOrRewMoney);
-    }
-
-    const std::string text_quest = ChatHelper::FormatQuest(pQuest);
-    if (botAI->HasStrategy("debug quest", BotState::BOT_STATE_NON_COMBAT) || botAI->HasStrategy("debug rpg", BotState::BOT_STATE_COMBAT))
-    {
-        LOG_INFO("playerbots", "{} => Quest [ {} ] completed", bot->GetName(), pQuest->GetTitle());
-        bot->Say("Quest [ " + text_quest + " ] completed", LANG_UNIVERSAL);
-    }
-    botAI->TellMasterNoFacing("Quest completed " + text_quest);
-
-    player->CompleteQuest(entry);
-
-    return true;
-}
-
 bool QuestAction::ProcessQuests(ObjectGuid questGiver)
 {
     if (GameObject* gameObject = botAI->GetGameObject(questGiver))
@@ -244,7 +149,9 @@ bool QuestAction::AcceptQuest(Quest const* quest, ObjectGuid questGiver)
         {
             Object* pObject = ObjectAccessor::GetObjectByTypeMask(*bot, questGiver,
                                                                   TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT | TYPEMASK_ITEM);
-            bot->AddQuest(quest, pObject);
+            // like the accept opcode: a quest with nothing left to do is complete at once
+            if (pObject)
+                bot->AddQuestAndCheckCompletion(quest, pObject);
         }
 
         if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE && bot->GetQuestStatus(questId) != QUEST_STATUS_REWARDED)
@@ -261,6 +168,105 @@ bool QuestAction::AcceptQuest(Quest const* quest, ObjectGuid questGiver)
     botAI->TellMaster(out);
 
     return false;
+}
+
+// Complete as soon as it is taken and handed in to the same giver: auto-complete quests and talk-to quests
+// whose required items the bot already carries.
+bool QuestAction::IsImmediateTurnIn(Quest const* quest, Object* questGiver)
+{
+    if (!questGiver || quest->IsRepeatable() || !questGiver->hasQuest(quest->GetQuestId()) ||
+        !questGiver->hasInvolvedQuest(quest->GetQuestId()))
+        return false;
+
+    if (quest->IsAutoComplete() || !quest->GetQuestMethod())
+        return true;
+
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredNpcOrGo[i])
+            return false;
+
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredItemId[i] && bot->GetItemCount(quest->RequiredItemId[i]) < quest->RequiredItemCount[i])
+            return false;
+
+    return !quest->GetRepObjectiveFaction();
+}
+
+bool UseQuestGameObjectAction::NeedsObject(GameObject* go)
+{
+    if (!go || !go->isSpawned() || go->GetGoType() == GAMEOBJECT_TYPE_CHEST ||
+        go->GetGoType() == GAMEOBJECT_TYPE_QUESTGIVER)
+        return false;
+
+    return bot->HasQuestForGO(go->GetEntry()) || go->ActivateToQuest(bot);
+}
+
+GameObject* UseQuestGameObjectAction::FindUsableCopy(uint32 entry)
+{
+    GameObject* best = nullptr;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest game objects no los"))
+    {
+        GameObject* go = botAI->GetGameObject(guid);
+        if (!go || go->GetEntry() != entry || go->HasGameObjectFlag(GO_FLAG_IN_USE) || !NeedsObject(go) ||
+            bot->GetDistance(go) > SEARCH_RANGE)
+            continue;
+
+        if (!best || bot->GetDistance(go) < bot->GetDistance(best))
+            best = go;
+    }
+
+    return best;
+}
+
+bool UseQuestGameObjectAction::Execute(Event event)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+
+    // relayed use by the master: remember the nearest copy this bot still needs
+    if (!event.getPacket().empty())
+    {
+        GameObject* used = botAI->GetGameObject(event.getObject());
+        if (!used || bot->IsInCombat())
+            return false;
+
+        GameObject* target = used;
+        if (!NeedsObject(used) || used->HasGameObjectFlag(GO_FLAG_IN_USE))
+            target = FindUsableCopy(used->GetEntry());
+        if (!target)
+            return false;
+
+        info.pendingQuestObject = target->GetGUID();
+        info.pendingQuestObjectSince = std::max(getMSTime(), 1u);
+        return true;
+    }
+
+    GameObject* go = botAI->GetGameObject(info.pendingQuestObject);
+    if (!go || GetMSTimeDiffToNow(info.pendingQuestObjectSince) > PENDING_TIMEOUT_MS || !NeedsObject(go))
+    {
+        info.pendingQuestObject = ObjectGuid::Empty;
+        return false;
+    }
+
+    // someone else is using it: take another copy or wait for it to close
+    if (go->HasGameObjectFlag(GO_FLAG_IN_USE))
+    {
+        if (GameObject* other = FindUsableCopy(go->GetEntry()))
+            info.pendingQuestObject = other->GetGUID();
+
+        return false;
+    }
+
+    if (!go->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
+        return MoveTo(go->GetMapId(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
+
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    WorldPacket use(CMSG_GAMEOBJ_USE, 8);
+    use << go->GetGUID();
+    bot->GetSession()->HandleGameObjectUseOpcode(use);
+    info.pendingQuestObject = ObjectGuid::Empty;
+    return true;
 }
 
 bool QuestUpdateCompleteAction::Execute(Event event)

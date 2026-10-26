@@ -162,10 +162,7 @@ uint32 MoneyNeededForValue::Calculate()
             moneyWanted = AI_VALUE(uint32, "train cost");
             break;
         case NeedMoneyFor::travel:
-            moneyWanted =
-                bot->isTaxiCheater()
-                    ? 0
-                    : 1500;  // 15s for traveling half a continent. Todo: Add better calculation (Should be ???)
+            moneyWanted = 1500;  // 15s for traveling half a continent. Todo: Add better calculation (Should be ???)
             break;
         case NeedMoneyFor::gear:
             moneyWanted = level * level * level;  // Or level^3 (10s @ lvl10, 3g @ lvl30, 20g @ lvl60, 50g @ lvl80):
@@ -221,9 +218,6 @@ uint32 TotalMoneyNeededForValue::Calculate()
 uint32 FreeMoneyForValue::Calculate()
 {
     uint32 money = bot->GetMoney();
-
-    if (botAI->HasCheat(BotCheatMask::gold))
-        return 10000000;
 
     if (IsRealPlayer(botAI->GetMaster()))
         return money;

@@ -22,6 +22,11 @@ void GatherStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode("timer", { NextAction("add gathering loot", 5.0f) }));
 }
 
+void AutoCraftStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    triggers.push_back(new TriggerNode("often", { NextAction("auto craft", 4.0f) }));
+}
+
 void RevealStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     triggers.push_back(

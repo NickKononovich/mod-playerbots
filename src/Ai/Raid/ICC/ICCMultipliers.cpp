@@ -245,6 +245,10 @@ float IccRotfaceMultiplier::GetValue(Action* action)
     if (!boss1)
         return 1.0f;
 
+    // After the pull nobody drags the raid after the leader: ooze kiting and slime spray need fixed spots.
+    if (boss1->IsInCombat() && dynamic_cast<FollowAction*>(action))
+        return 0.0f;
+
     {
         uint32 const now = getMSTime();
         IcecrownHelpers::IccInstanceState& st = IcecrownHelpers::IccState(bot->GetMap()->GetInstanceId());
@@ -267,7 +271,10 @@ float IccRotfaceMultiplier::GetValue(Action* action)
     if (botAI->HasAura("Vile Gas", bot))
         return 0.0f;
 
-    if (PlayerbotAI::IsTank(bot) && dynamic_cast<TankAssistAction*>(action))
+    // The tank position action attacks through bot->Attack, which does not switch engines: in the non-combat
+    // engine tank assist is the tank's only way into its combat rotation, so it is held in the combat engine only.
+    if (PlayerbotAI::IsTank(bot) && dynamic_cast<TankAssistAction*>(action) &&
+        botAI->GetState() == BOT_STATE_COMBAT)
         return 0.0f;
 
     if (dynamic_cast<CombatFormationMoveAction*>(action) || dynamic_cast<AvoidAoeAction*>(action))

@@ -15,9 +15,9 @@ DemonologyWarlockStrategy::DemonologyWarlockStrategy(PlayerbotAI* botAI) : Gener
 // ===== Default Actions =====
 std::vector<NextAction> DemonologyWarlockStrategy::getDefaultActions()
 {
+    // [b31_deep] No default Immolate: it bypassed the 12 s lifetime of the "demo immolate" trigger.
     return {
        NextAction("corruption", 5.5f),
-       NextAction("immolate", 5.4f),
        NextAction("shadow bolt", 5.3f),
        NextAction("incinerate", 5.2f),
        NextAction("shoot", 5.0f) };
@@ -46,20 +46,15 @@ void DemonologyWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         )
     );
 
-    // Main DoT triggers for high uptime
+    // [b31_deep] wowsims demo APL: CoD (fight > 60 s, else CoA), then the main target's Corruption (maxDots 1) and
+    // Immolate (fight >= 12 s) above the Decimation / Molten Core procs. The multi-dot on other attackers ranked
+    // above all of them (C12: Corruption 5.8/min on L80 bosses, 39 Corruption + 20 Immolate in 209 s on the
+    // Maulgar council) and now ranks below the procs, in packs only.
     triggers.push_back(
         new TriggerNode(
-            "corruption on attacker",
+            "damage curse of doom",
             {
-                NextAction("corruption on attacker", 19.5f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "immolate on attacker",
-            {
-                NextAction("immolate on attacker", 19.0f)
+                NextAction("curse of doom", 19.6f)
             }
         )
     );
@@ -67,15 +62,31 @@ void DemonologyWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         new TriggerNode(
             "corruption",
             {
-                NextAction("corruption", 18.0f)
+                NextAction("corruption", 19.5f)
             }
         )
     );
     triggers.push_back(
         new TriggerNode(
-            "immolate",
+            "demo immolate",
             {
-                NextAction("immolate", 17.5f)
+                NextAction("immolate", 19.0f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "demo corruption on attacker",
+            {
+                NextAction("corruption on attacker", 16.0f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "demo immolate on attacker",
+            {
+                NextAction("immolate on attacker", 15.8f)
             }
         )
     );
@@ -98,10 +109,10 @@ void DemonologyWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         )
     );
 
-    // Life Tap glyph buff, and Life Tap as filler
+    // Life Tap glyph buff, and Life Tap as filler ([b31_deep] refreshed < 3 s before it drops, wowsims demo)
     triggers.push_back(
         new TriggerNode(
-            "life tap glyph buff",
+            "life tap glyph buff early",
             {
                 NextAction("life tap", 29.5f)
             }
@@ -124,6 +135,10 @@ void DemonologyWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus backlash", { NextAction("shadow bolt", 16.8f) }));
+    triggers.push_back(new TriggerNode("set bonus ascendant pact", { NextAction("life tap", 5.65f) }));
 }
 
 // Combat strategy to run to melee for Immolation Aura

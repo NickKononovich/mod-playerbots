@@ -11,6 +11,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 
@@ -322,7 +323,7 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit* 
 
         Unit* marked = botAI->GetUnit(iconGuid);
         if (marked && !marked->IsAlive())
-            group->SetTargetIcon(iconIdx, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, iconIdx, ObjectGuid::Empty);
     }
 
     // Check if the only spike left is a tank spike
@@ -333,13 +334,13 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit* 
     {
         // Skull on spike, Cross on boss
         if (group->GetTargetIcon(RtiTargetValue::skullIndex) != spikes[0]->GetGUID())
-            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), spikes[0]->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, spikes[0]->GetGUID());
 
         if (group->GetTargetIcon(RtiTargetValue::crossIndex) != boss->GetGUID())
-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), boss->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::crossIndex, boss->GetGUID());
 
         if (!group->GetTargetIcon(RtiTargetValue::starIndex).IsEmpty())
-            group->SetTargetIcon(RtiTargetValue::starIndex, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::starIndex, ObjectGuid::Empty);
 
         return true;
     }
@@ -348,7 +349,7 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit* 
     for (size_t i = spikes.size(); i < sizeof(Icons); ++i)
     {
         if (!group->GetTargetIcon(Icons[i]).IsEmpty())
-            group->SetTargetIcon(Icons[i], bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, Icons[i], ObjectGuid::Empty);
     }
 
     // Assign Skull/Cross/Star to each alive spike
@@ -356,7 +357,7 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit* 
     {
         uint8 const iconIdx = Icons[i];
         if (group->GetTargetIcon(iconIdx) != spikes[i]->GetGUID())
-            group->SetTargetIcon(iconIdx, bot->GetGUID(), spikes[i]->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, iconIdx, spikes[i]->GetGUID());
     }
 
     return true;
@@ -372,12 +373,12 @@ bool IccSpikeAction::HandleNoSpikesMarking(Unit* boss)
     for (uint8 const iconIdx : {uint8(6), uint8(0)})
     {
         if (!group->GetTargetIcon(iconIdx).IsEmpty())
-            group->SetTargetIcon(iconIdx, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, iconIdx, ObjectGuid::Empty);
     }
 
     // Skull on boss
     if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
 
     // Per-bot context value -- every bot needs this for its own ChooseTarget.
     context->GetValue<std::string>("rti")->Set("skull");

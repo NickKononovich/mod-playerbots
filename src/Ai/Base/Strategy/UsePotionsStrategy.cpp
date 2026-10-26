@@ -31,7 +31,9 @@ void UsePotionsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     Strategy::InitTriggers(triggers);
 
     triggers.push_back(new TriggerNode(
-        "critical health", { NextAction("healthstone", ACTION_MEDIUM_HEAL + 1) }));
+        "critical health", { NextAction("healthstone", ACTION_EMERGENCY) }));
     triggers.push_back(
         new TriggerNode("medium mana", { NextAction("mana potion", ACTION_EMERGENCY) }));
+    // A fight started while sitting with food / drink (100 % crits against a sitting target): stand up first.
+    triggers.push_back(new TriggerNode("rested", { NextAction("stand up", ACTION_EMERGENCY + 1.0f) }));
 }

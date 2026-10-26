@@ -27,6 +27,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
+#include "SelfBotControl.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
 #include "WorldScript.h"
@@ -149,6 +150,11 @@ public:
         {
             PlayerbotsMgr::instance().AddPlayerbotData(player, false);
             sRandomPlayerbotMgr.OnPlayerLogin(player);
+            // user 2026-10-25: the spectator character "Watcher" always runs at x5 (".modify speed all 5"),
+            // so it keeps up with the test bots without typing the command after every login
+            if (player->GetName() == "Watcher")
+                for (UnitMoveType type : {MOVE_RUN, MOVE_WALK, MOVE_SWIM, MOVE_FLIGHT})
+                    player->SetSpeed(type, 5.0f, true);
 
             // Before modifying the following messages, please make sure it does not violate the GNU GPLv2
             // license especially if you are distributing a repack or hosting a public server
@@ -249,7 +255,8 @@ public:
     {
         PlayerbotAI* const botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
 
-        if (botAI != nullptr)
+        // A SelfBot whose player just took control by input waits for its removal on the world thread.
+        if (botAI != nullptr && !SelfBotControl::IsSuspended(player))
         {
             botAI->UpdateAI(diff);
         }
@@ -293,6 +300,11 @@ public:
         if (lang == LANG_ADDON)
             return true;
 
+        // A SelfBot's own player gives orders to the group, not to the character the SelfBot drives;
+        // "@me <command>" addresses only that SelfBot.
+        bool const ownSelfBot = sPlayerbotAIConfig.SelfBotIgnoreOwnGroupCommands && IsSelfBot(player);
+        bool const toSelfOnly = ownSelfBot && msg.compare(0, 4, "@me ") == 0;
+
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             Player* const member = itr->GetSource();
@@ -305,7 +317,10 @@ public:
             if (botAI == nullptr)
                 continue;
 
-            botAI->HandleCommand(type, msg, player);
+            if (ownSelfBot && (member == player) != toSelfOnly)
+                continue;
+
+            botAI->HandleCommand(type, toSelfOnly ? msg.substr(4) : msg, player);
         }
 
         return true;
@@ -616,12 +631,20 @@ void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
 void AddSC_HyjalBotScripts();
+void AddSC_DungeonBotScripts();
 void AddSC_IcecrownBotScripts();
 void AddSC_RubySanctumBotScripts();
 void AddSC_randombot_level_mgr();
+void AddPlayerbotsDeathRecorder();
+void AddPlayerbotsInstanceResetCatchUp();
+void AddPlayerbotsLowLevelDeathKnightStart();
+void AddPlayerbotsTestHarness();
+void AddPlayerbotsUserPack();
 
 void AddPlayerbotsScripts()
 {
+    // First: its chat hook drops cheat commands to the user's pack before PlayerbotsPlayerScript hands them to bots.
+    AddPlayerbotsUserPack();
     new PlayerbotsBattlefieldScript();
     new PlayerbotsDatabaseScript();
     new PlayerbotsPlayerScript();
@@ -635,11 +658,16 @@ void AddPlayerbotsScripts()
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
     AddPlayerbotsCommandscripts();
+    AddPlayerbotsDeathRecorder();
+    AddPlayerbotsInstanceResetCatchUp();
+    AddPlayerbotsLowLevelDeathKnightStart();
+    AddPlayerbotsTestHarness();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();
     AddSC_SerpentshrineCavernBotScripts();
     AddSC_TempestKeepBotScripts();
     AddSC_HyjalBotScripts();
+    AddSC_DungeonBotScripts();
     AddSC_IcecrownBotScripts();
     AddSC_RubySanctumBotScripts();
     AddSC_randombot_level_mgr();

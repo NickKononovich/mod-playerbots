@@ -12,20 +12,10 @@ class GenericRogueStrategyActionNodeFactory : public NamedObjectFactory<ActionNo
 public:
     GenericRogueStrategyActionNodeFactory()
     {
-        creators["use deadly poison on off hand"] = &use_deadly_poison_on_off_hand;
         creators["kick"] = &kick;
     }
 
 private:
-    static ActionNode* use_deadly_poison_on_off_hand([[maybe_unused]] PlayerbotAI* botAI)
-    {
-        return new ActionNode(
-            "use deadly poison on off hand",
-            /*P*/ {},
-            /*A*/ { NextAction("use instant poison on off hand") },
-            /*C*/ {}
-        );
-    }
     static ActionNode* kick([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode(
@@ -46,19 +36,21 @@ void GenericRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     CombatStrategy::InitTriggers(triggers);
 
+    // [b31_wr] Poisons go on out of combat (GenericRogueNonCombatStrategy, refreshed under 10 min). In combat only a
+    // missing one on a long fight, below every finisher (was HIGH + 6 / + 5.5: a 3 s cast above Slice and Dice).
     triggers.push_back(
         new TriggerNode(
-            "main hand weapon no enchant",
+            "main hand poison missing long fight",
             {
-                NextAction("use instant poison on main hand", ACTION_HIGH + 6)
+                NextAction("use poison on main hand", ACTION_HIGH - 0.5f)
             }
         )
     );
     triggers.push_back(
         new TriggerNode(
-            "off hand weapon no enchant",
+            "off hand poison missing long fight",
             {
-                NextAction("use deadly poison on off hand", ACTION_HIGH + 5.5f)
+                NextAction("use poison on off hand", ACTION_HIGH - 0.6f)
             }
         )
     );
@@ -102,7 +94,7 @@ void GenericRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode(
-            "low tank threat",
+            "tricks of the trade on main tank",
             {
                 NextAction("tricks of the trade on main tank", ACTION_HIGH + 7)
             }
@@ -114,6 +106,14 @@ void GenericRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             "medium threat",
             {
                 NextAction("vanish", ACTION_HIGH)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "high threat",
+            {
+                NextAction("feint", ACTION_HIGH + 8)
             }
         )
     );
@@ -280,7 +280,9 @@ void RogueAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "medium aoe",
             {
-                NextAction("fan of knives", ACTION_NORMAL + 5)
+                // [b33_aoe_class] ACTION_NORMAL + 5 -> ACTION_HIGH + 3.5: the AoE of the specs without Blade Flurry
+                // (Subtlety, Assassination) on 3+ targets; above the builders, below the finishers
+                NextAction("fan of knives", ACTION_HIGH + 3.5f)
             }
         )
     );
@@ -299,9 +301,9 @@ void RogueBoostStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode(
-            "blade flurry",
+            "killing spree",
             {
-                NextAction("blade flurry", ACTION_HIGH + 4)
+                NextAction("killing spree", ACTION_HIGH + 3)
             }
         )
     );

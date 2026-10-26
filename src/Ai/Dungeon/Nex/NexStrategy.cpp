@@ -5,6 +5,7 @@
  */
 
 #include "NexStrategy.h"
+#include "DungeonHazard.h"
 #include "NexMultipliers.h"
 
 void WotlkDungeonNexStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -36,11 +37,19 @@ void WotlkDungeonNexStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // TODO: This turns hunters into melee marshmallows, have not come up with a better solution yet
     triggers.push_back(new TriggerNode("ormorok stack",
         { NextAction("dodge spikes", ACTION_MOVE + 5) }));
+    // Each Crystal Spike 27099 erupts (47944, 3 yd) 2 s after it appears: whoever stands next to one, the tank
+    // included, steps off it until it has fired (DungeonHazard.cpp). Wave 8: an enhancement shaman at 2.7 yd from
+    // Ormorok's centre died to two spikes in a row.
+    triggers.push_back(new TriggerNode("dungeon hazard",
+        { NextAction("avoid dungeon hazard", ACTION_EMERGENCY + 4) }));
     // TODO: Add handling for spell reflect... best to spam low level/weak spells but don't want
     // to hardcode spells per class, might be difficult to dynamically generate this.
     // Will revisit if I find my altbots killing themselves in heroic, just heal through it for now
 
     // Keristrasza
+    // Her prison only drops after the three containment spheres are used (out of combat, interactor only).
+    triggers.push_back(new TriggerNode("nexus containment sphere",
+        { NextAction("click containment sphere", ACTION_MOVE + 2) }));
     triggers.push_back(new TriggerNode("intense cold",
         { NextAction("intense cold jump", ACTION_MOVE + 5) }));
     // Flank dragon positioning
@@ -55,4 +64,5 @@ void WotlkDungeonNexStrategy::InitMultipliers(std::vector<Multiplier*>& multipli
     multipliers.push_back(new TelestraMultiplier(botAI));
     multipliers.push_back(new AnomalusMultiplier(botAI));
     multipliers.push_back(new OrmorokMultiplier(botAI));
+    multipliers.push_back(new DungeonHazardHoldMultiplier(botAI));
 }

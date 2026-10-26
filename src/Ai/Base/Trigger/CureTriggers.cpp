@@ -25,4 +25,16 @@ bool PartyMemberNeedCureTrigger::IsActive()
     return target && target->IsInWorld();
 }
 
-bool NeedWorldBuffTrigger::IsActive() { return !WorldBuffAction::NeedWorldBuffs(bot).empty(); }
+Value<Unit*>* PartyMemberNeedUrgentCureTrigger::GetTargetValue()
+{
+    return context->GetValue<Unit*>("party member to dispel urgent", dispelType);
+}
+
+bool PartyMemberNeedUrgentCureTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    return target && target->IsInWorld();
+}
+
+// The world buff action grants nothing any more (no free auras for bots), so the trigger never fires.
+bool NeedWorldBuffTrigger::IsActive() { return false; }

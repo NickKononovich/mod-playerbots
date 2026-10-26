@@ -5,7 +5,12 @@
  */
 
 #include "PartyMemberToResurrect.h"
+
+#include "Group.h"
+#include "ObjectAccessor.h"
+#include "PathGenerator.h"
 #include "Playerbots.h"
+#include "RaidLeaderState.h"
 
 class IsTargetOfResurrectSpell : public SpellEntryPredicate
 {
@@ -41,8 +46,90 @@ private:
     IsTargetOfResurrectSpell predicate;
 };
 
+namespace
+{
+    // Out of combat a resurrecter walks to a corpse this far, on a complete walk (Violet Hold wave 18: the mage lay
+    // on the ledge 66-92 yd from the group, outside the 2 x SpellDistance window; nobody tried in three quiet spells
+    // of 13-23 s, the mage released after 2 minutes into a Dalaran it could not walk).
+    constexpr float RESURRECT_WALK_RANGE = 100.0f;
+
+    enum ResurrectRank : uint8
+    {
+        RANK_HEALER_RESURRECTER = 0,  // brings back more resurrecters
+        RANK_RESURRECTER = 1,
+        RANK_TANK = 2,
+        RANK_LEADER = 3,
+        RANK_OTHER = 4
+    };
+
+    uint8 RankOf(Player* player, Player* leader)
+    {
+        bool const resurrecter = RaidLeader::CanResurrect(player);
+        if (resurrecter && PlayerbotAI::IsHeal(player))
+            return RANK_HEALER_RESURRECTER;
+        if (resurrecter)
+            return RANK_RESURRECTER;
+        if (PlayerbotAI::IsTank(player))
+            return RANK_TANK;
+        if (player == leader)
+            return RANK_LEADER;
+        return RANK_OTHER;
+    }
+}
+
+// In combat (battle resurrection) a corpse in reach and in sight; out of combat one the resurrecter can walk to
+// ("reach party member to resurrect" walks it into spell range first).
+bool PartyMemberToResurrect::Check(Unit* player)
+{
+    if (PartyMemberValue::Check(player))
+        return true;
+    if (!player || bot->IsInCombat() || player->GetMapId() != bot->GetMapId() ||
+        (player->ToPlayer() && player->ToPlayer()->IsGameMaster()) ||
+        bot->GetDistance(player) >= RESURRECT_WALK_RANGE)
+        return false;
+
+    PathGenerator path(bot);
+    path.CalculatePath(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), false);
+    return path.GetPathType() == PATHFIND_NORMAL;
+}
+
+// After a wipe: healers who can resurrect first, then other resurrecters, tanks, the leader, and the rest.
 Unit* PartyMemberToResurrect::Calculate()
 {
     FindDeadPlayer finder(this);
-    return FindPartyMember(finder);
+    Group* group = bot->GetGroup();
+    if (!group)
+        return FindPartyMember(finder);
+
+    // The leader named who comes first ("res <name>"); the order holds until that member is up.
+    if (ObjectGuid const first = RaidLeader::GetResurrectFirst(bot))
+    {
+        Player* member = ObjectAccessor::FindPlayer(first);
+        if (!member || member->IsAlive() || !group->IsMember(first))
+            RaidLeader::SetResurrectFirst(bot, ObjectGuid::Empty);
+        else if (member != bot && member->IsInWorld() && finder.Check(member) && Check(member))
+            return member;
+    }
+
+    Player* leader = botAI->GetGroupLeader();
+    Player* best = nullptr;
+    uint8 bestRank = RANK_OTHER + 1;
+    float bestDistance = 0.0f;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || !finder.Check(member) || !Check(member))
+            continue;
+
+        uint8 const rank = RankOf(member, leader);
+        float const distance = bot->GetDistance(member);
+        if (!best || rank < bestRank || (rank == bestRank && distance < bestDistance))
+        {
+            best = member;
+            bestRank = rank;
+            bestDistance = distance;
+        }
+    }
+
+    return best;
 }

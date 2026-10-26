@@ -10,8 +10,30 @@
 #include "PartyMemberValue.h"
 
 class Pet;
+class Player;
 class PlayerbotAI;
 class Unit;
+
+// [heal_triage] Shared healer triage helpers (all four healer classes).
+namespace HealTriage
+{
+    // A member no heal can land on: Ice Block, Cyclone, Divine Intervention, ... (the same Unit::IsImmunedToSpell
+    // test CheckCast runs, against a rank 1 heal of the healer's class).
+    bool IsHealImmune(Player* healer, Unit* target);
+
+    // A healthy tank's HoT upkeep (Lifebloom / Rejuvenation / Renew / Riptide on the main tank) yields to a member
+    // below medium health: HoR heroic Falric 2026-10-25, the resto druid rolled Lifebloom on a 96 % tank while the
+    // dps sat at 17-40 %.
+    bool TankUpkeepYields(PlayerbotAI* botAI, Unit* tank);
+
+    // [heal_triage b29] Below this the heal target is an emergency: the single-target saves outrank the group heals
+    // and no cure, facing turn or damage spell of the healer goes first.
+    inline constexpr float EMERGENCY_HEALTH_PCT = 35.0f;
+
+    // A group member below medium health who cannot take a heal right now (Ice Block): the healer holds its heals
+    // ready instead of turning to damage, the block ends at any moment with the member still low.
+    bool HasImmuneMemberToHeal(PlayerbotAI* botAI);
+}
 
 class PartyMemberToHeal : public PartyMemberValue
 {

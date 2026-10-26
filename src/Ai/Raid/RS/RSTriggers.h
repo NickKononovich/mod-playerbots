@@ -259,6 +259,13 @@ public:
     bool IsActive() override;
 };
 
+class RsHalionDispelMarkTrigger : public Trigger
+{
+public:
+    RsHalionDispelMarkTrigger(PlayerbotAI* botAI) : Trigger(botAI, "rs halion dispel mark") {}
+    bool IsActive() override;
+};
+
 class RsTrashAddsTrigger : public Trigger
 {
 public:

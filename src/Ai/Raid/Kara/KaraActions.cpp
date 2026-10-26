@@ -9,6 +9,7 @@
 #include "KaraHelpers.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "RaidHonesty.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1495,14 +1496,19 @@ bool NightbaneFlightPhaseStackAndMoveAction::Execute(Event /*event*/)
         false, false, false, false, MovementPriority::MOVEMENT_FORCED, true, false);
 }
 
-// Failsafe in case bots fall through the world or off the terrace
+// A bot that fell off the terrace walks back up; it is no longer teleported (bots play without
+// cheats). Below the world there is no path, which is only reported.
 bool NightbaneTeleportBackToTerraceAction::Execute(Event /*event*/)
 {
     Position const& position = NIGHTBANE_TELEPORT_POSITION;
-    bot->NearTeleportTo(
-        position.GetPositionX(), position.GetPositionY(),
-        position.GetPositionZ(), bot->GetOrientation());
-    return true;
+    if (MoveTo(KARA_MAP_ID, position.GetPositionX(), position.GetPositionY(), position.GetPositionZ(),
+               false, false, false, false, MovementPriority::MOVEMENT_FORCED, true, false))
+    {
+        return true;
+    }
+
+    RaidHonesty::LogNeedsHonestTactic(bot, "Nightbane: out of bounds without a path back");
+    return false;
 }
 
 bool NightbaneManageTimersAndTrackersAction::Execute(Event /*event*/)

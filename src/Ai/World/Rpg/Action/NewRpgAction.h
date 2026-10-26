@@ -68,6 +68,50 @@ protected:
     const int32 statusDoQuestDuration = 30 * MINUTE  * IN_MILLISECONDS ;
     const int32 statusOutDoorPvPDuration = HOUR * IN_MILLISECONDS ;
     const int32 statusDoGatherDuration = 15 * MINUTE * IN_MILLISECONDS;
+    static constexpr uint32 QUEST_FIRST_CHANCE = 85;  // % of idle rolls that go straight to a quest (owned bots)
+};
+
+class NewRpgWaitForGroupAction : public NewRpgBaseAction
+{
+public:
+    NewRpgWaitForGroupAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg wait for group") {}
+    bool Execute(Event event) override;
+};
+
+// Out to the nearest inn and sit there while the selfbot leader is away (rested experience).
+class NewRpgRestAtInnAction : public NewRpgBaseAction
+{
+public:
+    NewRpgRestAtInnAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg rest at inn") {}
+    bool Execute(Event event) override;
+    bool isUseful() override;
+
+private:
+    static constexpr float INN_SEARCH_DISTANCE = 600.0f;  // farther inns are not worth the walk
+    static constexpr float INN_REACHED = 5.0f;
+};
+
+// Restarts a stalled taxi spline; after a couple of restarts ends the flight on the ground below the bot.
+class NewRpgTaxiUnstallAction : public NewRpgBaseAction
+{
+public:
+    NewRpgTaxiUnstallAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg taxi unstall") {}
+    bool Execute(Event event) override;
+
+private:
+    static constexpr uint8 MAX_RESTARTS = 2;
+    static constexpr float GROUND_SEARCH = 200.0f;
+};
+
+// Talks to a flight master it passes so its flight path becomes known, as a player does; group bots next to the
+// flight master learn it too.
+class NewRpgDiscoverFlightMasterAction : public NewRpgBaseAction
+{
+public:
+    NewRpgDiscoverFlightMasterAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg discover flight master")
+    {
+    }
+    bool Execute(Event event) override;
 };
 
 class NewRpgGoGrindAction : public NewRpgBaseAction

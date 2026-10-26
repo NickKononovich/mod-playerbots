@@ -61,4 +61,18 @@ void ArcaneMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // Burn while mana lasts, then conserve: each Arcane Blast stack raises its cost, Arcane Missiles resets them.
+    // [b31_deep] wowsims arcane APL: Arcane Blast while mana > 25 % (was "medium mana", 40 %)
+    triggers.push_back(
+        new TriggerNode(
+            "arcane blast 4 stacks and mana at or below 25",
+            {
+                NextAction("arcane missiles", 14.5f)
+            }
+        )
+    );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus arcane barrage", { NextAction("arcane barrage", 14.9f) }));
+    triggers.push_back(new TriggerNode("set bonus arcane surge", { NextAction("arcane blast", 14.8f) }));
 }

@@ -71,6 +71,10 @@ bool SetFocusHealTargetsAction::Execute(Event event)
     // Query current focus targets
     if (param.find('?') != std::string::npos)
     {
+        // Without a manual list the automatic raid assignment is what the healer prefers.
+        if (focusHealTargets.empty())
+            focusHealTargets = AI_VALUE(std::list<ObjectGuid>, "auto focus heal targets");
+
         if (focusHealTargets.empty())
         {
             std::string text = PlayerbotTextMgr::instance().GetBotTextOrDefault(

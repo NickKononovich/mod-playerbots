@@ -50,6 +50,15 @@ void CombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [b44_st] a charmed member is held without damage (never attacked: AttackersValue::IsCharmedAlly)
+    triggers.push_back(
+        new TriggerNode(
+            "charmed group member",
+            {
+                NextAction("control charmed member", ACTION_INTERRUPT + 2)
+            }
+        )
+    );
     // The pet-attack trigger is commented out because it was forcing the bot's pet to attack, overriding stay and follow commands.
     // Pets will automatically attack the bot's enemy if they are in "defensive" or "aggressive"
     // stance, or if the master issues an attack command.
@@ -81,8 +90,11 @@ std::vector<NextAction> TankFaceStrategy::getDefaultActions()
     };
 }
 
-void TankFaceStrategy::InitTriggers(std::vector<TriggerNode*>& /*triggers*/)
+void TankFaceStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // Above "tank face" (ACTION_MOVE) and "reach melee": the fight goes where the healer sees it.
+    triggers.push_back(new TriggerNode("tank lost healer sight",
+                                       { NextAction("tank step to healer sight", ACTION_MOVE + 2) }));
 }
 
 std::vector<NextAction> CombatFormationStrategy::getDefaultActions()

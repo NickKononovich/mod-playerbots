@@ -50,6 +50,23 @@ public:
     bool IsActive() override;
 };
 
+// A member's dispellable debuff hurts now (PartyMemberToDispelUrgent); its strategy ranks the cure above the
+// member's low-health heals and below the critical ones.
+class PartyMemberNeedUrgentCureTrigger : public Trigger
+{
+public:
+    PartyMemberNeedUrgentCureTrigger(PlayerbotAI* botAI, std::string const name, uint32 dispelType)
+        : Trigger(botAI, name, 1 * IN_MILLISECONDS), dispelType(dispelType)
+    {
+    }
+
+    Value<Unit*>* GetTargetValue() override;
+    bool IsActive() override;
+
+private:
+    uint32 dispelType;
+};
+
 class NeedWorldBuffTrigger : public Trigger
 {
 public:

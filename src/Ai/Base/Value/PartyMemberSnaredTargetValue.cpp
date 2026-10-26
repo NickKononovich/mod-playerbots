@@ -28,7 +28,16 @@ public:
         if (!botAI->GetBot()->IsWithinLOSInMap(unit))
             return false;
 
-        return botAI->IsMovementImpaired(unit) && !botAI->HasAnyAuraOf(unit, "stealth", "prowl", nullptr);
+        // [b33_class] snared or rooted, not stunned / knocked down: IsMovementImpaired also counts stuns (IsRooted,
+        // zero run speed), which the only consumer, Hand of Freedom, cannot remove (same test as
+        // ai::paladin::HasFreedomRemovableImpairment).
+        if (unit->HasUnitState(UNIT_STATE_STUNNED) || unit->HasAuraType(SPELL_AURA_MOD_STUN))
+            return false;
+
+        bool const snaredOrRooted = unit->HasAuraType(SPELL_AURA_MOD_ROOT) ||
+                                    unit->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED) ||
+                                    unit->HasAuraWithMechanic((1ULL << MECHANIC_ROOT) | (1ULL << MECHANIC_SNARE));
+        return snaredOrRooted && !botAI->HasAnyAuraOf(unit, "stealth", "prowl", nullptr);
     }
 };
 

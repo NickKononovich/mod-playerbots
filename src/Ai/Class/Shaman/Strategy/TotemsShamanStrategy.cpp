@@ -6,6 +6,7 @@
 
 #include "TotemsShamanStrategy.h"
 #include "Playerbots.h"
+#include "ShamanTriggers.h"  // [b31_deep] FIRE_AOE_SINGLE_TARGET_LEVEL
 
 namespace
 {
@@ -68,8 +69,18 @@ MagmaTotemStrategy::MagmaTotemStrategy(PlayerbotAI* botAI) : GenericShamanStrate
 void MagmaTotemStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericShamanStrategy::InitTriggers(triggers);
-    triggers.push_back(new TriggerNode("set magma totem", { NextAction("set magma totem", 60.0f) }));
-    triggers.push_back(new TriggerNode("no fire totem", { NextAction("magma totem", 55.0f) }));
+    // [shside_enh_mana] Magma Totem (27 % base mana, 20 s) pays only on 3+ mobs around the shaman: Searing Totem
+    // (7 %, 1 min) holds the Call of the Elements bar and the single-target fights, and Magma replaces it when a
+    // pack stands in melee (CastMagmaTotemAction::isUseful). Searing waits while a standing fire totem still reaches.
+    // [b31_deep] From FIRE_AOE_SINGLE_TARGET_LEVEL on Magma also holds a single target (wowsims enhancement APLs,
+    // ai::shaman::AllowsSingleTargetFireAoe), so it goes on the bar: Call of the Elements dropped a Searing Totem
+    // that the "no fire totem" Magma replaced right after, a GCD and the Searing mana for nothing.
+    if (botAI->GetBot()->GetLevel() >= FIRE_AOE_SINGLE_TARGET_LEVEL)
+        triggers.push_back(new TriggerNode("set magma totem", { NextAction("set magma totem", 60.0f) }));
+    else
+        triggers.push_back(new TriggerNode("set searing totem", { NextAction("set searing totem", 60.0f) }));
+    triggers.push_back(
+        new TriggerNode("no fire totem", { NextAction("magma totem", 55.0f), NextAction("searing totem", 54.9f) }));
 }
 
 FlametongueTotemStrategy::FlametongueTotemStrategy(PlayerbotAI* botAI) : GenericShamanStrategy(botAI) {}
@@ -144,10 +155,15 @@ WrathOfAirTotemStrategy::WrathOfAirTotemStrategy(PlayerbotAI* botAI) : GenericSh
 void WrathOfAirTotemStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericShamanStrategy::InitTriggers(triggers);
-    // If the bot hasn't learned Wrath of Air Totem yet, set Grounding Totem instead.
+    // If the bot hasn't learned Wrath of Air Totem yet (level 64), set Windfury Totem (32), then Grounding Totem.
+    // [b31_deep] Was: straight to Grounding, so below 64 Call of the Elements dropped a Grounding Totem (eaten by the
+    // first enemy spell) and the single "wrath of air totem" drop (alternatives: Windfury, Grounding) paid a second
+    // GCD for Windfury (DEEP_AUDIT_SHAMAN.md: Elemental L60 boss 2.15 Windfury Totems a minute).
     Player* bot = botAI->GetBot();
     if (bot->HasSpell(SPELL_WRATH_OF_AIR_TOTEM))
         triggers.push_back(new TriggerNode("set wrath of air totem", { NextAction("set wrath of air totem", 60.0f) }));
+    else if (bot->HasSpell(SPELL_WINDFURY_TOTEM))
+        triggers.push_back(new TriggerNode("set windfury totem", { NextAction("set windfury totem", 60.0f) }));
     else if (bot->HasSpell(SPELL_GROUNDING_TOTEM))
         triggers.push_back(new TriggerNode("set grounding totem", { NextAction("set grounding totem", 60.0f) }));
     triggers.push_back( new TriggerNode("no air totem", { NextAction("wrath of air totem", 55.0f) }));

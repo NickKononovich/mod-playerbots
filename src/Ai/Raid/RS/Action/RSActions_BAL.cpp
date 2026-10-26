@@ -7,6 +7,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RSActions.h"
 #include <algorithm>
 #include <cmath>
@@ -459,9 +460,6 @@ bool RsBaltharusTankPositionAction::Execute(Event )
     if (!PlayerbotAI::IsTank(bot))
         return false;
 
-    if (!(bot->HasAura(RS_SPELL_PAIN_SUPPRESION)))
-        bot->AddAura(RS_SPELL_PAIN_SUPPRESION, bot);
-
     Unit* boss = RsFindTarget(botAI, [](Unit* unit) { return unit->GetEntry() == NPC_BALTHARUS_THE_WARBORN; });
     if (!boss)
         return false;
@@ -521,7 +519,7 @@ bool RsBaltharusTankPositionAction::Execute(Event )
         if (Group* group = bot->GetGroup())
         {
             if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
         }
 
         if (boss->GetVictim() != bot)
@@ -539,13 +537,7 @@ bool RsBaltharusTankPositionAction::Execute(Event )
             }
         }
 
-        boss->SetFacingTo(RS_BALTHARUS_TANK_FACING);
-        for (Unit* clone : clones)
-        {
-            if (clone && clone->IsAlive())
-                clone->SetFacingTo(RS_BALTHARUS_TANK_FACING);
-        }
-
+        // Boss and clones face their victim on their own; the tank's spot decides where cleaves go.
         if (IsPlayerMarked(bot))
             return false;
 
@@ -603,16 +595,11 @@ bool RsBaltharusTankPositionAction::Execute(Event )
 
             if (clone->GetVictim() != bot)
                 RsCastClassTaunt(botAI, bot, clone);
-
-            if (clone->IsAlive())
-                clone->SetFacingTo(RS_BALTHARUS_TANK_FACING);
         }
 
         Unit* myClone = myClones.front();
         if (myClone)
             bot->SetTarget(myClone->GetGUID());
-
-        boss->SetFacingTo(RS_BALTHARUS_TANK_FACING);
 
         if (IsPlayerMarked(bot))
             return false;

@@ -17,6 +17,7 @@ public:
     FrostDKStrategy(PlayerbotAI* botAI);
 
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    void InitMultipliers(std::vector<Multiplier*>& multipliers) override;  // [b31_dk]
     std::string const getName() override { return "frost"; }
     std::vector<NextAction> getDefaultActions() override;
     uint32 GetType() const override { return STRATEGY_TYPE_DPS | STRATEGY_TYPE_MELEE; }

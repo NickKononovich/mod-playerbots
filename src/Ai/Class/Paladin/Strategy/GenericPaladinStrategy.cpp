@@ -5,7 +5,9 @@
  */
 
 #include "GenericPaladinStrategy.h"
+#include "AiFactory.h"
 #include "GenericPaladinStrategyActionNodeFactory.h"
+#include "Playerbots.h"
 
 GenericPaladinStrategy::GenericPaladinStrategy(PlayerbotAI* botAI) : CombatStrategy(botAI)
 {
@@ -23,35 +25,61 @@ void GenericPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("hammer of justice on snare target",
         { NextAction("hammer of justice on snare target", ACTION_INTERRUPT) }));
     triggers.push_back(new TriggerNode("critical health", { NextAction("divine shield", ACTION_EMERGENCY) }));
-    triggers.push_back(new TriggerNode("critical health", { NextAction("lay on hands", ACTION_EMERGENCY + 1) }));
     triggers.push_back(new TriggerNode("party member critical health",
         { NextAction("lay on hands on party", ACTION_EMERGENCY + 2) }));
     triggers.push_back(new TriggerNode("divine shield low health",
         { NextAction("flash of light", ACTION_EMERGENCY + 3), NextAction("holy light", ACTION_EMERGENCY + 2)}));
     triggers.push_back(new TriggerNode("protect party member",
         { NextAction("blessing of protection on party", ACTION_EMERGENCY + 3) }));
-    triggers.push_back(new TriggerNode("high mana", { NextAction("divine plea", ACTION_HIGH) }));
+    // [b31_pal] no generic "medium mana" Divine Plea: each spec queues its own ("holy divine plea", "ret divine plea",
+    // the tank's "high mana", the offheal's "low mana"); the generic one doubled Ret's and Holy's.
     triggers.push_back(new TriggerNode("hand of freedom on party",
         { NextAction("hand of freedom on party", ACTION_HIGH + 4) }));
+    triggers.push_back(new TriggerNode("hand of sacrifice on main tank",
+        { NextAction("hand of sacrifice on main tank", ACTION_EMERGENCY + 1) }));
+    triggers.push_back(new TriggerNode("tank damage spike",
+        { NextAction("hand of sacrifice on spiking tank", ACTION_EMERGENCY + 1) }));
+    triggers.push_back(new TriggerNode("hand of salvation on party",
+        { NextAction("hand of salvation on party", ACTION_HIGH + 5) }));
+    triggers.push_back(new TriggerNode("aura mastery", { NextAction("aura mastery", ACTION_HIGH + 6) }));
+    // [rot_b31_pdd] a seal without its Judgement aura state goes, the spec's "seal" (ACTION_HIGH) casts it again
+    triggers.push_back(new TriggerNode("seal state lost", { NextAction("drop stale seal", ACTION_HIGH + 1) }));
 }
 
 void PaladinCureStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // [b31_deep] Dispels are the healer's job: a retribution paladin cleanses below its whole rotation (5.3-5.8),
+    // above auto attack. Build 30 L70s boss: Cleanse 2.62/min, 15 % of the spec's casts, at 19.5 above all of it.
+    // The urgent cures below keep their relevance for every spec.
+    bool const isRet = AiFactory::GetPlayerSpecTab(botAI->GetBot()) == PALADIN_TAB_RETRIBUTION;
+    float const selfCure = isRet ? ACTION_DEFAULT + 0.16f : ACTION_LIGHT_HEAL + 9.6f;
+    float const partyCure = isRet ? ACTION_DEFAULT + 0.15f : ACTION_LIGHT_HEAL + 9.5f;
     triggers.push_back(new TriggerNode(
-        "cleanse cure disease", { NextAction("cleanse disease", ACTION_DISPEL + 2) }));
+        "cleanse cure disease", { NextAction("cleanse disease", selfCure) }));
     triggers.push_back(
         new TriggerNode("cleanse party member cure disease",
-                        { NextAction("cleanse disease on party", ACTION_DISPEL + 1) }));
+                        { NextAction("cleanse disease on party", partyCure) }));
     triggers.push_back(new TriggerNode(
-        "cleanse cure poison", { NextAction("cleanse poison", ACTION_DISPEL + 2) }));
+        "cleanse cure poison", { NextAction("cleanse poison", selfCure) }));
     triggers.push_back(
         new TriggerNode("cleanse party member cure poison",
-                        { NextAction("cleanse poison on party", ACTION_DISPEL + 1) }));
+                        { NextAction("cleanse poison on party", partyCure) }));
     triggers.push_back(new TriggerNode(
-        "cleanse cure magic", { NextAction("cleanse magic", ACTION_DISPEL + 2) }));
+        "cleanse cure magic", { NextAction("cleanse magic", selfCure) }));
     triggers.push_back(
         new TriggerNode("cleanse party member cure magic",
-                        { NextAction("cleanse magic on party", ACTION_DISPEL + 1) }));
+                        { NextAction("cleanse magic on party", partyCure) }));
+
+    // A debuff that hurts now: after Holy's critical heals (from 34), before its medium ones (25-26); a tank keeps
+    // its taunts (from 27) first.
+    bool const isTank = AiFactory::GetPlayerSpecTab(botAI->GetBot()) == PALADIN_TAB_PROTECTION;
+    float const urgentRelevance = isTank ? ACTION_HIGH + 6.0f : ACTION_MEDIUM_HEAL + 7.5f;
+    triggers.push_back(new TriggerNode("party member urgent cure poison",
+                                       { NextAction("cleanse poison on party", urgentRelevance) }));
+    triggers.push_back(new TriggerNode("party member urgent cure disease",
+                                       { NextAction("cleanse disease on party", urgentRelevance - 0.1f) }));
+    triggers.push_back(new TriggerNode("party member urgent cure magic",
+                                       { NextAction("cleanse magic on party", urgentRelevance + 0.1f) }));
 }
 
 void PaladinBoostStrategy::InitTriggers(std::vector<TriggerNode*>& /*triggers*/)

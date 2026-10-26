@@ -202,11 +202,8 @@ public:
         creators["illidan stormrage manage dps timer and rti"] =
             &RaidBlackTempleActionContext::illidan_stormrage_manage_dps_timer_and_rti;
 
-        creators["illidan stormrage destroy hazards"] =
-            &RaidBlackTempleActionContext::illidan_stormrage_destroy_hazards;
-
-        creators["illidan stormrage handle adds cheat"] =
-            &RaidBlackTempleActionContext::illidan_stormrage_handle_adds_cheat;
+        creators["illidan stormrage move out of leftover hazard"] =
+            &RaidBlackTempleActionContext::illidan_stormrage_move_out_of_leftover_hazard;
     }
 
 private:
@@ -465,13 +462,9 @@ private:
     {
         return new IllidanStormrageManageDpsTimerAndRtiAction(botAI);
     }
-    static Action* illidan_stormrage_destroy_hazards(PlayerbotAI* botAI)
+    static Action* illidan_stormrage_move_out_of_leftover_hazard(PlayerbotAI* botAI)
     {
-        return new IllidanStormrageDestroyHazardsAction(botAI);
-    }
-    static Action* illidan_stormrage_handle_adds_cheat(PlayerbotAI* botAI)
-    {
-        return new IllidanStormrageHandleAddsCheatAction(botAI);
+        return new IllidanStormrageMoveOutOfLeftoverHazardAction(botAI);
     }
 };
 

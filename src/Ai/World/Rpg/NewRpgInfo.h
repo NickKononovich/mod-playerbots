@@ -53,6 +53,8 @@ struct NewRpgInfo
         int32 objectiveIdx{0};
         WorldPosition pos{};
         uint32 lastReachPOI{0};
+        uint32 progress{0};  // objective counts done so far; growth restarts the status timer
+        WorldPosition giverPos{};  // set while the quest still has to be picked up there
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
@@ -87,6 +89,7 @@ struct NewRpgInfo
     };
 
     uint32 startT{0};  // start timestamp of the current status
+    uint8 lastQuestLevel{0};  // level when the abandoned-quest list was last cleared
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
@@ -94,6 +97,49 @@ struct NewRpgInfo
     uint32 stuckAttempts{0};
     WorldPosition moveFarPos;
     // END MOVE_FAR
+
+    // Boat, zeppelin or portal leg of a far move. It spans statuses: a new destination plans it again.
+    enum class TripPhase : uint8
+    {
+        None,
+        ToStart,  // walking to the pier or the portal
+        Wait,     // on the pier until the transport docks
+        Board,    // stepping onto the deck
+        Ride,     // aboard until it docks where the leg ends
+        Leave     // walking off onto that pier
+    };
+    struct Trip
+    {
+        TripPhase phase{TripPhase::None};
+        TravelRouteMgr::Leg leg{};
+        uint32 phaseStart{0};
+        WorldPosition dest{};
+        uint32 plannedAt{0};
+    };
+    Trip trip;
+    void SetTripPhase(TripPhase phase)
+    {
+        trip.phase = phase;
+        trip.phaseStart = getMSTime();
+    }
+    void ClearTrip() { trip = Trip{}; }
+
+    uint32 dalaranPortalAskedAt{0};   // a group mage was asked for Portal: Dalaran
+    uint32 dalaranPortalFailedAt{0};
+
+    // taxi stall watch (#2863, #2664)
+    float taxiLastX{0.0f};
+    float taxiLastY{0.0f};
+    float taxiLastZ{0.0f};
+    uint32 taxiStillSince{0};
+    uint8 taxiRecoveries{0};
+
+    uint32 groupCheckedAt{0};  // cache of HasCapableGroup
+    bool capableGroup{false};
+
+    // quest game object a group member used; this bot walks up and uses it too (#2725)
+    ObjectGuid pendingQuestObject{};
+    uint32 pendingQuestObjectSince{0};
 
     using RpgData = std::variant<
         Idle,
@@ -116,7 +162,7 @@ struct NewRpgInfo
     void ChangeToGoCamp(WorldPosition pos);
     void ChangeToWanderNpc();
     void ChangeToWanderRandom();
-    void ChangeToDoQuest(uint32 questId, Quest const* quest);
+    void ChangeToDoQuest(uint32 questId, Quest const* quest, WorldPosition giverPos = WorldPosition());
     void ChangeToTravelFlight(uint32 flightMasterEntry, WorldPosition flightMasterPos, std::vector<uint32> path);
     void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
     void ChangeToDoGather();

@@ -5,8 +5,56 @@
  */
 
 #include "FleeManager.h"
+#include "Creature.h"
+#include "Group.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include <cmath>
+
+namespace
+{
+    constexpr float FLEE_IDLE_AGGRO_MARGIN = 5.0f;  // a spot this close to an idle mob's aggro range is not taken
+    constexpr float FLEE_IDLE_MAX_DZ = 5.0f;
+    constexpr float FLEE_TANK_PREFERENCE = 5.0f;    // spots nearer the tank by more than this win
+
+    // Wave 9 Steamvault: a healer fled 60 yd away from the tank into an unpulled Bog Overlord and died.
+    bool PullsIdleMob(Player* bot, PlayerbotAI* botAI, GuidVector const& units, float x, float y, float z)
+    {
+        for (ObjectGuid const guid : units)
+        {
+            Creature* mob = botAI->GetCreature(guid);
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->HasReactState(REACT_AGGRESSIVE) ||
+                !bot->IsHostileTo(mob) || std::fabs(mob->GetPositionZ() - z) > FLEE_IDLE_MAX_DZ)
+                continue;
+
+            if (mob->GetExactDist2d(x, y) <= mob->GetAggroRange(bot) + FLEE_IDLE_AGGRO_MARGIN)
+                return true;
+        }
+
+        return false;
+    }
+
+    Player* NearestLivingTank(Player* bot)
+    {
+        Group* group = bot->GetGroup();
+        if (!group || PlayerbotAI::IsTank(bot))
+            return nullptr;
+
+        Player* nearest = nullptr;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMapId() != bot->GetMapId() ||
+                !PlayerbotAI::IsTank(member))
+                continue;
+
+            if (!nearest || bot->GetExactDist2d(member) < bot->GetExactDist2d(nearest))
+                nearest = member;
+        }
+
+        return nearest;
+    }
+}
 
 FleeManager::FleeManager(Player* bot, float maxAllowedDistance, float /*followAngle*/, bool forceMaxDistance,
                          WorldPosition startPosition)
@@ -68,6 +116,7 @@ void FleeManager::calculatePossibleDestinations(std::vector<FleePoint*>& points)
     FleePoint start(botPosX, botPosY, botPosZ);
     calculateDistanceToCreatures(&start);
 
+    Player* tank = NearestLivingTank(bot);
     std::vector<float> enemyOri;
     GuidVector units = *botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los");
     for (GuidVector::iterator i = units.begin(); i != units.end(); ++i)
@@ -109,8 +158,13 @@ void FleeManager::calculatePossibleDestinations(std::vector<FleePoint*>& points)
                 if (!bot->IsWithinLOS(x, y, z) || (target && !target->IsWithinLOS(x, y, z)))
                     continue;
 
+                if (PullsIdleMob(bot, botAI, units, x, y, z))
+                    continue;
+
                 FleePoint* point = new FleePoint(x, y, z);
                 calculateDistanceToCreatures(point);
+                if (tank)
+                    point->tankDistance = tank->GetExactDist2d(x, y);
 
                 if (ServerFacade::instance().IsDistanceGreaterOrEqualThan(point->minDistance - start.minDistance,
                                                                 sPlayerbotAIConfig.FollowDistance))
@@ -134,6 +188,11 @@ void FleeManager::cleanup(std::vector<FleePoint*>& points)
 
 bool FleeManager::isBetterThan(FleePoint* point, FleePoint* other)
 {
+    // A healer or damage dealer runs towards its tank, where the mob it pulls gets taken back.
+    if (point->tankDistance >= 0.0f && other->tankDistance >= 0.0f &&
+        std::fabs(point->tankDistance - other->tankDistance) > FLEE_TANK_PREFERENCE)
+        return point->tankDistance < other->tankDistance;
+
     return point->sumDistance - other->sumDistance > 0;
 }
 

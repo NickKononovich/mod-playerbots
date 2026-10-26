@@ -20,6 +20,8 @@ public:
     virtual ~Multiplier() {}
 
     virtual float GetValue([[maybe_unused]] Action* action) { return 1.0f; }
+    // [b41_mgt] A veto (GetValue 0) the group's no-damage release (Engine, combat_no_damage_release) must not lift.
+    virtual bool KeepsVeto([[maybe_unused]] Action* action) { return false; }
 
     PerformanceData* GetPerfData();
     void NoteBlock();

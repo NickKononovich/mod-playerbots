@@ -57,6 +57,10 @@ std::vector<NextAction> SurvivalHunterStrategy::getDefaultActions()
         NextAction("black arrow", 5.6f),
         NextAction("serpent sting", 5.5f),
         NextAction("aimed shot", 5.4f),
+        // [b31_deep] Aimed and Multi-Shot share one 10 s cooldown (category 85); the SV template takes Aimed Shot only
+        // at 80, so below it the slot sat empty on single target (wowsims sv.apl: Aimed > Multi > Steady)
+        NextAction("multi-shot", 5.35f),
+        // Useless once Explosive Shot is known ([b31_deep], CastArcaneShotAction::isUseful): pre-talent levels only
         NextAction("arcane shot", 5.3f),
         NextAction("steady shot", 5.2f),
         NextAction("auto shot", 5.1f)
@@ -72,7 +76,8 @@ void SurvivalHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "lock and load",
             {
-                NextAction("explosive shot rank 4", 28.0f)
+                // [b31_deep] double tap: highest rank, then the next rank while our highest-rank DoT ticks
+                NextAction("explosive shot lock and load", 28.0f)
             }
         )
     );
@@ -108,14 +113,8 @@ void SurvivalHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "low mana",
-            {
-                NextAction("viper sting", 16.0f)
-            }
-        )
-    );
+    // [b31_deep] "low mana" -> "viper sting" removed: one sting per hunter, so it replaced Serpent Sting; only MM
+    // (Chimera Shot on a Viper Sting returns mana) keeps it.
     triggers.push_back(
         new TriggerNode(
             "no stings",
@@ -132,4 +131,11 @@ void SurvivalHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus ascendant execution", { NextAction("kill shot", 18.4f) }));
+    triggers.push_back(new TriggerNode("set bonus titan's focus", { NextAction("explosive shot rank 4", 17.95f) }));
+    triggers.push_back(new TriggerNode("set bonus improved steady shot",
+        { NextAction("aimed shot", 17.8f),
+          NextAction("arcane shot", 17.7f) }));
 }

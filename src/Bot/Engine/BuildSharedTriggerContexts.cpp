@@ -9,11 +9,16 @@
 #include "BTTriggerContext.h"
 #include "BWLTriggerContext.h"
 #include "ChatTriggerContext.h"
+#include "ClassicTriggerContext.h"
+#include "EscortProtect.h"
+#include "BrdStrategy.h"
+#include "DungeonHazard.h"
 #include "EoETriggerContext.h"
 #include "GruulTriggerContext.h"
 #include "HyjalTriggerContext.h"
 #include "ICCTriggerContext.h"
 #include "KaraTriggerContext.h"
+#include "LeaderContext.h"
 #include "MCTriggerContext.h"
 #include "MagTriggerContext.h"
 #include "NaxxTriggerContext.h"
@@ -23,6 +28,9 @@
 #include "SSCTriggerContext.h"
 #include "TKTriggerContext.h"
 #include "TbcDungeonTriggerContext.h"
+#include "SelfTravelContext.h"
+#include "StratTriggerContext.h"
+#include "TestRunnerContext.h"
 #include "TriggerContext.h"
 #include "UldTriggerContext.h"
 #include "VoATriggerContext.h"
@@ -36,6 +44,7 @@ void AiObjectContext::BuildSharedTriggerContexts(
     triggerContexts.Add(new TriggerContext());
     triggerContexts.Add(new ChatTriggerContext());
     triggerContexts.Add(new WorldPacketTriggerContext());
+    triggerContexts.Add(new LeaderTriggerContext());
     triggerContexts.Add(new RaidAq20TriggerContext());
     triggerContexts.Add(new RaidMcTriggerContext());
     triggerContexts.Add(new RaidBwlTriggerContext());
@@ -61,6 +70,14 @@ void AiObjectContext::BuildSharedTriggerContexts(
     triggerContexts.Add(new TbcDungeonUnderbogTriggerContext());
     triggerContexts.Add(new TbcDungeonMagistersTerraceTriggerContext());
     triggerContexts.Add(new TbcDungeonHellfireRampartsTriggerContext());
+    triggerContexts.Add(new TbcDungeonSlavePensTriggerContext());
+    triggerContexts.Add(new TbcDungeonBloodFurnaceTriggerContext());
+    triggerContexts.Add(new TbcDungeonManaTombsTriggerContext());
+    triggerContexts.Add(new TbcDungeonShatteredHallsTriggerContext());
+    triggerContexts.Add(new TbcDungeonShadowLabyrinthTriggerContext());
+    triggerContexts.Add(new TbcDungeonSteamvaultTriggerContext());
+    triggerContexts.Add(new TbcDungeonArcatrazTriggerContext());
+    triggerContexts.Add(new TbcDungeonBlackMorassTriggerContext());
     triggerContexts.Add(new WotlkDungeonUKTriggerContext());
     triggerContexts.Add(new WotlkDungeonNexTriggerContext());
     triggerContexts.Add(new WotlkDungeonANTriggerContext());
@@ -76,4 +93,12 @@ void AiObjectContext::BuildSharedTriggerContexts(
     triggerContexts.Add(new WotlkDungeonFoSTriggerContext());
     triggerContexts.Add(new WotlkDungeonPoSTriggerContext());
     triggerContexts.Add(new WotlkDungeonToCTriggerContext());
+    triggerContexts.Add(new WotlkDungeonHoRTriggerContext());
+    triggerContexts.Add(new DungeonHazardTriggerContext());
+    triggerContexts.Add(new ClassicDungeonTriggerContext());
+    triggerContexts.Add(new ClassicDungeonStratholmeTriggerContext());
+    triggerContexts.Add(new DungeonEscortTriggerContext());
+    triggerContexts.Add(new ClassicDungeonBrdTriggerContext());
+    triggerContexts.Add(new TestRunnerTriggerContext());
+    triggerContexts.Add(new SelfTravelTriggerContext());
 }

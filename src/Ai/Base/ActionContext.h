@@ -23,14 +23,17 @@
 #include "ChooseRpgTargetAction.h"
 #include "ChooseTargetActions.h"
 #include "ChooseTravelTargetAction.h"
+#include "ConsumableActions.h"
 #include "DelayAction.h"
 #include "DestroyItemAction.h"
 #include "DropQuestAction.h"
 #include "EmoteAction.h"
+#include "FearCounterActions.h"  // [fear_counter]
 #include "FishingAction.h"
 #include "FollowActions.h"
 #include "GenericSpellActions.h"
 #include "GiveItemAction.h"
+#include "GlyphActions.h"
 #include "GreetAction.h"
 #include "GuildAcceptAction.h"
 #include "GuildCreateActions.h"
@@ -39,6 +42,7 @@
 #include "InviteToGroupAction.h"
 #include "LeaveGroupAction.h"
 #include "LootAction.h"
+#include "SetCraftAction.h"
 #include "LootRollAction.h"
 #include "MoveToRpgTargetAction.h"
 #include "MoveToTravelTargetAction.h"
@@ -51,6 +55,7 @@
 #include "PetsAction.h"
 #include "PositionAction.h"
 #include "PullActions.h"
+#include "TerrainHazardActions.h"
 #include "RandomBotUpdateAction.h"
 #include "ReachTargetActions.h"
 #include "ReleaseSpiritAction.h"
@@ -59,10 +64,13 @@
 #include "RevealGatheringItemAction.h"
 #include "RpgAction.h"
 #include "RpgSubActions.h"
+#include "InterruptActions.h"
 #include "RtiAction.h"
 #include "SayAction.h"
 #include "ShareQuestAction.h"
 #include "StayActions.h"
+#include "StuckWatchdog.h"
+#include "RangedPositionActions.h"
 #include "SuggestWhatToDoAction.h"
 #include "TravelAction.h"
 #include "UseItemAction.h"
@@ -79,6 +87,14 @@ public:
     ActionContext()
     {
         creators["mark rti"] = &ActionContext::mark_rti;
+        creators["auto cc mark"] = &ActionContext::auto_cc_mark;
+        creators["clear auto cc mark"] = &ActionContext::clear_auto_cc_mark;
+        creators["cast auto cc"] = &ActionContext::cast_auto_cc;
+        creators["control charmed member"] = &ActionContext::control_charmed_member;  // [b44_st]
+        creators["pre pull cc"] = &ActionContext::pre_pull_cc;
+        creators["emergency cc"] = &ActionContext::emergency_cc;
+        creators["tank kill marks"] = &ActionContext::tank_kill_marks;
+        creators["interrupt assigned cast"] = &ActionContext::interrupt_assigned_cast;
         creators["set return position"] = &ActionContext::set_return_position;
         creators["rpg"] = &ActionContext::rpg;
         creators["crpg"] = &ActionContext::crpg;
@@ -93,6 +109,12 @@ public:
         creators["melee"] = &ActionContext::melee;
         creators["reach spell"] = &ActionContext::ReachSpell;
         creators["reach melee"] = &ActionContext::ReachMelee;
+        creators["reach healer attacker"] = &ActionContext::ReachHealerAttacker;
+        creators["taunt reaction"] = &ActionContext::TauntReaction;
+        creators["flee stop"] = &ActionContext::FleeStop;
+        creators["finish fled survivor"] = &ActionContext::FinishFledSurvivor;
+        creators["reach group member attacker"] = &ActionContext::reach_group_member_attacker;
+        creators["move to tank"] = &ActionContext::move_to_tank;
         creators["reach party member to heal"] = &ActionContext::reach_party_member_to_heal;
         creators["reach party member to resurrect"] = &ActionContext::reach_party_member_to_resurrect;
         creators["flee"] = &ActionContext::flee;
@@ -113,24 +135,40 @@ public:
         creators["pull action"] = &ActionContext::pull_action;
         creators["pull end"] = &ActionContext::pull_end;
         creators["return to pull position"] = &ActionContext::return_to_pull_position;
+        creators["move fight spot back"] = &ActionContext::move_fight_spot_back;
+        creators["move fight off hazard"] = &ActionContext::move_fight_off_hazard;
         creators["reach pull"] = &ActionContext::reach_pull;
         creators["end pull"] = &ActionContext::end_pull;
+        creators["move to los pull spot"] = &ActionContext::move_to_los_pull_spot;
+        creators["chain pull"] = &ActionContext::chain_pull;
         creators["healthstone"] = &ActionContext::healthstone;
         creators["healing potion"] = &ActionContext::healing_potion;
         creators["mana potion"] = &ActionContext::mana_potion;
         creators["food"] = &ActionContext::food;
         creators["drink"] = &ActionContext::drink;
+        creators["stand up"] = &ActionContext::stand_up;
+        creators["restock food"] = &ActionContext::restock_food;
         creators["tank assist"] = &ActionContext::tank_assist;
+        creators["tank defend on attacked group member"] = &ActionContext::tank_defend_on_attacked_group_member;
+        creators["tank open idle boss"] = &ActionContext::tank_open_idle_boss;
         creators["dps assist"] = &ActionContext::dps_assist;
         creators["dps aoe"] = &ActionContext::dps_aoe;
         creators["attack rti target"] = &ActionContext::attack_rti_target;
         creators["loot"] = &ActionContext::loot;
         creators["add loot"] = &ActionContext::add_loot;
         creators["add gathering loot"] = &ActionContext::add_gathering_loot;
+        creators["auto craft"] = &ActionContext::auto_craft;
+        creators["learn glyph"] = &ActionContext::learn_glyph;
+        creators["give glyph"] = &ActionContext::give_glyph;
         creators["add all loot"] = &ActionContext::add_all_loot;
         creators["release loot"] = &ActionContext::release_loot;
         creators["shoot"] = &ActionContext::shoot;
         creators["follow"] = &ActionContext::follow;
+        creators["stuck recovery"] = &ActionContext::stuck_recovery;
+        creators["move to ranged position"] = &ActionContext::move_to_ranged_position;
+        creators["stop to heal"] = &ActionContext::stop_to_heal;
+        creators["tank step to healer sight"] = &ActionContext::tank_step_to_healer_sight;
+        creators["move to prepull sight spot"] = &ActionContext::move_to_prepull_sight_spot;
         creators["move from group"] = &ActionContext::move_from_group;
         creators["runaway"] = &ActionContext::runaway;
         creators["stay"] = &ActionContext::stay;
@@ -152,6 +190,7 @@ public:
         creators["move out of enemy contact"] = &ActionContext::move_out_of_enemy_contact;
         creators["set facing"] = &ActionContext::set_facing;
         creators["set behind"] = &ActionContext::set_behind;
+        creators["move to group member attackers"] = &ActionContext::move_to_group_member_attackers;
         creators["attack duel opponent"] = &ActionContext::attack_duel_opponent;
         creators["drop target"] = &ActionContext::drop_target;
         creators["check mail"] = &ActionContext::check_mail;
@@ -174,6 +213,11 @@ public:
         creators["blood fury"] = &ActionContext::blood_fury;
         creators["berserking"] = &ActionContext::berserking;
         creators["every man for himself"] = &ActionContext::every_man_for_himself;
+        // [fear_counter]
+        creators["fear counter tremor totem"] = &ActionContext::fear_counter_tremor_totem;
+        creators["fear counter fear ward"] = &ActionContext::fear_counter_fear_ward;
+        creators["fear counter berserker rage"] = &ActionContext::fear_counter_berserker_rage;
+        creators["fear counter pvp trinket"] = &ActionContext::fear_counter_pvp_trinket;
         creators["will of the forsaken"] = &ActionContext::will_of_the_forsaken;
         creators["stoneform"] = &ActionContext::stoneform;
         creators["escape artist"] = &ActionContext::escape_artist;
@@ -271,6 +315,10 @@ public:
 
         creators["new rpg status update"] = &ActionContext::new_rpg_status_update;
         creators["new rpg go grind"] = &ActionContext::new_rpg_go_grind;
+        creators["new rpg wait for group"] = &ActionContext::new_rpg_wait_for_group;
+        creators["new rpg rest at inn"] = &ActionContext::new_rpg_rest_at_inn;
+        creators["new rpg taxi unstall"] = &ActionContext::new_rpg_taxi_unstall;
+        creators["new rpg discover flight master"] = &ActionContext::new_rpg_discover_flight_master;
         creators["new rpg go camp"] = &ActionContext::new_rpg_go_camp;
         creators["new rpg wander random"] = &ActionContext::new_rpg_wander_random;
         creators["new rpg wander npc"] = &ActionContext::new_rpg_wander_npc;
@@ -286,6 +334,14 @@ private:
     static Action* give_food(PlayerbotAI* botAI) { return new GiveFoodAction(botAI); }
     static Action* ra(PlayerbotAI* botAI) { return new RemoveAuraAction(botAI); }
     static Action* mark_rti(PlayerbotAI* botAI) { return new MarkRtiAction(botAI); }
+    static Action* auto_cc_mark(PlayerbotAI* botAI) { return new AutoCcMarkAction(botAI); }
+    static Action* tank_kill_marks(PlayerbotAI* botAI) { return new TankKillMarksAction(botAI); }
+    static Action* interrupt_assigned_cast(PlayerbotAI* botAI) { return new InterruptAssignedCastAction(botAI); }
+    static Action* clear_auto_cc_mark(PlayerbotAI* botAI) { return new ClearAutoCcMarkAction(botAI); }
+    static Action* cast_auto_cc(PlayerbotAI* botAI) { return new CastAutoCcAction(botAI); }
+    static Action* control_charmed_member(PlayerbotAI* botAI) { return new ControlCharmedMemberAction(botAI); }
+    static Action* pre_pull_cc(PlayerbotAI* botAI) { return new PrePullCcAction(botAI); }
+    static Action* emergency_cc(PlayerbotAI* botAI) { return new EmergencyCcAction(botAI); }
     static Action* set_return_position(PlayerbotAI* botAI) { return new SetReturnPositionAction(botAI); }
     static Action* rpg(PlayerbotAI* botAI) { return new RpgAction(botAI); }
     static Action* crpg(PlayerbotAI* botAI) { return new CRpgAction(botAI); }
@@ -310,6 +366,10 @@ private:
     static Action* melee(PlayerbotAI* botAI) { return new MeleeAction(botAI); }
     static Action* ReachSpell(PlayerbotAI* botAI) { return new ReachSpellAction(botAI); }
     static Action* ReachMelee(PlayerbotAI* botAI) { return new ReachMeleeAction(botAI); }
+    static Action* ReachHealerAttacker(PlayerbotAI* botAI) { return new ReachHealerAttackerAction(botAI); }
+    static Action* TauntReaction(PlayerbotAI* botAI) { return new TauntReactionAction(botAI); }
+    static Action* FleeStop(PlayerbotAI* botAI) { return new FleeStopAction(botAI); }
+    static Action* FinishFledSurvivor(PlayerbotAI* botAI) { return new FinishFledSurvivorAction(botAI); }
     static Action* reach_party_member_to_heal(PlayerbotAI* botAI) { return new ReachPartyMemberToHealAction(botAI); }
     static Action* reach_party_member_to_resurrect(PlayerbotAI* botAI) { return new ReachPartyMemberToResurrectAction(botAI); }
     static Action* flee(PlayerbotAI* botAI) { return new FleeAction(botAI); }
@@ -329,8 +389,12 @@ private:
     static Action* pull_action(PlayerbotAI* botAI) { return new PullAction(botAI); }
     static Action* pull_end(PlayerbotAI* botAI) { return new PullEndAction(botAI); }
     static Action* return_to_pull_position(PlayerbotAI* botAI) { return new ReturnToPullPositionAction(botAI); }
+    static Action* move_fight_spot_back(PlayerbotAI* botAI) { return new MoveFightSpotBackAction(botAI); }
+    static Action* move_fight_off_hazard(PlayerbotAI* botAI) { return new MoveFightOffHazardAction(botAI); }
     static Action* reach_pull(PlayerbotAI* botAI) { return new ReachPullAction(botAI); }
     static Action* end_pull(PlayerbotAI* botAI) { return new ChangeCombatStrategyAction(botAI, "-pull"); }
+    static Action* move_to_los_pull_spot(PlayerbotAI* botAI) { return new MoveToLosPullSpotAction(botAI); }
+    static Action* chain_pull(PlayerbotAI* botAI) { return new ChainPullAction(botAI); }
     static Action* cancel_channel(PlayerbotAI* botAI) { return new CancelChannelAction(botAI); }
 
     static Action* emote(PlayerbotAI* botAI) { return new EmoteAction(botAI); }
@@ -346,8 +410,24 @@ private:
     static Action* sit(PlayerbotAI* botAI) { return new SitAction(botAI); }
     static Action* runaway(PlayerbotAI* botAI) { return new RunAwayAction(botAI); }
     static Action* follow(PlayerbotAI* botAI) { return new FollowAction(botAI); }
+    static Action* stuck_recovery(PlayerbotAI* botAI) { return new StuckRecoveryAction(botAI); }
+    static Action* move_to_ranged_position(PlayerbotAI* botAI) { return new MoveToRangedPositionAction(botAI); }
+    static Action* stop_to_heal(PlayerbotAI* botAI) { return new StopToHealAction(botAI); }
+    static Action* tank_step_to_healer_sight(PlayerbotAI* botAI) { return new TankStepToHealerSightAction(botAI); }
+    static Action* move_to_prepull_sight_spot(PlayerbotAI* botAI)
+    {
+        return new MoveToPrePullSightSpotAction(botAI);
+    }
+    static Action* reach_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new ReachGroupMemberAttackerAction(botAI);
+    }
+    static Action* move_to_tank(PlayerbotAI* botAI) { return new MoveToTankAction(botAI); }
     static Action* move_from_group(PlayerbotAI* botAI) { return new MoveFromGroupAction(botAI); }
     static Action* add_gathering_loot(PlayerbotAI* botAI) { return new AddGatheringLootAction(botAI); }
+    static Action* auto_craft(PlayerbotAI* botAI) { return new AutoCraftAction(botAI); }
+    static Action* learn_glyph(PlayerbotAI* botAI) { return new LearnGlyphAction(botAI); }
+    static Action* give_glyph(PlayerbotAI* botAI) { return new GiveGlyphAction(botAI); }
     static Action* add_loot(PlayerbotAI* botAI) { return new AddLootAction(botAI); }
     static Action* add_all_loot(PlayerbotAI* botAI) { return new AddAllLootAction(botAI); }
     static Action* loot(PlayerbotAI* botAI) { return new LootAction(botAI); }
@@ -356,14 +436,25 @@ private:
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* attack_rti_target(PlayerbotAI* botAI) { return new AttackRtiTargetAction(botAI); }
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }
+    static Action* tank_defend_on_attacked_group_member(PlayerbotAI* botAI)
+    {
+        return new DefendAttackedGroupMemberAction(botAI);
+    }
+    static Action* tank_open_idle_boss(PlayerbotAI* botAI) { return new OpenIdleBossAction(botAI); }
     static Action* drink(PlayerbotAI* botAI) { return new DrinkAction(botAI); }
     static Action* food(PlayerbotAI* botAI) { return new EatAction(botAI); }
+    static Action* stand_up(PlayerbotAI* botAI) { return new StandUpAction(botAI); }
+    static Action* restock_food(PlayerbotAI* botAI) { return new RestockFoodAction(botAI); }
     static Action* mana_potion(PlayerbotAI* botAI) { return new UseManaPotion(botAI); }
     static Action* healing_potion(PlayerbotAI* botAI) { return new UseHealingPotion(botAI); }
-    static Action* healthstone(PlayerbotAI* botAI) { return new UseItemAction(botAI, "healthstone"); }
+    static Action* healthstone(PlayerbotAI* botAI) { return new UseHealthstoneAction(botAI); }
     static Action* move_out_of_enemy_contact(PlayerbotAI* botAI) { return new MoveOutOfEnemyContactAction(botAI); }
     static Action* set_facing(PlayerbotAI* botAI) { return new SetFacingTargetAction(botAI); }
     static Action* set_behind(PlayerbotAI* botAI) { return new SetBehindTargetAction(botAI); }
+    static Action* move_to_group_member_attackers(PlayerbotAI* botAI)
+    {
+        return new MoveToGroupMemberAttackersAction(botAI);
+    }
     static Action* say(PlayerbotAI* botAI) { return new SayAction(botAI); }
     static Action* reveal_gathering_item(PlayerbotAI* botAI) { return new RevealGatheringItemAction(botAI); }
     static Action* outfit(PlayerbotAI* botAI) { return new OutfitAction(botAI); }
@@ -379,6 +470,11 @@ private:
     static Action* blood_fury(PlayerbotAI* botAI) { return new CastBloodFuryAction(botAI); }
     static Action* berserking(PlayerbotAI* botAI) { return new CastBerserkingAction(botAI); }
     static Action* every_man_for_himself(PlayerbotAI* botAI) { return new CastEveryManForHimselfAction(botAI); }
+    // [fear_counter]
+    static Action* fear_counter_tremor_totem(PlayerbotAI* botAI) { return new FearCounterTremorTotemAction(botAI); }
+    static Action* fear_counter_fear_ward(PlayerbotAI* botAI) { return new FearCounterFearWardAction(botAI); }
+    static Action* fear_counter_berserker_rage(PlayerbotAI* botAI) { return new FearCounterBerserkerRageAction(botAI); }
+    static Action* fear_counter_pvp_trinket(PlayerbotAI* botAI) { return new FearCounterPvpTrinketAction(botAI); }
     static Action* will_of_the_forsaken(PlayerbotAI* botAI) { return new CastWillOfTheForsakenAction(botAI); }
     static Action* stoneform(PlayerbotAI* botAI) { return new CastStoneformAction(botAI); }
     static Action* escape_artist(PlayerbotAI* botAI) { return new CastEscapeArtistAction(botAI); }
@@ -476,6 +572,13 @@ private:
 
     static Action* new_rpg_status_update(PlayerbotAI* botAI) { return new NewRpgStatusUpdateAction(botAI); }
     static Action* new_rpg_go_grind(PlayerbotAI* botAI) { return new NewRpgGoGrindAction(botAI); }
+    static Action* new_rpg_wait_for_group(PlayerbotAI* botAI) { return new NewRpgWaitForGroupAction(botAI); }
+    static Action* new_rpg_rest_at_inn(PlayerbotAI* botAI) { return new NewRpgRestAtInnAction(botAI); }
+    static Action* new_rpg_taxi_unstall(PlayerbotAI* botAI) { return new NewRpgTaxiUnstallAction(botAI); }
+    static Action* new_rpg_discover_flight_master(PlayerbotAI* botAI)
+    {
+        return new NewRpgDiscoverFlightMasterAction(botAI);
+    }
     static Action* new_rpg_go_camp(PlayerbotAI* botAI) { return new NewRpgGoCampAction(botAI); }
     static Action* new_rpg_wander_random(PlayerbotAI* botAI) { return new NewRpgWanderRandomAction(botAI); }
     static Action* new_rpg_wander_npc(PlayerbotAI* botAI) { return new NewRpgWanderNpcAction(botAI); }

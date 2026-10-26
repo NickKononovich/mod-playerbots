@@ -149,16 +149,13 @@ void TrainerAction::Iterate(Creature* creature, bool learnSpells, uint32 spellId
 
 void TrainerAction::Learn(SpellInfo const* spellInfo, uint32 cost, std::ostringstream& out)
 {
-    if (!botAI->HasCheat(BotCheatMask::gold))
+    if (AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::spells) < cost)
     {
-        if (AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::spells) < cost)
-        {
-            out << " - too expensive";
-            return;
-        }
-
-        bot->ModifyMoney(-static_cast<int32>(cost));
+        out << " - too expensive";
+        return;
     }
+
+    bot->ModifyMoney(-static_cast<int32>(cost));
 
     if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
         bot->CastSpell(bot, spellInfo->Id, true);

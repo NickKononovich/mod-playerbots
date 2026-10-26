@@ -15,6 +15,7 @@
 #include "PriestTriggers.h"
 #include "PullStrategy.h"
 #include "ShadowPriestStrategy.h"
+#include "DamageSpikeActions.h"
 
 class PriestStrategyFactoryInternal : public NamedObjectContext<Strategy>
 {
@@ -91,6 +92,7 @@ public:
         creators["shadowform"] = &PriestTriggerFactoryInternal::shadowform;
         creators["vampiric embrace"] = &PriestTriggerFactoryInternal::vampiric_embrace;
         creators["power infusion"] = &PriestTriggerFactoryInternal::power_infusion;
+        creators["hymn of hope needed"] = &PriestTriggerFactoryInternal::hymn_of_hope_needed;
         creators["inner focus"] = &PriestTriggerFactoryInternal::inner_focus;
         creators["shadow protection"] = &PriestTriggerFactoryInternal::shadow_protection;
         creators["shadow protection on party"] = &PriestTriggerFactoryInternal::shadow_protection_on_party;
@@ -100,6 +102,9 @@ public:
         creators["hex of weakness"] = &PriestTriggerFactoryInternal::hex_of_weakness;
         creators["shadowguard"] = &PriestTriggerFactoryInternal::shadowguard;
         creators["fear ward on main tank"] = &PriestTriggerFactoryInternal::fear_ward_on_main_tank;
+        creators["power word: shield on main tank"] = &PriestTriggerFactoryInternal::power_word_shield_on_main_tank;
+        creators["prayer of mending on main tank"] = &PriestTriggerFactoryInternal::prayer_of_mending_on_main_tank;
+        creators["renew on main tank"] = &PriestTriggerFactoryInternal::renew_on_main_tank;
         creators["feedback"] = &PriestTriggerFactoryInternal::feedback;
         creators["binding heal"] = &PriestTriggerFactoryInternal::binding_heal;
         creators["chastise"] = &PriestTriggerFactoryInternal::chastise;
@@ -107,6 +112,20 @@ public:
         creators["silence on enemy healer"] = &PriestTriggerFactoryInternal::silence_on_enemy_healer;
         creators["shadowfiend"] = &PriestTriggerFactoryInternal::shadowfiend;
         creators["mind sear channel check"] = &PriestTriggerFactoryInternal::mind_sear_channel_check;
+        creators["mind sear heavy aoe"] = &PriestTriggerFactoryInternal::mind_sear_heavy_aoe;  // [b31_deep]
+        creators["mind flay clip"] = &PriestTriggerFactoryInternal::mind_flay_clip;  // [guide_b31_dead] (+ next line)
+        creators["shadowform out of combat"] = &PriestTriggerFactoryInternal::shadowform_out_of_combat;
+        creators["battle resurrected member"] = &PriestTriggerFactoryInternal::battle_resurrected_member;
+        creators["battle resurrected member low health"] =
+            &PriestTriggerFactoryInternal::battle_resurrected_member_low_health;
+        creators["tank peel"] = &PriestTriggerFactoryInternal::tank_peel;
+        creators["surge of light"] = &PriestTriggerFactoryInternal::surge_of_light;
+        // [guide_b31_dead] healer guide gaps (GUIDE_AUDIT_HEALERS 1-2)
+        creators["penance on main tank"] = &PriestTriggerFactoryInternal::penance_on_main_tank;
+        creators["circle of healing two injured"] = &PriestTriggerFactoryInternal::circle_of_healing_two_injured;
+        creators["borrowed time"] = &PriestTriggerFactoryInternal::borrowed_time;
+        creators["borrowed time low health"] = &PriestTriggerFactoryInternal::borrowed_time_low_health;
+        creators["serendipity greater heal"] = &PriestTriggerFactoryInternal::serendipity_greater_heal;
     }
 
 private:
@@ -133,12 +152,22 @@ private:
     static Trigger* divine_spirit_on_party(PlayerbotAI* botAI) { return new DivineSpiritOnPartyTrigger(botAI); }
     static Trigger* inner_fire(PlayerbotAI* botAI) { return new InnerFireTrigger(botAI); }
     static Trigger* power_infusion(PlayerbotAI* botAI) { return new PowerInfusionTrigger(botAI); }
+    static Trigger* hymn_of_hope_needed(PlayerbotAI* botAI) { return new HymnOfHopeNeededTrigger(botAI); }
     static Trigger* inner_focus(PlayerbotAI* botAI) { return new InnerFocusTrigger(botAI); }
     static Trigger* shadow_protection_on_party(PlayerbotAI* botAI) { return new ShadowProtectionOnPartyTrigger(botAI); }
     static Trigger* shadow_protection(PlayerbotAI* botAI) { return new ShadowProtectionTrigger(botAI); }
     static Trigger* shackle_undead(PlayerbotAI* botAI) { return new ShackleUndeadTrigger(botAI); }
     static Trigger* feedback(PlayerbotAI* botAI) { return new FeedbackTrigger(botAI); }
     static Trigger* fear_ward_on_main_tank(PlayerbotAI* botAI) { return new FearWardOnMainTankTrigger(botAI); }
+    static Trigger* power_word_shield_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new PowerWordShieldOnMainTankTrigger(botAI);
+    }
+    static Trigger* prayer_of_mending_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new PrayerOfMendingOnMainTankTrigger(botAI);
+    }
+    static Trigger* renew_on_main_tank(PlayerbotAI* botAI) { return new RenewOnMainTankTrigger(botAI); }
     static Trigger* shadowguard(PlayerbotAI* botAI) { return new ShadowguardTrigger(botAI); }
     static Trigger* hex_of_weakness(PlayerbotAI* botAI) { return new HexOfWeaknessTrigger(botAI); }
     static Trigger* touch_of_weakness(PlayerbotAI* botAI) { return new TouchOfWeaknessTrigger(botAI); }
@@ -149,6 +178,32 @@ private:
     static Trigger* chastise(PlayerbotAI* botAI) { return new ChastiseTrigger(botAI); }
     static Trigger* binding_heal(PlayerbotAI* botAI) { return new BindingHealTrigger(botAI); }
     static Trigger* mind_sear_channel_check(PlayerbotAI* botAI) { return new MindSearChannelCheckTrigger(botAI); }
+    // [b31_deep]
+    static Trigger* mind_sear_heavy_aoe(PlayerbotAI* botAI) { return new MindSearHeavyAoeTrigger(botAI); }
+    static Trigger* mind_flay_clip(PlayerbotAI* botAI) { return new MindFlayClipTrigger(botAI); }  // [guide_b31_dead]
+    static Trigger* shadowform_out_of_combat(PlayerbotAI* botAI)  // [guide_b31_dead]
+    {
+        return new ShadowformNonCombatTrigger(botAI);
+    }
+    static Trigger* battle_resurrected_member(PlayerbotAI* botAI) { return new BattleResurrectedMemberTrigger(botAI); }
+    static Trigger* battle_resurrected_member_low_health(PlayerbotAI* botAI)
+    {
+        return new BattleResurrectedMemberLowHealthTrigger(botAI);
+    }
+    static Trigger* tank_peel(PlayerbotAI* botAI) { return new TankPeelTrigger(botAI); }
+    static Trigger* surge_of_light(PlayerbotAI* botAI) { return new SurgeOfLightTrigger(botAI); }
+    // [guide_b31_dead]
+    static Trigger* penance_on_main_tank(PlayerbotAI* botAI) { return new PenanceOnMainTankTrigger(botAI); }
+    static Trigger* circle_of_healing_two_injured(PlayerbotAI* botAI)
+    {
+        return new CircleOfHealingTwoInjuredTrigger(botAI);
+    }
+    static Trigger* borrowed_time(PlayerbotAI* botAI) { return new BorrowedTimeTrigger(botAI, "borrowed time", 90.0f); }
+    static Trigger* borrowed_time_low_health(PlayerbotAI* botAI)
+    {
+        return new BorrowedTimeTrigger(botAI, "borrowed time low health", sPlayerbotAIConfig.LowHealth);
+    }
+    static Trigger* serendipity_greater_heal(PlayerbotAI* botAI) { return new SerendipityGreaterHealTrigger(botAI); }
 };
 
 class PriestAiObjectContextInternal : public NamedObjectContext<Action>
@@ -219,6 +274,9 @@ public:
         creators["shadowguard"] = &PriestAiObjectContextInternal::shadowguard;
         creators["desperate prayer"] = &PriestAiObjectContextInternal::desperate_prayer;
         creators["fear ward on main tank"] = &PriestAiObjectContextInternal::fear_ward_on_main_tank;
+        creators["power word: shield on main tank"] = &PriestAiObjectContextInternal::power_word_shield_on_main_tank;
+        creators["prayer of mending on main tank"] = &PriestAiObjectContextInternal::prayer_of_mending_on_main_tank;
+        creators["renew on main tank"] = &PriestAiObjectContextInternal::renew_on_main_tank;
         creators["starshards"] = &PriestAiObjectContextInternal::starshards;
         creators["elune's grace"] = &PriestAiObjectContextInternal::elunes_grace;
         creators["feedback"] = &PriestAiObjectContextInternal::feedback;
@@ -230,13 +288,29 @@ public:
         creators["mass dispel"] = &PriestAiObjectContextInternal::mass_dispel;
         creators["pain suppression"] = &PriestAiObjectContextInternal::pain_suppression;
         creators["pain suppression on party"] = &PriestAiObjectContextInternal::pain_suppression_on_party;
+        creators["pain suppression on spiking tank"] = &PriestAiObjectContextInternal::pain_suppression_spike;
         creators["prayer of mending on party"] = &PriestAiObjectContextInternal::prayer_of_mending;
         creators["binding heal"] = &PriestAiObjectContextInternal::binding_heal;
         creators["penance on party"] = &PriestAiObjectContextInternal::penance_on_party;
+        // [guide_b31_dead] main-tank upkeep heals for the healer guide gaps
+        creators["penance on main tank"] = &PriestAiObjectContextInternal::penance_on_main_tank;
+        creators["greater heal on main tank"] = &PriestAiObjectContextInternal::greater_heal_on_main_tank;
         creators["hymn of hope"] = &PriestAiObjectContextInternal::hymn_of_hope;
         creators["divine hymn"] = &PriestAiObjectContextInternal::divine_hymn;
         creators["mind sear"] = &PriestAiObjectContextInternal::mind_sear;
         creators["guardian spirit on party"] = &PriestAiObjectContextInternal::guardian_spirit_on_party;
+        creators["guardian spirit on spiking tank"] = &PriestAiObjectContextInternal::guardian_spirit_spike;
+        creators["power word: shield on battle resurrected"] = &PriestAiObjectContextInternal::shield_on_rezzed;
+        creators["penance on battle resurrected"] = &PriestAiObjectContextInternal::penance_on_rezzed;
+        creators["flash heal on battle resurrected"] = &PriestAiObjectContextInternal::flash_heal_on_rezzed;
+        creators["renew on battle resurrected"] = &PriestAiObjectContextInternal::renew_on_rezzed;
+        creators["power word: fortitude on battle resurrected"] = &PriestAiObjectContextInternal::fortitude_on_rezzed;
+        creators["divine spirit on battle resurrected"] = &PriestAiObjectContextInternal::divine_spirit_on_rezzed;
+        creators["shadow protection on battle resurrected"] =
+            &PriestAiObjectContextInternal::shadow_protection_on_rezzed;
+        creators["power word: shield on peeling tank"] = &PriestAiObjectContextInternal::shield_on_peeling_tank;
+        creators["renew on peeling tank"] = &PriestAiObjectContextInternal::renew_on_peeling_tank;
+        creators["flash heal on peeling tank"] = &PriestAiObjectContextInternal::flash_heal_on_peeling_tank;
     }
 
 private:
@@ -311,6 +385,15 @@ private:
     static Action* elunes_grace(PlayerbotAI* botAI) { return new CastElunesGraceAction(botAI); }
     static Action* starshards(PlayerbotAI* botAI) { return new CastStarshardsAction(botAI); }
     static Action* fear_ward_on_main_tank(PlayerbotAI* botAI) { return new CastFearWardOnMainTankAction(botAI); }
+    static Action* power_word_shield_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new CastPowerWordShieldOnMainTankAction(botAI);
+    }
+    static Action* prayer_of_mending_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new CastPrayerOfMendingOnMainTankAction(botAI);
+    }
+    static Action* renew_on_main_tank(PlayerbotAI* botAI) { return new CastRenewOnMainTankAction(botAI); }
     static Action* desperate_prayer(PlayerbotAI* botAI) { return new CastDesperatePrayerAction(botAI); }
     static Action* shadowguard(PlayerbotAI* botAI) { return new CastShadowguardAction(botAI); }
     static Action* hex_of_weakness(PlayerbotAI* botAI) { return new CastHexOfWeaknessAction(botAI); }
@@ -326,6 +409,73 @@ private:
     static Action* binding_heal(PlayerbotAI* botAI) { return new CastBindingHealAction(botAI); }
     static Action* prayer_of_mending(PlayerbotAI* botAI) { return new CastPrayerOfMendingAction(botAI); }
     static Action* pain_suppression_on_party(PlayerbotAI* botAI) { return new CastPainSuppressionProtectAction(botAI); }
+    static Action* pain_suppression_spike(PlayerbotAI* botAI)
+    {
+        return new CastSpikeProtectSpellAction(botAI, "pain suppression");
+    }
+    static Action* guardian_spirit_spike(PlayerbotAI* botAI)
+    {
+        return new CastSpikeProtectSpellAction(botAI, "guardian spirit");
+    }
+    static Action* shield_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastPowerWordShieldOnValueTargetAction(botAI, "battle resurrected member", "battle resurrected");
+    }
+    // [guide_b31_dead]
+    static Action* penance_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "penance", "main tank", "main tank", 25.0f,
+                                               HealingManaEfficiency::HIGH, true, 95.0f);
+    }
+    static Action* greater_heal_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "greater heal", "main tank", "main tank", 50.0f,
+                                               HealingManaEfficiency::MEDIUM, true, 70.0f);
+    }
+    static Action* penance_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "penance", "battle resurrected member", "battle resurrected",
+                                               25.0f, HealingManaEfficiency::HIGH);
+    }
+    static Action* flash_heal_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "flash heal", "battle resurrected member", "battle resurrected",
+                                               15.0f, HealingManaEfficiency::LOW);
+    }
+    static Action* renew_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "renew", "battle resurrected member", "battle resurrected",
+                                               15.0f, HealingManaEfficiency::VERY_HIGH);
+    }
+    static Action* fortitude_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastBuffOnValueTargetAction(botAI, "power word: fortitude", "battle resurrected member",
+                                               "battle resurrected");
+    }
+    static Action* divine_spirit_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastBuffOnValueTargetAction(botAI, "divine spirit", "battle resurrected member",
+                                               "battle resurrected");
+    }
+    static Action* shadow_protection_on_rezzed(PlayerbotAI* botAI)
+    {
+        return new CastBuffOnValueTargetAction(botAI, "shadow protection", "battle resurrected member",
+                                               "battle resurrected");
+    }
+    static Action* shield_on_peeling_tank(PlayerbotAI* botAI)
+    {
+        return new CastPowerWordShieldOnValueTargetAction(botAI, "peeling tank", "peeling tank");
+    }
+    static Action* renew_on_peeling_tank(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "renew", "peeling tank", "peeling tank", 15.0f,
+                                               HealingManaEfficiency::VERY_HIGH);
+    }
+    static Action* flash_heal_on_peeling_tank(PlayerbotAI* botAI)
+    {
+        return new CastHealOnValueTargetAction(botAI, "flash heal", "peeling tank", "peeling tank", 15.0f,
+                                               HealingManaEfficiency::LOW, true, ai::healer::PEEL_TANK_TOP_UP_PCT);
+    }
     static Action* pain_suppression(PlayerbotAI* botAI) { return new CastPainSuppressionAction(botAI); }
     static Action* mass_dispel(PlayerbotAI* botAI) { return new CastMassDispelAction(botAI); }
     static Action* shadowfiend(PlayerbotAI* botAI) { return new CastShadowfiendAction(botAI); }
@@ -377,7 +527,25 @@ void PriestAiObjectContext::BuildSharedTriggerContexts(SharedNamedObjectContextL
     triggerContexts.Add(new PriestTriggerFactoryInternal());
 }
 
+class PriestValueContextInternal : public NamedObjectContext<UntypedValue>
+{
+public:
+    PriestValueContextInternal()
+    {
+        creators["battle resurrected member"] = &PriestValueContextInternal::battle_resurrected_member;
+        creators["peeling tank"] = &PriestValueContextInternal::peeling_tank;
+    }
+
+private:
+    static UntypedValue* battle_resurrected_member(PlayerbotAI* botAI)
+    {
+        return new BattleResurrectedMemberValue(botAI);
+    }
+    static UntypedValue* peeling_tank(PlayerbotAI* botAI) { return new PeelingTankValue(botAI); }
+};
+
 void PriestAiObjectContext::BuildSharedValueContexts(SharedNamedObjectContextList<UntypedValue>& valueContexts)
 {
     AiObjectContext::BuildSharedValueContexts(valueContexts);
+    valueContexts.Add(new PriestValueContextInternal());
 }

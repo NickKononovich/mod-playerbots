@@ -23,6 +23,7 @@ public:
         creators["bwl razorgore fire resistance"] = &RaidBwlActionContext::bwl_razorgore_fire_resistance_action;
         creators["bwl razorgore avoid aoe"] = &RaidBwlActionContext::bwl_razorgore_avoid_aoe;
         creators["bwl razorgore mark boss"] = &RaidBwlActionContext::bwl_razorgore_mark_boss;
+        creators["bwl razorgore control orb"] = &RaidBwlActionContext::bwl_razorgore_control_orb;
 
         creators["bwl vaelastrasz fire resistance"] = &RaidBwlActionContext::bwl_vaelastrasz_fire_resistance_action;
         creators["bwl vaelastrasz move away"] = &RaidBwlActionContext::bwl_vaelastrasz_move_away;
@@ -49,6 +50,10 @@ private:
     static Action* bwl_razorgore_fire_resistance_action(PlayerbotAI* botAI) { return new BossFireResistanceAction(botAI, "razorgore the untamed"); }
     static Action* bwl_razorgore_avoid_aoe(PlayerbotAI* botAI) { return new BwlRazorgoreAvoidAoeAction(botAI); }
     static Action* bwl_razorgore_mark_boss(PlayerbotAI* botAI) { return new BwlRazorgoreMarkBossAction(botAI); }
+    static Action* bwl_razorgore_control_orb(PlayerbotAI* botAI)
+    {
+        return new BwlRazorgoreControlOrbAction(botAI);
+    }
     static Action* bwl_vaelastrasz_fire_resistance_action(PlayerbotAI* botAI) { return new BossFireResistanceAction(botAI, "vaelastrasz the corrupt"); }
     static Action* bwl_vaelastrasz_move_away(PlayerbotAI* botAI) { return new BwlVaelastraszMoveAwayAction(botAI); }
     static Action* bwl_broodlord_fire_resistance_action(PlayerbotAI* botAI) { return new BossFireResistanceAction(botAI, "broodlord lashlayer"); }

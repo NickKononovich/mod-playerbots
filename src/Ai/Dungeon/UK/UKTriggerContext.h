@@ -16,7 +16,9 @@ class WotlkDungeonUKTriggerContext : public NamedObjectContext<Trigger>
         WotlkDungeonUKTriggerContext()
         {
             creators["keleseth frost tomb"] = &WotlkDungeonUKTriggerContext::keleseth_frost_tomb;
-            creators["dalronn priority"] = &WotlkDungeonUKTriggerContext::dalronn_priority_target;
+            creators["skarvald priority"] = &WotlkDungeonUKTriggerContext::skarvald_priority;
+            creators["dalronn interrupt"] = &WotlkDungeonUKTriggerContext::dalronn_interrupt;
+            creators["ingvar smash danger"] = &WotlkDungeonUKTriggerContext::ingvar_smash_danger;
             creators["ingvar dreadful roar"] = &WotlkDungeonUKTriggerContext::ingvar_dreadful_roar;
             creators["ingvar smash tank"] = &WotlkDungeonUKTriggerContext::ingvar_smash_tank;
             creators["ingvar smash tank return"] = &WotlkDungeonUKTriggerContext::ingvar_smash_tank_return;
@@ -24,7 +26,9 @@ class WotlkDungeonUKTriggerContext : public NamedObjectContext<Trigger>
         }
     private:
         static Trigger* keleseth_frost_tomb(PlayerbotAI* botAI) { return new KelesethFrostTombTrigger(botAI); }
-        static Trigger* dalronn_priority_target(PlayerbotAI* botAI) { return new DalronnDpsTrigger(botAI); }
+        static Trigger* skarvald_priority(PlayerbotAI* botAI) { return new SkarvaldPriorityTrigger(botAI); }
+        static Trigger* dalronn_interrupt(PlayerbotAI* botAI) { return new DalronnInterruptTrigger(botAI); }
+        static Trigger* ingvar_smash_danger(PlayerbotAI* botAI) { return new IngvarSmashDangerTrigger(botAI); }
         static Trigger* ingvar_dreadful_roar(PlayerbotAI* botAI) { return new IngvarDreadfulRoarTrigger(botAI); }
         static Trigger* ingvar_smash_tank(PlayerbotAI* botAI) { return new IngvarSmashTankTrigger(botAI); }
         static Trigger* ingvar_smash_tank_return(PlayerbotAI* botAI) { return new IngvarSmashTankReturnTrigger(botAI); }

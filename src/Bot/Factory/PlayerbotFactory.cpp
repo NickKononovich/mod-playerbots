@@ -35,11 +35,13 @@
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "ReputationMgr.h"
+#include "RoguePoisons.h"
 #include "SharedDefines.h"
 #include "StatsWeightCalculator.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
 #include "World.h"
+#include <algorithm>
 #include <array>
 #include <unordered_set>
 #include <utility>
@@ -85,6 +87,30 @@ static bool TryApplyBeltBuckle(Player* bot, Item* waist)
     return true;
 }
 
+// Whether the meta gem condition (SpellItemEnchantmentCondition, as Player::EnchantmentFitsRequirements reads it)
+// still needs more gems of a colour. gemCount is indexed meta / red / yellow / blue.
+static bool MetaConditionLacksColor(uint32 conditionId, uint32 const (&gemCount)[4], uint8 colorIndex)
+{
+    SpellItemEnchantmentConditionEntry const* condition = sSpellItemEnchantmentConditionStore.LookupEntry(conditionId);
+    if (!condition)
+        return false;
+
+    for (uint8 i = 0; i < 5; ++i)
+    {
+        if (condition->Color[i] != colorIndex + 1 || condition->CompareColor[i] > 4)
+            continue;
+
+        uint8 const compareColor = condition->CompareColor[i];
+        uint32 const other = compareColor ? gemCount[compareColor - 1] : condition->Value[i];
+        if (condition->Comparator[i] == 5 && gemCount[colorIndex] < other)  // at least
+            return true;
+        if (condition->Comparator[i] == 3 && gemCount[colorIndex] <= other)  // more than
+            return true;
+    }
+
+    return false;
+}
+
 const uint64 diveMask = (1LL << 7) | (1LL << 44) | (1LL << 37) | (1LL << 38) | (1LL << 26) | (1LL << 30) | (1LL << 27) |
                         (1LL << 33) | (1LL << 24) | (1LL << 34);
 
@@ -108,7 +134,27 @@ std::vector<uint32> PlayerbotFactory::ccBreakTrinketCache;
 
 namespace
 {
-constexpr uint32 SPELL_DRUID_THICK_HIDE = 16931;
+// [b31_sd] Thick Hide, every rank: a bear template takes rank 1 at level 20 and rank 2 at 21, so a rank 3 (16931)
+// check alone read those bears as cats.
+constexpr uint32 SPELL_DRUID_THICK_HIDE_RANKS[] = {16929, 16930, 16931};
+
+// [b31_sd] The row 0/1 talents a feral has at level 19, before Thick Hide (row 1) gets its first point at 20: the cat
+// templates (PremadeSpec 11.3 / 11.5) put 5 into Feral Aggression (row 0) after Ferocity, the bear template (11.1)
+// takes Feral Instinct and Savage Fury (row 1) instead. Rank ids from Talent.dbc.
+constexpr uint32 SPELL_DRUID_FERAL_AGGRESSION_RANKS[] = {16858, 16859, 16860, 16861, 16862};
+constexpr uint32 SPELL_DRUID_BEAR_ROW1_RANKS[] = {16947, 16948, 16949, 16998, 16999};  // Feral Instinct, Savage Fury
+
+template <size_t N>
+bool HasAnyDruidTalentAura(Player* player, uint32 const (&spellIds)[N])
+{
+    for (uint32 const spellId : spellIds)
+        if (player->HasAura(spellId))
+            return true;
+
+    return false;
+}
+
+bool HasDruidThickHide(Player* player) { return HasAnyDruidTalentAura(player, SPELL_DRUID_THICK_HIDE_RANKS); }
 constexpr uint32 SPELL_OWLKIN_FRENZY = 48393;
 constexpr uint32 SPELL_PRIMAL_TENACITY = 33957;
 constexpr uint32 SPELL_IMPROVED_BARKSKIN = 63411;
@@ -139,7 +185,15 @@ constexpr uint32 SPELL_SUDDEN_DOOM = 49529;
 constexpr uint32 SPELL_ACCLIMATION = 50152;
 constexpr uint32 SPELL_MAGIC_SUPPRESSION = 49611;
 
+// [b43_class] 30798 is the Enhancement talent rank; its LEARN_SPELL effect teaches Dual Wield 674. The rank goes to
+// m_talents, not m_spells, so HasSpell(30798) was always false. Check the taught spell, or the talent itself.
 constexpr uint32 SPELL_SHAMAN_DUAL_WIELD = 30798;
+constexpr uint32 SPELL_DUAL_WIELD = 674;
+
+static bool ShamanKnowsDualWield(Player* bot)
+{
+    return bot->HasSpell(SPELL_DUAL_WIELD) || bot->HasTalent(SPELL_SHAMAN_DUAL_WIELD, bot->GetActiveSpec());
+}
 constexpr uint32 SPELL_ASTRAL_SHIFT = 51479;
 constexpr uint32 SPELL_EARTHEN_POWER = 51524;
 constexpr uint32 SPELL_FOCUSED_MIND = 30866;
@@ -1305,27 +1359,20 @@ void PlayerbotFactory::InitConsumables()
         }
         case CLASS_ROGUE:
         {
-            std::vector<uint32> instant_poisons = {
-                INSTANT_POISON_IX, INSTANT_POISON_VIII, INSTANT_POISON_VII, INSTANT_POISON_VI, INSTANT_POISON_V,
-                INSTANT_POISON_IV, INSTANT_POISON_III, INSTANT_POISON_II, INSTANT_POISON };
-            std::vector<uint32> deadly_poisons = {
-                DEADLY_POISON_IX, DEADLY_POISON_VIII, DEADLY_POISON_VII, DEADLY_POISON_VI, DEADLY_POISON_V,
-                DEADLY_POISON_IV, DEADLY_POISON_III, DEADLY_POISON_II, DEADLY_POISON };
-            for (uint32 itemId : deadly_poisons)
+            // [b31_wr] the best rank of each kind the level allows, ids from RoguePoisons (one list for the rogue's
+            // poison actions, "apply poison" and this); Wound for the hand that would get Deadly when another rogue
+            // of the group brings it
+            for (RoguePoisons::Kind kind :
+                 { RoguePoisons::Kind::DEADLY, RoguePoisons::Kind::INSTANT, RoguePoisons::Kind::WOUND })
             {
-                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-                if (proto->RequiredLevel > level)
-                    continue;
-                items.push_back({itemId, 20});
-                break;
-            }
-            for (uint32 itemId : instant_poisons)
-            {
-                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-                if (proto->RequiredLevel > level)
-                    continue;
-                items.push_back({itemId, 20});
-                break;
+                for (uint32 itemId : RoguePoisons::ItemIds(kind))
+                {
+                    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+                    if (!proto || proto->RequiredLevel > level)
+                        continue;
+                    items.push_back({itemId, 20});
+                    break;
+                }
             }
             break;
         }
@@ -1599,8 +1646,8 @@ void PlayerbotFactory::InitPet()
     {
         pet->InitStatsForLevel(bot->GetLevel());
         pet->SetLevel(bot->GetLevel());
-        pet->SetPower(POWER_HAPPINESS, pet->GetMaxPower(Powers(POWER_HAPPINESS)));
-        pet->SetHealth(pet->GetMaxHealth());
+        // No happiness refill: a new pet keeps the core's fresh-tame value, an existing one is fed like a player's.
+        // (InitStatsForLevel above still sets full health, as the core does for any pet whose stats it rebuilds.)
     }
     else
     {
@@ -1718,13 +1765,22 @@ uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_temp
         /// @todo: fix cat druid hardcode
         if (bot->getClass() == CLASS_DRUID && specTab == DRUID_TAB_FERAL && bot->GetLevel() >= 20)
         {
-            bool isCat = !bot->HasAura(SPELL_DRUID_THICK_HIDE);
-            if (!isCat && bot->GetLevel() == 20)
+            // [b31_sd] The level-20 roll sat behind "!isCat", i.e. a bot that already has Thick Hide. On the level-up
+            // to 20 no feral has a Thick Hide point yet (the first point at 20 for a bear template), so every
+            // feral levelling through 20 became a cat and the roll never ran. At 20 without Thick Hide the bot's own
+            // row 0/1 talents tell its template (Feral Aggression: cat; Feral Instinct / Savage Fury: bear); only a
+            // bot with neither rolls, with the configured cat / bear probabilities.
+            bool isCat = !HasDruidThickHide(bot);
+            if (isCat && bot->GetLevel() == 20 && !HasAnyDruidTalentAura(bot, SPELL_DRUID_FERAL_AGGRESSION_RANKS))
             {
-                uint32 bearP = sPlayerbotAIConfig.RandomClassSpecProb[cls][1];
-                uint32 catP = sPlayerbotAIConfig.RandomClassSpecProb[cls][3];
-                if (urand(1, bearP + catP) <= catP)
-                    isCat = true;
+                if (HasAnyDruidTalentAura(bot, SPELL_DRUID_BEAR_ROW1_RANKS))
+                    isCat = false;
+                else
+                {
+                    uint32 bearP = sPlayerbotAIConfig.RandomClassSpecProb[cls][1];
+                    uint32 catP = sPlayerbotAIConfig.RandomClassSpecProb[cls][3];
+                    isCat = bearP + catP == 0 || urand(1, bearP + catP) <= catP;
+                }
             }
             if (isCat)
             {
@@ -1773,7 +1829,7 @@ uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_temp
     if (bot->GetFreeTalentPoints())
         InitTalents((specTab + 2) % 3);
 
-    if (bot->getClass() == CLASS_SHAMAN && bot->HasSpell(SPELL_SHAMAN_DUAL_WIELD))
+    if (bot->getClass() == CLASS_SHAMAN && ShamanKnowsDualWield(bot))  // [b43_class]
     {
         bot->SetSkill(SKILL_DUAL_WIELD, 0, 1, 1);
         bot->SetCanDualWield(true);
@@ -1797,6 +1853,20 @@ static bool IsAboveTalentExpansionLimit(Player* bot, uint32 row, uint32 col)
         return row > 8 || (row == 8 && col != 1);
 
     return false;
+}
+
+// [b31_talrank] The rank the bot already holds in a talent: LearnTalent takes the TARGET rank, so the free points
+// available for it are the free pool plus what is already spent there (InitTalentsByTemplate does the same). Without
+// it a template applied over an earlier one (levels 61-79) moved a point to another talent.
+static uint32 CurrentTalentRank(Player* bot, uint32 talentId)
+{
+    TalentEntry const* talentInfo = sTalentStore.LookupEntry(talentId);
+    if (!talentInfo)
+        return 0;
+    for (int8 rank = MAX_TALENT_RANK - 1; rank >= 0; --rank)
+        if (talentInfo->RankID[rank] && bot->HasTalent(talentInfo->RankID[rank], bot->GetActiveSpec()))
+            return rank + 1;
+    return 0;
 }
 
 void PlayerbotFactory::InitTalentsBySpecNo(Player* bot, int specNo, bool reset)
@@ -1866,7 +1936,8 @@ void PlayerbotFactory::InitTalentsBySpecNo(Player* bot, int specNo, bool reset)
                 }
                 talentID = talentInfo->TalentID;
             }
-            bot->LearnTalent(talentID, std::min(lvl, bot->GetFreeTalentPoints()) - 1);
+            bot->LearnTalent(talentID,
+                             std::min(lvl, bot->GetFreeTalentPoints() + CurrentTalentRank(bot, talentID)) - 1);
             if (bot->GetFreeTalentPoints() == 0)
             {
                 break;
@@ -1878,7 +1949,7 @@ void PlayerbotFactory::InitTalentsBySpecNo(Player* bot, int specNo, bool reset)
         }
     }
 
-    if (bot->getClass() == CLASS_SHAMAN && bot->HasSpell(SPELL_SHAMAN_DUAL_WIELD))
+    if (bot->getClass() == CLASS_SHAMAN && ShamanKnowsDualWield(bot))  // [b43_class]
     {
         bot->SetSkill(SKILL_DUAL_WIELD, 0, 1, 1);
         bot->SetCanDualWield(true);
@@ -1943,7 +2014,8 @@ void PlayerbotFactory::InitTalentsByParsedSpecLink(Player* bot, std::vector<std:
             }
             talentID = talentInfo->TalentID;
         }
-        bot->LearnTalent(talentID, std::min(lvl, bot->GetFreeTalentPoints()) - 1);
+        bot->LearnTalent(talentID,
+                         std::min(lvl, bot->GetFreeTalentPoints() + CurrentTalentRank(bot, talentID)) - 1);
         if (bot->GetFreeTalentPoints() == 0)
         {
             break;
@@ -2339,6 +2411,183 @@ void Shuffle(std::vector<uint32>& items)
 //     }
 // }
 
+// Item level targeted gearing (SetIlvlTargeted): candidates more than this below the best wearable one of their kind
+// are dropped before scoring.
+static constexpr uint32 ILVL_TARGETED_WINDOW = 12;
+// Share of the best score within which trinkets, relics, wands, shields and off-hand items go by item level.
+static constexpr float ILVL_TARGETED_SCORE_SHARE = 0.85f;
+
+// The kind an item competes with for the item level floor: armor of one type, one-hand or two-hand weapons, ranged
+// weapons, shields, off-hand items, relics. One kind cannot push another out of the slot (cloth over plate).
+static uint32 GetIlvlTargetedGroup(ItemTemplate const* proto)
+{
+    uint32 invType = proto->InventoryType;
+    switch (invType)
+    {
+        case INVTYPE_ROBE:
+            invType = INVTYPE_CHEST;
+            break;
+        case INVTYPE_WEAPONMAINHAND:
+        case INVTYPE_WEAPONOFFHAND:
+            invType = INVTYPE_WEAPON;
+            break;
+        case INVTYPE_RANGEDRIGHT:
+            invType = INVTYPE_RANGED;
+            break;
+        default:
+            break;
+    }
+
+    uint32 const subClass = proto->Class == ITEM_CLASS_ARMOR ? proto->SubClass : 0;
+    return (invType << 8) | subClass;
+}
+
+static bool IsWand(ItemTemplate const* proto)
+{
+    return proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_WAND;
+}
+
+// Items whose value the stat weights miss (on-use effects, procs, the relic and wand effects, block): among the
+// near-best scores the item level decides.
+static bool PrefersItemLevel(uint8 slot, ItemTemplate const* proto)
+{
+    if (slot == EQUIPMENT_SLOT_TRINKET1 || slot == EQUIPMENT_SLOT_TRINKET2)
+        return true;
+
+    switch (proto->InventoryType)
+    {
+        case INVTYPE_RELIC:
+        case INVTYPE_SHIELD:
+        case INVTYPE_HOLDABLE:
+            return true;
+        default:
+            return IsWand(proto);
+    }
+}
+
+// Keeps the wearable candidates within ILVL_TARGETED_WINDOW of the best wearable one of their kind, highest item level
+// first, and rolls their random properties.
+void PlayerbotFactory::FilterIlvlTargetedCandidates(uint8 slot, std::vector<std::pair<uint32, int32>>& ids,
+                                                    StatsWeightCalculator& calculator)
+{
+    std::vector<ItemTemplate const*> protos;
+    protos.reserve(ids.size());
+    for (auto const& candidate : ids)
+    {
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(candidate.first))
+            protos.push_back(proto);
+    }
+
+    // The item id breaks ties, so the pick does not depend on the order of the equipment cache.
+    std::sort(protos.begin(), protos.end(),
+              [](ItemTemplate const* a, ItemTemplate const* b)
+              { return a->ItemLevel != b->ItemLevel ? a->ItemLevel > b->ItemLevel : a->ItemId < b->ItemId; });
+
+    std::unordered_map<uint32, uint32> groupTop;  // kind -> item level of its best wearable candidate
+    std::vector<std::pair<uint32, int32>> kept;
+    for (ItemTemplate const* proto : protos)
+    {
+        uint32 const group = GetIlvlTargetedGroup(proto);
+        auto const top = groupTop.find(group);
+        if (top != groupTop.end() && proto->ItemLevel + ILVL_TARGETED_WINDOW < top->second)
+            continue;
+
+        // Only an item the bot can wear sets the floor: a unique one worn in the other ring or trinket slot would
+        // otherwise drop everything else.
+        uint16 dest;
+        if (!CanEquipItem(proto) || !CanEquipUnseenItem(slot, dest, proto->ItemId))
+            continue;
+
+        if (top == groupTop.end())
+            groupTop.emplace(group, proto->ItemLevel);
+
+        int32 randomPropertyId = 0;
+        if (proto->RandomProperty || proto->RandomSuffix)
+            randomPropertyId = calculator.PickBestRandomPropertyId(proto->ItemId);
+        kept.emplace_back(proto->ItemId, randomPropertyId);
+    }
+
+    ids = std::move(kept);
+}
+
+// Best score of the wearable candidates; for the PrefersItemLevel kinds the highest item level of that kind whose score
+// is within ILVL_TARGETED_SCORE_SHARE of the best. Returns false when nothing can be worn.
+bool PlayerbotFactory::PickIlvlTargetedCandidate(uint8 slot, std::vector<std::pair<uint32, int32>> const& ids,
+                                                 StatsWeightCalculator& calculator, uint32& itemId,
+                                                 int32& randomPropertyId, float& score)
+{
+    struct ScoredCandidate
+    {
+        ItemTemplate const* proto;
+        int32 randomPropertyId;
+        float score;
+    };
+
+    uint8 const preferredArmorType =
+        sPlayerbotAIConfig.PreferClassArmorType ? GetPreferredArmorType(bot->getClass()) : 0;
+
+    std::vector<ScoredCandidate> scored;
+    scored.reserve(ids.size());
+    for (auto const& [candidateId, candidateProperty] : ids)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(candidateId);
+        if (!proto || !CanEquipItem(proto))
+            continue;
+
+        uint16 dest;
+        if (!CanEquipUnseenItem(slot, dest, candidateId))
+            continue;
+
+        float value = calculator.CalculateItem(candidateId, candidateProperty, slot);
+        if (value > 0.0f && proto->Class == ITEM_CLASS_ARMOR && preferredArmorType != 0 &&
+            proto->SubClass == preferredArmorType)
+            value *= 3.0f;  // 3x multiplier for preferred armor type, as the score-only pick
+
+        // The score-only pick starts from -1 and takes only a higher score.
+        if (value <= -1.0f)
+            continue;
+
+        scored.push_back({proto, candidateProperty, value});
+    }
+
+    if (scored.empty())
+        return false;
+
+    // Candidates come highest item level first: on equal scores the first one wins.
+    size_t best = 0;
+    for (size_t i = 1; i < scored.size(); ++i)
+    {
+        if (scored[i].score > scored[best].score)
+            best = i;
+    }
+
+    size_t chosen = best;
+    ItemTemplate const* bestProto = scored[best].proto;
+    if (PrefersItemLevel(slot, bestProto))
+    {
+        float const bestScore = scored[best].score;
+        float const threshold = bestScore > 0.0f ? ILVL_TARGETED_SCORE_SHARE * bestScore : bestScore;
+        for (size_t i = 0; i < scored.size(); ++i)
+        {
+            ItemTemplate const* proto = scored[i].proto;
+            // Same kind only: a shield never gives way to an off-hand item, nor a wand to a gun.
+            if (proto->InventoryType != bestProto->InventoryType || IsWand(proto) != IsWand(bestProto) ||
+                scored[i].score < threshold)
+                continue;
+
+            ItemTemplate const* current = scored[chosen].proto;
+            if (proto->ItemLevel > current->ItemLevel ||
+                (proto->ItemLevel == current->ItemLevel && scored[i].score > scored[chosen].score))
+                chosen = i;
+        }
+    }
+
+    itemId = scored[chosen].proto->ItemId;
+    randomPropertyId = scored[chosen].randomPropertyId;
+    score = scored[chosen].score;
+    return true;
+}
+
 void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
 {
     if (level < 5)
@@ -2472,7 +2721,8 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         }
 
         int32 desiredQuality = itemQuality;
-        if (urand(0, 100) < 100 * sPlayerbotAIConfig.RandomGearLoweringChance && desiredQuality > ITEM_QUALITY_NORMAL)
+        if (!_ilvlTargeted && urand(0, 100) < 100 * sPlayerbotAIConfig.RandomGearLoweringChance &&
+            desiredQuality > ITEM_QUALITY_NORMAL)
             desiredQuality--;
 
         uint32 const windowFloor = uint32(std::max((int32)bot->GetLevel() - delta, 0));
@@ -2518,6 +2768,15 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             return desiredQuality-- > ITEM_QUALITY_POOR;
         };
 
+        // The score-only pick stops once 25 candidates are found, so a full set of blues hides better greens. The item
+        // level targeted pick searches every quality down to green and goes on only when nothing found can be worn.
+        auto keepSearching = [&]() -> bool
+        {
+            if (!_ilvlTargeted)
+                return items[slot].size() < 25;
+            return desiredQuality > ITEM_QUALITY_UNCOMMON || !hasWearableCandidate();
+        };
+
         do
         {
             // Grey and white skip the limit only as a last resort, when no better quality found anything wearable.
@@ -2529,8 +2788,9 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 {
                     for (uint32 itemId : sRandomItemMgr.GetEquipmentNew(requiredLevel, inventoryType))
                     {
+                        // Random variety for random bots; the targeted pick must not lose the only good item.
                         uint32 skipProb = 25;
-                        if (urand(1, 100) <= skipProb)
+                        if (!_ilvlTargeted && urand(1, 100) <= skipProb)
                             continue;
 
                         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
@@ -2545,6 +2805,9 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                             continue;
 
                         if (!proto)
+                            continue;
+
+                        if (_excludedItems && _excludedItems->count(itemId))
                             continue;
 
                         if (shouldCheckGS && gearScoreLimit != 0 &&
@@ -2573,14 +2836,15 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                             proto->Class != ITEM_CLASS_WEAPON)
                             continue;
 
+                        // The targeted pick rolls the property for the survivors of its item level filter only.
                         int32 bestRandomProp = 0;
-                        if (proto->RandomProperty || proto->RandomSuffix)
+                        if (!_ilvlTargeted && (proto->RandomProperty || proto->RandomSuffix))
                             bestRandomProp = calculator.PickBestRandomPropertyId(itemId);
                         items[slot].push_back({itemId, bestRandomProp});
                     }
                 }
             }
-        } while (items[slot].size() < 25 && nextSearchStep());
+        } while (keepSearching() && nextSearchStep());
 
         std::vector<std::pair<uint32, int32>>& ids = items[slot];
         if (ids.empty())
@@ -2591,7 +2855,13 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         float bestScoreForSlot = -1;
         uint32 bestItemForSlot = 0;
         int32 bestRandomPropForSlot = 0;
-        for (size_t index = 0; index < ids.size(); index++)
+        if (_ilvlTargeted)
+        {
+            FilterIlvlTargetedCandidates(slot, ids, calculator);
+            PickIlvlTargetedCandidate(slot, ids, calculator, bestItemForSlot, bestRandomPropForSlot, bestScoreForSlot);
+        }
+
+        for (size_t index = 0; !_ilvlTargeted && index < ids.size(); index++)
         {
             uint32 newItemId = ids[index].first;
             int32 newItemProp = ids[index].second;
@@ -2712,7 +2982,12 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             float bestScoreForSlot = -1;
             uint32 bestItemForSlot = 0;
             int32 bestRandomPropForSlot = 0;
-            for (size_t index = 0; index < ids.size(); index++)
+            // The main pass already applied the item level filter and rolled the properties.
+            if (_ilvlTargeted)
+                PickIlvlTargetedCandidate(slot, ids, calculator, bestItemForSlot, bestRandomPropForSlot,
+                                          bestScoreForSlot);
+
+            for (size_t index = 0; !_ilvlTargeted && index < ids.size(); index++)
             {
                 uint32 newItemId = ids[index].first;
                 int32 newItemProp = ids[index].second;
@@ -3666,6 +3941,47 @@ void PlayerbotFactory::InitClassSpells()
                 bot->learnSpell(712, false);  // summon succubus
             if (level >= 30)
                 bot->learnSpell(691, false);  // summon felhunter
+            // [b35_lock] Inferno (1122) is no trainer spell in this world DB (trainer_spell has no row for it): quest
+            // 7603 "Kroshius' Infernal Core" (level 50, RewardSpell 1413) teaches it, and only the random bots'
+            // pre-quests run class quests. The level-80 harness warlocks never had it.
+            // [b43_inferno] Blizzard's path: the bot ends up as a player who did the warlock chain 7601 "What Niby
+            // Commands" -> 7602 "Flawless Fel Essence" -> 7603 (all warlock-only, MinLevel 50). The chain is walked
+            // from the quest templates' prevQuests (PrevQuestID), so it follows the DB. RewardQuest is not used:
+            // it gives XP (RewardXPDifficulty 5/6), stores the 7603 reward trinket 18762, destroys objective
+            // items, fires quest scripts and does a full SaveToDB mid-factory. Each quest is only marked rewarded,
+            // then learnQuestRewardedSpells casts 7603's RewardSpell 1413, whose LEARN_SPELL effect teaches 1122 -
+            // the same call the core makes at login for every rewarded quest (_LoadQuestStatusRewarded).
+            if (level >= 50)
+            {
+                constexpr uint32 QUEST_KROSHIUS_INFERNAL_CORE = 7603;
+                if (Quest const* infernoQuest = sObjectMgr->GetQuestTemplate(QUEST_KROSHIUS_INFERNAL_CORE))
+                {
+                    std::vector<uint32> chain = {QUEST_KROSHIUS_INFERNAL_CORE};
+                    for (size_t i = 0; i < chain.size(); ++i)
+                    {
+                        Quest const* chainQuest = sObjectMgr->GetQuestTemplate(chain[i]);
+                        if (!chainQuest)
+                            continue;
+                        // a negative prevQuest means "must be active", not "rewarded": not part of the done chain
+                        for (int32 prevId : chainQuest->prevQuests)
+                            if (prevId > 0 && std::find(chain.begin(), chain.end(), uint32(prevId)) == chain.end())
+                                chain.push_back(uint32(prevId));
+                    }
+                    for (uint32 questId : chain)
+                        if (!bot->IsQuestRewarded(questId))
+                            bot->SetRewardedQuest(questId);
+
+                    bot->learnQuestRewardedSpells(infernoQuest);
+
+                    // the self-cast can fail outside the world; learn what 1413 teaches, as the next login would
+                    if (SpellInfo const* rewardSpell = sSpellMgr->GetSpellInfo(infernoQuest->GetRewSpellCast()))
+                        for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+                            if (rewardSpell->Effects[eff].Effect == SPELL_EFFECT_LEARN_SPELL &&
+                                rewardSpell->Effects[eff].TriggerSpell &&
+                                !bot->HasSpell(rewardSpell->Effects[eff].TriggerSpell))
+                                bot->learnSpell(rewardSpell->Effects[eff].TriggerSpell, false);
+                }
+            }
             break;
         case CLASS_DRUID:
             bot->learnSpell(5176, true);
@@ -4078,10 +4394,13 @@ void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 }
 
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,
-                                bool applyFinishers)
+                                bool applyFinishers, bool ilvlTargetedMode,
+                                std::unordered_set<uint32> const* excludedItems)
 {
     uint32 gs = ilvl == 0 ? 0 : CalcMixedGearScore(ilvl, itemQuality);
     PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs);
+    factory.SetIlvlTargeted(ilvlTargetedMode);
+    factory.SetExcludedItems(excludedItems);
     factory.InitEquipment(incremental, secondChance);
 
     if (!applyFinishers)
@@ -4320,10 +4639,11 @@ std::vector<uint32> PlayerbotFactory::GetCurrentGemsCount()
 
 void PlayerbotFactory::InitFood()
 {
-    if (botAI && botAI->HasCheat(BotCheatMask::food))
-    {
+    // Free food is for random bots only (none run here, MaxRandomBots = 0). Our own bots buy or cook it; test
+    // characters get consumables from the test harness's own command. The signature stays for its callers.
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return;
-    }
+
     std::unordered_map<uint32, std::vector<uint32>> items;
     ItemTemplateContainer const* itemTemplateContainer = sObjectMgr->GetItemTemplateStore();
     for (ItemTemplateContainer::const_iterator i = itemTemplateContainer->begin(); i != itemTemplateContainer->end();
@@ -4554,6 +4874,9 @@ void PlayerbotFactory::CleanupConsumables() // remove old consumables as part of
         DEADLY_POISON_IX, DEADLY_POISON_VIII, DEADLY_POISON_VII, DEADLY_POISON_VI, DEADLY_POISON_V,
         DEADLY_POISON_IV, DEADLY_POISON_III, DEADLY_POISON_II, DEADLY_POISON
     };
+    // [b31_wr] Wound Poison is stocked now too
+    for (uint32 itemId : RoguePoisons::ItemIds(RoguePoisons::Kind::WOUND))
+        idsToDelete.insert(itemId);
 
     for (Item* item : items)
     {
@@ -4568,68 +4891,8 @@ void PlayerbotFactory::CleanupConsumables() // remove old consumables as part of
         bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
 }
 
-void PlayerbotFactory::InitGlyphs(bool increment)
+uint8 PlayerbotFactory::GetGlyphSpecIndex(Player* bot)
 {
-    bot->InitGlyphsForLevel();
-    if (!increment && botAI &&
-        botAI->GetAiObjectContext()->GetValue<bool>("custom_glyphs")->Get())
-        return;   // // Added for custom Glyphs - custom glyphs flag test
-
-    if (!increment)
-    {
-        for (uint32 slotIndex = 0; slotIndex < MAX_GLYPH_SLOT_INDEX; ++slotIndex)
-        {
-            uint32 glyph = bot->GetGlyph(slotIndex);
-            if (GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph))
-            {
-                bot->RemoveAurasDueToSpell(glyphEntry->SpellId);
-
-                // Removed any triggered auras
-                Unit::AuraMap& ownedAuras = bot->GetOwnedAuras();
-                for (Unit::AuraMap::iterator iter = ownedAuras.begin(); iter != ownedAuras.end();)
-                {
-                    Aura* aura = iter->second;
-                    if (SpellInfo const* triggeredByAuraSpellInfo = aura->GetTriggeredByAuraSpellInfo())
-                    {
-                        if (triggeredByAuraSpellInfo->Id == glyphEntry->SpellId)
-                        {
-                            bot->RemoveOwnedAura(iter);
-                            continue;
-                        }
-                    }
-                    ++iter;
-                }
-
-                bot->SetGlyph(slotIndex, 0, true);
-            }
-        }
-    }
-
-    if (sPlayerbotAIConfig.LimitTalentsExpansion && bot->GetLevel() <= 70)
-    {
-        bot->SendTalentsInfoData(false);
-        return;
-    }
-
-    uint32 level = bot->GetLevel();
-    uint32 maxSlot = 0;
-    if (level >= 15)
-        maxSlot = 2;
-    if (level >= 30)
-        maxSlot = 3;
-    if (level >= 50)
-        maxSlot = 4;
-    if (level >= 70)
-        maxSlot = 5;
-    if (level >= 80)
-        maxSlot = 6;
-
-    uint8 glyphOrder[6] = {0, 1, 3, 2, 4, 5};
-
-    if (!maxSlot)
-        return;
-
-    uint8 cls = bot->getClass();
     uint8 tab = AiFactory::GetPlayerSpecTab(bot);
     /// @todo: fix cat druid hardcode
 
@@ -4637,7 +4900,9 @@ void PlayerbotFactory::InitGlyphs(bool increment)
     if (bot->getClass() == CLASS_WARRIOR)
     {
         // Arms PvP (spec index 3): If the bot has the Second Wind talent
-        if (bot->HasAura(SPELL_SECOND_WIND))
+        // [b31_armspvp] ... and no Improved Heroic Strike: the PvE Arms template (1.0.80) now takes Second Wind 2/2
+        // too, while only the PvP one skips Improved Heroic Strike (12282/12663/12664) for Deflection.
+        if (bot->HasAura(SPELL_SECOND_WIND) && !bot->HasAura(12282) && !bot->HasAura(12663) && !bot->HasAura(12664))
             tab = 3;
         // Fury PvP (spec index 4): If the bot has the Blood Craze talent
         else if (bot->HasAura(SPELL_BLOOD_CRAZE))
@@ -4770,7 +5035,7 @@ void PlayerbotFactory::InitGlyphs(bool increment)
     if (bot->getClass() == CLASS_DRUID)
     {
         // Cat PvE (spec index 3): If the bot is Feral spec, level 20 or higher, and does NOT have the Thick Hide talent
-        if (tab == DRUID_TAB_FERAL && bot->GetLevel() >= 20 && !bot->HasAura(SPELL_DRUID_THICK_HIDE))
+        if (tab == DRUID_TAB_FERAL && bot->GetLevel() >= 20 && !HasDruidThickHide(bot))
             tab = 3;
         // Balance PvP (spec index 4): If the bot has the Owlkin Frenzy talent
         else if (bot->HasAura(SPELL_OWLKIN_FRENZY))
@@ -4782,6 +5047,82 @@ void PlayerbotFactory::InitGlyphs(bool increment)
         else if (bot->HasAura(SPELL_IMPROVED_BARKSKIN))
             tab = 6;
     }
+
+    return tab;
+}
+
+void PlayerbotFactory::InitGlyphs(bool increment)
+{
+    bot->InitGlyphsForLevel();
+
+    // Honest progression: a non-random bot learns glyphs only from glyph items (LearnGlyphAction); this path would
+    // wipe its glyphs and hand out the premade set for free.
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot) && !sPlayerbotAIConfig.AltMaintenanceGlyphs)
+    {
+        bot->SendTalentsInfoData(false);
+        return;
+    }
+
+    if (!increment && botAI &&
+        botAI->GetAiObjectContext()->GetValue<bool>("custom_glyphs")->Get())
+        return;   // // Added for custom Glyphs - custom glyphs flag test
+
+    if (!increment)
+    {
+        for (uint32 slotIndex = 0; slotIndex < MAX_GLYPH_SLOT_INDEX; ++slotIndex)
+        {
+            uint32 glyph = bot->GetGlyph(slotIndex);
+            if (GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph))
+            {
+                bot->RemoveAurasDueToSpell(glyphEntry->SpellId);
+
+                // Removed any triggered auras
+                Unit::AuraMap& ownedAuras = bot->GetOwnedAuras();
+                for (Unit::AuraMap::iterator iter = ownedAuras.begin(); iter != ownedAuras.end();)
+                {
+                    Aura* aura = iter->second;
+                    if (SpellInfo const* triggeredByAuraSpellInfo = aura->GetTriggeredByAuraSpellInfo())
+                    {
+                        if (triggeredByAuraSpellInfo->Id == glyphEntry->SpellId)
+                        {
+                            bot->RemoveOwnedAura(iter);
+                            continue;
+                        }
+                    }
+                    ++iter;
+                }
+
+                bot->SetGlyph(slotIndex, 0, true);
+            }
+        }
+    }
+
+    if (sPlayerbotAIConfig.LimitTalentsExpansion && bot->GetLevel() <= 70)
+    {
+        bot->SendTalentsInfoData(false);
+        return;
+    }
+
+    uint32 level = bot->GetLevel();
+    uint32 maxSlot = 0;
+    if (level >= 15)
+        maxSlot = 2;
+    if (level >= 30)
+        maxSlot = 3;
+    if (level >= 50)
+        maxSlot = 4;
+    if (level >= 70)
+        maxSlot = 5;
+    if (level >= 80)
+        maxSlot = 6;
+
+    uint8 glyphOrder[6] = {0, 1, 3, 2, 4, 5};
+
+    if (!maxSlot)
+        return;
+
+    uint8 cls = bot->getClass();
+    uint8 tab = GetGlyphSpecIndex(bot);
 
     std::list<uint32> glyphs;
     ItemTemplateContainer const* itemTemplates = sObjectMgr->GetItemTemplateStore();
@@ -5262,9 +5603,13 @@ void PlayerbotFactory::ApplyEnchantTemplate(uint8 spec)
 
 void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
 {
-    std::vector<uint32> curCount = GetCurrentGemsCount();
+    // Gems socketed in this pass (meta / red / yellow / blue) and the meta gem whose colour condition they serve.
+    uint32 gemCount[4] = {0, 0, 0, 0};
+    uint32 metaCondition = 0;
+    Item* metaItem = nullptr;
+    EnchantmentSlot metaSlot = SOCK_ENCHANTMENT_SLOT;
+    bool metaApplied = false;
     uint8 jewelersCount = 0;
-    int requiredActive = 2;
     std::vector<uint32> availableGems;
     for (uint32 const& enchantGem : enchantGemIdCache)
     {
@@ -5397,8 +5742,11 @@ void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
                 continue;
 
             int32 enchantIdChosen = -1;
-            bool jewelersGemChosen;
+            bool jewelersGemChosen = false;
+            uint32 chosenGemColor = 0;
             float bestGemScore = -1;
+            // Fresh weights per socket: the gems already set move the hit / expertise / ArP caps.
+            StatsWeightCalculator gemCalculator(bot);
             for (uint32& enchantGem : availableGems)
             {
                 ItemTemplate const* gemTemplate = sObjectMgr->GetItemTemplate(enchantGem);
@@ -5417,21 +5765,22 @@ void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
                 if (!gemProperties)
                     continue;
 
-                if ((socketColor & gemProperties->color) == 0 && gemProperties->color == 1)  // meta socket
+                // A meta gem fits only a meta socket, and a meta socket takes only a meta gem.
+                bool const isMetaGem = gemProperties->color == SOCKET_COLOR_META;
+                if (isMetaGem != (socketColor == SOCKET_COLOR_META))
                     continue;
 
                 uint32 enchant_id = gemProperties->spellitemenchantement;
                 if (!enchant_id)
                     continue;
 
-                StatsWeightCalculator calculator(bot);
-                float score = calculator.CalculateEnchant(enchant_id);
-                if (curCount[0] != 0)
+                float score = gemCalculator.CalculateEnchant(enchant_id);
+                if (metaCondition)
                 {
-                    // Ensure meta gem activation
-                    for (size_t i = 1; i < curCount.size(); i++)
+                    // Ensure meta gem activation: favour the colours its condition still lacks.
+                    for (uint8 i = 1; i < 4; i++)
                     {
-                        if (curCount[i] < (uint32)requiredActive && (gemProperties->color & (1 << i)))
+                        if ((gemProperties->color & (1 << i)) && MetaConditionLacksColor(metaCondition, gemCount, i))
                         {
                             score *= 2;
                             break;
@@ -5445,17 +5794,40 @@ void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
                     enchantIdChosen = enchant_id;
                     bestGemScore = score;
                     jewelersGemChosen = isJewelersGem;
+                    chosenGemColor = gemProperties->color;
                 }
             }
             if (enchantIdChosen == -1)
                 continue;
             bot->ApplyEnchantment(item, EnchantmentSlot(enchant_slot), false);
             item->SetEnchantment(EnchantmentSlot(enchant_slot), enchantIdChosen, 0, 0, bot->GetGUID());
+            if (chosenGemColor == SOCKET_COLOR_META)
+            {
+                // ApplyEnchantment checks the colour condition now; remember the outcome to resync it at the end.
+                SpellItemEnchantmentEntry const* metaEnchant = sSpellItemEnchantmentStore.LookupEntry(enchantIdChosen);
+                metaCondition = metaEnchant ? metaEnchant->EnchantmentCondition : 0;
+                metaItem = item;
+                metaSlot = EnchantmentSlot(enchant_slot);
+                metaApplied = !metaCondition || bot->EnchantmentFitsRequirements(metaCondition, -1);
+            }
             bot->ApplyEnchantment(item, EnchantmentSlot(enchant_slot), true);
-            curCount = GetCurrentGemsCount();
+            for (uint8 b = 0; b < 4; ++b)
+            {
+                if (chosenGemColor & (1 << b))
+                    ++gemCount[b];
+            }
             if (jewelersGemChosen)
                 ++jewelersCount;
         }
+    }
+
+    // The meta gem was applied before the gems that activate it. Apply (or remove) its bonus now, as
+    // Player::CorrectMetaGemEnchants would after socketing, so later unequips remove exactly what was added.
+    if (metaItem && metaCondition)
+    {
+        bool const metaActive = bot->EnchantmentFitsRequirements(metaCondition, -1);
+        if (metaActive != metaApplied)
+            bot->ApplyEnchantment(metaItem, metaSlot, metaActive, true, true);
     }
 }
 

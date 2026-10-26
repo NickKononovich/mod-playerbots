@@ -7,32 +7,40 @@
 #include "PlayerbotAI.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
+#include "MapUpdater.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
+#include "ChooseTargetActions.h"  // [healer_audit_b30] DpsAssistAction::HealerGroupUnderAttack
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
 #include "EmoteAction.h"
+#include "EscortProtect.h"
 #include "Engine.h"
+#include "GenericSpellActions.h"
 #include "EventProcessor.h"
 #include "ExternalEventHelper.h"
 #include "GameObjectData.h"
 #include "GameTime.h"
 #include "GuildMgr.h"
+#include "InterruptValues.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
+#include "MovementActions.h"
 #include "LastSpellCastValue.h"
 #include "LogLevelAction.h"
 #include "LootObjectStack.h"
 #include "MapMgr.h"
 #include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "NewRpgStrategy.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PetsAction.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
@@ -42,6 +50,7 @@
 #include "PositionValue.h"
 #include "RBAC.h"
 #include "RaceMgr.h"
+#include "ReflectAuras.h"
 #include "RandomPlayerbotMgr.h"
 #include "ReactionEngine.h"
 #include "SayAction.h"
@@ -51,14 +60,49 @@
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "StringFormat.h"
 #include "Transport.h"
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
+
+namespace
+{
+    // Temporary combat idle diagnostics: reports each executed combat action to its bot.
+    class IdleDiagListener : public ActionExecutionListener
+    {
+    public:
+        explicit IdleDiagListener(PlayerbotAI* botAI) : _botAI(botAI) {}
+
+        bool Before(Action* /*action*/, Event /*event*/) override { return true; }
+        bool AllowExecution(Action* /*action*/, Event /*event*/) override { return true; }
+        bool OverrideResult(Action* /*action*/, bool executed, Event /*event*/) override { return executed; }
+
+        void After(Action* action, bool executed, Event /*event*/) override
+        {
+            if (executed && action)
+                _botAI->NoteIdleDiagAction(action);
+        }
+
+    private:
+        PlayerbotAI* _botAI;
+    };
+}
+
+namespace
+{
+// [b44_cast] cast timeline trace (defined below CastSpell)
+void B44CastTrace(Player* bot, char const* what, SpellInfo const* info, Unit* target);
+}
 
 namespace
 {
@@ -145,9 +189,6 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       chatFilter(this),
       security(bot)  // reorder args - whipowill
 {
-    if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
-        bot->SetTaxiCheater(true);
-
     for (uint8 i = 0; i < MAX_ACTIVITY_TYPE; i++)
     {
         allowActiveCheckTimer[i] = 0;
@@ -161,6 +202,8 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     engines[BOT_STATE_NON_COMBAT] = AiFactory::createNonCombatEngine(bot, this, aiObjectContext);
     engines[BOT_STATE_DEAD] = AiFactory::createDeadEngine(bot, this, aiObjectContext);
     engines[BOT_STATE_REACTION] = reactionEngine = AiFactory::createReactionEngine(bot, this, aiObjectContext);
+    if (engines[BOT_STATE_COMBAT])
+        engines[BOT_STATE_COMBAT]->AddActionExecutionListener(new IdleDiagListener(this));
 
     if (sPlayerbotAIConfig.ApplyInstanceStrategies)
         ApplyInstanceStrategies(bot->GetMapId());
@@ -247,6 +290,191 @@ PlayerbotAI::~PlayerbotAI()
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
 
+namespace
+{
+// Deeper than this under a point counts as open air. Matches the test harness' DirectLineOverGround.
+constexpr float GROUND_SUPPORT_DROP = 6.0f;
+constexpr float GROUND_SAMPLE_STEP = 2.0f;
+constexpr uint32 GROUND_MAX_SAMPLES = 16;
+constexpr float GROUND_MIN_TRUNCATED_MOVE = 2.0f;
+constexpr uint32 AIRBORNE_LOG_INTERVAL_MS = 30 * IN_MILLISECONDS;
+}  // namespace
+
+bool PlayerbotAI::HasGroundSupport(WorldObject const* object, float x, float y, float z)
+{
+    // Liquid counts: a bot swims or water-walks on it. Includes gameobject floors (dynamic tree).
+    float const level = object->GetMapWaterOrGroundLevel(x, y, z);
+    return level > INVALID_HEIGHT && z - level <= GROUND_SUPPORT_DROP;
+}
+
+bool PlayerbotAI::IsSubjectToGravity() const
+{
+    return bot->IsAlive() && !bot->GetVehicle() && !bot->GetTransport() && !bot->IsInFlight() && !bot->CanFly() &&
+           !bot->HasFlyAura() && !bot->HasIncreaseMountedFlightSpeedAura();
+}
+
+// PathGenerator gives a Player a straight shortcut when the destination has no navmesh polygon under it
+// (PathGenerator::BuildPolyPath: "creature ? creature->CanFly() : true"), because a client applies gravity to it.
+// A bot has no client: it walked that line through the air (Oculus wave 7: Drakos' island z 360 to Ring 2 z 433,
+// wave 6: up to a flying Azure Ring Guardian), and the next dismount let it fall to the bottom of the instance.
+void PlayerbotAI::GuardAirborneSpline()
+{
+    if (master == bot)
+        return;  // a SelfBot has a game client, which applies gravity itself
+
+    Movement::MoveSpline const* spline = bot->movespline;
+    if (!spline->Initialized() || spline->Finalized() || spline->GetId() == checkedSplineId)
+        return;
+
+    checkedSplineId = spline->GetId();
+    if (spline->onTransport || spline->isFalling() || spline->isBoarding() || spline->isCyclic() ||
+        fallPending || !IsSubjectToGravity() ||
+        bot->GetMotionMaster()->GetMotionSlotType(MOTION_SLOT_CONTROLLED) != NULL_MOTION_TYPE)  // jumps, fear, ...
+        return;
+
+    // A navmesh path of several points stays on the mesh; only a single straight segment can leave the ground.
+    // [b30_topped_up] ... and the first leg of a path from a spot off the navmesh: PathGenerator snaps the start to
+    // the nearest polygon, the spline runs from where the bot stands straight to it. dmw-n 20261025-184229-dmw-n-5C-16:
+    // the healer on a perch over Immol'thar's spawn (-39.4,812.5,-11.6, no polygon; his Portal of Immol'thar) had
+    // every drop refused by the ledge guard for 4 minutes, then a follow to the leader 380 yd off (higher up: no
+    // ledge check) took a path whose first leg glided 51 yd through the air into his pit (a navmesh region with no
+    // way out), stranded for good. The first leg is sampled when it descends more than GROUND_SUPPORT_DROP.
+    Movement::MoveSpline::MySpline const& path = spline->_Spline();
+    if (path.last() - path.first() < 1)
+        return;
+    bool const single = path.last() - path.first() == 1;
+    G3D::Vector3 start = path.getPoint(path.first());
+    G3D::Vector3 end = path.getPoint(single ? path.last() : path.first() + 1);
+    // [b32_occ] ... and the last leg: a path whose end polygon is not the destination's (PATHFIND_INCOMPLETE to a
+    // spot over open air) runs on the mesh to the rim, then the core's straight tail to the destination. occ-h
+    // 20261025-221216-occ-h-5G-22 (496 s): the tank's walk from Ring 2 (z 433) ended at (1171.1,1041.2,105.1),
+    // the floor under a flying Azure Ring Guardian; the first leg stayed on the ring, the tail took it down
+    // through the air to z 363, 70 yd under its group. The tail is sampled when it descends more than
+    // GROUND_SUPPORT_DROP; a cut walks the path's own (pathed) way to the rim.
+    bool tail = false;
+    if (!single && start.z - end.z <= GROUND_SUPPORT_DROP)
+    {
+        G3D::Vector3 const tailStart = path.getPoint(path.last() - 1);
+        G3D::Vector3 const tailEnd = path.getPoint(path.last());
+        if (tailStart.z - tailEnd.z <= GROUND_SUPPORT_DROP ||
+            !HasGroundSupport(bot, tailStart.x, tailStart.y, tailStart.z))
+            return;
+        start = tailStart;
+        end = tailEnd;
+        tail = true;
+    }
+    if (!HasGroundSupport(bot, start.x, start.y, start.z))
+    {
+        // Already in the air (a corpse revived in mid-air, a seat left above the void): a client would fall.
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
+        StartFall();
+        return;
+    }
+
+    float const length = (end - start).length();
+    uint32 const samples =
+        std::min(GROUND_MAX_SAMPLES, std::max<uint32>(1, static_cast<uint32>(std::ceil(length / GROUND_SAMPLE_STEP))));
+    G3D::Vector3 lastSupported = start;
+    for (uint32 i = 1; i <= samples; ++i)
+    {
+        G3D::Vector3 const point = start + (end - start) * (static_cast<float>(i) / static_cast<float>(samples));
+        if (HasGroundSupport(bot, point.x, point.y, point.z))
+        {
+            lastSupported = point;
+            continue;
+        }
+
+        uint32 const now = getMSTime();
+        if (!lastAirborneLogMs || getMSTimeDiff(lastAirborneLogMs, now) > AIRBORNE_LOG_INTERVAL_MS)
+        {
+            lastAirborneLogMs = now;
+            LOG_INFO("playerbots", "{} refused a straight move over open air on map {} from ({:.1f}, {:.1f}, {:.1f}) "
+                     "to ({:.1f}, {:.1f}, {:.1f})", bot->GetName(), bot->GetMapId(), start.x, start.y, start.z,
+                     end.x, end.y, end.z);
+        }
+
+        // Walk as far as the ground goes, onto the ground, like a player stopping at the edge.
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
+        if (tail || (lastSupported - start).length() >= GROUND_MIN_TRUNCATED_MOVE)
+        {
+            // lastSupported has ground or liquid within GROUND_SUPPORT_DROP, so the level is valid.
+            float const groundZ = bot->GetMapWaterOrGroundLevel(lastSupported.x, lastSupported.y, lastSupported.z);
+            // [b32_occ] a cut tail: the mesh path to its rim point (the legs before it bend), not a straight line
+            bot->GetMotionMaster()->MovePoint(0, lastSupported.x, lastSupported.y, groundZ, FORCED_MOVEMENT_NONE,
+                                              0.0f, 0.0f, tail, true);
+        }
+        return;
+    }
+}
+
+// Player::HandleFall runs on MSG_MOVE_FALL_LAND, a client opcode bots never send: the fall damage is applied here,
+// where the fall spline ends, so the bot dies (and leaves its corpse) on the ground like a player.
+void PlayerbotAI::StartFall()
+{
+    if (fallPending || !IsSubjectToGravity())
+        return;
+
+    float const startZ = bot->GetPositionZ();
+    bot->GetMotionMaster()->MoveFall();  // for a player: MOVEMENTFLAG_FALLING and m_lastFallZ, then the spline
+    if (!bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING))
+        return;  // the ground is right here, or no ground at all below (MoveFall gave up)
+
+    bot->SetFallInformation(0, startZ);
+    fallPending = true;
+    LOG_INFO("playerbots", "{} falls from ({:.1f}, {:.1f}, {:.1f}) on map {}", bot->GetName(), bot->GetPositionX(),
+             bot->GetPositionY(), startZ, bot->GetMapId());
+}
+
+void PlayerbotAI::UpdateFall()
+{
+    if (master == bot)
+        return;  // a SelfBot's game client reports its own falls (MSG_MOVE_FALL_LAND)
+
+    // Leaving a seat puts the passenger at the vehicle's position, in the air for a flying vehicle.
+    bool const onVehicle = bot->GetVehicle() != nullptr;
+    if (wasOnVehicle && !onVehicle)
+        fallCheckRequested = true;
+    wasOnVehicle = onVehicle;
+
+    Movement::MoveSpline const* spline = bot->movespline;
+    bool const splineActive = spline->Initialized() && !spline->Finalized();
+    if (fallCheckRequested && !fallPending && !(splineActive && spline->isBoarding()))
+    {
+        fallCheckRequested = false;
+        StartFall();
+        return;  // the fall spline (if any) is checked from the next tick on
+    }
+
+    if (!fallPending)
+        return;
+
+    if (!bot->IsAlive())
+    {
+        fallPending = false;
+        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
+        return;
+    }
+
+    if (splineActive && spline->isFalling())
+        return;
+
+    // Landed, or the fall was cut short by another movement: the damage counts from m_lastFallZ to here.
+    fallPending = false;
+    MovementInfo landing = bot->m_movementInfo;
+    landing.pos.Relocate(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    // A client landing in water takes no fall damage (it sends no MSG_MOVE_FALL_LAND damage there either).
+    // Player::IsInWater is the client's swim flag, never set for a bot: the liquid at the landing spot decides.
+    LiquidData const& liquid = bot->GetLiquidData();
+    bool const swimming = (liquid.Status & MAP_LIQUID_STATUS_SWIMMING) &&
+                          liquid.Level - bot->GetPositionZ() >= bot->GetCollisionHeight() * 0.5f;
+    if (!swimming)
+        bot->HandleFall(landing);
+    bot->SetFallInformation(0, bot->GetPositionZ());
+    bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
+}
+
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
     // Handle the AI check delay
@@ -260,24 +488,25 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return;
 
+    MapWorkerTrace::SetBot(bot->GetGUID().GetRawValue());
+
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
     if (!bot->Unit::IsFalling())
         bot->SetFallInformation(0, bot->GetPositionZ());
 
-    // Handle cheat options (set bot health and power if cheats are enabled)
-    if (bot->IsAlive() &&
-        (static_cast<uint32>(GetCheat()) > 0 || static_cast<uint32>(sPlayerbotAIConfig.BotCheatMask) > 0))
-    {
-        if (HasCheat(BotCheatMask::health))
-            bot->SetFullHealth();
+    UpdateFall();
+    GuardAirborneSpline();
 
-        if (HasCheat(BotCheatMask::mana) && bot->getPowerType() == POWER_MANA)
-            bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
+    // [b44_st] Charmed by an enemy (Hex of Jammal'an, Mind Control, Incite Chaos): the core's charm AI drives the bot
+    // as it drives a player's character, who has no control either; the bot's own engine would cast and move against
+    // it (backlog wave 11 05:35; st-h 20261026-075135-st-h-5F-7: Rthunac ran "dps assist" / "chase" under the charm).
+    if (!bot->GetVehicle() && bot->IsCharmed() &&
+        (bot->HasAuraType(SPELL_AURA_MOD_CHARM) || bot->HasAuraType(SPELL_AURA_AOE_CHARM) ||
+         bot->HasAuraType(SPELL_AURA_MOD_POSSESS)))
+        return;
 
-        if (HasCheat(BotCheatMask::power) && bot->getPowerType() != POWER_MANA)
-            bot->SetPower(bot->getPowerType(), bot->GetMaxPower(bot->getPowerType()));
-    }
+    // No health/mana/power refills: bots regenerate like players (user decision 2026-10-23, no cheats).
 
     AllowActivity();
 
@@ -318,18 +547,45 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             if (spellInterruptRequested)
             {
                 spellInterruptRequested = false;
+                B44CastTrace(bot, "stop:requested", currentSpell->GetSpellInfo(), nullptr);  // [b44_cast]
                 bot->InterruptSpell(currentSpell->GetCurrentContainer());
                 YieldThread(bot, GetReactDelay());
                 return;
             }
 
             SpellInfo const* spellInfo = currentSpell->GetSpellInfo();
-            if (spellInfo)
+            // Stop-cast to kick: an enemy cast this bot was assigned to interrupt outranks finishing its own,
+            // so the engine runs this tick and the assigned interrupt goes out.
+            bool const stopCastToInterrupt = InterruptCoordination::ShouldStopCastToInterrupt(this);
+            if (stopCastToInterrupt)
+            {
+                B44CastTrace(bot, "stop:kick", spellInfo, nullptr);  // [b44_cast]
+                bot->InterruptSpell(currentSpell->GetCurrentContainer());
+            }
+
+            // Standing in a ground effect (Flamestrike) outranks finishing the cast: the engine runs this tick and
+            // "avoid aoe" walks the bot out. At most once per DODGE_STOP_CAST_INTERVAL_MS.
+            constexpr uint32 DODGE_STOP_CAST_INTERVAL_MS = 2500;
+            bool stopCastToDodge = false;
+            bool const dodgeAllowed = !lastDodgeStopCastMs ||
+                                      getMSTimeDiff(lastDodgeStopCastMs, getMSTime()) >= DODGE_STOP_CAST_INTERVAL_MS;
+            if (!stopCastToInterrupt && dodgeAllowed &&
+                currentSpell->GetCurrentContainer() == CURRENT_GENERIC_SPELL &&
+                AvoidAoeAction::ShouldStopCastToDodge(this))
+            {
+                stopCastToDodge = true;
+                lastDodgeStopCastMs = getMSTime();
+                B44CastTrace(bot, "stop:dodge", spellInfo, nullptr);  // [b44_cast]
+                bot->InterruptSpell(CURRENT_GENERIC_SPELL);
+            }
+
+            if (spellInfo && !stopCastToInterrupt && !stopCastToDodge)
             {
                 Unit* spellTarget = currentSpell->m_targets.GetUnitTarget();
                 // Interrupt if target is dead or spell can't target dead units
                 if (spellTarget && !spellTarget->IsAlive() && !spellInfo->IsAllowingDeadTarget())
                 {
+                    B44CastTrace(bot, "stop:target dead", spellInfo, spellTarget);  // [b44_cast]
                     bot->InterruptSpell(currentSpell->GetCurrentContainer());
                     YieldThread(bot, GetReactDelay());
                     return;
@@ -383,8 +639,18 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                     ServerFacade::instance().SetFacingTo(bot, spellTarget);
                 }
 
-                // Wait for spell cast
-                YieldThread(bot, GetReactDelay());
+                // Wait for spell cast. In combat the bot looks again the moment the cast ends: a react delay of
+                // 500-700 ms after every cast left the caster idle a quarter of the fight (C-I-C, wave 2026-10-24).
+                UpdateIdleDiag(true);
+                uint32 const reactDelay = GetReactDelay();
+                int32 const remaining = currentSpell->GetCastTimeRemaining();
+                if (bot->IsInCombat() && remaining >= 0 && static_cast<uint32>(remaining) < reactDelay)
+                {
+                    SetNextCheckDelay(static_cast<uint32>(remaining));
+                    return;
+                }
+
+                YieldThread(bot, reactDelay);
                 return;
             }
         }
@@ -417,7 +683,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         Transport* newTransport = bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
                                                                     bot->GetPositionY(), bot->GetPositionZ(), bot);
 
-        if (newTransport != bot->GetTransport())
+        // A static transport (an elevator: GAMEOBJECT_TYPE_TRANSPORT) is not in the grid and GetTransportForPos
+        // never finds it (it searches 75 yd around the GO origin): the bot riding one is left on it, its own lift
+        // action boards and leaves (Mechanar wave 33).
+        Transport* const current = bot->GetTransport();
+        bool const onElevator = current && current->GetGoType() == GAMEOBJECT_TYPE_TRANSPORT && !newTransport;
+        if (!onElevator && newTransport != bot->GetTransport())
         {
             LOG_DEBUG("playerbots", "Bot {} is on a transport", bot->GetName());
 
@@ -435,8 +706,23 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     UpdateAIGroupMaster();
 
     // Update internal AI
+    idleDiag.tickCast = false;
+    idleDiag.tickAction.clear();
     UpdateAIInternal(elapsed, minimal);
-    YieldThread(bot, GetReactDelay());
+    UpdateIdleDiag(false);
+    UpdateHealDiag();
+
+    uint32 const reactDelay = GetReactDelay();
+    YieldThread(bot, reactDelay);
+
+    // In combat the next look comes when the global cooldown ends rather than up to a react delay later, the way
+    // a player presses the next button (the cast-time branch above does the same for casts).
+    if (bot->IsInCombat() && !bot->IsNonMeleeSpellCast(false, false, true))
+    {
+        uint32 const gcd = GetGlobalCooldownRemaining();
+        if (gcd && gcd < nextAICheckDelay && nextAICheckDelay <= reactDelay + 200)
+            SetNextCheckDelay(gcd);
+    }
 }
 
 bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool canControlSelf)
@@ -558,19 +844,25 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     ExternalEventHelper helper(aiObjectContext);
 
-    // chat replies
-    for (auto it = chatReplies.begin(); it != chatReplies.end();)
+    // chat replies: take the due ones under the lock, answer them outside it
+    std::list<ChatQueuedReply> dueReplies;
     {
-        time_t checkTime = it->m_time;
-        if (checkTime && time(0) < checkTime)
+        std::lock_guard<std::mutex> lock(chatRepliesLock);
+        time_t const now = time(nullptr);
+        for (auto it = chatReplies.begin(); it != chatReplies.end();)
         {
-            ++it;
-            continue;
-        }
+            if (it->m_time && now < it->m_time)
+            {
+                ++it;
+                continue;
+            }
 
-        ChatReplyAction::ChatReplyDo(bot, it->m_type, it->m_guid1, it->m_msg, it->m_chanName, it->m_name);
-        it = chatReplies.erase(it);
+            auto const due = it++;
+            dueReplies.splice(dueReplies.end(), chatReplies, due);
+        }
     }
+    for (ChatQueuedReply& reply : dueReplies)
+        ChatReplyAction::ChatReplyDo(bot, reply.m_type, reply.m_guid1, reply.m_msg, reply.m_chanName, reply.m_name);
 
     HandleCommands();
 
@@ -622,6 +914,11 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     DoNextAction(minimal);
 
+    // pets in a dungeon group: passive, on the owner's target once the tank holds it, else at the owner's heel. After
+    // the tick's actions, so a guardian summoned by one of them (it starts aggressive) is passive before its first
+    // PetAI update.
+    DungeonPetControl::Update(this);
+
     if (pmo)
         pmo->finish();
 }
@@ -662,6 +959,99 @@ void PlayerbotAI::HandleCommands()
         }
 
         it = chatCommands.erase(it);
+    }
+}
+
+namespace
+{
+    // UTF-8 Cyrillic capitals (and ASCII) to lower case; the byte length stays the same.
+    std::string LowerCaseUtf8Cyrillic(std::string const& text)
+    {
+        std::string out;
+        out.reserve(text.size());
+        for (size_t i = 0; i < text.size(); ++i)
+        {
+            unsigned char const c = text[i];
+            unsigned char const next = i + 1 < text.size() ? text[i + 1] : 0;
+            if (c == 0xD0 && next >= 0x90 && next <= 0x9F)  // A..P
+            {
+                out += char(0xD0);
+                out += char(next + 0x20);
+                ++i;
+            }
+            else if (c == 0xD0 && next >= 0xA0 && next <= 0xAF)  // R..Ya
+            {
+                out += char(0xD1);
+                out += char(next - 0x20);
+                ++i;
+            }
+            else if (c == 0xD0 && next == 0x81)  // Yo
+            {
+                out += char(0xD1);
+                out += char(0x91);
+                ++i;
+            }
+            else
+                out += c < 0x80 ? char(std::tolower(c)) : char(c);
+        }
+        return out;
+    }
+
+    // Short Russian chat orders (RussianCommandSynonyms) as the bot commands they stand for; the rest of the
+    // line stays as the parameter ("resni Fitse" -> "res Fitse"). Bytes are escaped: the source stays ASCII.
+    std::string TranslateRussianCommand(std::string const& text)
+    {
+        static std::vector<std::pair<std::string, std::string>> const synonyms = {
+            {"\xD1\x80\xD0\xB5\xD1\x81\xD0\xBD\xD0\xB8\x20\xD0\xBC\xD0\xB5\xD0\xBD\xD1\x8F", "res me"},  // resni menya
+            {"\xD0\xB7\xD0\xB0\x20\xD0\xBC\xD0\xBD\xD0\xBE\xD0\xB9", "follow"},  // za mnoy
+            {"\xD1\x8F\x20\xD1\x82\xD1\x83\xD1\x82", "resume"},  // ya tut
+            {"\xD0\xB6\xD0\xB4\xD0\xB8", "stay"},  // zhdi
+            {"\xD1\x81\xD1\x82\xD0\xBE\xD0\xB9", "stay"},  // stoy
+            {"\xD1\x81\xD1\x82\xD0\xBE\xD0\xBF", "stay"},  // stop
+            {"\xD1\x81\xD1\x82\xD0\xBE\xD1\x8F\xD1\x82\xD1\x8C", "stay"},  // stoyat
+            {"\xD0\xBF\xD0\xBE\xD1\x88\xD0\xBB\xD0\xB8", "follow"},  // poshli
+            {"\xD0\xB8\xD0\xB4\xD1\x91\xD0\xBC", "follow"},  // idyom
+            {"\xD0\xB8\xD0\xB4\xD0\xB5\xD0\xBC", "follow"},  // idem
+            {"\xD0\xBA\xD0\xBE\x20\xD0\xBC\xD0\xBD\xD0\xB5", "follow"},  // ko mne
+            {"\xD0\xB1\xD0\xB5\xD0\xB9", "attack"},  // bey
+            {"\xD0\xB0\xD1\x82\xD0\xB0\xD0\xBA\xD1\x83\xD0\xB9", "attack"},  // atakuy
+            {"\xD0\xB0\xD1\x82\xD0\xB0\xD0\xBA\xD0\xB0", "attack"},  // ataka
+            {"\xD0\xBF\xD1\x83\xD0\xBB\xD0\xBB", "pull"},  // pull
+            {"\xD0\xBF\xD1\x83\xD0\xBB", "pull"},  // pul
+            {"\xD0\xBE\xD1\x82\xD1\x85\xD0\xBE\xD0\xB4", "flee"},  // otkhod
+            {"\xD0\xBD\xD0\xB0\xD0\xB7\xD0\xB0\xD0\xB4", "flee"},  // nazad
+            {"\xD0\xB1\xD1\x83\xD1\x80\xD1\x81\xD1\x82", "burst"},  // burst
+            {"\xD1\x80\xD0\xB5\xD1\x81\xD0\xBD\xD0\xB8", "res"},  // resni
+            {"\xD0\xBF\xD0\xB0\xD1\x83\xD0\xB7\xD0\xB0", "pause"},  // pauza
+            {"\xD0\xB0\xD1\x84\xD0\xBA", "pause"},  // afk
+            {"\xD0\xBF\xD1\x80\xD0\xBE\xD0\xB4\xD0\xBE\xD0\xBB\xD0\xB6\xD0\xB0\xD0\xB5\xD0\xBC", "resume"},
+            {"\xD1\x82\xD1\x83\xD1\x82", "resume"},  // tut
+            {"\xD0\xBE\xD1\x82\xD0\xB4\xD1\x8B\xD1\x85", "rest"},  // otdykh
+            {"\xD0\xBE\xD1\x82\xD0\xB4\xD1\x8B\xD1\x85\xD0\xB0\xD0\xB5\xD0\xBC", "rest"},  // otdykhaem
+            {"\xD0\xBA\xD0\xB8\xD0\xBA", "interrupt"},  // kik
+            {"\xD1\x81\xD0\xB1\xD0\xB5\xD0\xB9", "interrupt"},  // sbey
+            {"\xD0\xBF\xD1\x80\xD0\xB5\xD1\x80\xD0\xB2\xD0\xB8", "interrupt"},  // prervi
+            {"\xD0\xBF\xD0\xB5\xD1\x80\xD0\xB5\xD0\xB1\xD0\xB0\xD1\x84", "rebuff"},  // perebaf
+            {"\xD0\xBF\xD0\xB8\xD1\x82\xD1\x8C", "drink"},  // pit
+        };
+
+        if (text.empty() || static_cast<unsigned char>(text[0]) < 0x80)
+            return text;  // not Cyrillic: nothing to translate
+
+        std::string const lower = LowerCaseUtf8Cyrillic(text);
+        for (auto const& [phrase, command] : synonyms)
+        {
+            if (lower.compare(0, phrase.size(), phrase) != 0)
+                continue;
+
+            if (lower.size() == phrase.size())
+                return command;
+
+            if (lower[phrase.size()] == ' ')
+                return command + text.substr(phrase.size());
+        }
+
+        return text;
     }
 }
 
@@ -729,6 +1119,9 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
     filtered = chatFilter.Filter(trim((std::string&)filtered));
     if (filtered.empty())
         return;
+
+    if (sPlayerbotAIConfig.RussianCommandSynonyms)
+        filtered = TranslateRussianCommand(filtered);
 
     if (filtered.substr(0, 6) == "debug ")
     {
@@ -1078,6 +1471,9 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
     if (filtered.empty())
         return;
 
+    if (sPlayerbotAIConfig.RussianCommandSynonyms)
+        filtered = TranslateRussianCommand(filtered);
+
     if (filtered.substr(0, 6) == "debug ")
     {
         std::string const response = HandleRemoteCommand(filtered.substr(6));
@@ -1297,6 +1693,14 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                 }
 
                 if (chanName == "World")
+                    return;
+
+                // This runs in the SPEAKER's thread (another map's worker for a whisper across maps, any thread of a
+                // map that is not this bot's), and GetValue creates the value in this bot's context map on first use:
+                // a cross-thread insert that corrupted the heap (four 60 s freezes 2026-10-24 in the chat reply path,
+                // two instances of one map each time). Dungeon bots skip chat replies; the full fix defers this block
+                // to the bot's own thread.
+                if (bot->GetMap() && bot->GetMap()->IsDungeon())
                     return;
 
                 // do not reply to self but always try to reply to real player
@@ -1600,6 +2004,13 @@ void PlayerbotAI::DoNextAction(bool min)
         return;
     }
 
+    // [healer_audit_b30] A healer joins the combat engine as soon as it or a group member near it is under attack,
+    // not only through "dps assist" (blocked while it has healing work): ok-h-5G-37 the holy paladin healed from the
+    // non-combat engine (no Holy Shock, no Lay on Hands, no emergency band) while the tank died. See
+    // DpsAssistAction::HealerGroupUnderAttack.
+    if (currentEngine == engines[BOT_STATE_NON_COMBAT] && DpsAssistAction::HealerGroupUnderAttack(this))
+        ChangeEngine(BOT_STATE_COMBAT);
+
     // Clear targets if in combat but sticking with old data
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
     {
@@ -1713,11 +2124,14 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
 {
     static const std::vector<std::string> allInstanceStrategies =
     {
+        "classic-brs", "classic-gnomer", "classic-mara", "classic-scholo", "classic-sm", "classic-st", "classic-strat",
+        "classic-zf", "classic-brd", "dungeon-escort", "tbc-ohb", "tbc-bm",
         "aq20", "blacktemple", "bwl", "gruulslair", "hyjal", "icc", "karazhan", "magtheridon",
-        "moltencore", "naxx", "onyxia", "rs", "ssc", "tbc-ac", "tbc-mech", "tbc-mgt", "tbc-ramp",
-        "tbc-seth", "tbc-ub", "tempestkeep", "ulduar", "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk",
-        "wotlk-eoe", "wotlk-fos", "wotlk-gd", "wotlk-hol", "wotlk-hos", "wotlk-nex", "wotlk-occ",
-        "wotlk-ok", "wotlk-os", "wotlk-pos", "wotlk-toc", "wotlk-uk", "wotlk-up", "wotlk-vh",
+        "moltencore", "naxx", "onyxia", "rs", "ssc", "tbc-ac", "tbc-arc", "tbc-bf", "tbc-mech", "tbc-mgt",
+        "tbc-mt", "tbc-ramp", "tbc-seth", "tbc-sh", "tbc-sl", "tbc-sp", "tbc-sv", "tbc-ub", "tempestkeep", "ulduar",
+        "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk", "wotlk-eoe", "wotlk-fos", "wotlk-gd", "wotlk-hol",
+        "wotlk-hor", "wotlk-hos", "wotlk-nex", "wotlk-occ", "wotlk-ok", "wotlk-os", "wotlk-pos", "wotlk-toc",
+        "wotlk-uk", "wotlk-up", "wotlk-vh",
         "zulaman"
     };
 
@@ -1730,6 +2144,39 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
     std::string strategyName;
     switch (mapId)
     {
+        case 90:
+            strategyName = "classic-gnomer";  // Gnomeregan
+            break;
+        case 189:
+            strategyName = "classic-sm";  // Scarlet Monastery
+            break;
+        case 349:
+            strategyName = "classic-mara";  // Maraudon
+            break;
+        case 229:
+            strategyName = "classic-brs";  // Blackrock Spire (Rookery eggs, Hatchers first, Father Flame)
+            break;
+        case 109:
+            strategyName = "classic-st";  // Sunken Temple (Atal'ai statues)
+            break;
+        case 289:
+            strategyName = "classic-scholo";  // Scholomance (caster packs: Mana Burn, kill and kick order)
+            break;
+        case 209:
+            strategyName = "classic-zf";  // Zul'Farrak (troll cages, Weegli's door, gong)
+            break;
+        case 230:
+            strategyName = "classic-brd";  // Blackrock Depths (kill order, Gout of Flames, Incendius at a wall)
+            break;
+        case 329:
+            strategyName = "classic-strat";  // Stratholme (street packs: aggro edge, kill and kick order, cleaves)
+            break;
+        case 560:
+            strategyName = "tbc-ohb";  // Old Hillsbrad Foothills (bombs, barrels, Thrall)
+            break;
+        case 269:
+            strategyName = "tbc-bm";  // The Black Morass (Medivh defense, rift keepers, Chrono-beacon)
+            break;
         case 249:
             strategyName = "onyxia";  // Onyxia's Lair
             break;
@@ -1751,14 +2198,26 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
         case 534:
             strategyName = "hyjal";  // The Battle for Mount Hyjal (Hyjal Summit)
             break;
+        case 540:
+            strategyName = "tbc-sh";  // Hellfire Citadel: The Shattered Halls
+            break;
+        case 542:
+            strategyName = "tbc-bf";  // Hellfire Citadel: The Blood Furnace
+            break;
         case 543:
             strategyName = "tbc-ramp";  // Hellfire Citadel: Hellfire Ramparts
             break;
         case 544:
             strategyName = "magtheridon";  // Magtheridon's Lair
             break;
+        case 545:
+            strategyName = "tbc-sv";  // Coilfang Reservoir: The Steamvault
+            break;
         case 546:
             strategyName = "tbc-ub";  // Coilfang Reservoir: The Underbog
+            break;
+        case 547:
+            strategyName = "tbc-sp";  // Coilfang Reservoir: The Slave Pens
             break;
         case 548:
             strategyName = "ssc";  // Serpentshrine Cavern
@@ -1766,8 +2225,17 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
         case 550:
             strategyName = "tempestkeep";  // Tempest Keep: The Eye
             break;
+        case 552:
+            strategyName = "tbc-arc";  // Tempest Keep: The Arcatraz
+            break;
+        case 555:
+            strategyName = "tbc-sl";  // Auchindoun: Shadow Labyrinth
+            break;
         case 556:
             strategyName = "tbc-seth";  // Auchindoun: Sethekk Halls
+            break;
+        case 557:
+            strategyName = "tbc-mt";  // Auchindoun: Mana-Tombs
             break;
         case 554:
             strategyName = "tbc-mech";  // Tempest Keep: The Mechanar
@@ -1847,11 +2315,24 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
         case 658:
             strategyName = "wotlk-pos";  // Pit of Saron
             break;
+        case 668:
+            strategyName = "wotlk-hor";  // Halls of Reflection
+            break;
         case 724:
             strategyName = "rs";  // Ruby Sanctum
             break;
         default:
             break;
+    }
+
+    // Escorted NPCs (Gnomeregan's Emi Shortfuse, the Disciple of Naralex): next to the map's own strategy
+    if (EscortProtect::MapHasEscort(mapId))
+    {
+        engines[BOT_STATE_COMBAT]->addStrategy("dungeon-escort");
+        engines[BOT_STATE_NON_COMBAT]->addStrategy("dungeon-escort");
+        // [w24b-escort-strategy] once per bot and map: its own context now, kept next to the map strategy
+        LOG_INFO("playerbots", "[w24b-escort-strategy] {}: dungeon-escort on map {} next to its map strategy",
+                 bot->GetName(), mapId);
     }
 
     if (strategyName.empty())
@@ -2389,8 +2870,10 @@ bool PlayerbotAI::IsTank(Player* player, bool bySpec)
             }
             break;
         case CLASS_DRUID:
+            // [b31_sd] any Thick Hide rank: bear templates have rank 1 at 20, rank 2 at 21
             if (tab == DRUID_TAB_FERAL && (player->GetShapeshiftForm() == FORM_BEAR ||
-                                           player->GetShapeshiftForm() == FORM_DIREBEAR || player->HasAura(16931)))
+                                           player->GetShapeshiftForm() == FORM_DIREBEAR || player->HasAura(16929) ||
+                                           player->HasAura(16930) || player->HasAura(16931)))
             {
                 return true;
             }
@@ -3382,6 +3865,31 @@ bool PlayerbotAI::CanCastSpell(std::string const name, Unit* target, Item* itemT
     return CanCastSpell(aiObjectContext->GetValue<uint32>("spell id", name)->Get(), target, true, itemTarget);
 }
 
+// [cc_break] A spell the core lets a player cast under its current loss of control: Every Man for Himself and the
+// PvP trinkets (stun, fear, charm), Berserker Rage and Will of the Forsaken (fear). Spell::CheckCasterAuras reads the
+// same SPELL_ATTR5_ALLOW_WHILE_* flags. hor-h build 29: the paladin tank stood feared 5 s by a Ghostly Priest with
+// "every man for himself (isPossible false: lost control)" while the mob it should take stayed on the shaman.
+static bool CastableUnderLossOfControl(Player* bot, uint32 spellId)
+{
+    if (bot->HasUnitState(UNIT_STATE_JUMPING | UNIT_STATE_CHARGING))
+        return false;
+
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!spellInfo)
+        return false;
+
+    if (bot->HasUnitState(UNIT_STATE_STUNNED) && !spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_STUNNED))
+        return false;
+
+    if (bot->HasUnitState(UNIT_STATE_FLEEING) && !spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_FLEEING))
+        return false;
+
+    if (bot->HasUnitState(UNIT_STATE_CONFUSED) && !spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_CONFUSED))
+        return false;
+
+    return true;
+}
+
 bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell, Item* itemTarget, Item* castItem)
 {
     if (!spellid)
@@ -3392,7 +3900,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         return false;
     }
 
-    if (bot->HasUnitState(UNIT_STATE_LOST_CONTROL))
+    if (bot->HasUnitState(UNIT_STATE_LOST_CONTROL) && !CastableUnderLossOfControl(bot, spellid))
     {
         if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
             LOG_DEBUG("playerbots", "Can cast spell failed. Unit state lost control. - spellid: {}, bot name: {}", spellid, bot->GetName());
@@ -3445,6 +3953,22 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
                 target->GetName(), spellid, bot->GetName());
 
         return false;
+    }
+
+    // A reflected spell lands on the bot (a mage killed by its own Deep Freeze), and a counterattack aura strikes
+    // back at every melee hit; the bot waits it out or another target is picked (DpsTargetValue).
+    if (target != bot)
+    {
+        bool const countered = spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE &&
+                               ReflectAuras::CountersMelee(target, bot) && !IsTank(bot);
+        if ((countered || ReflectAuras::ReflectsSpell(target, spellInfo)) && bot->IsHostileTo(target))
+        {
+            if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
+                LOG_DEBUG("playerbots", "Can cast spell failed. Target turns it back. - target name: {}, spellid: {}, "
+                          "bot name: {}", target->GetName(), spellid, bot->GetName());
+
+            return false;
+        }
     }
 
     if ((bot->GetShapeshiftForm() == FORM_FLIGHT || bot->GetShapeshiftForm() == FORM_FLIGHT_EPIC) && !bot->IsInCombat())
@@ -3645,6 +4169,42 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, float x, float y, float z, bool c
             return false;
     }
 }
+
+namespace
+{
+// [b44_cast] Opt-in cast timeline for the caster-filler audit (ROTATION_AUDIT_NIGHT.md, b44_cast): environment variable
+// PLAYERBOTS_B44_CAST = "*" or a comma-separated list of bot names, read once. Only a bot in combat inside a dungeon
+// or raid. One line per cast start (spell, cast time with haste, GCD) and per cast this file stops (reason); offline:
+// next start - (start + castMs) = the gap after a cast, negative = the cast ended early (cancelled / interrupted).
+bool B44CastTraced(Player* bot)
+{
+    static std::string const filter = []()
+    {
+        char const* value = std::getenv("PLAYERBOTS_B44_CAST");
+        return std::string(value ? value : "");
+    }();
+    if (filter.empty() || !bot || !bot->IsInCombat() || !bot->GetMap() || !bot->GetMap()->Instanceable())
+        return false;
+
+    if (filter == "*")
+        return true;
+
+    std::string const name = "," + bot->GetName() + ",";
+    return ("," + filter + ",").find(name) != std::string::npos;
+}
+
+void B44CastTrace(Player* bot, char const* what, SpellInfo const* info, Unit* target)
+{
+    if (!info || !B44CastTraced(bot))
+        return;
+
+    uint32 const castMs = info->IsChanneled() ? uint32(std::max(info->GetDuration(), 0)) : info->CalcCastTime(bot);
+    LOG_DEBUG("playerbots", "[b44_cast] {} {} {} {} ms={} cast={} gcd={} moving={} target={}", bot->GetName(), what,
+              info->Id, info->SpellName[LOCALE_enUS] ? info->SpellName[LOCALE_enUS] : "", getMSTime(), castMs,
+              bot->GetGlobalCooldownMgr().GetGlobalCooldown(info), bot->isMoving(),
+              target ? target->GetName() : std::string());
+}
+}  // namespace
 
 bool PlayerbotAI::CastSpell(std::string const name, Unit* target, Item* itemTarget)
 {
@@ -3956,6 +4516,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     }
 
     forceRebuff.NoteCast(spellInfo);
+    lastCastSpellId = spellId;
+    B44CastTrace(bot, "start", spellInfo, target);  // [b44_cast]
 
     return true;
 }
@@ -4069,6 +4631,7 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
 
     // WaitForSpellCast(spell);
     aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().Set(spellId, bot->GetGUID(), time(nullptr));
+    lastCastSpellId = spellId;
     aiObjectContext->GetValue<PositionMap&>("position")->Get()["random"].Reset();
 
     if (oldSel)
@@ -4421,6 +4984,27 @@ bool PlayerbotAI::IsInterruptableSpellCasting(Unit* target, std::string const sp
     if (!spellInfo)
         return false;
 
+    // The enemy cast itself must be one a kick can stop (the core's EffectInterruptCast rule); spending an
+    // interrupt on an uninterruptible cast wastes it.
+    bool castInterruptible = false;
+    if (Spell* cast = target->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        SpellInfo const* castInfo = cast->GetSpellInfo();
+        castInterruptible = castInfo && castInfo->PreventionType == SPELL_PREVENTION_TYPE_SILENCE &&
+                            (castInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT);
+    }
+
+    if (Spell* cast = target->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+    {
+        SpellInfo const* castInfo = cast->GetSpellInfo();
+        castInterruptible = castInterruptible ||
+                            (castInfo && castInfo->PreventionType == SPELL_PREVENTION_TYPE_SILENCE &&
+                             (castInfo->ChannelInterruptFlags & CHANNEL_INTERRUPT_FLAG_INTERRUPT));
+    }
+
+    if (!castInterruptible)
+        return false;
+
     for (uint8 i = EFFECT_0; i <= EFFECT_2; i++)
     {
         if ((spellInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT) &&
@@ -4433,6 +5017,11 @@ bool PlayerbotAI::IsInterruptableSpellCasting(Unit* target, std::string const sp
 
         if ((spellInfo->Effects[i].Effect == SPELL_EFFECT_APPLY_AURA) &&
             spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_MOD_SILENCE)
+            return true;
+
+        // A stun stops any cast too (Hammer of Justice, Bash, War Stomp), unless the target shrugs stuns off.
+        if (spellInfo->Effects[i].Effect == SPELL_EFFECT_APPLY_AURA &&
+            spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_MOD_STUN && !target->IsImmunedToSpellEffect(spellInfo, i))
             return true;
     }
 
@@ -5517,6 +6106,13 @@ float PlayerbotAI::GetRange(std::string const type)
     if (abs(val) >= 0.1f)
         return val;
 
+    // [b32_engage] A hunter's "spell" range is its weapon's: Auto Shot (35 yd plus Hawk Eye), not SpellDistance
+    // 28.5. At 29-35 yd it shot from where it stood instead of walking in (engage_delay.md, "G ranged
+    // repositioning": 2269 hunter pulls, 20263 s lost).
+    if ((type == "spell" || type == "shoot") && bot && bot->getClass() == CLASS_HUNTER)
+        if (float const weapon = GetHunterWeaponRange(); weapon > 0.0f)
+            return weapon;
+
     if (type == "spell")
         return sPlayerbotAIConfig.SpellDistance;
 
@@ -5533,6 +6129,20 @@ float PlayerbotAI::GetRange(std::string const type)
         return sPlayerbotAIConfig.MeleeDistance;
 
     return 0;
+}
+
+// [b32_engage] Auto Shot's range with the bot's own range mods (Hawk Eye), less a margin for a moving target; 0
+// without a ranged weapon or the spell.
+float PlayerbotAI::GetHunterWeaponRange()
+{
+    constexpr uint32 AUTO_SHOT = 75;
+    constexpr float AUTO_SHOT_MARGIN = 2.0f;
+    if (!bot || !bot->GetWeaponForAttack(RANGED_ATTACK, true))
+        return 0.0f;
+
+    SpellInfo const* autoShot = sSpellMgr->GetSpellInfo(AUTO_SHOT);
+    float const range = autoShot ? autoShot->GetMaxRange(false, bot) : 0.0f;
+    return range > sPlayerbotAIConfig.SpellDistance + AUTO_SHOT_MARGIN ? range - AUTO_SHOT_MARGIN : 0.0f;
 }
 
 void PlayerbotAI::Ping(float x, float y)
@@ -5701,6 +6311,12 @@ Item* PlayerbotAI::FindStoneFor(Item* weapon) const
     if (!item_template)
         return nullptr;
 
+    // [b34_gnomer] Only a weapon takes a stone. The subclass tests below never looked at the item class, and
+    // ITEM_SUBCLASS_ARMOR_SHIELD (6) == ITEM_SUBCLASS_WEAPON_POLEARM (6): a tank's shield got a sharpening stone,
+    // the cast failed, and "apply stone" repeated on every tick (gnomer-n 5B 20261026-014521, Rtwarbd).
+    if (item_template->Class != ITEM_CLASS_WEAPON)
+        return nullptr;
+
     static const std::vector<uint32_t> uPrioritizedSharpStoneIds = {
         ADAMANTITE_SHARPENING_STONE, FEL_SHARPENING_STONE,   ELEMENTAL_SHARPENING_STONE, DENSE_SHARPENING_STONE,
         SOLID_SHARPENING_STONE,      HEAVY_SHARPENING_STONE, COARSE_SHARPENING_STONE,    ROUGH_SHARPENING_STONE};
@@ -5747,7 +6363,7 @@ Item* PlayerbotAI::FindOilFor(Item* weapon) const
         return nullptr;
 
     ItemTemplate const* item_template = weapon->GetTemplate();
-    if (!item_template)
+    if (!item_template || item_template->Class != ITEM_CLASS_WEAPON)  // [b34_gnomer] a weapon only, as FindStoneFor
         return nullptr;
 
     static const std::vector<uint32_t> uPrioritizedWizardOilIds = {
@@ -6179,7 +6795,11 @@ bool PlayerbotAI::IsInRealGuild()
     return PlayerbotGuildMgr::instance().IsRealGuild(bot->GetGuildId());
 }
 
-void PlayerbotAI::QueueChatResponse(const ChatQueuedReply chatReply) { chatReplies.push_back(std::move(chatReply)); }
+void PlayerbotAI::QueueChatResponse(const ChatQueuedReply chatReply)
+{
+    std::lock_guard<std::mutex> lock(chatRepliesLock);
+    chatReplies.push_back(std::move(chatReply));
+}
 
 bool PlayerbotAI::EqualLowercaseName(std::string s1, std::string s2)
 {
@@ -6728,6 +7348,173 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
     return result;
 }
 
+uint32 PlayerbotAI::GetGlobalCooldownRemaining()
+{
+    if (!lastCastSpellId)
+        return 0;
+
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(lastCastSpellId);
+    if (!spellInfo || !spellInfo->StartRecoveryCategory)
+        return 0;
+
+    return bot->GetGlobalCooldownMgr().GetGlobalCooldown(spellInfo);
+}
+
+namespace
+{
+    constexpr uint32 IDLE_DIAG_WINDOW_MS = 15 * IN_MILLISECONDS;
+    constexpr uint32 IDLE_DIAG_MAX_GAP_MS = 4 * IN_MILLISECONDS;
+    constexpr uint32 IDLE_DIAG_SLOW_GAP_MS = 150;
+    constexpr uint32 IDLE_DIAG_VERY_SLOW_GAP_MS = 400;
+    constexpr uint8 IDLE_DIAG_THREAT_HOLD = 80;  // ThreatMultiplier's single-target limit
+    constexpr float IDLE_DIAG_RANGED_REACH = 30.0f;
+}
+
+void PlayerbotAI::NoteIdleDiagAction(Action* action)
+{
+    if (!bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable())
+        return;
+
+    idleDiag.tickAction = action->getName();
+    if (!dynamic_cast<CastSpellAction*>(action))
+        return;
+
+    idleDiag.tickCast = true;
+    uint32 const now = getMSTime();
+    if (idleDiag.busyEndMs && now >= idleDiag.busyEndMs)
+    {
+        uint32 const gap = now - idleDiag.busyEndMs;
+        if (gap < IDLE_DIAG_MAX_GAP_MS)
+        {
+            ++idleDiag.gapCount;
+            idleDiag.gapSumMs += gap;
+            idleDiag.gapMaxMs = std::max(idleDiag.gapMaxMs, gap);
+            idleDiag.gapOver150 += gap > IDLE_DIAG_SLOW_GAP_MS ? 1 : 0;
+            idleDiag.gapOver400 += gap > IDLE_DIAG_VERY_SLOW_GAP_MS ? 1 : 0;
+        }
+    }
+
+    uint32 busy = GetGlobalCooldownRemaining();
+    for (CurrentSpellTypes type : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL})
+        if (Spell* spell = bot->GetCurrentSpell(type))
+            busy = std::max(busy, static_cast<uint32>(std::max(spell->GetCastTimeRemaining(), 0)));
+
+    idleDiag.busyEndMs = std::max(idleDiag.busyEndMs, now + busy);
+}
+
+void PlayerbotAI::UpdateHealDiag()
+{
+    constexpr uint32 HEAL_DIAG_CHECK_MS = 1000;
+    constexpr uint32 HEAL_DIAG_LOG_MS = 3000;
+    constexpr float HEAL_DIAG_HEALTH_PCT = 50.0f;
+
+    Group* group = bot->GetGroup();
+    Map* map = bot->GetMap();
+    if (!group || !map || !map->Instanceable() || !bot->IsAlive() || !IsHeal(bot))
+        return;
+
+    uint32 const now = getMSTime();
+    if (healDiagCheckMs && getMSTimeDiff(healDiagCheckMs, now) < HEAL_DIAG_CHECK_MS)
+        return;
+
+    healDiagCheckMs = now;
+    if (healDiagLogMs && getMSTimeDiff(healDiagLogMs, now) < HEAL_DIAG_LOG_MS)
+        return;
+
+    if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) || bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+        return;
+
+    Player* hurt = nullptr;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member->GetMap() != map || !member->IsAlive() || !member->IsInCombat() ||
+            member->GetHealthPct() >= HEAL_DIAG_HEALTH_PCT)
+            continue;
+
+        if (!hurt || member->GetHealthPct() < hurt->GetHealthPct())
+            hurt = member;
+    }
+
+    if (!hurt)
+        return;
+
+    healDiagLogMs = now;
+    LOG_DEBUG("playerbots",
+              "[heal diag] {} (combat {}, engine {}, {:.0f}% hp, {:.0f}% mana, moving {}): {} at {:.0f}% {:.1f} yd, "
+              "sight {} | {}",
+              bot->GetName(), bot->IsInCombat(), uint32(currentState), bot->GetHealthPct(),
+              bot->GetPowerPct(POWER_MANA), bot->isMoving(), hurt->GetName(), hurt->GetHealthPct(),
+              bot->GetExactDist(hurt), bot->IsWithinLOSInMap(hurt),
+              currentEngine ? currentEngine->GetLastAction() : std::string());
+}
+
+void PlayerbotAI::UpdateIdleDiag(bool casting)
+{
+    if (!bot->IsInCombat() || !bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable() ||
+        IsTank(bot) || IsHeal(bot))
+    {
+        idleDiag.busyEndMs = 0;
+        return;
+    }
+
+    uint32 const now = getMSTime();
+    if (!idleDiag.windowStartMs)
+        idleDiag.windowStartMs = now;
+
+    ++idleDiag.ticks;
+    if (casting)
+        ++idleDiag.castWait;
+    else if (idleDiag.tickCast)
+        ++idleDiag.casts;
+    else if (!idleDiag.tickAction.empty())
+    {
+        ++idleDiag.nonCast;
+        ++idleDiag.actions[idleDiag.tickAction];
+    }
+    else
+    {
+        Unit* target = aiObjectContext->GetValue<Unit*>("current target")->Get();
+        bool const outOfReach = target && (IsRanged(bot) ? bot->GetDistance(target) > IDLE_DIAG_RANGED_REACH
+                                                         : !bot->IsWithinMeleeRange(target));
+        if (!target || !target->IsAlive())
+            ++idleDiag.noTarget;
+        else if (outOfReach || !bot->IsWithinLOSInMap(target))
+            ++idleDiag.rangeLos;
+        else if (bot->isMoving())
+            ++idleDiag.moving;
+        else if (GetGlobalCooldownRemaining())
+            ++idleDiag.gcd;
+        else if (aiObjectContext->GetValue<uint8>("threat", "current target")->Get() >= IDLE_DIAG_THREAT_HOLD)
+            ++idleDiag.threat;
+        else
+            ++idleDiag.other;
+    }
+
+    if (getMSTimeDiff(idleDiag.windowStartMs, now) < IDLE_DIAG_WINDOW_MS)
+        return;
+
+    std::vector<std::pair<std::string, uint32>> top(idleDiag.actions.begin(), idleDiag.actions.end());
+    std::sort(top.begin(), top.end(), [](auto const& left, auto const& right) { return left.second > right.second; });
+    std::string actions;
+    for (size_t i = 0; i < top.size() && i < 6; ++i)
+        actions += Acore::StringFormat(" {}:{}", top[i].first, top[i].second);
+
+    LOG_DEBUG("playerbots",
+              "[idle diag] {} {}s ticks {} cast {} castWait {} nonCast {} | idle: noTarget {} rangeLos {} moving {} "
+              "gcd {} threat {} other {} | gap n {} avg {} max {} >150 {} >400 {} | actions{}",
+              bot->GetName(), getMSTimeDiff(idleDiag.windowStartMs, now) / IN_MILLISECONDS, idleDiag.ticks,
+              idleDiag.casts, idleDiag.castWait, idleDiag.nonCast, idleDiag.noTarget, idleDiag.rangeLos,
+              idleDiag.moving, idleDiag.gcd, idleDiag.threat, idleDiag.other, idleDiag.gapCount,
+              idleDiag.gapCount ? idleDiag.gapSumMs / idleDiag.gapCount : 0, idleDiag.gapMaxMs, idleDiag.gapOver150,
+              idleDiag.gapOver400, actions);
+
+    uint32 const busyEnd = idleDiag.busyEndMs;
+    idleDiag = IdleDiag();
+    idleDiag.busyEndMs = busyEnd;
+    idleDiag.windowStartMs = now;
+}
+
 uint32 PlayerbotAI::GetReactDelay()
 {
     uint32 base = sPlayerbotAIConfig.ReactDelay;  // Default 100(ms)
@@ -6775,7 +7562,14 @@ uint32 PlayerbotAI::GetReactDelay()
 
     // When in combat, return 5 times the base
     if (bot->IsInCombat() || currentState == BOT_STATE_COMBAT)
+    {
+        // A group in a dungeon or raid: at five times the base a member got two or three ticks per GCD and spent
+        // them turning and stepping (tank: a cast every 3 s; dps: busy 56-63 %, wave 2026-10-24).
+        if (bot->GetGroup() && bot->GetMap() && bot->GetMap()->Instanceable())
+            return base * 2;
+
         return base * 5;
+    }
 
     // When not resting, return 10-30 times the base
     if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))

@@ -8,8 +8,12 @@
 #define PLAYERBOTS_REVIVEFROMCORPSEACTION_H
 
 #include "MovementActions.h"
+#include "ObjectGuid.h"
+
+#include <G3D/Vector3.h>
 
 class PlayerbotAI;
+class Corpse;
 
 struct GraveyardStruct;
 
@@ -28,6 +32,13 @@ public:
 
     bool Execute(Event event) override;
     bool isUseful() override;
+
+private:
+    bool SafeSpot(Corpse* corpse, GuidVector const& hostiles, float radius, G3D::Vector3& spot);
+
+    uint32 _spotMs = 0;
+    bool _spotFound = false;
+    G3D::Vector3 _spot;
 };
 
 class SpiritHealerAction : public MovementAction

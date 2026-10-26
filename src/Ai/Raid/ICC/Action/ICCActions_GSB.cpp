@@ -12,6 +12,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 
@@ -196,19 +197,12 @@ bool IccGunshipRocketJumpAction::Execute(Event /*event*/)
     if (side == GunshipSide::NONE)
         return false;
 
-    // Z-axis correction: teleport bot back if fallen below deck
+    // Below deck (fell off): the encounter's own fall teleport brings players back, so just wait for it
     if (!bot->GetVehicle())
     {
         Position const& zRef = (side == GunshipSide::ALLY) ? ICC_GUNSHIP_ROCKET_JUMP_ALLY2 : ICC_GUNSHIP_ROCKET_JUMP_HORDE2;
-        Position const& zDest = (side == GunshipSide::ALLY) ? ICC_GUNSHIP_ROCKET_JUMP_ALLY2 : ICC_GUNSHIP_ROCKET_JUMP_HORDE2;
-        float const Z_THRESHOLD = zRef.GetPositionZ() - 5.0f;
-        if (bot->GetPositionZ() < Z_THRESHOLD)
-        {
-            bot->TeleportTo(bot->GetMapId(), zDest.GetPositionX(), zDest.GetPositionY(),
-                            zDest.GetPositionZ(), bot->GetOrientation());
-            botAI->Reset();
+        if (bot->GetPositionZ() < zRef.GetPositionZ() - 5.0f)
             return false;
-        }
     }
 
     float const maxWaitingDistance = (side == GunshipSide::ALLY) ? 30.0f : 25.0f;
@@ -337,16 +331,10 @@ bool IccGunshipRocketJumpAction::Execute(Event /*event*/)
         uint32 const captainEntry = (side == GunshipSide::ALLY) ? NPC_HIGH_OVERLORD_SAURFANG : NPC_MURADIN_BRONZEBEARD;
         Unit* captain = bot->FindNearestCreature(captainEntry, 1000.0f);
 
-        // Battle Fury buff bugged on captain - strip all difficulty variants every tick. todo: remove when boss agro fixed
-        if (captain)
-        {
-            static constexpr uint32 BATTLE_FURY_IDS[] = {SPELL_BATTLE_FURY1, SPELL_BATTLE_FURY2,
-                                                        SPELL_BATTLE_FURY3, SPELL_BATTLE_FURY4,
-                                                        SPELL_BATTLE_FURY5};
-            for (uint32 const id : BATTLE_FURY_IDS)
-                if (captain->HasAura(id))
-                    captain->RemoveAurasDueToSpell(id);
-        }
+        // Battle Fury stacks on the captain are part of the fight; the tank only limits time spent on him
+        if (captain && captain->IsInCombat())
+            IccLogHonestTacticGap(bot, IccHonestGap::Gunship, "Gunship Battle",
+                                  "captain Battle Fury stacks: tank rotation or faster kill");
 
         bool allyAtMage = false;
         if (Group* group = bot->GetGroup())
@@ -753,7 +741,7 @@ bool IccGunshipRocketJumpAction::Execute(Event /*event*/)
 
                     if (nextAdd)
                     {
-                        group->SetTargetIcon(STAR_ICON_INDEX, bot->GetGUID(), nextAdd->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, STAR_ICON_INDEX, nextAdd->GetGUID());
                         lastStarPos = Position(nextAdd->GetPositionX(),
                                                nextAdd->GetPositionY(),
                                                nextAdd->GetPositionZ());
@@ -955,7 +943,7 @@ bool IccGunshipRocketJumpAction::CleanupSkullIcon(uint8 skullIconIndex)
 
     Unit* skullTarget = ObjectAccessor::GetUnit(*bot, currentSkullTarget);
     if (!skullTarget || !skullTarget->IsAlive())
-        group->SetTargetIcon(skullIconIndex, bot->GetGUID(), ObjectGuid::Empty);
+        RaidMarkOwnership::SetIcon(bot, group, skullIconIndex, ObjectGuid::Empty);
 
     return false;
 }
@@ -967,7 +955,7 @@ bool IccGunshipRocketJumpAction::UpdateBossSkullIcon(Unit* boss, uint8 skullIcon
         return false;
 
     if (group->GetTargetIcon(skullIconIndex) != boss->GetGUID())
-        group->SetTargetIcon(skullIconIndex, bot->GetGUID(), boss->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, skullIconIndex, boss->GetGUID());
 
     return false;
 }

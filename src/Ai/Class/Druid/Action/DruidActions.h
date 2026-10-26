@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_DRUIDACTIONS_H
 #define PLAYERBOTS_DRUIDACTIONS_H
 
+#include "DruidTriggers.h"  // [b31_sd] DRUID_MULTI_DOT_MIN_LIFETIME
 #include "GenericSpellActions.h"
 #include "SharedDefines.h"
 #include "Value.h"
@@ -71,6 +72,23 @@ public:
     }
 };
 
+// [b31_sd] Healing Touch in the resto health bands. The guides cast it only under Nature's Swiftness (that node uses
+// "healing touch on party"); this filler stays only for a druid without Nourish (level 80), whose direct heals are
+// otherwise Regrowth alone.
+inline constexpr uint32 SPELL_NOURISH_RANK_1 = 50464;
+
+class CastHealingTouchFillerOnPartyAction : public CastHealingTouchOnPartyAction
+{
+public:
+    CastHealingTouchFillerOnPartyAction(PlayerbotAI* botAI) : CastHealingTouchOnPartyAction(botAI) {}
+
+    std::string const getName() override { return "healing touch filler on party"; }
+    bool isUseful() override
+    {
+        return !bot->HasSpell(SPELL_NOURISH_RANK_1) && CastHealingTouchOnPartyAction::isUseful();
+    }
+};
+
 class CastReviveAction : public ResurrectPartyMemberAction
 {
 public:
@@ -84,8 +102,80 @@ class CastRebirthAction : public ResurrectPartyMemberAction
 public:
     CastRebirthAction(PlayerbotAI* botAI) : ResurrectPartyMemberAction(botAI, "rebirth") {}
 
+    // Battle res queue of the raid utility coordinator: two ressers never pick the same corpse.
+    std::string const GetTargetName() override { return "battle res target"; }
     std::vector<NextAction> getPrerequisites() override;
     bool isUseful() override;
+    bool Execute(Event event) override;  // remembers the ally for the follow-up heals (RebirthFollowUp)
+};
+
+// [b32_brez] The bear tank's last-resort battle res (BearBattleRes, DruidTriggers.h): leaves its form and starts
+// Rebirth in one step, so no tick passes in caster form before the cast (and the "caster form" prerequisite's
+// medium-mana gate cannot leave the cast to fail in form). "bear battle res reshift" brings Dire Bear Form back.
+class CastBearBattleResAction : public CastRebirthAction
+{
+public:
+    CastBearBattleResAction(PlayerbotAI* botAI) : CastRebirthAction(botAI) {}
+
+    std::string const getName() override { return "bear battle res"; }
+    std::string const GetTargetName() override { return "bear battle res target"; }
+    std::vector<NextAction> getPrerequisites() override { return Action::getPrerequisites(); }
+    bool isUseful() override;
+    bool Execute(Event event) override;
+};
+
+// An ally back from Rebirth stands in the fight low and unbuffed: the druid that brought it back heals it up and
+// gives it Mark of the Wild before anything else, for a while after the cast.
+namespace RebirthFollowUp
+{
+    constexpr uint32 WINDOW_MS = 30000;
+    constexpr float SAFE_HEALTH_PCT = 70.0f;
+
+    void Record(PlayerbotAI* botAI, Unit* target);
+    // The ally within the window once it is alive again, else nullptr.
+    Unit* GetTarget(PlayerbotAI* botAI);
+}
+
+class CastSpellOnRebirthTargetAction : public CastSpellAction
+{
+public:
+    // hot: not cast again while this druid's own aura of it is on the target
+    CastSpellOnRebirthTargetAction(PlayerbotAI* botAI, std::string const spell, bool hot = false)
+        : CastSpellAction(botAI, spell), name(spell + " on rebirth target"), isHot(hot)
+    {
+        range = botAI->GetRange("heal");
+    }
+
+    std::string const getName() override { return name; }
+    Unit* GetTarget() override { return RebirthFollowUp::GetTarget(botAI); }
+    bool isUseful() override;
+
+private:
+    std::string const name;
+    bool const isHot;
+};
+
+class CastBuffOnRebirthTargetAction : public CastSpellAction
+{
+public:
+    // sameBuff: an aura that covers it (Gift of the Wild for the Mark); tankOnly: Thorns goes on a tank
+    CastBuffOnRebirthTargetAction(PlayerbotAI* botAI, std::string const spell, std::string const sameBuff,
+                                  bool tankOnly)
+        : CastSpellAction(botAI, spell), name(spell + " on rebirth target"), coveringBuff(sameBuff),
+          onlyTank(tankOnly)
+    {
+        range = botAI->GetRange("heal");
+    }
+
+    std::string const getName() override { return name; }
+    Unit* GetTarget() override { return RebirthFollowUp::GetTarget(botAI); }
+    bool isUseful() override;
+    std::vector<NextAction> getPrerequisites() override;
+
+private:
+    std::string const name;
+    std::string const coveringBuff;
+    bool const onlyTank;
 };
 
 class CastMarkOfTheWildAction : public GroupBuffSpellAction
@@ -136,12 +226,24 @@ public:
     bool Execute(Event event) override;
 };
 
+// [b31_deep] The tank HoT upkeeps are heals, not single-target threat: heal threat is split over every mob, so the
+// threat strategy holding them (CastSpellAction's default Single type, measured on the healer's current target)
+// lowered nothing and broke the rolling Lifebloom stack (7076 "multiplier threat x0" on L80 bosses).
+class CastRejuvenationOnMainTankAction : public BuffOnMainTankAction
+{
+public:
+    CastRejuvenationOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "rejuvenation", true) {}
+
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
+};
+
 class CastLifebloomOnMainTankAction : public BuffOnMainTankAction
 {
 public:
     CastLifebloomOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "lifebloom", true) {}
 
     bool isUseful() override;
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
 class CastWrathAction : public CastSpellAction
@@ -178,6 +280,15 @@ class CastMoonfireAction : public CastDebuffSpellAction
 {
 public:
     CastMoonfireAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "moonfire", true) {}
+};
+
+// Moving, Starfire and Wrath wait for the druid to stand: Moonfire is the instant nuke, cast even over its own DoT.
+class CastMoonfireOnTheMoveAction : public CastSpellAction
+{
+public:
+    CastMoonfireOnTheMoveAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "moonfire") {}
+
+    bool isUseful() override { return bot->isMoving() && CastSpellAction::isUseful(); }
 };
 
 class CastInsectSwarmAction : public CastDebuffSpellAction
@@ -280,7 +391,8 @@ class CastInnervateOnHealerAction : public CastSpellAction
 public:
     CastInnervateOnHealerAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "innervate") {}
 
-    std::string const GetTargetName() override { return "healer low mana"; }
+    // Raid utility coordinator: lowest-mana healers are paired with the druids that have Innervate ready.
+    std::string const GetTargetName() override { return "innervate target"; }
     bool isPossible() override;
     std::vector<NextAction> getPrerequisites() override;
 };
@@ -307,6 +419,14 @@ public:
         : HealPartyMemberAction(botAI, "wild growth", 15.0f, HealingManaEfficiency::VERY_HIGH)
     {
     }
+
+    bool isUseful() override;
+    // [heal_triage] Cast on the member with the most hurt players within 30 yd, not only on the lowest one.
+    Unit* GetTarget() override;
+
+private:
+    ObjectGuid _center;
+    uint32 _centerMs = 0;
 };
 
 class CastPartySwiftmendAction : public HealPartyMemberAction
@@ -316,12 +436,17 @@ public:
         : HealPartyMemberAction(botAI, "swiftmend", 15.0f, HealingManaEfficiency::MEDIUM)
     {
     }
+
+    bool isUseful() override;
 };
 
 class CastPartyNourishAction : public HealPartyMemberAction
 {
 public:
-    CastPartyNourishAction(PlayerbotAI* botAI) : HealPartyMemberAction(botAI, "nourish", 25.0f, HealingManaEfficiency::LOW) {}
+    // [b31_sd] HIGH, not LOW: Nourish is the druid's cheapest direct heal (+20 % on a target with a HoT); with LOW the
+    // conserve-mana strategy dropped it first (GUIDE_AUDIT_HEALERS.md, Resto Druid: 1.16/min on bosses).
+    CastPartyNourishAction(PlayerbotAI* botAI)
+        : HealPartyMemberAction(botAI, "nourish", 25.0f, HealingManaEfficiency::HIGH) {}
 };
 
 class CastDruidRemoveCurseOnPartyAction : public CurePartyMemberAction
@@ -333,21 +458,27 @@ public:
 class CastInsectSwarmOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
-    CastInsectSwarmOnAttackerAction(PlayerbotAI* botAI) : CastDebuffSpellOnAttackerAction(botAI, "insect swarm", true, 0.0f) {}
-    bool isUseful() override { return CastAuraSpellAction::isUseful(); }
+    // [b31_sd] The lifetime gate of the trigger (DRUID_MULTI_DOT_MIN_LIFETIME) holds for the queued cast too: the
+    // isUseful() override that skipped CastDebuffSpellAction's gate is gone.
+    CastInsectSwarmOnAttackerAction(PlayerbotAI* botAI)
+        : CastDebuffSpellOnAttackerAction(botAI, "insect swarm", true, DRUID_MULTI_DOT_MIN_LIFETIME) {}
 };
 
 class CastMoonfireOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
-    CastMoonfireOnAttackerAction(PlayerbotAI* botAI) : CastDebuffSpellOnAttackerAction(botAI, "moonfire", true, 0.0f) {}
-    bool isUseful() override { return CastAuraSpellAction::isUseful(); }
+    CastMoonfireOnAttackerAction(PlayerbotAI* botAI)
+        : CastDebuffSpellOnAttackerAction(botAI, "moonfire", true, DRUID_MULTI_DOT_MIN_LIFETIME) {}
 };
 
 class CastEnrageAction : public CastBuffSpellAction
 {
 public:
     CastEnrageAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "enrage") {}
+
+    // [b31_sd] Enrage lowers the bear's armor while it builds rage (GUIDE_AUDIT_TANKS.md: the guide uses it before
+    // the pull, in combat "generally not"). In combat only while the bear is short of rage and healthy.
+    bool isUseful() override;
 };
 
 class CastRejuvenationOnNotFullAction : public HealPartyMemberAction
@@ -405,12 +536,8 @@ public:
     std::string const getName() override { return "wild growth blanket"; }
 };
 
-class EclipseSolarProcTimeValue : public ManualSetValue<time_t>
-{
-public:
-    EclipseSolarProcTimeValue(PlayerbotAI* botAI) : ManualSetValue<time_t>(botAI, 0) {}
-};
-
+// [b31_deep] Start of the last Lunar Eclipse (time()), for its 30 s proc cooldown (CastWrathAction and
+// CastStarfireAction). The Solar counterpart is gone: the fishing rule only needs the Lunar cooldown.
 class EclipseLunarProcTimeValue : public ManualSetValue<time_t>
 {
 public:

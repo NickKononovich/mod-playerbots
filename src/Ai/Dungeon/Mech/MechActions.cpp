@@ -10,7 +10,10 @@
 #include "Group.h"
 #include "MechShared.h"
 #include "Playerbots.h"
+#include "PullStrategy.h"
+#include "Spell.h"
 #include "Timer.h"
+#include "Transport.h"
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -43,7 +46,7 @@ namespace
         return Dist2d(ax + t * dx, ay + t * dy, px, py);
     }
 
-    bool PartyCentroid(Player* bot, float& cx, float& cy)
+    bool PartyCentroid(Player* bot, float& cx, float& cy, bool rangedOnly)
     {
         Group* group = bot->GetGroup();
         if (!group)
@@ -58,6 +61,8 @@ namespace
                 member->GetMapId() != bot->GetMapId())
                 continue;
             if (bot->GetExactDist2d(member) > 60.0f)
+                continue;
+            if (rangedOnly && (PlayerbotAI::IsTank(member) || !PlayerbotAI::IsRanged(member)))
                 continue;
             sx += member->GetPositionX();
             sy += member->GetPositionY();
@@ -101,6 +106,10 @@ namespace
     constexpr float KITE_FAN_OFFSETS[] = {
         0.0f, 0.35f, -0.35f, 0.70f, -0.70f, 1.05f, -1.05f, 1.40f, -1.40f,
         1.75f, -1.75f, 2.10f, -2.10f, 2.45f, -2.45f, 2.80f, -2.80f, 3.14f };
+
+    // [b33_mech] A fixated tank holding Sepethrea that is otherwise safe still steps on while her Arcane Blast would
+    // throw it more than this many yards past MechanarFlames::THROW_SAFE_Y (a small slack, so it does not shuffle).
+    constexpr float THROW_SETTLE_SLACK = 5.0f;
 
     bool SpotSafe(std::vector<std::pair<float, float>> const& flames,
                   std::vector<MechanarFlames::TrailPatch> const& patches, float x, float y,
@@ -215,11 +224,45 @@ bool SepethreaKiteFlameAction::Execute(Event)
 
     float tankX = 0.0f, tankY = 0.0f;
     bool const haveTank = TankPosition(bot, tankX, tankY);
-    bool const leashed = PlayerbotAI::IsHeal(bot) && haveTank;
-    float const tankDist = leashed ? bot->GetExactDist2d(tankX, tankY) : 0.0f;
+    bool const isTank = PlayerbotAI::IsTank(bot);
 
+    // Leash: a healer kites inside healing range of the tank; a fixated tank whose boss is on someone
+    // else kites close to her (taunt range, and she walks back onto the tank). A tank holding the boss
+    // needs no leash: she follows it, so it drags her along the kite path.
+    float leashX = tankX, leashY = tankY;
+    float leashSoft = MechanarFlames::HEALER_KITE_LEASH;
+    float leashHard = MechanarFlames::HEALER_KITE_LEASH_MAX;
+    bool leashed = PlayerbotAI::IsHeal(bot) && haveTank;
+    if (isTank)
+    {
+        Unit* boss = MechanarFlames::GetSepethrea(bot);
+        leashed = boss && boss->GetVictim() != bot;
+        if (leashed)
+        {
+            leashX = boss->GetPositionX();
+            leashY = boss->GetPositionY();
+            leashSoft = MechanarFlames::TANK_KITE_LEASH;
+            leashHard = MechanarFlames::TANK_KITE_LEASH_MAX;
+        }
+    }
+    // [b33_mech2] The leash point stays in the fight area: a tank her Arcane Blast threw out of the room (mech-n
+    // 20261026-000434-mech-n-5D-17 00:25:04, Rldrual 303.5,-3.5 in the south trash) pulled the healer's leash after
+    // it, out of the room and into the trash too. Capped to the nearest room point, the healer kites inside the room
+    // as close to the tank as the room allows.
+    if (leashed && !MechanarFlames::InRoom(leashX, leashY))
+        MechanarFlames::ClampIntoRoom(leashX, leashY);
+    float const leashDist = leashed ? bot->GetExactDist2d(leashX, leashY) : 0.0f;
+
+    // [b33_mech] A tank dragging her keeps her Arcane Blast throw out of the south trash (MechShared.h
+    // ARCANE_BLAST_THROW): it turns well before the south end and scores every spot by where the throw lands.
+    Unit* const heldBoss = isTank && !leashed ? MechanarFlames::GetSepethrea(bot) : nullptr;
+    float const southEndY = heldBoss ? MechanarFlames::TANK_TURN_SOUTH_Y : MechanarFlames::ROOM_Y_MIN;
+
+    // The tank keeps its berth from the ranged/healer spot only: the melee stay on the boss, which
+    // follows the tank, so fleeing from them would never settle.
     float px = tankX, py = tankY;
-    bool const haveParty = haveTank || PartyCentroid(bot, px, py);
+    bool const haveParty =
+        isTank ? PartyCentroid(bot, px, py, true) : (haveTank || PartyCentroid(bot, px, py, false));
     float const groupDist = haveParty ? bot->GetExactDist2d(px, py) : 1000.0f;
 
     uint32 const nowMs = getMSTime();
@@ -238,8 +281,7 @@ bool SepethreaKiteFlameAction::Execute(Event)
     if (!turning && !leashed && std::fabs(fy) >= 0.5f && dist <= MechanarFlames::KITE_TURN_THRESHOLD)
     {
         float const endSign = fy > 0.0f ? 1.0f : -1.0f;
-        float const endDist = fy > 0.0f ? MechanarFlames::ROOM_Y_MAX - by
-                                        : by - MechanarFlames::ROOM_Y_MIN;
+        float const endDist = fy > 0.0f ? MechanarFlames::ROOM_Y_MAX - by : by - southEndY;
         if (endDist < MechanarFlames::KITE_TURN_RUNWAY)
         {
             float bestKey = -1e18f, bestLaneClear = -1e18f;
@@ -249,8 +291,7 @@ bool SepethreaKiteFlameAction::Execute(Event)
                                         ? MechanarFlames::ROOM_X_MAX - MechanarFlames::KITE_TURN_WALL_INSET
                                         : MechanarFlames::ROOM_X_MIN + MechanarFlames::KITE_TURN_WALL_INSET;
                 float laneEndY = flame->GetPositionY() - endSign * MechanarFlames::KITE_TURN_PASS_BEHIND;
-                laneEndY = std::min(std::max(laneEndY, MechanarFlames::ROOM_Y_MIN + 3.0f),
-                                    MechanarFlames::ROOM_Y_MAX - 3.0f);
+                laneEndY = std::min(std::max(laneEndY, southEndY + 3.0f), MechanarFlames::ROOM_Y_MAX - 3.0f);
                 float const laneClear =
                     std::min(SegClearance(avoidFlames, patches, bx, by, sideX, by),
                              SegClearance(avoidFlames, patches, sideX, by, sideX, laneEndY));
@@ -282,8 +323,7 @@ bool SepethreaKiteFlameAction::Execute(Event)
             _turnLateral = false;
 
         float laneEndY = flame->GetPositionY() - _turnEnd * MechanarFlames::KITE_TURN_PASS_BEHIND;
-        laneEndY = std::min(std::max(laneEndY, MechanarFlames::ROOM_Y_MIN + 3.0f),
-                            MechanarFlames::ROOM_Y_MAX - 3.0f);
+        laneEndY = std::min(std::max(laneEndY, southEndY + 3.0f), MechanarFlames::ROOM_Y_MAX - 3.0f);
 
         float laneClear;
         if (_turnLateral)
@@ -303,7 +343,8 @@ bool SepethreaKiteFlameAction::Execute(Event)
     }
 
     if (dist >= MechanarFlames::KITE_THRESHOLD && groupDist >= MechanarFlames::KITE_GROUP_CLEARANCE &&
-        (!leashed || tankDist <= MechanarFlames::HEALER_KITE_LEASH) &&
+        (!leashed || leashDist <= leashSoft) &&
+        (!heldBoss || MechanarFlames::ThrowOvershoot(heldBoss, bx, by) <= THROW_SETTLE_SLACK) &&
         SpotSafe(avoidFlames, patches, bx, by))
         return false;
 
@@ -368,9 +409,8 @@ bool SepethreaKiteFlameAction::Execute(Event)
             if (!SegSafe(avoidFlames, patches, bx, by, destX, destY))
                 continue;
 
-            float const destTankDist = leashed ? Dist2d(destX, destY, tankX, tankY) : 0.0f;
-            if (leashed && destTankDist > MechanarFlames::HEALER_KITE_LEASH_MAX &&
-                destTankDist >= tankDist)
+            float const destLeashDist = leashed ? Dist2d(destX, destY, leashX, leashY) : 0.0f;
+            if (leashed && destLeashDist > leashHard && destLeashDist >= leashDist)
                 continue;
 
             float fd = 1e9f;
@@ -378,11 +418,12 @@ bool SepethreaKiteFlameAction::Execute(Event)
                 fd = std::min(fd, Dist2d(destX, destY, chaser.first, chaser.second));
             float const longAxis = leashed ? 0.0f : MechanarFlames::KITE_LONG_AXIS_WEIGHT;
             float score = fd + longAxis * std::fabs(std::sin(ang)) + len * 0.1f;
+            if (heldBoss)
+                score -= MechanarFlames::THROW_WEIGHT * MechanarFlames::ThrowOvershoot(heldBoss, destX, destY);
             if (leashed)
             {
-                if (destTankDist > MechanarFlames::HEALER_KITE_LEASH)
-                    score -= MechanarFlames::HEALER_KITE_LEASH_WEIGHT *
-                             (destTankDist - MechanarFlames::HEALER_KITE_LEASH);
+                if (destLeashDist > leashSoft)
+                    score -= MechanarFlames::HEALER_KITE_LEASH_WEIGHT * (destLeashDist - leashSoft);
                 float passDist = 1e9f;
                 for (auto const& chaser : chaserPos)
                     passDist = std::min(passDist, MinSegDist(bx, by, destX, destY,
@@ -420,15 +461,26 @@ bool SepethreaAvoidFlameAction::Execute(Event)
     std::vector<MechanarFlames::TrailPatch> patches;
     MechanarFlames::CollectTrailPatches(bot, MechanarFlames::TRAIL_SCAN + MechanarFlames::INFERNO_AVOID_CLEAR, patches);
 
-    float const clearDist = MechanarFlames::MELEE_FLAME_CLEAR;
+    // A tank holding Sepethrea drags her clear: she stands in front of it with the melee around her,
+    // so it keeps a wider berth and also moves when only she is in a flame's Inferno reach.
+    Unit* boss = MechanarFlames::TankHoldsBoss(bot) ? MechanarFlames::GetSepethrea(bot) : nullptr;
+    float const clearDist =
+        MechanarFlames::MELEE_FLAME_CLEAR + (boss ? MechanarFlames::TANK_DRAG_EXTRA : 0.0f);
     float const bx = bot->GetPositionX();
     float const by = bot->GetPositionY();
-    if (SpotSafe(avoidFlames, patches, bx, by, clearDist))
+    std::vector<MechanarFlames::TrailPatch> const noPatches;
+    bool const bossClear = !boss || SpotSafe(avoidFlames, noPatches, boss->GetPositionX(), boss->GetPositionY(),
+                                             MechanarFlames::INFERNO_AVOID_RANGE);
+    if (bossClear && SpotSafe(avoidFlames, patches, bx, by, clearDist))
         return false;
 
     constexpr int DIRS = 16;
     float bestX = bx, bestY = by, bestClear = HazardClearance(avoidFlames, patches, bx, by, clearDist);
     bool found = false;
+    // [b33_mech] A tank holding her takes the nearest safe spot whose Arcane Blast throw stays out of the south trash;
+    // a safe spot with a bad throw is only the fallback, the one with the shortest overshoot.
+    bool haveThrown = false;
+    float thrownX = 0.0f, thrownY = 0.0f, thrownOver = 1e9f;
     for (float radius = 4.0f; radius <= MechanarFlames::INFERNO_AVOID_CLEAR + 8.0f && !found; radius += 3.0f)
     {
         for (int i = 0; i < DIRS; ++i)
@@ -440,6 +492,18 @@ bool SepethreaAvoidFlameAction::Execute(Event)
                 continue;
             if (SpotSafe(avoidFlames, patches, x, y, clearDist))
             {
+                float const over = MechanarFlames::ThrowOvershoot(boss, x, y);
+                if (over > THROW_SETTLE_SLACK)
+                {
+                    if (over < thrownOver)
+                    {
+                        thrownOver = over;
+                        thrownX = x;
+                        thrownY = y;
+                        haveThrown = true;
+                    }
+                    continue;
+                }
                 bestX = x;
                 bestY = y;
                 found = true;
@@ -453,6 +517,11 @@ bool SepethreaAvoidFlameAction::Execute(Event)
                 bestY = y;
             }
         }
+    }
+    if (!found && haveThrown)
+    {
+        bestX = thrownX;
+        bestY = thrownY;
     }
 
     if (bestX == bx && bestY == by)
@@ -511,9 +580,50 @@ bool SepethreaAvoidTrailAction::Execute(Event)
         }
     }
 
-    float destX = bot->GetPositionX() + ax * MechanarFlames::TRAIL_CLEAR_STEP;
-    float destY = bot->GetPositionY() + ay * MechanarFlames::TRAIL_CLEAR_STEP;
-    if (!MechanarFlames::SegmentInRoom(bot->GetPositionX(), bot->GetPositionY(), destX, destY))
+    // Step out along the push direction, but fan around it: straight out of a patch is often into a
+    // wall or a corner (the old clamp put the bot right back where it stood, in the fire), or into the
+    // flame that is laying the trail. Keep the flames' melee berth and prefer the push direction.
+    std::vector<std::pair<float, float>> flames;
+    MechanarFlames::CollectAvoidFlames(bot, flames);
+    std::vector<Creature*> chasers;
+    MechanarFlames::CollectChasingFlames(bot, chasers);
+    for (Creature* chaser : chasers)
+        flames.emplace_back(chaser->GetPositionX(), chaser->GetPositionY());
+
+    float const bx = bot->GetPositionX();
+    float const by = bot->GetPositionY();
+    float const baseAng = std::atan2(ay, ax);
+    // [b33_mech] A tank holding her also weighs where her Arcane Blast would throw it (MechShared.h
+    // ARCANE_BLAST_THROW), capped below the clearance term: out of the fire first, the throw breaks the ties.
+    Unit* const heldBoss = MechanarFlames::TankHoldsBoss(bot) ? MechanarFlames::GetSepethrea(bot) : nullptr;
+    float const stepLens[] = { MechanarFlames::TRAIL_CLEAR_STEP, 7.0f, 13.0f };
+    float destX = bx + ax * MechanarFlames::TRAIL_CLEAR_STEP;
+    float destY = by + ay * MechanarFlames::TRAIL_CLEAR_STEP;
+    float bestKey = -1e18f;
+    bool found = false;
+    for (float off : KITE_FAN_OFFSETS)
+    {
+        float const ang = baseAng + off;
+        for (float len : stepLens)
+        {
+            float const x = bx + std::cos(ang) * len;
+            float const y = by + std::sin(ang) * len;
+            if (!MechanarFlames::SegmentInRoom(bx, by, x, y))
+                continue;
+            float const clear = HazardClearance(flames, patches, x, y, MechanarFlames::MELEE_FLAME_CLEAR);
+            float const key = std::min(clear, 4.0f) * 4.0f + std::cos(off) * 3.0f - len * 0.05f -
+                              MechanarFlames::THROW_WEIGHT *
+                                  std::min(MechanarFlames::ThrowOvershoot(heldBoss, x, y), 4.0f);
+            if (key > bestKey)
+            {
+                bestKey = key;
+                destX = x;
+                destY = y;
+                found = true;
+            }
+        }
+    }
+    if (!found && !MechanarFlames::SegmentInRoom(bx, by, destX, destY))
         MechanarFlames::ClampIntoRoom(destX, destY);
 
     MovementPriority const priority =
@@ -533,4 +643,254 @@ bool SepethreaFocusBossAction::Execute(Event)
         return Attack(boss);
 
     return false;
+}
+
+namespace
+{
+// The walk over the deck's rim (MechanarRideLiftAction): its middle point lies this far inside the deck's edge.
+constexpr float DECK_RIM_INSET = 1.0f;
+// The deck's floor at a point: searched from this high above the deck or the bot, this far down; only a floor this
+// close to the deck's own height counts (else the bot's height on the landing: the deck stands flush with it).
+constexpr float DECK_FLOOR_SEARCH_UP = 3.0f;
+constexpr float DECK_FLOOR_SEARCH = 8.0f;
+constexpr float DECK_FLOOR_MAX_DZ = 4.0f;
+// Off the deck only while it stands long enough for the walk to the landing (up to 15 yd); else at the next stop.
+constexpr uint32 STEP_OFF_MIN_LEFT_MS = 2300;
+
+float DeckFloor(Player* bot, Transport* lift, float x, float y)
+{
+    float const deckZ = MechanarLift::DeckZ(lift);
+    float const from = std::max(deckZ, bot->GetPositionZ()) + DECK_FLOOR_SEARCH_UP;
+    float const floor = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, from, true, DECK_FLOOR_SEARCH);
+    if (floor > INVALID_HEIGHT && std::fabs(floor - deckZ) <= DECK_FLOOR_MAX_DZ)
+        return floor;
+    return bot->GetPositionZ();
+}
+
+// The point of the deck's square, inset by DECK_RIM_INSET, nearest to (x, y).
+G3D::Vector3 DeckRimPoint(Transport* lift, float x, float y, float z)
+{
+    float cx = 0.0f, cy = 0.0f;
+    MechanarLift::DeckCenter(lift, cx, cy);
+    float const half = MechanarLift::DECK_HALF - DECK_RIM_INSET;
+    return G3D::Vector3(std::clamp(x, cx - half, cx + half), std::clamp(y, cy - half, cy + half), z);
+}
+}  // namespace
+
+bool MechanarRideLiftAction::WalkOverRim(G3D::Vector3 const& rim, G3D::Vector3 const& end)
+{
+    UpdateMovementState();
+    if (!IsMovingAllowed())
+        return false;
+
+    if (bot->IsSitState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+
+    // A path of three points is followed as given (SwimStraight): MovePoint pathfinds even without generatePath,
+    // and that path ended on the landing's rim, short of the deck (mech-n/h 2026-10-25: all five at 247,50.8).
+    G3D::Vector3 const start(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    Movement::PointsArray path = {start, rim, end};
+    MotionMaster* mm = bot->GetMotionMaster();
+    mm->Clear();
+    mm->MoveSplinePath(&path);
+
+    float const distance = (rim - start).length() + (end - rim).length();
+    float const delay = std::min(static_cast<float>(sPlayerbotAIConfig.MaxWaitForMove),
+                                 static_cast<float>(IN_MILLISECONDS) * MoveDelay(distance));
+    AI_VALUE(LastMovement&, "last movement")
+        .Set(MechanarLift::MAP_ID, end.x, end.y, end.z, bot->GetOrientation(), delay,
+             MovementPriority::MOVEMENT_FORCED);
+    return true;
+}
+
+bool MechanarRideLiftAction::Execute(Event /*event*/)
+{
+    MechanarLift::Leg leg;
+    if (!MechanarLift::ActiveLeg(bot, leg))
+        return false;
+
+    Transport* lift = leg.lift;
+    float landingX = 0.0f, landingY = 0.0f, landingZ = 0.0f;
+    bool const ownWalk =
+        bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == ESCORT_MOTION_TYPE;
+
+    if (leg.riding || leg.onDeck)
+    {
+        // The walk onto the deck or off it is under way: it goes on.
+        if (ownWalk)
+            return true;
+
+        // The deck stands at the goal long enough for the walk: off it, onto the landing. Off the transport first,
+        // so the walk is in world coordinates and ends on the landing, not carried on with the deck.
+        if (MechanarLift::StopLeftMs(lift, leg.goal) >= STEP_OFF_MIN_LEFT_MS)
+        {
+            MechanarLift::Landing(leg.goal, landingX, landingY, landingZ);
+            float const landingFloor = bot->GetMapHeight(landingX, landingY, landingZ + DECK_FLOOR_SEARCH_UP);
+            if (landingFloor > INVALID_HEIGHT && std::fabs(landingFloor - landingZ) <= DECK_FLOOR_MAX_DZ)
+                landingZ = landingFloor;
+            if (leg.riding)
+                lift->RemovePassenger(bot, true);
+            G3D::Vector3 const rim = DeckRimPoint(lift, landingX, landingY, bot->GetPositionZ());
+            if (WalkOverRim(rim, G3D::Vector3(landingX, landingY, landingZ)))
+                return true;
+            // No walk now: aboard again until the next stop.
+            lift->AddPassenger(bot, true);
+            return true;
+        }
+
+        // Aboard: a passenger, standing still until the goal. Also again after PlayerbotAI's own transport check
+        // let go of the bot - it looks for a static transport within 75 yd of the object's position, which for
+        // this lift is its model origin by the instance entrance, 260 yd from the shaft.
+        if (!leg.riding)
+        {
+            lift->AddPassenger(bot, true);
+            if (bot->isMoving())
+                bot->StopMovingOnCurrentPos();
+            return true;
+        }
+        if (bot->isMoving())
+        {
+            bot->StopMovingOnCurrentPos();
+            return true;
+        }
+        // Riding: nothing to do here; what does not move the bot (a buff, a heal) may run meanwhile, every move is
+        // held (MechanarLiftHoldMultiplier).
+        return false;
+    }
+
+    // At the landing of its level: onto the deck while it stands there long enough, else wait for it.
+    MechanarLift::Landing(leg.here, landingX, landingY, landingZ);
+    float const toLanding = bot->GetExactDist2d(landingX, landingY);
+    if (toLanding <= MechanarLift::BOARD_FROM_RANGE &&
+        MechanarLift::StopLeftMs(lift, leg.here) >= MechanarLift::BOARD_MIN_LEFT_MS)
+    {
+        // Spread over the deck by the bot's place in the group, nobody in the middle of another.
+        static float const SLOT_OFFSETS[][2] = {{0.0f, 0.0f}, {-2.5f, -2.5f}, {-2.5f, 2.5f}, {2.5f, -2.5f},
+                                                {2.5f, 2.5f}};
+        uint32 slot = 0;
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                if (ref->GetSource() == bot)
+                    break;
+                ++slot;
+            }
+        float deckX = 0.0f, deckY = 0.0f;
+        MechanarLift::DeckCenter(lift, deckX, deckY);
+        deckX += SLOT_OFFSETS[slot % 5][0];
+        deckY += SLOT_OFFSETS[slot % 5][1];
+        float const deckFloor = DeckFloor(bot, lift, deckX, deckY);
+        G3D::Vector3 const rim = DeckRimPoint(lift, bot->GetPositionX(), bot->GetPositionY(), deckFloor);
+        // A passenger before the step, as a client boards: the walk runs in the deck's coordinates, and no guard
+        // of a walk over open air cuts it at the rim (PlayerbotAI::GuardAirborneSpline skips transport splines).
+        if (bot->GetTransport() != lift)
+            lift->AddPassenger(bot, true);
+        if (WalkOverRim(rim, G3D::Vector3(deckX, deckY, deckFloor)))
+            return true;
+        lift->RemovePassenger(bot, true);
+    }
+
+    // On the way to the landing.
+    if (bot->isMoving())
+    {
+        float shaftX = 0.0f, shaftY = 0.0f;
+        MechanarLift::DeckCenter(lift, shaftX, shaftY);
+        float const toShaft = bot->GetExactDist2d(shaftX, shaftY);
+        uint32 const now = getMSTime();
+        if (toShaft > MechanarLift::APPROACH_RANGE &&
+            (!_landingWalkLogMs || getMSTimeDiff(_landingWalkLogMs, now) >= 10 * IN_MILLISECONDS))
+        {
+            _landingWalkLogMs = now ? now : 1;
+            LOG_INFO("playerbots",
+                     "[w24b-mech-landing-walk] {}: walks on to the {} landing past the approach range, {:.1f} yd from "
+                     "the shaft, {:.1f} yd to go",
+                     bot->GetName(), leg.here == MechanarLift::Level::Top ? "top" : "bottom", toShaft, toLanding);
+        }
+        return true;
+    }
+    if (toLanding > MechanarLift::LANDING_WAIT_RANGE)
+        return MoveTo(MechanarLift::MAP_ID, landingX, landingY, landingZ, false, false, false, false,
+                      MovementPriority::MOVEMENT_NORMAL);
+
+    // Waiting for the deck: nothing else walks the bot away meanwhile (MechanarLiftHoldMultiplier).
+    return false;
+}
+
+bool CapacitusPolarityAction::Execute(Event /*event*/)
+{
+    constexpr uint32 logMs = 5 * IN_MILLISECONDS;
+    constexpr float arrived = 1.0f;
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    if (!MechanarCapacitus::PolaritySpot(bot, x, y, z) || bot->GetExactDist2d(x, y) < arrived)
+        return false;
+
+    uint32 const now = getMSTime();
+    if (!_logMs || getMSTimeDiff(_logMs, now) >= logMs)
+    {
+        _logMs = now;
+        LOG_INFO("playerbots",
+                 "[capacitus polarity] {} ({} charge, {} the tank's) moves to ({:.1f}, {:.1f}), {:.1f} yd", bot->GetName(), MechanarCapacitus::Charge(bot) > 0 ? "positive" : "negative",
+                 MechanarCapacitus::OppositeOfTank(bot) ? "not" : "with", x, y, bot->GetExactDist2d(x, y));
+    }
+
+    return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_COMBAT, true,
+                  false);
+}
+
+bool CapacitusHoldFireAction::Execute(Event /*event*/)
+{
+    Unit* capacitus = MechanarCapacitus::GetCapacitus(bot);
+    if (!capacitus)
+        return false;
+
+    bool stopped = false;
+    char const* shield = "";
+    if (!PlayerbotAI::IsHeal(bot) && MechanarCapacitus::CastingIntoMagicShield(botAI, capacitus))
+    {
+        for (CurrentSpellTypes const slot : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL})
+        {
+            Spell* spell = bot->GetCurrentSpell(slot);
+            if (spell && spell->m_targets.GetUnitTarget() == capacitus)
+            {
+                bot->InterruptSpell(slot);
+                stopped = true;
+            }
+        }
+        shield = "Reflective Magic Shield: cast stopped";
+    }
+
+    if (MechanarCapacitus::MeleeHoldsForDamageShield(bot, capacitus) && bot->GetVictim() == capacitus)
+    {
+        bot->AttackStop();
+        stopped = true;
+        shield = "Reflective Damage Shield: melee stopped";
+    }
+
+    if (stopped)
+        LOG_INFO("playerbots", "[capacitus shield] {}: {}", bot->GetName(), shield);
+    return stopped;
+}
+
+bool MechanarBridgePullAction::Execute(Event /*event*/)
+{
+    Creature* target = MechanarBridge::BridgePullTarget(botAI);
+    PullStrategy* strategy = PullStrategy::Get(botAI);
+    if (!target || !strategy)
+        return false;
+
+    std::vector<Creature*> pack;
+    MechanarBridge::CollectBridgePack(bot, pack);
+    LOG_INFO("playerbots",
+             "[mech bridge] {} pulls {} at {:.1f} yd: the bridge pack ({} alive) must die before Pathaleon appears "
+             "(instance DATA_BRIDGE_MOB_DEATH_COUNT 4, he is invisible and unattackable until then)",
+             bot->GetName(), target->GetName(), bot->GetExactDist(target), pack.size());
+
+    strategy->RequestPull(target, true, false);
+    bot->SetSelection(target->GetGUID());
+    context->GetValue<Unit*>("current target")->Set(target);
+    botAI->ChangeEngine(BOT_STATE_COMBAT);
+    return true;
 }

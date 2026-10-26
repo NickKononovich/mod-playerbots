@@ -10,6 +10,7 @@
 #include "MoveSpline.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidKiteHelper.h"
 #include "SSCActions.h"
 #include "SSCHelpers.h"
 
@@ -619,14 +620,13 @@ bool LadyVashjShouldAssignTargetPriorityTrigger::IsActiveInEncounter()
     return phase == 2 || phase == 3;
 }
 
-// Intentionally not gated on BotCheatMask as the foundation for the positioning in this strategy
-// would not work without the Striders being tankable.
+// The Strider positioning needs fear-immune tanks, so a priest keeps Fear Ward on them.
 bool LadyVashjTankNeedsFearWardTrigger::IsActiveInEncounter()
 {
-    if (!PlayerbotAI::IsTank(bot) || bot->HasAura(Id(SscSpells::SPELL_FEAR_WARD)))
+    if (bot->getClass() != CLASS_PRIEST || !AI_VALUE2(Unit*, "find target", "coilfang strider"))
         return false;
 
-    return AI_VALUE2(Unit*, "find target", "coilfang strider");
+    return GetVashjTankWithoutFearWard(bot) != nullptr;
 }
 
 bool LadyVashjCoilfangStriderShouldBeTankedTrigger::IsActiveInEncounter()
@@ -640,6 +640,16 @@ bool LadyVashjCoilfangStriderShouldBeTankedTrigger::IsActiveInEncounter()
 
     Unit* vashj = AI_VALUE2(Unit*, "find target", "lady vashj");
     return vashj && ShouldPositionVashjStrider(bot, strider, vashj, GetLadyVashjPhase(vashj));
+}
+
+bool LadyVashjCoilfangStriderOnNonTankTrigger::IsActiveInEncounter()
+{
+    if (PlayerbotAI::IsTank(bot) || HasTaintedCore(bot))
+        return false;
+
+    Unit* strider = GetVashjStriderAttackingBot(bot);
+    return strider && RaidKiteHelper::IsKiteNeeded(
+        bot, { strider->GetPosition() }, VASHJ_STRIDER_KITE_DISTANCE);
 }
 
 bool LadyVashjCoilfangEliteShouldBeTankedTrigger::IsActiveInEncounter()

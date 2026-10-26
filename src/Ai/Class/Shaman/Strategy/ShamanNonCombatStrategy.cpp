@@ -84,6 +84,9 @@ void ShamanNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     NonCombatStrategy::InitTriggers(triggers);
 
+    // [rot_b31_heal] A totem acting on enemies goes first, alone; the friendly ones stay for the next pull and the
+    // recall only fires once the group has walked out of their reach.
+    triggers.push_back(new TriggerNode("idle hostile totem", { NextAction("dismiss hostile totems", 61.0f) }));
     // Totemic Recall
     triggers.push_back(new TriggerNode("totemic recall", { NextAction("totemic recall", 60.0f) }));
 
@@ -126,6 +129,10 @@ void ShamanNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     {
         triggers.push_back(new TriggerNode("main hand weapon no imbue", { NextAction("earthliving weapon main hand", 22.0f), }));
         triggers.push_back(new TriggerNode("water shield", { NextAction("water shield", 20.0f), }));
+        // [healer_audit_b30] K6 pre-pull, as the druid, priest and paladin have it: Earth Shield and Riptide on the
+        // tank that is about to pull (Riptide yields to its own upkeep rule once he is full).
+        triggers.push_back(new TriggerNode("pull imminent", { NextAction("earth shield on main tank", ACTION_HIGH + 3),
+                                                              NextAction("riptide on main tank", ACTION_HIGH + 2) }));
     }
 
     // Buff Triggers while swimming
@@ -133,6 +140,11 @@ void ShamanNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("water walking", { NextAction("water walking", 12.0f), }));
     triggers.push_back(new TriggerNode("water breathing on party", { NextAction("water breathing on party", 11.0f), }));
     triggers.push_back(new TriggerNode("water walking on party", { NextAction("water walking on party", 11.0f), }));
+
+    // Raid utility coordinator: no duplicate buff totems inside a party
+    triggers.push_back(new TriggerNode("totem assignment", { NextAction("apply totem assignment", 13.0f), }));
+    // [b31_sd] Resto alone on the water slot: Healing Stream under a Blessing of Wisdom, Mana Spring otherwise.
+    triggers.push_back(new TriggerNode("water totem choice", { NextAction("apply water totem choice", 12.9f) }));
 
     // Pet Triggers
     triggers.push_back(new TriggerNode("has pet", { NextAction("toggle pet spell", 60.0f), }));

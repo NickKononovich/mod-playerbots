@@ -179,6 +179,9 @@ public:
         creators["lady vashj coilfang strider should be tanked"] =
             &RaidSscTriggerContext::lady_vashj_coilfang_strider_should_be_tanked;
 
+        creators["lady vashj coilfang strider on non tank"] =
+            &RaidSscTriggerContext::lady_vashj_coilfang_strider_on_non_tank;
+
         creators["lady vashj coilfang elite should be tanked"] =
             &RaidSscTriggerContext::lady_vashj_coilfang_elite_should_be_tanked;
 
@@ -448,6 +451,10 @@ private:
     static Trigger* lady_vashj_coilfang_strider_should_be_tanked(PlayerbotAI* botAI)
     {
         return new LadyVashjCoilfangStriderShouldBeTankedTrigger(botAI);
+    }
+    static Trigger* lady_vashj_coilfang_strider_on_non_tank(PlayerbotAI* botAI)
+    {
+        return new LadyVashjCoilfangStriderOnNonTankTrigger(botAI);
     }
     static Trigger* lady_vashj_coilfang_elite_should_be_tanked(PlayerbotAI* botAI)
     {

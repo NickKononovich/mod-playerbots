@@ -7,11 +7,14 @@
 #ifndef PLAYERBOTS_HUNTERACTIONS_H
 #define PLAYERBOTS_HUNTERACTIONS_H
 
+#include "AiObjectContext.h"
 #include "AiObject.h"
 #include "Event.h"
 #include "GenericSpellActions.h"
 #include "Unit.h"
 
+class Item;
+class Pet;
 class PlayerbotAI;
 class Unit;
 
@@ -145,6 +148,16 @@ public:
         CastSpellAction(botAI, "silencing shot") {}
 };
 
+// [b31_deep] wowsims MM fires Silencing Shot on cooldown as a damage shot. The bot holds it for interrupts, which a
+// boss that its silence and interrupt cannot affect makes pointless: there it is spent on cooldown.
+class CastSilencingShotOnCooldownAction : public CastSilencingShotAction
+{
+public:
+    CastSilencingShotOnCooldownAction(PlayerbotAI* botAI) : CastSilencingShotAction(botAI) {}
+    std::string const getName() override { return "silencing shot on cooldown"; }
+    bool isUseful() override;
+};
+
 class CastConcussiveShotAction : public CastSnareSpellAction
 {
 public:
@@ -172,11 +185,22 @@ public:
         CastSpellAction(botAI, "distracting shot") {}
 };
 
+// [b31_deep] Misdirection puts its 30 s aura (34477) and the 4 s threat-transfer buff (35079) on the HUNTER; the
+// tank never carries one, so a check on the tank was always true.
+constexpr uint32 SPELL_MISDIRECTION = 34477;
+constexpr uint32 SPELL_MISDIRECTION_TRANSFER = 35079;
+
+// Raid utility coordinator: the tank holding the current pull, else the main tank.
 class CastMisdirectionOnMainTankAction : public BuffOnMainTankAction
 {
 public:
     CastMisdirectionOnMainTankAction(PlayerbotAI* botAI) :
         BuffOnMainTankAction(botAI, "misdirection", true) {}
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
+    bool isUseful() override;  // [b31_deep]
+
+    std::string const GetTargetName() override { return "threat redirect target"; }
+    Value<Unit*>* GetTargetValue() override { return context->GetValue<Unit*>("threat redirect target"); }
 };
 
 class CastFeignDeathAction : public CastBuffSpellAction
@@ -184,15 +208,23 @@ class CastFeignDeathAction : public CastBuffSpellAction
 public:
     CastFeignDeathAction(PlayerbotAI* botAI) :
         CastBuffSpellAction(botAI, "feign death") {}
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
 // Pet Spells
 
+// Feeds the hunter pet with real food from the bags through the Feed Pet spell (no free happiness).
 class FeedPetAction : public Action
 {
 public:
     FeedPetAction(PlayerbotAI* botAI) : Action(botAI, "feed pet") {}
     bool Execute(Event event) override;
+    bool isUseful() override;
+
+private:
+    Item* FindPetFood(Pet* pet);
+
+    uint32 _noFoodUntil = 0;
 };
 
 class CastCallPetAction : public CastBuffSpellAction
@@ -315,15 +347,33 @@ public:
     bool isUseful() override;
 };
 
+// Refresh window: shorter than the GCD would let the sting fall off, longer clips a tick
+constexpr uint32 SERPENT_STING_REFRESH_MS = 2000;
+// [guide_b31_dead] Marksmanship talent; its shot refreshes the hunter's own Serpent Sting
+constexpr uint32 SPELL_CHIMERA_SHOT = 53209;
+// Serpent Sting ticks every 3 s for 15 s: on trash dying sooner the GCD is worth more as a shot
+constexpr float SERPENT_STING_MIN_TARGET_LIFETIME = 6.0f;
+
 class CastSerpentStingAction : public CastDebuffSpellAction
 {
 public:
     CastSerpentStingAction(PlayerbotAI* botAI) :
-        CastDebuffSpellAction(botAI, "serpent sting", true) {}
+        CastDebuffSpellAction(botAI, "serpent sting", true, SERPENT_STING_MIN_TARGET_LIFETIME)
+    {
+        beforeDuration = SERPENT_STING_REFRESH_MS;
+    }
+
+    // [guide_b31_dead] Chimera Shot refreshes our Serpent Sting, so with it the sting is only re-applied when missing
     bool isUseful() override
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        if (bot->HasSpell(SPELL_CHIMERA_SHOT))
+        {
+            Unit* target = GetTarget();
+            if (target && botAI->GetAura("serpent sting", target, true))
+                return false;
+        }
+
+        return CastDebuffSpellAction::isUseful();
     }
 };
 
@@ -343,12 +393,7 @@ class CastSerpentStingOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
     CastSerpentStingOnAttackerAction(PlayerbotAI* botAI)
-        : CastDebuffSpellOnAttackerAction(botAI, "serpent sting", true) {}
-    bool isUseful() override
-    {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
-    }
+        : CastDebuffSpellOnAttackerAction(botAI, "serpent sting", true, SERPENT_STING_MIN_TARGET_LIFETIME) {}
 };
 
 class CastImmolationTrapAction : public CastSpellAction
@@ -364,6 +409,7 @@ class CastExplosiveTrapAction : public CastSpellAction
 public:
     CastExplosiveTrapAction(PlayerbotAI* botAI) :
         CastSpellAction(botAI, "explosive trap") {}
+    bool isUseful() override;  // [b31_deep] yields the shared fire-trap cooldown to a ready Black Arrow
 };
 
 class CastBlackArrowAction : public CastDebuffSpellAction
@@ -403,7 +449,7 @@ public:
         if (!target)
             return false;
 
-        return !target->HasAura(60053);
+        return !target->HasAura(60053, bot->GetGUID());  // [b31_deep] our own DoT, not another hunter's
     }
 };
 
@@ -423,7 +469,7 @@ public:
         if (!target)
             return false;
 
-        return !target->HasAura(60052);
+        return !target->HasAura(60052, bot->GetGUID());  // [b31_deep] our own DoT, not another hunter's
     }
 };
 
@@ -443,7 +489,7 @@ public:
         if (!target)
             return false;
 
-        return !target->HasAura(60051);
+        return !target->HasAura(60051, bot->GetGUID());  // [b31_deep] our own DoT, not another hunter's
     }
 };
 
@@ -463,8 +509,25 @@ public:
         if (!target)
             return false;
 
-        return !target->HasAura(53301);
+        return !target->HasAura(53301, bot->GetGUID());  // [b31_deep] our own DoT, not another hunter's
     }
+};
+
+// [b31_deep] Lock and Load double tap (wowsims sv.apl, Warcraft Tavern SV): the proc's two free shots go to the
+// highest known Explosive Shot rank, and to the next lower rank while our own highest-rank DoT still ticks (ranks
+// of Explosive Shot stack on the target), so the second charge neither clips nor waits for the first DoT.
+constexpr uint32 EXPLOSIVE_SHOT_RANKS[] = { 60053, 60052, 60051, 53301 };
+
+class CastExplosiveShotLockAndLoadAction : public CastExplosiveShotBaseAction
+{
+public:
+    CastExplosiveShotLockAndLoadAction(PlayerbotAI* botAI) : CastExplosiveShotBaseAction(botAI) {}
+    std::string const getName() override { return "explosive shot lock and load"; }
+    bool Execute(Event event) override;
+    bool isUseful() override;
+
+private:
+    uint32 PickRank();
 };
 
 // Melee Spells
@@ -498,12 +561,14 @@ class CastMultiShotAction : public CastSpellAction
 {
 public:
     CastMultiShotAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "multi-shot") {}
+    bool isUseful() override;  // [b33_aoe_class] not next to a crowd-controlled mob
 };
 
 class CastVolleyAction : public CastSpellAction
 {
 public:
     CastVolleyAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "volley") {}
+    bool isUseful() override;  // [b33_aoe_class] not next to a crowd-controlled mob
     ActionThreatType getThreatType() override
     {
         return ActionThreatType::Aoe;

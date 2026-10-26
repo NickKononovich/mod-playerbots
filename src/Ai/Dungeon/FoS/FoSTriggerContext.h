@@ -19,6 +19,8 @@ public:
         creators["move from bronjahm"] = &WotlkDungeonFoSTriggerContext::move_from_bronjahm;
         creators["switch to soul fragment"] = &WotlkDungeonFoSTriggerContext::switch_to_soul_fragment;
         creators["devourer of souls"] = &WotlkDungeonFoSTriggerContext::devourer_of_souls;
+        creators["fos wailing souls"] = &WotlkDungeonFoSTriggerContext::fos_wailing_souls;
+        creators["fos interrupt"] = &WotlkDungeonFoSTriggerContext::fos_interrupt;
     }
 
 private:
@@ -26,6 +28,8 @@ private:
     static Trigger* switch_to_soul_fragment(PlayerbotAI* botAI) { return new SwitchToSoulFragment(botAI); }
     static Trigger* bronjahm_position(PlayerbotAI* botAI) { return new BronjahmPositionTrigger(botAI); }
     static Trigger* devourer_of_souls(PlayerbotAI* botAI) { return new DevourerOfSoulsTrigger(botAI); }
+    static Trigger* fos_wailing_souls(PlayerbotAI* botAI) { return new WailingSoulsTrigger(botAI); }
+    static Trigger* fos_interrupt(PlayerbotAI* botAI) { return new FoSInterruptTrigger(botAI); }
 };
 
 #endif  // !_PLAYERBOT_WOTLKDUNGEONFOSTRIGGERCONTEXT_H

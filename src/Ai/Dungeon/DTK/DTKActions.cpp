@@ -5,7 +5,12 @@
  */
 
 #include "DTKActions.h"
+#include "Pet.h"
 #include "Playerbots.h"
+#include "StringFormat.h"
+#include "TbcHazard.h"
+
+#include <string>
 
 bool CorpseExplodeSpreadAction::Execute(Event /*event*/)
 {
@@ -18,7 +23,7 @@ bool CorpseExplodeSpreadAction::Execute(Event /*event*/)
     for (auto i = corpses.begin(); i != corpses.end(); ++i)
     {
         Unit* unit = botAI->GetUnit(*i);
-        if (unit && unit->GetEntry() == NPC_DRAKKARI_INVADER)
+        if (unit && DTKIds::IsTrollgoreInvader(unit->GetEntry()))
         {
             float currentDistance = bot->GetExactDist2d(unit);
             if (currentDistance < distance + distanceExtra)
@@ -28,17 +33,34 @@ bool CorpseExplodeSpreadAction::Execute(Event /*event*/)
     return false;
 }
 
+bool TrollgoreHoldRoomAction::Execute(Event /*event*/)
+{
+    Unit* boss = AI_VALUE2(Unit*, "find target", "trollgore");
+    if (!boss)
+        return false;
+
+    // The tank brings him back to his home spot; the others close in around it (melee keep hitting from there).
+    float const spread = boss->GetVictim() == bot ? 2.0f : 8.0f;
+    return MoveNear(bot->GetMapId(), DTKIds::TROLLGORE_HOLD_X, DTKIds::TROLLGORE_HOLD_Y, DTKIds::TROLLGORE_HOLD_Z,
+                    spread, MovementPriority::MOVEMENT_COMBAT);
+}
+
 bool AvoidArcaneFieldAction::Execute(Event /*event*/)
 {
-    Unit* boss = AI_VALUE2(Unit*, "find target", "novos the summoner");
-    if (!boss) { return false; }
+    // The field slows by 50 %: leave on the shortest free line and stop any cast (heals outranked it before).
+    Unit* center = DTKShared::ArcaneFieldCenter(botAI);
+    if (!center)
+        return false;
 
-    float distance = 12.0f;  // 11 unit radius, 1 unit added as buffer
-    if (bot->GetExactDist2d(boss) < distance)
-    {
-        return MoveAway(boss, distance - bot->GetExactDist2d(boss));
-    }
-    return false;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float const exitRadius = DTKShared::ARCANE_FIELD_RADIUS + bot->GetCombatReach() + TbcHazard::EXIT_MARGIN;
+    if (!TbcHazard::FindExitPoint(bot, center->GetPosition(), exitRadius, x, y, z))
+        return false;
+
+    bot->CastStop();
+    return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_FORCED, true);
 }
 
 bool NovosDefaultPositionAction::isUseful()
@@ -60,6 +82,28 @@ bool NovosDefaultPositionAction::Execute(Event /*event*/)
             clusterDistance, MovementPriority::MOVEMENT_NORMAL);
     }
     return false;
+}
+
+bool NovosDropSummonTargetAction::Execute(Event /*event*/)
+{
+    // Killing a Novos Summon Target stops its Crystal Handlers, so the shield never drops (softlock).
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (target && DTKIds::IsNovosNeverTarget(target->GetEntry()))
+        context->GetValue<Unit*>("current target")->Set(nullptr);
+
+    Unit* victim = bot->GetVictim();
+    if (victim && DTKIds::IsNovosNeverTarget(victim->GetEntry()))
+    {
+        bot->AttackStop();
+        bot->SetTarget(ObjectGuid::Empty);
+        bot->SetSelection(ObjectGuid::Empty);
+    }
+
+    if (Pet* pet = bot->GetPet())
+        if (Unit* petVictim = pet->GetVictim(); petVictim && DTKIds::IsNovosNeverTarget(petVictim->GetEntry()))
+            pet->AttackStop();
+
+    return true;
 }
 
 bool NovosTargetPriorityAction::Execute(Event /*event*/)
@@ -163,5 +207,114 @@ bool NovosTargetPriorityAction::Execute(Event /*event*/)
             return false;
         }
     }
+    return false;
+}
+
+bool KingDredFearGuardAction::Execute(Event /*event*/)
+{
+    Unit* dred = DTKShared::KingDred(botAI);
+    if (!dred)
+        return false;
+
+    std::string const health = Acore::StringFormat("king dred at {:.0f} %{}", dred->GetHealthPct(),
+        dred->FindCurrentSpellBySpellId(DTKIds::SPELL_BELLOWING_ROAR) ? ", bellowing roar cast" : "");
+
+    switch (bot->getClass())
+    {
+        case CLASS_SHAMAN:
+            if (!botAI->CanCastSpell("tremor totem", bot) || !botAI->CastSpell("tremor totem", bot))
+                return false;
+            DTKShared::Log(bot, "dtk dred fear guard", "tremor", "tremor totem, " + health, 5 * IN_MILLISECONDS);
+            return true;
+        case CLASS_PRIEST:
+        {
+            Player* target = DTKShared::DredFearWardTarget(botAI, dred);
+            if (!target || !botAI->CastSpell("fear ward", target))
+                return false;
+            DTKShared::Log(bot, "dtk dred fear guard", "ward",
+                           Acore::StringFormat("fear ward on {}, {}", target->GetName(), health), 5 * IN_MILLISECONDS);
+            return true;
+        }
+        case CLASS_WARRIOR:
+            if (!dred->FindCurrentSpellBySpellId(DTKIds::SPELL_BELLOWING_ROAR) ||
+                !botAI->CanCastSpell("berserker rage", bot) || !botAI->CastSpell("berserker rage", bot))
+                return false;
+            DTKShared::Log(bot, "dtk dred fear guard", "rage", "berserker rage, " + health, 5 * IN_MILLISECONDS);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool KingDredGrievousBiteHealAction::Execute(Event /*event*/)
+{
+    Player* target = DTKShared::DredBittenMember(botAI);
+    if (!target)
+        return false;
+
+    auto const cast = [this, target](char const* spell)
+    { return botAI->CanCastSpell(spell, target) && botAI->CastSpell(spell, target); };
+
+    // Direct heals: a HoT ticks against the bite's own ticks and the target never reaches full.
+    char const* used = nullptr;
+    switch (bot->getClass())
+    {
+        case CLASS_PRIEST:
+            for (char const* spell : {"penance", "flash heal", "greater heal"})
+                if (!used && cast(spell))
+                    used = spell;
+            break;
+        case CLASS_DRUID:
+            for (char const* spell : {"swiftmend", "nourish", "regrowth", "healing touch"})
+                if (!used && cast(spell))
+                    used = spell;
+            break;
+        case CLASS_SHAMAN:
+            for (char const* spell : {"riptide", "lesser healing wave", "healing wave"})
+                if (!used && cast(spell))
+                    used = spell;
+            break;
+        case CLASS_PALADIN:
+            for (char const* spell : {"holy shock", "flash of light", "holy light"})
+                if (!used && cast(spell))
+                    used = spell;
+            break;
+        default:
+            break;
+    }
+    if (!used)
+        return false;
+
+    DTKShared::Log(bot, "dtk dred bite heal", target->GetGUID().ToString(),
+                   Acore::StringFormat("{} on {} ({:.0f} % hp, grievous bite)", used, target->GetName(),
+                                       target->GetHealthPct()),
+                   3 * IN_MILLISECONDS);
+    return true;
+}
+
+bool NovosPullAction::Execute(Event /*event*/)
+{
+    Unit* boss = AI_VALUE2(Unit*, "find target", "novos the summoner");
+    if (!boss || !boss->IsAlive() || boss->IsInCombat())
+        return false;
+
+    // From range when he is out of reach on his platform: the first hit starts the encounter (his adds come).
+    if (bot->IsWithinLOSInMap(boss) && !bot->IsWithinMeleeRange(boss))
+    {
+        static constexpr char const* openers[] = {"avenger's shield", "hand of reckoning", "exorcism",
+                                                  "judgement of wisdom", "judgement of light", "heroic throw",
+                                                  "taunt", "death grip", "icy touch", "faerie fire (feral)",
+                                                  "growl", "shoot", "throw"};
+        for (char const* opener : openers)
+            if (botAI->CanCastSpell(opener, boss) && botAI->CastSpell(opener, boss))
+                return true;
+    }
+
+    if (AI_VALUE(Unit*, "current target") != boss || bot->GetVictim() != boss)
+        if (Attack(boss))
+            return true;
+
+    if (!bot->IsWithinMeleeRange(boss))
+        return MoveNear(boss, 1.0f);
     return false;
 }

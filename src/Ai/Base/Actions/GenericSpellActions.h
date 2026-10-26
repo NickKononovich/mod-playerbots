@@ -116,6 +116,9 @@ public:
     std::string const GetTargetName() override { return "self target"; }
     bool isUseful() override;
     bool Execute(Event event) override;
+    // [b31_shared] A buff on the bot or a friend makes no threat: the multiplier must not veto it. A buff action
+    // aimed at an enemy (Turn Undead) keeps the Single rule.
+    ActionThreatType getThreatType() override;
 };
 
 class GroupBuffSpellAction : public CastBuffSpellAction
@@ -155,7 +158,8 @@ public:
 
     std::string const GetTargetName() override { return "self target"; }
     bool isUseful() override;
-    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
+    // Healing threat spreads over every mob in combat (Aoe), but only a top-off waits for the tank's threat.
+    ActionThreatType getThreatType() override;
     // Yunfan: Mana efficiency tell the bot how to save mana. The higher the better.
     HealingManaEfficiency manaEfficiency;
     uint8 estAmount;
@@ -210,6 +214,7 @@ public:
     ResurrectPartyMemberAction(PlayerbotAI* botAI, std::string const spell) : CastSpellAction(botAI, spell) {}
 
     std::string const GetTargetName() override { return "party member to resurrect"; }
+    bool isPossible() override;
     std::vector<NextAction> getPrerequisites() override
     {
         return NextAction::merge(
@@ -230,6 +235,162 @@ public:
 
 protected:
     uint32 dispelType;
+};
+
+// A taunt or threat spell on the mob hitting a non-tank group member ("group member attacker" value). A spell of
+// SHORT_REACH yards or less goes to the best such mob within its reach when the pick stands further away.
+class CastSpellOnGroupMemberAttackerAction : public CastSpellAction
+{
+public:
+    static constexpr float SHORT_REACH = 15.0f;  // melee spells, Judgement, Hammer of Justice; not the 30 yd taunts
+
+    // onlyForHealer: kept for a mob on the healer (a stun with a long cooldown, not a taunt)
+    CastSpellOnGroupMemberAttackerAction(PlayerbotAI* botAI, std::string const spell, bool onlyForHealer = false)
+        : CastSpellAction(botAI, spell), name(spell + " on group member attacker"), healerOnly(onlyForHealer)
+    {
+    }
+
+    Value<Unit*>* GetTargetValue() override;
+    Unit* GetTarget() override;
+    std::string const getName() override { return name; }
+    bool isUseful() override;
+    bool Execute(Event event) override;
+
+private:
+    std::string name;
+    bool healerOnly;
+    ObjectGuid _reachTarget;  // the short-reach target, looked up once per GroupMemberAttackerValue::CHECK_INTERVAL_MS
+    uint32 _reachCheckedMs = 0;
+};
+
+// A spell cast on a group member a mob is hitting ("attacked group member" value: Righteous Defense).
+class CastSpellOnAttackedGroupMemberAction : public CastSpellAction
+{
+public:
+    // minMobs: useful only while the friend has that many attackers the peel has not just taken (the "swarmed" variant
+    // goes before the single-target taunt: Righteous Defense takes up to three at once)
+    CastSpellOnAttackedGroupMemberAction(PlayerbotAI* botAI, std::string const spell, uint32 minMobs = 0)
+        : CastSpellAction(botAI, spell),
+          name(spell + (minMobs > 1 ? " on swarmed group member" : " on attacked group member")),
+          minFreshMobs(minMobs)
+    {
+    }
+
+    Unit* GetTarget() override;
+    std::string const getName() override { return name; }
+    bool isUseful() override;
+    bool Execute(Event event) override;
+
+private:
+    std::string name;
+    uint32 minFreshMobs;
+};
+
+// [taunt_reaction] Tank in combat: a mob that turns to a non-tank member is taken back from where the tank stands,
+// within about one GCD, before any rotation filler, a fight-spot hold or an encounter walk (ACTION_RAID + 6 in
+// TankAssistStrategy; a taunt needs no walking). hor-h build 29: the Shadowy Mercenary on the mage 5 s and the
+// Ghostly Priest on the shaman 6 s while the tank walked to its wave spot (ACTION_RAID + 5) and its taunt went to the
+// mob beside it. In order:
+//   1. two or more fresh mobs on one member: Righteous Defense on the member; Challenging Shout / Challenging Roar
+//      with two of them within 10 yd of the tank, for the healer's mobs or with the single taunt cooling;
+//   2. the class's single taunt (Hand of Reckoning, Taunt, Dark Command, Growl) on the mob out of the tank's reach
+//      first (GroupMemberAttackerValue::FindForTaunt);
+//   3. with the taunt cooling, a ranged threat spell on a mob out of melee: Avenger's Shield, Heroic Throw, Faerie
+//      Fire (Feral), Death Grip (on a caster: a mob casting or not in melee with its victim).
+class TauntReactionAction : public Action
+{
+public:
+    struct Spells
+    {
+        char const* taunt;
+        char const* ranged;
+        char const* swarm;   // the area taunt, nullptr when the class has none
+        bool swarmOnFriend;  // Righteous Defense is cast on the friend, the shouts on the tank
+    };
+
+    static constexpr uint32 MIN_SWARM_MOBS = 2;
+    static constexpr uint32 SWARM_SPREAD_MOBS = 3;  // [bear_aoe_threat] mobs on several members, for the shouts
+    static constexpr float AOE_TAUNT_RADIUS = 10.0f;  // Challenging Shout, Challenging Roar
+    static constexpr float DEFAULT_TAUNT_RANGE = 30.0f;
+    static constexpr uint32 PLAN_MS = 300;  // the choice is made at most this often (line of sight per mob)
+
+    TauntReactionAction(PlayerbotAI* botAI) : Action(botAI, "taunt reaction") {}
+
+    bool isUseful() override;
+    bool Execute(Event event) override;
+
+    // The reaction spells of the bot's class, nullptr for a class without a tank taunt.
+    static Spells const* ClassSpells(Player* bot);
+    // Known and off cooldown (the global cooldown is the cast's own check).
+    static bool SpellReady(PlayerbotAI* botAI, char const* spell);
+    // The spell that takes `mob` from where the tank stands now: the taunt, else the ranged threat spell (out of
+    // melee only); ready, in range, in sight. Empty when none: then a walk is the only way.
+    static std::string ReadyFor(PlayerbotAI* botAI, Unit* mob);
+    // Ready, the target in range (a friend by distance, a mob by combat reach) and in sight, and the cast's own
+    // checks (form, stance, global cooldown) pass. The bot itself as target: no range check.
+    static bool Usable(PlayerbotAI* botAI, char const* spell, Unit* target);
+
+private:
+    struct Plan
+    {
+        std::string spell;
+        ObjectGuid target;   // the mob, the friend (Righteous Defense) or the tank itself (the shouts)
+        ObjectGuid victim;   // the member the mobs hit
+        GuidVector mobs;     // the mobs it takes, for the peel record and the reaction log
+        bool holds = false;  // a taunt: the mob is marked peeled (not after a ranged threat spell)
+        uint32 madeMs = 0;
+    };
+
+    bool MakePlan(Plan& plan);
+    static float SpellRange(PlayerbotAI* botAI, char const* spell, float fallback);
+
+    Plan _plan;
+};
+
+// [flee_stop] Any damage dealer or tank: a mob of the fight running at low health ("fleeing mob") is stopped with
+// the class's stun, root or snare before it reaches the next pack; the ranged then burst it (DpsTargetValue picks the
+// runner, ThreatMultiplier does not hold on it). One stop per runner per FledMobs::STOP_SPREAD_MS for the group.
+// Spells round the caster (Frost Nova, Piercing Howl, Earthbind Totem) only with the runner within SELF_REACH.
+class FleeStopAction : public Action
+{
+public:
+    static constexpr float SELF_REACH = 10.0f;
+
+    FleeStopAction(PlayerbotAI* botAI) : Action(botAI, "flee stop") {}
+
+    bool isUseful() override;
+    bool Execute(Event event) override;
+
+private:
+    struct Stop
+    {
+        char const* spell;
+        bool aroundSelf;
+    };
+
+    // The first of the class's stops that takes `mob` now, nullptr when none.
+    Stop const* Pick(Unit* mob);
+};
+
+// The tank's area threat spell around itself (Consecration, Thunder Clap, Swipe, Blood Boil) for the peel: useful
+// while a mob hitting a non-tank group member stands within `radius` yards, whatever the current target is. The
+// plain melee actions want the current target in melee, so with the tank's target elsewhere the area threat was
+// useless and the adds stayed on the casters.
+class CastAreaSpellOnGroupMemberAttackersAction : public CastSpellAction
+{
+public:
+    CastAreaSpellOnGroupMemberAttackersAction(PlayerbotAI* botAI, std::string const spell, float radius)
+        : CastSpellAction(botAI, spell), name(spell + " on group member attackers"), radius(radius)
+    {
+    }
+
+    std::string const GetTargetName() override { return "self target"; }
+    std::string const getName() override { return name; }
+    bool isUseful() override;
+
+private:
+    std::string name;
+    float radius;
 };
 
 class BuffOnPartyAction : public CastBuffSpellAction, public PartyMemberActionNameSupport
@@ -259,7 +420,10 @@ public:
 
     bool isPossible() override;
     bool Execute(Event event) override;
-    ActionThreatType getThreatType() override { return ActionThreatType::None; }
+    // [b35_lock] Single, as the spells: with None the threat hold (ThreatMultiplier) zeroed every damage spell at its
+    // limit but left the wand, which then shot alone (destro audit: 6.8 % of the fight, Lethtendris 23-35 s at
+    // "multiplier threat x0.00"). The hold also stops a wand that is already repeating (ThreatStrategy.cpp).
+    ActionThreatType getThreatType() override { return ActionThreatType::Single; }
 
 private:
     uint32 shootSpellId;
@@ -308,6 +472,7 @@ public:
 
     std::string const GetTargetName() override { return "self target"; }
     bool isPossible() override;
+    bool Execute(Event event) override;  // [fear_counter] logs a fear / charm / sleep break
 };
 
 class CastWillOfTheForsakenAction : public CastSpellAction
@@ -317,6 +482,7 @@ public:
 
     std::string const GetTargetName() override { return "self target"; }
     bool isPossible() override;
+    bool Execute(Event event) override;  // [fear_counter] logs a fear / charm / sleep break
 };
 
 class CastStoneformAction : public CastSpellAction
@@ -488,6 +654,13 @@ public:
 public:
     virtual Value<Unit*>* GetTargetValue();
     virtual std::string const getName() { return MainTankActionNameSupport::getName(); }
+    // [b31_shared] HoTs and tank buffs (Lifebloom, Earth Shield, Beacon) make no threat on the dps' target
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
+    // [heal_triage] A heal-over-time upkeep on a healthy tank yields to a member below medium health.
+    bool isUseful() override;
+
+protected:
+    bool HotUpkeepYields();
 };
 
 #endif

@@ -14,6 +14,7 @@
 #include "Strategy.h"
 #include "Trigger.h"
 #include "Value.h"
+#include <atomic>
 #include <sstream>
 #include <string>
 
@@ -70,6 +71,10 @@ public:
     void Load(std::vector<std::string> data);
 
     std::vector<std::string> performanceStack;
+
+    // Test harness diagnostics: the bot's engines record their intention (Engine::IntentSink) until this getMSTime;
+    // 0 = not watched, the only thing every other bot reads per tick. Set by the harness on the world thread.
+    std::atomic<uint32> intentWatchUntilMs{0};
 
     static void BuildAllSharedContexts();
 

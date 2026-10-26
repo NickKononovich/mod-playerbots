@@ -7,10 +7,14 @@
 #include "UldTriggers.h"
 #include "FollowMasterStrategy.h"
 #include "GameObject.h"
+#include "InstanceScript.h"
 #include "MovementActions.h"
 #include "Object.h"
+#include "Pet.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "RaidBotDuty.h"
+#include "RaidMarkOwnership.h"
 #include "RtiTargetValue.h"
 #include "ScriptedCreature.h"
 #include "SharedDefines.h"
@@ -64,14 +68,20 @@ bool FlameLeviathanVehicleNearTrigger::IsActive()
     if (bot->GetVehicle())
         return false;
 
-    Player* master = botAI->GetMaster();
-    if (!master)
+    // A human master boards first and the bots follow (upstream behaviour).
+    if (Player* human = RaidBotDuty::GetHumanMaster(botAI))
+        return human->GetVehicle() != nullptr;
+
+    // SelfBot leader or no client: board on our own while Flame Leviathan is not dead.
+    if (bot->GetMapId() != ULDUAR_MAP_ID || !bot->IsAlive())
         return false;
 
-    if (!master->GetVehicle())
+    InstanceScript* instance = bot->GetInstanceScript();
+    constexpr uint32 BOSS_FLAME_LEVIATHAN = 0;  // BOSS_LEVIATHAN in ulduar.h
+    if (!instance || instance->GetBossState(BOSS_FLAME_LEVIATHAN) == DONE)
         return false;
 
-    return true;
+    return !AI_VALUE(GuidVector, "nearest vehicles far").empty();
 }
 
 bool RazorscaleFlyingAloneTrigger::IsActive()
@@ -504,13 +514,28 @@ bool KologarnRtiTargetTrigger::IsActive()
 
 bool KologarnCrunchArmorTrigger::IsActive()
 {
+    // 25-man Crunch Armor stacks for 45 s: the other tank taunts once the current tank carries 2 stacks.
+    constexpr uint8 CRUNCH_ARMOR_SWAP_STACKS = 2;
+
+    if (!PlayerbotAI::IsMainTank(bot) && !PlayerbotAI::IsAssistTankOfIndex(bot, 0))
+        return false;
+
     Unit* boss = AI_VALUE2(Unit*, "find target", "kologarn");
 
     // Check boss and it is alive
     if (!boss || !boss->IsAlive())
         return false;
 
-    return bot->HasAura(SPELL_CRUNCH_ARMOR);
+    Unit* victim = boss->GetVictim();
+    if (!victim || victim == bot)
+        return false;
+
+    Aura const* victimCrunch = victim->GetAura(SPELL_CRUNCH_ARMOR);
+    if (!victimCrunch || victimCrunch->GetStackAmount() < CRUNCH_ARMOR_SWAP_STACKS)
+        return false;
+
+    Aura const* ownCrunch = bot->GetAura(SPELL_CRUNCH_ARMOR);
+    return !ownCrunch || ownCrunch->GetStackAmount() < CRUNCH_ARMOR_SWAP_STACKS;
 }
 
 bool AuriayaFallFromFloorTrigger::IsActive()
@@ -534,12 +559,7 @@ bool HodirBitingColdTrigger::IsActive()
         return false;
     }
 
-    Player* master = botAI->GetMaster();
-    if (!master || !master->IsAlive())
-        return false;
-
-    return botAI->GetAura("biting cold", bot, false, false, 2) &&
-           !botAI->GetAura("biting cold", master, false, false, 2);
+    return botAI->GetAura("biting cold", bot, false, false, 2) != nullptr;
 }
 
 // Snowpacked Icicle Target
@@ -777,7 +797,15 @@ bool ThorimUnbalancingStrikeTrigger::IsActive()
     if (!boss->IsHostileTo(bot))
         return false;
 
-    return bot->HasAura(SPELL_UNBALANCING_STRIKE);
+    // Tank swap after every Unbalancing Strike: the tank without the debuff taunts Thorim off the one with it.
+    if (!PlayerbotAI::IsMainTank(bot) && !PlayerbotAI::IsAssistTankOfIndex(bot, 0))
+        return false;
+
+    Unit* victim = boss->GetVictim();
+    if (!victim || victim == bot || !victim->HasAura(SPELL_UNBALANCING_STRIKE))
+        return false;
+
+    return !bot->HasAura(SPELL_UNBALANCING_STRIKE);
 }
 
 bool ThorimMarkDpsTargetTrigger::IsActive()
@@ -822,7 +850,7 @@ bool ThorimMarkDpsTargetTrigger::IsActive()
 
         if (boss->GetPositionZ() < ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD && (!currentSkullUnit || !currentSkullUnit->IsAlive()))
         {
-            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
             return true;
         }
 
@@ -935,7 +963,11 @@ bool ThorimGauntletPositioningTrigger::IsActive()
             return false;
     }
 
+    // The gauntlet run is led by the master's position; without a master there is nobody to follow.
     Unit* master = botAI->GetMaster();
+    if (!master)
+        return false;
+
     if (master->GetDistance(ULDUAR_THORIM_NEAR_ENTRANCE_POSITION) < 10.0f && (bot->GetDistance2d(master) > 5.0f))
     {
         return true;
@@ -1489,33 +1521,12 @@ bool MimironPhase4MarkDpsTrigger::IsActive()
 
 bool MimironCheatTrigger::IsActive()
 {
-    if (!botAI->HasCheat(BotCheatMask::raid))
-        return false;
-
-    if (!PlayerbotAI::IsMainTank(bot))
-        return false;
-
-    GuidVector targets = AI_VALUE(GuidVector, "nearest npcs");
-    for (ObjectGuid const& guid : targets)
-    {
-        Unit* unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsAlive())
-            continue;
-
-        if (unit->GetEntry() == NPC_PROXIMITY_MINE)
-            return true;
-        else if (unit->GetEntry() == NPC_BOMB_BOT)
-            return true;
-    }
-
-    return false;
+    // Proximity Mines and Bomb Bots are dodged, not removed.
+    return FindMimironGroundHazard(botAI, bot) != nullptr;
 }
 
 bool VezaxCheatTrigger::IsActive()
 {
-    if (!botAI->HasCheat(BotCheatMask::raid))
-        return false;
-
     Unit* boss = AI_VALUE2(Unit*, "find target", "general vezax");
 
     // Check boss and it is alive
@@ -1525,7 +1536,21 @@ bool VezaxCheatTrigger::IsActive()
     if (!AI_VALUE2(bool, "has mana", "self target"))
         return false;
 
-    return AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana;
+    // Mana only comes from a Saronite Vapors cloud: enter while low on mana, leave at the stack cap.
+    Aura const* vapors = bot->GetAura(SPELL_SARONITE_VAPORS_STACK);
+    bool const stackCapped = vapors && vapors->GetStackAmount() >= ULDUAR_VEZAX_VAPORS_MAX_STACKS;
+    if (!stackCapped && AI_VALUE2(uint8, "mana", "self target") >= sPlayerbotAIConfig.LowMana)
+        return false;
+
+    Creature* cloud = FindSaroniteVaporsCloud(bot, ULDUAR_VEZAX_VAPORS_SEARCH_RANGE);
+    if (!cloud)
+        return false;
+
+    float const distance = bot->GetExactDist2d(cloud);
+    if (stackCapped)
+        return distance < ULDUAR_VEZAX_VAPORS_LEAVE_RADIUS;
+
+    return distance > ULDUAR_VEZAX_VAPORS_STAND_DISTANCE;
 }
 
 bool VezaxShadowCrashTrigger::IsActive()
@@ -1634,15 +1659,37 @@ bool YoggSaronTrigger::IsInChamberOfTheAspectsIllusion()
            ULDUAR_YOGG_SARON_CHAMBER_OF_ASPECTS_RADIUS;
 }
 
+// Only a human master takes an illusion slot and walks into the brain room by themselves. A SelfBot is
+// assigned and led like any bot, so with no client the bots run the illusion on their own.
 bool YoggSaronTrigger::IsMasterIsInIllusionGroup()
 {
-    Player* master = botAI->GetMaster();
+    Player* master = RaidBotDuty::GetHumanMaster(botAI);
     return master && !PlayerbotAI::IsTank(master);
+}
+
+bool YoggSaronTrigger::IsIllusionDoorOpen()
+{
+    constexpr uint32 GO_CHAMBER_ILLUSION_DOORS = 194635;  // ..194637 (Icecrown, Stormwind), boss_yoggsaron.cpp
+    constexpr uint32 GO_STORMWIND_ILLUSION_DOORS = 194637;
+    constexpr float DOOR_SEARCH_RANGE = 80.0f;
+
+    if (!IsInIllusionRoom())
+        return false;
+
+    // The script opens the door to the brain once every Influence Tentacle of the illusion is dead.
+    for (uint32 entry = GO_CHAMBER_ILLUSION_DOORS; entry <= GO_STORMWIND_ILLUSION_DOORS; ++entry)
+    {
+        GameObject* door = bot->FindNearestGameObject(entry, DOOR_SEARCH_RANGE);
+        if (door && door->GetGoState() == GO_STATE_ACTIVE)
+            return true;
+    }
+
+    return false;
 }
 
 bool YoggSaronTrigger::IsMasterIsInBrainRoom()
 {
-    Player* master = botAI->GetMaster();
+    Player* master = RaidBotDuty::GetHumanMaster(botAI);
 
     if (!master)
         return false;
@@ -1697,16 +1744,6 @@ Unit* YoggSaronTrigger::GetNextIllusionRoomRtiTarget()
 
     GuidVector targets = AI_VALUE(GuidVector, "nearest npcs");
 
-    if (botAI->HasCheat(BotCheatMask::raid))
-    {
-        for (ObjectGuid const& guid : targets)
-        {
-            Unit* unit = botAI->GetUnit(guid);
-            if (unit && unit->IsAlive() && unit->GetEntry() == NPC_LAUGHING_SKULL)
-                return unit;
-        }
-    }
-
     float nearestDistance = std::numeric_limits<float>::max();
     Unit* nextIllusionRoomRtiTarget = nullptr;
 
@@ -1742,22 +1779,14 @@ Unit* YoggSaronTrigger::GetNextIllusionRoomRtiTarget()
 
 bool YoggSaronOminousCloudCheatTrigger::IsActive()
 {
-    if (!botAI->HasCheat(BotCheatMask::raid))
+    // Phase 1: everyone but the main tank walks around the Ominous Clouds (touching one summons a Guardian).
+    if (!GetSaraIfAlive())
         return false;
 
-    Unit* boss = GetSaraIfAlive();
-    if (!boss)
+    if (PlayerbotAI::IsMainTank(bot))
         return false;
 
-    if (!PlayerbotAI::IsBotMainTank(bot))
-        return false;
-
-    if (bot->GetDistance2d(boss->GetPositionX(), boss->GetPositionY()) > 50.0f)
-        return false;
-
-    Creature* target = boss->FindNearestCreature(NPC_OMINOUS_CLOUD, 25.0f, true);
-
-    return target;
+    return bot->FindNearestCreature(NPC_OMINOUS_CLOUD, ULDUAR_YOGG_SARON_CLOUD_AVOID_RADIUS, true) != nullptr;
 }
 
 bool YoggSaronGuardianPositioningTrigger::IsActive()
@@ -1931,13 +1960,14 @@ bool YoggSaronMoveToEnterPortalTrigger::IsActive()
     if (bot->GetRaidDifficulty() == Difficulty::RAID_DIFFICULTY_10MAN_NORMAL)
         brainRoomTeamCount = 4;
 
+    Player* humanMaster = RaidBotDuty::GetHumanMaster(botAI);
     if (IsMasterIsInIllusionGroup())
         brainRoomTeamCount--;
 
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* member = gref->GetSource();
-        if (!member || !member->IsAlive() || PlayerbotAI::IsTank(member))
+        if (!member || !member->IsAlive() || PlayerbotAI::IsTank(member) || member == humanMaster)
             continue;
 
         if (member->GetGUID() == bot->GetGUID())
@@ -1975,9 +2005,6 @@ bool YoggSaronBossRoomMovementCheatTrigger::IsActive()
     FollowMasterStrategy followMasterStrategy(botAI);
     if (botAI->HasStrategy(followMasterStrategy.getName(), BotState::BOT_STATE_NON_COMBAT))
         return true;
-
-    if (!botAI->HasCheat(BotCheatMask::raid))
-        return false;
 
     if (AI_VALUE(std::string, "rti") != "skull")
         return false;
@@ -2032,7 +2059,17 @@ bool YoggSaronIllusionRoomTrigger::GoToBrainRoomRequired()
     if (AI_VALUE(std::string, "rti") == "square")
         return false;
 
-    return IsMasterIsInBrainRoom();
+    return IsMasterIsInBrainRoom() || IsIllusionDoorOpen();
+}
+
+bool YoggSaronBrainPetPassiveTrigger::IsActive()
+{
+    Pet* pet = bot->GetPet();
+    if (!pet || !pet->IsAlive() || !IsYoggSaronFight())
+        return false;
+
+    bool const passive = pet->GetReactState() == REACT_PASSIVE;
+    return IsInBrainLevel() ? !passive : passive;
 }
 
 bool YoggSaronIllusionRoomTrigger::SetRtiMarkRequired()
@@ -2064,12 +2101,9 @@ bool YoggSaronMoveToExitPortalTrigger::IsActive()
 
         if (induceMadnessSpell && induceMadnessSpell->m_spellInfo->Id == SPELL_INDUCE_MADNESS)
         {
-            uint32 castingTimeLeft = induceMadnessSpell->GetCastTimeRemaining();
-            if ((botAI->HasCheat(BotCheatMask::raid) && castingTimeLeft < 6000) ||
-                (!botAI->HasCheat(BotCheatMask::raid) && castingTimeLeft < 8000))
-            {
+            constexpr uint32 INDUCE_MADNESS_LEAVE_MS = 8000;  // time to walk back to the exit portal
+            if (induceMadnessSpell->GetCastTimeRemaining() < INDUCE_MADNESS_LEAVE_MS)
                 return true;
-            }
         }
     }
     else if (brain->GetHealth() < brain->GetMaxHealth() * 0.3f)

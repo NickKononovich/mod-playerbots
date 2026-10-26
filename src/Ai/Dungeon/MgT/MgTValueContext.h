@@ -308,6 +308,20 @@ protected:
     }
 };
 
+class MgTDelrissaHealerSpotValue : public MgTEscapeSpotsValue
+{
+public:
+    MgTDelrissaHealerSpotValue(PlayerbotAI* botAI) : MgTEscapeSpotsValue(botAI, "mgt delrissa healer spot") {}
+
+protected:
+    MagistersTerrace::EscapeSpots Calculate() override
+    {
+        MagistersTerrace::EscapeSpots spots;
+        MagistersTerrace::CollectDelrissaHealerSpot(bot, spots);
+        return spots;
+    }
+};
+
 class TbcDungeonMgTValueContext : public NamedObjectContext<UntypedValue>
 {
 public:
@@ -324,6 +338,7 @@ public:
         creators["mgt delrissa focus target"] = &TbcDungeonMgTValueContext::mgt_delrissa_focus_target;
         creators["mgt delrissa tremor totem"] = &TbcDungeonMgTValueContext::mgt_delrissa_tremor_totem;
         creators["mgt delrissa pets"] = &TbcDungeonMgTValueContext::mgt_delrissa_pets;
+        creators["mgt delrissa healer spot"] = &TbcDungeonMgTValueContext::mgt_delrissa_healer_spot;
         creators["mgt flame strike escape"] = &TbcDungeonMgTValueContext::mgt_flame_strike_escape;
         creators["mgt phoenix escape"] = &TbcDungeonMgTValueContext::mgt_phoenix_escape;
         creators["mgt phoenix ring"] = &TbcDungeonMgTValueContext::mgt_phoenix_ring;
@@ -356,6 +371,10 @@ private:
         return new MgTDelrissaTremorTotemValue(botAI);
     }
     static UntypedValue* mgt_delrissa_pets(PlayerbotAI* botAI) { return new MgTDelrissaPetsValue(botAI); }
+    static UntypedValue* mgt_delrissa_healer_spot(PlayerbotAI* botAI)
+    {
+        return new MgTDelrissaHealerSpotValue(botAI);
+    }
     static UntypedValue* mgt_flame_strike_escape(PlayerbotAI* botAI) { return new MgTFlameStrikeEscapeValue(botAI); }
     static UntypedValue* mgt_phoenix_escape(PlayerbotAI* botAI) { return new MgTPhoenixEscapeValue(botAI); }
     static UntypedValue* mgt_phoenix_ring(PlayerbotAI* botAI) { return new MgTPhoenixRingValue(botAI); }

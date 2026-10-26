@@ -11,6 +11,8 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 
+#include <cmath>
+
 WorldLocation Formation::NullLocation = WorldLocation();
 
 bool IsSameLocation(WorldLocation const& a, WorldLocation const& b)
@@ -47,6 +49,15 @@ bool ValidateTargetContext(Unit* a, Unit* b)
     return ValidateTargetContext(a, b, unused);
 }
 
+Player* Formation::GetMaster()
+{
+    if (Player* master = botAI->GetMaster())
+        return master;
+
+    Player* leader = botAI->GetGroupLeader();
+    return leader != bot ? leader : nullptr;
+}
+
 WorldLocation MoveAheadFormation::GetLocation()
 {
     Player* master = GetMaster();
@@ -60,6 +71,14 @@ WorldLocation MoveAheadFormation::GetLocation()
     float x = loc.GetPositionX();
     float y = loc.GetPositionY();
     float z = loc.GetPositionZ();
+
+    // A spot a few yards from the leader on another floor (the ground search found the room above a stairwell):
+    // wave 6 Dire Maul, the group walked up into a pack of ten its tank was standing under, over and over again.
+    // Stand where the leader stands instead.
+    constexpr float FORMATION_MAX_FLOOR_DIFFERENCE = 3.0f;
+    if (std::fabs(z - master->GetPositionZ()) > FORMATION_MAX_FLOOR_DIFFERENCE)
+        return WorldLocation(master->GetMapId(), master->GetPositionX(), master->GetPositionY(),
+                             master->GetPositionZ());
 
     // if (master->isMoving())
     // {

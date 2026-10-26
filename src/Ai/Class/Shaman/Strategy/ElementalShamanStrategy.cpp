@@ -15,7 +15,11 @@ ElementalShamanStrategy::ElementalShamanStrategy(PlayerbotAI* botAI) : GenericSh
 // ===== Default Actions =====
 std::vector<NextAction> ElementalShamanStrategy::getDefaultActions()
 {
+    // Lava Burst, Chain Lightning and Lightning Bolt have cast times and wait for the shaman to stand; on the move
+    // the instants keep going: Flame Shock through its trigger, Earth Shock while Flame Shock outlasts the shock
+    // cooldown.
     return {
+        NextAction("earth shock on the move", 5.4f),
         NextAction("lava burst", 5.2f),
         NextAction("lightning bolt", 5.0f)
     };
@@ -44,6 +48,13 @@ void ElementalShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
+    // [b31_sd] Flametongue Weapon's spell power (it also feeds the Fire Elemental): an imbue that expired mid-fight is
+    // restored (moved here from "boost").
+    // [b31_deep] "boost" IS a default strategy outside battlegrounds (AiFactory); the move is still right: the
+    // imbue belongs to the spec, not to the burst window.
+    triggers.push_back(
+        new TriggerNode("main hand weapon no imbue", { NextAction("flametongue weapon main hand", 23.5f) }));
+
     // Cooldown Trigger
     triggers.push_back(
         new TriggerNode(
@@ -71,6 +82,13 @@ void ElementalShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [b31_deep] Flame Shock multidot on a second / third mob (wowsims elemental APLs): below Lava Burst (5.2), above
+    // Lightning Bolt (5.0); the action keeps the current target's own Flame Shock first.
+    triggers.push_back(new TriggerNode("flame shock on attacker", { NextAction("flame shock on attacker", 5.15f) }));
+    // [b44_cast] No single-target Chain Lightning filler: wowsims elemental casts Chain Lightning only when
+    // numberTargets > 1 ("chain lightning aoe", ShamanAoeStrategy). Sim A/B on the bots' own counted boss fights
+    // (3 requests, 3000 iterations, same seed): Chain Lightning on cooldown on one target 4801 DPS vs the APL 5062
+    // (-5.2 %); the bot cast it 5.5/min there, 8 % of its boss time (ROTATION_AUDIT_NIGHT.md, b44_cast).
 
     // Mana Triggers
     triggers.push_back(
@@ -83,7 +101,7 @@ void ElementalShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "high mana",
+            "thunderstorm for mana",
             {
                 NextAction("thunderstorm", 19.0f)
             }
@@ -93,10 +111,14 @@ void ElementalShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // Range Triggers
     triggers.push_back(
         new TriggerNode(
-            "enemy is close",
+            "thunderstorm knockback",
             {
                 NextAction("thunderstorm", 19.0f)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus lava surge", { NextAction("lava burst", 5.28f) }));
+    triggers.push_back(new TriggerNode("set bonus ascendant storm", { NextAction("chain lightning", 5.27f) }));
 }

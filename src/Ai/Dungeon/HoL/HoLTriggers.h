@@ -35,6 +35,24 @@ enum HallsOfLightningIDs
 #define SPELL_BALL_LIGHTNING        DUNGEON_MODE(bot, SPELL_BALL_LIGHTNING_N, SPELL_BALL_LIGHTNING_H)
 #define SPELL_LIGHTNING_NOVA        DUNGEON_MODE(bot, SPELL_LIGHTNING_NOVA_N, SPELL_LIGHTNING_NOVA_H)
 
+namespace HoLIds
+{
+// boss_volkhan.cpp: Shattering Stomp is cast once below 25 % and makes every Brittle Golem cast Shatter
+// (52429/59527, 10 yd) at the start of the 3 s cast, so the bots must already be clear when the boss nears 25 %.
+constexpr uint32 NPC_BRITTLE_GOLEM = 28681;
+constexpr uint32 SPELL_SHATTERING_STOMP_N = 52237;
+constexpr uint32 SPELL_SHATTERING_STOMP_H = 59529;
+constexpr float STOMP_WINDOW_HIGH_PCT = 40.0f;
+constexpr float STOMP_WINDOW_LOW_PCT = 20.0f;
+constexpr float SHATTER_SAFE_DISTANCE = 13.0f;
+}
+
+namespace HoLShared
+{
+Unit* BrittleGolemThreat(Player* bot, Unit* volkhan);
+bool IsLightningNova(Player* bot, Unit* loken);
+}
+
 class StormforgedLieutenantTrigger : public Trigger
 {
 public:
@@ -56,6 +74,13 @@ public:
     bool IsActive() override;
 };
 
+class VolkhanBrittleGolemTrigger : public Trigger
+{
+public:
+    VolkhanBrittleGolemTrigger(PlayerbotAI* botAI) : Trigger(botAI, "volkhan brittle golem") {}
+    bool IsActive() override;
+};
+
 class IonarStaticOverloadTrigger : public Trigger
 {
 public:
@@ -74,13 +99,6 @@ class IonarTankAggroTrigger : public Trigger
 {
 public:
     IonarTankAggroTrigger(PlayerbotAI* botAI) : Trigger(botAI, "ionar tank aggro") {}
-    bool IsActive() override;
-};
-
-class IonarDisperseTrigger : public Trigger
-{
-public:
-    IonarDisperseTrigger(PlayerbotAI* botAI) : Trigger(botAI, "ionar disperse") {}
     bool IsActive() override;
 };
 

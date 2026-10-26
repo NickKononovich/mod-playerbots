@@ -7,19 +7,21 @@
 #ifndef PLAYERBOTS_SUBTLETYROGUESTRATEGY_H
 #define PLAYERBOTS_SUBTLETYROGUESTRATEGY_H
 
-// To be implemented. For now, Subtlety uses Assassination's strategy (poorly).
+#include "GenericRogueStrategy.h"
 
-/*#include "GenericRogueStrategy.h"
+class PlayerbotAI;
 
+// [b31_wr] Minimal 3.3.5 Subtlety (was commented out; Subtlety ran the Assassination strategy): Hemorrhage debuff
+// upkeep, Backstab from behind else Hemorrhage, Slice and Dice upkeep, Rupture / Eviscerate at 5 combo points,
+// Shadow Dance into Ambush, Premeditation in Stealth or Shadow Dance.
 class SubtletyRogueStrategy : public GenericRogueStrategy
 {
 public:
     SubtletyRogueStrategy(PlayerbotAI* botAI);
 
-public:
-    virtual void InitTriggers(std::vector<TriggerNode*>& triggers) override;
-    virtual std::string const getName() override { return "subtlety"; }
-    virtual std::vector<NextAction> getDefaultActions() override;
-};*/
+    void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    std::string const getName() override { return "subtlety"; }
+    std::vector<NextAction> getDefaultActions() override;
+};
 
 #endif

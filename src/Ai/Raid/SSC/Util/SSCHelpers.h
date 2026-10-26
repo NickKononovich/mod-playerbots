@@ -607,6 +607,8 @@ inline constexpr float VASHJ_ENCHANTED_NEAR_HER_DISTANCE = 20.0f;
 inline constexpr float VASHJ_IDLE_TANK_DISTANCE = 10.0f;
 inline constexpr float VASHJ_ADD_TANK_ARRIVAL_DISTANCE = 3.0f;
 inline constexpr float VASHJ_PHASE_3_STRIDER_DISTANCE_FROM_VASHJ = 28.0f;
+// A non-tank with a Strider on it keeps this far (Panic radius plus a step of slack).
+inline constexpr float VASHJ_STRIDER_KITE_DISTANCE = VASHJ_STRIDER_PANIC_RADIUS + 4.0f;
 
 // Target tiers by phase and role, best first (GetVashjTargetTiers)
 inline std::vector<VashjTargetTier> const VASHJ_PHASE_2_STATION_RANGED_TIERS = {
@@ -688,6 +690,9 @@ Position const& GetVashjStriderHoldPosition(Unit const& strider);
 Position const& GetVashjEliteTankPosition(Unit const& elite);
 bool ShouldPositionVashjStrider(Player* bot, Unit* strider, Unit* vashj, int8 phase);
 bool IsTankedStriderInStepInReach(Player* bot, Unit* unit);
+Unit* GetVashjStriderAttackingBot(Player* bot);
+// Nearest living tank in Fear Ward range of the priest 'bot' that does not have Fear Ward.
+Player* GetVashjTankWithoutFearWard(Player* bot);
 // Pets skip targets they're useless on: Vashj while she's immune in Phase 2, Striders (Panic fears
 // any pet in melee range), and Sporebats (out of reach).
 Unit* GetVashjPetTarget(PlayerbotAI* botAI, Creature* pet, Unit* vashj);

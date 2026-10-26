@@ -5,157 +5,96 @@
  */
 
 #include "ReadyCheckAction.h"
+
 #include "Event.h"
+#include "Pet.h"
+#include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
-#include <memory>
-#include <mutex>
-#include <vector>
+#include "RaidLeaderState.h"
 
-static void SendReadyConfirm(Player* bot)
+namespace
 {
-    WorldPacket packet(MSG_RAID_READY_CHECK);
-    packet << bot->GetGUID();
-    packet << uint8(1);
-    bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
+    // The client answers with the state byte only; the server adds the guid when it relays the answer.
+    void SendReadyConfirm(Player* bot, bool ready)
+    {
+        WorldPacket packet(MSG_RAID_READY_CHECK);
+        packet << uint8(ready ? 1 : 0);
+        bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
+    }
+
+    std::string FormatPercent(std::string const& name, uint32 value, float percent)
+    {
+        std::ostringstream out;
+
+        std::string color;
+        if (percent > 75)
+            color = "|cff00ff00";
+        else if (percent > 50)
+            color = "|cffffff00";
+        else
+            color = "|cffff0000";
+
+        out << "|cffffffff[" << name << "]" << color << "x" << value;
+        return out.str();
+    }
+
+    BotReadiness NotReady(std::string const& key, std::string const& defaultText)
+    {
+        return {false, PlayerbotTextMgr::instance().GetBotTextOrDefault(key, defaultText, {})};
+    }
 }
 
-std::string const formatPercent(std::string const name, uint8 value, float percent)
+BotReadiness ReadyCheckAction::EvaluateReadiness(PlayerbotAI* botAI)
 {
-    std::ostringstream out;
+    Player* bot = botAI->GetBot();
+    AiObjectContext* context = botAI->GetAiObjectContext();
 
-    std::string color;
-    if (percent > 75)
-        color = "|cff00ff00";
-    else if (percent > 50)
-        color = "|cffffff00";
-    else
-        color = "|cffff0000";
+    if (!bot->IsAlive())
+        return NotReady("ready_reason_dead", "dead");
 
-    out << "|cffffffff[" << name << "]" << color << "x" << (int)value;
-    return out.str();
+    bool drinking = false;
+    if (RaidLeader::IsEatingOrDrinking(bot, drinking))
+        return drinking ? NotReady("ready_reason_drinking", "drinking") : NotReady("ready_reason_eating", "eating");
+
+    if (AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.AlmostFullHealth)
+        return NotReady("ready_reason_low_health", "low health");
+
+    if (AI_VALUE2(bool, "has mana", "self target") &&
+        AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.HighMana)
+        return NotReady("ready_reason_low_mana", "low mana");
+
+    Player* leader = botAI->GetGroupLeader();
+    if (leader && leader != bot &&
+        (leader->GetMap() != bot->GetMap() || bot->GetDistance(leader) > RaidLeader::READY_MAX_LEADER_DISTANCE))
+        return NotReady("ready_reason_far", "far away");
+
+    if (bot->getClass() == CLASS_HUNTER)
+    {
+        if (!bot->GetUInt32Value(PLAYER_AMMO_ID))
+            return NotReady("ready_reason_no_ammo", "no ammo");
+
+        Pet* pet = bot->GetPet();
+        if (!pet || pet->GetHappinessState() == UNHAPPY)
+            return NotReady("ready_reason_no_pet", "no pet");
+    }
+
+    // Only consumables the bot carries count: a bot without a flask is not asked to have one.
+    if (!AI_VALUE(ObjectGuid, "raid flask").IsEmpty())
+        return NotReady("ready_reason_no_flask", "no flask");
+
+    if (!AI_VALUE(ObjectGuid, "raid food buff").IsEmpty())
+        return NotReady("ready_reason_no_food_buff", "no food buff");
+
+    return {};
 }
 
-class ReadyChecker
+void ReadyCheckAction::AnswerReadyCheck(PlayerbotAI* botAI)
 {
-public:
-    virtual ~ReadyChecker() = default;
-    virtual bool Check(PlayerbotAI* botAI, AiObjectContext* context) = 0;
-    virtual std::string const getName() = 0;
-    virtual bool PrintAlways() { return true; }
-
-    static std::vector<std::unique_ptr<ReadyChecker>> checkers;
-    static std::once_flag initFlag;
-};
-
-std::vector<std::unique_ptr<ReadyChecker>> ReadyChecker::checkers;
-std::once_flag ReadyChecker::initFlag;
-
-class HealthChecker : public ReadyChecker
-{
-public:
-    bool Check(PlayerbotAI* /*botAI*/, AiObjectContext* context) override
-    {
-        return AI_VALUE2(uint8, "health", "self target") > sPlayerbotAIConfig.AlmostFullHealth;
-    }
-
-    std::string const getName() override { return "HP"; }
-};
-
-class ManaChecker : public ReadyChecker
-{
-public:
-    bool Check(PlayerbotAI* /*botAI*/, AiObjectContext* context) override
-    {
-        return !AI_VALUE2(bool, "has mana", "self target") ||
-               AI_VALUE2(uint8, "mana", "self target") > sPlayerbotAIConfig.MediumHealth;
-    }
-
-    std::string const getName() override { return "MP"; }
-};
-
-class DistanceChecker : public ReadyChecker
-{
-public:
-    bool Check(PlayerbotAI* botAI, AiObjectContext* /*context*/) override
-    {
-        Player* bot = botAI->GetBot();
-        if (Player* master = botAI->GetMaster())
-        {
-            bool distance = bot->GetDistance(master) <= sPlayerbotAIConfig.SightDistance;
-            if (!distance)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    bool PrintAlways() override { return false; }
-    std::string const getName() override { return "Far away"; }
-};
-
-class HunterChecker : public ReadyChecker
-{
-public:
-    bool Check(PlayerbotAI* botAI, AiObjectContext* /*context*/) override
-    {
-        Player* bot = botAI->GetBot();
-        if (bot->getClass() == CLASS_HUNTER)
-        {
-            if (!bot->GetUInt32Value(PLAYER_AMMO_ID))
-            {
-                botAI->TellError("Out of ammo!");
-                return false;
-            }
-
-            if (!bot->GetPet())
-            {
-                botAI->TellError("No pet!");
-                return false;
-            }
-
-            if (bot->GetPet()->GetHappinessState() == UNHAPPY)
-            {
-                botAI->TellError("Pet is unhappy!");
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    bool PrintAlways() override { return false; }
-    std::string const getName() override { return "Far away"; }
-};
-
-class ItemCountChecker : public ReadyChecker
-{
-public:
-    ItemCountChecker(std::string const item, std::string const name) : item(item), name(name) {}
-
-    bool Check(PlayerbotAI* /*botAI*/, AiObjectContext* context) override
-    {
-        return AI_VALUE2(uint32, "item count", item) > 0;
-    }
-
-    std::string const getName() override { return name; }
-
-private:
-    std::string const item;
-    std::string const name;
-};
-
-class ManaPotionChecker : public ItemCountChecker
-{
-public:
-    ManaPotionChecker(std::string const item, std::string const name) : ItemCountChecker(item, name) {}
-
-    bool Check(PlayerbotAI* botAI, AiObjectContext* context) override
-    {
-        return !AI_VALUE2(bool, "has mana", "self target") || ItemCountChecker::Check(botAI, context);
-    }
-};
+    Player* bot = botAI->GetBot();
+    BotReadiness const readiness = EvaluateReadiness(botAI);
+    SendReadyConfirm(bot, readiness.ready);
+    RaidLeader::RecordReadyAnswer(bot, readiness.ready, readiness.reason);
+}
 
 bool ReadyCheckAction::Execute(Event event)
 {
@@ -167,6 +106,19 @@ bool ReadyCheckAction::Execute(Event event)
         p >> player;
         if (player == bot->GetGUID())
             return false;
+
+        // [ready_reply_now] The answer goes out at once and the rebuff pass runs after it (Begin(false): no reply
+        // at its end). DOWNTIME_AUDIT 2026-10-25: the deferred reply ("ready reply [force rebuff pending]") held
+        // boss pulls up to the leader's 150 s (mgt-n 153 s, pos-h 148 s with everyone at full health); a missing buff
+        // never makes a member not ready (EvaluateReadiness), and the tank's planner waits for buffs by itself.
+        constexpr bool READY_REPLY_ON_RECEIPT = true;
+        if (READY_REPLY_ON_RECEIPT && sPlayerbotAIConfig.ForceRebuffOnReadyCheck && !bot->IsInCombat() &&
+            botAI->HasStrategy("force rebuff", BOT_STATE_NON_COMBAT))
+        {
+            bool const answered = ReadyCheck();
+            botAI->forceRebuff.Begin(false);
+            return answered;
+        }
 
         // Defer the ready reply until buffs are topped off.
         if (sPlayerbotAIConfig.ForceRebuffOnReadyCheck && !bot->IsInCombat() &&
@@ -183,51 +135,28 @@ bool ReadyCheckAction::Execute(Event event)
 
 void ReadyCheckAction::ReportReadinessToMaster()
 {
-    std::call_once(
-        ReadyChecker::initFlag,
-        []()
-        {
-            ReadyChecker::checkers.reserve(8);
-
-            ReadyChecker::checkers.emplace_back(std::make_unique<HealthChecker>());
-            ReadyChecker::checkers.emplace_back(std::make_unique<ManaChecker>());
-            ReadyChecker::checkers.emplace_back(std::make_unique<DistanceChecker>());
-            ReadyChecker::checkers.emplace_back(std::make_unique<HunterChecker>());
-
-            ReadyChecker::checkers.emplace_back(std::make_unique<ItemCountChecker>("food", "Food"));
-            ReadyChecker::checkers.emplace_back(std::make_unique<ManaPotionChecker>("drink", "Water"));
-            ReadyChecker::checkers.emplace_back(std::make_unique<ItemCountChecker>("healing potion", "Hpot"));
-            ReadyChecker::checkers.emplace_back(std::make_unique<ManaPotionChecker>("mana potion", "Mpot"));
-        });
-
-    bool result = true;
-    for (auto const& checkerPtr : ReadyChecker::checkers)
-    {
-        if (!checkerPtr)
-            continue;
-
-        bool ok = checkerPtr->Check(botAI, context);
-        result = result && ok;
-    }
+    // The automatic checks before each boss would flood the master with inventory reports.
+    if (RaidLeader::IsAutomaticReadyCheckPending(bot))
+        return;
 
     std::ostringstream out;
 
     uint32 hp = AI_VALUE2(uint32, "item count", "healing potion");
-    out << formatPercent("Hp", hp, 100.0 * hp / 5);
+    out << FormatPercent("Hp", hp, 100.0f * hp / 5);
 
     out << ", ";
     uint32 food = AI_VALUE2(uint32, "item count", "food");
-    out << formatPercent("Food", food, 100.0 * food / 20);
+    out << FormatPercent("Food", food, 100.0f * food / 20);
 
     if (AI_VALUE2(bool, "has mana", "self target"))
     {
         out << ", ";
         uint32 mp = AI_VALUE2(uint32, "item count", "mana potion");
-        out << formatPercent("Mp", mp, 100.0 * mp / 5);
+        out << FormatPercent("Mp", mp, 100.0f * mp / 5);
 
         out << ", ";
         uint32 water = AI_VALUE2(uint32, "item count", "water");
-        out << formatPercent("Water", water, 100.0 * water / 20);
+        out << FormatPercent("Water", water, 100.0f * water / 20);
     }
 
     botAI->TellMaster(out);
@@ -237,7 +166,7 @@ bool ReadyCheckAction::ReadyCheck()
 {
     ReportReadinessToMaster();
 
-    SendReadyConfirm(bot);
+    AnswerReadyCheck(botAI);
 
     botAI->forceRebuff.End();
 
@@ -269,7 +198,7 @@ bool ReadyReplyAction::isUseful()
 bool ReadyReplyAction::Execute(Event /*event*/)
 {
     if (botAI->forceRebuff.ShouldReplyToReadyCheck())
-        SendReadyConfirm(bot);
+        ReadyCheckAction::AnswerReadyCheck(botAI);
 
     botAI->forceRebuff.End();
     return true;

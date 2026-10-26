@@ -34,6 +34,15 @@ bool MalygosTrigger::IsActive()
     return bool(AI_VALUE2(Unit*, "find target", "malygos"));
 }
 
+bool EoEDrakeFlyingTrigger::IsActive()
+{
+    if (bot->GetMapId() != EOE_MAP_ID)
+        return false;
+
+    Unit* vehicleBase = bot->GetVehicleBase();
+    return vehicleBase && vehicleBase->GetEntry() == NPC_WYRMREST_SKYTALON;
+}
+
 bool PowerSparkTrigger::IsActive()
 {
     Unit* boss = AI_VALUE2(Unit*, "find target", "malygos");

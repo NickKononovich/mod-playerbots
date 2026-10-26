@@ -24,23 +24,12 @@ bool RepairAllAction::Execute(Event /*event*/)
         bot->SetFacingToObject(unit);
         float discountMod = bot->GetReputationPriceDiscount(unit);
 
-        uint32 botMoney = bot->GetMoney();
-        if (botAI->HasCheat(BotCheatMask::gold))
-        {
-            bot->SetMoney(10000000);
-        }
-
-        // Repair weapons first.
+        // Repairs are paid from the bot's own gold (weapons first while money lasts).
         uint32 totalCost = bot->DurabilityRepair(EQUIPMENT_SLOT_MAINHAND, true, discountMod, false);
         totalCost += bot->DurabilityRepair(EQUIPMENT_SLOT_RANGED, true, discountMod, false);
         totalCost += bot->DurabilityRepair(EQUIPMENT_SLOT_OFFHAND, true, discountMod, false);
 
         totalCost += bot->DurabilityRepairAll(true, discountMod, false);
-
-        if (botAI->HasCheat(BotCheatMask::gold))
-        {
-            bot->SetMoney(botMoney);
-        }
 
         if (totalCost > 0)
         {

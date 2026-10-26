@@ -115,20 +115,39 @@ void GenericShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     CombatStrategy::InitTriggers(triggers);
 
-    triggers.push_back(new TriggerNode("wind shear", { NextAction("wind shear", 23.0f), }));
-    triggers.push_back(new TriggerNode("wind shear on enemy healer", { NextAction("wind shear on enemy healer", 23.0f), }));
+    // Interrupts sit in the interrupt band, above movement (ACTION_MOVE), like every other class kick.
+    triggers.push_back(new TriggerNode("wind shear", { NextAction("wind shear", ACTION_INTERRUPT + 1), }));
+    triggers.push_back(new TriggerNode("wind shear on enemy healer",
+                                       { NextAction("wind shear on enemy healer", ACTION_INTERRUPT + 2), }));
     triggers.push_back(new TriggerNode("purge", { NextAction("purge", ACTION_DISPEL), }));
     triggers.push_back(new TriggerNode("new pet", { NextAction("set pet stance", 65.0f), }));
 }
 
 void ShamanCureStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
-    triggers.push_back(new TriggerNode("cleanse spirit poison", { NextAction("cleanse spirit", 24.0f), }));
-    triggers.push_back(new TriggerNode("party member cleanse spirit poison", { NextAction("cleanse spirit poison on party", 23.0f), }));
-    triggers.push_back(new TriggerNode("cleanse spirit disease", { NextAction("cleanse spirit", 24.0f), }));
-    triggers.push_back(new TriggerNode("party member cleanse spirit disease", { NextAction("cleanse spirit disease on party", 23.0f), }));
-    triggers.push_back(new TriggerNode("cleanse spirit curse", { NextAction("cleanse spirit", 24.0f), }));
-    triggers.push_back(new TriggerNode("party member cleanse spirit curse", { NextAction("cleanse spirit curse on party", 23.0f), }));
+    // A healer's dispels wait behind its critical and low heals.
+    bool const isResto = AiFactory::GetPlayerSpecTab(botAI->GetBot()) == SHAMAN_TAB_RESTORATION;
+    float const selfRelevance = isResto ? SHAMAN_RESTO_DISPEL_RELEVANCE + 0.1f : 24.0f;
+    float const partyRelevance = isResto ? SHAMAN_RESTO_DISPEL_RELEVANCE : 23.0f;
+
+    triggers.push_back(new TriggerNode("cleanse spirit poison", { NextAction("cleanse spirit", selfRelevance) }));
+    triggers.push_back(new TriggerNode("party member cleanse spirit poison",
+                                       { NextAction("cleanse spirit poison on party", partyRelevance) }));
+    triggers.push_back(new TriggerNode("cleanse spirit disease", { NextAction("cleanse spirit", selfRelevance) }));
+    triggers.push_back(new TriggerNode("party member cleanse spirit disease",
+                                       { NextAction("cleanse spirit disease on party", partyRelevance) }));
+    triggers.push_back(new TriggerNode("cleanse spirit curse", { NextAction("cleanse spirit", selfRelevance) }));
+    triggers.push_back(new TriggerNode("party member cleanse spirit curse",
+                                       { NextAction("cleanse spirit curse on party", partyRelevance) }));
+
+    // A debuff that hurts now: a resto shaman takes it after critical heals (from 23), before low-health heals.
+    float const urgentRelevance = isResto ? SHAMAN_RESTO_URGENT_DISPEL_RELEVANCE : ACTION_DISPEL;
+    triggers.push_back(new TriggerNode("party member urgent cure poison",
+                                       { NextAction("cleanse spirit poison on party", urgentRelevance) }));
+    triggers.push_back(new TriggerNode("party member urgent cure disease",
+                                       { NextAction("cleanse spirit disease on party", urgentRelevance) }));
+    triggers.push_back(new TriggerNode("party member urgent cure curse",
+                                       { NextAction("cleanse spirit curse on party", urgentRelevance) }));
 }
 
 void ShamanBoostStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -139,14 +158,14 @@ void ShamanBoostStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     Player* bot = botAI->GetBot();
     int tab = AiFactory::GetPlayerSpecTab(bot);
 
+    // [b31_sd] The in-combat re-imbues (Elemental main-hand Flametongue, Enhancement main-hand Windfury and off-hand
+    // Flametongue) moved to the spec strategies. The imbue still outranks the Fire Elemental there (23.5 / 24.5 vs
+    // 23 / 24). [b31_deep] The old reason given here was wrong: "boost" is a default combat strategy outside
+    // battlegrounds (AiFactory::AddDefaultCombatStrategies); the imbue belongs to the spec all the same.
     if (tab == SHAMAN_TAB_ELEMENTAL)
-    {
         triggers.push_back(new TriggerNode("fire elemental totem", { NextAction("fire elemental totem", 23.0f), }));
-    }
     else if (tab == SHAMAN_TAB_ENHANCEMENT)
-    {
         triggers.push_back(new TriggerNode("fire elemental totem", { NextAction("fire elemental totem melee", 24.0f), }));
-    }
 }
 
 void ShamanAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -158,14 +177,17 @@ void ShamanAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     if (tab == SHAMAN_TAB_ELEMENTAL)
     {
         triggers.push_back(new TriggerNode("medium aoe",{ NextAction("fire nova", 23.0f), }));
-        triggers.push_back(new TriggerNode("chain lightning no cd", { NextAction("chain lightning", 5.6f), }));
+        // [b31_sd] Above Lava Burst (5.2), below Flame Shock (5.3). At 5.1 it was the filler's duplicate.
+        // [b31_deep] 2+ mobs within the jump range of the target (ChainLightningAoeTrigger, wowsims numberTargets > 1).
+        triggers.push_back(new TriggerNode("chain lightning aoe", { NextAction("chain lightning", 5.25f), }));
     }
     else if (tab == SHAMAN_TAB_ENHANCEMENT)
     {
         triggers.push_back(new TriggerNode("medium aoe",{ NextAction("fire nova", 23.0f), }));
         triggers.push_back(new TriggerNode("maelstrom weapon 5 and medium aoe", { NextAction("chain lightning", 22.0f), }));
         triggers.push_back(new TriggerNode("maelstrom weapon 4 and medium aoe", { NextAction("chain lightning", 21.0f), }));
-        triggers.push_back(new TriggerNode("enemy within melee", { NextAction("fire nova", 5.1f), }));
+        // [shside_enh_mana] No Fire Nova on "enemy within melee": 22 % base mana on one target was the largest
+        // single drain of the rotation. Fire Nova is the 3+ mob ("medium aoe") tool only.
     }
     // Resto AoE handled by "Healer DPS" Strategy
 }

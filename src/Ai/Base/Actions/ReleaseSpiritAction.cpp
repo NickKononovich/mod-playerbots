@@ -5,16 +5,65 @@
  */
 
 #include "ReleaseSpiritAction.h"
+#include "AggressiveTargetValue.h"
 #include "Corpse.h"
 #include "Event.h"
 #include "GameGraveyard.h"
+#include "Group.h"
+#include "InstanceScript.h"
 #include "Log.h"
 #include "NearestNpcsValue.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
+#include "ObjectMgr.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "RaidLeaderState.h"
+#include "ReachTargetActions.h"
 #include "ServerFacade.h"
+#include "SpellMgr.h"
+#include "Timer.h"
+
+#include <algorithm>
+
+namespace
+{
+    // [b30_hor_rez] A living member is a resurrecter worth waiting for only when a resurrection can come. While the
+    // instance's encounter is in progress the core refuses every out-of-combat resurrection (Spell::CheckCast,
+    // SPELL_FAILED_TARGET_CANNOT_BE_RESURRECTED): only a ready battle resurrection counts then - unless the living
+    // still outnumber the dead (they carry the encounter on and resurrect once it is over). hor-n
+    // 20261025-185515-hor-n-5H-74: four dead in a wave at 731-764 s, the bear tank battle-rezzed alone; its
+    // Revive failed with code 186 every tick (the waves are the encounter), the four lay "waiting" for it 73 s, the
+    // next wave killed the tank eating alone at 851 s.
+    bool ResurrectionCanCome(Player* member, uint32 alive, uint32 dead)
+    {
+        if (!RaidLeader::CanResurrect(member))
+            return false;
+        InstanceScript* script = member->GetInstanceScript();
+        if (!script || alive >= dead || !script->IsEncounterInProgress())
+            return true;
+        return RaidLeader::HasBattleResurrection(member);
+    }
+
+    // [b32_sh_ooze] In an instance with a respawn zone (RespawnIgnored: trash that refills behind the group) a
+    // resurrection is worth more than a corpse run - the run back from the entrance passes the refilled mobs again
+    // (user 2026-10-25: «если кто-то умрет, то вся группа должна идти заново»). A resurrecter within this range counts
+    // (PartyMemberToResurrect's walk range, the healer walks back to the corpse), not only one within `range`.
+    constexpr float RESPAWN_ZONE_RESURRECTER_RANGE = 100.0f;
+    float ResurrecterRange(Player* bot, float range)
+    {
+        return RespawnIgnored::Any(bot->GetInstanceId()) ? std::max(range, RESPAWN_ZONE_RESURRECTER_RANGE) : range;
+    }
+
+    void CountGroup(Player* bot, uint32& alive, uint32& dead)
+    {
+        alive = 0;
+        dead = 0;
+        for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource(); member && member->GetMap() == bot->GetMap())
+                ++(member->IsAlive() ? alive : dead);
+    }
+}
 
 // ReleaseSpiritAction implementation
 bool ReleaseSpiritAction::Execute(Event event)
@@ -47,7 +96,6 @@ bool ReleaseSpiritAction::Execute(Event event)
     botAI->TellMasterNoFacing(message);
 
     IncrementDeathCount();
-    bot->DurabilityRepairAll(false, 1.0f, false);
     LogRelease("released");
 
     WorldPacket releasePacket(CMSG_REPOP_REQUEST);
@@ -88,8 +136,25 @@ void ReleaseSpiritAction::LogRelease(std::string const& releaseMsg) const
 bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
     IncrementDeathCount();
-    bot->DurabilityRepairAll(false, 1.0f, false);
     LogRelease("auto released");
+
+    if (_noResSpot)
+    {
+        // In a dungeon the ghost is brought back where it walks in (WorldSession::HandleMoveWorldportAck: the corpse
+        // lies in the instance), elsewhere "find corpse" picks a spot out of the pack's reach on the group's side.
+        Map* map = bot->GetMap();
+        AreaTriggerTeleport const* entrance =
+            map->IsDungeon() ? sObjectMgr->GetMapEntranceTrigger(map->GetId()) : nullptr;
+        if (entrance)
+            LOG_INFO("playerbots", "[corpse res] no safe spot -> {} releases and revives at ({:.1f},{:.1f},{:.1f}), "
+                     "the instance entrance", bot->GetName(), entrance->target_X, entrance->target_Y,
+                     entrance->target_Z);
+        else
+            LOG_INFO("playerbots", "[corpse res] no safe spot -> {} releases and revives near its corpse "
+                     "({:.1f},{:.1f},{:.1f}) out of the pack's reach", bot->GetName(), bot->GetPositionX(),
+                     bot->GetPositionY(), bot->GetPositionZ());
+        _noResSpot = false;
+    }
 
     WorldPacket packet(CMSG_REPOP_REQUEST);
     packet << uint8(0);
@@ -108,7 +173,48 @@ bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 
 bool AutoReleaseSpiritAction::isUseful()
 {
-    if (!bot->isDead() || bot->InArena())
+    if (!bot->isDead())
+    {
+        _diedAt = 0;
+        _releaseAt = 0;
+        _deadSince = 0;
+        _noResSpot = false;
+        return false;
+    }
+
+    // [b32_bfd] A new death restarts every wait. The reset above never runs: this action belongs to the dead engine
+    // only, and PlayerbotAI switches to the living engine before any of its actions is asked again, so _deadSince,
+    // _diedAt and _releaseAt outlived the resurrection. bfd-h 20261025-221216-5D-35: the bear tank died at 2443 s
+    // (rezzed at 2498 s) and again at 2683 s; the second death inherited the first one's clocks - "dead 2 min, nobody
+    // near" was true at once and "waited 3 min for the shaman" ran out when the fight ended - and the tank released
+    // 14 s after the fight while the shaman (21 yd away, drinking) was about to resurrect it; its ghost then stood
+    // at the Zoram Strand graveyard for good. A new death: the death count PlayerbotAI raises on every death changed,
+    // or a corpse that lies elsewhere than the one this wait was for (a death count kept for a real master).
+    if (!bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+    {
+        uint32 const deathCount = AI_VALUE(uint32, "death count");
+        bool const newDeath = _deadSince && (deathCount != _deathCountSeen ||
+                                             bot->GetMapId() != _deathMapId ||
+                                             bot->GetExactDist(&_deathPos) > NEW_DEATH_MOVED);
+        if (newDeath)
+        {
+            _deadSince = 0;
+            _diedAt = 0;
+            _releaseAt = 0;
+            _noResSpot = false;
+        }
+        if (!_deadSince)
+        {
+            _deathCountSeen = deathCount;
+            _deathMapId = bot->GetMapId();
+            _deathPos = bot->GetPosition();
+        }
+    }
+
+    if (!_deadSince)
+        _deadSince = getMSTime();
+
+    if (bot->InArena())
         return false;
 
     if (bot->InBattleground())
@@ -117,7 +223,138 @@ bool AutoReleaseSpiritAction::isUseful()
     if (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
         return false;
 
+    // Every resurrecter's search found no spot in sight of the corpse out of the pack's reach (the corpse lies deep in
+    // an idle pack): no resurrection comes, release once the fight is over (RFC 2026-10-24 18:28, the tank waited 3.5
+    // minutes for a paladin that could not see it without waking the Searing Blades).
+    if (bot->GetGroup() && !bot->isResurrectRequested() && CorpseRes::Blocked(bot, CORPSE_RES_BLOCKED_MS) &&
+        FightIsOver())
+    {
+        _noResSpot = true;
+        return ReleaseDelayElapsed();
+    }
+
+    if (bot->GetGroup() && bot->GetMap()->IsDungeon() && GetMSTimeDiffToNow(_deadSince) >= INSTANCE_DEAD_MAX_MS &&
+        !bot->isResurrectRequested())
+    {
+        bool resurrecterNear = false;
+        uint32 alive = 0;
+        uint32 dead = 0;
+        CountGroup(bot, alive, dead);
+        for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsAlive() && member->GetMap() == bot->GetMap() &&
+                !member->IsInCombat() && ResurrectionCanCome(member, alive, dead) &&  // [b30_hor_rez]
+                bot->GetDistance(member) <= ResurrecterRange(bot, NEAR_RESURRECTER))  // [b32_sh_ooze]
+                resurrecterNear = true;
+        }
+
+        if (!resurrecterNear)
+            return ReleaseDelayElapsed();
+    }
+
+    if (WaitForGroupResurrect())
+        return false;
+
+    // In an instance nobody is left to resurrect us: once the fight is over, release and run back.
+    if (bot->GetGroup() && bot->GetMap()->IsDungeon())
+        return FightIsOver() && ReleaseDelayElapsed();
+
     return ShouldAutoRelease();
+}
+
+bool AutoReleaseSpiritAction::FightIsOver()
+{
+    Group* group = bot->GetGroup();
+    Map* map = bot->GetMap();
+    bool anyAlive = false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || member->GetMap() != map || !member->IsAlive())
+            continue;
+
+        anyAlive = true;
+        if (member->IsInCombat())
+            return false;
+    }
+
+    if (!anyAlive)
+        RaidLeader::CallWipe(bot, nullptr, "all dead");
+
+    return true;
+}
+
+// Dead bots release a few seconds apart instead of all on the same tick.
+bool AutoReleaseSpiritAction::ReleaseDelayElapsed()
+{
+    if (!_releaseAt)
+        _releaseAt = getMSTime() + urand(RELEASE_DELAY_MIN_MS, RELEASE_DELAY_MAX_MS);
+
+    return int32(getMSTime() - _releaseAt) >= 0;
+}
+
+// The dead stay in the field while a living group member can resurrect them: during the fight (battle res, or
+// a resurrection once it is over) and for a while after it. Groups in an instance always wait; elsewhere only
+// groups led from a game client (a real player or a SelfBot) do.
+bool AutoReleaseSpiritAction::WaitForGroupResurrect()
+{
+    Group* group = bot->GetGroup();
+    if (!group || bot->GetMap()->IsBattlegroundOrArena())
+        return false;
+
+    bool const inInstance = bot->GetMap()->IsDungeon();
+    if (!inInstance && !botAI->HasGameClientMaster() && !IsSelfBot(bot))
+        return false;
+
+    if (!_diedAt)
+        _diedAt = getMSTime();
+
+    bool resurrecterFound = false;
+    bool resurrecterInCombat = false;
+    bool groupInCombat = false;
+    uint32 alive = 0;
+    uint32 dead = 0;
+    CountGroup(bot, alive, dead);
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap() ||
+            bot->GetDistance(member) > ResurrecterRange(bot, sPlayerbotAIConfig.SightDistance))  // [b32_sh_ooze]
+            continue;
+
+        groupInCombat = groupInCombat || member->IsInCombat();
+        if (!ResurrectionCanCome(member, alive, dead))  // [b30_hor_rez]
+            continue;
+
+        resurrecterFound = true;
+        resurrecterInCombat = resurrecterInCombat || member->IsInCombat();
+    }
+
+    // Soulstone or Reincarnation: the "self resurrect" action brings the bot back once rising is safe (the shaman's
+    // trigger holds the Ankh while mobs fight, evade or rest on the corpse). Stratholme wave 18: held only 90 s for
+    // a pack resting on the corpse, the shaman rose among it, 151 yd from the group, and died again within 2 s. Not
+    // safe within SELF_RESURRECT_WAIT_MS of the fight's end: released, the corpse run picks a safe spot to rise on.
+    bool const selfResurrect = bot->GetUInt32Value(PLAYER_SELF_RES_SPELL) != 0;
+    if (selfResurrect && groupInCombat)
+    {
+        _diedAt = getMSTime();
+        return true;
+    }
+    if (selfResurrect && GetMSTimeDiffToNow(_diedAt) <= SELF_RESURRECT_WAIT_MS)
+        return true;
+
+    if (!resurrecterFound)
+        return false;
+
+    // The wait counts from the end of the fight: a whole raid takes a while to resurrect one by one.
+    if (resurrecterInCombat)
+    {
+        _diedAt = getMSTime();
+        return true;
+    }
+
+    return GetMSTimeDiffToNow(_diedAt) <= (inInstance ? INSTANCE_RESURRECT_WAIT_MS : GROUP_RESURRECT_WAIT_MS);
 }
 
 bool AutoReleaseSpiritAction::HandleBattlegroundSpiritHealer()
@@ -146,18 +383,12 @@ bool AutoReleaseSpiritAction::HandleBattlegroundSpiritHealer()
     if (!spiritHealer)
         return false;
 
+    // The bot must click the spirit healer to start its timer. Out of reach the ghost waits for the area
+    // spirit healer instead of being teleported to it.
     if (bot->GetDistance(spiritHealer) >= INTERACTION_DISTANCE)
-    {
-        // Bot needs to actually click spirit-healer in BG to get res timer going
-        // and in IOC it's not within clicking range when they res in own base
+        return false;
 
-        // Teleport to nearest friendly Spirit Healer when not currently in range of one.
-        bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
-        bot->TeleportTo(bot->GetMapId(), spiritHealer->GetPositionX(), spiritHealer->GetPositionY(), spiritHealer->GetPositionZ(), 0.f);
-        RESET_AI_VALUE(bool, "combat::self target");
-        RESET_AI_VALUE(WorldPosition, "current position");
-    }
-    else if (!IsSelfBot(bot))
+    if (!IsSelfBot(bot))
     {
         m_bgGossipTime = now;
         WorldPacket packet(CMSG_GOSSIP_HELLO);
@@ -177,10 +408,10 @@ bool AutoReleaseSpiritAction::ShouldAutoRelease() const
     if (!groupLeader || groupLeader == bot)
         return true;
 
-    if (!IsRealPlayer(botAI->GetMaster()))
+    if (!botAI->HasGameClientMaster())
         return true;
 
-    if (IsRealPlayer(botAI->GetMaster()) &&
+    if (botAI->HasGameClientMaster() &&
         groupLeader->GetMapId() == bot->GetMapId() &&
         bot->GetMap() &&
         (bot->GetMap()->IsRaid() || bot->GetMap()->IsDungeon()))
@@ -219,39 +450,22 @@ bool AutoReleaseSpiritAction::ShouldDelayBattlegroundRelease() const
     return true;
 }
 
+// A stuck or falling corpse releases like a player would (the server moves the ghost to the graveyard); a ghost
+// is not teleported anywhere.
 bool RepopAction::Execute(Event /*event*/)
 {
-    GraveyardStruct const* graveyard = GetGrave(
-        AI_VALUE(uint32, "death count") > 10 ||
-        CalculateDeadTime() > 30 * MINUTE
-    );
-
-    if (!graveyard)
+    if (!bot->isDead() || bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
         return false;
 
-    PerformGraveyardTeleport(graveyard);
+    WorldPacket packet(CMSG_REPOP_REQUEST);
+    packet << uint8(0);
+    bot->GetSession()->HandleRepopRequestOpcode(packet);
     return true;
 }
 
 bool RepopAction::isUseful()
 {
-    return !bot->InBattleground();
-}
-
-int64 RepopAction::CalculateDeadTime() const
-{
-    if (Corpse* corpse = bot->GetCorpse())
-        return time(nullptr) - corpse->GetGhostTime();
-
-    return bot->isDead() ? 0 : 60 * MINUTE;
-}
-
-void RepopAction::PerformGraveyardTeleport(GraveyardStruct const* graveyard) const
-{
-    bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
-    bot->TeleportTo(graveyard->Map, graveyard->x, graveyard->y, graveyard->z, 0.f);
-    RESET_AI_VALUE(bool, "combat::self target");
-    RESET_AI_VALUE(WorldPosition, "current position");
+    return !bot->InBattleground() && bot->isDead() && !bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
 }
 
 // SelfResurrectAction implementation for Warlock's Soulstone Resurrection/Shaman's Reincarnation

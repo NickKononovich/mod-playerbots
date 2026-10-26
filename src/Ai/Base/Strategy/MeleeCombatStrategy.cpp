@@ -21,4 +21,7 @@ void SetBehindCombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(new TriggerNode("not behind target",
                                        { NextAction("set behind", ACTION_MOVE + 7) }));
+    // A mob meleeing the dps away from the tank: the dps brings it to the tank, where the peel and the heals reach,
+    // before stepping behind anything (Stockade 2026-10-24: a rogue died alone 23 yd from the tank).
+    triggers.push_back(new TriggerNode("chased away from tank", { NextAction("move to tank", ACTION_MOVE + 8) }));
 }

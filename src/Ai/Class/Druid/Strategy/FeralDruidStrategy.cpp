@@ -7,6 +7,11 @@
 #include "FeralDruidStrategy.h"
 #include "Playerbots.h"
 
+bool DruidHasThickHide(Player* bot)  // [b31_sd]
+{
+    return bot->HasAura(16929) || bot->HasAura(16930) || bot->HasAura(AURA_THICK_HIDE);
+}
+
 class FeralDruidStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
 {
 public:
@@ -84,7 +89,9 @@ void FeralDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "enemy out of melee", { NextAction("reach melee", 21.0f) }));
     triggers.push_back(new TriggerNode(
-        "low health", { NextAction("survival instincts", 91.0f) }));
+        "damage spike", { NextAction("survival instincts", 91.0f) }));
+    triggers.push_back(new TriggerNode(
+        "critical health", { NextAction("survival instincts", 91.0f) }));
     triggers.push_back(new TriggerNode("player has flag",
                                        { NextAction("dash", 92.0f) }));
     triggers.push_back(new TriggerNode("enemy flagcarrier near",
@@ -95,10 +102,11 @@ void FeralChargeDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     Player* bot = botAI->GetBot();
 
-    if (bot->HasSpell(SPELL_CAT_FORM) && !bot->HasAura(AURA_THICK_HIDE))
+    if (bot->HasSpell(SPELL_CAT_FORM) && !DruidHasThickHide(bot))
         triggers.push_back(new TriggerNode(
             "enemy out of melee", { NextAction("feral charge - cat", 29.0f) }));
     else
         triggers.push_back(new TriggerNode(
-            "enemy out of melee", { NextAction("feral charge - bear", 18.0f) }));
+            // above the bear's "reach melee" (ACTION_MOVE + 0.5): at 18 it never fired, the bear always walked in
+            "enemy out of melee", { NextAction("feral charge - bear", ACTION_MOVE + 1.0f) }));
 }

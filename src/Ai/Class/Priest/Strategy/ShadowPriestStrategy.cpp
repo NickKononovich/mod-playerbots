@@ -31,10 +31,14 @@ void ShadowPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "shadowform",
             {
-                NextAction("shadowform", ACTION_HIGH)
+                // [guide_b31_dead] top priority whenever missing: above Dispersion (+5), Mind Sear (+4) and the DoTs
+                NextAction("shadowform", ACTION_HIGH + 6)
             }
         )
     );
+    // [guide_b31_dead] clip Mind Flay right after a tick when Mind Blast is ready; Mind Blast (default 5.3) then
+    // outranks a new Mind Flay (5.2). Movement already breaks the channel, so Shadow Word: Death needs no clip.
+    triggers.push_back(new TriggerNode("mind flay clip", { NextAction("cancel channel", ACTION_HIGH + 5.5f) }));
     triggers.push_back(
         new TriggerNode(
             "low mana",
@@ -67,6 +71,11 @@ void ShadowPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus titanic insight", { NextAction("mind blast", ACTION_HIGH + 0.5f) }));
+    triggers.push_back(new TriggerNode("set bonus ascendant void",
+        { NextAction("shadow word: death", ACTION_HIGH + 0.4f) }));
 }
 
 void ShadowPriestAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -95,14 +104,11 @@ void ShadowPriestAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "medium aoe",
-            {
-                NextAction("mind sear", ACTION_HIGH + 4)
-            }
-        )
-    );
+    // [b31_deep] wowsims aoe APLs: at 2-5 targets the current target's DoTs (VT +3, DP +2, SW:P +1) come first and
+    // Mind Sear after them (above Mind Blast / Mind Flay, below the set-bonus procs +0.4 / +0.5); it goes over
+    // the DoTs only with 5+ other enemies within its 10 yd around the target (it never hits the target itself).
+    triggers.push_back(new TriggerNode("medium aoe", { NextAction("mind sear", ACTION_HIGH + 0.3f) }));
+    triggers.push_back(new TriggerNode("mind sear heavy aoe", { NextAction("mind sear", ACTION_HIGH + 4) }));
 }
 
 void ShadowPriestDebuffStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

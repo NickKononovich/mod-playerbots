@@ -8,14 +8,20 @@
 #include "Action.h"
 #include "AiObjectContext.h"
 #include "Group.h"
+#include "KillOrder.h"
 #include "PlayerbotAI.h"
+#include "Playerbots.h"
+#include "RtiValue.h"
 #include "ServerFacade.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 
 class FindTargetForCcStrategy : public FindTargetStrategy
 {
 public:
-    FindTargetForCcStrategy(PlayerbotAI* botAI, std::string const spell)
-        : FindTargetStrategy(botAI), spell(spell), maxDistance(0.f)
+    FindTargetForCcStrategy(PlayerbotAI* botAI, std::string const spell, bool peacefulTargetsOnly, bool breakable)
+        : FindTargetStrategy(botAI), spell(spell), maxDistance(0.f), peacefulTargetsOnly(peacefulTargetsOnly),
+          breakable(breakable)
     {
     }
 
@@ -23,7 +29,21 @@ public:
     void CheckAttacker(Unit* creature, ThreatManager* /*threatMgr*/) override
     {
         Player* bot = botAI->GetBot();
+        // Sap and the like only open a pull: never once the bot or the target is fighting.
+        if (peacefulTargetsOnly && (bot->IsInCombat() || creature->IsInCombat()))
+            return;
+
+        // 5-man dungeons: never a mob deep in the room the group does not fight yet; it is held once it comes.
+        if (!KillOrder::IsInGroupFight(bot, creature))
+            return;
+
         if (!botAI->CanCastSpell(spell, creature))
+            return;
+
+        // [rot_b31_cc] never a mob whose crowd control broke early (back-off), nor one the group's own area damage or
+        // a damage over time would break at once - the marked one either (build 30: 111 Polymorphs in a wave)
+        if (bot->IsInCombat() && (IsCrowdControlBackedOff(creature) ||
+                                  (breakable && CrowdControlWouldBreak(botAI, creature))))
             return;
 
         if (*botAI->GetAiObjectContext()->GetValue<Unit*>("rti cc target") == creature)
@@ -87,10 +107,15 @@ public:
 private:
     std::string const spell;
     float maxDistance;
+    bool peacefulTargetsOnly;
+    bool breakable;  // [rot_b31_cc] damage breaks the spell's hold (not Banish)
 };
 
 Unit* CcTargetValue::Calculate()
 {
-    FindTargetForCcStrategy strategy(botAI, qualifier);
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", qualifier));
+    bool const peacefulTargetsOnly = spellInfo && spellInfo->HasAttribute(SPELL_ATTR1_ONLY_PEACEFUL_TARGETS);
+    bool const breakable = !spellInfo || !(spellInfo->GetAllEffectsMechanicMask() & (1ULL << MECHANIC_BANISH));
+    FindTargetForCcStrategy strategy(botAI, qualifier, peacefulTargetsOnly, breakable);
     return FindTarget(&strategy);
 }

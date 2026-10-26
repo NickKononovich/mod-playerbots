@@ -5,6 +5,11 @@
  */
 
 #include "AoeHealValues.h"
+
+#include <cctype>
+#include <cstdlib>
+
+#include "PartyMemberToHeal.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 
@@ -23,6 +28,9 @@ uint8 AoeHealValue::Calculate()
         range = sPlayerbotAIConfig.CriticalHealth;
     else if (qualifier == "almost full")
         range = sPlayerbotAIConfig.AlmostFullHealth;
+    // [heal_triage] A plain health percent ("70", "40"): the group-damage triggers of TriggerContext.
+    else if (!qualifier.empty() && std::isdigit(static_cast<unsigned char>(qualifier[0])))
+        range = std::strtof(qualifier.c_str(), nullptr);
 
     uint8 count = 0;
     Group::MemberSlotList const& groupSlot = group->GetMemberSlots();
@@ -33,6 +41,10 @@ uint8 AoeHealValue::Calculate()
             continue;
 
         if (player->GetDistance(bot) >= sPlayerbotAIConfig.SightDistance)
+            continue;
+
+        // An Ice Blocked / Cycloned member takes no heal, so it does not call for a group heal either.
+        if (HealTriage::IsHealImmune(bot, player))
             continue;
 
         float percent = (static_cast<float>(player->GetHealth()) / player->GetMaxHealth()) * 100;

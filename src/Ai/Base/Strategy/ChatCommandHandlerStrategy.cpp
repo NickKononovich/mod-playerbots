@@ -79,6 +79,14 @@ void ChatCommandHandlerStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
     triggers.push_back(new TriggerNode("disperse", { NextAction("disperse set", relevance) }));
     triggers.push_back(new TriggerNode("qi", { NextAction("query item usage", relevance) }));
     triggers.push_back(new TriggerNode("focus heal", { NextAction("focus heal targets", relevance) }));
+
+    // Raid leader orders (Leader/LeaderActions): group break, rest, kick now, resurrection first, timed burst.
+    triggers.push_back(new TriggerNode("pause", { NextAction("group pause", relevance) }));
+    triggers.push_back(new TriggerNode("resume", { NextAction("group resume", relevance) }));
+    triggers.push_back(new TriggerNode("rest", { NextAction("rest", relevance) }));
+    triggers.push_back(new TriggerNode("interrupt", { NextAction("interrupt order", relevance) }));
+    triggers.push_back(new TriggerNode("res", { NextAction("resurrect first", relevance) }));
+    triggers.push_back(new TriggerNode("burst", { NextAction("burst order", relevance) }));
 }
 
 void ChatCommandHandlerStrategy::InitReactionTriggers(std::vector<TriggerNode*>& triggers)

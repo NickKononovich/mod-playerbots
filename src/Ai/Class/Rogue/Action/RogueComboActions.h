@@ -19,16 +19,34 @@ public:
     bool isUseful() override;
 };
 
-class CastSinisterStrikeAction : public CastSpellAction
+// Combo builder that holds back when it would starve an imminent Slice and Dice refresh
+class CastRogueBuilderAction : public CastSpellAction
 {
 public:
-    CastSinisterStrikeAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "sinister strike") {}
+    CastRogueBuilderAction(PlayerbotAI* botAI, std::string const spell) : CastSpellAction(botAI, spell) {}
+
+    bool isUseful() override;
 };
 
-class CastMutilateAction : public CastSpellAction
+class CastSinisterStrikeAction : public CastRogueBuilderAction
 {
 public:
-    CastMutilateAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "mutilate") {}
+    CastSinisterStrikeAction(PlayerbotAI* botAI) : CastRogueBuilderAction(botAI, "sinister strike") {}
+};
+
+class CastMutilateAction : public CastRogueBuilderAction
+{
+public:
+    CastMutilateAction(PlayerbotAI* botAI) : CastRogueBuilderAction(botAI, "mutilate") {}
+
+    // [melee_audit_b30] pools energy for Mutilate instead of falling through to Sinister Strike
+    bool isUseful() override;
+};
+
+class CastHemorrhageAction : public CastRogueBuilderAction
+{
+public:
+    CastHemorrhageAction(PlayerbotAI* botAI) : CastRogueBuilderAction(botAI, "hemorrhage") {}
 };
 
 class CastRiposteAction : public CastSpellAction

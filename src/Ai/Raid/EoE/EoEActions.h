@@ -61,6 +61,10 @@ public:
 
     bool Execute(Event event) override;
     bool isPossible() override;
+
+private:
+    Position _lastDestination;
+    bool _hasDestination = false;
 };
 
 class EoEDrakeAttackAction : public Action

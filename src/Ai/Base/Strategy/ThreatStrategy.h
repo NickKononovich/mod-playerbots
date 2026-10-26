@@ -7,9 +7,13 @@
 #ifndef PLAYERBOTS_THREATSTRATEGY_H
 #define PLAYERBOTS_THREATSTRATEGY_H
 
+#include "ObjectGuid.h"
 #include "Strategy.h"
 
+#include <unordered_map>
+
 class PlayerbotAI;
+class Unit;
 
 class ThreatMultiplier : public Multiplier
 {
@@ -17,6 +21,20 @@ public:
     ThreatMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "threat") {}
 
     float GetValue(Action* action) override;
+
+private:
+    static constexpr uint32 HOLD_LOG_MS = 5000;
+    // [fresh_add_hold] A ranged damage dealer gives the tank this long on a mob new to the fight (an add, a wave, the
+    // pack at the pull start) that is not on a tank yet, as a player waits for the tank's lead on Omen.
+    static constexpr uint32 FRESH_ADD_HOLD_MS = 1500;
+    static constexpr float FRESH_ADD_TANK_RANGE = 40.0f;  // a tank farther from the mob than this takes it by no taunt
+    static constexpr size_t FRESH_ADD_MEMO = 32;          // mobs remembered; the oldest go first
+
+    bool HoldsForFreshAdd(Unit* target);
+
+    uint32 _loggedMs = 0;
+    std::unordered_map<ObjectGuid, uint32> _freshSeen;  // mob, when this bot first wanted to hit it in the fight
+    ObjectGuid _freshLogged;
 };
 
 class ThreatStrategy : public Strategy

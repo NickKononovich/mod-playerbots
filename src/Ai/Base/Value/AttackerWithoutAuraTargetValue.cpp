@@ -5,7 +5,9 @@
  */
 
 #include "AttackerWithoutAuraTargetValue.h"
+#include "KillOrder.h"
 #include "Playerbots.h"
+#include "RtiValue.h"
 #include "Strategy.h"
 #include "TargetValue.h"
 
@@ -22,7 +24,16 @@ Unit* AttackerWithoutAuraTargetValue::Calculate()
         if (!unit || !unit->IsAlive() || dynamicExclusions.find(guid) != dynamicExclusions.end())
             continue;
 
+        // a DoT tick breaks the crowd control; [rot_b31_cc] also the one its crowd control icon waits for (a DoT put
+        // on the mob before the Polymorph lands broke it again at the next tick)
+        if (IsCrowdControlled(unit) || HasCrowdControlIcon(bot, unit))
+            continue;
+
         if (!bot->IsWithinCombatRange(unit, botAI->GetRange(range)))
+            continue;
+
+        // 5-man dungeons: no DoT on a mob deep in the room the group does not fight yet (KillOrder::IsInGroupFight)
+        if (!KillOrder::IsInGroupFight(bot, unit))
             continue;
 
         if (unit->GetHealth() < max_health)
@@ -49,6 +60,11 @@ Unit* MeleeAttackerWithoutAuraTargetValue::Calculate()
     {
         Unit* unit = botAI->GetUnit(guid);
         if (!unit || !unit->IsAlive() || dynamicExclusions.find(guid) != dynamicExclusions.end())
+            continue;
+
+        // a DoT tick breaks the crowd control; [rot_b31_cc] also the one its crowd control icon waits for (a DoT put
+        // on the mob before the Polymorph lands broke it again at the next tick)
+        if (IsCrowdControlled(unit) || HasCrowdControlIcon(bot, unit))
             continue;
 
         if (!bot->IsWithinMeleeRange(unit))

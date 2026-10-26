@@ -8,9 +8,17 @@
 #define PLAYERBOTS_TBCDUNGEONACTIONCONTEXT_H
 
 #include "ACActionContext.h"
+#include "ArcActionContext.h"
+#include "BFActionContext.h"
+#include "BMActionContext.h"
 #include "MechActionContext.h"
+#include "MTActionContext.h"
 #include "MgTActionContext.h"
 #include "RampActionContext.h"
+#include "SHActionContext.h"
+#include "SLActionContext.h"
+#include "SPActionContext.h"
+#include "SVActionContext.h"
 #include "SethActionContext.h"
 #include "UBActionContext.h"
 

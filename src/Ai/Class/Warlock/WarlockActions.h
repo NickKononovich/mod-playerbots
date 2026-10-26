@@ -128,6 +128,22 @@ public:
     bool Execute(Event event) override;
 };
 
+// "ss auto": in a group the stone goes to a healer who can resurrect out of combat (priest, paladin, shaman),
+// else to the main tank; alone it goes on the warlock. Re-applied whenever the stone is used up (e.g. after a wipe).
+class UseSoulstoneAutoAction : public UseSpellItemAction
+{
+public:
+    UseSoulstoneAutoAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone") {}
+    bool Execute(Event event) override;
+};
+
+class CastRitualOfSoulsAction : public CastSpellAction
+{
+public:
+    CastRitualOfSoulsAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "ritual of souls") {}
+    std::string const GetTargetName() override { return "self target"; }
+};
+
 // Summoning Spells
 
 class CastSummonVoidwalkerAction : public CastBuffSpellAction
@@ -217,6 +233,7 @@ class CastSoulshatterAction : public CastSpellAction
 public:
     CastSoulshatterAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "soulshatter") {}
     bool isUseful() override;
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
 class CastLifeTapAction : public CastSpellAction
@@ -251,58 +268,95 @@ public:
 
 // DoT/Curse Spells
 
+// DoTs are refreshed this long before expiry: about the cast time plus a margin
+constexpr uint32 CORRUPTION_REFRESH_MS = 1000;
+constexpr uint32 UNSTABLE_AFFLICTION_REFRESH_MS = 2000;
+constexpr uint32 IMMOLATE_REFRESH_MS = 2500;
+constexpr float CORRUPTION_FULL_DURATION_SECONDS = 18.0f;
+
+// A DoT is only applied when the target lives long enough (seconds, "estimated group dps") for it to out-damage
+// the filler cast it replaces; on a dying target the warlock keeps casting the filler / Drain Soul instead.
+constexpr float CORRUPTION_MIN_TARGET_LIFETIME = 6.0f;           // instant, two 3 s ticks beat one filler GCD
+constexpr float IMMOLATE_MIN_TARGET_LIFETIME = 6.0f;             // direct hit plus two ticks
+constexpr float UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME = 9.0f;  // 1.5 s cast, needs about three ticks
+// [b31_deep] wowsims affliction / demo APL: Curse of Agony only when the fight lasts more than 22 s (its first
+// ticks are the weak ones; was 12 s).
+constexpr float CURSE_OF_AGONY_MIN_TARGET_LIFETIME = 22.0f;
+constexpr float CURSE_OF_DOOM_MIN_TARGET_LIFETIME = 60.0f;       // the only hit lands when the curse expires
+// [b35_lock] wowsims destro: Inferno when the fight has less than 61 s left (the Infernal serves 60 s).
+constexpr float INFERNO_MAX_TARGET_LIFETIME = 61.0f;
+constexpr uint32 INFERNO_REAGENT_ITEM = 5565;  // Infernal Stone
+// +13 % spell damage for the whole group: worth a GCD only on a target the casters hit for a while
+constexpr float CURSE_OF_THE_ELEMENTS_MIN_TARGET_LIFETIME = 10.0f;
+// Drain Soul deals four times its damage at or below this target health percent (Unit::SpellDamageBonusDone).
+constexpr int32 DRAIN_SOUL_EXECUTE_HEALTH_PCT = 25;
+// [ranged_audit_b30] Two 3 s ticks at four times the damage, about what the Shadow Bolts in that time deal.
+constexpr float DRAIN_SOUL_EXECUTE_MIN_TARGET_LIFETIME = 6.0f;
+// [b31_deep] Demonology: Immolate only on a target that lives this long (wowsims demo APL, fight >= 12 s).
+constexpr float DEMO_IMMOLATE_MIN_TARGET_LIFETIME = 12.0f;
+// [b31_deep] Demonology multi-dot (Corruption / Immolate on other attackers): only on adds living this long.
+constexpr float DEMO_MULTIDOT_MIN_TARGET_LIFETIME = 12.0f;
+// [b31_deep] Glyph of Life Tap buff refreshed this long before it drops (wowsims: affliction < 2 s, demo and
+// destruction < 3 s).
+constexpr uint32 LIFE_TAP_GLYPH_REFRESH_AFFLICTION_MS = 2000;
+constexpr uint32 LIFE_TAP_GLYPH_REFRESH_MS = 3000;
+
 class CastCorruptionAction : public CastDebuffSpellAction
 {
 public:
-    CastCorruptionAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "corruption", true) {}
+    CastCorruptionAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "corruption", true, CORRUPTION_MIN_TARGET_LIFETIME)
+    {
+        beforeDuration = CORRUPTION_REFRESH_MS;
+    }
     bool isUseful() override
     {
-        // Bypass TTL check and prevent casting if Seed of Corruption is present
-        return CastAuraSpellAction::isUseful() && !botAI->HasAura("seed of corruption", GetTarget(), false, true);
+        // Prevent casting if Seed of Corruption is present
+        return CastDebuffSpellAction::isUseful() && !botAI->HasAura("seed of corruption", GetTarget(), false, true);
     }
 };
 
 class CastCorruptionOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
-    CastCorruptionOnAttackerAction(PlayerbotAI* botAI) : CastDebuffSpellOnAttackerAction(botAI, "corruption", true) {}
+    CastCorruptionOnAttackerAction(PlayerbotAI* botAI)
+        : CastDebuffSpellOnAttackerAction(botAI, "corruption", true, CORRUPTION_MIN_TARGET_LIFETIME)
+    {
+    }
     bool isUseful() override
     {
-        // Bypass TTL check and prevent casting if Seed of Corruption is present
-        return CastAuraSpellAction::isUseful() && !botAI->HasAura("seed of corruption", GetTarget(), false, true);
+        // Prevent casting if Seed of Corruption is present
+        return CastDebuffSpellOnAttackerAction::isUseful() &&
+               !botAI->HasAura("seed of corruption", GetTarget(), false, true);
     }
 };
 
 class CastImmolateAction : public CastDebuffSpellAction
 {
 public:
-    CastImmolateAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "immolate", true) {}
-    bool isUseful() override
+    CastImmolateAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "immolate", true, IMMOLATE_MIN_TARGET_LIFETIME)
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        beforeDuration = IMMOLATE_REFRESH_MS;
     }
 };
 
 class CastImmolateOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
-    CastImmolateOnAttackerAction(PlayerbotAI* botAI) : CastDebuffSpellOnAttackerAction(botAI, "immolate", true) {}
-    bool isUseful() override
+    CastImmolateOnAttackerAction(PlayerbotAI* botAI)
+        : CastDebuffSpellOnAttackerAction(botAI, "immolate", true, IMMOLATE_MIN_TARGET_LIFETIME)
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
     }
 };
 
 class CastUnstableAfflictionAction : public CastDebuffSpellAction
 {
 public:
-    CastUnstableAfflictionAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "unstable affliction", true) {}
-    bool isUseful() override
+    CastUnstableAfflictionAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "unstable affliction", true, UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME)
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        beforeDuration = UNSTABLE_AFFLICTION_REFRESH_MS;
     }
 };
 
@@ -310,24 +364,22 @@ class CastUnstableAfflictionOnAttackerAction : public CastDebuffSpellOnAttackerA
 {
 public:
     CastUnstableAfflictionOnAttackerAction(PlayerbotAI* botAI)
-        : CastDebuffSpellOnAttackerAction(botAI, "unstable affliction", true)
+        : CastDebuffSpellOnAttackerAction(botAI, "unstable affliction", true, UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME)
     {
-    }
-    bool isUseful() override
-    {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
     }
 };
 
 class CastCurseOfAgonyAction : public CastDebuffSpellAction
 {
 public:
-    CastCurseOfAgonyAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "curse of agony", true) {}
+    CastCurseOfAgonyAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "curse of agony", true, CURSE_OF_AGONY_MIN_TARGET_LIFETIME)
+    {
+    }
+    // [b31_deep] A warlock has one curse per target: Agony would overwrite the bot's own Curse of Doom.
     bool isUseful() override
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        return CastDebuffSpellAction::isUseful() && !botAI->HasAura("curse of doom", GetTarget(), false, true);
     }
 };
 
@@ -335,35 +387,30 @@ class CastCurseOfAgonyOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
     CastCurseOfAgonyOnAttackerAction(PlayerbotAI* botAI)
-        : CastDebuffSpellOnAttackerAction(botAI, "curse of agony", true)
+        : CastDebuffSpellOnAttackerAction(botAI, "curse of agony", true, CURSE_OF_AGONY_MIN_TARGET_LIFETIME)
     {
     }
+    // [b31_deep] Not over the bot's own Curse of Doom (one curse per warlock per target).
     bool isUseful() override
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        return CastDebuffSpellOnAttackerAction::isUseful() &&
+               !botAI->HasAura("curse of doom", GetTarget(), false, true);
     }
 };
 
 class CastCurseOfTheElementsAction : public CastDebuffSpellAction
 {
 public:
-    CastCurseOfTheElementsAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "curse of the elements", true) {}
-    bool isUseful() override
-    {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
-    }
+    CastCurseOfTheElementsAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "curse of the elements", true, CURSE_OF_THE_ELEMENTS_MIN_TARGET_LIFETIME) {}
 };
 
 class CastCurseOfDoomAction : public CastDebuffSpellAction
 {
 public:
-    CastCurseOfDoomAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "curse of doom", true, 0) {}
-    bool isUseful() override
+    CastCurseOfDoomAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "curse of doom", true, CURSE_OF_DOOM_MIN_TARGET_LIFETIME)
     {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
     }
 };
 
@@ -389,15 +436,13 @@ public:
     }
 };
 
+// [b31_deep] Same lifetime gate as Curse of the Elements (a group debuff worth a GCD only on a target the group
+// hits for a while); the TTL bypass put it on every dying trash mob at 29, above the whole rotation.
 class CastCurseOfWeaknessAction : public CastDebuffSpellAction
 {
 public:
-    CastCurseOfWeaknessAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "curse of weakness") {}
-    bool isUseful() override
-    {
-        // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
-    }
+    CastCurseOfWeaknessAction(PlayerbotAI* botAI)
+        : CastDebuffSpellAction(botAI, "curse of weakness", false, CURSE_OF_THE_ELEMENTS_MIN_TARGET_LIFETIME) {}
 };
 
 // Damage Spells
@@ -458,6 +503,16 @@ public:
     CastShadowburnAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "shadowburn") {}
 };
 
+// [b35_lock] Inferno (1122): the Infernal for 60 s. A TARGET_FLAG_DEST_LOCATION spell: PlayerbotAI::CastSpell drops
+// it at the target's position. Its impact threat is small (the Infernal holds its own); its 2 s AoE stun is why
+// "inferno boss" keeps it to bosses, and the guardian gate (GenericSpellActions.cpp) waits for the tank to hold it.
+class CastInfernoAction : public CastSpellAction
+{
+public:
+    CastInfernoAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "inferno") {}
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
+};
+
 class CastChaosBoltAction : public CastSpellAction
 {
 public:
@@ -472,6 +527,25 @@ public:
 
 // AoE Spells
 
+// [b44_hos] Affliction AoE. The count is the standard one: "medium aoe" (3 enemies within 8 yd of the target, the
+// target included), Icy Veins WotLK Classic Affliction spell summary: Seed "on any packs with 3 targets or more". What
+// it does not do is take the main target's DoTs: wowtbc.gg WotLK Affliction keeps Haunt on the top-priority target,
+// and Seed of Corruption shares Corruption's SPELL_SPECIFIC_WARLOCK_CORRUPTION (SpellInfo::GetSpellSpecific), so a
+// Seed on a target replaces the warlock's Corruption there. hos-h Tribunal (DPS_GAP_TRIBUNAL_COS.md 2.5): Seed at
+// 23.4-23.5 above every DoT (20.2 and below), no Corruption, UA or CoA in 16 attempts, 11 % of sim.
+// The math (base values from Spell.dbc, 3.3.5 coefficients, 2000 spell power, equal crit and haste on both sides):
+//   Seed r9 explosion 1633-1897 + 0.2129 SP = ~2190 on each of N enemies, 2.0 s cast: ~1095 x N per cast second,
+//     x1.05 Contagion: N = 3 -> ~3450 / s.
+//   Corruption r10 6 x 180 + 1.2 SP = 3480 in a 1.5 s GCD: 2320 / s, x1.1 Improved Corruption x1.1 Shadow Embrace
+//     x1.2 Haunt = ~3370 / s, and Everlasting Affliction keeps it rolling from Haunt / Shadow Bolt: one GCD buys the
+//     whole fight, so it goes first at N = 3 and loses nothing at N >= 4.
+//   Haunt: an 8 s cooldown nuke that carries the +20 % on every DoT above; it goes first too.
+//   Unstable Affliction r5 5 x 230 + 1.0 SP = 3150 per 1.5 s cast: ~2770 / s with Shadow Embrace and Haunt, below
+//     Seed from N = 3: it keeps its single-target rank (19.5) below the Seed (23.4-23.5) in a pack.
+// So in a pack an Affliction warlock puts Haunt (when ready) and Corruption on its target first (on a target that
+// lives CORRUPTION_MIN_TARGET_LIFETIME), and never seeds a unit that carries its Corruption.
+bool AfflictionSeedWaits(PlayerbotAI* botAI, Unit* seedTarget);
+
 class CastSeedOfCorruptionAction : public CastDebuffSpellAction
 {
 public:
@@ -479,7 +553,7 @@ public:
     bool isUseful() override
     {
         // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        return CastAuraSpellAction::isUseful() && !AfflictionSeedWaits(botAI, GetTarget());  // [b44_hos]
     }
     ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
 };
@@ -494,8 +568,11 @@ public:
     bool isUseful() override
     {
         // Bypass TTL check
-        return CastAuraSpellAction::isUseful();
+        return CastAuraSpellAction::isUseful() && !AfflictionSeedWaits(botAI, GetTarget());  // [b44_hos]
     }
+    // [b44_hos] Affliction: the attacker without Seed that also carries no Corruption of this warlock ("attacker
+    // without aura" picks the healthiest one without Seed, often the main target with its Corruption).
+    Unit* GetTarget() override;
     ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
 };
 
@@ -526,6 +603,8 @@ class CastShadowfuryAction : public CastSpellAction
 {
 public:
     CastShadowfuryAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "shadowfury") {}
+    // [b33_aoe_class] Destruction talent: only a warlock that knows it
+    bool isUseful() override { return botAI->HasSpell("shadowfury") && CastSpellAction::isUseful(); }
 };
 
 class CastImmolationAuraAction : public CastSpellAction

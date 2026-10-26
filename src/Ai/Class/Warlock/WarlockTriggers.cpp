@@ -5,11 +5,16 @@
  */
 
 #include "WarlockTriggers.h"
+#include "DynamicObject.h"
+#include "GameObject.h"
 #include "GenericTriggers.h"
+#include "Item.h"
+#include "Map.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "RaidConsumables.h"
 #include "TargetValue.h"
 
 static const uint32 SOUL_SHARD_ITEM_ID = 6265;
@@ -38,9 +43,28 @@ uint32 GetSoulstoneCount(Player* bot)
     return count;
 }
 
-bool SpellstoneTrigger::IsActive() { return BuffTrigger::IsActive() && AI_VALUE2(uint32, "item count", getName()) > 0; }
+namespace
+{
+    // [b31_deep] Spellstone / Firestone are a temporary enchant of the main-hand weapon, not an aura on the bot: the
+    // BuffTrigger aura check was always true, and the use action ran every tick ("spellstone 24 Execute returned
+    // false", 179 times in the affliction logs). The weapon stone is due only while the main hand has no temporary
+    // enchant.
+    bool MainHandNeedsWeaponStone(Player* bot)
+    {
+        Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+        return weapon && !weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT);
+    }
+}
 
-bool FirestoneTrigger::IsActive() { return BuffTrigger::IsActive() && AI_VALUE2(uint32, "item count", getName()) > 0; }
+bool SpellstoneTrigger::IsActive()
+{
+    return MainHandNeedsWeaponStone(bot) && AI_VALUE2(uint32, "item count", getName()) > 0;
+}
+
+bool FirestoneTrigger::IsActive()
+{
+    return MainHandNeedsWeaponStone(bot) && AI_VALUE2(uint32, "item count", getName()) > 0;
+}
 
 bool WarlockConjuredItemTrigger::IsActive()
 {
@@ -53,6 +77,83 @@ bool TooManySoulShardsTrigger::IsActive() { return GetSoulShardCount(botAI->GetB
 
 bool OutOfSoulstoneTrigger::IsActive() { return GetSoulstoneCount(botAI->GetBot()) == 0; }
 
+namespace
+{
+    constexpr uint32 SPELL_RITUAL_OF_SOULS_RANK_1 = 29893;
+    constexpr uint32 SPELL_RITUAL_OF_SOULS_RANK_2 = 58887;
+    constexpr float RITUAL_OF_SOULS_BOSS_DISTANCE = 45.0f;
+
+    bool CanStartRitualOfSouls(Player* player)
+    {
+        for (uint32 spellId : {SPELL_RITUAL_OF_SOULS_RANK_2, SPELL_RITUAL_OF_SOULS_RANK_1})
+            if (player->HasSpell(spellId))
+                return !player->HasSpellCooldown(spellId);
+        return false;
+    }
+}
+
+bool RitualOfSoulsTrigger::IsActive()
+{
+    if (!bot->IsAlive() || bot->IsInCombat() || !CanStartRitualOfSouls(bot) ||
+        !AI_VALUE2(uint32, "item count", "soul shard"))
+        return false;
+
+    Group* group = bot->GetGroup();
+    Map* map = bot->GetMap();
+    if (!group || !map || !(map->IsRaid() || (map->IsDungeon() && map->IsHeroic())))
+        return false;
+
+    // One caster per group: the bot warlock with the lowest GUID among those who can start the ritual now
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || member->getClass() != CLASS_WARLOCK || !member->IsAlive() ||
+            member->IsInCombat() || member->GetMap() != map || !GET_PLAYERBOT_AI(member) ||
+            !CanStartRitualOfSouls(member))
+            continue;
+
+        if (member->GetGUID() < bot->GetGUID())
+            return false;
+    }
+
+    if (!AI_VALUE(bool, "ready check in progress"))
+    {
+        bool bossNear = false;
+        for (ObjectGuid const guid : AI_VALUE(GuidVector, "possible targets"))
+        {
+            Unit* unit = botAI->GetUnit(guid);
+            if (unit && unit->IsAlive() && !unit->IsInCombat() && ai::raidutil::IsBossUnit(unit) &&
+                bot->GetDistance(unit) <= RITUAL_OF_SOULS_BOSS_DISTANCE)
+            {
+                bossNear = true;
+                break;
+            }
+        }
+
+        if (!bossNear)
+            return false;
+    }
+
+    // Not while a Soulwell, or the Soul Portal of a ritual in progress, is already up nearby
+    for (ObjectGuid const guid : AI_VALUE(GuidVector, "nearest game objects"))
+    {
+        GameObject* go = botAI->GetGameObject(guid);
+        if (go && go->isSpawned() && (RaidConsumables::IsSoulwell(go) || RaidConsumables::IsSoulPortal(go)) &&
+            bot->GetDistance(go) <= RaidConsumables::SOULWELL_SEARCH_DISTANCE)
+            return false;
+    }
+
+    // [b43_class] not at "pull imminent" or next to a pack: only at a real rest or the run start
+    std::string const blocked = RaidConsumables::RitualBlockedReason(botAI);
+    if (!blocked.empty())
+    {
+        LOG_DEBUG("playerbots", "[b43_class] {}: ritual of souls waits: {}", bot->GetName(), blocked);
+        return false;
+    }
+
+    return true;
+}
+
 bool DemonArmorTrigger::IsActive()
 {
     Unit* target = GetTarget();
@@ -62,6 +163,10 @@ bool DemonArmorTrigger::IsActive()
 
 bool SoulLinkTrigger::IsActive()
 {
+    // [b31_deep] Only with the talent learned and a pet out (157 "spell not known" failures for affliction).
+    if (!bot->GetPet() || !AI_VALUE2(uint32, "spell id", "soul link"))
+        return false;
+
     Unit* target = GetTarget();
     return !botAI->HasAura("soul link", target);
 }
@@ -108,12 +213,129 @@ bool LifeTapTrigger::IsActive()
 bool LifeTapGlyphBuffTrigger::IsActive()
 {
     constexpr uint32 SPELL_LIFE_TAP_GLYPH = 63320;
-    return bot->HasAura(SPELL_LIFE_TAP_GLYPH) && BuffTrigger::IsActive();
+    // Titanforged Doomcaller's Regalia (E1) 4p: Life Tap grants the glyph buff without the glyph ([setbonus-rot]).
+    constexpr uint32 SPELL_SET_E1_WARLOCK_4P = 127151;
+    return (bot->HasAura(SPELL_LIFE_TAP_GLYPH) || bot->HasAura(SPELL_SET_E1_WARLOCK_4P)) && BuffTrigger::IsActive();
+}
+
+namespace ai::warlock
+{
+using ai::raidutil::AssignedCurse;
+
+AssignedCurse GetCoordinatedCurse(PlayerbotAI* botAI)
+{
+    // Only the spec default curse strategies are coordinated; any other curse strategy is a player choice.
+    if (!botAI->HasStrategy("curse of agony", BOT_STATE_COMBAT) &&
+        !botAI->HasStrategy("curse of elements", BOT_STATE_COMBAT))
+    {
+        return AssignedCurse::NONE;
+    }
+
+    ai::raidutil::RaidUtilityAssignment const& assignment = ai::raidutil::GetAssignment(botAI);
+    if (!assignment.valid || !assignment.curseCoordinated)
+        return AssignedCurse::NONE;
+
+    return assignment.curse;
+}
+
+bool IsCurseAllowed(PlayerbotAI* botAI, AssignedCurse curse)
+{
+    AssignedCurse const assigned = GetCoordinatedCurse(botAI);
+    return assigned == AssignedCurse::NONE || assigned == curse;
+}
+}
+
+// [b31_deep] Agony never replaces the bot's own Curse of Doom (one curse per warlock per target).
+bool CurseOfAgonyTrigger::IsActive()
+{
+    return ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::AGONY) && DebuffTrigger::IsActive() &&
+           !botAI->HasAura("curse of doom", GetTarget(), false, true);
+}
+
+bool CurseOfAgonyOnAttackerTrigger::IsActive()
+{
+    return ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::AGONY) && DebuffTrigger::IsActive() &&
+           !botAI->HasAura("curse of doom", GetTarget(), false, true);
+}
+
+bool DamageCurseOfDoomTrigger::IsActive()
+{
+    ai::raidutil::AssignedCurse const assigned = ai::warlock::GetCoordinatedCurse(botAI);
+    if (assigned != ai::raidutil::AssignedCurse::AGONY &&
+        (assigned != ai::raidutil::AssignedCurse::NONE || !botAI->HasStrategy("curse of agony", BOT_STATE_COMBAT)))
+        return false;
+
+    uint32 const doomId = AI_VALUE2(uint32, "spell id", "curse of doom");
+    if (!doomId || bot->HasSpellCooldown(doomId))
+        return false;
+
+    Unit* target = GetTarget();
+    if (!target || target->IsPlayer() || !DebuffTrigger::IsActive())
+        return false;
+
+    return ExpectedLifetime(botAI, target) >= CURSE_OF_DOOM_MIN_TARGET_LIFETIME;
+}
+
+// [b35_lock]
+bool InfernoBossTrigger::IsActive()
+{
+    if (!bot->IsInCombat())
+        return false;
+
+    uint32 const infernoId = AI_VALUE2(uint32, "spell id", "inferno");
+    if (!infernoId || bot->HasSpellCooldown(infernoId))
+        return false;
+
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive() || target->IsPlayer() || !ai::raidutil::IsBossUnit(target))
+        return false;
+
+    return ExpectedLifetime(botAI, target) <= INFERNO_MAX_TARGET_LIFETIME &&
+           bot->HasItemCount(INFERNO_REAGENT_ITEM, 1);
+}
+
+bool CurseOfTonguesTrigger::IsActive()
+{
+    return ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::TONGUES) && BuffTrigger::IsActive();
+}
+
+bool AssignedCurseOfTheElementsTrigger::IsActive()
+{
+    return ai::warlock::GetCoordinatedCurse(botAI) == ai::raidutil::AssignedCurse::ELEMENTS &&
+           CurseOfTheElementsTrigger::IsActive();
+}
+
+bool AssignedCurseOfWeaknessTrigger::IsActive()
+{
+    return ai::warlock::GetCoordinatedCurse(botAI) == ai::raidutil::AssignedCurse::WEAKNESS &&
+           CurseOfWeaknessTrigger::IsActive();
+}
+
+bool AssignedCurseOfTonguesTrigger::IsActive()
+{
+    return ai::warlock::GetCoordinatedCurse(botAI) == ai::raidutil::AssignedCurse::TONGUES &&
+           CurseOfTonguesTrigger::IsActive();
+}
+
+bool AssignedCurseOfAgonyTrigger::IsActive()
+{
+    return ai::warlock::GetCoordinatedCurse(botAI) == ai::raidutil::AssignedCurse::AGONY &&
+           CurseOfAgonyTrigger::IsActive();
+}
+
+bool PullImminentLifeTapTrigger::IsActive()
+{
+    return AI_VALUE(bool, "pull imminent") &&
+           AI_VALUE2(uint8, "health", "self target") > sPlayerbotAIConfig.MediumHealth &&
+           LifeTapGlyphBuffTrigger::IsActive();
 }
 
 // Checks if the target has a conflicting debuff that is equal to Curse of the Elements
 bool CurseOfTheElementsTrigger::IsActive()
 {
+    if (!ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::ELEMENTS))
+        return false;
+
     Unit* target = GetTarget();
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return false;
@@ -121,8 +343,8 @@ bool CurseOfTheElementsTrigger::IsActive()
     // List of all spell IDs for Ebon Plague, Earth and Moon, and Curse of the Elements
     static const uint32 CurseOfTheElementsExclusiveDebuffs[] = {// Ebon Plague
                                                                 51735, 51734, 51726,
-                                                                // Earth and Moon
-                                                                48511, 48513, 48514,
+                                                                // Earth and Moon (target debuff, not the talent)
+                                                                60431, 60432, 60433,
                                                                 // Curse of the Elements
                                                                 1490, 11721, 11722, 27228, 47865};
 
@@ -133,13 +355,16 @@ bool CurseOfTheElementsTrigger::IsActive()
             return false;
     }
 
-    // Use default BuffTrigger logic for the rest (only trigger if debuff is missing or expiring)
-    return BuffTrigger::IsActive();
+    // Missing or expiring, and the target lives long enough for the group to use it
+    return DebuffTrigger::IsActive();
 }
 
 // Checks if the target has a conflicting debuff that is equal to Curse of Weakness
 bool CurseOfWeaknessTrigger::IsActive()
 {
+    if (!ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::WEAKNESS))
+        return false;
+
     Unit* target = GetTarget();
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return false;
@@ -159,8 +384,9 @@ bool CurseOfWeaknessTrigger::IsActive()
         if (target->HasAura(spellId))
             return false;
     }
-    // Use default BuffTrigger logic for the rest (only trigger if debuff is missing or expiring)
-    return BuffTrigger::IsActive();
+    // [b31_deep] Missing or expiring, and the target lives long enough for the group to use it (as for Curse of the
+    // Elements; was BuffTrigger::IsActive without a lifetime gate: a 29-relevance GCD on every dying trash mob).
+    return DebuffTrigger::IsActive();
 }
 
 struct WarlockPetDef
@@ -240,6 +466,31 @@ const std::set<uint32> RainOfFireChannelCheckTrigger::RAIN_OF_FIRE_SPELL_IDS = {
     47820   // Rain of Fire Rank 7
 };
 
+bool DrainSoulClipTrigger::IsActive()
+{
+    constexpr uint32 SPELLFAMILYFLAG0_DRAIN_SOUL = 0x00004000;
+
+    Spell* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (!channel || !channel->m_spellInfo || channel->m_spellInfo->SpellFamilyName != SPELLFAMILY_WARLOCK ||
+        !(channel->m_spellInfo->SpellFamilyFlags[0] & SPELLFAMILYFLAG0_DRAIN_SOUL))
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana)
+        return false;
+
+    uint32 const hauntId = AI_VALUE2(uint32, "spell id", "haunt");
+    if (hauntId && !bot->HasSpellCooldown(hauntId))
+        return true;
+
+    if (!AI_VALUE2(uint32, "spell id", "unstable affliction") ||
+        target->GetHealth() / AI_VALUE(float, "estimated group dps") < UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME)
+        return false;
+
+    Aura* unstableAffliction = botAI->GetAura("unstable affliction", target, true);
+    return !unstableAffliction || unstableAffliction->GetDuration() < int32(UNSTABLE_AFFLICTION_REFRESH_MS);
+}
+
 bool RainOfFireChannelCheckTrigger::IsActive()
 {
     Player* bot = botAI->GetBot();
@@ -248,8 +499,16 @@ bool RainOfFireChannelCheckTrigger::IsActive()
     if (Spell* spell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
     {
         // Only trigger if the spell being channeled is Rain of Fire
-        if (RAIN_OF_FIRE_SPELL_IDS.count(spell->m_spellInfo->Id))
-            return !HasEnoughAoeTargets(botAI, bot->GetPosition(), sPlayerbotAIConfig.SightDistance, minEnemies);
+        if (!spell->m_spellInfo || !RAIN_OF_FIRE_SPELL_IDS.count(spell->m_spellInfo->Id))
+            return false;
+
+        // [b31_deep] Count the attackers inside this bot's own Rain of Fire, not within SightDistance of the bot
+        // (that radius kept the channel going on one target: 20 cancels in all logs, Haunt "channeling" under RoF).
+        DynamicObject* dynObj = bot->GetDynObject(spell->m_spellInfo->Id);
+        if (!dynObj)
+            return false;
+
+        return !HasEnoughAoeTargets(botAI, dynObj->GetPosition(), dynObj->GetRadius(), minEnemies);
     }
 
     // Not channeling Rain of Fire

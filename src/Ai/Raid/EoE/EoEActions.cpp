@@ -7,6 +7,9 @@
 #include "EoEActions.h"
 #include "EoETriggers.h"
 #include "Playerbots.h"
+#include "RaidBotDuty.h"
+#include <algorithm>
+#include <cmath>
 
 bool MalygosPositionAction::Execute(Event /*event*/)
 {
@@ -237,46 +240,56 @@ bool EoEFlyDrakeAction::isPossible()
 }
 bool EoEFlyDrakeAction::Execute(Event /*event*/)
 {
-    Player* master = botAI->GetMaster();
-    if (!master) { return false; }
-    Unit* masterVehicle = master->GetVehicleBase();
     Unit* vehicleBase = bot->GetVehicleBase();
-    if (!vehicleBase || !masterVehicle) { return false; }
+    if (!vehicleBase) { return false; }
+
+    // AC #25184: MoveFollow does not work on a Wyrmrest Skytalon, so following the master's drake leaves the
+    // bot behind. Each drake instead flies (MovePoint, no path) to its own slot on a ring around Malygos, or
+    // around a human master's drake when Malygos is not in sight. Works with a SelfBot leader or no client.
+    constexpr float BOSS_RING_RADIUS = 35.0f;      // drake spells reach 60y
+    constexpr float MASTER_RING_RADIUS = 8.0f;
+    constexpr float SLOT_TOLERANCE = 6.0f;
+    constexpr float RESTEER_DISTANCE = 5.0f;
+
+    Unit* anchor = AI_VALUE2(Unit*, "find target", "malygos");
+    float radius = BOSS_RING_RADIUS;
+    if (!anchor)
+    {
+        Player* human = RaidBotDuty::GetHumanMaster(botAI);
+        anchor = human ? human->GetVehicleBase() : nullptr;
+        radius = MASTER_RING_RADIUS;
+    }
+    if (!anchor || anchor == vehicleBase) { return false; }
+
+    uint8 const numPlayers = bot->GetRaidDifficulty() == RAID_DIFFICULTY_25MAN_NORMAL ? 25 : 10;
+    int32 const slot = std::max<int32>(0, botAI->GetGroupSlotIndex(bot));
+    float const angle = slot * 2.0f * static_cast<float>(M_PI) / numPlayers;
+    Position destination(anchor->GetPositionX() + std::cos(angle) * radius,
+                         anchor->GetPositionY() + std::sin(angle) * radius, anchor->GetPositionZ());
 
     MotionMaster* mm = vehicleBase->GetMotionMaster();
-    Unit* boss = AI_VALUE2(Unit*, "find target", "malygos");
-    if (boss && false)
+    if (vehicleBase->GetExactDist(&destination) <= SLOT_TOLERANCE)
     {
-        // Handle as boss encounter instead of formation flight
-        mm->Clear(false);
-        float distance = vehicleBase->GetExactDist(boss);
-        float range = 55.0f;    // Drake range is 60yd
-        if (distance > range)
-        {
-            mm->MoveForwards(boss, range - distance);
-            vehicleBase->SendMovementFlagUpdate();
-            return true;
-        }
-
-        vehicleBase->SetFacingToObject(boss);
-        mm->MoveIdle();
-        vehicleBase->SendMovementFlagUpdate();
+        if (anchor->IsHostileTo(bot))
+            vehicleBase->SetFacingToObject(anchor);
         return false;
     }
 
-    if (vehicleBase->GetExactDist(masterVehicle) > 5.0f)
-    {
-        uint8 numPlayers;
-        bot->GetRaidDifficulty() == RAID_DIFFICULTY_25MAN_NORMAL ? numPlayers = 25 : numPlayers = 10;
-        // 3/4 of a circle, with frontal cone 90 deg unobstructed
-        float angle = botAI->GetGroupSlotIndex(bot) * (2*M_PI - M_PI_2)/numPlayers + M_PI_2;
-        // float angle = M_PI;
-        vehicleBase->SetCanFly(true);
-        mm->MoveFollow(masterVehicle, 3.0f, angle);
-        vehicleBase->SendMovementFlagUpdate();
-        return true;
-    }
-    return false;
+    if (_hasDestination && mm->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE &&
+        _lastDestination.GetExactDist(&destination) < RESTEER_DISTANCE)
+        return false;
+
+    RaidBotDuty::LogWorkaroundOnce(bot, "eoe-skytalon-follow",
+                                   "AC #25184 Skytalon cannot follow: holding a ring slot with MovePoint");
+
+    vehicleBase->SetCanFly(true);  // a ridden Skytalon flies freely for a player too (client flight state)
+    mm->Clear(false);
+    mm->MovePoint(0, destination.GetPositionX(), destination.GetPositionY(), destination.GetPositionZ(),
+                  FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
+    vehicleBase->SendMovementFlagUpdate();
+    _lastDestination = destination;
+    _hasDestination = true;
+    return true;
 }
 
 bool EoEDrakeAttackAction::isPossible()
@@ -328,6 +341,8 @@ bool EoEDrakeAttackAction::Execute(Event /*event*/)
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* member = itr->GetSource();
+        if (!member)
+            continue;
         sortedMembers.push_back(std::make_pair(member->GetGUID(), member));
     }
     std::sort(sortedMembers.begin(), sortedMembers.end());

@@ -119,10 +119,10 @@ float TravelNodePath::getCost(Player* bot, uint32 cGold)
             if (!taxiPath)
                 return -1;
 
-            if (!bot->isTaxiCheater() && taxiPath->price > cGold)
+            if (taxiPath->price > cGold)
                 return -1;
 
-            if (!bot->isTaxiCheater() && !bot->m_taxi.IsTaximaskNodeKnown(taxiPath->to))
+            if (!bot->m_taxi.IsTaximaskNodeKnown(taxiPath->to))
                 return -1;
 
             TaxiNodesEntry const* startTaxiNode = sTaxiNodesStore.LookupEntry(taxiPath->from);
@@ -1192,13 +1192,8 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Pla
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (botAI)
         {
-            if (botAI->HasCheat(BotCheatMask::gold))
-                startStub->currentGold = 10000000;
-            else
-            {
-                AiObjectContext* context = botAI->GetAiObjectContext();
-                startStub->currentGold = AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::travel);
-            }
+            AiObjectContext* context = botAI->GetAiObjectContext();
+            startStub->currentGold = AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::travel);
         }
         else
             startStub->currentGold = bot->GetMoney();
@@ -1296,7 +1291,7 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Pla
             childNode->m_h = h;
             childNode->parent = currentNode;
 
-            if (bot && !bot->isTaxiCheater())
+            if (bot)
                 childNode->currentGold = currentNode->currentGold - link.second->getPrice();
 
             if (childNode->close)
@@ -2576,4 +2571,51 @@ std::vector<uint32> TravelNodeMap::BuildPath(uint32 fromNode, uint32 toNode,
     path.push_back(fromNode);
     std::reverse(path.begin(), path.end());
     return path;
+}
+
+// Fewest-hop taxi route that only touches flight paths the bot has discovered and that serve its faction: a
+// real player can only pick destinations shown on the flight master's map. fromNode is the flight master the bot
+// is going to talk to, which teaches it that node on arrival.
+std::vector<uint32> TravelNodeMap::FindKnownTaxiPath(Player* bot, uint32 fromNode, uint32 toNode) const
+{
+    if (!bot || fromNode == toNode || !bot->m_taxi.IsTaximaskNodeKnown(toNode))
+        return {};
+
+    TeamId const team = bot->GetTeamId();
+    std::queue<uint32> workQueue;
+    std::unordered_map<uint32, uint32> parentMap;
+    workQueue.push(fromNode);
+    parentMap[fromNode] = 0;
+
+    while (!workQueue.empty())
+    {
+        uint32 const current = workQueue.front();
+        workQueue.pop();
+        if (current == toNode)
+            break;
+
+        auto graphItr = taxiGraph.find(current);
+        if (graphItr == taxiGraph.end())
+            continue;
+
+        for (uint32 next : graphItr->second)
+        {
+            if (parentMap.count(next) || !bot->m_taxi.IsTaximaskNodeKnown(next) ||
+                !sObjectMgr->GetTaxiMountDisplayId(next, team, true))
+                continue;
+
+            parentMap[next] = current;
+            workQueue.push(next);
+        }
+    }
+
+    if (!parentMap.count(toNode))
+        return {};
+
+    std::vector<uint32> path;
+    for (uint32 current = toNode; current; current = parentMap[current])
+        path.push_back(current);
+
+    std::reverse(path.begin(), path.end());
+    return path.front() == fromNode ? path : std::vector<uint32>();
 }

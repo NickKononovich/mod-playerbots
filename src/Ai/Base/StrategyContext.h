@@ -20,6 +20,7 @@
 #include "DpsAssistStrategy.h"
 #include "DuelStrategy.h"
 #include "EmoteStrategy.h"
+#include "FearCounterStrategy.h"  // [fear_counter]
 #include "FocusTargetStrategy.h"
 #include "FollowMasterStrategy.h"
 #include "ForceRebuff.h"
@@ -31,6 +32,7 @@
 #include "LfgStrategy.h"
 #include "LootNonCombatStrategy.h"
 #include "MaintenanceStrategy.h"
+#include "InterruptStrategy.h"
 #include "MarkRtiStrategy.h"
 #include "MeleeCombatStrategy.h"
 #include "MoveFromGroupStrategy.h"
@@ -63,8 +65,10 @@ public:
     StrategyContext()
     {
         creators["racials"] = &StrategyContext::racials;
+        creators["fear counter"] = &StrategyContext::fear_counter;  // [fear_counter]
         creators["loot"] = &StrategyContext::loot;
         creators["gather"] = &StrategyContext::gather;
+        creators["auto craft"] = &StrategyContext::auto_craft;
         creators["emote"] = &StrategyContext::emote;
         creators["passive"] = &StrategyContext::passive;
         creators["aggressive"] = &StrategyContext::aggressive;
@@ -98,8 +102,13 @@ public:
         creators["map full"] = &StrategyContext::map_full;
         creators["sit"] = &StrategyContext::sit;
         creators["mark rti"] = &StrategyContext::mark_rti;
+        creators["auto cc marks"] = &StrategyContext::auto_cc_marks;
+        creators["pre pull cc"] = &StrategyContext::pre_pull_cc;
+        creators["tank marks"] = &StrategyContext::tank_marks;
+        creators["interrupt"] = &StrategyContext::interrupt_strategy;
         creators["adds"] = &StrategyContext::possible_adds;
         creators["pull back"] = &StrategyContext::pull_back;
+        creators["los pull"] = &StrategyContext::los_pull;
         creators["close"] = &StrategyContext::close;
         creators["ranged"] = &StrategyContext::ranged;
         creators["behind"] = &StrategyContext::behind;
@@ -133,6 +142,7 @@ public:
         creators["master fishing"] = &StrategyContext::master_fishing;
         creators["wait for attack"] = &StrategyContext::wait_for_attack;
         creators["focus heal targets"] = &StrategyContext::focus_heal_targets;
+        creators["ranged position"] = &StrategyContext::ranged_position;
     }
 
 private:
@@ -140,6 +150,10 @@ private:
     static Strategy* ranged(PlayerbotAI* botAI) { return new RangedCombatStrategy(botAI); }
     static Strategy* close(PlayerbotAI* botAI) { return new MeleeCombatStrategy(botAI); }
     static Strategy* mark_rti(PlayerbotAI* botAI) { return new MarkRtiStrategy(botAI); }
+    static Strategy* auto_cc_marks(PlayerbotAI* botAI) { return new AutoCcMarksStrategy(botAI); }
+    static Strategy* pre_pull_cc(PlayerbotAI* botAI) { return new PrePullCcStrategy(botAI); }
+    static Strategy* tank_marks(PlayerbotAI* botAI) { return new TankMarksStrategy(botAI); }
+    static Strategy* interrupt_strategy(PlayerbotAI* botAI) { return new InterruptStrategy(botAI); }
     static Strategy* tell_target(PlayerbotAI* botAI) { return new TellTargetStrategy(botAI); }
     static Strategy* threat(PlayerbotAI* botAI) { return new ThreatStrategy(botAI); }
     static Strategy* focus(PlayerbotAI* botAI) { return new FocusStrategy(botAI); }
@@ -151,8 +165,11 @@ private:
     static Strategy* start_duel(PlayerbotAI* botAI) { return new StartDuelStrategy(botAI); }
     static Strategy* dead(PlayerbotAI* botAI) { return new DeadStrategy(botAI); }
     static Strategy* racials(PlayerbotAI* botAI) { return new RacialsStrategy(botAI); }
+    // [fear_counter]
+    static Strategy* fear_counter(PlayerbotAI* botAI) { return new FearCounterStrategy(botAI); }
     static Strategy* loot(PlayerbotAI* botAI) { return new LootNonCombatStrategy(botAI); }
     static Strategy* gather(PlayerbotAI* botAI) { return new GatherStrategy(botAI); }
+    static Strategy* auto_craft(PlayerbotAI* botAI) { return new AutoCraftStrategy(botAI); }
     static Strategy* emote(PlayerbotAI* botAI) { return new EmoteStrategy(botAI); }
     static Strategy* passive(PlayerbotAI* botAI) { return new PassiveStrategy(botAI); }
     static Strategy* aggressive(PlayerbotAI* botAI) { return new AggressiveStrategy(botAI); }
@@ -178,6 +195,7 @@ private:
     static Strategy* sit(PlayerbotAI* botAI) { return new SitStrategy(botAI); }
     static Strategy* possible_adds(PlayerbotAI* botAI) { return new PossibleAddsStrategy(botAI); }
     static Strategy* pull_back(PlayerbotAI* botAI) { return new PullBackStrategy(botAI); }
+    static Strategy* los_pull(PlayerbotAI* botAI) { return new LosPullStrategy(botAI); }
     static Strategy* mount(PlayerbotAI* botAI) { return new MountStrategy(botAI); }
     static Strategy* bg(PlayerbotAI* botAI) { return new BGStrategy(botAI); }
     static Strategy* battleground(PlayerbotAI* botAI) { return new BattlegroundStrategy(botAI); }
@@ -208,6 +226,7 @@ private:
     static Strategy* master_fishing(PlayerbotAI* botAI) { return new MasterFishingStrategy(botAI); }
     static Strategy* wait_for_attack(PlayerbotAI* botAI) { return new WaitForAttackStrategy(botAI); }
     static Strategy* focus_heal_targets(PlayerbotAI* botAI) { return new FocusHealTargetsStrategy(botAI); }
+    static Strategy* ranged_position(PlayerbotAI* botAI) { return new RangedPositionStrategy(botAI); }
 };
 
 class MovementStrategyContext : public NamedObjectContext<Strategy>

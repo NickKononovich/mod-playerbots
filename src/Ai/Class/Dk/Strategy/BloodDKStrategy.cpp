@@ -5,7 +5,13 @@
  */
 
 #include "BloodDKStrategy.h"
+#include "DKTriggers.h"  // [b31_deep] SPELL_DK_RUNE_STRIKE
 #include "Playerbots.h"
+#include "RezzedTankHoldMultiplier.h"
+#include "TargetValue.h"  // [b36_tankaoe] HasEnoughAoeTargets
+#include "Timer.h"        // [b36_tankaoe]
+
+#include <algorithm>  // [b36_tankaoe]
 
 class BloodDKStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
 {
@@ -91,9 +97,10 @@ BloodDKStrategy::BloodDKStrategy(PlayerbotAI* botAI) : GenericDKStrategy(botAI)
 std::vector<NextAction> BloodDKStrategy::getDefaultActions()
 {
     return {
+        // Icy Touch only through the disease triggers: as a filler it spent the frost runes Death Strike needs
         NextAction("rune strike", ACTION_DEFAULT + 0.6f),
-        NextAction("icy touch", ACTION_DEFAULT + 0.5f),
-        NextAction("heart strike", ACTION_DEFAULT + 0.4f),
+        NextAction("heart strike", ACTION_DEFAULT + 0.5f),
+        NextAction("death strike", ACTION_DEFAULT + 0.4f),
         NextAction("dancing rune weapon", ACTION_DEFAULT + 0.3f),
         NextAction("death coil", ACTION_DEFAULT + 0.2f),
         NextAction("horn of winter", ACTION_DEFAULT + 0.1f),
@@ -101,9 +108,134 @@ std::vector<NextAction> BloodDKStrategy::getDefaultActions()
     };
 }
 
+void BloodDKStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
+{
+    GenericDKStrategy::InitMultipliers(multipliers);
+    multipliers.push_back(new RezzedTankHoldMultiplier(botAI));
+    multipliers.push_back(new DKDiseaseRefreshMultiplier(botAI));  // [b31_dk]
+    multipliers.push_back(new BloodDeathCoilMultiplier(botAI));    // [b31_deep]
+    multipliers.push_back(new BloodDnDRuneReserveMultiplier(botAI));  // [b36_tankaoe]
+}
+
+namespace
+{
+// [b36_tankaoe] Death and Decay's cost covered by the ready runes: one Blood, Frost and Unholy, Death runes for any.
+uint8 DnDRunesCovered(uint8 const (&ready)[NUM_RUNE_TYPES])
+{
+    uint8 covered = 0;
+    covered += ready[RUNE_BLOOD] ? 1 : 0;
+    covered += ready[RUNE_FROST] ? 1 : 0;
+    covered += ready[RUNE_UNHOLY] ? 1 : 0;
+    uint8 const missing = 3 - covered;
+    return covered + std::min<uint8>(missing, ready[RUNE_DEATH]);
+}
+
+// Pays `cost` from the matching runes, then Death runes; false when the runes do not cover it.
+bool PayRunes(uint8 (&ready)[NUM_RUNE_TYPES], RuneType type, uint8 cost)
+{
+    uint8 const own = std::min<uint8>(cost, ready[type]);
+    ready[type] -= own;
+    uint8 const rest = cost - own;
+    if (rest > ready[RUNE_DEATH])
+        return false;
+
+    ready[RUNE_DEATH] -= rest;
+    return true;
+}
+}  // namespace
+
+float BloodDnDRuneReserveMultiplier::GetValue(Action* action)
+{
+    // the name first (string compares), the fight state, then the cached spell id and cooldown, the mob count last
+    if (!action)
+        return 1.0f;
+
+    std::string const& name = action->getName();
+    uint8 blood = 0;
+    uint8 frost = 0;
+    uint8 unholy = 0;
+    if (name == "icy touch")
+        frost = 1;
+    else if (name == "plague strike")
+        unholy = 1;
+    else if (name == "death strike")
+        frost = unholy = 1;
+    else if (name == "heart strike" || name == "blood strike")
+        blood = 1;
+    else
+        return 1.0f;
+
+    if (!bot->IsInCombat() || !PlayerbotAI::IsTank(bot))
+        return 1.0f;
+
+    if (frost && unholy && bot->GetHealthPct() < DEATH_STRIKE_FREE_HEALTH_PCT)
+        return 1.0f;
+
+    uint32 const dndId = AI_VALUE2(uint32, "spell id", "death and decay");
+    if (!dndId || !bot->HasSpell(dndId))
+        return 1.0f;
+
+    uint32 const cooldown = bot->GetSpellCooldownDelay(dndId);
+    if (cooldown > READY_WINDOW_MS)
+    {
+        _readySinceMs = 0;
+        return 1.0f;
+    }
+
+    uint32 const now = getMSTime();
+    if (cooldown)
+        _readySinceMs = 0;
+    else if (!_readySinceMs)
+        _readySinceMs = now;
+    else if (getMSTimeDiff(_readySinceMs, now) > DK_DND_RESERVE_MAX_MS)
+        return 1.0f;
+
+    uint8 ready[NUM_RUNE_TYPES] = {};
+    for (uint8 i = 0; i < MAX_RUNES; ++i)
+    {
+        if (!bot->GetRuneCooldown(i))
+            ++ready[bot->GetCurrentRune(i)];
+    }
+
+    uint8 const before = DnDRunesCovered(ready);
+    if (!PayRunes(ready, RUNE_BLOOD, blood) || !PayRunes(ready, RUNE_FROST, frost) ||
+        !PayRunes(ready, RUNE_UNHOLY, unholy))
+        return 1.0f;  // not payable: the cast check refuses it anyway
+
+    if (DnDRunesCovered(ready) >= before)
+        return 1.0f;  // a spare rune
+
+    return HasEnoughAoeTargets(botAI, bot->GetPosition(), PILE_RANGE, MIN_MOBS) ? 0.0f : 1.0f;
+}
+
+float BloodDeathCoilMultiplier::GetValue(Action* action)
+{
+    // [b31_deep] name and runic power first, the Rune Strike lookup (a hash read) last
+    if (!action || bot->GetPower(POWER_RUNIC_POWER) >= BLOOD_DEATH_COIL_RUNIC_POWER ||
+        action->getName() != "death coil")
+        return 1.0f;
+
+    return bot->HasSpell(SPELL_DK_RUNE_STRIKE) ? 0.0f : 1.0f;
+}
+
 void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericDKStrategy::InitTriggers(triggers);
+
+    // [b31_dk] Frost Presence, the 3.3.5 tank presence (armor, threat, less damage taken) the rotation's
+    // prerequisites already ask for; above movement and peel, below interrupts.
+    triggers.push_back(new TriggerNode("no presence", { NextAction("frost presence", ACTION_MOVE + 9) }));
+
+    // [b35_uh] moved here from GenericDKStrategy, unchanged: the tank spends Empower Rune Weapon in any fight once
+    // every rune is down (wowsims blood_aggro: on cooldown; blood_dps: with no rune of any type left)
+    triggers.push_back(new TriggerNode("no rune", { NextAction("empower rune weapon", ACTION_HIGH + 1) }));
+
+    // [b44_cast] Raise Dead on cooldown in a boss / long elite fight (wowsims blood_aggro: after Death Strike and Heart
+    // Strike, before Empower Rune Weapon and Death Coil), the Blood template's Glyph of Raise Dead needing no corpse
+    // (RaiseDeadBoostTrigger, as Frost). Below Dancing Rune Weapon / Death Strike / Heart Strike (+0.3..+0.5), above
+    // Death Coil (+0.2). Sim A/B on the bots' 13 counted Blood boss fights: no Raise Dead 2812 DPS vs 2974 (-5.4 %).
+    // The critical-health Raise Dead + Death Pact then uses this ghoul while it lives.
+    triggers.push_back(new TriggerNode("raise dead boost", { NextAction("raise dead", ACTION_DEFAULT + 0.25f) }));
 
     triggers.push_back(
         new TriggerNode(
@@ -137,20 +269,180 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // Peel: take back a mob hitting the healer or a damage dealer, also when it is not the current target.
+    // Above "set facing" (ACTION_MOVE + 7) and "tank face" (ACTION_MOVE), as the warrior's taunt.
+    triggers.push_back(
+        new TriggerNode(
+            "mob attacking group member",
+            {
+                NextAction("dark command on group member attacker", ACTION_INTERRUPT + 0.5f),
+                // [b32_peel] Death Grip brings the mob (a caster at range too) to the tank: no gap-closer gate
+                NextAction("death grip on group member attacker", ACTION_INTERRUPT + 0.4f),
+                // both on cooldown: Icy Touch carries the presence's threat at range
+                NextAction("icy touch on group member attacker", ACTION_INTERRUPT + 0.3f),
+                // a loose mob in melee (any, not only the pick): Heart Strike's threat by hand
+                NextAction("heart strike on group member attacker", ACTION_INTERRUPT + 0.25f)
+            }
+        )
+    );
+    // A pack around the tank with a mob held by proximity aggro alone (the first heal takes it) or on a member: area
+    // threat as the pull lands and while one is loose. Below the peel steps, above "tank assist".
+    triggers.push_back(
+        new TriggerNode(
+            "tank aoe threat",
+            {
+                NextAction("death and decay", ACTION_INTERRUPT + 0.2f),
+                // [b32_tank_aoe] Pestilence before Blood Boil (both a Blood rune): at +0.15 under Blood Boil it never
+                // ran on the scholo-n 13-mob pull (Blood Boil 8, Pestilence 0, Icy Touch 11). It spreads the diseases
+                // (and their threat) from the target, and Blood Boil hits harder on diseased mobs; useless without
+                // both diseases on the target (CastPestilenceAction::isUseful), then Blood Boil takes the rune.
+                NextAction("pestilence", ACTION_INTERRUPT + 0.19f),
+                NextAction("blood boil tank aoe", ACTION_INTERRUPT + 0.18f)
+            }
+        )
+    );
+    // [b32_tank_aoe] "tank aoe pack" (TankAoeThreat.h): 3+ mobs in reach and one without a safe threat lead -> the area
+    // spell above the single-target builders until the lead is safe; then the single-target order below resumes.
+    // Above Death Strike (ACTION_HIGH + 3), Icy Touch / Plague Strike (+2) and Heart Strike (default); below Blood Tap.
+    triggers.push_back(new TriggerNode("tank aoe pack",
+        {
+            NextAction("pestilence", ACTION_HIGH + 3.6f),
+            NextAction("death and decay", ACTION_HIGH + 3.5f),
+            NextAction("blood boil tank aoe", ACTION_HIGH + 3.4f)
+        }));
+    // [b32_peel] "tank aoe crowd" (TankAoeThreat.h): more than 3 mobs in reach, one not held -> the area threat above
+    // every peel step (+0.25..+0.5) and "taunt reaction" (TankPeel::CrowdFirst); off while a mob is on the healer.
+    triggers.push_back(new TriggerNode("tank aoe crowd",
+        {
+            NextAction("pestilence", ACTION_INTERRUPT + 0.63f),
+            NextAction("death and decay", ACTION_INTERRUPT + 0.62f),
+            NextAction("blood boil tank aoe", ACTION_INTERRUPT + 0.6f)
+        }));
+    // [b33_aoe_class] 3+ mobs on the tank's target pile ("medium aoe", 8 yd), threat lead safe or not: Death and Decay
+    // above the Icy Touch peel (+0.3), which spent the frost rune it needs (hor-n-5G-27 escape, 299 s with 5-15 adds:
+    // Death and Decay 4, Icy Touch 29; GenericDKStrategy's 29.0 lost every rune race). Pestilence and Blood Boil
+    // above Death Strike (+3), Icy Touch / Plague Strike (+2) and Heart Strike, as "tank aoe pack".
+    triggers.push_back(new TriggerNode("medium aoe",
+        {
+            NextAction("death and decay", ACTION_INTERRUPT + 0.35f),
+            NextAction("pestilence", ACTION_HIGH + 3.6f),
+            NextAction("blood boil tank aoe", ACTION_HIGH + 3.4f)
+        }));
+    // One mob within Blood Boil's reach is held by it while the taunts cool down (two or more: below).
+    triggers.push_back(
+        new TriggerNode(
+            "mob attacking group member nearby",
+            {
+                NextAction("blood boil on group member attackers", ACTION_MOVE + 2.4f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "group member attacker near",
+            {
+                NextAction("reach group member attacker", ACTION_MOVE + 0.9f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "mobs attacking group members nearby",
+            {
+                NextAction("death and decay", ACTION_MOVE + 2.5f),
+                NextAction("blood boil on group member attackers", ACTION_MOVE + 2.4f)
+            }
+        )
+    );
+    // Two or more adds out of reach of the area threat: step towards them (what the tank holds follows) and take
+    // them with the AoE of "mobs attacking group members nearby"; reach melee brings the tank back afterwards.
+    triggers.push_back(
+        new TriggerNode(
+            "group member attackers far",
+            {
+                NextAction("move to group member attackers", ACTION_MOVE + 1)
+            }
+        )
+    );
+    // A caster or a runner holding at range comes to the tank; above "reach melee", below the peel steps.
+    triggers.push_back(
+        new TriggerNode(
+            "death grip far target",
+            {
+                NextAction("death grip", ACTION_MOVE + 0.8f)
+            }
+        )
+    );
+    // Above the rotation and "tank face" (ACTION_MOVE), below the peel steps and area threat.
+    triggers.push_back(
+        new TriggerNode(
+            "enemy out of melee",
+            {
+                NextAction("reach melee", ACTION_MOVE + 0.5f)
+            }
+        )
+    );
     triggers.push_back(
         new TriggerNode(
             "low health",
             {
-                NextAction("army of the dead", ACTION_HIGH + 4),
                 NextAction("death strike", ACTION_HIGH + 3)
             }
         )
     );
     triggers.push_back(
         new TriggerNode(
-            "critical health",
+            "rune tap health",
             {
-                NextAction("vampiric blood", ACTION_HIGH + 5)
+                NextAction("rune tap", ACTION_EMERGENCY + 1),
+                // [bear_aoe_threat] no Blood rune for it: Blood Tap activates one (off the global cooldown)
+                NextAction("blood tap for defense", ACTION_EMERGENCY + 0.9f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "vampiric blood health",
+            {
+                NextAction("vampiric blood", ACTION_EMERGENCY + 2),
+                NextAction("blood tap for defense", ACTION_EMERGENCY + 0.9f)  // [bear_aoe_threat]
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "icebound fortitude health",
+            {
+                NextAction("icebound fortitude", ACTION_EMERGENCY + 3)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "damage spike",
+            {
+                NextAction("icebound fortitude", ACTION_EMERGENCY + 3),
+                NextAction("vampiric blood", ACTION_EMERGENCY + 2),
+                // [rot_b31_pdd] Icebound Fortitude costs 20 runic power in 3.3.5 (48792: PowerType 6, cost 200), as
+                // Anti-Magic Shell: on a pull with none (a body pull, a patrol) both fail. The rune-paid Rune Tap and
+                // Vampiric Blood cover it, Blood Tap (off the global cooldown) frees a Blood rune for them.
+                NextAction("rune tap", ACTION_EMERGENCY + 1),
+                NextAction("blood tap for defense", ACTION_EMERGENCY + 0.9f)
+            }
+        )
+    );
+    // [b31_dk] "tank pressure" (below TankCooldownHealthPct and still falling) is the medium spike: Vampiric Blood and
+    // Rune Tap. Icebound Fortitude stays for "icebound fortitude health" (35 %) and the big "damage spike" above, where
+    // CastVampiricBloodAction does not add Vampiric Blood on top of it while health holds.
+    triggers.push_back(
+        new TriggerNode(
+            "tank pressure",
+            {
+                NextAction("vampiric blood", ACTION_EMERGENCY + 2),
+                // [b31_deep] on a boss (CastMarkOfBloodAction::isUseful): its hits heal the tank
+                NextAction("mark of blood", ACTION_EMERGENCY + 1.5f),
+                NextAction("rune tap", ACTION_EMERGENCY + 1),  // [rot_b31_pdd] as on "damage spike"
+                NextAction("blood tap for defense", ACTION_EMERGENCY + 0.9f)
             }
         )
     );
@@ -178,4 +470,13 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus vampiric blood tank",
+        { NextAction("vampiric blood", ACTION_HIGH + 8) }));
+    triggers.push_back(new TriggerNode("set bonus icebound fortitude tank",
+        { NextAction("icebound fortitude", ACTION_HIGH + 7.9f) }));
+    triggers.push_back(new TriggerNode("set bonus rune tap tank", { NextAction("rune tap", ACTION_HIGH + 7.5f) }));
+    triggers.push_back(new TriggerNode("set bonus death strike ward",
+        { NextAction("death strike", ACTION_HIGH + 1.5f) }));
 }

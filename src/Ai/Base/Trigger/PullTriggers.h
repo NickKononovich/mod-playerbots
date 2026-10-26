@@ -42,4 +42,23 @@ public:
     bool IsActive() override;
 };
 
+// [chain_pull_in_combat] A dungeon tank finishing the last mob of its fight (one attacker left, not a boss, below
+// CHAIN_PULL_HEALTH_PCT or about to die): the next small pack close by can be pulled now ("chain pull").
+class ChainPullTrigger : public Trigger
+{
+public:
+    ChainPullTrigger(PlayerbotAI* botAI) : Trigger(botAI, "chain pull") {}
+
+    bool IsActive() override;
+};
+
+// A group member is away from the group spot of its tank's line-of-sight pull (LosPull in PullStrategy.h).
+class LosPullGatherTrigger : public Trigger
+{
+public:
+    LosPullGatherTrigger(PlayerbotAI* botAI) : Trigger(botAI, "los pull gather") {}
+
+    bool IsActive() override;
+};
+
 #endif

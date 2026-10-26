@@ -18,6 +18,11 @@
 #include "QuestDef.h"
 #include "TravelMgr.h"
 
+class Creature;
+class GameObject;
+class MotionTransport;
+class WorldPacket;
+
 struct POIInfo
 {
     G3D::Vector2 pos;
@@ -39,6 +44,28 @@ protected:
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL, WorldObject* center = nullptr);
     bool ForceToWait(uint32 duration, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
 
+    /* TRAVEL: boats, zeppelins, portals, Dalaran */
+    bool MoveFarToDirect(WorldPosition dest);
+    bool WalkTo(WorldPosition const& dest);
+    bool TravelTrip(WorldPosition const& dest);
+    bool TravelByTransport(NewRpgInfo::Trip& trip);
+    bool TravelByPortal(NewRpgInfo::Trip& trip);
+    bool RideTransport(MotionTransport* transport);
+    bool BoardTransport(MotionTransport* transport);
+    bool FindDeckPoint(MotionTransport* transport, float& x, float& y, float& z);
+    MotionTransport* FindTransport(uint32 entry);
+    bool HoldPosition(uint32 duration = 2 * IN_MILLISECONDS);
+    void MovePointDirect(float x, float y, float z);
+    bool IsGroupGathered(float distance);
+    bool DalaranStep(WorldPosition const& dest);
+    bool UseDalaranPortal();
+    bool UseDalaranCrystal(uint32 entry);
+    bool TeleportByDalaranEnvoy();
+    bool FlyTowards(uint32 toNode);
+    bool UseGameObjectWithGroup(GameObject* go);
+    void GossipTeleportToDalaran(Player* player, Creature* envoy);
+    bool HasDalaranTeleportQuest(Player* player);
+
     /* QUEST RELATED CHECK */
     ObjectGuid ChooseNpcOrGameObjectToInteract(bool questgiverOnly = false, float distanceLimit = 0.0f);
     bool HasQuestToAcceptOrReward(WorldObject* object);
@@ -48,12 +75,18 @@ protected:
     uint32 BestRewardIndex(Quest const* quest);
     bool IsQuestWorthDoing(Quest const* quest);
     bool IsQuestCapableDoing(Quest const* quest);
+    bool HasCapableGroup();
+    bool UseQuestGameObject(uint32 questId);
+    bool GetDalaranQuestTarget(uint32 questId, WorldPosition& pos);
 
     /* QUEST RELATED ACTION */
     bool SearchQuestGiverAndAcceptOrReward();
     bool AcceptQuest(Quest const* quest, ObjectGuid guid);
     bool TurnInQuest(Quest const* quest, ObjectGuid guid);
     bool OrganizeQuestLog();
+    void RelayPacketToGroupBots(WorldPacket const& packet);
+    void RelayQuestPacketToGroupBots(uint16 opcode, ObjectGuid guid, uint32 questId);
+    void RelayInteractPacketToGroupBots(ObjectGuid guid);
 
 protected:
     bool GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector<POIInfo>& poiInfo, bool toComplete = false);
@@ -61,6 +94,9 @@ protected:
     static WorldPosition SelectRandomCampPos(Player* bot);
     bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path);
     bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus);
+    uint32 ChooseBestQuest(WorldPosition& giverPos);
+    float GetQuestWeight(Quest const* quest, bool rested);
+    uint32 GetQuestProgress(uint32 questId);
     bool CheckRpgStatusAvailable(NewRpgStatus status);
 
 protected:
@@ -74,6 +110,25 @@ protected:
     // the teleport fires, but long enough that a genuine long
     // walk that is slowly making progress never triggers it.
     const uint32 stuckTime = 90 * IN_MILLISECONDS;
+
+    /* FOR TRAVEL */
+    static constexpr float TRIP_PLAN_DISTANCE = 1200.0f;            // closer destinations are always walked to
+    static constexpr uint32 TRIP_REPLAN_MS = 30 * IN_MILLISECONDS;
+    static constexpr float PIER_REACHED = 6.0f;
+    static constexpr uint32 BOARD_MIN_REMAINING_MS = 15 * IN_MILLISECONDS;  // later the group would miss it
+    static constexpr uint32 BOARD_TIMEOUT_MS = 25 * IN_MILLISECONDS;
+    static constexpr uint32 WAIT_SPARE_MS = 2 * MINUTE * IN_MILLISECONDS;   // on top of one full loop
+    static constexpr float GROUP_GATHER_DISTANCE = 30.0f;
+    static constexpr float GROUP_USE_DISTANCE = 20.0f;              // members this close use a portal with us
+    static constexpr uint32 PORTAL_CAST_WAIT_MS = 20 * IN_MILLISECONDS;
+    static constexpr uint32 PORTAL_RETRY_MS = 5 * MINUTE * IN_MILLISECONDS;
+    static constexpr float QUEST_OBJECT_RANGE = 60.0f;
+
+    /* FOR GROUP QUESTS */
+    static constexpr uint32 MAX_GROUP_QUEST_PLAYERS = 5;
+    static constexpr uint32 MIN_GROUP_FOR_ELITE = 3;     // members on the map within GROUP_LEVEL_SPREAD levels
+    static constexpr int32 GROUP_LEVEL_SPREAD = 3;
+    static constexpr uint32 GROUP_CHECK_MS = 10 * IN_MILLISECONDS;
 };
 
 #endif

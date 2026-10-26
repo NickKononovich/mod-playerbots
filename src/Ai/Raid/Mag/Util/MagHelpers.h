@@ -37,7 +37,7 @@ enum class MagSpells : uint32
     SPELL_SHADOW_CAGE       = 30205,
     SPELL_SHADOW_GRASP      = 30410,
     SPELL_BLAST_NOVA        = 30616,
-    SPELL_DEBRIS_SPAWN      = 30630,
+    SPELL_DEBRIS_VISUAL     = 30632, // dynobj of the 5s warning; 30630 only summons 17516
     SPELL_QUAKE             = 30657,
 
     // Hunter

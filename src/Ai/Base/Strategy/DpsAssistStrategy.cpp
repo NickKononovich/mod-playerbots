@@ -11,6 +11,9 @@ void DpsAssistStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     triggers.push_back(
         new TriggerNode("not dps target active", { NextAction("dps assist", 50.0f) }));
+    // [flee_stop] A mob running at low health is stunned or snared before it brings the next pack; "dps assist"
+    // already turns the ranged to it (DpsTargetValue: a runner first).
+    triggers.push_back(new TriggerNode("fleeing mob", { NextAction("flee stop", ACTION_INTERRUPT + 4) }));
 }
 
 void DpsAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

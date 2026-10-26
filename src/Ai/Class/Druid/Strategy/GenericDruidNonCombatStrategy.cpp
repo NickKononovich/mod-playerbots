@@ -6,7 +6,9 @@
 
 #include "GenericDruidNonCombatStrategy.h"
 #include "AiFactory.h"
+#include "FeralDruidStrategy.h"
 #include "Playerbots.h"
+#include "RezzedTankHoldMultiplier.h"
 
 class GenericDruidNonCombatStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
 {
@@ -17,7 +19,7 @@ public:
         creators["thorns on party"] = &thorns_on_party;
         creators["mark of the wild"] = &mark_of_the_wild;
         creators["mark of the wild on party"] = &mark_of_the_wild_on_party;
-        creators["regrowth_on_party"] = &regrowth_on_party;
+        creators["regrowth on party"] = &regrowth_on_party;  // [b31_deep] the key had underscores
         creators["rejuvenation on party"] = &rejuvenation_on_party;
         creators["remove curse on party"] = &remove_curse_on_party;
         creators["abolish poison on party"] = &abolish_poison_on_party;
@@ -112,74 +114,85 @@ void GenericDruidNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trig
     NonCombatStrategy::InitTriggers(triggers);
 
     triggers.push_back(new TriggerNode("mark of the wild", { NextAction("mark of the wild", 14.0f) }));
-    triggers.push_back(new TriggerNode("party member cure poison", { NextAction("abolish poison on party", 20.0f) }));
+    // [b31_deep] A bear tank's non-combat engine also runs between the mobs of a fight: each of these heals and the
+    // poison cure shifted it to caster form (rage gone, 2 GCDs; 5.8 % of the level 70-79 combat ticks went to
+    // Rejuvenation at "almost full"). It keeps the critical heals only. The second copy of these trigger nodes
+    // (registered twice with the same actions) is merged into this block.
+    int const specTab = AiFactory::GetPlayerSpecTab(botAI->GetBot());
+    bool const bearTank = specTab == DRUID_TAB_FERAL && DruidHasThickHide(botAI->GetBot());
+
+    if (!bearTank)
+        triggers.push_back(new TriggerNode("party member cure poison",
+                                           { NextAction("abolish poison on party", 20.0f) }));
     triggers.push_back(new TriggerNode("party member dead", { NextAction("revive", ACTION_CRITICAL_HEAL + 10) }));
 
     triggers.push_back(new TriggerNode("often", { NextAction("apply oil", 1.0f) }));
-
-    triggers.push_back(
-        new TriggerNode("party member critical health",
-                        {
-                                          NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 7),
-                                          NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 6),
-                                          NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 5),
-                                          }));
-
-    triggers.push_back(
-        new TriggerNode("party member low health",
-                        {
-                                          NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 5),
-                                          NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 4),
-                                          NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 3),
-                                          }));
-
-    triggers.push_back(
-        new TriggerNode("party member medium health",
-                        { NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 3),
-                                          NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 2),
-                                          NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 1),
-                                          }));
-
-    triggers.push_back(
-        new TriggerNode("party member almost full health",
-                        { NextAction("wild growth on party", ACTION_LIGHT_HEAL + 3), NextAction("rejuvenation on party", ACTION_LIGHT_HEAL + 2) }));
-
-    triggers.push_back(
-        new TriggerNode("party member remove curse",
-                        { NextAction("remove curse on party", ACTION_DISPEL + 7) }));
-    triggers.push_back(
-        new TriggerNode("new pet", { NextAction("set pet stance", 60.0f) }));
 
     triggers.push_back(new TriggerNode("party member critical health", {
                        NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 7),
                        NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 6),
                        NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 5),
                        }));
-    triggers.push_back(new TriggerNode("party member low health", {
-                       NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 5),
-                       NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 4),
-                       NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 3),
-                       }));
-    triggers.push_back(new TriggerNode("party member medium health", {
-                       NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 3),
-                       NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 2),
-                       NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 1),
-                       }));
-    triggers.push_back(new TriggerNode("party member almost full health", {
-                       NextAction("wild growth on party", ACTION_LIGHT_HEAL + 3),
-                       NextAction("rejuvenation on party", ACTION_LIGHT_HEAL + 2),
-                       }));
+    if (!bearTank)
+    {
+        triggers.push_back(new TriggerNode("party member low health", {
+                           NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 5),
+                           NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 4),
+                           NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 3),
+                           }));
+        triggers.push_back(new TriggerNode("party member medium health", {
+                           NextAction("wild growth on party", ACTION_MEDIUM_HEAL + 3),
+                           NextAction("regrowth on party", ACTION_MEDIUM_HEAL + 2),
+                           NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 1),
+                           }));
+        triggers.push_back(new TriggerNode("party member almost full health", {
+                           NextAction("wild growth on party", ACTION_LIGHT_HEAL + 3),
+                           NextAction("rejuvenation on party", ACTION_LIGHT_HEAL + 2),
+                           }));
+    }
     triggers.push_back(new TriggerNode("party member remove curse", {
                        NextAction("remove curse on party", ACTION_DISPEL + 7),
                        }));
+    triggers.push_back(
+        new TriggerNode("new pet", { NextAction("set pet stance", 60.0f) }));
 
     triggers.push_back(new TriggerNode("aquatic form", { NextAction("aquatic form", 10.0f) }));
 
-    int specTab = AiFactory::GetPlayerSpecTab(botAI->GetBot());
+    // [b32_tank_aoe] A bear tank back in (Dire) Bear Form out of combat once nothing is left to rest for: it walked to
+    // the next pack and into harness / body pulls in caster form after Thorns / Mark of the Wild / a drink, and the
+    // combat "bear form" trigger shifted only after the first hit. Above the harness waypoint walk (11.0) and Thorns
+    // (10-11, which takes "caster form" once more and the trigger's 3 s grace), below Mark of the Wild (13-14), the
+    // heals, the rest (drink / food) and the pull sequence. Bear Form below 40 (no Dire Bear Form: impossible).
+    if (bearTank)
+        triggers.push_back(new TriggerNode("bear tank form",
+            { NextAction("dire bear form", 11.5f), NextAction("bear form", 11.4f) }));
+
     if (specTab == DRUID_TAB_BALANCE || specTab == DRUID_TAB_RESTORATION)
         triggers.push_back(new TriggerNode("often", { NextAction("apply oil", 1.0f) }));
     if (specTab == DRUID_TAB_FERAL)
         triggers.push_back(new TriggerNode("often", { NextAction("apply stone", 1.0f) }));
+
+    // K6 pre-pull: Lifebloom on the tank that is about to pull
+    if (specTab == DRUID_TAB_RESTORATION)
+    {
+        triggers.push_back(new TriggerNode("pull imminent", { NextAction("lifebloom on main tank", ACTION_HIGH + 2) }));
+
+        // A resto druid whose tank engaged before the druid itself entered combat is still on this engine: keep
+        // its direct heals here too, or a dying tank only gets Wild Growth, Regrowth and Rejuvenation.
+        triggers.push_back(new TriggerNode("party member critical health",
+                                           {
+                                               NextAction("swiftmend on party", ACTION_MEDIUM_HEAL + 8),
+                                               NextAction("nourish on party", ACTION_MEDIUM_HEAL + 5.5f),
+                                           }));
+        triggers.push_back(new TriggerNode("party member low health",
+                                           { NextAction("nourish on party", ACTION_MEDIUM_HEAL + 3.5f) }));
+        triggers.push_back(new TriggerNode("party member losing health fast",
+                                           {
+                                               NextAction("swiftmend on party", ACTION_MEDIUM_HEAL + 6.4f),
+                                               NextAction("rejuvenation on party", ACTION_MEDIUM_HEAL + 6.3f),
+                                               NextAction("nourish on party", ACTION_MEDIUM_HEAL + 6.2f),
+                                           }));
+    }
 
 }
 
@@ -201,4 +214,12 @@ void GenericDruidBuffStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("thorns", {
                        NextAction("thorns", 10.0f),
                        }));
+}
+
+void GenericDruidNonCombatStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
+{
+    NonCombatStrategy::InitMultipliers(multipliers);
+    // the non-combat engine runs right after a resurrection, also while the group still fights
+    if (PlayerbotAI::IsTank(botAI->GetBot(), true))
+        multipliers.push_back(new RezzedTankHoldMultiplier(botAI));
 }

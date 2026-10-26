@@ -59,7 +59,7 @@ void FireMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode(
-            "enemy too close for spell",
+            "enemy too close for spell and solo or being attacked",
             {
                 NextAction("dragon's breath", ACTION_INTERRUPT + 1)
             }
@@ -67,12 +67,16 @@ void FireMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "enemy is close",
+            "enemy is close and solo or being attacked",
             {
                 NextAction("blast wave", ACTION_INTERRUPT)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus fire blast", { NextAction("fire blast", 18.2f) }));
+    triggers.push_back(new TriggerNode("set bonus arcane surge", { NextAction("fireball", 18.0f) }));
 }
 
 // Combat strategy to run to melee for Dragon's Breath and Blast Wave

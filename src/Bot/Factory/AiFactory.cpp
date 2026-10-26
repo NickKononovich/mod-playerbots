@@ -33,7 +33,42 @@ constexpr uint32 SPELL_FROSTFIRE_BOLT = 44614;
 constexpr uint32 SPELL_ICE_SHARDS = 15047;
 constexpr uint32 SPELL_WHIRLWIND = 1680;
 constexpr uint32 SPELL_CAT_FORM = 768;
-constexpr uint32 SPELL_DRUID_THICK_HIDE = 16931;
+// [b31_sd] Thick Hide, every rank: a bear template takes rank 1 at level 20 and rank 2 at 21, so a rank 3 (16931)
+// check alone read those bears as cats.
+constexpr uint32 SPELL_DRUID_THICK_HIDE_RANKS[] = {16929, 16930, 16931};
+
+bool HasDruidThickHide(Player* player)
+{
+    for (uint32 const spellId : SPELL_DRUID_THICK_HIDE_RANKS)
+        if (player->HasAura(spellId))
+            return true;
+
+    return false;
+}
+
+// [b31_shared] Horn of Winter (both ranks) does not stack with Strength of Earth Totem
+constexpr uint32 SPELL_HORN_OF_WINTER_RANKS[] = {57330, 57623};
+
+// A death knight with Horn of Winter in the shaman's group when its strategies are reset (login, invite accept).
+bool GroupHasHornOfWinter(Player* player)
+{
+    Group* group = player->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member->getClass() != CLASS_DEATH_KNIGHT)
+            continue;
+
+        for (uint32 const spellId : SPELL_HORN_OF_WINTER_RANKS)
+            if (member->HasSpell(spellId))
+                return true;
+    }
+
+    return false;
+}
 }
 
 AiObjectContext* AiFactory::createAiObjectContext(Player* player, PlayerbotAI* botAI)
@@ -288,16 +323,34 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     if (!player->InBattleground())
         engine->addStrategiesNoInit("racials", "chat", "default", "cast time", "potions", "duel", "boost", nullptr);
 
-    if (sPlayerbotAIConfig.AutoAvoidAoe && facade->HasGameClientMaster())
+    // [fear_counter] Tremor Totem / Fear Ward / Berserker Rage / PvP trinket against fear, charm and sleep.
+    engine->addStrategy("fear counter", false);
+
+    if (!player->InBattleground() && sPlayerbotAIConfig.RaidLeader)
+        engine->addStrategy("raid leader", false);
+
+    // Our own bots dodge AoE also in parties that have no game client at all.
+    if (sPlayerbotAIConfig.AutoAvoidAoe && (facade->HasGameClientMaster() || !sRandomPlayerbotMgr.IsRandomBot(player)))
         engine->addStrategy("avoid aoe", false);
 
     engine->addStrategy("formation", false);
+    // Class crowd control on hard trash packs: marks at the pull, re-casts, emergency peels (MarkRtiStrategy.h).
+    if (sPlayerbotAIConfig.AutoCc && !player->InBattleground())
+        engine->addStrategy("auto cc marks", false);
+
+    // One interrupter per enemy cast across the group (InterruptValues.h).
+    if (!player->InBattleground())
+        engine->addStrategy("interrupt", false);
+
+    // The group's part in the tank's line-of-sight pull of a caster pack (LosPull in PullStrategy.h).
+    if (sPlayerbotAIConfig.LosPullMinCasters && !player->InBattleground())
+        engine->addStrategy("los pull", false);
 
     switch (player->getClass())
     {
         case CLASS_PRIEST:
             if (tab == PRIEST_TAB_SHADOW)
-                engine->addStrategiesNoInit("shadow", "shadow debuff", "shadow aoe", nullptr);
+                engine->addStrategiesNoInit("shadow", "shadow debuff", "shadow aoe", "cc", nullptr);
             else if (tab == PRIEST_TAB_DISCIPLINE)
                 engine->addStrategy("disc", false);
             else // if (tab == PRIEST_TAB_HOLY)
@@ -316,7 +369,8 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
                     engine->addStrategiesNoInit("fire", "bdps", nullptr);
             }
             else // if (tab == MAGE_TAB_FROST)
-                engine->addStrategiesNoInit("frost", "bmana", nullptr);
+                // In a group Molten Armor (crit) stays up; Mage Armor (regen) is for the solo frost mage.
+                engine->addStrategiesNoInit("frost", player->GetGroup() ? "bdps" : "bmana", nullptr);
             engine->addStrategiesNoInit("dps assist", "cure", "cc", "aoe", nullptr);
             break;
 
@@ -330,14 +384,18 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
             break;
 
         case CLASS_SHAMAN:
+        {
+            // [b31_shared] Strength of Earth is the caster default too; Stoneskin only beside a Horn of Winter
+            char const* const earth = GroupHasHornOfWinter(player) ? "stoneskin" : "strength of earth";
             if (tab == SHAMAN_TAB_ELEMENTAL)
-                engine->addStrategiesNoInit("ele", "stoneskin", "wrath", "mana spring", "wrath of air", nullptr);
+                engine->addStrategiesNoInit("ele", earth, "wrath", "mana spring", "wrath of air", nullptr);
             else if (tab == SHAMAN_TAB_RESTORATION)
-                engine->addStrategiesNoInit("resto", "stoneskin", "flametongue", "mana spring", "wrath of air", nullptr);
+                engine->addStrategiesNoInit("resto", earth, "flametongue", "mana spring", "wrath of air", nullptr);
             else // if (tab == SHAMAN_TAB_ENHANCEMENT)
                 engine->addStrategiesNoInit("enh", "strength of earth", "magma", "healing stream", "windfury", nullptr);
             engine->addStrategiesNoInit("dps assist", "cure", "aoe", nullptr);
             break;
+        }
 
         case CLASS_PALADIN:
             if (tab == PALADIN_TAB_PROTECTION)
@@ -357,7 +415,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
                 engine->addStrategiesNoInit("resto", "cure", "dps assist", "tranquility", nullptr);
             else
             {
-                if (player->HasSpell(SPELL_CAT_FORM) && !player->HasAura(SPELL_DRUID_THICK_HIDE))
+                if (player->HasSpell(SPELL_CAT_FORM) && !HasDruidThickHide(player))
                     engine->addStrategiesNoInit("cat", "aoe", "cc", "dps assist", "feral charge", nullptr);
                 else
                     engine->addStrategiesNoInit("bear", "tank assist", "pull", "pull back", "feral charge", nullptr);
@@ -377,7 +435,9 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         case CLASS_ROGUE:
             if (tab == ROGUE_TAB_COMBAT)
                 engine->addStrategiesNoInit("combat", nullptr);
-            else // if (tab == ROGUE_TAB_ASSASSINATION || tab == ROGUE_TAB_SUBTLETY)
+            else if (tab == ROGUE_TAB_SUBTLETY)  // [b31_wr] own strategy (was "assassin")
+                engine->addStrategiesNoInit("subtlety", nullptr);
+            else // if (tab == ROGUE_TAB_ASSASSINATION)
                 engine->addStrategiesNoInit("assassin", nullptr);
             engine->addStrategiesNoInit("dps assist", "aoe", nullptr);
             break;
@@ -386,7 +446,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
             if (tab == WARLOCK_TAB_AFFLICTION)
                 engine->addStrategiesNoInit("affli", "curse of agony", nullptr);
             else if (tab == WARLOCK_TAB_DEMONOLOGY)
-                engine->addStrategiesNoInit("demo", "curse of agony", "meta melee", nullptr);
+                engine->addStrategiesNoInit("demo", "curse of agony", nullptr);
             else // if (tab == WARLOCK_TAB_DESTRUCTION)
                 engine->addStrategiesNoInit("destro", "curse of elements", nullptr);
             engine->addStrategiesNoInit("cc", "dps assist", "aoe", nullptr);
@@ -403,7 +463,12 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     }
 
     if (PlayerbotAI::IsTank(player, true))
+    {
         engine->addStrategy("tank face", false);
+        // Skull/Cross on the trash the tank holds; only the main tank acts on it (NeedTankKillMarksTrigger).
+        if (!player->InBattleground())
+            engine->addStrategy("tank marks", false);
+    }
 
     if (PlayerbotAI::IsMelee(player, true) && PlayerbotAI::IsDps(player, true))
         engine->addStrategy("behind", false);
@@ -415,6 +480,10 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         if (!sPlayerbotAIConfig.IsRestrictedHealerDPSMap(player->GetMapId()))
             engine->addStrategy("healer dps", false);
     }
+
+    // Healers and ranged stand behind the tank, out of the pack's melee, and healers inside heal range of it.
+    if (PlayerbotAI::IsRanged(player, true) && !PlayerbotAI::IsTank(player, true) && !IsSelfBot(player))
+        engine->addStrategy("ranged position", false);
 
     if (IsSelfBot(player) || sRandomPlayerbotMgr.IsRandomBot(player))
     {
@@ -512,7 +581,8 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     switch (player->getClass())
     {
         case CLASS_PRIEST:
-            nonCombatEngine->addStrategiesNoInit("dps assist", "cure", "rshadow", nullptr);
+            // [fear_counter] "fear counter": pre-pull Fear Ward on the tank.
+            nonCombatEngine->addStrategiesNoInit("dps assist", "cure", "rshadow", "fear counter", nullptr);
             break;
         case CLASS_PALADIN:
             if (tab == PALADIN_TAB_PROTECTION)
@@ -537,7 +607,7 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
             nonCombatEngine->addStrategiesNoInit("dps assist", "cure", nullptr);
             break;
         case CLASS_MAGE:
-            if (tab == MAGE_TAB_ARCANE || tab == MAGE_TAB_FIRE)
+            if (tab == MAGE_TAB_ARCANE || tab == MAGE_TAB_FIRE || player->GetGroup())
                 nonCombatEngine->addStrategy("bdps", false);
             else
                 nonCombatEngine->addStrategy("bmana", false);
@@ -547,7 +617,7 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
         case CLASS_DRUID:
             if (tab == DRUID_TAB_FERAL)
             {
-                if (player->GetLevel() >= 20 && !player->HasAura(SPELL_DRUID_THICK_HIDE))
+                if (player->GetLevel() >= 20 && !HasDruidThickHide(player))
                     nonCombatEngine->addStrategy("dps assist", false);
                 else
                     nonCombatEngine->addStrategiesNoInit("tank assist", "pull", nullptr);
@@ -569,7 +639,7 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
             else if (tab == WARLOCK_TAB_DESTRUCTION)
                 nonCombatEngine->addStrategiesNoInit("imp", "firestone", nullptr);
 
-            nonCombatEngine->addStrategiesNoInit("dps assist", "ss self", nullptr);
+            nonCombatEngine->addStrategiesNoInit("dps assist", "ss auto", nullptr);
             break;
         case CLASS_DEATH_KNIGHT:
             if (tab == DEATH_KNIGHT_TAB_BLOOD)
@@ -586,10 +656,39 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     {
         nonCombatEngine->addStrategiesNoInit("nc", "food", "chat", "follow", "default", "force rebuff", "quest", "loot",
                                             "gather", "duel", "pvp", "buff", "mount", "emote", nullptr);
+
+        if (sPlayerbotAIConfig.RaidLeader)
+            nonCombatEngine->addStrategy("raid leader", false);
+        if (sPlayerbotAIConfig.RaidConsumables)
+            nonCombatEngine->addStrategy("raid consumables", false);
+
+        // Members walk to the group spot of a line-of-sight pull before the tank pulls (LosPull).
+        if (sPlayerbotAIConfig.LosPullMinCasters)
+            nonCombatEngine->addStrategy("los pull", false);
+
+        // Crowd control bots sap, trap and mark a hard pack before the tank pulls it (PrePullCc).
+        if (sPlayerbotAIConfig.AutoCc && sPlayerbotAIConfig.AutoCcPrePull)
+            nonCombatEngine->addStrategy("pre pull cc", false);
+
+        // In a group led from a client, the tank takes the initiative and pulls what is near the group.
+        if (PlayerbotAI::IsTank(player) && facade->HasGameClientMaster() && player->GetGroup())
+            nonCombatEngine->addStrategy("aggressive", false);
     }
 
     if (sPlayerbotAIConfig.AutoSaveMana && PlayerbotAI::IsHeal(player, true))
         nonCombatEngine->addStrategy("save mana", false);
+
+    // A healer or ranged bot not yet in combat walks into range of an engaged tank instead of into its pack.
+    if (PlayerbotAI::IsRanged(player, true) && !PlayerbotAI::IsTank(player, true) && !IsSelfBot(player))
+        nonCombatEngine->addStrategy("ranged position", false);
+
+    // [b35_scholo] A ground effect outlives the fight: the Diseased Ghoul's On Death Cloud of Disease 17742 (persistent
+    // area aura, 350 nature damage every 1 s, 5 yd, 20 s) stays where it died. "avoid aoe" ran in the combat engine
+    // only, so after the pull the group stood in it at the tank's spot to regen. scholo-n 20261026-024524-5E-4:
+    // pull 22 ended at 1244 s with no deaths, then the lock, hunter and rogue died at 1256-1258 s out of combat at
+    // (283,130), the tank went from 86 % to 42 %, the drinking healer 20 yd off. Same rule as the combat engine.
+    if (sPlayerbotAIConfig.AutoAvoidAoe && (facade->HasGameClientMaster() || !sRandomPlayerbotMgr.IsRandomBot(player)))
+        nonCombatEngine->addStrategy("avoid aoe", false);
 
     if ((sRandomPlayerbotMgr.IsRandomBot(player)) && !player->InBattleground())
     {

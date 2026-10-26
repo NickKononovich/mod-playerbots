@@ -39,8 +39,11 @@ std::vector<NextAction> EnhancementShamanStrategy::getDefaultActions()
 {
     return {
        NextAction("stormstrike", 5.5f),
-       NextAction("feral spirit", 5.4f),
-       NextAction("earth shock", 5.3f),
+       // [b31_sd] Earth Shock only while Flame Shock outlasts the shared shock cooldown (Flame Shock upkeep first).
+       NextAction("earth shock between flame shocks", 5.3f),
+       // [b31_deep] Fire Nova on cooldown below Earth Shock, above Lava Lash (wowsims enhancement APLs). Its
+       // isUseful() keeps it to a pack, or the single-target case of ai::shaman::AllowsSingleTargetFireAoe.
+       NextAction("fire nova", 5.25f),
        NextAction("lava lash", 5.2f),
        NextAction("melee", 5.0f)
     };
@@ -60,6 +63,16 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+
+    // [b31_sd] In-combat re-imbue of both weapons (moved here from "boost", which only covered the off hand).
+    // [b31_deep] ("boost" is a default strategy outside battlegrounds, AiFactory.) Windfury on the main hand;
+    // below level 30 (no Windfury Weapon)
+    // the Flametongue alternative takes it. Each enchant action is possible only on an unimbued weapon.
+    triggers.push_back(new TriggerNode("main hand weapon no imbue",
+                                       { NextAction("windfury weapon main hand", 24.6f),
+                                         NextAction("flametongue weapon main hand", 24.4f) }));
+    triggers.push_back(
+        new TriggerNode("off hand weapon no imbue", { NextAction("flametongue weapon off hand", 24.5f) }));
 
     // Spirit Walk Trigger
     triggers.push_back(
@@ -90,14 +103,6 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
     );
     triggers.push_back(
         new TriggerNode(
-            "maelstrom weapon 4",
-            {
-                NextAction("lightning bolt", 19.5f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
             "flame shock",
             {
                 NextAction("flame shock", 19.0f)
@@ -113,15 +118,13 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         )
     );
 
+    // [shside_enh_mana] Feral Spirit is a cooldown (bosses, hard pulls: the burst window), not a trash filler.
+    triggers.push_back(new TriggerNode("feral spirit boost", { NextAction("feral spirit", 23.5f) }));
+
     // Health/Mana Triggers
-    triggers.push_back(
-        new TriggerNode(
-            "medium mana",
-            {
-                NextAction("shamanistic rage", 23.0f)
-            }
-        )
-    );
+    // [shside_enh_mana] Shamanistic Rage on cooldown in melee whenever mana is not near full: it is the spec's mana
+    // tool (scholo-h 20261025-153805-4: 6 casts in ~25 min of fighting, Rtshaab dry at 7.6 %).
+    triggers.push_back(new TriggerNode("shamanistic rage for mana", { NextAction("shamanistic rage", 23.0f) }));
     triggers.push_back(
         new TriggerNode(
             "low health",
@@ -130,4 +133,8 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus titanic strike", { NextAction("stormstrike", 5.6f) }));
+    triggers.push_back(new TriggerNode("set bonus maelstrom weapon 4", { NextAction("lightning bolt", 5.15f) }));
 }

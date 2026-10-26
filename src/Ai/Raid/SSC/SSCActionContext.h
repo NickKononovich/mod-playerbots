@@ -176,6 +176,9 @@ public:
         creators["lady vashj position coilfang strider"] =
             &RaidSscActionContext::lady_vashj_position_coilfang_strider;
 
+        creators["lady vashj kite coilfang strider"] =
+            &RaidSscActionContext::lady_vashj_kite_coilfang_strider;
+
         creators["lady vashj position coilfang elite"] =
             &RaidSscActionContext::lady_vashj_position_coilfang_elite;
 
@@ -449,6 +452,10 @@ private:
     static Action* lady_vashj_position_coilfang_strider(PlayerbotAI* botAI)
     {
         return new LadyVashjPositionCoilfangStriderAction(botAI);
+    }
+    static Action* lady_vashj_kite_coilfang_strider(PlayerbotAI* botAI)
+    {
+        return new LadyVashjKiteCoilfangStriderAction(botAI);
     }
     static Action* lady_vashj_position_coilfang_elite(PlayerbotAI* botAI)
     {

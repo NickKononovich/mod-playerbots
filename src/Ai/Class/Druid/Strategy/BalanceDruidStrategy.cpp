@@ -179,6 +179,7 @@ BalanceDruidStrategy::BalanceDruidStrategy(PlayerbotAI* botAI) : GenericDruidStr
 std::vector<NextAction> BalanceDruidStrategy::getDefaultActions()
 {
     return {
+        NextAction("moonfire on the move", 5.5f),
         NextAction("starfire", 5.4f),
         NextAction("wrath", 5.3f),
     };
@@ -188,10 +189,13 @@ void BalanceDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericDruidStrategy::InitTriggers(triggers);
 
-    // Debuffs and DoTs
     triggers.push_back(new TriggerNode("faerie fire", { NextAction("faerie fire", 29.5f) }));
-    triggers.push_back(new TriggerNode("insect swarm", { NextAction("insect swarm", 18.0f) }));
-    triggers.push_back(new TriggerNode("moonfire", { NextAction("moonfire", 17.5f) }));
+    // [b31_deep] The DoTs go up only when they are missing from the main target: the old "insect swarm" (19.5) and
+    // "moonfire" (19.4) refresh nodes had the same condition (DebuffTrigger with no refresh window) and never won.
+    // wowsims balance APL: Moonfire missing ranks above the eclipse nukes (20.0); Insect Swarm only outside an
+    // eclipse (APL "IS when the Lunar ICD is not ready", Warcraft Tavern "refresh DoTs outside eclipse"), so below.
+    triggers.push_back(new TriggerNode("moonfire missing", { NextAction("moonfire", 20.1f) }));
+    triggers.push_back(new TriggerNode("insect swarm missing", { NextAction("insect swarm", 19.9f) }));
 
     // Eclipse procs
     triggers.push_back(new TriggerNode("eclipse (solar)", { NextAction("wrath", 20.0f) }));
@@ -199,5 +203,10 @@ void BalanceDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     // Utility/Defensive
     triggers.push_back(new TriggerNode("medium mana", { NextAction("innervate", 29.0f) }));
-    triggers.push_back(new TriggerNode("enemy too close for spell", { NextAction("flee", 39.0f) }));
+    // [b31_deep] In a group the moonkin steps out of melee only in danger (low health or 2+ mobs on it); one mob
+    // is the tank's to pick up and the cast goes on (1.4 % of the L80 combat ticks fled before).
+    triggers.push_back(new TriggerNode("enemy too close for spell in danger", { NextAction("flee", 39.0f) }));
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus lunar surge", { NextAction("starfire", 20.5f) }));
 }

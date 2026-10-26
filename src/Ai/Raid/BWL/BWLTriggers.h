@@ -27,6 +27,13 @@ public:
     bool IsActive() override;
 };
 
+class BwlRazorgoreOrbControlTrigger : public Trigger
+{
+public:
+    BwlRazorgoreOrbControlTrigger(PlayerbotAI* botAI) : Trigger(botAI, "bwl razorgore orb control") {}
+    bool IsActive() override;
+};
+
 // Vaelastrasz the Corrupt
 
 class BwlVaelastraszPositioningTrigger : public Trigger

@@ -61,6 +61,8 @@ void RaidRsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         { NextAction("rs halion consumption", ACTION_RAID + 7) }));
     triggers.push_back(new TriggerNode("rs halion heal consumption",
         { NextAction("rs halion heal consumption", ACTION_RAID + 7) }));
+    triggers.push_back(new TriggerNode("rs halion dispel mark",
+        { NextAction("rs halion dispel mark", ACTION_RAID + 8) }));
     triggers.push_back(new TriggerNode("rs halion p2 tank position",
         { NextAction("rs halion p2 tank position", ACTION_RAID + 6),
           NextAction("attack rti target", ACTION_RAID + 5) }));

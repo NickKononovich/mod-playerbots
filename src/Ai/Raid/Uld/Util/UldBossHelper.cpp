@@ -266,3 +266,47 @@ void RazorscaleBossHelper::AssignRolesBasedOnHealth()
     // Set current time in the cooldown map for this bot to start cooldown
     _lastRoleSwapTime[botGuid] = std::time(nullptr);
 }
+
+Unit* FindMimironGroundHazard(PlayerbotAI* botAI, Player* bot)
+{
+    Unit* nearest = nullptr;
+    GuidVector const npcs = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
+    for (ObjectGuid const& guid : npcs)
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsAlive())
+            continue;
+
+        float radius = 0.0f;
+        if (unit->GetEntry() == NPC_PROXIMITY_MINE)
+            radius = ULDUAR_MIMIRON_MINE_AVOID_RADIUS;
+        else if (unit->GetEntry() == NPC_BOMB_BOT)
+            radius = ULDUAR_MIMIRON_BOMB_BOT_AVOID_RADIUS;
+        else
+            continue;
+
+        float const distance = bot->GetExactDist2d(unit);
+        if (distance < radius && (!nearest || distance < bot->GetExactDist2d(nearest)))
+            nearest = unit;
+    }
+
+    return nearest;
+}
+
+Creature* FindSaroniteVaporsCloud(Player* bot, float range)
+{
+    std::list<Creature*> vapors;
+    bot->GetCreatureListWithEntryInGrid(vapors, NPC_SARONITE_VAPORS, range);
+
+    Creature* nearest = nullptr;
+    for (Creature* vapor : vapors)
+    {
+        if (!vapor || vapor->IsAlive() || !vapor->HasAura(SPELL_SARONITE_VAPORS_CLOUD))
+            continue;
+
+        if (!nearest || bot->GetExactDist2d(vapor) < bot->GetExactDist2d(nearest))
+            nearest = vapor;
+    }
+
+    return nearest;
+}

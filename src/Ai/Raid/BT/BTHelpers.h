@@ -192,9 +192,14 @@ extern std::unordered_map<ObjectGuid, Position> illidanShadowTrapDestination;
 extern std::unordered_map<uint32, int> illidanLastPhase;
 extern std::unordered_map<uint32, time_t> illidanBossDpsWaitTimer;
 extern std::unordered_map<uint32, time_t> illidanFlameDpsWaitTimer;
+extern std::unordered_map<uint32, time_t> illidanNonTankAggroTime;
 extern std::unordered_map<uint32, ObjectGuid> eastFlameGuid;
 extern std::unordered_map<uint32, ObjectGuid> westFlameGuid;
 int GetIllidanPhase(Unit* illidan);
+// Flame Crash, Demon Fire and Blaze NPCs near the bot. With 'onlyInside', just the ones the bot
+// stands in; otherwise every one in reach, for planning the way out.
+inline constexpr float ILLIDAN_LEFTOVER_HAZARD_RADIUS = 12.0f;
+std::vector<Position> GetLeftoverIllidanHazards(PlayerbotAI* botAI, bool onlyInside);
 std::vector<Unit*> GetAllFlameCrashes(Player* bot);
 std::pair<Unit*, Unit*> GetFlamesOfAzzinoth(Player* bot);
 Player* GetIllidanWarlockTank(Player* bot);

@@ -90,6 +90,7 @@ public:
         creators["ss master"] = &WarlockSoulstoneStrategyFactoryInternal::soulstone_master;
         creators["ss tank"] = &WarlockSoulstoneStrategyFactoryInternal::soulstone_tank;
         creators["ss healer"] = &WarlockSoulstoneStrategyFactoryInternal::soulstone_healer;
+        creators["ss auto"] = &WarlockSoulstoneStrategyFactoryInternal::soulstone_auto;
     }
 
 private:
@@ -97,6 +98,7 @@ private:
     static Strategy* soulstone_master(PlayerbotAI* botAI) { return new SoulstoneMasterStrategy(botAI); }
     static Strategy* soulstone_tank(PlayerbotAI* botAI) { return new SoulstoneTankStrategy(botAI); }
     static Strategy* soulstone_healer(PlayerbotAI* botAI) { return new SoulstoneHealerStrategy(botAI); }
+    static Strategy* soulstone_auto(PlayerbotAI* botAI) { return new SoulstoneAutoStrategy(botAI); }
 };
 
 class WarlockCurseStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -154,6 +156,7 @@ public:
         creators["firestone"] = &WarlockTriggerFactoryInternal::firestone;
         creators["spellstone"] = &WarlockTriggerFactoryInternal::spellstone;
         creators["soulstone"] = &WarlockTriggerFactoryInternal::soulstone;
+        creators["ritual of souls"] = &WarlockTriggerFactoryInternal::ritual_of_souls;
         creators["banish"] = &WarlockTriggerFactoryInternal::banish;
         creators["fear"] = &WarlockTriggerFactoryInternal::fear;
         creators["spell lock"] = &WarlockTriggerFactoryInternal::spell_lock;
@@ -161,12 +164,17 @@ public:
         creators["devour magic cleanse"] = &WarlockTriggerFactoryInternal::devour_magic_cleanse;
         creators["backlash"] = &WarlockTriggerFactoryInternal::backlash;
         creators["corruption"] = &WarlockTriggerFactoryInternal::corruption;
+        creators["corruption long fight"] = &WarlockTriggerFactoryInternal::corruption_long_fight;
         creators["corruption on attacker"] = &WarlockTriggerFactoryInternal::corruption_on_attacker;
         creators["immolate"] = &WarlockTriggerFactoryInternal::immolate;
         creators["immolate on attacker"] = &WarlockTriggerFactoryInternal::immolate_on_attacker;
         creators["unstable affliction"] = &WarlockTriggerFactoryInternal::unstable_affliction;
         creators["unstable affliction on attacker"] = &WarlockTriggerFactoryInternal::unstable_affliction_on_attacker;
         creators["haunt"] = &WarlockTriggerFactoryInternal::haunt;
+        creators["conflagrate"] = &WarlockTriggerFactoryInternal::conflagrate;  // [guide_b31_dead]
+        creators["chaos bolt"] = &WarlockTriggerFactoryInternal::chaos_bolt;    // [guide_b31_dead]
+        creators["drain soul execute"] = &WarlockTriggerFactoryInternal::drain_soul_execute;
+        creators["drain soul clip"] = &WarlockTriggerFactoryInternal::drain_soul_clip;
         creators["decimation"] = &WarlockTriggerFactoryInternal::decimation;
         creators["life tap"] = &WarlockTriggerFactoryInternal::life_tap;
         creators["life tap glyph buff"] = &WarlockTriggerFactoryInternal::life_tap_glyph_buff;
@@ -183,8 +191,20 @@ public:
         creators["curse of exhaustion"] = &WarlockTriggerFactoryInternal::curse_of_exhaustion;
         creators["curse of tongues"] = &WarlockTriggerFactoryInternal::curse_of_tongues;
         creators["curse of weakness"] = &WarlockTriggerFactoryInternal::curse_of_weakness;
+        creators["assigned curse of the elements"] = &WarlockTriggerFactoryInternal::assigned_curse_of_the_elements;
+        creators["assigned curse of weakness"] = &WarlockTriggerFactoryInternal::assigned_curse_of_weakness;
+        creators["assigned curse of tongues"] = &WarlockTriggerFactoryInternal::assigned_curse_of_tongues;
+        creators["assigned curse of agony"] = &WarlockTriggerFactoryInternal::assigned_curse_of_agony;
+        creators["pull imminent life tap"] = &WarlockTriggerFactoryInternal::pull_imminent_life_tap;
         creators["wrong pet"] = &WarlockTriggerFactoryInternal::wrong_pet;
         creators["rain of fire channel check"] = &WarlockTriggerFactoryInternal::rain_of_fire_channel_check;
+        // [b31_deep]
+        creators["demo immolate"] = &WarlockTriggerFactoryInternal::demo_immolate;
+        creators["demo corruption on attacker"] = &WarlockTriggerFactoryInternal::demo_corruption_on_attacker;
+        creators["demo immolate on attacker"] = &WarlockTriggerFactoryInternal::demo_immolate_on_attacker;
+        creators["life tap glyph buff early"] = &WarlockTriggerFactoryInternal::life_tap_glyph_buff_early;
+        creators["damage curse of doom"] = &WarlockTriggerFactoryInternal::damage_curse_of_doom;
+        creators["inferno boss"] = &WarlockTriggerFactoryInternal::inferno_boss;  // [b35_lock]
     }
 
 private:
@@ -202,7 +222,9 @@ private:
     static Trigger* firestone(PlayerbotAI* botAI) { return new FirestoneTrigger(botAI); }
     static Trigger* spellstone(PlayerbotAI* botAI) { return new SpellstoneTrigger(botAI); }
     static Trigger* soulstone(PlayerbotAI* botAI) { return new SoulstoneTrigger(botAI); }
+    static Trigger* ritual_of_souls(PlayerbotAI* botAI) { return new RitualOfSoulsTrigger(botAI); }
     static Trigger* corruption(PlayerbotAI* botAI) { return new CorruptionTrigger(botAI); }
+    static Trigger* corruption_long_fight(PlayerbotAI* botAI) { return new CorruptionLongFightTrigger(botAI); }
     static Trigger* corruption_on_attacker(PlayerbotAI* botAI) { return new CorruptionOnAttackerTrigger(botAI); }
     static Trigger* banish(PlayerbotAI* botAI) { return new BanishTrigger(botAI); }
     static Trigger* fear(PlayerbotAI* botAI) { return new FearTrigger(botAI); }
@@ -215,6 +237,10 @@ private:
     static Trigger* unstable_affliction(PlayerbotAI* botAI) { return new UnstableAfflictionTrigger(botAI); }
     static Trigger* unstable_affliction_on_attacker(PlayerbotAI* botAI) { return new UnstableAfflictionOnAttackerTrigger(botAI); }
     static Trigger* haunt(PlayerbotAI* botAI) { return new HauntTrigger(botAI); }
+    static Trigger* conflagrate(PlayerbotAI* botAI) { return new ConflagrateTrigger(botAI); }  // [guide_b31_dead]
+    static Trigger* chaos_bolt(PlayerbotAI* botAI) { return new ChaosBoltTrigger(botAI); }     // [guide_b31_dead]
+    static Trigger* drain_soul_execute(PlayerbotAI* botAI) { return new DrainSoulExecuteTrigger(botAI); }
+    static Trigger* drain_soul_clip(PlayerbotAI* botAI) { return new DrainSoulClipTrigger(botAI); }
     static Trigger* decimation(PlayerbotAI* botAI) { return new DecimationTrigger(botAI); }
     static Trigger* life_tap(PlayerbotAI* botAI) { return new LifeTapTrigger(botAI); }
     static Trigger* life_tap_glyph_buff(PlayerbotAI* botAI) { return new LifeTapGlyphBuffTrigger(botAI); }
@@ -231,8 +257,26 @@ private:
     static Trigger* curse_of_exhaustion(PlayerbotAI* botAI) { return new CurseOfExhaustionTrigger(botAI); }
     static Trigger* curse_of_tongues(PlayerbotAI* botAI) { return new CurseOfTonguesTrigger(botAI); }
     static Trigger* curse_of_weakness(PlayerbotAI* botAI) { return new CurseOfWeaknessTrigger(botAI); }
+    static Trigger* assigned_curse_of_the_elements(PlayerbotAI* botAI)
+    {
+        return new AssignedCurseOfTheElementsTrigger(botAI);
+    }
+    static Trigger* assigned_curse_of_weakness(PlayerbotAI* botAI) { return new AssignedCurseOfWeaknessTrigger(botAI); }
+    static Trigger* assigned_curse_of_tongues(PlayerbotAI* botAI) { return new AssignedCurseOfTonguesTrigger(botAI); }
+    static Trigger* assigned_curse_of_agony(PlayerbotAI* botAI) { return new AssignedCurseOfAgonyTrigger(botAI); }
+    static Trigger* pull_imminent_life_tap(PlayerbotAI* botAI) { return new PullImminentLifeTapTrigger(botAI); }
     static Trigger* wrong_pet(PlayerbotAI* botAI) { return new WrongPetTrigger(botAI); }
     static Trigger* rain_of_fire_channel_check(PlayerbotAI* botAI) { return new RainOfFireChannelCheckTrigger(botAI); }
+    // [b31_deep]
+    static Trigger* demo_immolate(PlayerbotAI* botAI) { return new DemoImmolateTrigger(botAI); }
+    static Trigger* demo_corruption_on_attacker(PlayerbotAI* botAI)
+    {
+        return new DemoCorruptionOnAttackerTrigger(botAI);
+    }
+    static Trigger* demo_immolate_on_attacker(PlayerbotAI* botAI) { return new DemoImmolateOnAttackerTrigger(botAI); }
+    static Trigger* life_tap_glyph_buff_early(PlayerbotAI* botAI) { return new LifeTapGlyphBuffEarlyTrigger(botAI); }
+    static Trigger* damage_curse_of_doom(PlayerbotAI* botAI) { return new DamageCurseOfDoomTrigger(botAI); }
+    static Trigger* inferno_boss(PlayerbotAI* botAI) { return new InfernoBossTrigger(botAI); }  // [b35_lock]
 };
 
 class WarlockAiObjectContextInternal : public NamedObjectContext<Action>
@@ -258,6 +302,8 @@ public:
         creators["soulstone master"] = &WarlockAiObjectContextInternal::soulstone_master;
         creators["soulstone tank"] = &WarlockAiObjectContextInternal::soulstone_tank;
         creators["soulstone healer"] = &WarlockAiObjectContextInternal::soulstone_healer;
+        creators["soulstone auto"] = &WarlockAiObjectContextInternal::soulstone_auto;
+        creators["ritual of souls"] = &WarlockAiObjectContextInternal::ritual_of_souls;
         creators["summon voidwalker"] = &WarlockAiObjectContextInternal::summon_voidwalker;
         creators["summon felguard"] = &WarlockAiObjectContextInternal::summon_felguard;
         creators["summon felhunter"] = &WarlockAiObjectContextInternal::summon_felhunter;
@@ -295,6 +341,8 @@ public:
         creators["demon charge"] = &WarlockAiObjectContextInternal::demon_charge;
         creators["shadow cleave"] = &WarlockAiObjectContextInternal::shadow_cleave;
         creators["shadowburn"] = &WarlockAiObjectContextInternal::shadowburn;
+        creators["inferno"] = &WarlockAiObjectContextInternal::inferno;  // [b35_lock]
+        creators["summon infernal"] = &WarlockAiObjectContextInternal::inferno;  // [b35_lock]
         creators["shadowflame"] = &WarlockAiObjectContextInternal::shadowflame;
         creators["immolation aura"] = &WarlockAiObjectContextInternal::immolation_aura;
         creators["chaos bolt"] = &WarlockAiObjectContextInternal::chaos_bolt;
@@ -333,6 +381,8 @@ private:
     static Action* soulstone_master(PlayerbotAI* botAI) { return new UseSoulstoneMasterAction(botAI); }
     static Action* soulstone_tank(PlayerbotAI* botAI) { return new UseSoulstoneTankAction(botAI); }
     static Action* soulstone_healer(PlayerbotAI* botAI) { return new UseSoulstoneHealerAction(botAI); }
+    static Action* soulstone_auto(PlayerbotAI* botAI) { return new UseSoulstoneAutoAction(botAI); }
+    static Action* ritual_of_souls(PlayerbotAI* botAI) { return new CastRitualOfSoulsAction(botAI); }
     static Action* summon_voidwalker(PlayerbotAI* botAI) { return new CastSummonVoidwalkerAction(botAI); }
     static Action* summon_felguard(PlayerbotAI* botAI) { return new CastSummonFelguardAction(botAI); }
     static Action* summon_felhunter(PlayerbotAI* botAI) { return new CastSummonFelhunterAction(botAI); }
@@ -365,6 +415,7 @@ private:
     static Action* demon_charge(PlayerbotAI* botAI) { return new DemonChargeAction(botAI); }
     static Action* shadow_cleave(PlayerbotAI* botAI) { return new ShadowCleaveAction(botAI); }
     static Action* shadowburn(PlayerbotAI* botAI) { return new CastShadowburnAction(botAI); }
+    static Action* inferno(PlayerbotAI* botAI) { return new CastInfernoAction(botAI); }  // [b35_lock]
     static Action* shadowflame(PlayerbotAI* botAI) { return new CastShadowflameAction(botAI); }
     static Action* immolation_aura(PlayerbotAI* botAI) { return new CastImmolationAuraAction(botAI); }
     static Action* chaos_bolt(PlayerbotAI* botAI) { return new CastChaosBoltAction(botAI); }

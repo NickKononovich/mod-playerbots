@@ -30,3 +30,8 @@ bool UBUnderbatLashTrigger::IsActive()
     auto const& attackers = AI_VALUE_REF(GuidVector, "attackers");
     return GetNearestUnderbatInLashRange(bot, attackers) != nullptr;
 }
+
+bool UBGhazanLakeTrigger::IsActive()
+{
+    return UnderbogGhazan::LakeFight(bot) && UnderbogGhazan::IsWet(bot);
+}

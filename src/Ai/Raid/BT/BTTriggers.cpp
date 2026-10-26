@@ -243,8 +243,7 @@ bool TeronGorefiendBossIsCastingShadowOfDeathTrigger::IsActive()
         return false;
     }
 
-    Unit* target = spell->m_targets.GetUnitTarget();
-    return target && target->GetGUID() == bot->GetGUID();
+    return spell->m_targets.GetUnitTargetGUID() == bot->GetGUID();
 }
 
 bool TeronGorefiendBotHasShadowOfDeathTrigger::IsActive()
@@ -386,8 +385,7 @@ bool ReliquaryOfSoulsEssenceOfDesireCastingDeadenTrigger::IsActive()
         return false;
     }
 
-    Unit* target = spell->m_targets.GetUnitTarget();
-    return target && target->GetGUID() == bot->GetGUID();
+    return spell->m_targets.GetUnitTargetGUID() == bot->GetGUID();
 }
 
 // Mother Shahraz
@@ -480,8 +478,7 @@ bool IllidariCouncilGathiosCastingJudgementOfCommandTrigger::IsActive()
         return false;
     }
 
-    Unit* target = spell->m_targets.GetUnitTarget();
-    return target && target->GetGUID() == bot->GetGUID();
+    return spell->m_targets.GetUnitTargetGUID() == bot->GetGUID();
 }
 
 bool IllidariCouncilMalandeEngagedByFirstAssistTankTrigger::IsActive()
@@ -817,30 +814,23 @@ bool IllidanStormrageNeedToManageDpsTimerAndRtiTrigger::IsActive()
     return illidan && illidan->GetHealth() > 1;
 }
 
-// Destroying hazards behind phases is not gated behind CheatMask
-// The strategy simply cannot work without doing this
-bool IllidanStormrageNeedToClearHazardsBetweenPhasesTrigger::IsActive()
+// The hazards used to be killed between phases. Now every bot walks out of them instead; the flame
+// tanks keep their own Blaze rotation in phase 2.
+bool IllidanStormrageBotInLeftoverHazardTrigger::IsActive()
 {
-    if (!IsMechanicTrackerBot(bot, BLACK_TEMPLE_MAP_ID))
-        return false;
-
     Unit* illidan = AI_VALUE2(Unit*, "find target", "illidan stormrage");
     if (!illidan || illidan->GetHealth() == 1)
         return false;
 
-    int phase = GetIllidanPhase(illidan);
-    return phase == 0 || phase == 2 || phase == 4;
-}
-
-bool IllidanStormrageCheatTrigger::IsActive()
-{
-    if (!botAI->HasCheat(BotCheatMask::raid) || !PlayerbotAI::IsDps(bot))
+    int const phase = GetIllidanPhase(illidan);
+    if (phase != 0 && phase != 2 && phase != 4)
         return false;
 
-    Unit* illidan = AI_VALUE2(Unit*, "find target", "illidan stormrage");
-    if (!illidan)
+    if (phase == 2 && (PlayerbotAI::IsAssistTankOfIndex(bot, 0, true) ||
+                       PlayerbotAI::IsAssistTankOfIndex(bot, 1, true)))
+    {
         return false;
+    }
 
-    int phase = GetIllidanPhase(illidan);
-    return phase == 2 || phase == 4;
+    return !GetLeftoverIllidanHazards(botAI, true).empty();
 }

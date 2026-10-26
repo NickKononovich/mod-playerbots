@@ -196,11 +196,8 @@ void RaidBlackTempleStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("illidan stormrage need to manage dps timer and rti",
         { NextAction("illidan stormrage manage dps timer and rti", ACTION_EMERGENCY + 11) }));
 
-    triggers.push_back(new TriggerNode("illidan stormrage need to clear hazards between phases",
-        { NextAction("illidan stormrage destroy hazards", ACTION_EMERGENCY + 10) }));
-
-    triggers.push_back(new TriggerNode("illidan stormrage cheat",
-        { NextAction("illidan stormrage handle adds cheat", ACTION_EMERGENCY + 10) }));
+    triggers.push_back(new TriggerNode("illidan stormrage bot in leftover hazard",
+        { NextAction("illidan stormrage move out of leftover hazard", ACTION_EMERGENCY + 6) }));
 }
 
 void RaidBlackTempleStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

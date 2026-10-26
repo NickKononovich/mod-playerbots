@@ -8,8 +8,10 @@
 #define PLAYERBOTS_PRIESTACTIONS_H
 
 #include "GenericSpellActions.h"
+#include "HealerSupport.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PriestHelper.h"
 
 class PlayerbotAI;
 
@@ -54,7 +56,14 @@ public:
 SPELL_ACTION(CastMassDispelAction, "mass dispel");
 
 // disc talents
-BUFF_ACTION(CastPowerInfusionAction, "power infusion");
+class CastPowerInfusionAction : public CastBuffSpellAction
+{
+public:
+    CastPowerInfusionAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "power infusion") {}
+
+    // Raid utility coordinator: assigned best caster in range, else self.
+    std::string const GetTargetName() override { return "utility buff target::self"; }
+};
 BUFF_PARTY_ACTION(CastPowerInfusionOnPartyAction, "power infusion");
 BUFF_ACTION(CastInnerFocusAction, "inner focus");
 // disc 2.4.3 talents
@@ -70,7 +79,18 @@ HEAL_ACTION(CastRenewAction, "renew");
 HEAL_PARTY_ACTION(CastLesserHealOnPartyAction, "lesser heal", 50.0f, HealingManaEfficiency::MEDIUM);
 HEAL_PARTY_ACTION(CastHealOnPartyAction, "heal", 50.0f, HealingManaEfficiency::MEDIUM);
 HEAL_PARTY_ACTION(CastGreaterHealOnPartyAction, "greater heal", 50.0f, HealingManaEfficiency::MEDIUM);
-HEAL_PARTY_ACTION(CastPowerWordShieldOnPartyAction, "power word: shield", 15.0f, HealingManaEfficiency::VERY_HIGH);
+// [b31_deep] the triaged member, or when Weakened Soul / a shield is on him, the lowest other member below medium
+// health without either (the node failed as "target immune" and nobody got the shield).
+class CastPowerWordShieldOnPartyAction : public HealPartyMemberAction
+{
+public:
+    CastPowerWordShieldOnPartyAction(PlayerbotAI* botAI)
+        : HealPartyMemberAction(botAI, "power word: shield", 15.0f, HealingManaEfficiency::VERY_HIGH)
+    {
+    }
+
+    Unit* GetTarget() override;
+};
 HEAL_PARTY_ACTION(CastFlashHealOnPartyAction, "flash heal", 15.0f, HealingManaEfficiency::LOW);
 HEAL_PARTY_ACTION(CastRenewOnPartyAction, "renew", 15.0f, HealingManaEfficiency::VERY_HIGH);
 // HEAL_PARTY_ACTION(CastPrayerOfMendingAction, "prayer of mending", 10.0f, HealingManaEfficiency::HIGH);
@@ -115,10 +135,36 @@ public:
 
 // shadow 2.4.3
 // BUFF_ACTION(CastShadowfiendAction, "shadowfiend");
-SPELL_ACTION(CastShadowWordDeathAction, "shadow word: death");
+// [b31_deep] the backlash equals the damage dealt: not below low health, where a crit could kill the priest
+class CastShadowWordDeathAction : public CastSpellAction
+{
+public:
+    CastShadowWordDeathAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "shadow word: death") {}
+
+    bool isUseful() override;
+};
 
 // shadow
-DEBUFF_CHECKISOWNER_ACTION(CastShadowWordPainAction, "shadow word: pain");
+class CastPriestDotAction : public CastDebuffSpellAction
+{
+public:
+    CastPriestDotAction(PlayerbotAI* botAI, std::string const spell, uint32 refreshMs)
+        : CastDebuffSpellAction(botAI, spell, true, ai::priest::DOT_MIN_LIFETIME)
+    {
+        beforeDuration = refreshMs;
+    }
+};
+
+class CastShadowWordPainAction : public CastPriestDotAction
+{
+public:
+    CastShadowWordPainAction(PlayerbotAI* botAI)
+        : CastPriestDotAction(botAI, "shadow word: pain", ai::priest::DOT_REFRESH_MS) {}
+
+    // Waits for 5 Shadow Weaving stacks; never re-cast while Mind Flay keeps it rolling (Pain and Suffering 3/3).
+    bool isUseful() override;
+};
+
 DEBUFF_ENEMY_ACTION(CastShadowWordPainOnAttackerAction, "shadow word: pain");
 SPELL_ACTION(CastMindBlastAction, "mind blast");
 SPELL_ACTION(CastPsychicScreamAction, "psychic scream");
@@ -150,10 +196,24 @@ BUFF_ACTION(CastShadowformAction, "shadowform");
 SPELL_ACTION(CastSilenceAction, "silence");
 ENEMY_HEALER_ACTION(CastSilenceOnEnemyHealerAction, "silence");
 // shadow talents 2.4.3
-DEBUFF_CHECKISOWNER_ACTION(CastVampiricTouchAction, "vampiric touch");
+class CastVampiricTouchAction : public CastPriestDotAction
+{
+public:
+    CastVampiricTouchAction(PlayerbotAI* botAI)
+        : CastPriestDotAction(botAI, "vampiric touch", ai::priest::VAMPIRIC_TOUCH_REFRESH_MS) {}
+
+    // Refresh window follows the hasted cast time.
+    bool isUseful() override;
+};
+
 DEBUFF_ENEMY_ACTION(CastVampiricTouchOnAttackerAction, "vampiric touch");
 // racials
-DEBUFF_CHECKISOWNER_ACTION(CastDevouringPlagueAction, "devouring plague");
+class CastDevouringPlagueAction : public CastPriestDotAction
+{
+public:
+    CastDevouringPlagueAction(PlayerbotAI* botAI)
+        : CastPriestDotAction(botAI, "devouring plague", ai::priest::DOT_REFRESH_MS) {}
+};
 BUFF_ACTION(CastTouchOfWeaknessAction, "touch of weakness");
 DEBUFF_ACTION(CastHexOfWeaknessAction, "hex of weakness");
 BUFF_ACTION(CastShadowguardAction, "shadowguard");
@@ -247,6 +307,28 @@ public:
     CastFearWardOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "fear ward") {}
 };
 
+class CastPowerWordShieldOnMainTankAction : public BuffOnMainTankAction
+{
+public:
+    CastPowerWordShieldOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "power word: shield") {}
+
+    bool isUseful() override;
+};
+
+class CastPrayerOfMendingOnMainTankAction : public BuffOnMainTankAction
+{
+public:
+    CastPrayerOfMendingOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "prayer of mending", true)
+    {
+    }
+};
+
+class CastRenewOnMainTankAction : public BuffOnMainTankAction
+{
+public:
+    CastRenewOnMainTankAction(PlayerbotAI* botAI) : BuffOnMainTankAction(botAI, "renew", true) {}
+};
+
 class CastMindSearAction : public CastSpellAction
 {
 public:
@@ -262,6 +344,19 @@ public:
         : HealPartyMemberAction(botAI, "guardian spirit", 40.0f, HealingManaEfficiency::MEDIUM)
     {
     }
+};
+
+// Battle-resurrected member and peeling tank (see HealerSupport.h).
+class CastPowerWordShieldOnValueTargetAction : public CastHealOnValueTargetAction
+{
+public:
+    CastPowerWordShieldOnValueTargetAction(PlayerbotAI* botAI, std::string const targetValue, std::string const suffix)
+        : CastHealOnValueTargetAction(botAI, "power word: shield", targetValue, suffix, 15.0f,
+                                      HealingManaEfficiency::VERY_HIGH, false)
+    {
+    }
+
+    bool isUseful() override;
 };
 
 #endif

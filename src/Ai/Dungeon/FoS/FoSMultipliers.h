@@ -18,10 +18,20 @@ class BronjahmMultiplier : public Multiplier
         float GetValue(Action* action) override;
 };
 
+// DPS leave the group-position action to the skull fragment while a Corrupted Soul Fragment is alive.
 class AttackFragmentMultiplier : public Multiplier
 {
 public:
     AttackFragmentMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "attack fragment") { }
+
+    float GetValue(Action* action) override;
+};
+
+// No damage into the Devourer during Mirrored Soul; no movement but the dodge during Wailing Souls.
+class DevourerOfSoulsMultiplier : public Multiplier
+{
+public:
+    DevourerOfSoulsMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "devourer of souls") {}
 
     float GetValue(Action* action) override;
 };

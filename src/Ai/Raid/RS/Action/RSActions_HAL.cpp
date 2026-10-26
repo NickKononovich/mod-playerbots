@@ -7,6 +7,7 @@
 #include "ObjectAccessor.h"
 #include "Pet.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RSActions.h"
 #include "RSScripts.h"
 #include "ThreatManager.h"
@@ -35,12 +36,6 @@ bool RsHalionTankPositionAction::Execute(Event )
 
     std::vector<Unit*> adds;
     RsHalionCollectAdds(botAI, adds);
-
-    if (botAI->HasCheat(BotCheatMask::raid))
-    {
-        for (Unit* add : adds)
-            RsForceThreat(add, bot);
-    }
 
     if (Group* group = bot->GetGroup())
     {
@@ -84,24 +79,22 @@ bool RsHalionTankPositionAction::Execute(Event )
         }
 
         if (skullTarget && group->GetTargetIcon(RtiTargetValue::skullIndex) != skullTarget->GetGUID())
-            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), skullTarget->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, skullTarget->GetGUID());
 
         if (!adds.empty())
         {
             if (group->GetTargetIcon(RtiTargetValue::starIndex) != boss->GetGUID())
-                group->SetTargetIcon(RtiTargetValue::starIndex, bot->GetGUID(), boss->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::starIndex, boss->GetGUID());
         }
         else if (!group->GetTargetIcon(RtiTargetValue::starIndex).IsEmpty())
         {
-            group->SetTargetIcon(RtiTargetValue::starIndex, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::starIndex, ObjectGuid::Empty);
         }
     }
 
-    if (botAI->HasCheat(BotCheatMask::raid) && boss->GetVictim() != bot)
-    {
-        ThreatManager& mgr = boss->GetThreatMgr();
-        mgr.AddThreat(bot, 1000000.0f, nullptr, true, true);
-    }
+    // Lost aggro is won back with the real class taunt (real cooldown), nothing else.
+    if (boss->GetVictim() != bot)
+        RsCastClassTaunt(botAI, bot, boss);
 
     bool const committed = RsHalionTankMeteorCommitted(botAI);
     Position const& home = committed ? RS_HALION_TANK_METEOR_SPOT : RS_HALION_TANK_POSITION;
@@ -110,9 +103,6 @@ bool RsHalionTankPositionAction::Execute(Event )
     {
         if (committed)
             bot->CastStop();
-
-        if (committed && !bot->HasAura(RS_SPELL_NITRO_BOOSTS))
-            bot->AddAura(RS_SPELL_NITRO_BOOSTS, bot);
 
         return MoveTo(bot->GetMapId(), home.GetPositionX(), home.GetPositionY(), home.GetPositionZ(),
                       false, false, false, true, MovementPriority::MOVEMENT_FORCED, true, false);
@@ -220,12 +210,10 @@ bool RsHalionAvoidConesAction::Execute(Event )
 
 bool RsHalionCombustionAction::Execute(Event )
 {
+    // At the spot the bot waits: a priest/paladin dispels Fiery Combustion there (rs halion heal consumption),
+    // or it runs out on its own. The bot never strips the debuff itself.
     if (RsHalionHasCombustion(bot) && RsHalionCombustionAtSpot(bot))
-    {
-        bot->RemoveAurasDueToSpell(SPELL_FIERY_COMBUSTION, ObjectGuid::Empty, 0, AURA_REMOVE_BY_EXPIRE);
-        bot->RemoveAurasDueToSpell(SPELL_MARK_OF_COMBUSTION, ObjectGuid::Empty, 0, AURA_REMOVE_BY_EXPIRE);
         return false;
-    }
 
     if (RsHalionBossTank(botAI) == bot)
         return false;
@@ -240,9 +228,6 @@ bool RsHalionCombustionAction::Execute(Event )
         }
         return false;
     }
-
-    if (!bot->HasAura(RS_SPELL_NITRO_BOOSTS))
-        bot->AddAura(RS_SPELL_NITRO_BOOSTS, bot);
 
     Position const& spot = RsHalionCombustionSpot(bot);
 
@@ -429,18 +414,6 @@ bool RsHalionEnterPortalAction::Execute(Event )
             }
         }
 
-        if (p3TwilightExit && RsHalionCutterShouldMove(bot->GetInstanceId()) &&
-            !bot->HasAura(RS_SPELL_MAGIC_BARRIER))
-        {
-            bot->AddAura(RS_SPELL_MAGIC_BARRIER, bot);
-            ObjectGuid const barrierGuid = bot->GetGUID();
-            botAI->AddTimedEvent([barrierGuid]()
-            {
-                if (Player* p = ObjectAccessor::FindPlayer(barrierGuid))
-                    p->RemoveAura(RS_SPELL_MAGIC_BARRIER);
-            }, 5000);
-        }
-
         return MoveTo(bot->GetMapId(), goalX, goalY, portal->GetPositionZ(),
                       false, false, false, false, MovementPriority::MOVEMENT_FORCED);
     }
@@ -451,22 +424,8 @@ bool RsHalionEnterPortalAction::Execute(Event )
     bot->StopMoving();
     bot->SetFacingToObject(portal);
 
+    // The portal gameobject casts the real realm spell (Twilight Realm / Leave Twilight Realm).
     portal->Use(bot);
-
-    if (p3TwilightExit)
-        bot->RemoveAura(SPELL_TWILIGHT_REALM);
-
-    if (!p3TwilightExit && !phase3)
-    {
-        bot->AddAura(RS_SPELL_MAGIC_BARRIER, bot);
-
-        ObjectGuid const guid = bot->GetGUID();
-        botAI->AddTimedEvent([guid]()
-        {
-            if (Player* p = ObjectAccessor::FindPlayer(guid))
-                p->RemoveAura(RS_SPELL_MAGIC_BARRIER);
-        }, 5000);
-    }
 
     return true;
 }
@@ -486,16 +445,11 @@ bool RsHalionP2TankPositionAction::Execute(Event )
     if (Group* group = bot->GetGroup())
     {
         if (group->GetTargetIcon(RtiTargetValue::crossIndex) != boss->GetGUID())
-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), boss->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::crossIndex, boss->GetGUID());
     }
 
-    if (botAI->HasCheat(BotCheatMask::raid))
-    {
-        ThreatManager& mgr = boss->GetThreatMgr();
-        if (boss->GetVictim() != bot)
-            mgr.AddThreat(bot, 1000000.0f, nullptr, true, true);
-        mgr.FixateTarget(bot);
-    }
+    if (boss->GetVictim() != bot)
+        RsCastClassTaunt(botAI, bot, boss);
 
     context->GetValue<std::string>("rti")->Set("cross");
 
@@ -720,19 +674,13 @@ bool RsHalionConsumptionAction::Execute(Event )
         clearedForConsumption.insert(botGuid);
     }
 
-    if (!bot->HasAura(RS_SPELL_NITRO_BOOSTS))
-        bot->AddAura(RS_SPELL_NITRO_BOOSTS, bot);
-
     float const bossX = boss->GetPositionX();
     float const bossY = boss->GetPositionY();
     float const distToBoss = bot->GetExactDist2d(bossX, bossY);
 
+    // Out at the edge the bot waits for a priest/paladin dispel of Soul Consumption (or for expiry).
     if (distToBoss >= RS_HALION_CONSUMPTION_OUT_DIST - RS_HALION_CONSUMPTION_OUT_REACH)
-    {
-        bot->RemoveAurasDueToSpell(SPELL_SOUL_CONSUMPTION, ObjectGuid::Empty, 0, AURA_REMOVE_BY_EXPIRE);
-        bot->RemoveAurasDueToSpell(SPELL_MARK_OF_CONSUMPTION, ObjectGuid::Empty, 0, AURA_REMOVE_BY_EXPIRE);
         return false;
-    }
 
     std::vector<std::pair<Unit*, Unit*>> pairs;
     RsHalionCollectOrbPairs(boss, pairs);
@@ -831,6 +779,21 @@ bool RsHalionHealConsumptionAction::Execute(Event )
     }
 
     return false;
+}
+
+bool RsHalionDispelMarkAction::Execute(Event )
+{
+    Player* target = RsHalionDispelMarkTarget(botAI);
+    if (!target)
+        return false;
+
+    constexpr float DISPEL_RANGE = 28.0f;
+    if (bot->GetExactDist2d(target) > DISPEL_RANGE || !bot->IsWithinLOSInMap(target))
+        return MoveTo(bot->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(),
+                      false, false, false, false, MovementPriority::MOVEMENT_COMBAT);
+
+    char const* spell = bot->getClass() == CLASS_PRIEST ? "dispel magic" : "cleanse";
+    return botAI->CastSpell(spell, target);
 }
 
 bool RsHalionCutterAction::Execute(Event )

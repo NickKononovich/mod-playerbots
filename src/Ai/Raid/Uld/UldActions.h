@@ -152,10 +152,10 @@ public:
     bool isUseful() override;
 };
 
-class KologarnFallFromFloorAction : public Action
+class KologarnFallFromFloorAction : public MovementAction
 {
 public:
-    KologarnFallFromFloorAction(PlayerbotAI* botAI) : Action(botAI, "kologarn fall from floor action") {}
+    KologarnFallFromFloorAction(PlayerbotAI* botAI) : MovementAction(botAI, "kologarn fall from floor action") {}
     bool Execute(Event event) override;
     bool isUseful() override;
 };
@@ -191,10 +191,10 @@ public:
     bool isUseful() override;
 };
 
-class AuriayaFallFromFloorAction : public Action
+class AuriayaFallFromFloorAction : public MovementAction
 {
 public:
-    AuriayaFallFromFloorAction(PlayerbotAI* botAI) : Action(botAI, "auriaya fall from floor action") {}
+    AuriayaFallFromFloorAction(PlayerbotAI* botAI) : MovementAction(botAI, "auriaya fall from floor action") {}
     bool Execute(Event event) override;
     bool isUseful() override;
 };
@@ -268,10 +268,10 @@ public:
     bool isUseful() override;
 };
 
-class ThorimFallFromFloorAction : public Action
+class ThorimFallFromFloorAction : public MovementAction
 {
 public:
-    ThorimFallFromFloorAction(PlayerbotAI* botAI) : Action(botAI, "thorim fall from floor action") {}
+    ThorimFallFromFloorAction(PlayerbotAI* botAI) : MovementAction(botAI, "thorim fall from floor action") {}
     bool Execute(Event event) override;
     bool isUseful() override;
 };
@@ -352,18 +352,18 @@ public:
     bool Execute(Event event) override;
 };
 
-class MimironCheatAction : public Action
+class MimironCheatAction : public MovementAction
 {
 public:
-    MimironCheatAction(PlayerbotAI* botAI) : Action(botAI, "mimiron cheat action") {}
+    MimironCheatAction(PlayerbotAI* botAI) : MovementAction(botAI, "mimiron cheat action") {}
 
     bool Execute(Event event) override;
 };
 
-class VezaxCheatAction : public Action
+class VezaxCheatAction : public MovementAction
 {
 public:
-    VezaxCheatAction(PlayerbotAI* botAI) : Action(botAI, "vezax cheat action") {}
+    VezaxCheatAction(PlayerbotAI* botAI) : MovementAction(botAI, "vezax cheat action") {}
 
     bool Execute(Event event) override;
 };
@@ -384,10 +384,13 @@ public:
     bool Execute(Event event) override;
 };
 
-class YoggSaronOminousCloudCheatAction : public Action
+class YoggSaronOminousCloudCheatAction : public MovementAction
 {
 public:
-    YoggSaronOminousCloudCheatAction(PlayerbotAI* botAI) : Action(botAI, "yogg-saron ominous cloud cheat action") {}
+    YoggSaronOminousCloudCheatAction(PlayerbotAI* botAI)
+        : MovementAction(botAI, "yogg-saron ominous cloud cheat action")
+    {
+    }
 
     bool Execute(Event event) override;
 };
@@ -493,6 +496,14 @@ class YoggSaronLunaticGazeAction : public MovementAction
 {
 public:
     YoggSaronLunaticGazeAction(PlayerbotAI* botAI) : MovementAction(botAI, "yogg-saron lunatic gaze action") {}
+
+    bool Execute(Event event) override;
+};
+
+class YoggSaronBrainPetPassiveAction : public Action
+{
+public:
+    YoggSaronBrainPetPassiveAction(PlayerbotAI* botAI) : Action(botAI, "yogg-saron brain pet passive action") {}
 
     bool Execute(Event event) override;
 };

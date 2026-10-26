@@ -45,7 +45,6 @@ CombatRogueStrategy::CombatRogueStrategy(PlayerbotAI* botAI) : GenericRogueStrat
 std::vector<NextAction> CombatRogueStrategy::getDefaultActions()
 {
     return {
-        NextAction("killing spree", ACTION_DEFAULT + 0.1f),
         NextAction("melee", ACTION_DEFAULT)
     };
 }
@@ -66,7 +65,7 @@ void CombatRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode(
-            "high energy available",
+            "combo points not full",
             {
                 NextAction("sinister strike", ACTION_NORMAL + 3)
             }
@@ -78,6 +77,26 @@ void CombatRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             "slice and dice",
             {
                 NextAction("slice and dice", ACTION_HIGH + 5)
+            }
+        )
+    );
+
+    // [b31_wr] a running Slice and Dice under 6 s takes 4-5 points before Rupture / Eviscerate (wowsims combat APL)
+    triggers.push_back(
+        new TriggerNode(
+            "slice and dice pre-refresh",
+            {
+                NextAction("slice and dice", ACTION_HIGH + 5)
+            }
+        )
+    );
+
+    // [b31_wr] Blade Flurry on cooldown on one target too, under Slice and Dice (was "light aoe" only: 0.44 a minute)
+    triggers.push_back(
+        new TriggerNode(
+            "blade flurry ready",
+            {
+                NextAction("blade flurry", ACTION_HIGH + 2.5f)
             }
         )
     );
@@ -118,4 +137,7 @@ void CombatRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus titanic flow", { NextAction("sinister strike", ACTION_NORMAL + 4) }));
 }

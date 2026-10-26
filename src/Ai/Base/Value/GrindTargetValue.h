@@ -23,6 +23,8 @@ private:
     uint32 GetTargetingPlayerCount(Unit* unit);
     Unit* FindTargetForGrinding(uint32 assistCount);
     bool needForQuest(Unit* target);
+
+    TargetReachability _reachability;
 };
 
 #endif

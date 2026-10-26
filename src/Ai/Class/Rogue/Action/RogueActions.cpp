@@ -5,23 +5,41 @@
  */
 
 #include "RogueActions.h"
+#include "AiFactory.h"
+#include "DBCStores.h"
 #include "Event.h"
+#include "Group.h"
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "RoguePoisons.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 
 namespace
 {
 constexpr uint32 BG_WS_SPELL_WARSONG_FLAG = 23333;
 constexpr uint32 BG_WS_SPELL_SILVERWING_FLAG = 23335;
 constexpr uint32 BG_EY_NETHERSTORM_FLAG_SPELL = 34976;
-constexpr uint32 SPELL_MASTER_POISONER_RANK_3 = 58410;
 }
 
 bool CastStealthAction::isUseful()
 {
+    // User 2026-10-24, RFC live: «стелс ок перед пуллом (сап, оглушить, открыться), но зачем стелс, когда танк уже
+    // сагрил моба?». In a dungeon group stealth is for before the fight only: once the target or anyone of the group
+    // is fighting, re-stealthing on "enemy out of melee" just halves the rogue's speed and keeps it out of the fight.
     Unit* target = AI_VALUE(Unit*, "current target");
+    if (bot->GetMap() && bot->GetMap()->IsDungeon() && bot->GetGroup())
+    {
+        if (bot->IsInCombat() || (target && target->IsInCombat()))
+            return false;
+        for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member != bot && member->IsAlive() && member->IsInMap(bot) && member->IsInCombat())
+                    return false;
+    }
+
     if (target && bot->GetDistance(target) >= sPlayerbotAIConfig.SpellDistance)
         return false;
     return true;
@@ -34,8 +52,15 @@ bool CastStealthAction::isPossible()
            !bot->HasAura(BG_EY_NETHERSTORM_FLAG_SPELL);
 }
 
+// [b31_wr] Was always possible and returned true without stealth: the out-of-combat "often" trigger spent 16-25 % of
+// the ticks on it.
+bool UnstealthAction::isPossible() { return bot->HasAuraType(SPELL_AURA_MOD_STEALTH); }
+
 bool UnstealthAction::Execute(Event /*event*/)
 {
+    if (!botAI->HasAura("stealth", bot))
+        return false;
+
     botAI->RemoveAura("stealth");
     // botAI->ChangeStrategy("+combat,-stealthed", BOT_STATE_COMBAT);
 
@@ -65,13 +90,28 @@ bool CastVanishAction::isUseful()
 
 bool CastEnvenomAction::isUseful()
 {
-    return AI_VALUE2(uint8, "energy", "self target") >= 35;
+    return CastMeleeSpellAction::isUseful() && AI_VALUE2(uint8, "energy", "self target") >= 35;
 }
 
+// [b31_wr] Was "has Master Poisoner rank 3" alone, in place of CastSpellAction::isPossible (no CanCast, cooldown or
+// known-spell check), and Envenom without a Deadly Poison dose on the target does next to no damage.
 bool CastEnvenomAction::isPossible()
 {
-    // alternate to eviscerate if talents unlearned
-    return bot->HasAura(SPELL_MASTER_POISONER_RANK_3);
+    Unit* target = GetTarget();
+    if (!target || !target->HasAuraState(AURA_STATE_DEADLY_POISON, nullptr, bot))
+        return false;
+
+    return CastMeleeSpellAction::isPossible();
+}
+
+// [b31_wr]
+bool CastHungerForBloodAction::isUseful()
+{
+    if (!CastSpellAction::isUseful())
+        return false;
+
+    Aura* aura = botAI->GetAura(spell, bot);
+    return !aura || aura->GetDuration() < static_cast<int32>(HUNGER_FOR_BLOOD_REFRESH_MS);
 }
 
 bool CastTricksOfTheTradeOnMainTankAction::isUseful()
@@ -79,54 +119,138 @@ bool CastTricksOfTheTradeOnMainTankAction::isUseful()
     return CastSpellAction::isUseful() && AI_VALUE2(float, "distance", GetTargetName()) < 20.0f;
 }
 
-bool UseDeadlyPoisonAction::Execute(Event /*event*/)
+// [b31_wr]
+bool UseRoguePoisonAction::Execute(Event /*event*/)
 {
-    std::vector<Item*> const items =
-        AI_VALUE2(std::vector<Item*>, "inventory items", "Deadly Poison");
-    for (Item* const item : items)
-    {
-        // This check is needed only if there is a name match. I think the only one is Handbook
-        // of Deadly Poison V, which might be restored by IP. Keeping this here just in case.
-        if (item->GetTemplate()->Class != ITEM_CLASS_CONSUMABLE)
-            continue;
+    Item* const weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    Item* const poison = weapon ? RoguePoisons::ItemFor(botAI, slot) : nullptr;
+    if (!poison)
+        return false;
 
-        Item* const itemForSpell = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
-        return UseItem(item, ObjectGuid::Empty, itemForSpell);
-    }
-
-    return false;
+    return UseItem(poison, ObjectGuid::Empty, weapon);
 }
 
-bool UseInstantPoisonAction::Execute(Event /*event*/)
+// [b31_wr] RoguePoisons (RoguePoisons.h)
+namespace RoguePoisons
 {
-    std::vector<Item*> const items =
-        AI_VALUE2(std::vector<Item*>, "inventory items", "Instant Poison");
-    for (Item* const item : items)
+    namespace
     {
-        // Not necessary for instant but keeping for symmetry and to guide a potential refactor.
-        if (item->GetTemplate()->Class != ITEM_CLASS_CONSUMABLE)
-            continue;
+        constexpr uint8 DEADLY_POISON_MIN_LEVEL = 30;
 
-        Item* const itemForSpell = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
-        return UseItem(item, ObjectGuid::Empty, itemForSpell);
+        bool IsDeadlyPoisonEnchant(uint32 enchantId)
+        {
+            SpellItemEnchantmentEntry const* entry =
+                enchantId ? sSpellItemEnchantmentStore.LookupEntry(enchantId) : nullptr;
+            if (!entry)
+                return false;
+
+            SpellInfo const* procSpell = sSpellMgr->GetSpellInfo(entry->spellid[0]);
+            if (!procSpell || procSpell->SpellFamilyName != SPELLFAMILY_ROGUE)
+                return false;
+
+            std::string const name = procSpell->SpellName[0];
+            return name.rfind("Deadly Poison", 0) == 0;
+        }
+
+        // Another rogue of the group (same map: same thread) already puts Deadly Poison on the targets
+        bool OtherRogueBringsDeadly(Player* bot)
+        {
+            Group* group = bot->GetGroup();
+            if (!group)
+                return false;
+
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || member == bot || member->getClass() != CLASS_ROGUE || !member->IsInWorld() ||
+                    member->GetMap() != bot->GetMap())
+                    continue;
+
+                if (HasDeadlyOnWeapon(member))
+                    return true;
+
+                // a bot rogue with a lower GUID keeps Deadly: both bots reach the same answer before either has
+                // poisoned a weapon
+                if (GET_PLAYERBOT_AI(member) && member->GetGUID() < bot->GetGUID() &&
+                    member->GetLevel() >= DEADLY_POISON_MIN_LEVEL)
+                    return true;
+            }
+
+            return false;
+        }
+
+        Item* FindBest(PlayerbotAI* botAI, Kind kind)
+        {
+            for (uint32 itemId : ItemIds(kind))
+                if (Item* item = botAI->FindConsumable(itemId))
+                    return item;
+
+            return nullptr;
+        }
     }
 
-    return false;
-}
-
-bool UseInstantPoisonOffHandAction::Execute(Event /*event*/)
-{
-    std::vector<Item*> const items =
-        AI_VALUE2(std::vector<Item*>, "inventory items", "Instant Poison");
-    for (Item* const item : items)
+    std::vector<uint32> const& ItemIds(Kind kind)
     {
-        // Not necessary for instant but keeping for symmetry and to guide a potential refactor.
-        if (item->GetTemplate()->Class != ITEM_CLASS_CONSUMABLE)
-            continue;
+        static std::vector<uint32> const instant = {
+            INSTANT_POISON_IX, INSTANT_POISON_VIII, INSTANT_POISON_VII, INSTANT_POISON_VI, INSTANT_POISON_V,
+            INSTANT_POISON_IV, INSTANT_POISON_III, INSTANT_POISON_II, INSTANT_POISON };
+        static std::vector<uint32> const deadly = {
+            DEADLY_POISON_IX, DEADLY_POISON_VIII, DEADLY_POISON_VII, DEADLY_POISON_VI, DEADLY_POISON_V,
+            DEADLY_POISON_IV, DEADLY_POISON_III, DEADLY_POISON_II, DEADLY_POISON };
+        // Wound Poison VII .. I (item_template RequiredLevel 78, 72, 64, 56, 48, 40, 32)
+        static std::vector<uint32> const wound = { 43235, 43234, 22055, 10922, 10921, 10920, 10918 };
 
-        Item* const itemForSpell = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
-        return UseItem(item, ObjectGuid::Empty, itemForSpell);
+        switch (kind)
+        {
+            case Kind::DEADLY:
+                return deadly;
+            case Kind::WOUND:
+                return wound;
+            default:
+                return instant;
+        }
     }
 
-    return false;
+    bool HasDeadlyOnWeapon(Player* player)
+    {
+        for (uint8 slot : { EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND })
+        {
+            Item* weapon = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (weapon && IsDeadlyPoisonEnchant(weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT)))
+                return true;
+        }
+
+        return false;
+    }
+
+    Kind KindFor(PlayerbotAI* botAI, uint8 slot)
+    {
+        Player* bot = botAI->GetBot();
+        uint8 const deadlySlot = AiFactory::GetPlayerSpecTab(bot) == ROGUE_TAB_ASSASSINATION
+                                     ? uint8(EQUIPMENT_SLOT_MAINHAND)
+                                     : uint8(EQUIPMENT_SLOT_OFFHAND);
+        if (slot != deadlySlot)
+            return Kind::INSTANT;
+
+        return OtherRogueBringsDeadly(bot) ? Kind::WOUND : Kind::DEADLY;
+    }
+
+    Item* ItemFor(PlayerbotAI* botAI, uint8 slot)
+    {
+        switch (KindFor(botAI, slot))
+        {
+            case Kind::DEADLY:
+                if (Item* item = FindBest(botAI, Kind::DEADLY))
+                    return item;
+                return FindBest(botAI, Kind::INSTANT);
+            case Kind::WOUND:
+                if (Item* item = FindBest(botAI, Kind::WOUND))
+                    return item;
+                return FindBest(botAI, Kind::INSTANT);
+            default:
+                if (Item* item = FindBest(botAI, Kind::INSTANT))
+                    return item;
+                return FindBest(botAI, Kind::DEADLY);
+        }
+    }
 }

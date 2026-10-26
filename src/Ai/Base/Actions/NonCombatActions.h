@@ -31,4 +31,14 @@ public:
     bool isPossible() override;
 };
 
+// Eating / drinking with nothing left to do (full, or a fight started): stand up, which ends the food / drink.
+class StandUpAction : public Action
+{
+public:
+    StandUpAction(PlayerbotAI* botAI) : Action(botAI, "stand up") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
 #endif

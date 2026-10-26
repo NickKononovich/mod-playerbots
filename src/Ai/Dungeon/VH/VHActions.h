@@ -31,4 +31,54 @@ public:
     bool Execute(Event event) override;
 };
 
+class VHStartEventAction : public MovementAction
+{
+public:
+    VHStartEventAction(PlayerbotAI* botAI) : MovementAction(botAI, "vh start event") {}
+    bool Execute(Event event) override;
+};
+
+class VHAttackSealAttackerAction : public AttackAction
+{
+public:
+    VHAttackSealAttackerAction(PlayerbotAI* botAI) : AttackAction(botAI, "vh attack seal attacker") {}
+    bool Execute(Event event) override;
+};
+
+class VHAttackPortalKeeperAction : public AttackAction
+{
+public:
+    VHAttackPortalKeeperAction(PlayerbotAI* botAI) : AttackAction(botAI, "vh attack portal keeper") {}
+    bool Execute(Event event) override;
+};
+
+class VHEngageReleasedBossAction : public AttackAction
+{
+public:
+    VHEngageReleasedBossAction(PlayerbotAI* botAI) : AttackAction(botAI, "vh engage released boss") {}
+    bool Execute(Event event) override;
+};
+
+class VHRallyAction : public MovementAction
+{
+public:
+    VHRallyAction(PlayerbotAI* botAI) : MovementAction(botAI, "vh rally") {}
+    bool Execute(Event event) override;
+};
+
+// To Sinclari outside the seal and her "I'm not fighting, so send me in now!" (the server's SAI teleports inside).
+class VHLateJoinAction : public MovementAction
+{
+public:
+    VHLateJoinAction(PlayerbotAI* botAI) : MovementAction(botAI, "vh late join") {}
+    bool Execute(Event event) override;
+};
+
+class XevozzKiteAction : public MovementAction
+{
+public:
+    XevozzKiteAction(PlayerbotAI* botAI) : MovementAction(botAI, "xevozz kite") {}
+    bool Execute(Event event) override;
+};
+
 #endif

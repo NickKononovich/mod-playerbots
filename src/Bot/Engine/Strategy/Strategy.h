@@ -20,6 +20,7 @@ enum class TargetValueExclusionType : uint8
     DpsTarget,     // also "dps aoe target"
     DebuffTarget,  // "attacker without aura", "melee attacker without aura"
     Aoe,
+    PetTarget,     // a group pet's target in dungeons (DungeonPetControl, PetsAction.cpp)
 };
 
 enum StrategyType : uint32

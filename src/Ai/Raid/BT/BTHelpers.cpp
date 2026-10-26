@@ -217,6 +217,7 @@ std::unordered_map<ObjectGuid, ObjectGuid> illidanShadowTrapGuid;
 std::unordered_map<ObjectGuid, Position> illidanShadowTrapDestination;
 std::unordered_map<uint32, int> illidanLastPhase;
 std::unordered_map<uint32, time_t> illidanBossDpsWaitTimer;
+std::unordered_map<uint32, time_t> illidanNonTankAggroTime;
 std::unordered_map<uint32, time_t> illidanFlameDpsWaitTimer;
 std::unordered_map<uint32, ObjectGuid> eastFlameGuid;
 std::unordered_map<uint32, ObjectGuid> westFlameGuid;
@@ -267,6 +268,33 @@ int GetIllidanPhase(Unit* illidan)
         return 5;
 
     return -1;
+}
+
+std::vector<Position> GetLeftoverIllidanHazards(PlayerbotAI* botAI, bool onlyInside)
+{
+    std::vector<Position> hazards;
+    Player* bot = botAI->GetBot();
+    GuidVector const& npcs =
+        botAI->GetAiObjectContext()->GetValue<GuidVector>("possible triggers")->Get();
+    for (ObjectGuid const guid : npcs)
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsAlive())
+            continue;
+
+        uint32 const entry = unit->GetEntry();
+        if (entry != static_cast<uint32>(BlackTempleNpcs::NPC_FLAME_CRASH) &&
+            entry != static_cast<uint32>(BlackTempleNpcs::NPC_DEMON_FIRE) &&
+            entry != static_cast<uint32>(BlackTempleNpcs::NPC_BLAZE))
+        {
+            continue;
+        }
+
+        if (!onlyInside || bot->GetExactDist2d(unit) < ILLIDAN_LEFTOVER_HAZARD_RADIUS)
+            hazards.push_back(unit->GetPosition());
+    }
+
+    return hazards;
 }
 
 std::vector<Unit*> GetAllFlameCrashes(Player* bot)

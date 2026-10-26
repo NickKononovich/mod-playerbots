@@ -33,6 +33,10 @@ public:
         creators["flash heal"] = &flash_heal;
         creators["flash heal on party"] = &flash_heal_on_party;
         creators["psychic scream"] = &psychic_scream;
+        creators["hymn of hope"] = &hymn_of_hope;                          // [b31_deep]
+        creators["divine hymn"] = &divine_hymn;                            // [b31_deep]
+        creators["prayer of healing on party"] = &prayer_of_healing_on_party;  // [b31_deep]
+        creators["greater heal on main tank"] = &greater_heal_on_main_tank;    // [b31_deep]
     }
 
 private:
@@ -40,7 +44,7 @@ private:
     {
         return new ActionNode(
             "inner fire",
-            /*P*/ { NextAction("remove shadowform") },
+            /*P*/ {},  // [b31_deep] castable in Shadowform (Spell.dbc StancesNot has no bit 27)
             /*A*/ {},
             /*C*/ {}
         );
@@ -58,7 +62,7 @@ private:
     {
         return new ActionNode(
             "power word: fortitude",
-            /*P*/ { NextAction("remove shadowform") },
+            /*P*/ {},  // [b31_deep] castable in Shadowform
             /*A*/ {},
             /*C*/ {}
         );
@@ -67,7 +71,7 @@ private:
     {
         return new ActionNode(
             "power word: fortitude on party",
-            /*P*/ { NextAction("remove shadowform") },
+            /*P*/ {},  // [b31_deep] castable in Shadowform
             /*A*/ {},
             /*C*/ {}
         );
@@ -76,7 +80,7 @@ private:
     {
         return new ActionNode(
             "divine spirit",
-            /*P*/ { NextAction("remove shadowform") },
+            /*P*/ {},  // [b31_deep] castable in Shadowform
             /*A*/ {},
             /*C*/ {}
         );
@@ -85,7 +89,7 @@ private:
     {
         return new ActionNode(
             "divine spirit on party",
-            /*P*/ { NextAction("remove shadowform") },
+            /*P*/ {},  // [b31_deep] castable in Shadowform
             /*A*/ {},
             /*C*/ {}
         );
@@ -94,7 +98,8 @@ private:
     {
         return new ActionNode(
             "power word: shield",
-            /*P*/ { NextAction("remove shadowform") },
+            // [b31_deep] castable in Shadowform: the prereq dropped the form each time a mob hit the shadow priest
+            /*P*/ {},
             // /*A*/ { NextAction("renew", 50.0f) },
             /*A*/ {},
             /*C*/ {}
@@ -104,7 +109,7 @@ private:
     {
         return new ActionNode(
             "power word: shield on party",
-            /*P*/ { NextAction("remove shadowform") },
+            /*P*/ {},  // [b31_deep] castable in Shadowform
             /*A*/ {},
             /*C*/ {}
         );
@@ -205,6 +210,45 @@ private:
             "psychic scream",
             /*P*/ {},
             /*A*/ { NextAction("fade") },
+            /*C*/ {}
+        );
+    }
+    // [b31_deep] Hymn of Hope is not castable in Shadowform (StancesNot bit 27).
+    static ActionNode* hymn_of_hope([[maybe_unused]] PlayerbotAI* botAI)
+    {
+        return new ActionNode(
+            "hymn of hope",
+            /*P*/ { NextAction("remove shadowform") },
+            /*A*/ {},
+            /*C*/ {}
+        );
+    }
+    // [b31_deep] Inner Focus (off the GCD) goes into the expensive heals instead of the first spell after medium
+    // mana; a missing talent or a cooldown makes the prereq impossible and the heal goes out alone.
+    static ActionNode* divine_hymn([[maybe_unused]] PlayerbotAI* botAI)
+    {
+        return new ActionNode(
+            "divine hymn",
+            /*P*/ { NextAction("inner focus") },
+            /*A*/ {},
+            /*C*/ {}
+        );
+    }
+    static ActionNode* prayer_of_healing_on_party([[maybe_unused]] PlayerbotAI* botAI)
+    {
+        return new ActionNode(
+            "prayer of healing on party",
+            /*P*/ { NextAction("inner focus") },
+            /*A*/ {},
+            /*C*/ {}
+        );
+    }
+    static ActionNode* greater_heal_on_main_tank([[maybe_unused]] PlayerbotAI* botAI)
+    {
+        return new ActionNode(
+            "greater heal on main tank",
+            /*P*/ { NextAction("inner focus") },
+            /*A*/ {},
             /*C*/ {}
         );
     }

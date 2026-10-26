@@ -11,7 +11,31 @@
 
 class PlayerbotAI;
 
-class ImbueWithPoisonAction : public Action
+// A temporary weapon enhancement (poison, sharpening stone, weight stone, oil), put on between fights only
+// ([rjoin-imbue], ImbueAction.cpp): Execute() is true only when something was applied.
+class ImbueAction : public Action
+{
+public:
+    ImbueAction(PlayerbotAI* botAI, std::string const name, bool offhand)
+        : Action(botAI, name), _offhand(offhand)
+    {
+    }
+
+    bool isUseful() override;
+
+protected:
+    void PrepareImbue();
+    void Tried(uint8 slot);  // [b34_gnomer] an apply was cast on this equipment slot; isUseful() verifies it took
+    bool Done(bool applied);
+
+private:
+    bool _offhand;
+    uint32 _retryAfterMs = 0;
+    uint8 _triedSlotMask = 0;  // [b34_gnomer] bit 0 main hand, bit 1 off hand
+    uint8 _failures = 0;       // [b34_gnomer] applies in a row that left the slot without an enhancement
+};
+
+class ImbueWithPoisonAction : public ImbueAction
 {
 public:
     ImbueWithPoisonAction(PlayerbotAI* botAI);
@@ -19,7 +43,7 @@ public:
     bool Execute(Event event) override;
 };
 
-class ImbueWithStoneAction : public Action
+class ImbueWithStoneAction : public ImbueAction
 {
 public:
     ImbueWithStoneAction(PlayerbotAI* botAI);
@@ -27,7 +51,7 @@ public:
     bool Execute(Event event) override;
 };
 
-class ImbueWithOilAction : public Action
+class ImbueWithOilAction : public ImbueAction
 {
 public:
     ImbueWithOilAction(PlayerbotAI* botAI);

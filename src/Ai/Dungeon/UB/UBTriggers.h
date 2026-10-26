@@ -30,4 +30,12 @@ public:
     bool IsActive() override;
 };
 
+// Ghaz'an's lake: the bot swims while fighting in the basin (cached liquid status only).
+class UBGhazanLakeTrigger : public Trigger
+{
+public:
+    UBGhazanLakeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "ub ghazan lake") {}
+    bool IsActive() override;
+};
+
 #endif

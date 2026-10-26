@@ -2702,8 +2702,10 @@ void RandomPlayerbotMgr::OnBotLoginInternal(Player* const bot)
         }
     }
 
-    // Run guild recovery/assignment at login to handle empty guild tables after restart.
-    if (sPlayerbotAIConfig.RandomBotGuildCount > 0)
+    // Run guild recovery/assignment at login to handle empty guild tables after restart. Only random bot accounts:
+    // the test harness also logs its characters in here, and they must stay out of the random bot guilds.
+    if (sPlayerbotAIConfig.RandomBotGuildCount > 0 &&
+        sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId()))
     {
         PlayerbotFactory factory(bot, bot->GetLevel());
         factory.InitGuild();

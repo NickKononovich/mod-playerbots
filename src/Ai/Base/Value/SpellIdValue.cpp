@@ -42,6 +42,12 @@ uint32 SpellIdValue::Calculate()
         if (itr->second->State == PLAYERSPELL_REMOVED || !itr->second->Active)
             continue;
 
+        // [b33_aoe_class] A talent of the other (dual) spec stays in the spell map but Player::HasSpell is false:
+        // gd-h-5F-51 "bot lacks spell 47847" (Shadowfury on Demonology), 46924 (Bladestorm on Protection),
+        // 19506 / 23989 (Trueshot Aura / Readiness on Survival), and every "spell id" gate passed.
+        if (!itr->second->IsInSpec(bot->GetActiveSpec()))
+            continue;
+
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
         if (!spellInfo || spellInfo->IsPassive())
             continue;

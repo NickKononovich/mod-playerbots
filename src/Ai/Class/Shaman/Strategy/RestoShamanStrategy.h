@@ -18,6 +18,7 @@ public:
     RestoShamanStrategy(PlayerbotAI* botAI);
 
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    void InitMultipliers(std::vector<Multiplier*>& multipliers) override;  // [healer_audit_b30]
     std::string const getName() override { return "resto"; }
     uint32 GetType() const override { return STRATEGY_TYPE_RANGED | STRATEGY_TYPE_HEAL; }
 };

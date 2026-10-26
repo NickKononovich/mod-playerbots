@@ -544,6 +544,16 @@ protected:
     bool IsActiveInEncounter() override;
 };
 
+class LadyVashjCoilfangStriderOnNonTankTrigger : public SscEncounterTrigger
+{
+public:
+    LadyVashjCoilfangStriderOnNonTankTrigger(PlayerbotAI* botAI)
+        : SscEncounterTrigger(botAI, "lady vashj coilfang strider on non tank") {}
+
+protected:
+    bool IsActiveInEncounter() override;
+};
+
 class LadyVashjCoilfangEliteShouldBeTankedTrigger : public SscEncounterTrigger
 {
 public:

@@ -12,6 +12,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 
@@ -169,11 +170,6 @@ bool IccLichKingShadowTrapAction::Execute(Event /*event*/)
     Unit* boss = AI_VALUE2(Unit*, "find target", "the lich king");
     if (!boss || !PlayerbotAI::IsTank(bot))
         return false;
-
-    Difficulty const diff = bot->GetRaidDifficulty();
-
-    if (sPlayerbotAIConfig.EnableICCBuffs && boss->IsInCombat() && IsHeroicLk(diff))
-        IccApplyHeroicBuffToMember(bot, true, false);
 
     static constexpr float CIRCLE_RADIUS = 20.0f;
     static constexpr float SAFE_DISTANCE = 12.0f;
@@ -369,36 +365,21 @@ bool IccLichKingWinterAction::Execute(Event /*event*/)
 
     Difficulty const diff = bot->GetRaidDifficulty();
 
-    if (sPlayerbotAIConfig.EnableICCBuffs && boss->IsInCombat() && IsHeroicLk(diff))
-        IccApplyHeroicBuffToMember(bot, true, true);
-
-    // Speed boost to help escape the inward push
-    if (bot->GetDistance2d(boss) < 35.0f && !bot->HasAura(SPELL_NITRO_BOOSTS))
-        bot->AddAura(SPELL_NITRO_BOOSTS, bot);
-
-    // Heroic: if more than 2 Raging Spirits are alive, kill the one with the
-    // highest HP. Only the main tank does this to avoid simultaneous actions.
+    // Heroic: more than 2 Raging Spirits alive means the raid is falling behind on kills
     if (PlayerbotAI::IsMainTank(bot) && IsHeroicLk(diff))
     {
         GuidVector const& heroicNpcs = AI_VALUE(GuidVector, "nearest hostile npcs");
-        std::vector<Unit*> spirits;
-
+        uint32 spiritCount = 0;
         for (ObjectGuid const& guid : heroicNpcs)
         {
             Unit* unit = botAI->GetUnit(guid);
-            if (!unit || !unit->IsAlive())
-                continue;
-
-            if (IsLkRagingSpirit(unit->GetEntry()))
-                spirits.push_back(unit);
+            if (unit && unit->IsAlive() && IsLkRagingSpirit(unit->GetEntry()))
+                ++spiritCount;
         }
 
-        if (spirits.size() > 2)
-        {
-            Unit* killTarget = *std::max_element(spirits.begin(), spirits.end(),
-                [](Unit const* a, Unit const* b) { return a->GetHealth() < b->GetHealth(); });
-            bot->Kill(bot, killTarget);
-        }
+        if (spiritCount > 2)
+            IccLogHonestTacticGap(bot, IccHonestGap::LichKing, "The Lich King",
+                                  "heroic Raging Spirits pile up: more DPS/CC instead of instant kills");
     }
 
     // Skull marking during Remorseless Winter.
@@ -444,14 +425,11 @@ bool IccLichKingWinterAction::Execute(Event /*event*/)
             Unit* markTarget = bestShambling ? bestShambling : bestSpirit;
 
             if (markTarget)
-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), markTarget->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, markTarget->GetGUID());
             else if (!group->GetTargetIcon(RtiTargetValue::skullIndex).IsEmpty())
-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), ObjectGuid::Empty);
+                RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, ObjectGuid::Empty);
         }
     }
-
-    // Teleport back onto the platform if the engine pushed us through
-    FixPlatformPosition();
 
     // Staging during Remorseless Winter cast: non-tanks converge on ONE shared
     // safe vile spirit anchor and hold for 4s before falling through to the
@@ -651,18 +629,6 @@ bool IccLichKingWinterAction::Execute(Event /*event*/)
     }
     else
         HandleRangedPositioning();
-
-    return false;
-}
-
-bool IccLichKingWinterAction::FixPlatformPosition()
-{
-    if (std::abs(bot->GetPositionZ() - PLATFORM_Z) > 1.0f)
-    {
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                        PLATFORM_Z, bot->GetOrientation());
-        return true;
-    }
 
     return false;
 }
@@ -1808,28 +1774,6 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
     bool const hasPlague = botAI->HasAura("Necrotic Plague", bot);
     Unit* const terenas = bot->FindNearestCreature(NPC_TERENAS_MENETHIL_HC, 55.0f);
 
-    // Heroic cheat buffs — apply to all group members
-    Creature* lichKing = bot->FindNearestCreature(NPC_THE_LICH_KING, 100.0f);
-    if (lichKing && lichKing->IsInCombat() && sPlayerbotAIConfig.EnableICCBuffs && IsHeroicLk(diff))
-    {
-        Group* buffGroup = bot->GetGroup();
-        if (buffGroup)
-        {
-            for (GroupReference* itr = buffGroup->GetFirstMember(); itr; itr = itr->next())
-            {
-                Player* member = itr->GetSource();
-                if (!member || !member->IsAlive() || !member->IsInWorld())
-                    continue;
-
-                IccApplyHeroicBuffToMember(member, true, true);
-
-                if (boss && boss->HealthBelowPct(60) && boss->HealthAbovePct(40) &&
-                    !member->HasAura(SPELL_EMPOWERED_BLOOD))
-                    member->AddAura(SPELL_EMPOWERED_BLOOD, member);
-            }
-        }
-    }
-
     // Skull marking: phase 1 marks the boss; phase 2+ prioritises Raging Spirits.
     // Val'kyr marking owns skull while any Val'kyr is actively grabbing — skip here.
     if (Group* group = bot->GetGroup())
@@ -1894,16 +1838,16 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
                 if (nearestRaging)
                 {
                     if (!ragingMarked && group->GetTargetIcon(RtiTargetValue::skullIndex) != nearestRaging->GetGUID())
-                        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), nearestRaging->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, nearestRaging->GetGUID());
                 }
                 else if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
                 {
-                    group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+                    RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
                 }
 
                 // Cross marker is no longer used for vile windows — clear if set
                 if (!group->GetTargetIcon(CROSS_ICON).IsEmpty())
-                    group->SetTargetIcon(CROSS_ICON, bot->GetGUID(), ObjectGuid::Empty);
+                    RaidMarkOwnership::SetIcon(bot, group, CROSS_ICON, ObjectGuid::Empty);
 
                 // Per-bot RTI: melee non-tanks always target skull (boss or raging)
                 if (PlayerbotAI::IsMelee(bot) && !PlayerbotAI::IsTank(bot))
@@ -1917,7 +1861,7 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
             else if (boss && boss->HealthAbovePct(71))
             {
                 if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
-                    group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+                    RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
             }
             else if (boss)
             {
@@ -1951,50 +1895,20 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
                     if (nearestSpirit)
                     {
                         if (group->GetTargetIcon(RtiTargetValue::skullIndex) != nearestSpirit->GetGUID())
-                            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), nearestSpirit->GetGUID());
+                            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex,
+                                                       nearestSpirit->GetGUID());
                     }
                     else if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
                     {
-                        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
                     }
                 }
             }
         }
     }
 
-    // Val'kyr edge-dive (ongoing)
-    if (bot->HasAura(SPELL_VALKYR_CARRY))
-    {
-        if (bot->GetPositionZ() > 779.0f)
-            return JumpTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 740.01f);
-
-        bot->Kill(bot, bot);
-        return true;
-    }
-
-    // Detect bots fallen off edge and initiate dive
-    if (boss && boss->GetHealthPct() < 70.0f && boss->GetHealthPct() > 40.0f &&
-        !IccBossHasRemorselessWinter(boss))
-    {
-        static constexpr float PLATFORM_CENTER_X = 503.0f;
-        static constexpr float PLATFORM_CENTER_Y = -2124.0f;
-        static constexpr float PLATFORM_EDGE_MIN = 52.0f;
-        static constexpr float PLATFORM_EDGE_MAX = 70.0f;
-        static constexpr float PLATFORM_MIN_Z    = 844.0f;
-
-        float const dx = bot->GetPositionX() - PLATFORM_CENTER_X;
-        float const dy = bot->GetPositionY() - PLATFORM_CENTER_Y;
-        float const platDist = std::hypot(dx, dy);
-
-        if (platDist > PLATFORM_EDGE_MIN && platDist < PLATFORM_EDGE_MAX &&
-            bot->GetPositionZ() > PLATFORM_MIN_Z)
-        {
-            bot->AddAura(SPELL_VALKYR_CARRY, bot);
-            return JumpTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 740.01f);
-        }
-    }
-
-    if (HandleTeleportationFixes(diff, terenas))
+    // Off the platform or out of the encounter area: the core (fall, Harvest Soul return) decides what happens
+    if (HandleOutOfAreaState(diff, terenas))
         return true;
 
     HandleHeroicNonTankPositioning(diff, terenas);
@@ -2030,86 +1944,33 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
     return false;
 }
 
-bool IccLichKingAddsAction::HandleTeleportationFixes(Difficulty diff, Unit* terenas)
+bool IccLichKingAddsAction::HandleOutOfAreaState(Difficulty diff, Unit* terenas)
 {
-    static constexpr float PLATFORM_Z  = 840.857f;
-    static constexpr float SPIRIT_Z    = 1049.865f;
+    static constexpr float PLATFORM_Z = 840.857f;
+    static constexpr float SPIRIT_Z = 1049.865f;
     static constexpr float MAX_Y_DRIFT = 200.0f;
-    static constexpr float MAX_Z_DIFF  = 1.0f;
+    static constexpr float FALL_Z_DIFF = 10.0f;
     static constexpr float SPIRIT_Z_TOLERANCE = 5.0f;
 
-    // Normal mode: snap back if teleported far outside the encounter area
-    // (Harvest Soul victim exits Frostmourne room). Land on the main tank,
-    // falling back to assist tank, then the fixed adds anchor. Iterate group
-    // directly so distance/LOS gating in PartyMemberValue::Check doesn't hide
-    // a far-away main tank.
-    if (!IsHeroicLk(diff) && std::abs(bot->GetPositionY() - (-2095.7915f)) > MAX_Y_DRIFT)
-    {
-        Player* mainTank = nullptr;
-        Player* assistTank = nullptr;
-        if (Group* group = bot->GetGroup())
-        {
-            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
-            {
-                Player* member = itr->GetSource();
-                if (!member || !member->IsAlive())
-                    continue;
-                if (!mainTank && PlayerbotAI::IsMainTank(member))
-                    mainTank = member;
-                else if (!assistTank && PlayerbotAI::IsAssistTank(member))
-                    assistTank = member;
-            }
-        }
-        Unit* anchor = mainTank ? static_cast<Unit*>(mainTank) : static_cast<Unit*>(assistTank);
+    // Normal mode: far outside the encounter area (inside Frostmourne after Harvest Soul).
+    // The core returns the player; platform positioning must not run meanwhile.
+    bool const outOfArea = !IsHeroicLk(diff) && std::abs(bot->GetPositionY() - (-2095.7915f)) > MAX_Y_DRIFT;
 
-        if (anchor)
-            bot->TeleportTo(bot->GetMapId(), anchor->GetPositionX(), anchor->GetPositionY(),
-                            anchor->GetPositionZ(), bot->GetOrientation());
-        else
-            bot->TeleportTo(bot->GetMapId(),
-                            ICC_LICH_KING_ADDS_POSITION.GetPositionX(),
-                            ICC_LICH_KING_ADDS_POSITION.GetPositionY(),
-                            ICC_LICH_KING_ADDS_POSITION.GetPositionZ(),
-                            bot->GetOrientation());
-        return true;
-    }
+    // Well below the platform: fell off, dropped by a Val'kyr, or through the floor
+    bool const belowPlatform = !terenas && !botAI->GetAura("Harvest Soul", bot, false, false) &&
+                               !botAI->GetAura("Harvest Souls", bot, false, false) &&
+                               bot->GetPositionZ() < PLATFORM_Z - FALL_Z_DIFF;
 
-    // Fix bots going underground (buggy ice-platform collisions)
-    if (!botAI->GetAura("Harvest Soul", bot, false, false) &&
-        !botAI->GetAura("Harvest Souls", bot, false, false) &&
-        std::abs(bot->GetPositionZ() - PLATFORM_Z) > MAX_Z_DIFF)
-    {
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                        PLATFORM_Z, bot->GetOrientation());
-        return true;
-    }
+    // Heroic Frostmourne room: fell through the spirit-room floor
+    bool const belowSpiritRoom = terenas && botAI->GetAura("Harvest Soul", bot, false, false) &&
+                                 bot->GetPositionZ() < SPIRIT_Z - SPIRIT_Z_TOLERANCE;
 
-    // Heroic: keep bot near main tank during Harvest Soul (fall back to Terenas).
-    // Resolve main tank via group iteration so distance/LOS gating in
-    // PartyMemberValue::Check doesn't hide a far-away main tank.
-    if (terenas && botAI->GetAura("Harvest Soul", bot, false, false) &&
-        std::abs(bot->GetPositionZ() - SPIRIT_Z) > SPIRIT_Z_TOLERANCE)
-    {
-        Player* mainTank = nullptr;
-        if (Group* group = bot->GetGroup())
-        {
-            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
-            {
-                Player* member = itr->GetSource();
-                if (member && member->IsAlive() && PlayerbotAI::IsMainTank(member))
-                {
-                    mainTank = member;
-                    break;
-                }
-            }
-        }
-        Unit* anchor = mainTank ? static_cast<Unit*>(mainTank) : terenas;
-        bot->TeleportTo(bot->GetMapId(), anchor->GetPositionX(), anchor->GetPositionY(),
-                        SPIRIT_Z, bot->GetOrientation());
-        return true;
-    }
+    if (!outOfArea && !belowPlatform && !belowSpiritRoom)
+        return false;
 
-    return false;
+    IccLogHonestTacticGap(bot, IccHonestGap::LichKing, "The Lich King",
+                          "bot off the platform / out of the area: no teleport back, core mechanics only");
+    return true;
 }
 
 bool IccLichKingSpiritBombAction::IsBombThreatActive(PlayerbotAI* botAI, Player* bot)
@@ -2143,15 +2004,11 @@ bool IccLichKingSpiritBombAction::Execute(Event)
     if (!PlayerbotAI::IsMainTank(bot) || !terenas || !IsHeroicLk(diff))
         return false;
 
-    // Snap back to spirit-room Z if glitched through the floor
+    // Glitched through the spirit-room floor: nothing a player could do, leave the bomb logic alone
     static constexpr float SPIRIT_Z = 1049.865f;
     static constexpr float SPIRIT_Z_TOLERANCE = 5.0f;
     if (std::abs(bot->GetPositionZ() - SPIRIT_Z) > SPIRIT_Z_TOLERANCE)
-    {
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                        SPIRIT_Z, bot->GetOrientation());
-        return true;
-    }
+        return false;
 
     static constexpr float SAFE_DIST = 14.0f;
     static constexpr float SAFE_HEIGHT = 12.0f;
@@ -2417,7 +2274,7 @@ bool IccLichKingAddsAction::HandleSpiritMarkingAndTargeting(Difficulty diff, Uni
 
         Unit* toMark = prioritySpirit ? prioritySpirit : nearestSpirit;
         if (toMark && (needNewMark || (prioritySpirit && !markOnTarget)))
-            group->SetTargetIcon(STAR_ICON, bot->GetGUID(), toMark->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, STAR_ICON, toMark->GetGUID());
     }
 
     // Ranged DPS focus the star target
@@ -2431,7 +2288,6 @@ bool IccLichKingAddsAction::HandleSpiritMarkingAndTargeting(Difficulty diff, Uni
             bot->SetTarget(starTarget->GetGUID());
             bot->SetFacingToObject(starTarget);
             Attack(starTarget);
-            bot->Kill(bot, starTarget);
             return true;
         }
     }
@@ -2476,7 +2332,7 @@ bool IccLichKingAddsAction::HandleRagingSpiritFlanking(Unit* boss, bool hasPlagu
         return false;
     if (bot->GetVehicle())
         return false;
-    if (bot->HasAura(SPELL_HARVEST_SOUL_VALKYR) || bot->HasAura(SPELL_VALKYR_CARRY))
+    if (bot->HasAura(SPELL_HARVEST_SOUL_VALKYR))
         return false;
 
     GuidVector const& npcs = AI_VALUE(GuidVector, "nearest hostile npcs");
@@ -2713,8 +2569,8 @@ bool IccLichKingAddsAction::HandleAssistTankAddManagement(Unit* boss, Difficulty
     if (!PlayerbotAI::IsAssistTank(bot) || !boss)
         return false;
 
-    // Below 71%: stun all shamblings until winter starts so they don't
-    // shockwave the raid during the transition gap.
+    // Below 71%: crowd-control shamblings with the tank's own class spell until winter
+    // starts so they don't shockwave the raid during the transition gap.
     if (boss->HealthBelowPct(72) && boss->HealthAbovePct(70))
     {
         if (!IccBossHasRemorselessWinter(boss))
@@ -2723,12 +2579,12 @@ bool IccLichKingAddsAction::HandleAssistTankAddManagement(Unit* boss, Difficulty
             for (ObjectGuid const& guid : stunTargets)
             {
                 Unit* unit = botAI->GetUnit(guid);
-                if (!unit || !unit->IsAlive())
+                if (!unit || !unit->IsAlive() || !IsLkShambling(unit->GetEntry()))
                     continue;
-                if (!IsLkShambling(unit->GetEntry()))
+                if (unit->HasUnitState(UNIT_STATE_STUNNED) || unit->HasBreakableByDamageCrowdControlAura())
                     continue;
-                if (!unit->HasAura(SPELL_HAMMER_OF_JUSTICE))
-                    bot->AddAura(SPELL_HAMMER_OF_JUSTICE, unit);
+                if (std::optional<bool> const cc = IccTryClassCC(bot, botAI, unit))
+                    return *cc;
             }
         }
 
@@ -3565,9 +3421,6 @@ bool IccLichKingAddsAction::HandleDefileMechanics(Unit* boss, Difficulty diff)
         lastYellMs = info.castTime;
     }
 
-    if (!target->HasAura(SPELL_NITRO_BOOSTS))
-        target->AddAura(SPELL_NITRO_BOOSTS, target);
-
     // Real players run themselves; only the targeted bot moves.
     if (target != bot)
         return false;
@@ -3746,7 +3599,7 @@ bool IccLichKingAddsAction::HandleValkyrMarking(std::vector<Unit*> const& grabbi
             bool const stale = !marked->HasAura(SPELL_HARVEST_SOUL_VALKYR) ||
                                std::abs(marked->GetPositionZ() - bot->GetPositionZ()) > 5.0f;
             if (stale)
-                group->SetTargetIcon(iconIdx, bot->GetGUID(), ObjectGuid::Empty);
+                RaidMarkOwnership::SetIcon(bot, group, iconIdx, ObjectGuid::Empty);
         }
     }
 
@@ -3754,7 +3607,7 @@ bool IccLichKingAddsAction::HandleValkyrMarking(std::vector<Unit*> const& grabbi
     for (size_t i = sorted.size(); i < Icons.size(); ++i)
     {
         if (!group->GetTargetIcon(Icons[i]).IsEmpty())
-            group->SetTargetIcon(Icons[i], bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, Icons[i], ObjectGuid::Empty);
     }
 
     // Assign an icon to each active Val'kyr.
@@ -3772,7 +3625,7 @@ bool IccLichKingAddsAction::HandleValkyrMarking(std::vector<Unit*> const& grabbi
 
         Unit* marked = botAI->GetUnit(group->GetTargetIcon(iconIdx));
         if (!marked || marked != sorted[i])
-            group->SetTargetIcon(iconIdx, bot->GetGUID(), sorted[i]->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, iconIdx, sorted[i]->GetGUID());
     }
 
     return true;
@@ -3831,11 +3684,6 @@ bool IccLichKingAddsAction::HandleValkyrAssignment(std::vector<Unit*> const& gra
     context->GetValue<std::string>("rti")->Set(IccRtiNameForBucket(valkyrIndex));
 
     Attack(myValkyr);
-
-    Difficulty const diff = bot->GetRaidDifficulty();
-    if (sPlayerbotAIConfig.EnableICCBuffs && IsHeroicLk(diff) &&
-        !myValkyr->HasAura(SPELL_HAMMER_OF_JUSTICE))
-        bot->AddAura(SPELL_HAMMER_OF_JUSTICE, myValkyr);
 
     ApplyCCToValkyr(myValkyr);
 
@@ -4050,17 +3898,9 @@ bool IccLichKingAddsAction::HandleVileSpiritMechanics()
     Position const& slotPos = slots[chosen];
 
     // Assist tank: stacks with the raid at the chosen vile slot, but allowed
-    // a 40y leash to intercept the spirit nearest the slot. Keeps nitro boost
-    // for chase speed.
+    // a 40y leash to intercept the spirit nearest the slot.
     if (PlayerbotAI::IsAssistTank(bot))
     {
-        if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-            bot->AddAura(SPELL_NITRO_BOOSTS, bot);
-        if (!bot->HasAura(SPELL_PAIN_SUPPRESION))
-            bot->AddAura(SPELL_PAIN_SUPPRESION, bot);
-        if (!bot->HasAura(SPELL_AGEIS_OF_DALARAN))
-            bot->AddAura(SPELL_AGEIS_OF_DALARAN, bot);
-
         static constexpr float LEASH_RADIUS = 40.0f;
 
         float const anchorX = slotPos.GetPositionX();
@@ -4273,11 +4113,11 @@ bool IccLichKingAddsAction::HandleIceSphereMechanics()
         }
 
         if (nearestSphere)
-            group->SetTargetIcon(SPHERE_ICON, bot->GetGUID(), nearestSphere->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, SPHERE_ICON, nearestSphere->GetGUID());
         else
         {
             if (!group->GetTargetIcon(SPHERE_ICON).IsEmpty())
-                group->SetTargetIcon(SPHERE_ICON, bot->GetGUID(), ObjectGuid::Empty);
+                RaidMarkOwnership::SetIcon(bot, group, SPHERE_ICON, ObjectGuid::Empty);
             return false;
         }
 

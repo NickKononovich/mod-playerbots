@@ -104,4 +104,61 @@ public:
         : MovementAction(botAI, name) {}
     bool Execute(Event event) override;
 };
+
+// Walks (or rides) to the announcer and picks the gossip that starts the stage of the current progress.
+class ToCStartEventAction : public MovementAction
+{
+public:
+    ToCStartEventAction(PlayerbotAI* botAI) : MovementAction(botAI, "toc start event") {}
+    bool Execute(Event event) override;
+};
+
+class ToCPullArgentSoldiersAction : public AttackAction
+{
+public:
+    ToCPullArgentSoldiersAction(PlayerbotAI* botAI) : AttackAction(botAI, "toc pull argent soldiers") {}
+    bool Execute(Event event) override;
+};
+
+class ToCHoldFireAction : public Action
+{
+public:
+    ToCHoldFireAction(PlayerbotAI* botAI) : Action(botAI, "toc hold fire") {}
+    bool Execute(Event event) override;
+};
+
+class ToCInterruptAction : public Action
+{
+public:
+    ToCInterruptAction(PlayerbotAI* botAI) : Action(botAI, "toc interrupt") {}
+    bool Execute(Event event) override;
+};
+
+class ToCAvoidGhoulExplodeAction : public MovementAction
+{
+public:
+    ToCAvoidGhoulExplodeAction(PlayerbotAI* botAI) : MovementAction(botAI, "toc avoid ghoul explode") {}
+    bool Execute(Event event) override;
+};
+
+class ToCDispelRenewAction : public Action
+{
+public:
+    ToCDispelRenewAction(PlayerbotAI* botAI) : Action(botAI, "toc dispel renew") {}
+    bool Execute(Event event) override;
+};
+
+class ToCMarkedDefensiveAction : public Action
+{
+public:
+    ToCMarkedDefensiveAction(PlayerbotAI* botAI) : Action(botAI, "toc marked defensive") {}
+    bool Execute(Event event) override;
+};
+
+class ToCHealMarkedAction : public Action
+{
+public:
+    ToCHealMarkedAction(PlayerbotAI* botAI) : Action(botAI, "toc heal marked") {}
+    bool Execute(Event event) override;
+};
 #endif

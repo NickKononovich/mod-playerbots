@@ -65,9 +65,6 @@ bool RpgDiscoverTrigger::IsActive()
     if (!guidP.HasNpcFlag(UNIT_NPC_FLAG_FLIGHTMASTER))
         return false;
 
-    if (bot->isTaxiCheater())
-        return false;
-
     uint32 node =
         sObjectMgr->GetNearestTaxiNode(guidP.GetPositionX(), guidP.GetPositionY(), guidP.GetPositionZ(),
                                        guidP.GetMapId(), bot->GetTeamId());

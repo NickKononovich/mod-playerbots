@@ -24,6 +24,11 @@ public:
             &TbcDungeonMechanarTriggerContext::sepethrea_trail;
         creators["sepethrea focus boss"] =
             &TbcDungeonMechanarTriggerContext::sepethrea_focus_boss;
+        creators["mechanar lift"] =
+            &TbcDungeonMechanarTriggerContext::mechanar_lift;
+        creators["capacitus polarity"] = &TbcDungeonMechanarTriggerContext::capacitus_polarity;
+        creators["capacitus reflective shield"] = &TbcDungeonMechanarTriggerContext::capacitus_reflective_shield;
+        creators["mechanar bridge pull"] = &TbcDungeonMechanarTriggerContext::mechanar_bridge_pull;
     }
 
 private:
@@ -31,6 +36,13 @@ private:
     static Trigger* sepethrea_avoid_flame(PlayerbotAI* botAI) { return new SepethreaAvoidFlameTrigger(botAI); }
     static Trigger* sepethrea_trail(PlayerbotAI* botAI) { return new SepethreaTrailTrigger(botAI); }
     static Trigger* sepethrea_focus_boss(PlayerbotAI* botAI) { return new SepethreaFocusBossTrigger(botAI); }
+    static Trigger* mechanar_lift(PlayerbotAI* botAI) { return new MechanarLiftTrigger(botAI); }
+    static Trigger* capacitus_polarity(PlayerbotAI* botAI) { return new CapacitusPolarityTrigger(botAI); }
+    static Trigger* capacitus_reflective_shield(PlayerbotAI* botAI)
+    {
+        return new CapacitusReflectiveShieldTrigger(botAI);
+    }
+    static Trigger* mechanar_bridge_pull(PlayerbotAI* botAI) { return new MechanarBridgePullTrigger(botAI); }
 };
 
 #endif

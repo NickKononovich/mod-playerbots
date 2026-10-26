@@ -39,6 +39,18 @@ inline bool HasAnyPaladinHandFromCaster(Unit* target, Player* caster)
     return HasHandFromCaster(target, caster,
         { SPELL_HAND_OF_PROTECTION, SPELL_HAND_OF_SALVATION, SPELL_HAND_OF_FREEDOM, SPELL_HAND_OF_SACRIFICE });
 }
+
+// [b33_class] What Hand of Freedom can actually clear: a root or a snare (movement-impairing). PlayerbotAI::
+// IsMovementImpaired also reports stuns and knockdowns (IsRooted() / zero run speed), which Hand of Freedom cannot
+// remove: the paladin burned the GCD on them. A stunned target is skipped even when also snared.
+inline bool HasFreedomRemovableImpairment(Unit* unit)
+{
+    if (!unit || unit->HasUnitState(UNIT_STATE_STUNNED) || unit->HasAuraType(SPELL_AURA_MOD_STUN))
+        return false;
+
+    return unit->HasAuraType(SPELL_AURA_MOD_ROOT) || unit->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED) ||
+           unit->HasAuraWithMechanic((1ULL << MECHANIC_ROOT) | (1ULL << MECHANIC_SNARE));
+}
 }
 
 #endif

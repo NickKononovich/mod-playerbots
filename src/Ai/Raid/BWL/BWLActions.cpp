@@ -7,7 +7,11 @@
 #include "BWLActions.h"
 #include "BWLHelpers.h"
 #include "EncounterHelpers.h"
+#include "GameObject.h"
+#include "ItemPackets.h"
+#include "MotionMaster.h"
 #include "Playerbots.h"
+#include "RaidHonesty.h"
 #include "RtiTargetValue.h"
 
 using namespace BlackwingLairHelpers;
@@ -20,6 +24,10 @@ static constexpr float RAZORGORE_CONE_ARC = M_PI;
 static constexpr float RAZORGORE_BACK_FUZZ_ARC = M_PI_4;
 static constexpr float RAZORGORE_RANGE_DISTANCE = 15.0f;
 static constexpr float RAZORGORE_MELEE_DISTANCE = 3.0f;
+static constexpr float RAZORGORE_ORB_USE_DISTANCE = 3.0f;
+static constexpr float SUPPRESSION_DEVICE_DISARM_DISTANCE = 4.0f;
+// Destroy Egg reaches 10y; stop well inside it so the large model does not overshoot.
+static constexpr float RAZORGORE_EGG_CAST_DISTANCE = 6.0f;
 
 static constexpr float VAELASTRASZ_REPULSION_RANGE = 20.0f;
 static constexpr float VAELASTRASZ_TAIL_SWEEP_RECOVERY_RANGE = 30.0f;
@@ -29,9 +37,24 @@ static constexpr float VAELASTRASZ_RANGED_BIAS_BOSS_WEIGHT = 1.0f - VAELASTRASZ_
 
 // General
 
+// The aura used to be added for free. Now the bot equips a real Onyxia Scale Cloak it carries in its
+// bags; without one it is only reported (gear has to be earned).
 bool BwlOnyxiaScaleCloakAuraCheckAction::Execute(Event /*event*/)
 {
-    bot->AddAura(static_cast<uint32>(BlackwingLairSpells::SPELL_ONYXIA_SCALE_CLOAK), bot);
+    uint32 const cloakEntry = static_cast<uint32>(BlackwingLairItems::ITEM_ONYXIA_SCALE_CLOAK);
+    Item* cloak = bot->GetItemByEntry(cloakEntry);
+    if (!cloak || cloak->IsEquipped())
+    {
+        if (!cloak)
+            RaidHonesty::LogNeedsHonestTactic(bot, "BWL: no Onyxia Scale Cloak against Shadow Flame");
+        return false;
+    }
+
+    WorldPacket packet(CMSG_AUTOEQUIP_ITEM_SLOT, 9);
+    packet << cloak->GetGUID() << uint8(EQUIPMENT_SLOT_BACK);
+    WorldPackets::Item::AutoEquipItemSlot equipPacket(std::move(packet));
+    equipPacket.Read();
+    bot->GetSession()->HandleAutoEquipItemSlotOpcode(equipPacket);
     return true;
 }
 
@@ -40,18 +63,30 @@ bool BwlOnyxiaScaleCloakAuraCheckAction::isUseful()
     return !bot->HasAura(static_cast<uint32>(BlackwingLairSpells::SPELL_ONYXIA_SCALE_CLOAK));
 }
 
+// Rogues disarm the devices with Disarm Trap; the state is no longer flipped directly.
 bool BwlTurnOffSuppressionDeviceAction::Execute(Event /*event*/)
 {
     GuidVector gos = AI_VALUE(GuidVector, "nearest game objects");
     for (auto i = gos.begin(); i != gos.end(); ++i)
     {
         GameObject* go = botAI->GetGameObject(*i);
-        if (IsActiveSuppressionDeviceInRange(go, bot))
+        if (!IsActiveSuppressionDeviceInRange(go, bot))
+            continue;
+
+        uint32 const disarmTrap = static_cast<uint32>(BlackwingLairSpells::SPELL_DISARM_TRAP);
+        if (bot->GetExactDist(go) > SUPPRESSION_DEVICE_DISARM_DISTANCE)
         {
-            go->SetGoState(GO_STATE_ACTIVE);
+            return MoveTo(BWL_MAP_ID, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), false,
+                          false, false, false, MovementPriority::MOVEMENT_NORMAL, true, false);
         }
+
+        if (botAI->CanCastSpell(disarmTrap, go) && bot->CastSpell(go, disarmTrap, false) == SPELL_CAST_OK)
+            return true;
+
+        RaidHonesty::LogNeedsHonestTactic(bot, "BWL: cannot disarm a Suppression Device");
+        return false;
     }
-    return true;
+    return false;
 }
 
 // Razorgore the Untamed
@@ -135,6 +170,64 @@ bool BwlRazorgoreMarkBossAction::Execute(Event /*event*/)
 bool BwlRazorgoreMarkBossAction::isUseful()
 {
     return PlayerbotAI::IsTank(bot);
+}
+
+bool BwlRazorgoreControlOrbAction::Execute(Event /*event*/)
+{
+    if (IsControllingRazorgore(bot))
+        return DestroyNearestEgg(bot->GetCharm());
+
+    if (!CanUseOrbOfDomination(bot))
+        return false;
+
+    GameObject* orb = bot->FindNearestGameObject(
+        static_cast<uint32>(BlackwingLairGameObjects::GO_ORB_OF_DOMINATION), RAZORGORE_SEARCH_RADIUS);
+    if (!orb)
+        return false;
+
+    if (bot->GetExactDist2d(orb) > RAZORGORE_ORB_USE_DISTANCE)
+    {
+        return MoveTo(BWL_MAP_ID, orb->GetPositionX(), orb->GetPositionY(), orb->GetPositionZ(), false,
+                      false, false, false, MovementPriority::MOVEMENT_FORCED, true, false);
+    }
+
+    // The possession is a channel; a swing or a cast of the controller would end it at once.
+    bot->AttackStop();
+    bot->InterruptNonMeleeSpells(false);
+    bot->StopMoving();
+    orb->Use(bot);
+    return true;
+}
+
+bool BwlRazorgoreControlOrbAction::DestroyNearestEgg(Unit* razorgore)
+{
+    if (!razorgore)
+        return false;
+
+    if (razorgore->HasUnitState(UNIT_STATE_CASTING))
+        return true;
+
+    GameObject* egg = FindNearestIntactEgg(razorgore);
+    if (!egg)
+        return false;
+
+    if (razorgore->GetExactDist(egg) > RAZORGORE_EGG_CAST_DISTANCE)
+    {
+        razorgore->GetMotionMaster()->MovePoint(
+            0, egg->GetPositionX(), egg->GetPositionY(), egg->GetPositionZ());
+        return true;
+    }
+
+    // Destroy Egg is interrupted by movement.
+    razorgore->StopMoving();
+    uint32 const destroyEgg = static_cast<uint32>(BlackwingLairSpells::SPELL_DESTROY_EGG);
+    if (razorgore->CastSpell(egg, destroyEgg, false) == SPELL_CAST_OK)
+        return true;
+
+    // Out of range or line of sight from this spot: close in and retry next tick.
+    razorgore->GetMotionMaster()->MovePoint(
+        0, egg->GetPositionX(), egg->GetPositionY(), egg->GetPositionZ());
+    return true;
 }
 
 // Vaelastrasz the Corrupt

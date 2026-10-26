@@ -54,7 +54,7 @@ bool HireAction::Execute(Event /*event*/)
 
     botAI->TellMaster("I will join you at your next relogin");
 
-    bot->SetMoney(moneyReq);
+    // The bot keeps the money it earned itself; it is no longer topped up (or reset) to the hire price.
     RandomPlayerbotMgr::instance().Remove(bot);
     CharacterDatabase.Execute("UPDATE characters SET account = {} WHERE guid = {}", account,
                               bot->GetGUID().GetCounter());

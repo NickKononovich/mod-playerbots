@@ -14,7 +14,9 @@
 #include "PlayerbotAIConfig.h"
 #include <boost/functional/hash.hpp>
 #include <map>
+#include <mutex>
 #include <random>
+#include <unordered_map>
 
 class Creature;
 class GuidPosition;
@@ -880,6 +882,7 @@ public:
     const std::vector<WorldLocation> GetTravelHubs(Player* bot);
     std::vector<WorldLocation> GetCityLocations(Player* bot);
     std::vector<uint32> GetFlightNodesInZone(uint32 zoneId, TeamId team, uint32 excludeNode = 0) const;
+    std::vector<uint32> GetKnownFlightNodesInZone(Player* bot, uint32 zoneId, uint32 excludeNode = 0) const;
     bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
     std::vector<WorldLocation> const& GetLocsPerLevelCache(uint8 level) { return locsPerLevelCache[level]; }
 
@@ -1004,5 +1007,151 @@ private:
 };
 
 #define sTravelMgr TravelMgr::instance()
+
+class MotionTransport;
+
+// Dalaran floats over Crystalsong Forest and has a no-fly zone: it is only entered or left by its own ways.
+namespace DalaranTravel
+{
+    constexpr uint32 MAP_ID = 571;
+    constexpr float CENTER_X = 5807.0f;
+    constexpr float CENTER_Y = 650.0f;
+    constexpr float RADIUS = 450.0f;
+    constexpr float MIN_Z = 500.0f;
+
+    constexpr uint32 QUEST_HORDE = 12791;               // The Magical Kingdom of Dalaran (level 74)
+    constexpr uint32 QUEST_ALLIANCE = 12794;
+    constexpr uint32 QUEST_DEATH_KNIGHT = 12796;
+    constexpr uint32 QUEST_LEAVE_AND_RETURN = 12790;    // use the crystal down to the Violet Stand once
+    constexpr uint32 QUEST_CRYSTAL_FLAG = 12845;        // set by that ride (spell 42953), unlocks the crystal up
+    constexpr uint32 GO_CRYSTAL_DOWN = 191229;          // in Dalaran, to the Violet Stand
+    constexpr uint32 GO_CRYSTAL_UP = 191230;            // at the Violet Stand, to Dalaran
+    constexpr uint32 NPC_CELINDRA = 29156;              // Archmage Celindra, ends the quests above
+    constexpr uint32 TAXI_NODE_KRASUS_LANDING = 310;
+    constexpr uint32 SPELL_PORTAL_DALARAN = 53142;
+    constexpr uint32 GO_PORTAL_DALARAN = 191164;
+    constexpr uint32 ITEM_RUNE_OF_PORTALS = 17032;
+    constexpr uint32 GOSSIP_OPTION_TELEPORT = 0;        // "I am ready to be teleported to Dalaran."
+    constexpr float FLIGHT_SPEED = 32.0f;               // yards per second on a taxi
+
+    // Kirin Tor envoys in the Northrend hubs: they hand out the quests above and teleport its holders up.
+    constexpr uint32 QUEST_GIVERS[] = {23729, 26471, 26673, 27158, 29155, 29158, 29159, 29160, 29161, 29162, 29169};
+
+    inline bool IsTeleportQuest(uint32 questId)
+    {
+        return questId == QUEST_HORDE || questId == QUEST_ALLIANCE || questId == QUEST_DEATH_KNIGHT;
+    }
+}
+
+// Boats, zeppelins and fixed portals as travel edges between continents, plus the few places the RPG planner
+// needs by spawn (inns, the Dalaran teleport givers). Built once from the core's transport templates and spawn
+// data. Dock times come from the transport keyframes; where a transport is in its loop is learnt from any bot
+// that sees it, so no timetable is hardcoded.
+class TravelRouteMgr
+{
+public:
+    struct Dock
+    {
+        uint32 mapId = 0;
+        float x = 0.0f;  // transport position while docked
+        float y = 0.0f;
+        float z = 0.0f;
+        WorldPosition pier;       // where passengers wait: the dock master, or the nearest spawn on the pier
+        uint32 pierFaction = 0;   // faction template of that spawn
+        uint32 arriveMs = 0;      // path time the transport arrives
+        uint32 departMs = 0;      // path time it leaves
+    };
+
+    struct Line
+    {
+        uint32 entry = 0;
+        uint32 periodMs = 0;
+        TeamId team = TEAM_NEUTRAL;
+        std::vector<Dock> docks;
+    };
+
+    struct Portal
+    {
+        uint32 goEntry = 0;
+        uint32 faction = 0;
+        WorldPosition from;
+        WorldPosition to;
+    };
+
+    enum class LegKind : uint8
+    {
+        Walk,
+        Transport,
+        Portal
+    };
+
+    struct Leg
+    {
+        LegKind kind = LegKind::Walk;
+        uint32 lineEntry = 0;
+        uint8 fromDock = 0;
+        uint8 toDock = 0;
+        uint32 portalIndex = 0;
+    };
+
+    static TravelRouteMgr& instance()
+    {
+        static TravelRouteMgr instance;
+        return instance;
+    }
+
+    std::vector<Line> const& GetLines();
+    Line const* GetLine(uint32 entry);
+    std::vector<Portal> const& GetPortals();
+    std::vector<WorldPosition> const& GetSpawns(uint32 creatureEntry);
+    std::vector<WorldPosition> const& GetObjectSpawns(uint32 gameObjectEntry);
+    WorldPosition GetNearestInn(Player* bot, float maxDistance);
+
+    bool CanUseLine(Player* bot, Line const& line);
+    bool CanUsePortal(Player* bot, Portal const& portal);
+
+    // Same-map callers only: reads the transport's path progress.
+    void Observe(MotionTransport* transport);
+    static bool IsDocked(MotionTransport* transport, Dock const& dock, uint32& remainingMs);
+    // Time from `inMs` from now until the transport leaves `dock`; half a loop when it was never seen.
+    uint32 GetTimeToDepartureMs(Line const& line, uint8 dock, uint32 inMs);
+    static uint32 GetRideMs(Line const& line, uint8 fromDock, uint8 toDock);
+
+    // Fastest way to dest by walking, boats, zeppelins and portals. firstLeg is the first non-walking leg (Walk
+    // when walking straight there is best). False when dest cannot be reached at all.
+    bool FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds);
+    // Seconds to every dock or portal exit on mapId: the quest planner prices quests on other continents with it.
+    void GetArrivalCosts(Player* bot, uint32 mapId, std::vector<std::pair<WorldPosition, float>>& out);
+
+    // Dalaran floats over Crystalsong Forest: no walking in or out, only its own ways (see NewRpgBaseAction).
+    static bool IsInDalaran(WorldPosition const& pos);
+    static bool CanEnterDalaran(Player* bot);
+    static bool CanLeaveDalaran(Player* bot);
+
+    static constexpr float WALK_SPEED = 7.0f;            // yards per second, same as the quest planner
+    static constexpr float PORTAL_SECONDS = 15.0f;       // use, load screen
+    static constexpr float DALARAN_CROSS_SECONDS = 90.0f;
+
+private:
+    TravelRouteMgr() = default;
+
+    struct Node;
+    void Build();
+    void Solve(Player* bot, WorldPosition const* dest, std::vector<Node>& nodes, std::vector<float>& cost,
+               std::vector<int32>& prev, std::vector<LegKind>& prevKind);
+    static uint32 Landmass(WorldPosition const& pos);
+
+    std::once_flag _built;
+    std::vector<Line> _lines;
+    std::vector<Portal> _portals;
+    std::vector<std::pair<WorldPosition, uint32>> _inns;  // position, faction template
+    std::unordered_map<uint32, std::vector<WorldPosition>> _spawns;
+    std::unordered_map<uint32, std::vector<WorldPosition>> _objectSpawns;
+
+    std::mutex _observedLock;
+    std::unordered_map<uint32, std::pair<uint32, uint32>> _observed;  // entry -> (loop time, getMSTime when seen)
+};
+
+#define sTravelRouteMgr TravelRouteMgr::instance()
 
 #endif

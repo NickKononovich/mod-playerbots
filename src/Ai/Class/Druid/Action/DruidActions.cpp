@@ -6,13 +6,18 @@
 
 #include "DruidActions.h"
 #include "AoeValues.h"
+#include "DruidTriggers.h"
 #include "Event.h"
+#include "Group.h"
+#include "PartyMemberToHeal.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "TargetValue.h"
 
 constexpr uint32 SPELL_ECLIPSE_SOLAR = 48517;
 constexpr uint32 SPELL_ECLIPSE_LUNAR = 48518;
+// Titanforged Starcaller's Regalia (E1) 2p charge: the next Starfire is instant ([setbonus-rot]).
+constexpr uint32 SPELL_LUNAR_SURGE = 127174;
 
 namespace
 {
@@ -45,11 +50,14 @@ std::vector<NextAction> CastAbolishPoisonOnPartyAction::getAlternatives()
 bool CastLifebloomOnMainTankAction::isUseful()
 {
     Unit* target = GetTarget();
-    if (!target || !target->IsAlive() || !CastSpellAction::isUseful())
+    if (!target || !target->IsAlive() || !CastSpellAction::isUseful() || HotUpkeepYields())
         return false;
 
     Aura* lifebloom = botAI->GetAura("lifebloom", target, true, true);
-    return !lifebloom || lifebloom->GetStackAmount() < 3 || lifebloom->GetDuration() < 2000;
+    if (LifebloomLetBloom(bot, target, lifebloom))  // [b31_sd] the trigger's rule, for the Clearcasting node too
+        return false;
+
+    return !lifebloom || lifebloom->GetStackAmount() < 3 || lifebloom->GetDuration() < LIFEBLOOM_REFRESH_WINDOW_MS;
 }
 
 bool CastThornsAction::Execute(Event event)
@@ -67,34 +75,53 @@ bool CastThornsOnMainTankAction::Execute(Event event)
     return PrepareThornsTarget(botAI, GetTarget()) && BuffOnMainTankAction::Execute(event);
 }
 
+// [b31_deep] Eclipse fishing by the Lunar proc cooldown (wowsims balance APL; spell_dru_eclipse: Lunar procs from a
+// Wrath crit, Solar from a Starfire crit, each with its own 30 s cooldown from its proc, neither while an eclipse is
+// up). Outside an eclipse: Wrath while the Lunar cooldown is ready (fish Lunar, also in the opener), Starfire while
+// it is not (fish Solar). The old rule blocked each nuke for 30 s after the other eclipse and cleared the Lunar
+// timer on a Solar proc, so after Solar ended the default Starfire (5.4) won with Lunar ready and not yet procced.
+namespace
+{
+    constexpr time_t ECLIPSE_PROC_COOLDOWN_S = 30;
+    constexpr uint32 SPELL_ECLIPSE_TALENT_R1 = 48516;
+    constexpr uint32 SPELL_ECLIPSE_TALENT_R2 = 48521;
+    constexpr uint32 SPELL_ECLIPSE_TALENT_R3 = 48525;
+
+    // [b35_bal] Eclipse is a PASSIVE talent: Player::LearnTalent never adds it to m_spells, so HasSpell() was always
+    // false and Lunar fishing never ran. Check the active spec's talent map instead.
+    bool HasEclipseTalent(Player* bot)
+    {
+        uint8 const spec = bot->GetActiveSpec();
+        return bot->HasTalent(SPELL_ECLIPSE_TALENT_R1, spec) || bot->HasTalent(SPELL_ECLIPSE_TALENT_R2, spec) ||
+               bot->HasTalent(SPELL_ECLIPSE_TALENT_R3, spec);
+    }
+
+    // Records the start of an active Lunar Eclipse (from its remaining duration, so a missed tick does not shift it)
+    // and tells whether the Lunar proc cooldown is over.
+    bool LunarProcReady(AiObjectContext* context, Player* bot)
+    {
+        time_t const now = time(nullptr);
+        if (Aura* lunar = bot->GetAura(SPELL_ECLIPSE_LUNAR))
+        {
+            time_t const elapsed = (lunar->GetMaxDuration() - lunar->GetDuration()) / IN_MILLISECONDS;
+            context->GetValue<time_t>("eclipse lunar proc time")->Set(now - elapsed);
+            return false;
+        }
+
+        time_t const lunarTime = context->GetValue<time_t>("eclipse lunar proc time")->Get();
+        return !lunarTime || now - lunarTime >= ECLIPSE_PROC_COOLDOWN_S;
+    }
+}
+
 bool CastWrathAction::isUseful()
 {
-    time_t now = time(nullptr);
-    time_t solarTime = context->GetValue<time_t>("eclipse solar proc time")->Get();
-    time_t lunarTime = context->GetValue<time_t>("eclipse lunar proc time")->Get();
+    bool const lunarReady = LunarProcReady(context, bot);
+    if (bot->HasAura(SPELL_ECLIPSE_SOLAR))
+        return CastSpellAction::isUseful();
 
-    // --- Update Solar Eclipse tracking ---
-    // Wrath is selected during Solar Eclipse (eclipse trigger at 20.0f), so we reliably see it here.
-    if (bot->HasAura(SPELL_ECLIPSE_SOLAR) && !solarTime)
-        context->GetValue<time_t>("eclipse solar proc time")->Set(now);
-    // Lunar procced — Solar fishing window is over, new cycle begins
-    if (bot->HasAura(SPELL_ECLIPSE_LUNAR) && solarTime)
-        context->GetValue<time_t>("eclipse solar proc time")->Set(0);
-    // 30 s cooldown window expired
-    if (solarTime && (now - solarTime) >= 30)
-        context->GetValue<time_t>("eclipse solar proc time")->Set(0);
-
-    // --- Update Lunar Eclipse tracking (belt-and-suspenders in case Starfire isn't evaluated) ---
-    if (bot->HasAura(SPELL_ECLIPSE_LUNAR) && !lunarTime)
-        context->GetValue<time_t>("eclipse lunar proc time")->Set(now);
-    // Solar procced — Lunar fishing window is over
-    if (bot->HasAura(SPELL_ECLIPSE_SOLAR) && lunarTime)
-        context->GetValue<time_t>("eclipse lunar proc time")->Set(0);
-    if (lunarTime && (now - lunarTime) >= 30)
-        context->GetValue<time_t>("eclipse lunar proc time")->Set(0);
-
-    // Block Wrath while in Lunar Eclipse / post-Lunar fishing window
-    if (context->GetValue<time_t>("eclipse lunar proc time")->Get())
+    // Under Lunar Eclipse Starfire is the nuke; outside an eclipse Wrath only fishes for a ready Lunar proc. A druid
+    // without the Eclipse talent keeps the plain order (Starfire default above Wrath).
+    if (bot->HasAura(SPELL_ECLIPSE_LUNAR) || (HasEclipseTalent(bot) && !lunarReady))
         return false;
 
     return CastSpellAction::isUseful();
@@ -102,35 +129,123 @@ bool CastWrathAction::isUseful()
 
 bool CastStarfireAction::isUseful()
 {
-    time_t now = time(nullptr);
-    time_t solarTime = context->GetValue<time_t>("eclipse solar proc time")->Get();
-    time_t lunarTime = context->GetValue<time_t>("eclipse lunar proc time")->Get();
+    bool const lunarReady = LunarProcReady(context, bot);
+    // Instant Starfire (Lunar Surge) outdamages the Wrath of the same GCD even inside Solar Eclipse.
+    if (bot->HasAura(SPELL_LUNAR_SURGE) || bot->HasAura(SPELL_ECLIPSE_LUNAR))
+        return CastSpellAction::isUseful();
 
-    // --- Update Lunar Eclipse tracking ---
-    // Starfire is selected during Lunar Eclipse (eclipse trigger at 20.0f), so we reliably see it here.
-    if (bot->HasAura(SPELL_ECLIPSE_LUNAR) && !lunarTime)
-        context->GetValue<time_t>("eclipse lunar proc time")->Set(now);
-    // Solar procced — Lunar fishing window is over, new cycle begins
-    if (bot->HasAura(SPELL_ECLIPSE_SOLAR) && lunarTime)
-        context->GetValue<time_t>("eclipse lunar proc time")->Set(0);
-    // 30 s cooldown window expired
-    if (lunarTime && (now - lunarTime) >= 30)
-        context->GetValue<time_t>("eclipse lunar proc time")->Set(0);
-
-    // --- Update Solar Eclipse tracking (belt-and-suspenders in case Wrath isn't evaluated) ---
-    if (bot->HasAura(SPELL_ECLIPSE_SOLAR) && !solarTime)
-        context->GetValue<time_t>("eclipse solar proc time")->Set(now);
-    // Lunar procced — Solar fishing window is over
-    if (bot->HasAura(SPELL_ECLIPSE_LUNAR) && solarTime)
-        context->GetValue<time_t>("eclipse solar proc time")->Set(0);
-    if (solarTime && (now - solarTime) >= 30)
-        context->GetValue<time_t>("eclipse solar proc time")->Set(0);
-
-    // Block Starfire while in Solar Eclipse / post-Solar fishing window
-    if (context->GetValue<time_t>("eclipse solar proc time")->Get())
+    if (bot->HasAura(SPELL_ECLIPSE_SOLAR) || (HasEclipseTalent(bot) && lunarReady))
         return false;
 
     return CastSpellAction::isUseful();
+}
+
+// Wild Growth only pays off when several players near the target need healing.
+namespace
+{
+    constexpr float WILD_GROWTH_RADIUS = 30.0f;
+    constexpr uint8 WILD_GROWTH_MIN_INJURED = 3;
+    // [healer_audit_b30] In a five-man two hurt members (tank + one) already pay for Wild Growth, the strongest
+    // heal per cast a resto druid has; with 3 the build 30 druids at 80 cast it 4 times in 3520 s of combat
+    // against 635 Lifeblooms.
+    constexpr uint8 WILD_GROWTH_MIN_INJURED_PARTY = 2;
+
+    uint8 WildGrowthMinInjured(Group* group)
+    {
+        return group->isRaidGroup() ? WILD_GROWTH_MIN_INJURED : WILD_GROWTH_MIN_INJURED_PARTY;
+    }
+    constexpr uint32 WILD_GROWTH_CENTER_CACHE_MS = 200;
+    // [b31_sd] A member counts as injured for Wild Growth below 95 %, not below the almost-full band (85 %): the
+    // guide casts it on cooldown on a group taking damage (GUIDE_AUDIT_HEALERS.md: 0.21/min on bosses). The band
+    // that queues it still needs its lowest member below 85 %.
+    constexpr float WILD_GROWTH_INJURED_PCT = 95.0f;
+
+    uint8 WildGrowthInjured(Player* bot, Group* group, Unit* center)
+    {
+        uint8 injured = 0;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || !member->IsAlive() || !member->IsInMap(center))
+                continue;
+
+            if (member->GetHealthPct() >= WILD_GROWTH_INJURED_PCT || HealTriage::IsHealImmune(bot, member))
+                continue;
+
+            if (member != center && !member->IsWithinDist(center, WILD_GROWTH_RADIUS))
+                continue;
+
+            ++injured;
+        }
+
+        return injured;
+    }
+}
+
+// [heal_triage] HoR heroic Falric 2026-10-25: the lowest member stood 30+ yd from the other three, so Wild Growth on
+// it was "isUseful false" with four members at 17-40 %; the member in the middle of the hurt ones is the centre.
+Unit* CastWildGrowthOnPartyAction::GetTarget()
+{
+    Unit* lowest = HealPartyMemberAction::GetTarget();
+    Group* group = bot->GetGroup();
+    if (!lowest || !group)
+        return lowest;
+
+    uint32 const now = getMSTime();
+    if (_centerMs && getMSTimeDiff(_centerMs, now) < WILD_GROWTH_CENTER_CACHE_MS)
+    {
+        Unit* cached = _center ? botAI->GetUnit(_center) : nullptr;
+        return cached && cached->IsAlive() ? cached : lowest;
+    }
+
+    _centerMs = now;
+    _center = lowest->GetGUID();
+    uint8 best = WildGrowthInjured(bot, group, lowest);
+    if (best >= WildGrowthMinInjured(group))
+        return lowest;
+
+    Unit* center = lowest;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == lowest || !member->IsAlive() || !member->IsInMap(bot) ||
+            bot->GetDistance(member) > sPlayerbotAIConfig.HealDistance || !bot->IsWithinLOSInMap(member) ||
+            HealTriage::IsHealImmune(bot, member))
+            continue;
+
+        uint8 const injured = WildGrowthInjured(bot, group, member);
+        if (injured > best)
+        {
+            best = injured;
+            center = member;
+        }
+    }
+
+    _center = center->GetGUID();
+    return center;
+}
+
+bool CastWildGrowthOnPartyAction::isUseful()
+{
+    if (!HealPartyMemberAction::isUseful())
+        return false;
+
+    Unit* target = GetTarget();
+    Group* group = bot->GetGroup();
+    if (!target || !group)
+        return false;
+
+    return WildGrowthInjured(bot, group, target) >= WildGrowthMinInjured(group);
+}
+
+// Swiftmend consumes a Rejuvenation or Regrowth (any druid's); without one the cast only fails.
+bool CastPartySwiftmendAction::isUseful()
+{
+    if (!HealPartyMemberAction::isUseful())
+        return false;
+
+    Unit* target = GetTarget();
+    return target && (botAI->HasAura("rejuvenation", target) || botAI->HasAura("regrowth", target));
 }
 
 Value<Unit*>* CastEntanglingRootsCcAction::GetTargetValue()
@@ -144,6 +259,11 @@ Value<Unit*>* CastCycloneCcAction::GetTargetValue() { return context->GetValue<U
 
 bool CastTyphoonAction::isUseful()
 {
+    // The knockback scatters mobs off the tank, so in a group it is kept for enemy players.
+    Unit* target = GetTarget();
+    if (!target || (bot->GetGroup() && !target->IsPlayer()))
+        return false;
+
     bool facingTarget = AI_VALUE2(bool, "facing", "current target");
     bool targetClose  = ServerFacade::instance().IsDistanceLessOrEqualThan(
         AI_VALUE2(float, "distance", GetTargetName()), 15.f);
@@ -199,14 +319,112 @@ std::vector<NextAction> CastReviveAction::getPrerequisites()
 
 std::vector<NextAction> CastRebirthAction::getPrerequisites()
 {
-    return NextAction::merge({ NextAction("caster form") },
-                             ResurrectPartyMemberAction::getPrerequisites());
+    // No "reach party member to resurrect": that value can point at another resser's corpse, and a combat
+    // battle res is only cast in range anyway (see isUseful).
+    return NextAction::merge({ NextAction("caster form") }, Action::getPrerequisites());
 }
 
 bool CastRebirthAction::isUseful()
 {
-    return CastSpellAction::isUseful() &&
+    return GetTarget() && CastSpellAction::isUseful() &&
            AI_VALUE2(float, "distance", GetTargetName()) <= sPlayerbotAIConfig.SpellDistance;
+}
+
+bool CastRebirthAction::Execute(Event event)
+{
+    Unit* target = GetTarget();
+    if (!CastSpellAction::Execute(event))
+        return false;
+
+    RebirthFollowUp::Record(botAI, target);
+    return true;
+}
+
+bool CastBearBattleResAction::isUseful()
+{
+    Unit* target = GetTarget();
+    return target && CastSpellAction::isUseful() && bot->IsWithinDistInMap(target, BearBattleRes::RANGE);
+}
+
+bool CastBearBattleResAction::Execute(Event event)
+{
+    Unit* target = GetTarget();
+    if (!target)
+        return false;
+
+    // [b32_brez] logged before the form drops: the bear's state when it chose to go
+    uint32 const health = static_cast<uint32>(bot->GetHealthPct());
+    uint32 const attackers = static_cast<uint32>(bot->getAttackers().size());
+
+    // the attempt counts before the cast: a failed or interrupted one is not retried on this member for
+    // BearBattleRes::RETRY_MS, and "bear battle res reshift" puts the bear back in form either way
+    BearBattleRes::RecordAttempt(botAI, target);
+    botAI->RemoveShapeshift();
+
+    if (!CastRebirthAction::Execute(event))
+    {
+        LOG_INFO("playerbots", "[b32_brez] {}: battle rez on {} failed to start (hp {}%, attackers {})",
+                 bot->GetName(), target->GetName(), health, attackers);
+        return false;
+    }
+
+    LOG_INFO("playerbots", "[b32_brez] {}: battle rez on {} (hp {}%, attackers {})", bot->GetName(),
+             target->GetName(), health, attackers);
+    return true;
+}
+
+void RebirthFollowUp::Record(PlayerbotAI* botAI, Unit* target)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    context->GetValue<ObjectGuid>("rebirth target")->Set(target ? target->GetGUID() : ObjectGuid::Empty);
+    context->GetValue<uint32>("rebirth time")->Set(getMSTime());
+}
+
+Unit* RebirthFollowUp::GetTarget(PlayerbotAI* botAI)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    ObjectGuid const guid = context->GetValue<ObjectGuid>("rebirth target")->Get();
+    if (guid.IsEmpty())
+        return nullptr;
+
+    if (getMSTimeDiff(context->GetValue<uint32>("rebirth time")->Get(), getMSTime()) > WINDOW_MS)
+    {
+        context->GetValue<ObjectGuid>("rebirth target")->Set(ObjectGuid::Empty);
+        return nullptr;
+    }
+
+    Unit* target = botAI->GetUnit(guid);
+    Player* bot = botAI->GetBot();
+    if (!target || !target->IsAlive() || !target->IsInWorld() || target->GetMapId() != bot->GetMapId())
+        return nullptr;
+
+    return target;
+}
+
+bool CastSpellOnRebirthTargetAction::isUseful()
+{
+    Unit* target = GetTarget();
+    if (!target || target->GetHealthPct() >= RebirthFollowUp::SAFE_HEALTH_PCT || !CastSpellAction::isUseful())
+        return false;
+
+    return !isHot || !botAI->HasAura(spell, target, false, true);
+}
+
+bool CastBuffOnRebirthTargetAction::isUseful()
+{
+    Unit* target = GetTarget();
+    if (!target || !CastSpellAction::isUseful())
+        return false;
+
+    if (onlyTank && (!target->IsPlayer() || !PlayerbotAI::IsTank(target->ToPlayer())))
+        return false;
+
+    return !botAI->HasAura(spell, target) && (coveringBuff.empty() || !botAI->HasAura(coveringBuff, target));
+}
+
+std::vector<NextAction> CastBuffOnRebirthTargetAction::getPrerequisites()
+{
+    return NextAction::merge({ NextAction("caster form") }, CastSpellAction::getPrerequisites());
 }
 
 bool CastInnervateOnHealerAction::isPossible()
@@ -307,3 +525,20 @@ ObjectGuid BlanketHotTargetValue::Calculate()
 Unit* CastBlanketHotAction::GetTarget() { return botAI->GetUnit(AI_VALUE2(ObjectGuid, "blanket hot target", spell)); }
 
 bool CastBlanketHotAction::isUseful() { return GetTarget() != nullptr; }
+
+// [b31_sd] In combat: rage below ENRAGE_MAX_RAGE (Mangle, Lacerate and Swipe are not affordable, so the GCD-free rage
+// is worth the armor) and the bear at or above the almost-full band (the armor loss does not land on a falling
+// tank). It left the "medium health" node, where it went out at 65 % next to Frenzied Regeneration.
+bool CastEnrageAction::isUseful()
+{
+    constexpr uint8 ENRAGE_MAX_RAGE = 20;
+
+    if (!CastBuffSpellAction::isUseful())
+        return false;
+
+    if (!bot->IsInCombat())
+        return true;
+
+    return AI_VALUE2(uint8, "rage", "self target") < ENRAGE_MAX_RAGE &&
+           bot->GetHealthPct() >= sPlayerbotAIConfig.AlmostFullHealth;
+}

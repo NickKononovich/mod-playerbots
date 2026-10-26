@@ -11,6 +11,8 @@
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "RaidBotDuty.h"
+#include "RaidMarkOwnership.h"
 #include "Unit.h"
 #include "VoATriggers.h"
 
@@ -44,7 +46,7 @@ bool EmalonMarkBossAction::Execute(Event /*event*/)
                     // If there's no skull set yet, or the skull is on a different target, set boss
                     if (!currentSkullTarget || (boss->GetGUID() != currentSkullTarget))
                     {
-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), boss->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, skullIndex, boss->GetGUID());
                         return true;
                     }
                 }
@@ -63,7 +65,7 @@ bool EmalonMarkBossAction::Execute(Event /*event*/)
             // If there's no skull set yet, or the skull is on a different target, set the Eonar's Gift
             if (!currentSkullTarget || (boss->GetGUID() != currentSkullTarget))
             {
-                group->SetTargetIcon(skullIndex, bot->GetGUID(), boss->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, skullIndex, boss->GetGUID());
                 return true;
             }
         }
@@ -145,7 +147,7 @@ bool EmalonOverchargeAction::Execute(Event /*event*/)
                     // If there's no skull set yet, or the skull is on a different target, set Tempest Minion
                     if (!currentSkullTarget || (minion->GetGUID() != currentSkullTarget))
                     {
-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), minion->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, skullIndex, minion->GetGUID());
                         return true;
                     }
                 }
@@ -164,7 +166,7 @@ bool EmalonOverchargeAction::Execute(Event /*event*/)
             // If there's no skull set yet, or the skull is on a different target, set the Eonar's Gift
             if (!currentSkullTarget || (minion->GetGUID() != currentSkullTarget))
             {
-                group->SetTargetIcon(skullIndex, bot->GetGUID(), minion->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, skullIndex, minion->GetGUID());
                 return true;
             }
         }
@@ -181,9 +183,11 @@ bool EmalonOverchargeAction::isUseful()
 
 bool EmalonFallFromFloorAction::Execute(Event /*event*/)
 {
-    return bot->TeleportTo(bot->GetMapId(), VOA_EMALON_RESTORE_POSITION.GetPositionX(),
-                           VOA_EMALON_RESTORE_POSITION.GetPositionY(), VOA_EMALON_RESTORE_POSITION.GetPositionZ(),
-                           VOA_EMALON_RESTORE_POSITION.GetOrientation());
+    RaidBotDuty::LogWorkaroundOnce(bot, "voa-emalon-floor",
+                                   "VoA Emalon: needs honest tactic (bot below the floor, walking back only)");
+    return MoveTo(bot->GetMapId(), VOA_EMALON_RESTORE_POSITION.GetPositionX(),
+                  VOA_EMALON_RESTORE_POSITION.GetPositionY(), VOA_EMALON_RESTORE_POSITION.GetPositionZ(), false, false,
+                  false, false, MovementPriority::MOVEMENT_FORCED);
 }
 
 bool EmalonFallFromFloorAction::isUseful()

@@ -133,7 +133,7 @@ bool IsCeilingCollapsed(Player* bot)
 std::vector<Position> FindDebrisPositions(Player* bot)
 {
     constexpr float searchRadius = 150.0f;
-    return GetDynamicObjectPositions(bot, searchRadius, Id(MagSpells::SPELL_DEBRIS_SPAWN));
+    return GetDynamicObjectPositions(bot, searchRadius, Id(MagSpells::SPELL_DEBRIS_VISUAL));
 }
 
 bool GetActiveDebrisPosition(PlayerbotAI* botAI, Position& debris)

@@ -27,11 +27,20 @@ public:
         creators["mgt delrissa interrupt"] = &TbcDungeonMagistersTerraceActionContext::mgt_delrissa_interrupt;
         creators["mgt delrissa focus target"] = &TbcDungeonMagistersTerraceActionContext::mgt_delrissa_focus_target;
         creators["mgt delrissa tremor totem"] = &TbcDungeonMagistersTerraceActionContext::mgt_delrissa_tremor_totem;
+        creators["mgt delrissa cc mark"] = &TbcDungeonMagistersTerraceActionContext::mgt_delrissa_cc_mark;
+        creators["mgt delrissa retinue left"] =
+            &TbcDungeonMagistersTerraceActionContext::mgt_delrissa_retinue_left;
+        creators["mgt delrissa healer spot"] = &TbcDungeonMagistersTerraceActionContext::mgt_delrissa_healer_spot;
         creators["mgt leave flame strike"] = &TbcDungeonMagistersTerraceActionContext::mgt_leave_flame_strike;
         creators["mgt leave phoenix burn"] = &TbcDungeonMagistersTerraceActionContext::mgt_leave_phoenix_burn;
         creators["mgt kael focus target"] = &TbcDungeonMagistersTerraceActionContext::mgt_kael_focus_target;
         creators["mgt kael interrupt"] = &TbcDungeonMagistersTerraceActionContext::mgt_kael_interrupt;
         creators["mgt take lapse spot"] = &TbcDungeonMagistersTerraceActionContext::mgt_take_lapse_spot;
+        creators["mgt selin room pull"] = &TbcDungeonMagistersTerraceActionContext::mgt_selin_room_pull;
+        creators["mgt selin room to rally"] = &TbcDungeonMagistersTerraceActionContext::mgt_selin_room_to_rally;
+        creators["mgt wretched infusion"] = &TbcDungeonMagistersTerraceActionContext::mgt_wretched_infusion;
+        creators["mgt selin room leash"] = &TbcDungeonMagistersTerraceActionContext::mgt_selin_room_leash;
+        creators["mgt selin pet out"] = &TbcDungeonMagistersTerraceActionContext::mgt_selin_pet_out;
     }
 
 private:
@@ -51,6 +60,15 @@ private:
     {
         return new MgTDelrissaFocusTargetAction(botAI);
     }
+    static Action* mgt_delrissa_healer_spot(PlayerbotAI* botAI)
+    {
+        return new MgTDelrissaHealerSpotAction(botAI);
+    }
+    static Action* mgt_delrissa_cc_mark(PlayerbotAI* botAI) { return new MgTDelrissaCcMarkAction(botAI); }
+    static Action* mgt_delrissa_retinue_left(PlayerbotAI* botAI)
+    {
+        return new MgTDelrissaRetinueLeftAction(botAI);
+    }
     static Action* mgt_delrissa_tremor_totem(PlayerbotAI* botAI)
     {
         return new MgTDelrissaTremorTotemAction(botAI);
@@ -60,6 +78,11 @@ private:
     static Action* mgt_kael_focus_target(PlayerbotAI* botAI) { return new MgTKaelFocusTargetAction(botAI); }
     static Action* mgt_kael_interrupt(PlayerbotAI* botAI) { return new MgTKaelInterruptAction(botAI); }
     static Action* mgt_take_lapse_spot(PlayerbotAI* botAI) { return new MgTTakeLapseSpotAction(botAI); }
+    static Action* mgt_selin_room_pull(PlayerbotAI* botAI) { return new MgTSelinRoomPullAction(botAI); }
+    static Action* mgt_selin_room_to_rally(PlayerbotAI* botAI) { return new MgTSelinRoomToRallyAction(botAI); }
+    static Action* mgt_wretched_infusion(PlayerbotAI* botAI) { return new MgTWretchedInfusionAction(botAI); }
+    static Action* mgt_selin_room_leash(PlayerbotAI* botAI) { return new MgTSelinRoomLeashAction(botAI); }
+    static Action* mgt_selin_pet_out(PlayerbotAI* botAI) { return new MgTSelinPetOutAction(botAI); }
 };
 
 #endif

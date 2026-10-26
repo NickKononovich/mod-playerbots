@@ -11,6 +11,7 @@
 #include "MotionMaster.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiTargetValue.h"
 #include "ThreatManager.h"
 #include <vector>
@@ -38,16 +39,6 @@ inline Unit* RsFindTarget(PlayerbotAI* botAI, Pred pred)
             return unit;
     }
     return nullptr;
-}
-
-inline void RsForceThreat(Unit* target, Player* bot)
-{
-    if (!target || target->GetVictim() == bot)
-        return;
-
-    ThreatManager& mgr = target->GetThreatMgr();
-    mgr.AddThreat(bot, 1000000.0f, nullptr, true, true);
-    mgr.FixateTarget(bot);
 }
 
 inline bool RsReleaseIfFollowing(Player* bot)
@@ -102,7 +93,7 @@ inline void RsUpdateSkullMarker(Player* bot, Unit* priorityAdd)
         return;
 
     if (group->GetTargetIcon(RtiTargetValue::skullIndex) != priorityAdd->GetGUID())
-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), priorityAdd->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, priorityAdd->GetGUID());
 }
 
 #endif

@@ -6,6 +6,7 @@
 
 #include "UldActions.h"
 #include "AiObjectContext.h"
+#include "CharmInfo.h"
 #include "CombatStrategy.h"
 #include "DBCEnums.h"
 #include "FollowMasterStrategy.h"
@@ -13,10 +14,13 @@
 #include "Group.h"
 #include "LastMovementValue.h"
 #include "ObjectGuid.h"
+#include "Pet.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "RaidBotDuty.h"
+#include "RaidMarkOwnership.h"
 #include "RtiTargetValue.h"
 #include "RtiValue.h"
 #include "ScriptedCreature.h"
@@ -26,6 +30,8 @@
 #include "UldScripts.h"
 #include "Unit.h"
 #include "Vehicle.h"
+#include "World.h"
+#include <algorithm>
 #include <cmath>
 
 const std::string ADD_STRATEGY_CHAR = "+";
@@ -39,8 +45,6 @@ const std::vector<Position> corners = {
     {183.53f, 66.53f, 409.80f}, {383.03f, 75.10f, 411.71f}, {379.74f, -133.05f, 410.88f}, {158.67f, -137.54f, 409.80f}};
 
 const Position ULDUAR_KOLOGARN_RESTORE_POSITION = Position(1764.3749f, -24.02903f, 448.0f, 0.00087690353f);
-const Position ULDUAR_KOLOGARN_EYEBEAM_LEFT_POSITION = Position(1781.2051f, 9.34402f, 449.0f, 0.00087690353f);
-const Position ULDUAR_KOLOGARN_EYEBEAM_RIGHT_POSITION = Position(1763.2561f, -24.44305f, 449.0f, 0.00087690353f);
 const Position ULDUAR_THORIM_JUMP_START_POINT = Position(2137.137f, -291.19025f, 438.24753f, 1.7059844f);
 const Position ULDUAR_YOGG_SARON_BOSS_ROOM_RESTORE_POINT = Position(1928.8923f, -24.871964f, 324.88956f, 6.247805f);
 
@@ -48,6 +52,34 @@ const Position yoggPortalLoc[] = {
     {1970.48f, -9.75f, 325.5f},  {1992.76f, -10.21f, 325.5f}, {1995.53f, -39.78f, 325.5f}, {1969.25f, -42.00f, 325.5f},
     {1960.62f, -32.00f, 325.5f}, {1981.98f, -5.69f, 325.5f},  {1982.78f, -45.73f, 325.5f}, {2000.66f, -29.68f, 325.5f},
     {1999.88f, -19.61f, 325.5f}, {1961.37f, -19.54f, 325.5f}};
+
+namespace
+{
+// Tank swap: the other tank takes the boss with its own class taunt (real range and cooldown).
+bool UlduarCastClassTaunt(PlayerbotAI* botAI, Player* bot, Unit* target)
+{
+    std::string taunt;
+    switch (bot->getClass())
+    {
+        case CLASS_DEATH_KNIGHT:
+            taunt = "dark command";
+            break;
+        case CLASS_DRUID:
+            taunt = "growl";
+            break;
+        case CLASS_PALADIN:
+            taunt = "hand of reckoning";
+            break;
+        case CLASS_WARRIOR:
+            taunt = "taunt";
+            break;
+        default:
+            return false;
+    }
+
+    return botAI->CanCastSpell(taunt, target) && botAI->CastSpell(taunt, target);
+}
+}  // namespace
 
 bool FlameLeviathanVehicleAction::Execute(Event /*event*/)
 {
@@ -369,16 +401,13 @@ bool FlameLeviathanEnterVehicleAction::ShouldEnter(Unit* target)
 
     if (entry == NPC_SALVAGED_DEMOLISHER)
     {
+        // AC #28023: the Demolisher passenger seats have no abilities (no Liquid Pyrite, no anti-air), so a
+        // bot there only rides along. Take the driver seat or nothing; spare bots go to Choppers/turrets.
         if (vehicleKit->GetPassenger(0))
         {
-            Unit* target2 = vehicleKit->GetPassenger(1);
-            if (!target2)
-                return false;
-            Vehicle* vehicle2 = target2->GetVehicleKit();
-            if (!vehicle2)
-                return false;
-            if (vehicle2->GetPassenger(0))
-                return false;
+            RaidBotDuty::LogWorkaroundOnce(bot, "fl-demolisher-passenger",
+                                           "AC #28023 Demolisher passenger has no abilities: seat skipped");
+            return false;
         }
         return true;
     }
@@ -536,7 +565,7 @@ bool RazorscaleAvoidSentinelAction::Execute(Event /*event*/)
 
                     // If there's no skull set yet, or the skull is on a different target, set the sentinel
                     if (!currentSkullTarget || (lowestHealthSentinel->GetGUID() != currentSkullTarget))
-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), lowestHealthSentinel->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, skullIndex, lowestHealthSentinel->GetGUID());
                 }
                 break;  // Stop after finding the first valid bot tank
             }
@@ -552,7 +581,7 @@ bool RazorscaleAvoidSentinelAction::Execute(Event /*event*/)
 
             // If there's no skull set yet, or the skull is on a different target, set the sentinel
             if (!currentSkullTarget || (lowestHealthSentinel->GetGUID() != currentSkullTarget))
-                group->SetTargetIcon(skullIndex, bot->GetGUID(), lowestHealthSentinel->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, skullIndex, lowestHealthSentinel->GetGUID());
         }
     }
 
@@ -744,7 +773,7 @@ bool RazorscaleIgnoreBossAction::Execute(Event /*event*/)
         {
             if (PlayerbotAI::IsAssistTankOfIndex(bot, i) && GET_PLAYERBOT_AI(bot))  // Bot is a valid tank
             {
-                group->SetTargetIcon(moonIndex, bot->GetGUID(), boss->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, moonIndex, boss->GetGUID());
                 SetNextMovementDelay(1000);
                 break;  // Assign the moon marker and stop
             }
@@ -752,7 +781,7 @@ bool RazorscaleIgnoreBossAction::Execute(Event /*event*/)
     }
     else if (mainTankUnit == bot)  // If this bot is the main tank
     {
-        group->SetTargetIcon(moonIndex, bot->GetGUID(), boss->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, moonIndex, boss->GetGUID());
         SetNextMovementDelay(1000);
     }
 
@@ -870,7 +899,7 @@ bool RazorscaleGroundedAction::Execute(Event /*event*/)
                 // If the moon marker is set to the boss, reset it
                 if (currentMoonTarget == boss->GetGUID())
                 {
-                    group->SetTargetIcon(moonIndex, bot->GetGUID(), ObjectGuid::Empty);
+                    RaidMarkOwnership::SetIcon(bot, group, moonIndex, ObjectGuid::Empty);
                     SetNextMovementDelay(1000);
                     return true;
                 }
@@ -885,7 +914,7 @@ bool RazorscaleGroundedAction::Execute(Event /*event*/)
         // If the moon marker is set to the boss, reset it
         if (currentMoonTarget == boss->GetGUID())
         {
-            group->SetTargetIcon(moonIndex, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, moonIndex, ObjectGuid::Empty);
             SetNextMovementDelay(1000);
             return true;
         }
@@ -1239,12 +1268,12 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
                 Group* group = bot->GetGroup();
                 if (group)
                 {
-                    group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
+                    RaidMarkOwnership::SetIcon(bot, group, skullIndex, targetToMark->GetGUID());
                     if (targetToCcMark)
-                        group->SetTargetIcon(moonIndex, bot->GetGUID(), targetToCcMark->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, moonIndex, targetToCcMark->GetGUID());
 
                     if (additionalTargetToMark)
-                        group->SetTargetIcon(crossIndex, bot->GetGUID(), additionalTargetToMark->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, crossIndex, additionalTargetToMark->GetGUID());
 
                     return true;
                 }
@@ -1257,12 +1286,12 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
         Group* group = bot->GetGroup();
         if (group)
         {
-            group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, skullIndex, targetToMark->GetGUID());
             if (targetToCcMark)
-                group->SetTargetIcon(moonIndex, bot->GetGUID(), targetToCcMark->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, moonIndex, targetToCcMark->GetGUID());
 
             if (additionalTargetToMark)
-                group->SetTargetIcon(crossIndex, bot->GetGUID(), additionalTargetToMark->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, crossIndex, additionalTargetToMark->GetGUID());
 
             return true;
         }
@@ -1277,12 +1306,12 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
                 Group* group = bot->GetGroup();
                 if (group)
                 {
-                    group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
+                    RaidMarkOwnership::SetIcon(bot, group, skullIndex, targetToMark->GetGUID());
                     if (targetToCcMark)
-                        group->SetTargetIcon(moonIndex, bot->GetGUID(), targetToCcMark->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, moonIndex, targetToCcMark->GetGUID());
 
                     if (additionalTargetToMark)
-                        group->SetTargetIcon(crossIndex, bot->GetGUID(), additionalTargetToMark->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, crossIndex, additionalTargetToMark->GetGUID());
 
                     return true;
                 }
@@ -1296,10 +1325,11 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
 
 bool KologarnFallFromFloorAction::Execute(Event /*event*/)
 {
-    return bot->TeleportTo(bot->GetMapId(), ULDUAR_KOLOGARN_RESTORE_POSITION.GetPositionX(),
-                           ULDUAR_KOLOGARN_RESTORE_POSITION.GetPositionY(),
-                           ULDUAR_KOLOGARN_RESTORE_POSITION.GetPositionZ(),
-                           ULDUAR_KOLOGARN_RESTORE_POSITION.GetOrientation());
+    RaidBotDuty::LogWorkaroundOnce(bot, "uld-kologarn-floor",
+                                   "Ulduar Kologarn: needs honest tactic (bot below the bridge, walking back only)");
+    return MoveTo(bot->GetMapId(), ULDUAR_KOLOGARN_RESTORE_POSITION.GetPositionX(),
+                  ULDUAR_KOLOGARN_RESTORE_POSITION.GetPositionY(), ULDUAR_KOLOGARN_RESTORE_POSITION.GetPositionZ(),
+                  false, false, false, false, MovementPriority::MOVEMENT_FORCED);
 }
 
 bool KologarnFallFromFloorAction::isUseful()
@@ -1325,47 +1355,31 @@ bool KologarnRubbleSlowdownAction::Execute(Event /*event*/)
 
 bool KologarnEyebeamAction::Execute(Event /*event*/)
 {
-    float distanceToLeftPoint = bot->GetExactDist(ULDUAR_KOLOGARN_EYEBEAM_LEFT_POSITION);
-    float distanceToRightPoint = bot->GetExactDist(ULDUAR_KOLOGARN_EYEBEAM_RIGHT_POSITION);
+    // The Focused Eyebeam follows its target: run away from the nearest beam (kite), like a player would.
+    constexpr float EYEBEAM_KITE_MARGIN = 5.0f;
 
-    bool runToLeftSide;
-    if (!distanceToLeftPoint)
-        runToLeftSide = true;
-    else if (!distanceToRightPoint)
-        runToLeftSide = false;
-    else
-        runToLeftSide = distanceToRightPoint > distanceToLeftPoint;
+    Unit* nearestBeam = nullptr;
+    GuidVector triggers = AI_VALUE(GuidVector, "possible triggers");
+    for (ObjectGuid const& guid : triggers)
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || unit->GetNameForLocaleIdx(sWorld->GetDefaultDbcLocale()).rfind("Focused Eyebeam", 0) != 0)
+            continue;
 
-    bool teleportedToPoint;
-    KologarnEyebeamTrigger kologarnEyebeamTrigger(botAI);
-    if (runToLeftSide)
-    {
-        teleportedToPoint = bot->TeleportTo(bot->GetMapId(), ULDUAR_KOLOGARN_EYEBEAM_LEFT_POSITION.GetPositionX(),
-                                            ULDUAR_KOLOGARN_EYEBEAM_LEFT_POSITION.GetPositionY(),
-                                            ULDUAR_KOLOGARN_EYEBEAM_LEFT_POSITION.GetPositionZ(),
-                                            ULDUAR_KOLOGARN_EYEBEAM_LEFT_POSITION.GetOrientation());
-    }
-    else
-    {
-        teleportedToPoint = bot->TeleportTo(bot->GetMapId(), ULDUAR_KOLOGARN_EYEBEAM_RIGHT_POSITION.GetPositionX(),
-                                            ULDUAR_KOLOGARN_EYEBEAM_RIGHT_POSITION.GetPositionY(),
-                                            ULDUAR_KOLOGARN_EYEBEAM_RIGHT_POSITION.GetPositionZ(),
-                                            ULDUAR_KOLOGARN_EYEBEAM_RIGHT_POSITION.GetOrientation());
+        if (!nearestBeam || bot->GetExactDist2d(unit) < bot->GetExactDist2d(nearestBeam))
+            nearestBeam = unit;
     }
 
-    if (teleportedToPoint)
-        SetNextMovementDelay(5000);
+    if (!nearestBeam)
+        return false;
 
-    return teleportedToPoint;
+    return FleePosition(nearestBeam->GetPosition(), ULDUAR_KOLOGARN_EYEBEAM_RADIUS + EYEBEAM_KITE_MARGIN, 0);
 }
 
 bool KologarnEyebeamAction::isUseful()
 {
     KologarnEyebeamTrigger kologarnEyebeamTrigger(botAI);
-    if (!kologarnEyebeamTrigger.IsActive())
-        return false;
-
-    return botAI->HasCheat(BotCheatMask::raid);
+    return kologarnEyebeamTrigger.IsActive();
 }
 
 bool KologarnRtiTargetAction::isUseful()
@@ -1389,27 +1403,30 @@ bool KologarnRtiTargetAction::Execute(Event /*event*/)
 bool KologarnCrunchArmorAction::isUseful()
 {
     KologarnCrunchArmorTrigger kologarnCrunchArmorTrigger(botAI);
-    if (!kologarnCrunchArmorTrigger.IsActive())
-        return false;
-
-    return botAI->HasCheat(BotCheatMask::raid);
+    return kologarnCrunchArmorTrigger.IsActive();
 }
 
 bool KologarnCrunchArmorAction::Execute(Event /*event*/)
 {
-    bot->RemoveAura(SPELL_CRUNCH_ARMOR);
-    return true;
+    Unit* boss = AI_VALUE2(Unit*, "find target", "kologarn");
+    if (!boss || !boss->IsAlive())
+        return false;
+
+    return UlduarCastClassTaunt(botAI, bot, boss);
 }
 
 bool AuriayaFallFromFloorAction::Execute(Event /*event*/)
 {
-    Player* master = botAI->GetMaster();
+    // Rescue onto a group member above the floor; with a SelfBot master that may be someone other than it.
+    Player* master = RaidBotDuty::GetRegroupAnchor(botAI);
 
     if (!master)
         return false;
 
-    return bot->TeleportTo(bot->GetMapId(), master->GetPositionX(), master->GetPositionY(), master->GetPositionZ(),
-                           master->GetOrientation());
+    RaidBotDuty::LogWorkaroundOnce(bot, "uld-auriaya-floor",
+                                   "Ulduar Auriaya: needs honest tactic (bot below the floor, walking back only)");
+    return MoveTo(master->GetMapId(), master->GetPositionX(), master->GetPositionY(), master->GetPositionZ(), false,
+                  false, false, false, MovementPriority::MOVEMENT_FORCED);
 }
 
 bool AuriayaFallFromFloorAction::isUseful()
@@ -1453,41 +1470,20 @@ bool HodirMoveSnowpackedIcicleAction::Execute(Event /*event*/)
 
 bool HodirBitingColdJumpAction::Execute(Event /*event*/)
 {
-    bot->RemoveAurasDueToSpell(SPELL_BITING_COLD_PLAYER_AURA);
-
-    return true;
-
-    // Backup when the overall strategy without cheat will be more vialable
-
-    // int mapId = bot->GetMap()->GetId();
-    // int x = bot->GetPositionX();
-    // int y = bot->GetPositionY();
-    // int z = bot->GetPositionZ() + 3.98f;
-    // float speed = 7.96f;
-
-    // UpdateMovementState();
-    // if (!IsMovingAllowed(mapId, x, y, z))
-    //{
-    //     return false;
-    // }
-    // MovementPriority priority;
-    // if (IsWaitingForLastMove(priority))
-    //{
-    //     return false;
-    // }
-
-    // MotionMaster& mm = *bot->GetMotionMaster();
-    // mm.Clear();
-    // mm.MoveJump(x, y, z, speed, speed, 1, AI_VALUE(Unit*, "current target"));
-    // mm.MoveFall(0, true);
-    // AI_VALUE(LastMovement&, "last movement").Set(mapId, x, y, z, bot->GetOrientation(), 1000, priority);
-
-    // return true;
+    // Biting Cold drops a stack every two ticks while the player moves (spell_hodir_biting_cold_player_aura):
+    // take a short sidestep to a random side.
+    constexpr float STEP_DISTANCE = 3.0f;
+    float const side = urand(0, 1) ? static_cast<float>(M_PI_2) : -static_cast<float>(M_PI_2);
+    return Move(Position::NormalizeOrientation(bot->GetOrientation() + side), STEP_DISTANCE);
 }
 
 bool HodirBitingColdJumpAction::isUseful()
 {
-    return botAI->HasCheat(BotCheatMask::raid);
+    if (bot->isMoving())
+        return false;
+
+    HodirBitingColdTrigger hodirBitingColdTrigger(botAI);
+    return hodirBitingColdTrigger.IsActive();
 }
 
 bool FreyaMoveAwayNatureBombAction::isUseful()
@@ -1623,8 +1619,8 @@ bool FreyaMarkDpsTargetAction::Execute(Event /*event*/)
 
                     if (!currentSkullTarget || (targetToMark->GetGUID() != currentSkullTarget))
                     {
-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
-                        group->SetTargetIcon(squareIndex, bot->GetGUID(), boss->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, skullIndex, targetToMark->GetGUID());
+                        RaidMarkOwnership::SetIcon(bot, group, squareIndex, boss->GetGUID());
                         return true;
                     }
                 }
@@ -1641,8 +1637,8 @@ bool FreyaMarkDpsTargetAction::Execute(Event /*event*/)
 
             if (!currentSkullTarget || (targetToMark->GetGUID() != currentSkullTarget))
             {
-                group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
-                group->SetTargetIcon(squareIndex, bot->GetGUID(), boss->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, skullIndex, targetToMark->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, squareIndex, boss->GetGUID());
                 botAI->GetAiObjectContext()->GetValue<std::string>("rti")->Set("square");
                 return true;
             }
@@ -1692,16 +1688,16 @@ bool FreyaMoveToHealingSporeAction::Execute(Event /*event*/)
 bool ThorimUnbalancingStrikeAction::isUseful()
 {
     ThorimUnbalancingStrikeTrigger thorimUnbalancingStrikeTrigger(botAI);
-    if (!thorimUnbalancingStrikeTrigger.IsActive())
-        return false;
-
-    return botAI->HasCheat(BotCheatMask::raid);
+    return thorimUnbalancingStrikeTrigger.IsActive();
 }
 
 bool ThorimUnbalancingStrikeAction::Execute(Event /*event*/)
 {
-    bot->RemoveAura(SPELL_UNBALANCING_STRIKE);
-    return true;
+    Unit* boss = AI_VALUE2(Unit*, "find target", "thorim");
+    if (!boss || !boss->IsAlive())
+        return false;
+
+    return UlduarCastClassTaunt(botAI, bot, boss);
 }
 
 bool ThorimMarkDpsTargetAction::isUseful()
@@ -1723,13 +1719,13 @@ bool ThorimMarkDpsTargetAction::Execute(Event /*event*/)
     Unit* boss = AI_VALUE2(Unit*, "find target", "thorim");
     if (!currentMoonUnit && boss && boss->IsAlive() && boss->GetPositionZ() > ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD)
     {
-        group->SetTargetIcon(RtiTargetValue::moonIndex, bot->GetGUID(), boss->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::moonIndex, boss->GetGUID());
     }
 
     if (currentMoonUnit && boss && currentMoonUnit->GetEntry() == boss->GetEntry() &&
         boss->GetPositionZ() < ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD)
     {
-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
         return true;
     }
 
@@ -1792,13 +1788,13 @@ bool ThorimMarkDpsTargetAction::Execute(Event /*event*/)
 
     if (PlayerbotAI::IsMainTank(bot))
     {
-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), targetToMark->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, targetToMark->GetGUID());
         return true;
     }
 
     if (PlayerbotAI::IsAssistTankOfIndex(bot, 0))
     {
-        group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), targetToMark->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::crossIndex, targetToMark->GetGUID());
         return true;
     }
 
@@ -1838,6 +1834,8 @@ bool ThorimGauntletPositioningAction::Execute(Event /*event*/)
     FollowMasterStrategy followMasterStrategy(botAI);
 
     Unit* master = botAI->GetMaster();
+    if (!master)
+        return false;
 
     std::string const rti = AI_VALUE(std::string, "rti");
     if (rti != "cross")
@@ -2009,13 +2007,15 @@ bool ThorimGauntletPositioningAction::Execute(Event /*event*/)
 
 bool ThorimFallFromFloorAction::Execute(Event /*event*/)
 {
-    Player* master = botAI->GetMaster();
+    Player* master = RaidBotDuty::GetRegroupAnchor(botAI);
 
     if (!master)
         return false;
 
-    return bot->TeleportTo(bot->GetMapId(), master->GetPositionX(), master->GetPositionY(), master->GetPositionZ(),
-                           master->GetOrientation());
+    RaidBotDuty::LogWorkaroundOnce(bot, "uld-thorim-floor",
+                                   "Ulduar Thorim: needs honest tactic (bot below the floor, walking back only)");
+    return MoveTo(master->GetMapId(), master->GetPositionX(), master->GetPositionY(), master->GetPositionZ(), false,
+                  false, false, false, MovementPriority::MOVEMENT_FORCED);
 }
 
 bool ThorimFallFromFloorAction::isUseful()
@@ -2134,10 +2134,8 @@ bool MimironShockBlastAction::Execute(Event /*event*/)
             float dz = bot->GetPositionZ();
             if (bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
                                                                bot->GetPositionZ(), dx, dy, dz))
-            {
-                bot->TeleportTo(target->GetMapId(), dx, dy, dz, target->GetOrientation());
-                return true;
-            }
+                return MoveTo(bot->GetMapId(), dx, dy, dz, false, false, false, true,
+                              MovementPriority::MOVEMENT_COMBAT, true);
         }
         return false;
     }
@@ -2163,13 +2161,31 @@ bool MimironPhase1PositioningAction::isUseful()
 
 bool MimironP3Wx2LaserBarrageAction::Execute(Event /*event*/)
 {
-    auto master = botAI->GetMaster();
-    if (!master || !master->IsAlive())
-        return false;
+    // Upstream stacks on a human master who dodges the laser. A SelfBot or a client-less raid dodges by
+    // itself: stay behind VX-001 (the barrage sweeps its front), re-evaluated every tick as it turns.
+    Player* master = RaidBotDuty::GetHumanMaster(botAI);
+    if (!master)
+    {
+        Unit* vx001 = AI_VALUE2(Unit*, "find target", "vx-001");
+        if (!vx001 || !vx001->IsAlive())
+            return false;
 
-    if (bot->GetDistance2d(master) > 15.0f)
-        return bot->TeleportTo(master->GetMapId(), master->GetPositionX(), master->GetPositionY(),
-                               master->GetPositionZ(), master->GetOrientation());
+        constexpr float MIN_BEHIND_DISTANCE = 5.0f;
+        constexpr float MAX_BEHIND_DISTANCE = 20.0f;
+        float const behindDistance =
+            std::clamp(bot->GetExactDist2d(vx001), MIN_BEHIND_DISTANCE, MAX_BEHIND_DISTANCE);
+        float const behindAngle = Position::NormalizeOrientation(vx001->GetOrientation() + static_cast<float>(M_PI));
+        float const x = vx001->GetPositionX() + std::cos(behindAngle) * behindDistance;
+        float const y = vx001->GetPositionY() + std::sin(behindAngle) * behindDistance;
+        if (bot->GetExactDist2d(x, y) < 2.0f)
+            return false;
+
+        return MoveTo(bot->GetMapId(), x, y, bot->GetPositionZ(), false, false, false, true,
+                      MovementPriority::MOVEMENT_COMBAT, true);
+    }
+
+    if (!master->IsAlive())
+        return false;
 
     return MoveTo(master->GetMapId(), master->GetPositionX(), master->GetPositionY(), master->GetPositionZ(), false,
                   false, false, true, MovementPriority::MOVEMENT_COMBAT, true);
@@ -2306,16 +2322,16 @@ bool MimironAerialCommandUnitAction::Execute(Event /*event*/)
             return false;
 
         if (bombBot)
-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), bombBot->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::crossIndex, bombBot->GetGUID());
         else if (boss)
-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), boss->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::crossIndex, boss->GetGUID());
 
         if (assaultBot)
         {
             ObjectGuid skullTarget = group->GetTargetIcon(RtiTargetValue::skullIndex);
             Unit* skullUnit = botAI->GetUnit(skullTarget);
             if (!skullTarget || !skullUnit || !skullUnit->IsAlive())
-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), assaultBot->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, assaultBot->GetGUID());
         }
 
         return true;
@@ -2375,10 +2391,8 @@ bool MimironRocketStrikeAction::Execute(Event /*event*/)
             float dz = bot->GetPositionZ();
             if (bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
                                                                bot->GetPositionZ(), dx, dy, dz))
-            {
-                bot->TeleportTo(target->GetMapId(), dx, dy, dz, target->GetOrientation());
-                return true;
-            }
+                return MoveTo(bot->GetMapId(), dx, dy, dz, false, false, false, true,
+                              MovementPriority::MOVEMENT_COMBAT, true);
         }
         return false;
     }
@@ -2434,7 +2448,7 @@ bool MimironPhase4MarkDpsAction::Execute(Event /*event*/)
         if (aerialCommandUnit && aerialCommandUnit->GetHealth() > highestHealth)
             highestHealthUnit = aerialCommandUnit;
 
-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), highestHealthUnit->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, highestHealthUnit->GetGUID());
         if (highestHealthUnit == leviathanMkII)
         {
             if (AI_VALUE(std::string, "rti") == "skull")
@@ -2442,7 +2456,7 @@ bool MimironPhase4MarkDpsAction::Execute(Event /*event*/)
         }
         else
         {
-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), leviathanMkII->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::crossIndex, leviathanMkII->GetGUID());
             if (AI_VALUE(std::string, "rti") != "cross")
                 botAI->GetAiObjectContext()->GetValue<std::string>("rti")->Set("cross");
         }
@@ -2463,30 +2477,37 @@ bool MimironPhase4MarkDpsAction::Execute(Event /*event*/)
 
 bool MimironCheatAction::Execute(Event /*event*/)
 {
-    GuidVector targets = AI_VALUE(GuidVector, "nearest npcs");
-    for (ObjectGuid const& guid : targets)
-    {
-        Unit* unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsAlive())
-            continue;
+    // Step out of the nearest Proximity Mine / Bomb Bot instead of removing it.
+    Unit* hazard = FindMimironGroundHazard(botAI, bot);
+    if (!hazard)
+        return false;
 
-        if (unit->GetEntry() == NPC_PROXIMITY_MINE)
-            unit->Kill(bot, unit);
-        else if (unit->GetEntry() == NPC_BOMB_BOT)
-            unit->Kill(bot, unit);
-    }
-
-    return true;
+    return MoveAway(hazard, ULDUAR_MIMIRON_HAZARD_AVOID_DISTANCE);
 }
 
 bool VezaxCheatAction::Execute(Event /*event*/)
 {
-    // Restore bot's mana to full
-    uint32 maxMana = bot->GetMaxPower(POWER_MANA);
-    if (maxMana > 0)
-        bot->SetPower(POWER_MANA, maxMana);
+    // Aura of Despair blocks mana regeneration; a dead Saronite Vapors leaves a cloud that returns mana for
+    // the damage it deals. Walk in while low on mana, walk out once the stacks get dangerous.
+    Creature* cloud = FindSaroniteVaporsCloud(bot, ULDUAR_VEZAX_VAPORS_SEARCH_RANGE);
+    if (!cloud)
+        return false;
 
-    return true;
+    float const distance = bot->GetExactDist2d(cloud);
+    Aura const* vapors = bot->GetAura(SPELL_SARONITE_VAPORS_STACK);
+    if (vapors && vapors->GetStackAmount() >= ULDUAR_VEZAX_VAPORS_MAX_STACKS)
+    {
+        if (distance >= ULDUAR_VEZAX_VAPORS_LEAVE_RADIUS)
+            return false;
+
+        return MoveAway(cloud, ULDUAR_VEZAX_VAPORS_LEAVE_RADIUS - distance + 2.0f);
+    }
+
+    if (distance <= ULDUAR_VEZAX_VAPORS_STAND_DISTANCE)
+        return false;
+
+    return MoveTo(bot->GetMapId(), cloud->GetPositionX(), cloud->GetPositionY(), cloud->GetPositionZ(), false, false,
+                  false, true, MovementPriority::MOVEMENT_COMBAT, true);
 }
 
 bool VezaxShadowCrashAction::Execute(Event /*event*/)
@@ -2545,12 +2566,12 @@ bool YoggSaronOminousCloudCheatAction::Execute(Event /*event*/)
     if (!boss)
         return false;
 
-    Creature* target = boss->FindNearestCreature(NPC_OMINOUS_CLOUD, 25.0f);
-    if (!target || !target->IsAlive())
+    // Walk around the Ominous Clouds: touching one summons a Guardian of Yogg-Saron.
+    Creature* cloud = bot->FindNearestCreature(NPC_OMINOUS_CLOUD, ULDUAR_YOGG_SARON_CLOUD_AVOID_RADIUS, true);
+    if (!cloud)
         return false;
 
-    target->Kill(bot, target);
-    return true;
+    return MoveAway(cloud, ULDUAR_YOGG_SARON_CLOUD_AVOID_RADIUS + 2.0f - bot->GetExactDist2d(cloud));
 }
 
 bool YoggSaronGuardianPositioningAction::Execute(Event /*event*/)
@@ -2578,18 +2599,11 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
     YoggSaronTrigger yoggSaronTrigger(botAI);
     if (yoggSaronTrigger.IsPhase2())
     {
-        if (botAI->HasCheat(BotCheatMask::raid))
-        {
-            Unit* crusherTentacle = bot->FindNearestCreature(NPC_CRUSHER_TENTACLE, 200.0f, true);
-            if (crusherTentacle)
-                crusherTentacle->Kill(bot, crusherTentacle);
-        }
-
         ObjectGuid currentMoonTarget = group->GetTargetIcon(RtiTargetValue::moonIndex);
         Creature* yogg_saron = bot->FindNearestCreature(NPC_YOGG_SARON, 200.0f, true);
         if (!currentMoonTarget || currentMoonTarget != yogg_saron->GetGUID())
         {
-            group->SetTargetIcon(RtiTargetValue::moonIndex, bot->GetGUID(), yogg_saron->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::moonIndex, yogg_saron->GetGUID());
             return true;
         }
 
@@ -2612,7 +2626,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
                 return false;
         }
 
-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), nextPossibleTarget->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, nextPossibleTarget->GetGUID());
     }
     else if (yoggSaronTrigger.IsPhase3())
     {
@@ -2647,13 +2661,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
 
         if (lowestHealthUnit)
         {
-            // Added because lunatic gaze freeze all bots and they can't attack
-            // If someone fix it then this cheat can be removed
-            if (botAI->HasCheat(BotCheatMask::raid))
-                lowestHealthUnit->Kill(bot, lowestHealthUnit);
-            else
-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), lowestHealthUnit->GetGUID());
-
+            RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, lowestHealthUnit->GetGUID());
             return true;
         }
 
@@ -2667,7 +2675,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
             Unit* yoggsaron = AI_VALUE2(Unit*, "find target", "yogg-saron");
             if (yoggsaron && yoggsaron->IsAlive())
             {
-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), yoggsaron->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::skullIndex, yoggsaron->GetGUID());
                 return true;
             }
         }
@@ -2706,7 +2714,8 @@ bool YoggSaronMoveToEnterPortalAction::Execute(Event /*event*/)
     if (bot->GetRaidDifficulty() == Difficulty::RAID_DIFFICULTY_10MAN_NORMAL)
         brainRoomTeamCount = 4;
 
-    Player* master = botAI->GetMaster();
+    // Only a human master reserves a portal for themselves; a SelfBot is assigned like any bot.
+    Player* master = RaidBotDuty::GetHumanMaster(botAI);
     if (master && !PlayerbotAI::IsTank(master))
     {
         portalNumber++;
@@ -2716,7 +2725,7 @@ bool YoggSaronMoveToEnterPortalAction::Execute(Event /*event*/)
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* member = gref->GetSource();
-        if (!member || !member->IsAlive() || PlayerbotAI::IsTank(member) || botAI->GetMaster()->GetGUID() == member->GetGUID())
+        if (!member || !member->IsAlive() || PlayerbotAI::IsTank(member) || member == master)
             continue;
 
         portalNumber++;
@@ -2738,51 +2747,31 @@ bool YoggSaronMoveToEnterPortalAction::Execute(Event /*event*/)
 
     botAI->GetAiObjectContext()->GetValue<std::string>("rti")->Set("diamond");
 
-    if (botAI->HasCheat(BotCheatMask::raid))
-    {
-        return bot->TeleportTo(bot->GetMapId(), assignedPortalPosition.GetPositionX(),
-                                      assignedPortalPosition.GetPositionY(),
-                        assignedPortalPosition.GetPositionZ(), bot->GetOrientation());
-    }
-    else
-    {
-        return MoveNear(bot->GetMapId(), assignedPortalPosition.GetPositionX(),
-                               assignedPortalPosition.GetPositionY(),
-                 assignedPortalPosition.GetPositionZ(), sPlayerbotAIConfig.ContactDistance,
-                 MovementPriority::MOVEMENT_FORCED);
-    }
+    return MoveNear(bot->GetMapId(), assignedPortalPosition.GetPositionX(), assignedPortalPosition.GetPositionY(),
+                    assignedPortalPosition.GetPositionZ(), sPlayerbotAIConfig.ContactDistance,
+                    MovementPriority::MOVEMENT_FORCED);
 }
 
 bool YoggSaronFallFromFloorAction::Execute(Event /*event*/)
 {
     std::string rtiMark = AI_VALUE(std::string, "rti");
+    Position const* restorePoint = nullptr;
     if (rtiMark == "skull")
-    {
-        return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_BOSS_ROOM_RESTORE_POINT.GetPositionX(),
-                               ULDUAR_YOGG_SARON_BOSS_ROOM_RESTORE_POINT.GetPositionY(),
-                               ULDUAR_YOGG_SARON_BOSS_ROOM_RESTORE_POINT.GetPositionZ(),
-                               ULDUAR_YOGG_SARON_BOSS_ROOM_RESTORE_POINT.GetOrientation());
-    }
-    if (rtiMark == "cross")
-    {
-        return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_STORMWIND_KEEPER_MIDDLE.GetPositionX(),
-                               ULDUAR_YOGG_SARON_STORMWIND_KEEPER_MIDDLE.GetPositionY(),
-                               ULDUAR_YOGG_SARON_STORMWIND_KEEPER_MIDDLE.GetPositionZ(),
-                               bot->GetOrientation());
-    }
-    if (rtiMark == "circle")
-    {
-        return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_ICECROWN_CITADEL_MIDDLE.GetPositionX(),
-                               ULDUAR_YOGG_SARON_ICECROWN_CITADEL_MIDDLE.GetPositionY(),
-                               ULDUAR_YOGG_SARON_ICECROWN_CITADEL_MIDDLE.GetPositionZ(), bot->GetOrientation());
-    }
-    if (rtiMark == "star")
-    {
-        return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_CHAMBER_OF_ASPECTS_MIDDLE.GetPositionX(),
-                               ULDUAR_YOGG_SARON_CHAMBER_OF_ASPECTS_MIDDLE.GetPositionY(),
-                               ULDUAR_YOGG_SARON_CHAMBER_OF_ASPECTS_MIDDLE.GetPositionZ(), bot->GetOrientation());
-    }
-    return false;
+        restorePoint = &ULDUAR_YOGG_SARON_BOSS_ROOM_RESTORE_POINT;
+    else if (rtiMark == "cross")
+        restorePoint = &ULDUAR_YOGG_SARON_STORMWIND_KEEPER_MIDDLE;
+    else if (rtiMark == "circle")
+        restorePoint = &ULDUAR_YOGG_SARON_ICECROWN_CITADEL_MIDDLE;
+    else if (rtiMark == "star")
+        restorePoint = &ULDUAR_YOGG_SARON_CHAMBER_OF_ASPECTS_MIDDLE;
+
+    if (!restorePoint)
+        return false;
+
+    RaidBotDuty::LogWorkaroundOnce(bot, "uld-yogg-floor",
+                                   "Ulduar Yogg-Saron: needs honest tactic (bot below the floor, walking back only)");
+    return MoveTo(bot->GetMapId(), restorePoint->GetPositionX(), restorePoint->GetPositionY(),
+                  restorePoint->GetPositionZ(), false, false, false, false, MovementPriority::MOVEMENT_FORCED);
 }
 
 bool YoggSaronBossRoomMovementCheatAction::Execute(Event /*event*/)
@@ -2790,9 +2779,6 @@ bool YoggSaronBossRoomMovementCheatAction::Execute(Event /*event*/)
     FollowMasterStrategy followMasterStrategy(botAI);
     if (botAI->HasStrategy(followMasterStrategy.getName(), BotState::BOT_STATE_NON_COMBAT))
         botAI->ChangeStrategy(REMOVE_STRATEGY_CHAR + followMasterStrategy.getName(), BotState::BOT_STATE_NON_COMBAT);
-
-    if (!botAI->HasCheat(BotCheatMask::raid))
-        return false;
 
     Group* group = bot->GetGroup();
     if (!group)
@@ -2808,8 +2794,8 @@ bool YoggSaronBossRoomMovementCheatAction::Execute(Event /*event*/)
     if (!currentSkullUnit || !currentSkullUnit->IsAlive())
         return false;
 
-    return bot->TeleportTo(bot->GetMapId(), currentSkullUnit->GetPositionX(), currentSkullUnit->GetPositionY(),
-                           currentSkullUnit->GetPositionZ(), bot->GetOrientation());
+    constexpr float SKULL_APPROACH_DISTANCE = 30.0f;
+    return MoveTo(currentSkullUnit, SKULL_APPROACH_DISTANCE, MovementPriority::MOVEMENT_COMBAT);
 }
 
 bool YoggSaronUsePortalAction::Execute(Event /*event*/)
@@ -2869,31 +2855,19 @@ bool YoggSaronIllusionRoomAction::SetIllusionRtiTarget(YoggSaronTrigger yoggSaro
     if (!nextRtiTarget)
         return false;
 
-    // If proper adds handling in illusion room will be implemented, then this can be removed
-    if (botAI->HasCheat(BotCheatMask::raid))
-    {
-        bot->TeleportTo(bot->GetMapId(), nextRtiTarget->GetPositionX(), nextRtiTarget->GetPositionY(),
-                        nextRtiTarget->GetPositionZ(), bot->GetOrientation());
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
 
-        Unit::DealDamage(bot->GetSession()->GetPlayer(), nextRtiTarget, nextRtiTarget->GetHealth(), nullptr,
-                         DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false, true);
-    }
-    else
-    {
-        Group* group = bot->GetGroup();
-        if (!group)
-            return false;
-
-        uint8 rtiIndex = RtiTargetValue::GetRtiIndex(AI_VALUE(std::string, "rti"));
-        group->SetTargetIcon(rtiIndex, bot->GetGUID(), nextRtiTarget->GetGUID());
-    }
-
+    uint8 rtiIndex = RtiTargetValue::GetRtiIndex(AI_VALUE(std::string, "rti"));
+    RaidMarkOwnership::SetIcon(bot, group, rtiIndex, nextRtiTarget->GetGUID());
     return true;
 }
 
 bool YoggSaronIllusionRoomAction::SetBrainRtiTarget(YoggSaronTrigger yoggSaronTrigger)
 {
-    if (AI_VALUE(std::string, "rti") == "square" || !yoggSaronTrigger.IsMasterIsInBrainRoom())
+    if (AI_VALUE(std::string, "rti") == "square" ||
+        (!yoggSaronTrigger.IsMasterIsInBrainRoom() && !yoggSaronTrigger.IsIllusionDoorOpen()))
         return false;
 
     botAI->GetAiObjectContext()->GetValue<std::string>("rti")->Set("square");
@@ -2906,32 +2880,42 @@ bool YoggSaronIllusionRoomAction::SetBrainRtiTarget(YoggSaronTrigger yoggSaronTr
     if (!brain)
         return false;
 
-    group->SetTargetIcon(RtiTargetValue::squareIndex, bot->GetGUID(), brain->GetGUID());
+    RaidMarkOwnership::SetIcon(bot, group, RtiTargetValue::squareIndex, brain->GetGUID());
 
     Position entrancePosition = yoggSaronTrigger.GetIllusionRoomEntrancePosition();
 
-    if (botAI->HasCheat(BotCheatMask::raid))
-    {
-        if (Unit const* master = botAI->GetMaster())
-        {
-            Position masterPosition = master->GetPosition();
-            bot->TeleportTo(bot->GetMapId(), masterPosition.GetPositionX(), masterPosition.GetPositionY(),
-                            masterPosition.GetPositionZ(), bot->GetOrientation());
-        }
-        else
-        {
-            bot->TeleportTo(bot->GetMapId(), entrancePosition.GetPositionX(), entrancePosition.GetPositionY(),
-                            entrancePosition.GetPositionZ(), bot->GetOrientation());
-        }
-    }
-    else
-    {
-        MoveTo(bot->GetMapId(), entrancePosition.GetPositionX(), entrancePosition.GetPositionY(),
-            entrancePosition.GetPositionZ(), false, false, false, true, MovementPriority::MOVEMENT_FORCED, true,
-            false);
-    }
+    MoveTo(bot->GetMapId(), entrancePosition.GetPositionX(), entrancePosition.GetPositionY(),
+           entrancePosition.GetPositionZ(), false, false, false, true, MovementPriority::MOVEMENT_FORCED, true, false);
 
     botAI->DoSpecificAction("attack rti target");
+    return true;
+}
+
+bool YoggSaronBrainPetPassiveAction::Execute(Event /*event*/)
+{
+    Pet* pet = bot->GetPet();
+    if (!pet || !pet->IsAlive())
+        return false;
+
+    YoggSaronTrigger yoggSaronTrigger(botAI);
+    ReactStates const react = yoggSaronTrigger.IsInBrainLevel() ? REACT_PASSIVE : REACT_DEFENSIVE;
+    if (react == REACT_PASSIVE)
+    {
+        RaidBotDuty::LogWorkaroundOnce(bot, "yogg-brain-pets", "AC #27125 pets ignore the Brain: pets set passive");
+        pet->AttackStop();
+        pet->GetMotionMaster()->MoveFollow(bot, PET_FOLLOW_DIST, pet->GetFollowAngle());
+    }
+
+    pet->SetReactState(react);
+    if (CharmInfo* charmInfo = pet->GetCharmInfo())
+    {
+        charmInfo->SetPlayerReactState(react);
+        if (react == REACT_PASSIVE)
+        {
+            charmInfo->SetCommandState(COMMAND_FOLLOW);
+            charmInfo->SetIsCommandAttack(false);
+        }
+    }
     return true;
 }
 
@@ -2941,13 +2925,8 @@ bool YoggSaronMoveToExitPortalAction::Execute(Event /*event*/)
     if (!portal)
         return false;
 
-    if (botAI->HasCheat(BotCheatMask::raid))
-        bot->TeleportTo(bot->GetMapId(), portal->GetPositionX(), portal->GetPositionY(), portal->GetPositionZ(),
-                               bot->GetOrientation());
-    else
-        MoveTo(bot->GetMapId(), portal->GetPositionX(), portal->GetPositionY(), portal->GetPositionZ(), false,
-                      false, false, true, MovementPriority::MOVEMENT_FORCED,
-                      true, false);
+    MoveTo(bot->GetMapId(), portal->GetPositionX(), portal->GetPositionY(), portal->GetPositionZ(), false, false, false,
+           true, MovementPriority::MOVEMENT_FORCED, true, false);
 
     if (bot->GetDistance2d(portal) > 2.0f)
         return false;
@@ -2980,51 +2959,22 @@ bool YoggSaronPhase3PositioningAction::Execute(Event /*event*/)
 {
     if (PlayerbotAI::IsRanged(bot))
     {
-        if (botAI->HasCheat(BotCheatMask::raid))
-        {
-            return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionX(),
-                            ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionY(),
-                            ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionZ(),
-                            bot->GetOrientation());
-        }
-        else
-        {
-            return MoveTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionX(),
-                   ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionY(),
-                   ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionZ(), false,
-                   false, false, true, MovementPriority::MOVEMENT_FORCED, true, false);
-        }
+        return MoveTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionX(),
+                      ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionY(),
+                      ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT.GetPositionZ(), false, false, false, true,
+                      MovementPriority::MOVEMENT_FORCED, true, false);
     }
 
     if (PlayerbotAI::IsMelee(bot) && !PlayerbotAI::IsTank(bot))
     {
-        if (botAI->HasCheat(BotCheatMask::raid))
-        {
-            return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionX(),
-                            ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionY(),
-                            ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionZ(), bot->GetOrientation());
-        }
-        else
-        {
-            return MoveTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionX(),
-                   ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionY(),
-                   ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionZ(), false, false, false, true,
-                   MovementPriority::MOVEMENT_FORCED, true, false);
-        }
+        return MoveTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionX(),
+                      ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionY(),
+                      ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionZ(), false, false, false, true,
+                      MovementPriority::MOVEMENT_FORCED, true, false);
     }
 
     if (PlayerbotAI::IsTank(bot))
     {
-        if (bot->GetDistance(ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT) > 30.0f)
-        {
-            if (botAI->HasCheat(BotCheatMask::raid))
-            {
-                return bot->TeleportTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionX(),
-                                       ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionY(),
-                                       ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionZ(), bot->GetOrientation());
-            }
-        }
-
         return MoveTo(bot->GetMapId(), ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionX(),
                       ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionY(),
                       ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT.GetPositionZ(), false, false, false, true,

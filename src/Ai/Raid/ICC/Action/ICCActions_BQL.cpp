@@ -23,12 +23,8 @@ bool IccBqlGroupPositionAction::Execute(Event /*event*/)
     Aura* frenzyAura = botAI->GetAura("Frenzied Bloodthirst", bot);
     Aura* shadowAura = botAI->GetAura("Swarming Shadows", bot);
     bool isTank = PlayerbotAI::IsTank(bot);
-    if (isTank && shadowAura)
-    {
-        bot->RemoveAurasDueToSpell(shadowAura->GetId());
-        return true;
-    }
 
+    // A tank with Swarming Shadows leaves the tank spot and drops the trail like anyone else
     // Handle tank positioning
     if (isTank && HandleTankPosition(boss, frenzyAura, shadowAura))
         return true;

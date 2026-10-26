@@ -41,11 +41,77 @@ public:
     bool Execute(Event event) override;
 };
 
+// The tank walks Slad'ran back onto his platform.
+class SladranTankParkAction : public MovementAction
+{
+public:
+    SladranTankParkAction(PlayerbotAI* botAI) : MovementAction(botAI, "slad'ran tank park") {}
+    bool Execute(Event event) override;
+};
+
 class AvoidWhirlingSlashAction : public MovementAction
 {
 public:
     AvoidWhirlingSlashAction(PlayerbotAI* botAI) : MovementAction(botAI, "avoid whirling slash") {}
     bool Execute(Event event) override;
+};
+
+class GundrakUseAltarAction : public MovementAction
+{
+public:
+    GundrakUseAltarAction(PlayerbotAI* botAI) : MovementAction(botAI, "gundrak use altar") {}
+    bool Execute(Event event) override;
+};
+
+class EngageLivingMojoAction : public AttackAction
+{
+public:
+    EngageLivingMojoAction(PlayerbotAI* botAI) : AttackAction(botAI, "engage living mojo") {}
+    bool Execute(Event event) override;
+};
+
+class GundrakCrossBridgeAction : public MovementAction
+{
+public:
+    GundrakCrossBridgeAction(PlayerbotAI* botAI) : MovementAction(botAI, "gundrak cross bridge") {}
+    bool Execute(Event event) override;
+
+private:
+    bool WalkStraightTo(Position const& point);
+};
+
+// [b34_gd] Into the moat after the mobs fighting the group from it (GundrakEvent::FindMoatAttacker): along the deck
+// to its open stretch between the statue island and the east landing, off its side, down to the water.
+class GundrakMoatDropAction : public MovementAction
+{
+public:
+    GundrakMoatDropAction(PlayerbotAI* botAI) : MovementAction(botAI, "gundrak moat drop") {}
+    bool Execute(Event event) override;
+};
+
+// [b34_gd] Out of the moat to the bridge's west start (GundrakEvent::ShouldLeaveMoat).
+class GundrakMoatExitAction : public MovementAction
+{
+public:
+    GundrakMoatExitAction(PlayerbotAI* botAI) : MovementAction(botAI, "gundrak moat exit") {}
+    bool Execute(Event event) override;
+};
+
+// Off the central circle's pool bottom (GundrakCircle) as a player swims out: straight up to a surface point of the
+// pool over the bottom, then the navmesh path to its shore, in one spline.
+class GundrakCircleRouteAction : public MovementAction
+{
+public:
+    GundrakCircleRouteAction(PlayerbotAI* botAI) : MovementAction(botAI, "gundrak circle route") {}
+    bool Execute(Event event) override;
+    bool isUseful() override;
+
+private:
+    bool IsLeavingPool() const;
+
+    uint32 _swimStartMs = 0;
+    uint32 _swimDurationMs = 0;
+    uint32 _refusedMs = 0;
 };
 
 #endif

@@ -5,7 +5,10 @@
  */
 
 #include "NexActions.h"
+#include "DungeonInteract.h"
+#include "GameObject.h"
 #include "Playerbots.h"
+#include "RaidBotDuty.h"
 
 bool MoveFromWhirlwindAction::Execute(Event /*event*/)
 {
@@ -115,24 +118,12 @@ bool TelestraSplitTargetAction::Execute(Event /*event*/)
     return false;
 }
 
-bool ChaoticRiftTargetAction::isUseful() { return !PlayerbotAI::IsHeal(bot); }
+// The damage dealers kill the rifts; the tank holds Anomalus and the Crazed Mana-Wraiths the rifts spawn (nex-h
+// 2026-10-25: the tank stood on a rift with 6 attackers and the wraiths went for the casters).
+bool ChaoticRiftTargetAction::isUseful() { return !PlayerbotAI::IsHeal(bot) && !PlayerbotAI::IsTank(bot); }
 bool ChaoticRiftTargetAction::Execute(Event /*event*/)
 {
-    Unit* chaoticRift = nullptr;
-
-    // Target is not findable from threat table using AI_VALUE2(),
-    // therefore need to search manually for the unit name
-    GuidVector targets = AI_VALUE(GuidVector, "possible targets no los");
-
-    for (auto i = targets.begin(); i != targets.end(); ++i)
-    {
-        Unit* unit = botAI->GetUnit(*i);
-        if (unit && unit->GetName() == "Chaotic Rift")
-        {
-            chaoticRift = unit;
-            break;
-        }
-    }
+    Unit* chaoticRift = NexIds::FindChaoticRift(botAI);
     if (!chaoticRift || AI_VALUE(Unit*, "current target") == chaoticRift)
         return false;
 
@@ -163,4 +154,66 @@ bool IntenseColdJumpAction::Execute(Event /*event*/)
     // Probably best to revisit once bot movement is improved
     return JumpTo(bot->GetMap()->GetId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ() + 0.01f);
     // bot->GetMotionMaster()->MoveFall();
+}
+
+namespace
+{
+// The walk to a containment sphere: legs of a complete route, a leg this close is reached.
+constexpr float SPHERE_LEG_STEP = 40.0f;
+constexpr float SPHERE_LEG_REACHED = 1.0f;
+}  // namespace
+
+bool NexusClickContainmentSphereAction::Execute(Event /*event*/)
+{
+    NexIds::ContainmentSphere const* sphere = NexIds::FindReadySphere(bot);
+    if (!sphere)
+        return false;
+
+    if (bot->GetExactDist(sphere->x, sphere->y, sphere->z) > NexIds::SPHERE_SEARCH_RANGE)
+    {
+        // A complete walk, leg by leg: PathGenerator's partial path to the sphere ended on a steep dead end above
+        // Ormorok's room (nex-n/h 2026-10-25: the leader at 285.1,-176.8,7.4 for 4 minutes). A route ending within
+        // the search range counts (the sphere's floor may be a navmesh island of its own).
+        G3D::Vector3 leg;
+        if (SelfTravel::NextRouteLeg(bot, _route, G3D::Vector3(sphere->x, sphere->y, sphere->z),
+                                     NexIds::SPHERE_SEARCH_RANGE, SPHERE_LEG_STEP, leg))
+        {
+            if (bot->GetExactDist(leg.x, leg.y, leg.z) > SPHERE_LEG_REACHED &&
+                MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z))
+                return true;
+            if (bot->isMoving())
+                return true;
+            return false;
+        }
+        // No complete route: PathGenerator's partial path is the steep dead end above Ormorok's room, not a walk.
+        RaidBotDuty::LogWorkaroundOnce(bot, "nexus-sphere-route",
+                                       "needs path fix: no complete navmesh route to containment sphere " +
+                                           std::to_string(sphere->goEntry));
+        return false;
+    }
+
+    GameObject* go = bot->FindNearestGameObject(sphere->goEntry, NexIds::SPHERE_SEARCH_RANGE);
+    if (!go || !go->isSpawned() || go->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE))
+    {
+        RaidBotDuty::LogWorkaroundOnce(bot, "nexus-containment-sphere",
+                                       "needs honest tactic: Nexus containment sphere " +
+                                           std::to_string(sphere->goEntry) +
+                                           " is missing or not selectable although its boss is dead");
+        return false;
+    }
+
+    if (!go->IsWithinDistInMap(bot, go->GetInteractionDistance()))
+    {
+        if (MoveNear(go, NexIds::SPHERE_USE_DISTANCE))
+            return true;
+
+        return MoveTo(go->GetMapId(), go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
+    }
+
+    bot->StopMoving();
+    if (!DungeonInteract::UseGameObject(bot, go))
+        return false;
+
+    LOG_INFO("playerbots", "Nexus: {} used containment sphere {}", bot->GetName(), sphere->goEntry);
+    return true;
 }

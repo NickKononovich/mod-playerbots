@@ -144,8 +144,6 @@ bool IccRotfaceTankPositionAction::HandleAssistTankPositioning(Unit*)
         if (ooze->GetVictim() == bot)
             continue;
 
-        if (!bot->HasAura(SPELL_SPITEFULL_FURY))
-            bot->AddAura(SPELL_SPITEFULL_FURY, bot);
         IccCastClassTaunt(bot, botAI, ooze);
 
         float const dist = bot->GetExactDist2d(ooze);
@@ -158,8 +156,6 @@ bool IccRotfaceTankPositionAction::HandleAssistTankPositioning(Unit*)
 
     if (uncollectedOoze)
     {
-        if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-            bot->AddAura(SPELL_NITRO_BOOSTS, bot);
         return MoveTo(bot->GetMapId(), uncollectedOoze->GetPositionX(), uncollectedOoze->GetPositionY(),
                       uncollectedOoze->GetPositionZ(), false, false, false, false, MovementPriority::MOVEMENT_COMBAT);
     }
@@ -231,8 +227,6 @@ bool IccRotfaceTankPositionAction::HandleBigOozeKiting(Unit* bigOoze)
 {
     if (bigOoze->GetVictim() != bot && bigOoze->IsAlive())
     {
-        if (!bot->HasAura(SPELL_SPITEFULL_FURY))
-            bot->AddAura(SPELL_SPITEFULL_FURY, bot);
         IccCastClassTaunt(bot, botAI, bigOoze);
     }
 
@@ -244,8 +238,6 @@ bool IccRotfaceTankPositionAction::HandleBigOozeKiting(Unit* bigOoze)
         bot->SetFacingToObject(bigOoze);
         if (bigOoze->GetVictim() != bot)
         {
-            if (!bot->HasAura(SPELL_SPITEFULL_FURY))
-                bot->AddAura(SPELL_SPITEFULL_FURY, bot);
             IccCastClassTaunt(bot, botAI, bigOoze);
         }
         return false;
@@ -688,9 +680,6 @@ bool IccRotfaceGroupPositionAction::PositionHeroicGrid(Unit* boss)
         float const targetX = bot->GetPositionX() + (dx / dist) * step;
         float const targetY = bot->GetPositionY() + (dy / dist) * step;
 
-        if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-            bot->AddAura(SPELL_NITRO_BOOSTS, bot);
-
         return MoveTo(bot->GetMapId(), targetX, targetY, spot.GetPositionZ(), false, false, false, true,
                       MovementPriority::MOVEMENT_COMBAT);
     };
@@ -746,9 +735,6 @@ bool IccRotfaceGroupPositionAction::PositionHeroicGrid(Unit* boss)
                     if (distToTank <= 12.0f)
                         return false;
 
-                    if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-                        bot->AddAura(SPELL_NITRO_BOOSTS, bot);
-
                     return MoveTo(bot->GetMapId(), member->GetPositionX(), member->GetPositionY(),
                                   member->GetPositionZ(), false, false, false, true, MovementPriority::MOVEMENT_COMBAT);
                 }
@@ -779,9 +765,6 @@ bool IccRotfaceMoveAwayFromExplosionAction::Execute(Event /*event*/)
         _holdUntil = 0;
         return false;
     }
-
-    if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-        bot->AddAura(SPELL_NITRO_BOOSTS, bot);
 
     Position const anchor = ICC_ROTFACE_CENTER_POSITION_BOSS;
 
@@ -985,9 +968,6 @@ bool IccRotfaceAvoidVileGasAction::Execute(Event /*event*/)
 
     if (bot->GetExactDist2d(_safeSpot) > 2.0f)
     {
-        if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-            bot->AddAura(SPELL_NITRO_BOOSTS, bot);
-
         return MoveTo(bot->GetMapId(), _safeSpot.GetPositionX(), _safeSpot.GetPositionY(),
                       _safeSpot.GetPositionZ(), false, false, false, false,
                       MovementPriority::MOVEMENT_FORCED);

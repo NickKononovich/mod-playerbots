@@ -16,6 +16,12 @@ public:
 
     std::string GetPullActionName() const override;
     std::string GetPreActionName() const override;
+    // [b32_tank_aoe] a bear tank out of bear form: (Dire) Bear Form at the pull commit and before the walk to it
+    std::string GetPrePullBuffActionName() const override { return GetTankFormActionName(); }
+    std::string GetApproachFormActionName() const override { return GetTankFormActionName(); }
+
+private:
+    std::string GetTankFormActionName() const;
 };
 
 #endif

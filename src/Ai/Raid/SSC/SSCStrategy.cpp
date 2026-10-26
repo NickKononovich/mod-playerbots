@@ -181,6 +181,9 @@ void RaidSscStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("lady vashj coilfang strider should be tanked",
         { NextAction("lady vashj position coilfang strider", ACTION_EMERGENCY + 1) }));
 
+    triggers.push_back(new TriggerNode("lady vashj coilfang strider on non tank",
+        { NextAction("lady vashj kite coilfang strider", ACTION_EMERGENCY + 5) }));
+
     triggers.push_back(new TriggerNode("lady vashj coilfang elite should be tanked",
         { NextAction("lady vashj position coilfang elite", ACTION_EMERGENCY + 1) }));
 

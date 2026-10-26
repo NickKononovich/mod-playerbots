@@ -29,11 +29,25 @@ public:
             &TbcDungeonMagistersTerraceTriggerContext::mgt_delrissa_focus_target;
         creators["mgt delrissa tremor totem"] =
             &TbcDungeonMagistersTerraceTriggerContext::mgt_delrissa_tremor_totem;
+        creators["mgt delrissa cc mark"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_delrissa_cc_mark;
+        creators["mgt delrissa retinue left"] =
+            &TbcDungeonMagistersTerraceTriggerContext::mgt_delrissa_retinue_left;
+        creators["mgt delrissa healer spot"] =
+            &TbcDungeonMagistersTerraceTriggerContext::mgt_delrissa_healer_spot;
         creators["mgt flame strike"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_flame_strike;
         creators["mgt phoenix burn"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_phoenix_burn;
         creators["mgt kael focus target"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_kael_focus_target;
         creators["mgt kael interrupt"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_kael_interrupt;
         creators["mgt gravity lapse"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_gravity_lapse;
+        creators["mgt selin room pull"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_room_pull;
+        creators["mgt selin room gather"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_room_gather;
+        creators["mgt selin room drift"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_room_drift;
+        creators["mgt selin room rally"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_room_rally;
+        creators["mgt wretched infusion"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_wretched_infusion;
+        creators["mgt selin room leash"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_room_leash;
+        creators["mgt selin room pull inert"] =
+            &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_room_pull_inert;
+        creators["mgt selin pet out"] = &TbcDungeonMagistersTerraceTriggerContext::mgt_selin_pet_out;
     }
 
 private:
@@ -50,15 +64,32 @@ private:
     {
         return new MgTDelrissaFocusTargetTrigger(botAI);
     }
+    static Trigger* mgt_delrissa_cc_mark(PlayerbotAI* botAI) { return new MgTDelrissaCcMarkTrigger(botAI); }
+    static Trigger* mgt_delrissa_retinue_left(PlayerbotAI* botAI)
+    {
+        return new MgTDelrissaRetinueLeftTrigger(botAI);
+    }
     static Trigger* mgt_delrissa_tremor_totem(PlayerbotAI* botAI)
     {
         return new MgTDelrissaTremorTotemTrigger(botAI);
+    }
+    static Trigger* mgt_delrissa_healer_spot(PlayerbotAI* botAI)
+    {
+        return new MgTDelrissaHealerSpotTrigger(botAI);
     }
     static Trigger* mgt_flame_strike(PlayerbotAI* botAI) { return new MgTFlameStrikeTrigger(botAI); }
     static Trigger* mgt_phoenix_burn(PlayerbotAI* botAI) { return new MgTPhoenixBurnTrigger(botAI); }
     static Trigger* mgt_kael_focus_target(PlayerbotAI* botAI) { return new MgTKaelFocusTargetTrigger(botAI); }
     static Trigger* mgt_kael_interrupt(PlayerbotAI* botAI) { return new MgTKaelInterruptTrigger(botAI); }
     static Trigger* mgt_gravity_lapse(PlayerbotAI* botAI) { return new MgTGravityLapseTrigger(botAI); }
+    static Trigger* mgt_selin_room_pull(PlayerbotAI* botAI) { return new MgTSelinRoomPullTrigger(botAI); }
+    static Trigger* mgt_selin_room_gather(PlayerbotAI* botAI) { return new MgTSelinRoomGatherTrigger(botAI); }
+    static Trigger* mgt_selin_room_drift(PlayerbotAI* botAI) { return new MgTSelinRoomDriftTrigger(botAI); }
+    static Trigger* mgt_selin_room_rally(PlayerbotAI* botAI) { return new MgTSelinRoomRallyTrigger(botAI); }
+    static Trigger* mgt_wretched_infusion(PlayerbotAI* botAI) { return new MgTWretchedInfusionTrigger(botAI); }
+    static Trigger* mgt_selin_room_leash(PlayerbotAI* botAI) { return new MgTSelinRoomLeashTrigger(botAI); }
+    static Trigger* mgt_selin_room_pull_inert(PlayerbotAI* botAI) { return new MgTSelinRoomPullInertTrigger(botAI); }
+    static Trigger* mgt_selin_pet_out(PlayerbotAI* botAI) { return new MgTSelinPetOutTrigger(botAI); }
 };
 
 #endif

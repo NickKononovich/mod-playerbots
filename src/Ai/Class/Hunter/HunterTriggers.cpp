@@ -5,19 +5,74 @@
  */
 
 #include "HunterTriggers.h"
+#include "DynamicObject.h"  // [guide_b31_dead]
+#include "GenericBuffUtils.h"
 #include "GenericSpellActions.h"
 #include "GenericTriggers.h"
 #include "HunterActions.h"
+#include "Pet.h"  // [guide_b31_dead]
+#include "PetDefines.h"             // [b31_deep] PetStable
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "RaidUtilityAssignment.h"  // [b31_deep]
 #include "SharedDefines.h"
 #include "TargetValue.h"
 
+constexpr uint8 ASPECT_OF_THE_VIPER_MANA_PCT = 10;
+// [b31_deep] wowsims hunter default: back from Viper at 30 % mana (was 60: Viper halves shot damage, 10 -> 60 %
+// spent twice as long in it as 10 -> 30 %)
+constexpr uint8 ASPECT_OF_THE_DRAGONHAWK_MANA_PCT = 30;
+// [b31_deep] Misdirection window: the opening of a pull, or our threat closing on the tank's
+constexpr uint32 MISDIRECTION_PULL_WINDOW_SECONDS = 10;
+constexpr uint8 MISDIRECTION_THREAT_PCT = 70;
+// [b31_deep] Beast Mastery revives a pet that died on a boss only with this much fight left (DEEP_AUDIT_HUNTER)
+constexpr float REVIVE_PET_MIN_TARGET_LIFETIME = 30.0f;
+
+// [guide_b31_dead] Kill Command buffs the PET, never the hunter, so the old self-aura check was always true.
+// Now: spell off cooldown, a live pet fighting a target, and the pet's Kill Command aura not already up.
 bool KillCommandTrigger::IsActive()
 {
-    return !botAI->HasAura("kill command", GetTarget());
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", "kill command");
+    if (!spellId || bot->HasSpellCooldown(spellId))
+        return false;
+
+    Pet* pet = bot->GetPet();
+    if (!pet || !pet->IsAlive() || !pet->GetVictim())
+        return false;
+
+    return !botAI->HasAura("kill command", pet);
+}
+
+// [guide_b31_dead]
+bool IntimidationTrigger::IsActive()
+{
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", "intimidation");
+    if (!spellId || bot->HasSpellCooldown(spellId))
+        return false;
+
+    Pet* pet = bot->GetPet();
+    if (!pet || !pet->IsAlive())
+        return false;
+
+    Unit* victim = pet->GetVictim();
+    if (!victim || !victim->IsAlive())
+        return false;
+
+    if (victim->HasUnitState(UNIT_STATE_CASTING))
+        return true;
+
+    Unit* victimTarget = victim->GetVictim();
+    if (!victimTarget)
+        return false;
+
+    if (victimTarget == bot)
+        return true;
+
+    // Healer check only for bots (a strategy lookup); a real player's spec would need a talent scan.
+    Player* player = victimTarget->ToPlayer();
+    return player && GET_PLAYERBOT_AI(player) && PlayerbotAI::IsHeal(player);
 }
 
 bool BlackArrowTrigger::IsActive()
@@ -42,7 +97,7 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
         return false;
 
     if (botAI->HasAura("aspect of the viper", target))
-        return AI_VALUE2(uint8, "mana", "self target") >= 60;
+        return AI_VALUE2(uint8, "mana", "self target") >= ASPECT_OF_THE_DRAGONHAWK_MANA_PCT;
 
     return true;
 }
@@ -50,15 +105,62 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
 bool HunterNoStingsActiveTrigger::IsActive()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
-    return DebuffTrigger::IsActive() && target &&
-           !botAI->HasAura("serpent sting", target, false, true) &&
-           !botAI->HasAura("scorpid sting", target, false, true) &&
-           !botAI->HasAura("viper sting", target, false, true);
+    if (!DebuffTrigger::IsActive() || !target)
+        return false;
+
+    if (botAI->HasAura("scorpid sting", target, false, true) || botAI->HasAura("viper sting", target, false, true))
+        return false;
+
+    // Stings from different hunters stack, so only our own Serpent Sting counts, refreshed before it expires
+    Aura* serpentSting = botAI->GetAura("serpent sting", target, true);
+    // [guide_b31_dead] Chimera Shot (53209) refreshes our Serpent Sting: with it, only re-apply a missing sting
+    uint32 const refreshMs = bot->HasSpell(SPELL_CHIMERA_SHOT) ? 0 : SERPENT_STING_REFRESH_MS;
+    return ai::buff::BuffBelowRefreshTarget(botAI, serpentSting, refreshMs);
 }
 
 bool HuntersPetDeadTrigger::IsActive()
 {
     return AI_VALUE(bool, "pet dead") && !AI_VALUE2(bool, "mounted", "self target");
+}
+
+// [b31_deep] Hunter pets stay as a corpse when they die (Pet.cpp), so a summoned dead pet is the usual case; a
+// pet stored dead (Health 0) is revived the same way.
+bool HuntersPetDeadOnBossTrigger::IsActive()
+{
+    if (AI_VALUE2(bool, "mounted", "self target") || bot->GetTemporaryUnsummonedPetNumber())
+        return false;
+
+    if (Pet* pet = bot->GetPet())
+    {
+        if (pet->IsAlive())
+            return false;
+    }
+    else
+    {
+        PetStable const* stable = bot->GetPetStable();
+        if (!stable || !stable->CurrentPet || stable->CurrentPet->Health)
+            return false;
+    }
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || !ai::raidutil::IsBossUnit(target))
+        return false;
+
+    float const groupDps = AI_VALUE(float, "estimated group dps");
+    return groupDps > 0.0f && target->GetHealth() / groupDps >= REVIVE_PET_MIN_TARGET_LIFETIME;
+}
+
+// [b31_deep]
+bool HuntersPetDismissedTrigger::IsActive()
+{
+    if (bot->GetPet() || bot->GetTemporaryUnsummonedPetNumber() || AI_VALUE2(bool, "mounted", "self target"))
+        return false;
+
+    if (botAI->IsInVehicle())
+        return false;
+
+    PetStable const* stable = bot->GetPetStable();
+    return stable && stable->CurrentPet && stable->CurrentPet->Health;
 }
 
 bool HuntersPetLowHealthTrigger::IsActive()
@@ -90,7 +192,7 @@ bool HunterAspectOfTheViperTrigger::IsActive()
         return false;
 
     return BuffTrigger::IsActive() &&
-           AI_VALUE2(uint8, "mana", "self target") < (sPlayerbotAIConfig.LowMana / 2);
+           AI_VALUE2(uint8, "mana", "self target") < ASPECT_OF_THE_VIPER_MANA_PCT;
 }
 
 bool HunterAspectOfThePackTrigger::IsActive()
@@ -165,8 +267,65 @@ bool VolleyChannelCheckTrigger::IsActive()
     if (Spell* spell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
         spell && VOLLEY_SPELL_IDS.count(spell->m_spellInfo->Id))
     {
-        return !HasEnoughAoeTargets(botAI, bot->GetPosition(), sPlayerbotAIConfig.SightDistance, minEnemies);
+        // [guide_b31_dead] count attackers inside the Volley area (as HurricaneChannelCheckTrigger does), not
+        // within SightDistance of the hunter, which almost never dropped below the threshold.
+        DynamicObject* dynObj = nullptr;
+        for (uint32 spellId : VOLLEY_SPELL_IDS)
+        {
+            dynObj = bot->GetDynObject(spellId);
+            if (dynObj)
+                break;
+        }
+
+        if (!dynObj)
+            return false;
+
+        return !HasEnoughAoeTargets(botAI, dynObj->GetPosition(), dynObj->GetRadius(), minEnemies);
     }
 
     return false;
+}
+
+bool MisdirectionOnMainTankTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || target->IsPlayer())
+        return false;  // players have no threat table
+
+    Unit* mainTank = GetTarget();
+    if (!mainTank || mainTank == bot)
+        return false;
+
+    // [b31_deep] The aura sits on the hunter (see SPELL_MISDIRECTION), so the base check on the tank was always true
+    // and Misdirection went out on every cooldown (1.7-2.0/min, 4-6 % of the fight on its GCD).
+    if (bot->HasAura(SPELL_MISDIRECTION) || bot->HasAura(SPELL_MISDIRECTION_TRANSFER))
+        return false;
+
+    if (!BuffOnMainTankTrigger::IsActive())
+        return false;
+
+    return ai::raidutil::GetCombatSeconds(botAI) <= MISDIRECTION_PULL_WINDOW_SECONDS ||
+           AI_VALUE2(uint8, "threat", "current target") >= MISDIRECTION_THREAT_PCT;
+}
+
+// [b35_bal] see the header: Rapid Fire on the boss, not on instance trash (same pacing as Bloodlust/Heroism)
+bool RapidFireTrigger::IsActive()
+{
+    if (!BuffTrigger::IsActive())
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive())
+        return false;
+
+    if (target->ToPlayer() || ai::raidutil::IsBurstWindow(botAI))
+        return true;
+    if (ai::raidutil::ShouldHoldBurstForLust(botAI))
+        return false;
+
+    if (ai::raidutil::IsInstanceMap(bot) || ai::raidutil::IsBossUnit(target))
+        return ai::raidutil::IsBossEngaged(botAI, target);
+
+    // outdoors / solo: the old "losing this fight" heuristic of BoostTrigger
+    return AI_VALUE(uint8, "balance") <= balance;
 }

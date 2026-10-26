@@ -12,6 +12,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 #include <ctime>
@@ -83,7 +84,7 @@ bool IccPutricideGrowingOozePuddleAction::Execute(Event /*event*/)
         bot->CastStop();
         if (bot->GetTarget())
             bot->SetTarget(ObjectGuid::Empty);
-        if (Unit* master = botAI->GetMaster())
+        if (Unit* master = botAI->GetMaster(); master && master != bot)
             Follow(master);
         return true;
     }
@@ -518,11 +519,10 @@ bool IccPutricideVolatileOozeAction::Execute(Event /*event*/)
             aliveOozes.push_back(unit);
     }
 
+    // Extra oozes are fought, not deleted: the raid focuses the skull-marked one
     if (aliveOozes.size() > 1)
-    {
-        for (size_t i = 0; i < aliveOozes.size() - 1; ++i)
-            bot->Kill(bot, aliveOozes[i]);
-    }
+        IccLogHonestTacticGap(bot, IccHonestGap::Putricide, "Professor Putricide",
+                              "several Volatile Oozes / Gas Clouds alive at once");
 
     MarkOozeWithSkull(ooze);
 
@@ -617,10 +617,10 @@ bool IccPutricideVolatileOozeAction::MarkOozeWithSkull(Unit* ooze)
     Unit* markedUnit = botAI->GetUnit(skullGuid);
 
     if (markedUnit && (!markedUnit->IsAlive() || (ooze && markedUnit != ooze)))
-        group->SetTargetIcon(skullIconId, bot->GetGUID(), ObjectGuid::Empty);
+        RaidMarkOwnership::SetIcon(bot, group, skullIconId, ObjectGuid::Empty);
 
     if (ooze && ooze->IsAlive() && (!skullGuid || !markedUnit))
-        group->SetTargetIcon(skullIconId, bot->GetGUID(), ooze->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, skullIconId, ooze->GetGUID());
 
     return false;
 }
@@ -678,10 +678,8 @@ bool IccPutricideGasCloudAction::Execute(Event /*event*/)
     }
 
     if (aliveGasCloud.size() > 1)
-    {
-        for (size_t i = 0; i < aliveGasCloud.size() - 1; ++i)
-            bot->Kill(bot, aliveGasCloud[i]);
-    }
+        IccLogHonestTacticGap(bot, IccHonestGap::Putricide, "Professor Putricide",
+                              "several Volatile Oozes / Gas Clouds alive at once");
 
     if (!hasGaseousBloat && volatileOoze)
         return false;
@@ -729,9 +727,6 @@ bool IccPutricideGasCloudAction::HandleGaseousBloatMovement(Unit* gasCloud)
             return;
         g_bloatLastDir[botKey] = { ddx / l, ddy / l };
     };
-
-    if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-        bot->AddAura(SPELL_NITRO_BOOSTS, bot);
 
     constexpr int numAngles = 32;
     constexpr float gasBombSafeDist = 6.0f;
@@ -1069,7 +1064,7 @@ bool IccPutricideGasCloudAction::HandleGroupAuraSituation(Unit* gasCloud)
         ObjectGuid currentSkull = group->GetTargetIcon(skullIconId);
         Unit* markedUnit = botAI->GetUnit(currentSkull);
         if (!markedUnit || !markedUnit->IsAlive() || markedUnit != gasCloud)
-            group->SetTargetIcon(skullIconId, bot->GetGUID(), gasCloud->GetGUID());
+            RaidMarkOwnership::SetIcon(bot, group, skullIconId, gasCloud->GetGUID());
     }
 
     float currentDist = gasCloud ? bot->GetDistance(gasCloud) : 0.0f;
@@ -1114,7 +1109,7 @@ bool IccPutricideAvoidMalleableGooAction::Execute(Event /*event*/)
         bot->CastStop();
         if (bot->GetTarget())
             bot->SetTarget(ObjectGuid::Empty);
-        if (Unit* master = botAI->GetMaster())
+        if (Unit* master = botAI->GetMaster(); master && master != bot)
             Follow(master);
         return true;
     }
@@ -1274,7 +1269,7 @@ bool IccPutricideAvoidMalleableGooAction::HandleTankPositioning(Unit* boss)
             ObjectGuid skullGuid = group->GetTargetIcon(skullIconId);
             Unit* markedUnit = botAI->GetUnit(skullGuid);
             if (!skullGuid || !markedUnit || !markedUnit->IsAlive())
-                group->SetTargetIcon(skullIconId, bot->GetGUID(), boss->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, skullIconId, boss->GetGUID());
         }
     }
 
@@ -1324,11 +1319,9 @@ bool IccPutricideAvoidMalleableGooAction::HandleUnboundPlague(Unit* boss)
         }
     }
 
+    // Already clear of everyone: hold position and let healers carry the plague damage
     if (!closestPlayer || closestDistance >= unboundPlagueDistance)
-    {
-        bot->Kill(bot, bot);
-        return true;
-    }
+        return false;
 
     float dx = bot->GetPositionX() - closestPlayer->GetPositionX();
     float dy = bot->GetPositionY() - closestPlayer->GetPositionY();
@@ -1542,20 +1535,15 @@ bool IccPutricideAbominationAction::TryRegurgitate(Unit* abo, Unit* target)
     if (abo->HasSpellCooldown(spellId))
         return false;
 
-    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-    if (!spellInfo)
-        return false;
-
     if (!abo->HasInArc(CAST_ANGLE_IN_FRONT, target, 100.0f))
     {
         abo->SetFacingToObject(target);
         return false;
     }
 
-    Spell* spell = new Spell(abo, spellInfo, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
-    SpellCastTargets targets;
-    targets.SetUnitTarget(target);
-    spell->prepare(&targets);
+    // Regular vehicle cast: pays the abomination's energy like a player pilot
+    if (!botAI->CanCastVehicleSpell(spellId, target) || !botAI->CastVehicleSpell(spellId, target))
+        return false;
 
     abo->AddSpellCooldown(spellId, 0, 1000);
     return true;
@@ -1616,7 +1604,7 @@ bool IccPutricideAbominationAction::Execute(Event /*event*/)
     Unit* gasCloud = AI_VALUE2(Unit*, "find target", "gas cloud");
     Unit* puddle = FindClosestPuddle(100.0f);
 
-    // Priority 1: Regurgitated Ooze on volatile ooze (aura-gated, energy bypassed)
+    // Priority 1: Regurgitated Ooze on volatile ooze (aura-gated, needs energy)
     if (volatileOoze && volatileOoze->IsAlive() &&
         !botAI->HasAura("Regurgitated Ooze", volatileOoze))
     {
@@ -1624,7 +1612,7 @@ bool IccPutricideAbominationAction::Execute(Event /*event*/)
             return true;
     }
 
-    // Priority 2: Regurgitated Ooze on gas cloud (aura-gated, energy bypassed)
+    // Priority 2: Regurgitated Ooze on gas cloud (aura-gated, needs energy)
     if (gasCloud && gasCloud->IsAlive() &&
         !botAI->HasAura("Regurgitated Ooze", gasCloud))
     {

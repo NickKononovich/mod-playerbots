@@ -14,10 +14,65 @@ bool CastRemoveShadowformAction::Execute(Event /*event*/)
     return true;
 }
 
+// [b31_deep]
+bool CastShadowWordDeathAction::isUseful()
+{
+    return AI_VALUE2(uint8, "health", "self target") > sPlayerbotAIConfig.LowHealth && CastSpellAction::isUseful();
+}
+
+// [b31_deep]
+Unit* CastPowerWordShieldOnPartyAction::GetTarget()
+{
+    Unit* triaged = HealPartyMemberAction::GetTarget();
+    if (!triaged || !botAI->HasAnyAuraOf(triaged, "weakened soul", "power word: shield", nullptr))
+        return triaged;
+
+    // a member in the low / critical / emergency bands keeps the GCD: the node's next heal goes to him
+    Group* group = bot->GetGroup();
+    if (!group || triaged->GetHealthPct() < sPlayerbotAIConfig.LowHealth)
+        return triaged;
+
+    Player* best = nullptr;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == triaged || !member->IsAlive() || member->GetMap() != bot->GetMap() ||
+            member->GetHealthPct() >= sPlayerbotAIConfig.MediumHealth ||
+            member->GetDistance2d(bot) > sPlayerbotAIConfig.SpellDistance ||
+            botAI->HasAnyAuraOf(member, "weakened soul", "power word: shield", nullptr))
+            continue;
+
+        if (!best || member->GetHealthPct() < best->GetHealthPct())
+            best = member;
+    }
+
+    return best ? best : triaged;
+}
+
+bool CastShadowWordPainAction::isUseful()
+{
+    if (!ai::priest::ShadowWeavingReady(bot))
+        return false;
+
+    beforeDuration = ai::priest::ShadowWordPainRefreshMs(bot);
+    return CastPriestDotAction::isUseful();
+}
+
+bool CastVampiricTouchAction::isUseful()
+{
+    beforeDuration = ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", spell));
+    return CastPriestDotAction::isUseful();
+}
+
 bool CastFadeAction::isUseful()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
     return bot->GetGroup() && !(target && target->IsPlayer());  // players have no threat
+}
+
+bool CastPowerWordShieldOnMainTankAction::isUseful()
+{
+    return BuffOnMainTankAction::isUseful() && !botAI->HasAura("weakened soul", GetTarget());
 }
 
 bool CastRemoveShadowformAction::isUseful() { return botAI->HasAura("shadowform", AI_VALUE(Unit*, "self target")); }
@@ -25,6 +80,9 @@ bool CastRemoveShadowformAction::isUseful() { return botAI->HasAura("shadowform"
 Unit* CastPowerWordShieldOnAlmostFullHealthBelowAction::GetTarget()
 {
     Group* group = bot->GetGroup();
+    if (!group)  // [b31_deep]
+        return nullptr;
+
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
@@ -54,6 +112,9 @@ Unit* CastPowerWordShieldOnAlmostFullHealthBelowAction::GetTarget()
 bool CastPowerWordShieldOnAlmostFullHealthBelowAction::isUseful()
 {
     Group* group = bot->GetGroup();
+    if (!group)  // [b31_deep]
+        return false;
+
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
@@ -83,6 +144,9 @@ bool CastPowerWordShieldOnAlmostFullHealthBelowAction::isUseful()
 Unit* CastPowerWordShieldOnNotFullAction::GetTarget()
 {
     Group* group = bot->GetGroup();
+    if (!group)  // [b31_deep]
+        return nullptr;
+
     MinValueCalculator calc(100);
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
@@ -109,4 +173,10 @@ Unit* CastPowerWordShieldOnNotFullAction::GetTarget()
 bool CastPowerWordShieldOnNotFullAction::isUseful()
 {
     return GetTarget();
+}
+
+bool CastPowerWordShieldOnValueTargetAction::isUseful()
+{
+    Unit* target = GetTarget();
+    return target && CastHealOnValueTargetAction::isUseful() && !botAI->HasAura("weakened soul", target);
 }

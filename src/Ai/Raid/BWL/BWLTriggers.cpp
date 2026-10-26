@@ -14,9 +14,8 @@ using namespace BlackwingLairHelpers;
 
 bool BwlSuppressionDeviceTrigger::IsActive()
 {
-    // Until MoP, only rogues could disarm suppression devices.
-    // If raid cheats are enabled, any bot can disarm the devices.
-    if (botAI->HasCheat(BotCheatMask::raid) || bot->IsClass(CLASS_ROGUE))
+    // Until MoP, only rogues could disarm suppression devices (Disarm Trap).
+    if (bot->IsClass(CLASS_ROGUE))
     {
         GuidVector gos = AI_VALUE(GuidVector, "nearest game objects");
         for (auto i = gos.begin(); i != gos.end(); ++i)
@@ -36,6 +35,37 @@ bool BwlRazorgoreNotMindControlledTrigger::IsActive()
     if (Unit* boss = AI_VALUE2(Unit*, "find target", "razorgore the untamed"))
         return !boss->HasAura(static_cast<uint32>(BlackwingLairSpells::SPELL_MINDCONTROL));
     return false;
+}
+
+// Upstream leaves the orb and the eggs to a human player. With a SelfBot leader or no client at all
+// nobody would do it, so a bot takes the orb.
+bool BwlRazorgoreOrbControlTrigger::IsActive()
+{
+    if (bot->GetMapId() != BWL_MAP_ID)
+        return false;
+
+    if (IsControllingRazorgore(bot))
+        return true;
+
+    if (!CanUseOrbOfDomination(bot) || !AreRazorgoreEggsAlive(botAI))
+        return false;
+
+    Unit* razorgore = FindRazorgore(bot);
+    if (!razorgore || razorgore->IsCharmed())
+        return false;
+
+    // Out of combat the orb is the pull, so wait until the group leader is in the room.
+    if (!razorgore->IsInCombat())
+    {
+        Player* leader = botAI->GetGroupLeader();
+        if (!leader || leader->GetMapId() != BWL_MAP_ID ||
+            leader->GetExactDist2d(RAZORGORE_ROOM_CENTER) > RAZORGORE_EVENT_START_RADIUS)
+        {
+            return false;
+        }
+    }
+
+    return GetRazorgoreOrbController(bot, razorgore) == bot;
 }
 
 // Vaelastrasz the Corrupt

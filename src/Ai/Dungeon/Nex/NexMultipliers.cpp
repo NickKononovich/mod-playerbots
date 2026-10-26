@@ -10,6 +10,7 @@
 #include "MovementActions.h"
 #include "NexActions.h"
 #include "NexTriggers.h"
+#include "TbcHazard.h"
 
 float FactionCommanderMultiplier::GetValue(Action* action)
 {
@@ -69,14 +70,13 @@ float TelestraMultiplier::GetValue(Action* action)
 
 float AnomalusMultiplier::GetValue(Action* action)
 {
+    if (!dynamic_cast<DpsAssistAction*>(action))
+        return 1.0f;
+
     Unit* boss = AI_VALUE2(Unit*, "find target", "anomalus");
-    if (boss && boss->HasAura(BUFF_RIFT_SHIELD))
-    {
-        if (dynamic_cast<DpsAssistAction*>(action))
-        {
-            return 0.0f;
-        }
-    }
+    if (boss && (boss->HasAura(BUFF_RIFT_SHIELD) || NexIds::FindChaoticRift(botAI)))
+        return 0.0f;
+
     return 1.0f;
 }
 
@@ -92,7 +92,9 @@ float OrmorokMultiplier::GetValue(Action* action)
     }
     // This boss is annoying and shuffles around a lot. Don't let tank move once fight has started.
     // Extra checks are to allow the tank to close distance and engage the boss initially
+    // (stepping off a Crystal Spike, "avoid dungeon hazard", stays allowed).
     if (dynamic_cast<MovementAction*>(action) && !dynamic_cast<DodgeSpikesAction*>(action)
+        && !dynamic_cast<TbcHazardMoveAction*>(action)
         && PlayerbotAI::IsTank(bot) && bot->IsWithinMeleeRange(boss)
         && AI_VALUE2(bool, "facing", "current target"))
         {

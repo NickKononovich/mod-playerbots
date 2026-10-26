@@ -233,19 +233,9 @@ bool PetitionTurnInAction::Execute(Event /*event*/)
 
         bot->GetSession()->HandleTurnInPetitionOpcode(data);
 
-        if (bot->GetGuildId())
+        Guild* guild = bot->GetGuildId() ? sGuildMgr->GetGuildById(bot->GetGuildId()) : nullptr;
+        if (guild)
         {
-            // Ensure that bot has at least 10g for HandleSetEmblem can be managed core side
-            // (EMBLEM_PRICE = 10 * GOLD in core)
-            static constexpr uint32 REQUIRED = 10 * GOLD;
-            uint32 have = bot->GetMoney();               // actual money earned by bot in copper
-            if (have < REQUIRED)
-            {
-                bot->ModifyMoney(int32(REQUIRED - have)); // add only the missing amount to bot to reach 10g
-            }
-
-            Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
-
             uint32 st, cl, br, bc, bg;
             bg = urand(0, 51);
             bc = urand(0, 17);
@@ -254,7 +244,9 @@ bool PetitionTurnInAction::Execute(Event /*event*/)
             st = urand(0, 180);
             EmblemInfo emblemInfo(st, cl, br, bc, bg);
 
-            guild->HandleSetEmblem(emblemInfo); // official core handling
+            // The session overload is the player path: only with the bot's own 10g (EMBLEM_PRICE), which it pays.
+            // No money is added any more; a bot that cannot afford it keeps the default emblem.
+            guild->HandleSetEmblem(bot->GetSession(), emblemInfo);
 
             // LANG_GUILD_VETERAN -> can invite
             guild->HandleSetRankInfo(2, {}, GR_RIGHT_GCHATLISTEN | GR_RIGHT_GCHATSPEAK | GR_RIGHT_INVITE);

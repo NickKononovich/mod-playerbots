@@ -145,6 +145,11 @@ Playerbots.AddClassCommand = 1
 # Default: 0 (always the same character)
 Playerbots.AddClassRandomCharacter = 0
 
+# When an addclass bot logs in more than 3 levels away from its master, re-create it at the master's
+# level with generated gear. Disable to keep addclass bots' own level, talents and gear untouched.
+# Default: 1 (enabled)
+Playerbots.AddClassAutoInit = 1
+
 # Bot group invitation permission level (0 = GM only, 1 = accept based on level, 2 = always accept)
 # Default: 1 (accept based on level)
 Playerbots.GroupInvitationPermission = 1
@@ -195,6 +200,25 @@ Playerbots.SummonWhenGroup = 1
 # Player can be activated as a bot (selfbot)
 # Selfbot permission level (0 = disabled, 1 = GM only (default), 2 = all players, 3 = activate on login)
 Playerbots.SelfBotLevel = 1
+
+# Real client input (movement keys, jump, spell cast, target change) takes the character back from the
+# SelfBot at once ("SelfBot is now deactivated (manual input)."). It stays off until
+# ".playerbots bot self on" or, with SelfBotReturnAfterIdleSecs > 0, until the client was idle that long.
+# Input during the first SelfBotInputGraceSecs after the SelfBot came on is ignored.
+# Default: 1, 3, 0
+Playerbots.SelfBotInputTakesControl = 1
+Playerbots.SelfBotInputGraceSecs = 3
+Playerbots.SelfBotReturnAfterIdleSecs = 0
+
+# Party/raid chat written by a SelfBot's own player commands the other bots but not the SelfBot itself
+# (a group "stay" no longer freezes the leader). Start the message with "@me " to address only the SelfBot.
+# Default: 1
+Playerbots.SelfBotIgnoreOwnGroupCommands = 1
+
+# Short Russian chat orders are understood as bot commands (zhdi/stay, poshli/follow, bey/attack, pull,
+# otkhod/flee, burst, resni/res, pauza/pause, prodolzhaem/resume, otdykh/rest, kik/interrupt ...).
+# Default: 1
+Playerbots.RussianCommandSynonyms = 1
 
 # Non-GM player can only use init=auto to initialize bots based on their own level and gearscore
 # Default: 0 (non-GM player can use any intialization commands)
@@ -378,6 +402,8 @@ Playerbots.DispelAuraDuration = 700
 Playerbots.ReactDelay = 100
 
 # Dynamically adjust react delay for bots in different status to reduce server lags
+# (in combat: 5x ReactDelay, 2x for members of a group in a dungeon or raid; out of combat 10-200x).
+# Independently of this, a bot in combat looks again the moment its cast or global cooldown ends.
 Playerbots.DynamicReactDelay = 1
 
 # Inactivity delay
@@ -533,6 +559,32 @@ Playerbots.ForceRebuffOnReadyCheck = 0
 # Default: 60
 Playerbots.ForceRebuffMarginSecs = 60
 
+# Raid leader layer: in dungeons and raids the group leader bot (a SelfBot leader, or the leading bot
+# when no client leads) coordinates the group. It runs a ready check before each boss and after a
+# wipe, sets the raid main tank / main assist flags, holds DPS and healer attacks for a few seconds
+# after a boss pull, announces the pull, burn phases, Bloodlust, battle resurrections and wipes in
+# party/raid chat, and logs each wipe call to <LogsDir>/wipes.jsonl. Has no effect when a person
+# without a SelfBot leads the group.
+# Default: 1 (enabled)
+Playerbots.RaidLeader = 1
+
+# When a person leads from the game client, the first tank bot (else the first bot) of the group still
+# coordinates: ready checks are judged, wipes called, tank flags set. The boss pull waits for the person:
+# the bots' own pulls stay held until the boss is engaged, while the leader's "pull"/"attack" orders go.
+# Default: 1 (enabled)
+Playerbots.RaidLeaderForHumanLeader = 1
+
+# Seconds DPS and healers hold their attacks after the tank engages a boss, so the tank builds threat.
+# Healing is never held. 0 disables the hold. Bots with the "wait for attack" strategy use that instead.
+# Default: 3
+Playerbots.RaidLeaderPullHoldSecs = 3
+
+# In raid instances, bots use their own flask or elixirs and buff food out of combat, a role potion
+# (Speed, Wild Magic, Indestructible) right before a boss pull, and a Warlock's Soulwell. Only items
+# already in the bot's bags are used; nothing is created.
+# Default: 1 (enabled)
+Playerbots.RaidConsumables = 1
+
 #
 #
 ####################################################################################################
@@ -633,6 +685,8 @@ Playerbots.AutoGearScoreLimit = 0
 # "raid" (bots use certain cheats implemented into raid strategies)
 # To use multiple cheats, separate them by commas below (e.g., to enable all, use "gold,health,mana,power,raid,taxi")
 # Default: food, taxi, and raid are enabled
+# IGNORED since 2026-10-23: bots play by the same rules as players, PlayerbotAI::HasCheat() is always false and
+# the "cheat" chat command changes nothing, whatever this option says.
 Playerbots.BotCheats = "food,taxi,raid"
 
 # List of attunement quests (comma-separated list of quest IDs) that are automatically completed for all bots.
@@ -1411,6 +1465,139 @@ Playerbots.HealerDPSMapRestriction = 1
 # Default: (Dungeon and Raid maps) "33,34,36,43,47,48,70,90,109,129,209,229,230,329,349,389,429,1001,1004,1007,269,540,542,543,545,546,547,552,553,554,555,556,557,558,560,585,574,575,576,578,595,599,600,601,602,604,608,619,632,650,658,668,409,469,509,531,532,534,544,548,550,564,565,580,249,533,603,615,616,624,631,649,724"
 Playerbots.RestrictedHealerDPSMaps = "33,34,36,43,47,48,70,90,109,129,209,229,230,329,349,389,429,1001,1004,1007,269,540,542,543,545,546,547,552,553,554,555,556,557,558,560,585,574,575,576,578,595,599,600,601,602,604,608,619,632,650,658,668,409,469,509,531,532,534,544,548,550,564,565,580,249,533,603,615,616,624,631,649,724"
 
+# Raid healers split the work automatically: one healer per tank (two on the main tank with five or
+# more healers), the others over the raid subgroups. A preference, not a lock: anyone low is still
+# healed, and a manual "focus heal" list overrides it. Applies on the HealerDPSMapRestriction maps when
+# that restriction is on, otherwise in any raid instance.
+# Default: 1 (enabled)
+Playerbots.AutoHealerAssignment = 1
+
+# Percent of max health a unit must lose within two seconds (net of healing) to count as a damage
+# spike for the "damage spike" and "tank damage spike" triggers (tank and external cooldowns).
+# Default: 30
+Playerbots.TankDamageSpikePct = 30
+
+# Healers rank a group member by the health it is heading to, not only the health it has: the percent of
+# max health it lost in the last two seconds (net of healing), times this weight, counts as already missing.
+# 1.5 projects about three seconds ahead. 0 ranks by health alone.
+# Default: 1.5
+Playerbots.HealerHealthLossWeight = 1.5
+
+# Percent of max health the heal target must lose within two seconds (net of healing) for the
+# "party member losing health fast" trigger: the fast heals (Swiftmend, Nourish, Flash Heal, Holy Shock,
+# Riptide, ...) go out before the target reaches the low-health band. 0 disables the trigger.
+# Default: 12
+Playerbots.HealerFastHealthLossPct = 12
+
+# Class crowd control on hard trash packs, the way a real group uses it: a crowd control bot takes one mob
+# the group will not kill for a while out of the fight, never the one it kills now. Each class uses its own
+# spells, the first that holds the mob (creature type, immunities, level and talents come from the spells):
+#   mage     moon     Polymorph
+#   hunter   square   Freezing Arrow (80), Wyvern Sting (talent), Freezing Trap + Distracting Shot, Scare Beast
+#   warlock  diamond  Banish, Seduction (Succubus), Fear
+#   priest   circle   Shackle Undead
+#   paladin  circle   Repentance (talent), Turn Evil
+#   druid    triangle Hibernate, Entangling Roots (melee mobs only)
+#   rogue    star     Sap (before the pull only)
+#   shaman   star     Hex (80)
+# The marked mob comes from the tail of the kill order (never Skull, Cross, the tank's target or a mob anyone
+# attacks; a guard refuses and logs such a cast), the tank and the dps leave it alone and area spells stay
+# off it; when only held mobs are left they are let go one at a time and killed. Fear, Scare Beast, Turn
+# Evil and Psychic Scream are used only with no idle mob within 30 yd of the mob (45 yd of the caster).
+# Healers crowd control only in a group without a crowd control damage dealer. In a fight a rogue blinds,
+# and a priest screams away, a loose mob on a healer that nobody fights. Never on boss fights.
+# Default: 1 (enabled)
+Playerbots.AutoCc = 1
+
+# With Playerbots.AutoCc: before a 5-man tank pulls a hard pack (see Playerbots.AutoCcMarkMinPackSize, or a
+# pack the careful pull refuses as it stands) the crowd control bots claim and mark their mobs, a rogue saps
+# from stealth (only where no other pack sees it) and a hunter lays its Freezing Trap; the tank holds its pull
+# up to 1.5 s for the claims and up to 12 s for a Sap or a trap. Polymorph, Hex and the like are cast as the
+# pack comes, not before (cast before, they bring the pack onto the caster).
+# Default: 1 (enabled)
+Playerbots.AutoCcPrePull = 1
+
+# A pack is worth crowd control at this many mobs, or at three with a healer or two casters among them; the
+# marks go out at the pull. 0 disables the marks (the emergency Blind and Psychic Scream stay).
+# Default: 4
+Playerbots.AutoCcMarkMinPackSize = 4
+
+# At most this many mobs of one pack are crowd controlled at once by the marks above; a pack always keeps
+# two mobs free to kill.
+# Default: 2
+Playerbots.AutoCcMarkMaxPerPack = 2
+
+# A 5-man tank pulls a trash pack with at least this many casters (SmartAI casts that stand and cast, or a
+# paladin or mage class mob with a magic damage spell of more than 15 yards) around a corner: a ranged
+# pull, then the tank steps to a spot none of the pack can see, the group waits a few yards behind it out
+# of sight, and the casters have to walk into melee. Used only when such a spot is a short walk away.
+# 0 disables.
+# Default: 2
+Playerbots.LosPullMinCasters = 2
+
+# A 5-man tank at max level or in a heroic plans its pulls the way a careful heroic group does instead of
+# chain pulling whatever is in front of it: one pack at a time, everything whose aggro range or patrol reaches
+# the fight counts, the pack is sized by the mobs' real damage and health against the tank's real mitigation and
+# the healers' throughput and mana, a pack too big is split at its edge or pulled back at range, a caster pack
+# is pulled round a corner, and a pack that cannot be split is taken only with the group topped up. Levelling
+# dungeons below max level always plan their pulls this way. Never in raids. 0 keeps the old chain pulls.
+# Default: 1 (enabled)
+Playerbots.CarefulPullHeroic = 1
+
+# Measured careful pulls (Playerbots.CarefulPullHeroic) never plan a pull of more mobs than this, scaled by the
+# group's strength against the content (at least 3), the topped-up fallback included: a pack bigger than this
+# that cannot be split is refused. Below the cap a pack is sized by what the tank survives and the healers keep up
+# with (about three mobs where the group can split a pack, more for a stronger tank; a linked pack is taken whole
+# when the tank carries it). 0 disables the cap.
+# Default: 10
+Playerbots.CarefulPullMaxMobs = 10
+
+# A levelling 5-man tank (below max level, not outgearing the dungeon) sizes its careful pulls the measured way too:
+# by the mobs' real melee and health, the mobs that answer a call for help or see the fight from behind a corner,
+# the healers' mana and the cap above. 0 keeps the levelling estimate by rank and level. A pack that nothing fits is
+# pulled round a corner (casters) or by one mob of it once the group has waited 20 s topped up; the tank pulls
+# nothing of its own while its healer, itself or every damage dealer is dead or away, or a group buff is missing
+# (up to 10 s).
+# Default: 1 (enabled)
+Playerbots.CarefulPullMeasuredLevelling = 1
+
+# Careful and measured pulls (5-man) wait until every mana healer of the group has at least this much mana, on
+# top of what the pull itself needs; after a long chain fight the next pack waits for the drink. 0 disables.
+# Default: 50
+Playerbots.CarefulPullMinHealerMana = 50
+
+# A group tank walks to a mob hitting a healer or damage dealer when it stands within this many yards, out of
+# melee, so its melee and area threat hold the mob while the taunts cool down. 0 disables.
+# Default: 15
+Playerbots.TankPeelWalkRange = 15
+
+# A healer or ranged member of a 5-man or open-world party that a mob melees walks to the group's tank (up to
+# 40 yards away), where the tank's area threat and taunts take the mob, and stays there until it is taken.
+# Default: 1 (enabled)
+Playerbots.RangedFleeToTank = 1
+
+# A ranged damage dealer or healer of a 5-man or open-world party keeps within this many yards of its fighting tank
+# (healers at most 33), and walks to it when the fight is out of its sight. 0 disables (ranged then only step out of
+# melee, healers keep the 33-yard heal-range rule).
+# Default: 30
+Playerbots.RangedTankLeash = 30
+
+# In a 5-man dungeon the damage dealers (and their crowd control) fight only mobs of the tank's fight: within this
+# many yards of the tank, the tank's own target, or a mob at the group member it attacks. A mob deep in the room that
+# is in combat (an assist chain, a caster left at range by a line-of-sight pull) becomes a target once it comes.
+# Bosses, running encounters, the Skull, the Cross and prioritized targets are never limited. 0 disables.
+# Default: 35
+Playerbots.DpsGroupFightRadius = 35
+
+# A tank uses its defensive cooldowns (Divine Protection, Shield Wall, Icebound Fortitude, Survival Instincts,
+# Barkskin) below this health percent while it still loses Playerbots.TankCooldownLossPct of its max health in two
+# seconds, or below 70% of this percent whatever the trend. 0 disables the "tank pressure" trigger.
+# Default: 50
+Playerbots.TankCooldownHealthPct = 50
+
+# Default: 10
+Playerbots.TankCooldownLossPct = 10
+
 #
 #
 ####################################################################################################
@@ -1811,15 +1998,15 @@ Playerbots.PermanentlyInWorldTime = 31104000
 #
 
 Playerbots.PremadeSpecName.1.0 = arms pve
-Playerbots.PremadeSpecGlyph.1.0 = 43418,43395,43423,43399,43397,43421
+Playerbots.PremadeSpecGlyph.1.0 = 43416,43395,43423,43399,43397,43421
 Playerbots.PremadeSpecLink.1.0.60 = 3022032023335100002012211231241
 Playerbots.PremadeSpecLink.1.0.80 = 3022032023335100102012213231251-305-2033
 Playerbots.PremadeSpecName.1.1 = fury pve
-Playerbots.PremadeSpecGlyph.1.1 = 43418,43395,43414,43396,49084,43432
+Playerbots.PremadeSpecGlyph.1.1 = 43418,43395,43416,43396,49084,43432
 Playerbots.PremadeSpecLink.1.1.60 = -305053000500310053120501351
 Playerbots.PremadeSpecLink.1.1.80 = 32002300233-305053000500310153120511351
 Playerbots.PremadeSpecName.1.2 = prot pve
-Playerbots.PremadeSpecGlyph.1.2 = 43429,43397,43425,43399,49084,45797
+Playerbots.PremadeSpecGlyph.1.2 = 43415,43397,43425,43399,49084,45797
 Playerbots.PremadeSpecLink.1.2.60 = --053351225000210521030113321
 Playerbots.PremadeSpecLink.1.2.80 = 3500030023-301-053351225000210521030113321
 Playerbots.PremadeSpecName.1.3 = arms pvp
@@ -1845,10 +2032,10 @@ Playerbots.PremadeSpecLink.1.5.80 = 0502300123-3-250031220223012521332113321
 
 Playerbots.PremadeSpecName.2.0 = holy pve
 Playerbots.PremadeSpecGlyph.2.0 = 41106,43367,45741,43368,43365,41109
-Playerbots.PremadeSpecLink.2.0.60 = 50350151020013053100515221
+Playerbots.PremadeSpecLink.2.0.60 = 50350152100013053100515221
 Playerbots.PremadeSpecLink.2.0.80 = 50350152100013053100515221-50320104203
 Playerbots.PremadeSpecName.2.1 = prot pve
-Playerbots.PremadeSpecGlyph.2.1 = 41100,43367,43869,43368,43369,45745
+Playerbots.PremadeSpecGlyph.2.1 = 45742,43367,43869,43368,43369,45745
 Playerbots.PremadeSpecLink.2.1.60 = -05005135203102311333112321
 Playerbots.PremadeSpecLink.2.1.80 = -05005135203102311333312321-502302012003
 Playerbots.PremadeSpecName.2.2 = ret pve
@@ -1887,9 +2074,9 @@ Playerbots.PremadeSpecGlyph.3.1 = 42912,43350,45625,43351,43338,42914
 Playerbots.PremadeSpecLink.3.1.60 = -035305101030013233115031151
 Playerbots.PremadeSpecLink.3.1.80 = 502-035305101230013233135031351-5000002
 Playerbots.PremadeSpecName.3.2 = surv pve
-Playerbots.PremadeSpecGlyph.3.2 = 45733,43350,45731,43351,43338,45732
+Playerbots.PremadeSpecGlyph.3.2 = 42912,43350,45731,43351,43338,45732
 Playerbots.PremadeSpecLink.3.2.60 = --5000032500033330502135201311
-Playerbots.PremadeSpecLink.3.2.80 = -005305101-5000032500033330532135301321
+Playerbots.PremadeSpecLink.3.2.80 = -005305101-5000032500033330513135301331
 Playerbots.PremadeSpecName.3.3 = bm pvp
 Playerbots.PremadeSpecGlyph.3.3 = 42897,42900,42902,43356,43338,42900
 Playerbots.PremadeSpecLink.3.3.60 = 05203201505012233100531151
@@ -1926,7 +2113,7 @@ Playerbots.PremadeHunterPetLink.2.20 = 21000203300002110221
 
 Playerbots.PremadeSpecName.4.0 = as pve
 Playerbots.PremadeSpecGlyph.4.0 = 45768,43379,45761,43380,43378,45766
-Playerbots.PremadeSpecLink.4.0.60 = 005303104352100520103331051
+Playerbots.PremadeSpecLink.4.0.60 = 005303005352100520103331051
 Playerbots.PremadeSpecLink.4.0.80 = 005303005352100520103331051-005005003-502
 Playerbots.PremadeSpecName.4.1 = combat pve
 Playerbots.PremadeSpecGlyph.4.1 = 42962,43379,45762,43380,43378,42969
@@ -1962,9 +2149,9 @@ Playerbots.PremadeSpecGlyph.5.0 = 42408,43371,42400,43374,43342,45756
 Playerbots.PremadeSpecLink.5.0.60 = 0503203130300512301323131051
 Playerbots.PremadeSpecLink.5.0.80 = 0503203130300512331323231251-03520103
 Playerbots.PremadeSpecName.5.1 = holy pve
-Playerbots.PremadeSpecGlyph.5.1 = 42408,43371,42400,43374,43342,42396
-Playerbots.PremadeSpecLink.5.1.60 = -035050031301152530000331331
-Playerbots.PremadeSpecLink.5.1.80 = 05032031-235050032302152530000331351
+Playerbots.PremadeSpecGlyph.5.1 = 42409,43371,42396,43374,43342,45755
+Playerbots.PremadeSpecLink.5.1.60 = -135050030300152530001331331
+Playerbots.PremadeSpecLink.5.1.80 = 05032031-135050030300152530005331351
 Playerbots.PremadeSpecName.5.2 = shadow pve
 Playerbots.PremadeSpecGlyph.5.2 = 45753,43371,42407,43374,43370,42415
 Playerbots.PremadeSpecLink.5.2.60 = --325003041203010323150301351
@@ -1992,16 +2179,16 @@ Playerbots.PremadeSpecLink.5.5.80 = 50332031003--005323241223112003102311351
 
 Playerbots.PremadeSpecName.6.0 = blood pve
 Playerbots.PremadeSpecGlyph.6.0 = 45805,43673,43538,43544,43672,43542
-Playerbots.PremadeSpecLink.6.0.60 = 035502150300331320102013111-005
-Playerbots.PremadeSpecLink.6.0.80 = 0055021533303310201020131-305020510002-00522
+Playerbots.PremadeSpecLink.6.0.60 = 0055021533303301201020131-205
+Playerbots.PremadeSpecLink.6.0.80 = 2055321033330310200220131051-325-235
 Playerbots.PremadeSpecName.6.1 = frost pve
 Playerbots.PremadeSpecGlyph.6.1 = 45805,43673,43547,43544,43672,43543
-Playerbots.PremadeSpecLink.6.1.60 = -32003350332203012300023101351
+Playerbots.PremadeSpecLink.6.1.60 = -32002350342203012300023101351
 Playerbots.PremadeSpecLink.6.1.80 = -32002350352203012300033101351-230200305003
 Playerbots.PremadeSpecName.6.2 = unholy pve
 Playerbots.PremadeSpecGlyph.6.2 = 43542,43673,43546,43535,43672,43549
-Playerbots.PremadeSpecLink.6.2.60 = --2301303050032151000150013131151
-Playerbots.PremadeSpecLink.6.2.80 = 23050202--2302303350032152000150003133151
+Playerbots.PremadeSpecLink.6.2.60 = --2302303350032051000150003111151
+Playerbots.PremadeSpecLink.6.2.80 = 23050202--2302303350032052003150003113151
 Playerbots.PremadeSpecName.6.3 = double aura blood pve
 Playerbots.PremadeSpecGlyph.6.3 = 45805,43673,43538,43544,43672,43554
 Playerbots.PremadeSpecLink.6.3.60 = 005512153330030320102013-305
@@ -2028,9 +2215,9 @@ Playerbots.PremadeSpecLink.6.6.80 = -320050410002-230132330100215223010120313315
 #
 
 Playerbots.PremadeSpecName.7.0 = ele pve
-Playerbots.PremadeSpecGlyph.7.0 = 41536,43385,41532,43386,44923,45776
+Playerbots.PremadeSpecGlyph.7.0 = 41536,43385,41531,43386,44923,45776
 Playerbots.PremadeSpecLink.7.0.60 = 4530001520213351102301351
-Playerbots.PremadeSpecLink.7.0.80 = 4530001523213351302301351-00525003
+Playerbots.PremadeSpecLink.7.0.80 = 5530001523213351302301351-00505013
 Playerbots.PremadeSpecName.7.1 = enh pve
 Playerbots.PremadeSpecGlyph.7.1 = 41542,43385,41539,43386,43725,45771
 Playerbots.PremadeSpecLink.7.1.60 = -30305003105021333031121131051
@@ -2066,12 +2253,12 @@ Playerbots.PremadeSpecLink.8.0.60 = 230005231100330150323102500321
 Playerbots.PremadeSpecLink.8.0.80 = 230005231100330150323102505321-03-203303001
 Playerbots.PremadeSpecName.8.1 = fire pve
 Playerbots.PremadeSpecGlyph.8.1 = 42739,43339,45737,43364,44920,42751
-Playerbots.PremadeSpecLink.8.1.60 = -0055030011302231053120321341
+Playerbots.PremadeSpecLink.8.1.60 = -0055032012303230053120300341
 Playerbots.PremadeSpecLink.8.1.80 = 23000503110003-0055032012303330053120300351
 Playerbots.PremadeSpecName.8.2 = frost pve
 Playerbots.PremadeSpecGlyph.8.2 = 42742,43339,50045,43364,43361,42751
 Playerbots.PremadeSpecLink.8.2.60 = --0533030313203100030152231151
-Playerbots.PremadeSpecLink.8.2.80 = 23002303110003--0533030313203100030152231351
+Playerbots.PremadeSpecLink.8.2.80 = 23000503110003--0533030313203100030152231351
 Playerbots.PremadeSpecName.8.3 = frostfire pve
 Playerbots.PremadeSpecGlyph.8.3 = 44684,44920,42751,43339,43364,45737
 Playerbots.PremadeSpecLink.8.3.60 = -2305032012303331053120300051
@@ -2177,6 +2364,8 @@ Playerbots.PremadeSpecLink.11.6.80 = 05320021--230033312031500531353013251
 
 # Applies automatically refreshing buffs to bots simulating effects of spells, flasks, food, runes, etc.
 # Requires sending the command "nc +worldbuff" in chat to a bot (or a group of bots) to enable
+# DISABLED since 2026-10-23: the "world buff" action grants nothing any more (no free auras for bots); the
+# matrix below is still parsed but has no effect.
 # Each entry in the matrix should be formatted as follows: Entry:FactionID,ClassID,SpecID,MinimumLevel,MaximumLevel:SpellID1,SpellID2,etc.;
 # FactionID may be set to 0 for the entry to apply buffs to bots of either faction
 # The default entries create a cross-faction level 60-69 Vanilla buffs, level 70-79 TBC buffs, and level 80 buffs for each implemented pve spec from the "Premade Specs" section
@@ -2494,12 +2683,9 @@ Playerbots.RandomClassSpecIndex.11.6 = 6
 #
 #
 
-# Enable buffs in ICC to make Heroic easier and more casual.
-# 30% more damage, 40% damage reduction (tank bots), increased all resistances, reduced threat for
-# non-tank bots, increased threat for tank bots.
-# Buffs will be applied on LDW, PP, Sindragosa and Lich King.
-# Default: 1 (enabled)
-Playerbots.EnableICCBuffs = 1
+# REMOVED (2026-10-23): Playerbots.EnableICCBuffs. The free ICC damage/damage-reduction/threat buffs for bots
+# are gone - bots play by the same rules as players - and the option is no longer read. Delete it from your
+# playerbots.conf; a leftover line is ignored.
 
 #
 #
@@ -2753,3 +2939,51 @@ Playerbots.TargetPosRecalcDistance = 0.1
 
 # Allow bots to be summoned near innkeepers
 Playerbots.SummonAtInnkeepersEnabled = 1
+
+###################################################################################################
+# USER PACK
+#
+# The user's own characters played by bots while he is offline. At world start (after
+# LoginDelaySecs) they are logged in without a master, grouped under one leader and play with the
+# random bots' open-world strategies ("grind" + "new rpg"/"rpg" for the leader, "follow" for the
+# others). They are not random bots: no randomize, gear, gold, level-up teleport or free spells.
+# A character the user logs in himself is left alone; the others then become his bots (alt bots:
+# they group with him, follow him and take his chat commands) until he logs out.
+# Party orders from the user: "dungeon list|<name>", "fly <taxi node>", "goto <place|x,y>",
+# "pack train", "pack stop", "pack status" (console: ".playerbots pack status|cmd <order>").
+
+# Enable the user pack (0 = off)
+# Default: 0
+Playerbots.UserPack.Enabled = 0
+
+# Character GUIDs (characters.guid), comma-separated
+# Example: "505,641,680,834,1001"
+Playerbots.UserPack.Guids = ""
+
+# Preferred group leader GUID while nobody plays (0 = the first one online)
+Playerbots.UserPack.Leader = 0
+
+# XP multiplier for these characters only (kills, quests, exploration), also while the user plays them
+Playerbots.UserPack.XpRate = 0.5
+
+# Seconds after world start before the pack is logged in
+Playerbots.UserPack.LoginDelaySecs = 30
+
+# Test harness streaks; empty = <LogsDir>/tests/streaks.json
+Playerbots.UserPack.StreaksFile = ""
+
+# A dungeon is allowed when its test content key has at least this many clean runs in a row.
+# Instances without a test content key are never allowed (default deny).
+Playerbots.UserPack.MinStreak = 3
+
+# "dungeon <name>" level window: lowest pack level >= content level - Below,
+# highest pack level <= content level + Above
+Playerbots.UserPack.DungeonLevelBelow = 3
+Playerbots.UserPack.DungeonLevelAbove = 10
+
+# Status lines appended to this file (relative to LogsDir) every StatusIntervalSecs (0 = never)
+Playerbots.UserPack.StatusLog = "pack_status.log"
+Playerbots.UserPack.StatusIntervalSecs = 600
+
+# While nobody plays: visit the class trainers (paying) every N levels of the lowest member (0 = never)
+Playerbots.UserPack.AutoTrainEveryLevels = 2

@@ -35,6 +35,22 @@ protected:
     }
 };
 
+// Tank only: Sepethrea (held by this tank) stands within Inferno reach of a flame that is not chasing
+// the tank, so the melee on her are in the fire; the tank drags her clear.
+class SepethreaBossFlameNearValue : public BoolCalculatedValue
+{
+public:
+    SepethreaBossFlameNearValue(PlayerbotAI* botAI)
+        : BoolCalculatedValue(botAI, "sepethrea boss flame near", 200) {}
+
+protected:
+    bool Calculate() override
+    {
+        return MechanarFlames::TankHoldsBoss(bot) &&
+               MechanarFlames::BossNearFlame(bot, MechanarFlames::INFERNO_AVOID_RANGE);
+    }
+};
+
 class SepethreaTrailDangerValue : public BoolCalculatedValue
 {
 public:
@@ -56,6 +72,8 @@ public:
             &TbcDungeonMechValueContext::sepethrea_flame_near;
         creators["sepethrea trail danger"] =
             &TbcDungeonMechValueContext::sepethrea_trail_danger;
+        creators["sepethrea boss flame near"] =
+            &TbcDungeonMechValueContext::sepethrea_boss_flame_near;
     }
 
 private:
@@ -72,6 +90,11 @@ private:
     static UntypedValue* sepethrea_trail_danger(PlayerbotAI* botAI)
     {
         return new SepethreaTrailDangerValue(botAI);
+    }
+
+    static UntypedValue* sepethrea_boss_flame_near(PlayerbotAI* botAI)
+    {
+        return new SepethreaBossFlameNearValue(botAI);
     }
 };
 

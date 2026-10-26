@@ -23,4 +23,23 @@ public:
     float GetValue(Action* action) override;
 };
 
+// On the lift leg (MechanarLift::ActiveLeg) nothing else moves the bot: no follow, no walk to the harness waypoint
+// (no path joins the levels), no chase while it rides.
+class MechanarLiftHoldMultiplier : public Multiplier
+{
+public:
+    MechanarLiftHoldMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "mechanar lift hold") {}
+    float GetValue(Action* action) override;
+};
+
+// Mechano-Lord Capacitus (MechanarCapacitus): no magic spell into Reflective Magic Shield, no melee damage dealer on
+// him through Reflective Damage Shield (normal), and the bot of the other charge than the tank keeps its own stack
+// beyond the boss instead of chasing back into the tank's pulse (heroic Polarity Shift).
+class CapacitusMultiplier : public Multiplier
+{
+public:
+    CapacitusMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "capacitus") {}
+    float GetValue(Action* action) override;
+};
+
 #endif

@@ -18,6 +18,7 @@ public:
 
     std::string const getName() override { return "nc"; }
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    void InitMultipliers(std::vector<Multiplier*>& multipliers) override;
 };
 
 #endif

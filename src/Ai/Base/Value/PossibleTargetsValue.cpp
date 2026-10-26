@@ -40,7 +40,7 @@ void PossibleTargetsValue::FindUnits(std::list<Unit*>& targets)
 
 bool PossibleTargetsValue::AcceptUnit(Unit* unit)
 {
-    if (!AttackersValue::IsPossibleTarget(unit, bot, range))
+    if (!AttackersValue::IsPossibleTarget(unit, bot, range) || AttackersValue::IsIgnoredCritter(unit, bot))
         return false;
 
     // Level-based PvP restrictions

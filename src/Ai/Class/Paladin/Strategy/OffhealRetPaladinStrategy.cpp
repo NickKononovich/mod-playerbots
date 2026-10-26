@@ -151,14 +151,8 @@ void OffhealRetPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "blessing of might",
-            {
-                NextAction("blessing of might", ACTION_NORMAL + 1)
-            }
-        )
-    );
+    // [b31_deep] removed: a "blessing of might" trigger no context registers (it never ran); blessings are given out of
+    // combat by "blessing on party by role" (GenericPaladinNonCombatStrategy).
     triggers.push_back(
         new TriggerNode(
         "low health",

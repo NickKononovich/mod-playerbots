@@ -5,6 +5,7 @@
  */
 
 #include "UldStrategy.h"
+#include "UldMultipliers.h"
 
 void RaidUlduarStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
@@ -319,4 +320,14 @@ void RaidUlduarStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "yogg-saron phase 3 positioning trigger",
         { NextAction("yogg-saron phase 3 positioning action", ACTION_RAID) }));
+
+    triggers.push_back(new TriggerNode(
+        "yogg-saron brain pet passive trigger",
+        { NextAction("yogg-saron brain pet passive action", ACTION_RAID + 1) }));
+}
+
+void RaidUlduarStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
+{
+    multipliers.push_back(new YoggSaronLaughingSkullMultiplier(botAI));
+    multipliers.push_back(new UlduarTankSwapMultiplier(botAI));
 }

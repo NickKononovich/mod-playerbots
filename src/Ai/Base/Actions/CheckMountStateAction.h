@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_CHECKMOUNTSTATEACTION_H
 #define PLAYERBOTS_CHECKMOUNTSTATEACTION_H
 
+#include "Trigger.h"
 #include "UseItemAction.h"
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,7 @@ struct PreferredMountCache
 };
 
 class PlayerbotAI;
+class SpellInfo;
 
 class CheckMountStateAction : public UseItemAction
 {
@@ -44,6 +46,10 @@ public:
 
     static void CompleteDismount(Player* bot);
     static void LoadPreferredMounts();
+    // The one whose mount state this bot copies: its master, else the leader of its group; never the bot itself.
+    static Player* GetMountLeader(PlayerbotAI* botAI);
+    static bool IsCastingMount(Player* player);
+    static bool IsMountedOrMounting(Player* player);
 
 private:
     Player* master;
@@ -52,7 +58,7 @@ private:
     static std::unordered_map<uint32, PreferredMountCache> mountCache;
     float CalculateDismountDistance() const;
     float CalculateMountDistance() const;
-    void Dismount();
+    bool Dismount();  // false: in the air, stays mounted
     void ClearStaleFlightFlags();
     bool ShouldFollowMasterMountState(Player* master, bool noAttackers, bool shouldMount) const;
     bool ShouldDismountForMaster(Player* master) const;
@@ -63,6 +69,17 @@ private:
     bool TryPreferredMount(Player* master) const;
     uint32 GetMountType(Player* master) const;
     bool TryRandomMountFiltered(std::map<int32, std::vector<uint32>> const& spells, int32 masterSpeed) const;
+    static SpellInfo const* GetMountSpell(Player* player);
+};
+
+// The leader's mount state differs from ours (it mounts, starts casting a mount, or dismounts): copy it now, not on
+// the next idle tick, so the group rides off and stops together.
+class LeaderMountStateTrigger : public Trigger
+{
+public:
+    LeaderMountStateTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader mount state", 500) {}
+
+    bool IsActive() override;
 };
 
 #endif

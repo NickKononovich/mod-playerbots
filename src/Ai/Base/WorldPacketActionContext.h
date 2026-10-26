@@ -60,6 +60,7 @@ public:
         creators["tell cannot equip"] = &WorldPacketActionContext::tell_cannot_equip;
         creators["loot roll"] = &WorldPacketActionContext::loot_roll;
         creators["master loot roll"] = &WorldPacketActionContext::master_loot_roll;
+        creators["record loot win"] = &WorldPacketActionContext::record_loot_win;
         creators["revive from corpse"] = &WorldPacketActionContext::revive_from_corpse;
         creators["find corpse"] = &WorldPacketActionContext::find_corpse;
         creators["auto release"] = &WorldPacketActionContext::auto_release;
@@ -82,6 +83,7 @@ public:
         creators["confirm quest"] = &WorldPacketActionContext::confirm_quest;
         creators["accept all quests"] = &WorldPacketActionContext::accept_all_quests;
         creators["accept quest share"] = &WorldPacketActionContext::accept_quest_share;
+        creators["use quest game object"] = &WorldPacketActionContext::use_quest_game_object;
         creators["quest update add kill"] = &WorldPacketActionContext::quest_update_add_kill;
         creators["quest update add item"] = &WorldPacketActionContext::quest_update_add_item;
         creators["quest update failed"] = &WorldPacketActionContext::quest_update_failed;
@@ -164,11 +166,13 @@ private:
     static Action* confirm_quest(PlayerbotAI* botAI) { return new ConfirmQuestAction(botAI); }
     static Action* accept_all_quests(PlayerbotAI* botAI) { return new AcceptAllQuestsAction(botAI); }
     static Action* accept_quest_share(PlayerbotAI* botAI) { return new AcceptQuestShareAction(botAI); }
+    static Action* use_quest_game_object(PlayerbotAI* botAI) { return new UseQuestGameObjectAction(botAI); }
     static Action* turn_in_query_quest(PlayerbotAI* botAI) { return new TurnInQueryQuestAction(botAI); }
     //static Action* quest_confirm_accept(PlayerbotAI* botAI) { return new QuestConfirmAcceptAction(botAI); }
 
     static Action* loot_roll(PlayerbotAI* botAI) { return new LootRollAction(botAI); }
     static Action* master_loot_roll(PlayerbotAI* botAI) { return new MasterLootRollAction(botAI); }
+    static Action* record_loot_win(PlayerbotAI* botAI) { return new RecordLootWinAction(botAI); }
     static Action* bg_join(PlayerbotAI* botAI) { return new BGJoinAction(botAI); }
     static Action* bg_leave(PlayerbotAI* botAI) { return new BGLeaveAction(botAI); }
     static Action* bg_status(PlayerbotAI* botAI) { return new BGStatusAction(botAI); }

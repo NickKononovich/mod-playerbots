@@ -10,11 +10,16 @@
 #include "BTActionContext.h"
 #include "BWLActionContext.h"
 #include "ChatActionContext.h"
+#include "ClassicActionContext.h"
+#include "EscortProtect.h"
+#include "BrdStrategy.h"
+#include "DungeonHazard.h"
 #include "EoEActionContext.h"
 #include "GruulActionContext.h"
 #include "HyjalActionContext.h"
 #include "ICCActionContext.h"
 #include "KaraActionContext.h"
+#include "LeaderContext.h"
 #include "MCActionContext.h"
 #include "MagActionContext.h"
 #include "NaxxActionContext.h"
@@ -24,6 +29,9 @@
 #include "SSCActionContext.h"
 #include "TKActionContext.h"
 #include "TbcDungeonActionContext.h"
+#include "SelfTravelContext.h"
+#include "StratActionContext.h"
+#include "TestRunnerContext.h"
 #include "UldActionContext.h"
 #include "VoAActionContext.h"
 #include "WorldPacketActionContext.h"
@@ -36,6 +44,7 @@ void AiObjectContext::BuildSharedActionContexts(
     actionContexts.Add(new ActionContext());
     actionContexts.Add(new ChatActionContext());
     actionContexts.Add(new WorldPacketActionContext());
+    actionContexts.Add(new LeaderActionContext());
     actionContexts.Add(new RaidAq20ActionContext());
     actionContexts.Add(new RaidMcActionContext());
     actionContexts.Add(new RaidBwlActionContext());
@@ -61,6 +70,14 @@ void AiObjectContext::BuildSharedActionContexts(
     actionContexts.Add(new TbcDungeonUnderbogActionContext());
     actionContexts.Add(new TbcDungeonMagistersTerraceActionContext());
     actionContexts.Add(new TbcDungeonHellfireRampartsActionContext());
+    actionContexts.Add(new TbcDungeonSlavePensActionContext());
+    actionContexts.Add(new TbcDungeonBloodFurnaceActionContext());
+    actionContexts.Add(new TbcDungeonManaTombsActionContext());
+    actionContexts.Add(new TbcDungeonShatteredHallsActionContext());
+    actionContexts.Add(new TbcDungeonShadowLabyrinthActionContext());
+    actionContexts.Add(new TbcDungeonSteamvaultActionContext());
+    actionContexts.Add(new TbcDungeonArcatrazActionContext());
+    actionContexts.Add(new TbcDungeonBlackMorassActionContext());
     actionContexts.Add(new WotlkDungeonUKActionContext());
     actionContexts.Add(new WotlkDungeonNexActionContext());
     actionContexts.Add(new WotlkDungeonANActionContext());
@@ -76,4 +93,12 @@ void AiObjectContext::BuildSharedActionContexts(
     actionContexts.Add(new WotlkDungeonFoSActionContext());
     actionContexts.Add(new WotlkDungeonPoSActionContext());
     actionContexts.Add(new WotlkDungeonToCActionContext());
+    actionContexts.Add(new WotlkDungeonHoRActionContext());
+    actionContexts.Add(new DungeonHazardActionContext());
+    actionContexts.Add(new ClassicDungeonActionContext());
+    actionContexts.Add(new ClassicDungeonStratholmeActionContext());
+    actionContexts.Add(new DungeonEscortActionContext());
+    actionContexts.Add(new ClassicDungeonBrdActionContext());
+    actionContexts.Add(new TestRunnerActionContext());
+    actionContexts.Add(new SelfTravelActionContext());
 }

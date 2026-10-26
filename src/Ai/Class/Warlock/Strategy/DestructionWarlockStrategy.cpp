@@ -48,6 +48,16 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
             }
         )
     );
+    // [b31_deep] wowsims destro APL: Conflagrate, then Curse of Doom while the fight lasts > 60 s (only in the
+    // coordinator's damage-curse slot; the Curse of the Elements owner and a solo Destruction warlock keep CoE).
+    triggers.push_back(
+        new TriggerNode(
+            "damage curse of doom",
+            {
+                NextAction("curse of doom", 19.4f)
+            }
+        )
+    );
     triggers.push_back(
         new TriggerNode(
             "chaos bolt",
@@ -57,7 +67,16 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         )
     );
 
-    // Note: Corruption won't be used after the character learns Incinerate at level 64
+    triggers.push_back(
+        new TriggerNode(
+            "corruption long fight",
+            {
+                NextAction("corruption", 18.5f)
+            }
+        )
+    );
+
+    // Leveling filler: these rank below Incinerate once it is learned at level 64
     triggers.push_back(
         new TriggerNode(
             "corruption on attacker",
@@ -75,20 +94,34 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         )
     );
 
-    // Shadowburn as execute if target is low HP
+    // Shadowburn as execute if target is low HP. [b35_lock] Below Incinerate (5.6): standing still, Incinerate deals
+    // more per second (bot logs, Thalnos: Shadowburn 3157 per 1.33 s GCD = 2374 dps, Incinerate 5441 per ~1.77 s =
+    // 3074 dps; at 18.0 it cost ~0.4 %). It still wins while moving (no cast-time spell is possible then) and when
+    // Incinerate would not land before the target dies (CastTimeMultiplier cuts Incinerate to x0.1).
     triggers.push_back(
         new TriggerNode(
             "target critical health",
             {
-                NextAction("shadowburn", 18.0f)
+                NextAction("shadowburn", 5.55f)
             }
         )
     );
 
-    // Life Tap glyph buff, and Life Tap as filler
+    // [b35_lock] Inferno on a boss whose fight ends within 61 s (wowsims destro "remaining < 61 s"; sim +6-10 % on
+    // the short 5-man boss fights). After Conflagrate / Curse of Doom, before Chaos Bolt.
     triggers.push_back(
         new TriggerNode(
-            "life tap glyph buff",
+            "inferno boss",
+            {
+                NextAction("inferno", 19.3f)
+            }
+        )
+    );
+
+    // Life Tap glyph buff, and Life Tap as filler ([b31_deep] refreshed < 3 s before it drops, wowsims destro)
+    triggers.push_back(
+        new TriggerNode(
+            "life tap glyph buff early",
             {
                 NextAction("life tap", 29.5f)
             }
@@ -111,4 +144,8 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus backlash", { NextAction("incinerate", 18.8f) }));
+    triggers.push_back(new TriggerNode("set bonus ascendant pact", { NextAction("life tap", 5.65f) }));
 }

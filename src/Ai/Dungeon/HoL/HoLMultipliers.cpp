@@ -7,10 +7,12 @@
 #include "HoLMultipliers.h"
 #include "Action.h"
 #include "ChooseTargetActions.h"
+#include "DungeonHazard.h"
 #include "GenericSpellActions.h"
 #include "HoLActions.h"
 #include "HoLTriggers.h"
 #include "MovementActions.h"
+#include "TbcHazard.h"
 #include "WarriorActions.h"
 
 float BjarngrimMultiplier::GetValue(Action* action)
@@ -60,7 +62,19 @@ float BjarngrimMultiplier::GetValue(Action* action)
 float VolkhanMultiplier::GetValue(Action* action)
 {
     Unit* boss = AI_VALUE2(Unit*, "find target", "volkhan");
-    if (!boss || PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot)) { return 1.0f; }
+    if (!boss) { return 1.0f; }
+
+    // Shatter is imminent: nothing may walk the bot back next to a Brittle Golem.
+    if (dynamic_cast<MovementAction*>(action) && !dynamic_cast<AvoidBrittleGolemAction*>(action) &&
+        HoLShared::BrittleGolemThreat(bot, boss))
+        return 0.0f;
+
+    if (PlayerbotAI::IsHeal(bot))
+        return 1.0f;
+
+    // Every golem the tank's AoE finishes becomes a Brittle Golem that Shattering Stomp detonates.
+    if (PlayerbotAI::IsTank(bot))
+        return action->getThreatType() == Action::ActionThreatType::Aoe ? 0.0f : 1.0f;
 
     if (dynamic_cast<DpsAssistAction*>(action))
     {
@@ -80,12 +94,13 @@ float IonarMultiplier::GetValue(Action* action)
     Unit* boss = AI_VALUE2(Unit*, "find target", "ionar");
     if (!boss) { return 1.0f; }
 
-    // Check if the boss has dispersed into Sparks (not visible).
+    // Check if the boss has dispersed into Sparks (not visible). Only the Spark / reform-spot escape
+    // (DungeonHazard.cpp) and the Static Overload spread move a bot then: the Sparks follow their targets.
     if (!bot->CanSeeOrDetect(boss))
     {
         // Block MovementActions except for specific exceptions.
         if (dynamic_cast<MovementAction*>(action)
-            && !dynamic_cast<DispersePositionAction*>(action)
+            && !dynamic_cast<AvoidDungeonHazardAction*>(action)
             && !dynamic_cast<StaticOverloadSpreadAction*>(action))
         {
             return 0.0f;
@@ -124,7 +139,14 @@ float LokenMultiplier::GetValue(Action* action)
         {
             return 0.0f;
         }
+        return 1.0f;
     }
+
+    // Pulsing Shockwave grows with distance: between Novas only the stack may move a ranged bot or a healer
+    // (ranged positioning walked them back out to 25-30 yd, where the pulses killed them in waves 4-6).
+    if (!PlayerbotAI::IsMelee(bot) && TbcHazard::IsRepositionAction(action) &&
+        !dynamic_cast<LokenStackAction*>(action) && !dynamic_cast<AvoidLightningNovaAction*>(action))
+        return 0.0f;
 
     return 1.0f; // Default multiplier value for other cases.
 }

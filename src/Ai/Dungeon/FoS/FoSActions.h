@@ -37,21 +37,34 @@ public:
     bool Execute(Event event) override;
 
     bool isUseful() override;
+
+private:
+    // Soulstorm: everyone, ranged and healers too, at Bronjahm's feet inside the 10 yd eye.
+    bool StackInSoulstorm(Unit* boss);
 };
 
-class DevourerOfSoulsAction : public AttackAction
+// Mirrored Soul copies 45% of the damage the Devourer takes onto a player: everyone stops damaging it.
+class DevourerOfSoulsAction : public Action
 {
 public:
-    DevourerOfSoulsAction(PlayerbotAI* botAI, float distance = 10.0f, float delta_angle = M_PI / 8)
-        : AttackAction(botAI, "devourer of souls")
-    {
-        this->distance = distance;
-        this->delta_angle = delta_angle;
-    }
-    virtual bool Execute(Event event);
+    DevourerOfSoulsAction(PlayerbotAI* botAI) : Action(botAI, "devourer of souls") {}
+    bool Execute(Event event) override;
+};
 
-protected:
-    float distance, delta_angle;
+// Wailing Souls sweeps a beam (104 degrees wide in heroic) up to 87 degrees from the Devourer's facing in a random
+// direction: run to the narrow arc straight behind it that no remaining beam can reach.
+class AvoidWailingSoulsAction : public MovementAction
+{
+public:
+    AvoidWailingSoulsAction(PlayerbotAI* botAI) : MovementAction(botAI, "fos avoid wailing souls") {}
+    bool Execute(Event event) override;
+};
+
+class FoSInterruptAction : public Action
+{
+public:
+    FoSInterruptAction(PlayerbotAI* botAI) : Action(botAI, "fos interrupt") {}
+    bool Execute(Event event) override;
 };
 
 #endif

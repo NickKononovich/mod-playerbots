@@ -145,6 +145,123 @@ public:
     bool IsActive() override;
 };
 
+// Tank only: a mob is hitting a healer or damage dealer of the group ("group member attacker" value), or a
+// friend within Righteous Defense range is hit by a mob out of taunt range ("attacked group member").
+class MobAttackingGroupMemberTrigger : public Trigger
+{
+public:
+    MobAttackingGroupMemberTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mob attacking group member") {}
+
+    bool IsActive() override;
+};
+
+// Tank only: `minAttackers` (PEEL_AOE_MIN_ATTACKERS) or more mobs on non-tank members within `range` yards of the
+// tank. One mob is taunted back; from two on the tank takes them with its area threat (Righteous Defense takes up to
+// three). With one mob in reach of the area threat ("mob attacking group member nearby") it is what holds the mob
+// while the taunts cool down.
+class MobsAttackingGroupMembersTrigger : public Trigger
+{
+public:
+    static constexpr uint8 PEEL_AOE_MIN_ATTACKERS = 2;
+
+    MobsAttackingGroupMembersTrigger(PlayerbotAI* botAI, std::string const name, std::string const range,
+                                     uint8 minAttackers = PEEL_AOE_MIN_ATTACKERS)
+        : Trigger(botAI, name), range(range), minAttackers(minAttackers)
+    {
+    }
+
+    bool IsActive() override;
+
+private:
+    std::string range;
+    uint8 minAttackers;
+};
+
+// Tank only: the mob the peel would take ("group member attacker") stands out of melee within
+// TankPeelWalkRange yards: the tank walks to it, as a player does while its taunts cool down (wave 10: dps and
+// healers died to one mob with the tank 3-12 yd away).
+class GroupMemberAttackerNearTrigger : public Trigger
+{
+public:
+    GroupMemberAttackerNearTrigger(PlayerbotAI* botAI) : Trigger(botAI, "group member attacker near") {}
+
+    bool IsActive() override;
+};
+
+// Tank only: two or more mobs on non-tank members within taunt range and some of them out of reach of the tank's
+// area threat, or any mob on the healer out of that reach ("far healer attacker"): the tank steps towards them
+// ("move to group member attackers") and takes them with an AoE.
+class GroupMemberAttackersFarTrigger : public Trigger
+{
+public:
+    GroupMemberAttackersFarTrigger(PlayerbotAI* botAI) : Trigger(botAI, "group member attackers far") {}
+
+    bool IsActive() override;
+};
+
+// [taunt_reaction] Tank in combat: a mob hits a non-tank member in taunt range and sight ("group member attacker"),
+// or a friend in Righteous Defense range ("attacked group member"), and the class's taunt, ranged threat spell or
+// area taunt is off cooldown (TauntReactionAction).
+class TauntReactionTrigger : public Trigger
+{
+public:
+    TauntReactionTrigger(PlayerbotAI* botAI) : Trigger(botAI, "taunt reaction") {}
+
+    bool IsActive() override;
+};
+
+// [flee_stop] Any damage dealer or tank in combat: a mob of the fight runs at low health ("fleeing mob" value) and
+// nobody of the group stunned or snared it within FledMobs::STOP_SPREAD_MS.
+class FleeingMobTrigger : public Trigger
+{
+public:
+    FleeingMobTrigger(PlayerbotAI* botAI) : Trigger(botAI, "fleeing mob") {}
+
+    bool IsActive() override;
+};
+
+// [fled_survivor] Tank out of combat: a mob that fled from an earlier fight stands idle and damaged within 40 yd.
+class FledSurvivorNearTrigger : public Trigger
+{
+public:
+    FledSurvivorNearTrigger(PlayerbotAI* botAI) : Trigger(botAI, "fled survivor near") {}
+
+    bool IsActive() override;
+};
+
+// Tank only, in and out of combat: a mob hits the healer out of the tank's area threat ("far healer attacker").
+class HealerAttackedFarTrigger : public Trigger
+{
+public:
+    HealerAttackedFarTrigger(PlayerbotAI* botAI) : Trigger(botAI, "healer attacked far") {}
+
+    bool IsActive() override;
+};
+
+// Tank out of combat: a mob hits a non-tank member ("defend member target") and the tank is not attacking it yet.
+class GroupMemberAttackedTrigger : public Trigger
+{
+public:
+    GroupMemberAttackedTrigger(PlayerbotAI* botAI) : Trigger(botAI, "group member attacked") {}
+
+    bool IsActive() override;
+};
+
+// Tank out of combat: its current target is a dungeon boss within IDLE_BOSS_RANGE that is not in combat, and has been
+// for IDLE_BOSS_MS (a boss that does not aggro on proximity: the Violet Hold prisoners, Oculus Drakos / Varos /
+// Urom). The target was set by someone else (the harness' body pull, a target pick) and nothing swung at him.
+class IdleBossAtTankTrigger : public Trigger
+{
+public:
+    IdleBossAtTankTrigger(PlayerbotAI* botAI) : Trigger(botAI, "idle boss at tank") {}
+
+    bool IsActive() override;
+
+private:
+    ObjectGuid _boss;
+    uint32 _sinceMs = 0;
+};
+
 class HasAggroTrigger : public Trigger
 {
 public:
@@ -260,6 +377,23 @@ public:
     bool IsActive() override;
 };
 
+// A non-tank close to pulling aggro: its threat on its target is near the tank's. Fires before the mob turns,
+// unlike "medium threat" (mobs already on the bot); class strategies answer with their threat drop. With
+// `raidOnly` ("high threat in raid") only inside a raid, for drops that cost too much damage in a 5-man.
+class HighThreatTrigger : public Trigger
+{
+public:
+    HighThreatTrigger(PlayerbotAI* botAI, bool raidOnly = false)
+        : Trigger(botAI, raidOnly ? "high threat in raid" : "high threat"), _raidOnly(raidOnly)
+    {
+    }
+
+    bool IsActive() override;
+
+private:
+    bool _raidOnly;
+};
+
 class AoeTrigger : public AttackerCountTrigger
 {
 public:
@@ -285,6 +419,15 @@ class NoDrinkTrigger : public Trigger
 {
 public:
     NoDrinkTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no drink trigger") {}
+
+    bool IsActive() override;
+};
+
+// Low on real food/drink out of combat; checked every 5 s (bounded bag walk), the action looks for a vendor.
+class NeedFoodRestockTrigger : public Trigger
+{
+public:
+    NeedFoodRestockTrigger(PlayerbotAI* botAI) : Trigger(botAI, "need food restock", 5) {}
 
     bool IsActive() override;
 };
@@ -353,7 +496,7 @@ public:
 class NoAttackersTrigger : public Trigger
 {
 public:
-    NoAttackersTrigger(PlayerbotAI* botAI) : Trigger(botAI, "no attackers") {}
+    NoAttackersTrigger(PlayerbotAI* botAI, std::string const name = "no attackers") : Trigger(botAI, name) {}
 
     bool IsActive() override;
 };
@@ -646,7 +789,8 @@ private:
 class TankAssistTrigger : public NoAttackersTrigger
 {
 public:
-    TankAssistTrigger(PlayerbotAI* botAI) : NoAttackersTrigger(botAI) {}
+    // its own name: as "no attackers" it was logged under the other trigger's name and looked inactive
+    TankAssistTrigger(PlayerbotAI* botAI) : NoAttackersTrigger(botAI, "tank assist") {}
 
     bool IsActive() override;
 };

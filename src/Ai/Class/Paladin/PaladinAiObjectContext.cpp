@@ -16,6 +16,7 @@
 #include "PaladinPullStrategy.h"
 #include "PaladinTriggers.h"
 #include "Playerbots.h"
+#include "TankAoeThreat.h"
 #include "TankPaladinStrategy.h"
 
 class PaladinStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -120,7 +121,6 @@ public:
         creators["crusader aura"] = &PaladinTriggerFactoryInternal::crusader_aura;
         creators["retribution aura"] = &PaladinTriggerFactoryInternal::retribution_aura;
         creators["devotion aura"] = &PaladinTriggerFactoryInternal::devotion_aura;
-        creators["sanctity aura"] = &PaladinTriggerFactoryInternal::sanctity_aura;
         creators["concentration aura"] = &PaladinTriggerFactoryInternal::concentration_aura;
         creators["shadow resistance aura"] = &PaladinTriggerFactoryInternal::shadow_resistance_aura;
         creators["frost resistance aura"] = &PaladinTriggerFactoryInternal::frost_resistance_aura;
@@ -135,6 +135,9 @@ public:
         creators["cleanse party member cure magic"] = &PaladinTriggerFactoryInternal::CleanseCurePartyMemberMagic;
         creators["righteous fury"] = &PaladinTriggerFactoryInternal::righteous_fury;
         creators["holy shield"] = &PaladinTriggerFactoryInternal::holy_shield;
+        creators["tank aoe threat"] = &PaladinTriggerFactoryInternal::tank_aoe_threat;
+        creators["tank aoe pack"] = &PaladinTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
+        creators["tank aoe crowd"] = &PaladinTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
         creators["hammer of justice on enemy healer"] =
             &PaladinTriggerFactoryInternal::hammer_of_justice_on_enemy_target;
         creators["hammer of justice on snare target"] =
@@ -151,6 +154,9 @@ public:
         creators["beacon of light on main tank"] = &PaladinTriggerFactoryInternal::beacon_of_light_on_main_tank;
         creators["sacred shield on main tank"] = &PaladinTriggerFactoryInternal::sacred_shield_on_main_tank;
         creators["hand of freedom on party"] = &PaladinTriggerFactoryInternal::hand_of_freedom_on_party;
+        creators["hand of salvation on party"] = &PaladinTriggerFactoryInternal::hand_of_salvation_on_party;
+        creators["hand of sacrifice on main tank"] = &PaladinTriggerFactoryInternal::hand_of_sacrifice_on_main_tank;
+        creators["aura mastery"] = &PaladinTriggerFactoryInternal::aura_mastery;
 
         creators["blessing of kings on party"] = &PaladinTriggerFactoryInternal::blessing_of_kings_on_party;
         creators["blessing of wisdom on party"] = &PaladinTriggerFactoryInternal::blessing_of_wisdom_on_party;
@@ -159,6 +165,26 @@ public:
 
         creators["avenging wrath"] = &PaladinTriggerFactoryInternal::avenging_wrath;
         creators["greater blessing needed"] = &PaladinTriggerFactoryInternal::greater_blessing_needed;
+        creators["blessing on party by role"] = &PaladinTriggerFactoryInternal::blessing_on_party_by_role;
+        creators["ret divine plea"] = &PaladinTriggerFactoryInternal::ret_divine_plea;
+        creators["holy wrath target"] = &PaladinTriggerFactoryInternal::holy_wrath_target;
+        creators["holy wrath undead pack"] = &PaladinTriggerFactoryInternal::holy_wrath_undead_pack;  // [b34_pal]
+        creators["seal state lost"] = &PaladinTriggerFactoryInternal::seal_state_lost;  // [rot_b31_pdd]
+        creators["holy divine plea"] = &PaladinTriggerFactoryInternal::holy_divine_plea;  // [rot_b31_pdd]
+        // [b31_pal]
+        creators["judgements of the pure"] = &PaladinTriggerFactoryInternal::judgements_of_the_pure;
+        creators["holy divine illumination"] = &PaladinTriggerFactoryInternal::holy_divine_illumination;
+        creators["shield of righteousness ready"] = &PaladinTriggerFactoryInternal::shield_of_righteousness_ready;
+        creators["hammer of the righteous ready"] = &PaladinTriggerFactoryInternal::hammer_of_the_righteous_ready;
+        creators["judgement of wisdom ready"] = &PaladinTriggerFactoryInternal::judgement_of_wisdom_ready;
+        creators["consecration ready"] = &PaladinTriggerFactoryInternal::consecration_ready;
+        creators["avenger's shield boss filler"] = &PaladinTriggerFactoryInternal::avengers_shield_boss_filler;
+        // [b31_deep]
+        creators["paladin tank judges wisdom"] = &PaladinTriggerFactoryInternal::paladin_tank_judges_wisdom;
+        creators["tank seal of wisdom"] = &PaladinTriggerFactoryInternal::tank_seal_of_wisdom;
+        creators["infusion of light"] = &PaladinTriggerFactoryInternal::infusion_of_light;
+        creators["holy light boss tank"] = &PaladinTriggerFactoryInternal::holy_light_boss_tank;
+        creators["holy avenging wrath"] = &PaladinTriggerFactoryInternal::holy_avenging_wrath;
     }
 
 private:
@@ -167,6 +193,10 @@ private:
     static Trigger* divine_favor(PlayerbotAI* botAI) { return new DivineFavorTrigger(botAI); }
     static Trigger* divine_shield_low_health(PlayerbotAI* botAI) { return new DivineShieldLowHealthTrigger(botAI); }
     static Trigger* holy_shield(PlayerbotAI* botAI) { return new HolyShieldTrigger(botAI); }
+    // Consecration covers 8 yd around the paladin
+    static Trigger* tank_aoe_threat(PlayerbotAI* botAI) { return new TankAoeThreatTrigger(botAI, 8.0f, 6.0f); }
+    static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 8.0f); }  // [b32_tank_aoe]
+    static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
     static Trigger* righteous_fury(PlayerbotAI* botAI) { return new RighteousFuryTrigger(botAI); }
     static Trigger* judgement(PlayerbotAI* botAI) { return new JudgementTrigger(botAI); }
     static Trigger* judgement_of_wisdom(PlayerbotAI* botAI) { return new JudgementOfWisdomTrigger(botAI); }
@@ -178,7 +208,6 @@ private:
     static Trigger* crusader_aura(PlayerbotAI* botAI) { return new CrusaderAuraTrigger(botAI); }
     static Trigger* retribution_aura(PlayerbotAI* botAI) { return new RetributionAuraTrigger(botAI); }
     static Trigger* devotion_aura(PlayerbotAI* botAI) { return new DevotionAuraTrigger(botAI); }
-    static Trigger* sanctity_aura(PlayerbotAI* botAI) { return new SanctityAuraTrigger(botAI); }
     static Trigger* concentration_aura(PlayerbotAI* botAI) { return new ConcentrationAuraTrigger(botAI); }
     static Trigger* shadow_resistance_aura(PlayerbotAI* botAI) { return new ShadowResistanceAuraTrigger(botAI); }
     static Trigger* frost_resistance_aura(PlayerbotAI* botAI) { return new FrostResistanceAuraTrigger(botAI); }
@@ -219,6 +248,12 @@ private:
     static Trigger* beacon_of_light_on_main_tank(PlayerbotAI* botAI) { return new BeaconOfLightOnMainTankTrigger(botAI); }
     static Trigger* sacred_shield_on_main_tank(PlayerbotAI* botAI) { return new SacredShieldOnMainTankTrigger(botAI); }
     static Trigger* hand_of_freedom_on_party(PlayerbotAI* botAI) { return new HandOfFreedomOnPartyTrigger(botAI); }
+    static Trigger* hand_of_salvation_on_party(PlayerbotAI* botAI) { return new HandOfSalvationOnPartyTrigger(botAI); }
+    static Trigger* hand_of_sacrifice_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new HandOfSacrificeOnMainTankTrigger(botAI);
+    }
+    static Trigger* aura_mastery(PlayerbotAI* botAI) { return new AuraMasteryTrigger(botAI); }
 
     static Trigger* blessing_of_kings_on_party(PlayerbotAI* botAI) { return new BlessingOfKingsOnPartyTrigger(botAI); }
     static Trigger* blessing_of_wisdom_on_party(PlayerbotAI* botAI)
@@ -236,6 +271,45 @@ private:
     {
         return new GreaterBlessingNeededTrigger(botAI);
     }
+    static Trigger* blessing_on_party_by_role(PlayerbotAI* botAI) { return new BlessingOnPartyByRoleTrigger(botAI); }
+    static Trigger* ret_divine_plea(PlayerbotAI* botAI) { return new RetDivinePleaTrigger(botAI); }
+    static Trigger* holy_wrath_target(PlayerbotAI* botAI) { return new HolyWrathTargetTrigger(botAI); }
+    static Trigger* holy_wrath_undead_pack(PlayerbotAI* botAI)  // [b34_pal]
+    {
+        return new HolyWrathUndeadPackTrigger(botAI);
+    }
+    static Trigger* seal_state_lost(PlayerbotAI* botAI) { return new SealStateLostTrigger(botAI); }
+    static Trigger* holy_divine_plea(PlayerbotAI* botAI) { return new HolyDivinePleaTrigger(botAI); }
+    // [b31_pal]
+    static Trigger* judgements_of_the_pure(PlayerbotAI* botAI) { return new JudgementsOfThePureTrigger(botAI); }
+    static Trigger* holy_divine_illumination(PlayerbotAI* botAI) { return new HolyDivineIlluminationTrigger(botAI); }
+    static Trigger* shield_of_righteousness_ready(PlayerbotAI* botAI)
+    {
+        return new PaladinSpellReadyTrigger(botAI, "shield of righteousness");
+    }
+    static Trigger* hammer_of_the_righteous_ready(PlayerbotAI* botAI)
+    {
+        return new PaladinSpellReadyTrigger(botAI, "hammer of the righteous");
+    }
+    static Trigger* judgement_of_wisdom_ready(PlayerbotAI* botAI)
+    {
+        return new PaladinSpellReadyTrigger(botAI, "judgement of wisdom");
+    }
+    // a mana floor: Consecration is the dearest of the five
+    static Trigger* consecration_ready(PlayerbotAI* botAI)
+    {
+        return new PaladinSpellReadyTrigger(botAI, "consecration", 30);
+    }
+    static Trigger* avengers_shield_boss_filler(PlayerbotAI* botAI)
+    {
+        return new AvengersShieldBossFillerTrigger(botAI);
+    }
+    // [b31_deep]
+    static Trigger* paladin_tank_judges_wisdom(PlayerbotAI* botAI) { return new PaladinTankJudgesWisdomTrigger(botAI); }
+    static Trigger* tank_seal_of_wisdom(PlayerbotAI* botAI) { return new TankSealOfWisdomTrigger(botAI); }
+    static Trigger* infusion_of_light(PlayerbotAI* botAI) { return new InfusionOfLightTrigger(botAI); }
+    static Trigger* holy_light_boss_tank(PlayerbotAI* botAI) { return new HolyLightBossTankTrigger(botAI); }
+    static Trigger* holy_avenging_wrath(PlayerbotAI* botAI) { return new HolyAvengingWrathTrigger(botAI); }
 };
 
 class PaladinAiObjectContextInternal : public NamedObjectContext<Action>
@@ -263,6 +337,7 @@ public:
         creators["concentration aura"] = &PaladinAiObjectContextInternal::concentration_aura;
         creators["holy wrath"] = &PaladinAiObjectContextInternal::holy_wrath;
         creators["consecration"] = &PaladinAiObjectContextInternal::consecration;
+        creators["ret consecration"] = &PaladinAiObjectContextInternal::ret_consecration;  // [b31_deep]
         creators["cleanse disease"] = &PaladinAiObjectContextInternal::cleanse_disease;
         creators["cleanse poison"] = &PaladinAiObjectContextInternal::cleanse_poison;
         creators["cleanse magic"] = &PaladinAiObjectContextInternal::cleanse_magic;
@@ -295,6 +370,8 @@ public:
         creators["judgement of justice"] = &PaladinAiObjectContextInternal::judgement_of_justice;
         creators["hammer of wrath"] = &PaladinAiObjectContextInternal::hammer_of_wrath;
         creators["holy shield"] = &PaladinAiObjectContextInternal::holy_shield;
+        // [b31_holyshield_pull]
+        creators["holy shield pre pull"] = &PaladinAiObjectContextInternal::holy_shield_pre_pull;
         creators["hammer of the righteous"] = &PaladinAiObjectContextInternal::hammer_of_the_righteous;
         creators["retribution aura"] = &PaladinAiObjectContextInternal::retribution_aura;
         creators["shadow resistance aura"] = &PaladinAiObjectContextInternal::shadow_resistance_aura;
@@ -310,13 +387,35 @@ public:
         creators["turn undead"] = &PaladinAiObjectContextInternal::turn_undead;
         creators["blessing of protection on party"] = &PaladinAiObjectContextInternal::blessing_of_protection_on_party;
         creators["righteous defense"] = &PaladinAiObjectContextInternal::righteous_defense;
+        creators["righteous defense on attacked group member"] =
+            &PaladinAiObjectContextInternal::righteous_defense_on_attacked_group_member;
+        creators["righteous defense on swarmed group member"] =
+            &PaladinAiObjectContextInternal::righteous_defense_on_swarmed_group_member;
+        creators["hand of reckoning on group member attacker"] =
+            &PaladinAiObjectContextInternal::hand_of_reckoning_on_group_member_attacker;
+        creators["avenger's shield on group member attacker"] =
+            &PaladinAiObjectContextInternal::avengers_shield_on_group_member_attacker;
+        creators["hammer of justice on group member attacker"] =
+            &PaladinAiObjectContextInternal::hammer_of_justice_on_group_member_attacker;
+        creators["hammer of the righteous on group member attacker"] =
+            &PaladinAiObjectContextInternal::hammer_of_the_righteous_on_group_member_attacker;
+        creators["shield of righteousness on group member attacker"] =
+            &PaladinAiObjectContextInternal::shield_of_righteousness_on_group_member_attacker;
+        creators["judgement of wisdom on group member attacker"] =
+            &PaladinAiObjectContextInternal::judgement_of_wisdom_on_group_member_attacker;
+        creators["consecration on group member attackers"] =
+            &PaladinAiObjectContextInternal::consecration_on_group_member_attackers;
+        creators["consecration tank aoe"] = &PaladinAiObjectContextInternal::consecration_tank_aoe;
+        creators["holy wrath on group member attackers"] =
+            &PaladinAiObjectContextInternal::holy_wrath_on_group_member_attackers;
+        creators["holy wrath undead pack"] = &PaladinAiObjectContextInternal::holy_wrath_undead_pack;  // [b34_pal]
         creators["repentance"] = &PaladinAiObjectContextInternal::repentance;
         creators["repentance on snare target"] = &PaladinAiObjectContextInternal::repentance_on_snare_target;
         creators["repentance on enemy healer"] = &PaladinAiObjectContextInternal::repentance_on_enemy_healer;
-        creators["sanctity aura"] = &PaladinAiObjectContextInternal::sanctity_aura;
         creators["holy shock"] = &PaladinAiObjectContextInternal::holy_shock;
         creators["holy shock on party"] = &PaladinAiObjectContextInternal::holy_shock_on_party;
         creators["divine plea"] = &PaladinAiObjectContextInternal::divine_plea;
+        creators["drop stale seal"] = &PaladinAiObjectContextInternal::drop_stale_seal;  // [rot_b31_pdd]
         creators["shield of righteousness"] = &PaladinAiObjectContextInternal::shield_of_righteousness;
         creators["beacon of light on main tank"] = &PaladinAiObjectContextInternal::beacon_of_light_on_main_tank;
         creators["sacred shield on main tank"] = &PaladinAiObjectContextInternal::sacred_shield_on_main_tank;
@@ -325,8 +424,13 @@ public:
         creators["divine sacrifice"] = &PaladinAiObjectContextInternal::divine_sacrifice;
         creators["cancel divine sacrifice"] = &PaladinAiObjectContextInternal::cancel_divine_sacrifice;
         creators["hand of freedom on party"] = &PaladinAiObjectContextInternal::hand_of_freedom_on_party;
+        creators["hand of salvation on party"] = &PaladinAiObjectContextInternal::hand_of_salvation_on_party;
+        creators["hand of sacrifice on main tank"] = &PaladinAiObjectContextInternal::hand_of_sacrifice_on_main_tank;
+        creators["hand of sacrifice on spiking tank"] = &PaladinAiObjectContextInternal::hand_of_sacrifice_spike;
+        creators["aura mastery"] = &PaladinAiObjectContextInternal::aura_mastery;
         creators["cast greater blessing assignment"] =
             &PaladinAiObjectContextInternal::cast_greater_blessing_assignment;
+        creators["blessing on party by role"] = &PaladinAiObjectContextInternal::blessing_on_party_by_role;
     }
 
 private:
@@ -370,6 +474,7 @@ private:
     static Action* concentration_aura(PlayerbotAI* botAI) { return new CastConcentrationAuraAction(botAI); }
     static Action* holy_wrath(PlayerbotAI* botAI) { return new CastHolyWrathAction(botAI); }
     static Action* consecration(PlayerbotAI* botAI) { return new CastConsecrationAction(botAI); }
+    static Action* ret_consecration(PlayerbotAI* botAI) { return new CastRetConsecrationAction(botAI); }
     static Action* cleanse_poison(PlayerbotAI* botAI) { return new CastCleansePoisonAction(botAI); }
     static Action* cleanse_disease(PlayerbotAI* botAI) { return new CastCleanseDiseaseAction(botAI); }
     static Action* cleanse_magic(PlayerbotAI* botAI) { return new CastCleanseMagicAction(botAI); }
@@ -405,6 +510,7 @@ private:
     static Action* judgement_of_justice(PlayerbotAI* botAI) { return new CastJudgementOfJusticeAction(botAI); }
     static Action* hammer_of_wrath(PlayerbotAI* botAI) { return new CastHammerOfWrathAction(botAI); }
     static Action* holy_shield(PlayerbotAI* botAI) { return new CastHolyShieldAction(botAI); }
+    static Action* holy_shield_pre_pull(PlayerbotAI* botAI) { return new CastHolyShieldPrePullAction(botAI); }
     static Action* hammer_of_the_righteous(PlayerbotAI* botAI) { return new CastHammerOfTheRighteousAction(botAI); }
     static Action* retribution_aura(PlayerbotAI* botAI) { return new CastRetributionAuraAction(botAI); }
     static Action* shadow_resistance_aura(PlayerbotAI* botAI) { return new CastShadowResistanceAuraAction(botAI); }
@@ -419,14 +525,75 @@ private:
         return new CastHammerOfJusticeSnareAction(botAI);
     }
     static Action* righteous_defense(PlayerbotAI* botAI) { return new CastRighteousDefenseAction(botAI); }
+    static Action* righteous_defense_on_attacked_group_member(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnAttackedGroupMemberAction(botAI, "righteous defense");
+    }
+    static Action* righteous_defense_on_swarmed_group_member(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnAttackedGroupMemberAction(botAI, "righteous defense", 2);
+    }
+    static Action* hand_of_reckoning_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "hand of reckoning");
+    }
+    static Action* avengers_shield_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "avenger's shield");
+    }
+    static Action* hammer_of_justice_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "hammer of justice", true);
+    }
+    static Action* hammer_of_the_righteous_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "hammer of the righteous");
+    }
+    static Action* shield_of_righteousness_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "shield of righteousness");
+    }
+    static Action* judgement_of_wisdom_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "judgement of wisdom");
+    }
+    static Action* consecration_on_group_member_attackers(PlayerbotAI* botAI)
+    {
+        return new CastAreaSpellOnGroupMemberAttackersAction(botAI, "consecration", 8.0f);
+    }
+    static Action* consecration_tank_aoe(PlayerbotAI* botAI)
+    {
+        return new CastTankAreaThreatAction(botAI, "consecration");
+    }
+    static Action* holy_wrath_on_group_member_attackers(PlayerbotAI* botAI)
+    {
+        return new CastHolyWrathOnGroupMemberAttackersAction(botAI);  // [b31_deep] undead / demons only
+    }
+    static Action* holy_wrath_undead_pack(PlayerbotAI* botAI)  // [b34_pal]
+    {
+        return new CastHolyWrathUndeadPackAction(botAI);
+    }
     static Action* repentance(PlayerbotAI* botAI) { return new CastRepentanceAction(botAI); }
     static Action* repentance_on_snare_target(PlayerbotAI* botAI) { return new CastRepentanceSnareAction(botAI); }
     static Action* repentance_on_enemy_healer(PlayerbotAI* botAI) { return new CastRepentanceOnHealerAction(botAI); }
-    static Action* sanctity_aura(PlayerbotAI* botAI) { return new CastSanctityAuraAction(botAI); }
     static Action* holy_shock(PlayerbotAI* botAI) { return new CastHolyShockAction(botAI); }
     static Action* holy_shock_on_party(PlayerbotAI* botAI) { return new CastHolyShockOnPartyAction(botAI); }
     static Action* divine_plea(PlayerbotAI* botAI) { return new CastDivinePleaAction(botAI); }
+    static Action* hand_of_salvation_on_party(PlayerbotAI* botAI)
+    {
+        return new CastHandOfSalvationOnPartyAction(botAI);
+    }
+    static Action* hand_of_sacrifice_on_main_tank(PlayerbotAI* botAI)
+    {
+        return new CastHandOfSacrificeOnMainTankAction(botAI);
+    }
+    static Action* aura_mastery(PlayerbotAI* botAI) { return new CastAuraMasteryAction(botAI); }
+    static Action* hand_of_sacrifice_spike(PlayerbotAI* botAI)
+    {
+        return new CastHandOfSacrificeOnSpikingTankAction(botAI);
+    }
     static Action* shield_of_righteousness(PlayerbotAI* botAI) { return new ShieldOfRighteousnessAction(botAI); }
+    static Action* drop_stale_seal(PlayerbotAI* botAI) { return new DropStaleSealAction(botAI); }
     static Action* beacon_of_light_on_main_tank(PlayerbotAI* botAI) { return new CastBeaconOfLightOnMainTankAction(botAI); }
     static Action* sacred_shield_on_main_tank(PlayerbotAI* botAI) { return new CastSacredShieldOnMainTankAction(botAI); }
     static Action* avenging_wrath(PlayerbotAI* botAI) { return new CastAvengingWrathAction(botAI); }
@@ -438,6 +605,7 @@ private:
     {
         return new CastGreaterBlessingAssignmentAction(botAI);
     }
+    static Action* blessing_on_party_by_role(PlayerbotAI* botAI) { return new CastBlessingOnPartyByRoleAction(botAI); }
 };
 
 class PaladinValueContextInternal : public NamedObjectContext<UntypedValue>
@@ -448,6 +616,7 @@ public:
         creators["greater blessing assignments"] = &PaladinValueContextInternal::greater_blessing_assignments;
         creators["greater blessing pending assignment"] =
             &PaladinValueContextInternal::greater_blessing_pending_assignment;
+        creators["paladin tank in group"] = &PaladinValueContextInternal::paladin_tank_in_group;  // [b31_deep]
     }
 
 private:
@@ -460,6 +629,8 @@ private:
     {
         return ai::gbless::greater_blessing_pending_assignment_value(botAI);
     }
+
+    static UntypedValue* paladin_tank_in_group(PlayerbotAI* botAI) { return new PaladinTankInGroupValue(botAI); }
 };
 
 SharedNamedObjectContextList<Strategy> PaladinAiObjectContext::sharedStrategyContexts;

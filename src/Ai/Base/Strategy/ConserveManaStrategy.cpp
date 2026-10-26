@@ -6,6 +6,7 @@
 
 #include "ConserveManaStrategy.h"
 #include "GenericSpellActions.h"
+#include "HealAssignmentValues.h"
 #include "LastSpellCastValue.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -104,6 +105,16 @@ float HealerAutoSaveManaMultiplier::GetValue(Action* action)
         return 1.0f;
     bool isTank = target->ToPlayer() ? PlayerbotAI::IsTank(target->ToPlayer()) : false;
     uint8 health = target->GetHealthPct();
+
+    // Saving mana never outweighs keeping someone alive.
+    if (health < sPlayerbotAIConfig.LowHealth)
+        return 1.0f;
+
+    float const fastLoss = sPlayerbotAIConfig.HealerFastHealthLossPct;
+    if (fastLoss > 0.0f &&
+        RecentHealthLossPct(target, context->GetValue<HealthLossMap>("group health loss")->RefGet()) >= fastLoss)
+        return 1.0f;
+
     HealingManaEfficiency manaEfficiency = healingAction->manaEfficiency;
     uint8 estAmount = healingAction->estAmount;
     uint8 lossAmount = 100 - health;

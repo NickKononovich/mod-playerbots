@@ -126,9 +126,11 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [b31_sd] Tiger's Fury below 40 energy, not under Berserk ("tiger's fury" trigger; was "low energy" < 30). The
+    // "berserk" trigger (27.5, GenericDruidStrategy) waits for Tiger's Fury in cat form.
     triggers.push_back(
         new TriggerNode(
-            "low energy", {
+            "tiger's fury", {
                 NextAction("tiger's fury", 27.0f)
             }
         )
@@ -140,6 +142,8 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [b31_sd] Roar / Rip desync: an early Roar that ends 25 s after Rip, just below the Roar refresh.
+    triggers.push_back(new TriggerNode("savage roar clip", { NextAction("savage roar clip", 25.9f) }));
 
     triggers.push_back(
         new TriggerNode(
@@ -162,10 +166,14 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [b31_sd] Clearcasting Shred was 24.5, above Rip (23.5) and both Ferocious Bites: a missing Rip at 5 points
+    // waited for it. Now just below Rip, above Maim and the "ferocious bite time" spender; Shred needs the cat behind
+    // the target (CastShredAction), in front the free Mangle (cat) takes the proc.
     triggers.push_back(
         new TriggerNode(
             "clearcasting", {
-                NextAction("shred", 24.5f)
+                NextAction("shred", 23.4f),
+                NextAction("mangle (cat)", 23.3f)
             }
         )
     );
@@ -186,13 +194,20 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode(
             "rake", {
-                NextAction("rake", 21.5f)
+                NextAction("rake", 22.2f)  // [b31_sd] above Mangle (22.0), as the guides
             }
         )
     );
     triggers.push_back(
         new TriggerNode(
             "medium threat", {
+                NextAction("cower", 21.0f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "high threat", {
                 NextAction("cower", 21.0f)
             }
         )
@@ -275,6 +290,9 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus ascendant frenzy bite", { NextAction("ferocious bite", 22.6f) }));
 }
 
 // ============================================================

@@ -29,6 +29,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
+#include "SelfBotControl.h"
 #include "SharedDefines.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
@@ -637,7 +638,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
 
     bot->SaveToDB(false, false);
     bool addClassBot = sRandomPlayerbotMgr.IsAccountType(accountId, 2);
-    if (addClassBot && master && abs((int)master->GetLevel() - (int)bot->GetLevel()) > 3)
+    if (addClassBot && master && sPlayerbotAIConfig.AddClassAutoInit &&
+        abs((int)master->GetLevel() - (int)bot->GetLevel()) > 3)
     {
         // PlayerbotFactory factory(bot, master->GetLevel());
         // factory.Randomize(false);
@@ -1099,25 +1101,9 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
 
     if (!strcmp(cmd, "self"))
     {
-        if (GET_PLAYERBOT_AI(master))
-        {
-            messages.push_back("SelfBot is now deactivated.");
-            delete GET_PLAYERBOT_AI(master);
-
-            if (master->isTaxiCheater())
-                master->SetTaxiCheater(false);
-        }
-        else if (sPlayerbotAIConfig.SelfBotLevel == 0)
-            messages.push_back("SelfBot is disabled server-wide.");
-        else if (sPlayerbotAIConfig.SelfBotLevel == 1 && !master->CanBeGameMaster())
-            messages.push_back("SelfBot is restricted for this account.");
-        else
-        {
-            messages.push_back("SelfBot is now active.");
-            PlayerbotsMgr::instance().AddPlayerbotData(master, true);
-            GET_PLAYERBOT_AI(master)->SetMaster(master);
-            PlayerbotRepository::instance().Load(GET_PLAYERBOT_AI(master));
-        }
+        // "self" toggles; "self on|off|status" answer unambiguously (SelfBotControl, also feeds the BotControl addon)
+        for (std::string const& line : SelfBotControl::HandleCommand(master, charname ? charname : ""))
+            messages.push_back(line);
 
         return messages;
     }

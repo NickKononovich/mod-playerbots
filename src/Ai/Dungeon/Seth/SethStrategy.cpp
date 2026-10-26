@@ -5,6 +5,7 @@
  */
 
 #include "SethStrategy.h"
+#include "DungeonTactics.h"
 #include "SethMultipliers.h"
 #include "SethTriggers.h"
 
@@ -36,6 +37,10 @@ void TbcDungeonSethekkHallsStrategy::InitTriggers(std::vector<TriggerNode*>& tri
 
     triggers.push_back(new TriggerNode("talon king ikiss out of los",
         { NextAction("talon king ikiss move within los", ACTION_RAID + 1) }));
+
+    // Ikiss wipes his threat list 7 s after each Blink: damage dealers hold until the tank has him again.
+    triggers.push_back(new TriggerNode("dungeon wait for tank",
+        { NextAction("dungeon wait for tank", ACTION_EMERGENCY + 1) }));
 }
 
 void TbcDungeonSethekkHallsStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
@@ -44,4 +49,5 @@ void TbcDungeonSethekkHallsStrategy::InitMultipliers(std::vector<Multiplier*>& m
     multipliers.push_back(new AnzuControlSpellCastingWithSpellBombMultiplier(botAI));
     multipliers.push_back(new TalonKingIkissDelayBloodlustAndHeroismMultiplier(botAI));
     multipliers.push_back(new TalonKingIkissControlMovementMultiplier(botAI));
+    multipliers.push_back(new DungeonWaitForTankMultiplier(botAI));
 }

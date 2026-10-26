@@ -71,6 +71,7 @@ public:
         creators["hunter's mark"] = &HunterTriggerFactoryInternal::hunters_mark;
         creators["freezing trap"] = &HunterTriggerFactoryInternal::freezing_trap;
         creators["rapid fire"] = &HunterTriggerFactoryInternal::rapid_fire;
+        creators["bestial wrath"] = &HunterTriggerFactoryInternal::bestial_wrath;
         creators["aspect of the pack"] = &HunterTriggerFactoryInternal::aspect_of_the_pack;
         creators["aspect of the dragonhawk"] = &HunterTriggerFactoryInternal::aspect_of_the_dragonhawk;
         creators["aspect of the wild"] = &HunterTriggerFactoryInternal::aspect_of_the_wild;
@@ -94,6 +95,9 @@ public:
         creators["silencing shot"] = &HunterTriggerFactoryInternal::silencing_shot;
         creators["intimidation"] = &HunterTriggerFactoryInternal::intimidation;
         creators["volley channel check"] = &HunterTriggerFactoryInternal::volley_channel_check;
+        // [b31_deep]
+        creators["hunters pet dead on boss"] = &HunterTriggerFactoryInternal::hunters_pet_dead_on_boss;
+        creators["hunters pet dismissed"] = &HunterTriggerFactoryInternal::hunters_pet_dismissed;
     }
 
 private:
@@ -115,6 +119,7 @@ private:
     static Trigger* freezing_trap(PlayerbotAI* botAI) { return new FreezingTrapTrigger(botAI); }
     static Trigger* aspect_of_the_pack(PlayerbotAI* botAI) { return new HunterAspectOfThePackTrigger(botAI); }
     static Trigger* rapid_fire(PlayerbotAI* botAI) { return new RapidFireTrigger(botAI); }
+    static Trigger* bestial_wrath(PlayerbotAI* botAI) { return new BestialWrathTrigger(botAI); }
     static Trigger* aspect_of_the_dragonhawk(PlayerbotAI* botAI) { return new HunterAspectOfTheDragonhawkTrigger(botAI); }
     static Trigger* aspect_of_the_wild(PlayerbotAI* botAI) { return new HunterAspectOfTheWildTrigger(botAI); }
     static Trigger* low_ammo(PlayerbotAI* botAI) { return new HunterLowAmmoTrigger(botAI); }
@@ -130,6 +135,9 @@ private:
     static Trigger* silencing_shot(PlayerbotAI* botAI) { return new SilencingShotTrigger(botAI); }
     static Trigger* intimidation(PlayerbotAI* botAI) { return new IntimidationTrigger(botAI); }
     static Trigger* volley_channel_check(PlayerbotAI* botAI) { return new VolleyChannelCheckTrigger(botAI); }
+    // [b31_deep]
+    static Trigger* hunters_pet_dead_on_boss(PlayerbotAI* botAI) { return new HuntersPetDeadOnBossTrigger(botAI); }
+    static Trigger* hunters_pet_dismissed(PlayerbotAI* botAI) { return new HuntersPetDismissedTrigger(botAI); }
 };
 
 class HunterAiObjectContextInternal : public NamedObjectContext<Action>
@@ -186,12 +194,18 @@ public:
         creators["disengage"] = &HunterAiObjectContextInternal::disengage;
         creators["immolation trap"] = &HunterAiObjectContextInternal::immolation_trap;
         creators["explosive trap"] = &HunterAiObjectContextInternal::explosive_trap;
+        // [guide_b31_dead] plain "explosive shot" was unregistered (SV default 5.7 and trigger 17.5 were dead): the
+        // base action casts the highest known rank and is useful only while our own Explosive Shot DoT is absent
+        creators["explosive shot"] = &HunterAiObjectContextInternal::explosive_shot_base;
         creators["explosive shot base"] = &HunterAiObjectContextInternal::explosive_shot_base;
         creators["explosive shot rank 4"] = &HunterAiObjectContextInternal::explosive_shot_rank_4;
         creators["explosive shot rank 3"] = &HunterAiObjectContextInternal::explosive_shot_rank_3;
         creators["explosive shot rank 2"] = &HunterAiObjectContextInternal::explosive_shot_rank_2;
         creators["explosive shot rank 1"] = &HunterAiObjectContextInternal::explosive_shot_rank_1;
         creators["intimidation"] = &HunterAiObjectContextInternal::intimidation;
+        // [b31_deep]
+        creators["explosive shot lock and load"] = &HunterAiObjectContextInternal::explosive_shot_lock_and_load;
+        creators["silencing shot on cooldown"] = &HunterAiObjectContextInternal::silencing_shot_on_cooldown;
     }
 
 private:
@@ -249,6 +263,15 @@ private:
     static Action* explosive_shot_rank_2(PlayerbotAI* botAI) { return new CastExplosiveShotRank2Action(botAI); }
     static Action* explosive_shot_rank_1(PlayerbotAI* botAI) { return new CastExplosiveShotRank1Action(botAI); }
     static Action* intimidation(PlayerbotAI* botAI) { return new CastIntimidationAction(botAI); }
+    // [b31_deep]
+    static Action* explosive_shot_lock_and_load(PlayerbotAI* botAI)
+    {
+        return new CastExplosiveShotLockAndLoadAction(botAI);
+    }
+    static Action* silencing_shot_on_cooldown(PlayerbotAI* botAI)
+    {
+        return new CastSilencingShotOnCooldownAction(botAI);
+    }
 };
 
 SharedNamedObjectContextList<Strategy> HunterAiObjectContext::sharedStrategyContexts;

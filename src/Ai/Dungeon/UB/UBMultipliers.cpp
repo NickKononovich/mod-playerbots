@@ -11,6 +11,7 @@
 #include "MovementActions.h"
 #include "Playerbots.h"
 #include "ReachTargetActions.h"
+#include "TbcHazard.h"
 #include "UBActions.h"
 #include "UBShared.h"
 
@@ -58,4 +59,16 @@ float UnderbatFacingMultiplier::GetValue(Action* action)
 
     auto const& attackers = AI_VALUE_REF(GuidVector, "attackers");
     return AnyUnderbatInLashRange(bot, attackers) ? 0.0f : 1.0f;
+}
+
+float UBGhazanDryLandMultiplier::GetValue(Action* action)
+{
+    if (!TbcHazard::IsRepositionAction(action))
+        return 1.0f;
+
+    if (!UnderbogGhazan::LakeFight(bot) || UnderbogGhazan::IsWet(bot))
+        return 1.0f;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    return target && UnderbogGhazan::InLakeArea(target) && UnderbogGhazan::IsWet(target) ? 0.0f : 1.0f;
 }

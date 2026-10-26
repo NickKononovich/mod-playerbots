@@ -17,6 +17,16 @@ public:
     float GetValue(Action* action) override;
 };
 
+// While a bot possesses Razorgore only the orb action runs: any cast, swing or turn of the
+// controller ends the possession channel.
+class RazorgoreOrbControllerMultiplier : public Multiplier
+{
+public:
+    RazorgoreOrbControllerMultiplier(
+        PlayerbotAI* botAI) : Multiplier(botAI, "razorgore orb controller multiplier") {}
+    float GetValue(Action* action) override;
+};
+
 class VaelastraszTankMultiplier : public Multiplier
 {
 public:

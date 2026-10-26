@@ -162,19 +162,12 @@ void SellAction::Sell(Item* item)
         ObjectGuid itemguid = item->GetGUID();
         uint32 count = item->GetCount();
 
-        uint32 botMoney = bot->GetMoney();
-
         WorldPacket p(CMSG_SELL_ITEM);
         p << vendorguid << itemguid << count;
 
         WorldPackets::Item::SellItem nicePacket(std::move(p));
         nicePacket.Read();
         bot->GetSession()->HandleSellItemOpcode(nicePacket);
-
-        if (botAI->HasCheat(BotCheatMask::gold))
-        {
-            bot->SetMoney(botMoney);
-        }
 
         out << "Selling " << chat->FormatItem(item->GetTemplate());
         botAI->TellMaster(out);

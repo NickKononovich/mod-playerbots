@@ -28,6 +28,9 @@ public:
 
 protected:
     float GetFollowAngle();
+    // Whom the formation is built around: the master, or the group leader for bots that have no master (a party
+    // with no game client, where the leader is itself a bot).
+    Player* GetMaster();
 };
 
 class FollowFormation : public Formation

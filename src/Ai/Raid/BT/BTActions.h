@@ -547,19 +547,13 @@ public:
     bool Execute(Event event) override;
 };
 
-class IllidanStormrageDestroyHazardsAction : public Action
+// Steps out of Flame Crash / Demon Fire / Blaze left over from the previous phase. Replaces the
+// former Kill() on those NPCs and the Shadow Demon HP cut (bots play without cheats).
+class IllidanStormrageMoveOutOfLeftoverHazardAction : public MovementAction
 {
 public:
-    IllidanStormrageDestroyHazardsAction(
-        PlayerbotAI* botAI) : Action(botAI, "illidan stormrage destroy hazards") {}
-    bool Execute(Event event) override;
-};
-
-class IllidanStormrageHandleAddsCheatAction : public Action
-{
-public:
-    IllidanStormrageHandleAddsCheatAction(
-        PlayerbotAI* botAI) : Action(botAI, "illidan stormrage handle adds cheat") {}
+    IllidanStormrageMoveOutOfLeftoverHazardAction(
+        PlayerbotAI* botAI) : MovementAction(botAI, "illidan stormrage move out of leftover hazard") {}
     bool Execute(Event event) override;
 };
 

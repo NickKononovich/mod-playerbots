@@ -27,4 +27,46 @@ class SjonnirMultiplier : public Multiplier
         float GetValue(Action* action) override;
 };
 
+// Tribunal of Ages: no wipe escape (Feign Death, Vanish, ...) inside a Searing Gaze or Dark Matter; out first.
+class TribunalMultiplier : public Multiplier
+{
+    public:
+        TribunalMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "tribunal of ages") {}
+
+    public:
+        float GetValue(Action* action) override;
+};
+
+// Tribunal of Ages: the tank's movement leash around its hold spot next to Brann.
+class TribunalHoldMultiplier : public Multiplier
+{
+    public:
+        TribunalHoldMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "tribunal hold") {}
+
+    public:
+        float GetValue(Action* action) override;
+};
+
+// Tribunal of Ages: no walk to a unit standing in a Searing Gaze or Dark Matter (the tank's add, the healer's tank).
+class TribunalHazardKeepOutMultiplier : public Multiplier
+{
+    public:
+        TribunalHazardKeepOutMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "tribunal hazard keep out") {}
+
+    public:
+        float GetValue(Action* action) override;
+};
+
+// [b33_hos] Tribunal of Ages: no walk out to an add far from the hold spot (tank: beyond its leash, damage dealers:
+// beyond TRIBUNAL_DPS_REACH, the healer: to no enemy at all), and no tank gap closer (Charge, Intercept, Intervene)
+// that lands beyond the leash.
+class TribunalNoChaseMultiplier : public Multiplier
+{
+    public:
+        TribunalNoChaseMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "tribunal no chase") {}
+
+    public:
+        float GetValue(Action* action) override;
+};
+
 #endif

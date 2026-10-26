@@ -5,10 +5,18 @@
  */
 
 #include "UBActions.h"
+#include "Group.h"
+#include "GridTerrainData.h"
+#include "Map.h"
+#include "PathGenerator.h"
 #include "Playerbots.h"
 #include "Timer.h"
 #include "UBShared.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 using namespace UnderbogHungarfen;
 
@@ -125,4 +133,91 @@ bool UBClearUnderbatBackAction::Execute(Event /*event*/)
 
     _lastReposition = getMSTime();
     return true;
+}
+
+bool UBLeaveLakeAction::PathOk(float x, float y, float z, float maxLength)
+{
+    PathGenerator path(bot);
+    return path.CalculatePath(x, y, z, false) && !(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) &&
+           path.getPathLength() <= maxLength;
+}
+
+bool UBLeaveLakeAction::Execute(Event /*event*/)
+{
+    using namespace UnderbogGhazan;
+    if (!LakeFight(bot) || !IsWet(bot))
+        return false;
+
+    constexpr std::array<float, 5> steps = {6.0f, 10.0f, 15.0f, 20.0f, 26.0f};
+    constexpr uint32 directions = 12;
+    constexpr uint32 maxPathChecks = 8;
+    constexpr float heightProbeUp = 10.0f;
+    constexpr float heightSearch = 60.0f;
+    constexpr float nearPathMax = 45.0f;
+    constexpr float memberRange = 80.0f;
+    constexpr float farPathMax = 120.0f;
+
+    float const botX = bot->GetPositionX();
+    float const botY = bot->GetPositionY();
+    float const botZ = bot->GetPositionZ();
+
+    // Shore spots around the bot, nearest first. From the lake bottom the probe only finds the bottom (wet), so the
+    // anchors below take over there.
+    std::vector<std::pair<float, std::array<float, 3>>> candidates;
+    for (float step : steps)
+    {
+        for (uint32 i = 0; i < directions; ++i)
+        {
+            float const angle = 2.0f * static_cast<float>(M_PI) * i / directions;
+            float const x = botX + std::cos(angle) * step;
+            float const y = botY + std::sin(angle) * step;
+            float const z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, botZ + heightProbeUp, true,
+                                                     heightSearch);
+            if (z <= INVALID_HEIGHT + 1.0f || !IsDrySpot(bot, x, y, z))
+                continue;
+
+            candidates.push_back({step, {x, y, z}});
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](auto const& left, auto const& right) { return left.first < right.first; });
+
+    uint32 pathChecks = 0;
+    for (auto const& candidate : candidates)
+    {
+        if (++pathChecks > maxPathChecks)
+            break;
+
+        auto const& spot = candidate.second;
+        if (PathOk(spot[0], spot[1], spot[2], nearPathMax))
+            return MoveTo(bot->GetMapId(), spot[0], spot[1], spot[2], false, false, false, false,
+                          MovementPriority::MOVEMENT_FORCED, true);
+    }
+
+    // A member standing on dry land, then the walkway and the platform.
+    std::vector<std::array<float, 3>> anchors;
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMapId() != bot->GetMapId() ||
+                bot->GetExactDist(member) > memberRange || IsWet(member))
+                continue;
+
+            anchors.push_back({member->GetPositionX(), member->GetPositionY(), member->GetPositionZ()});
+        }
+    }
+    anchors.push_back({WALKWAY_X, WALKWAY_Y, WALKWAY_Z});
+    anchors.push_back({PLATFORM_X, PLATFORM_Y, PLATFORM_Z});
+
+    for (auto const& anchor : anchors)
+    {
+        if (!IsDrySpot(bot, anchor[0], anchor[1], anchor[2]) || !PathOk(anchor[0], anchor[1], anchor[2], farPathMax))
+            continue;
+
+        return MoveTo(bot->GetMapId(), anchor[0], anchor[1], anchor[2], false, false, false, false,
+                      MovementPriority::MOVEMENT_FORCED, true);
+    }
+    return false;
 }

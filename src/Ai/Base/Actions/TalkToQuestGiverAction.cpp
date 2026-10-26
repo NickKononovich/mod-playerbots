@@ -24,26 +24,16 @@ bool TalkToQuestGiverAction::ProcessQuest(Quest const* quest, Object* questGiver
     QuestStatus status = bot->GetQuestStatus(quest->GetQuestId());
     Player* master = GetMaster();
 
-    if (sPlayerbotAIConfig.SyncQuestForPlayer && master)
-    {
-        PlayerbotAI* masterBotAI = GET_PLAYERBOT_AI(master);
-        if (!masterBotAI || IsSelfBot(master))
-        {
-            QuestStatus masterStatus = master->GetQuestStatus(quest->GetQuestId());
-            if (masterStatus == QUEST_STATUS_INCOMPLETE || masterStatus == QUEST_STATUS_FAILED)
-                isCompleted |= CompleteQuest(master, quest->GetQuestId());
-        }
-    }
+    // Bots play their quests like players: no objective is completed for them (the SyncQuestWithPlayer /
+    // SyncQuestForPlayer completion was a cheat and is gone). The group kills and loots together instead.
 
-    if (sPlayerbotAIConfig.SyncQuestWithPlayer)
-    {
-        if (master && master->GetQuestStatus(quest->GetQuestId()) == QUEST_STATUS_COMPLETE &&
-            (status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_FAILED))
-        {
-            isCompleted |= CompleteQuest(bot, quest->GetQuestId());
-            status = bot->GetQuestStatus(quest->GetQuestId());
-        }
-    }
+    // An auto-complete quest (nothing to do, handed in where it is taken, e.g. Past Endeavors, #2495) never
+    // reaches the bot as an accept packet: the client of the master queries and rewards it. Take it and hand it
+    // in here when the master is taking it too.
+    if (status == QUEST_STATUS_NONE && IsImmediateTurnIn(quest, questGiver) && master &&
+        (master->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE || master->CanTakeQuest(quest, false)) &&
+        AcceptQuest(quest, questGiver->GetGUID()))
+        status = bot->GetQuestStatus(quest->GetQuestId());
 
     switch (status)
     {
@@ -256,27 +246,6 @@ bool TurnInQueryQuestAction::Execute(Event event)
     }
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
     QuestStatus status = bot->GetQuestStatus(quest->GetQuestId());
-    Player* master = GetMaster();
-
-    if (sPlayerbotAIConfig.SyncQuestForPlayer && master)
-    {
-        PlayerbotAI* masterBotAI = GET_PLAYERBOT_AI(master);
-        if (!masterBotAI || IsSelfBot(master))
-        {
-            QuestStatus masterStatus = master->GetQuestStatus(quest->GetQuestId());
-            if (masterStatus == QUEST_STATUS_INCOMPLETE || masterStatus == QUEST_STATUS_FAILED)
-                CompleteQuest(master, quest->GetQuestId());
-        }
-    }
-
-    if (sPlayerbotAIConfig.SyncQuestWithPlayer)
-    {
-        if (status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_FAILED)
-        {
-            CompleteQuest(bot, quest->GetQuestId());
-            status = bot->GetQuestStatus(quest->GetQuestId());
-        }
-    }
     std::ostringstream out;
     out << "Quest ";
     switch (status)

@@ -90,7 +90,14 @@ void GenericWarlockNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& tr
     triggers.push_back(new TriggerNode("unending breath on party", { NextAction("unending breath on party", 11.0f) }));
     triggers.push_back(new TriggerNode("no healthstone", { NextAction("create healthstone", 26.0f) }));
     triggers.push_back(new TriggerNode("no soulstone", { NextAction("create soulstone", 25.0f) }));
+    // Soulwell for the raid before a boss (ready check or boss near), when none is up
+    triggers.push_back(new TriggerNode("ritual of souls", { NextAction("ritual of souls", 24.5f) }));
     triggers.push_back(new TriggerNode("life tap", { NextAction("life tap", 23.0f) }));
+    // K6 pre-pull: Glyph of Life Tap spell power buff before the tank pulls. [b35_lock] Above "dps assist" (50): at
+    // 24 the tank's target already fired "not dps target active", the assist ran first ("not evaluated: dps assist
+    // (50.00) ran first") and the first GCD in combat went to Life Tap (Thalnos / Lethtendris, t ~3 s). Life Tap is
+    // instant, so the assist follows on the next tick; the trigger stays off once the glyph buff is up.
+    triggers.push_back(new TriggerNode("pull imminent life tap", { NextAction("life tap", 55.0f) }));
 }
 
 // Non-combat strategy for summoning a Imp
@@ -195,6 +202,17 @@ SoulstoneHealerStrategy::SoulstoneHealerStrategy(PlayerbotAI* botAI) : NonCombat
 void SoulstoneHealerStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     triggers.push_back(new TriggerNode("soulstone", { NextAction("soulstone healer", 24.0f) }));
+}
+
+// Non-combat strategy picking the soulstone target by itself: a healer who can resurrect, else the main tank,
+// alone the warlock itself. Enabled by default.
+// To enable, type "nc +ss auto"
+// To disable, type "nc -ss auto"
+SoulstoneAutoStrategy::SoulstoneAutoStrategy(PlayerbotAI* botAI) : NonCombatStrategy(botAI) {}
+
+void SoulstoneAutoStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    triggers.push_back(new TriggerNode("soulstone", { NextAction("soulstone auto", 24.0f) }));
 }
 
 // Non-combat strategy for using Spellstone

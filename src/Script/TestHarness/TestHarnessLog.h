@@ -1,0 +1,178 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef PLAYERBOTS_TESTHARNESSLOG_H
+#define PLAYERBOTS_TESTHARNESSLOG_H
+
+#include "Define.h"
+#include "ObjectGuid.h"
+
+#include <atomic>
+#include <map>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+class Player;
+class Spell;
+class SpellInfo;
+class Unit;
+
+namespace TestHarness
+{
+    std::string JsonEscape(std::string const& text);
+    std::string WallClock();
+
+    // One JSON object, built field by field; every line written by the harness is self-contained.
+    class JsonObject
+    {
+    public:
+        JsonObject& Str(char const* key, std::string const& value);
+        JsonObject& Num(char const* key, int64 value);
+        JsonObject& Real(char const* key, double value);
+        JsonObject& Bool(char const* key, bool value);
+        JsonObject& Raw(char const* key, std::string const& json);
+        JsonObject& Merge(JsonObject const& other);
+        std::string Build() const { return "{" + _body + "}"; }
+
+    private:
+        void Key(char const* key);
+        std::string _body;
+    };
+
+    class JsonArray
+    {
+    public:
+        JsonArray& Raw(std::string const& json);
+        JsonArray& Str(std::string const& value);
+        JsonArray& Num(int64 value);
+        std::string Build() const { return "[" + _body + "]"; }
+        bool Empty() const { return _body.empty(); }
+
+    private:
+        std::string _body;
+    };
+
+    // <LogsDir>/tests/<fileName>, one line per call.
+    void AppendLine(std::string const& fileName, std::string const& line);
+    std::string TestsDir();
+
+    // Per spell of one member: successful in-combat casts, and the damage / healing the spell's hits and ticks
+    // carried at the script hooks (before absorbs and resists, so an upper bound; heals include overheal).
+    struct SpellCounters
+    {
+        uint32 casts = 0;
+        uint64 damage = 0;
+        uint64 healing = 0;
+    };
+
+    struct MemberCounters
+    {
+        uint64 damageDone = 0;
+        uint64 healingDone = 0;
+        uint64 damageTaken = 0;
+        uint32 deaths = 0;
+        uint32 interrupts = 0;
+        uint32 dispels = 0;
+        std::map<uint32, uint32> itemUses;  // item entry -> uses (potions, flasks, food, healthstones)
+        std::map<uint32, SpellCounters> spells;  // spell id -> casts / amounts
+        uint64 busyMs = 0;  // in-combat casts x max(cast time, GCD, channel duration): GCD-utilisation estimate
+    };
+
+    struct DeathNote
+    {
+        ObjectGuid guid;
+        std::string name;
+        std::string killer;
+        uint32 killerEntry = 0;
+        uint32 ms = 0;
+    };
+
+    // Who started a fight (pull_start / pull_end, "who aggroed first"): the order the members entered combat, the
+    // first mob that engaged and its first victim, and the first hit between a member and a mob. Filled by the
+    // combat / damage hooks from the moment the harness resets it (the end of the previous fight).
+    struct OpenerMember
+    {
+        ObjectGuid guid;
+        std::string name;
+        std::string enemy;  // the unit the hook named as its combat partner
+        uint32 enemyEntry = 0;
+        uint32 ms = 0;
+    };
+
+    struct OpenerNote
+    {
+        std::vector<OpenerMember> members;  // combat entries, first first
+        std::string mob;
+        uint32 mobEntry = 0;
+        uint32 mobSpawnId = 0;
+        std::string mobVictim;
+        ObjectGuid mobVictimGuid;
+        uint32 mobMs = 0;
+        std::string hitBy;
+        ObjectGuid hitByGuid;
+        std::string hitVictim;
+        bool hitByMember = false;
+        uint32 hitMs = 0;
+        std::vector<std::pair<ObjectGuid, uint32>> memberFirstHits;  // each member's first hit on a mob (engageDelay)
+        // [opener_zero_hit] each member's first hit that dealt no damage (an evading mob, a full absorb): engageDelay's
+        // firstZeroHitSec tells "attacked, nothing landed" from "did not attack" (st-n-92 P19: firstHitSec 10-12 s for
+        // three damage dealers that cast and swung from +2 s on)
+        std::vector<std::pair<ObjectGuid, uint32>> memberFirstZeroHits;
+    };
+
+    // Counters fed by unit / player hooks on the map threads; read by the harness on the world thread.
+    class StatsRegistry
+    {
+    public:
+        static StatsRegistry& Instance();
+
+        void TrackMember(ObjectGuid guid, uint32 runSeq);
+        void TrackInstance(uint32 instanceId, uint32 runSeq);
+        void UntrackRun(uint32 runSeq);
+
+        MemberCounters Snapshot(ObjectGuid guid);
+        uint32 TakeKills(uint32 runSeq);
+        std::vector<DeathNote> TakeDeaths(uint32 runSeq);
+        // Entries of the creatures killed in the run's instance since the last call (boss kill credit).
+        std::vector<uint32> TakeKilledEntries(uint32 runSeq);
+
+        void OnDamage(Unit* attacker, Unit* victim, uint32 damage);
+        void OnHeal(Unit* healer, Unit* target, uint32 gain);
+        // [b31_harness] Called from the end of Spell::_cast (AllSpellScript OnSpellCast, after SMSG_SPELL_GO), so
+        // only casts that went off count. castItemEntry: the item the cast started from (Spell::m_CastItem is
+        // already cleared there for a consumed item, the script stashes it at the start of _cast).
+        void OnSpellCast(Player* player, Spell* spell, uint32 castItemEntry);
+        void OnSpellAmount(Unit* source, Unit* other, SpellInfo const* spell, uint32 amount, bool heal);
+        void OnUnitDeath(Unit* victim, Unit* killer);
+        // [b30_topped_up] [b30_reenter] a member re-entered the instance (stranded with no path back, or a route
+        // choice): counted as its death, `killer` names which ("stranded_reenter: ..." / "shortcut_reenter: ...")
+        void RecordReentry(Player* player, std::string const& killer);
+        void OnPlayerEnterCombat(Player* player, Unit* enemy);
+        void OnCreatureEngage(Unit* creature, Unit* victim);
+
+        OpenerNote Opener(uint32 runSeq);
+        void ResetOpener(uint32 runSeq);
+
+        bool Active() const { return _active.load(std::memory_order_relaxed); }
+
+    private:
+        uint32 RunOfMember(ObjectGuid guid) const;  // caller holds _lock
+
+        std::atomic<bool> _active{false};
+        std::mutex _lock;
+        std::unordered_map<ObjectGuid, uint32> _memberRun;
+        std::unordered_map<ObjectGuid, MemberCounters> _counters;
+        std::unordered_map<uint32, uint32> _instanceRun;
+        std::unordered_map<uint32, uint32> _kills;
+        std::unordered_map<uint32, std::vector<DeathNote>> _deaths;
+        std::unordered_map<uint32, std::vector<uint32>> _killedEntries;
+        std::unordered_map<uint32, OpenerNote> _openers;
+    };
+}
+
+#endif

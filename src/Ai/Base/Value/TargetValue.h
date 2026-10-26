@@ -11,6 +11,7 @@
 #include "TravelMgr.h"
 #include "Value.h"
 
+class Player;
 class PlayerbotAI;
 class ThreatManager;
 class Unit;
@@ -19,6 +20,8 @@ enum class TargetValueExclusionType : uint8;
 
 GuidSet GatherStrategyTargetExclusions(PlayerbotAI* botAI, TargetValueExclusionType type);
 bool HasEnoughAoeTargets(PlayerbotAI* botAI, Position const& center, float range, uint32 minCount);
+// Deliberate crowd control a stray AoE or DoT would break or waste: polymorph, sap, trap, shackle, sleep, banish.
+bool IsCrowdControlled(Unit const* unit);
 
 class FindTargetStrategy
 {
@@ -45,6 +48,24 @@ public:
 
 protected:
     virtual bool IsCcTarget(Unit* attacker);
+};
+
+// Whether the bot can walk to a pull candidate, cached per candidate. A mob on the floor above or below (Naxx,
+// Reliquary) is in sight and in range but has no walkable path, or only a long way round; pulling it means the
+// healer, whose heals draw threat at any range, is who it runs to.
+class TargetReachability
+{
+public:
+    bool IsReachable(Player* bot, Unit* unit);
+
+private:
+    struct Entry
+    {
+        bool reachable;
+        uint32 checkedAt;
+    };
+
+    std::unordered_map<ObjectGuid, Entry> _cache;
 };
 
 class TargetValue : public UnitCalculatedValue

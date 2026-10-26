@@ -22,4 +22,12 @@ private:
     bool spareMount = false;
 };
 
+// No damage into Paletress' Reflective Shield; no attack that turns the bot back to Eadric during Radiance.
+class ToCHoldFireMultiplier : public Multiplier
+{
+public:
+    ToCHoldFireMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "toc hold fire") {}
+    float GetValue(Action* action) override;
+};
+
 #endif

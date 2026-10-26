@@ -18,6 +18,41 @@ std::vector<NextAction> NewRpgStrategy::getDefaultActions()
 
 void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // a stalled taxi spline is restarted before anything else looks at the bot
+    triggers.push_back(
+        new TriggerNode(
+            "new rpg taxi stalled",
+            {
+                NextAction("new rpg taxi unstall", 14.0f)
+            }
+        )
+    );
+    // the selfbot leader is away: rest in an inn (above waiting for the group)
+    triggers.push_back(
+        new TriggerNode(
+            "new rpg leader afk",
+            {
+                NextAction("new rpg rest at inn", 13.0f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "new rpg unknown flight master",
+            {
+                NextAction("new rpg discover flight master", 12.5f)
+            }
+        )
+    );
+    // above "new rpg status update" (11) so nothing moves the leader while the group catches up
+    triggers.push_back(
+        new TriggerNode(
+            "new rpg group not ready",
+            {
+                NextAction("new rpg wait for group", 12.0f)
+            }
+        )
+    );
     triggers.push_back(
         new TriggerNode(
             "go grind status",

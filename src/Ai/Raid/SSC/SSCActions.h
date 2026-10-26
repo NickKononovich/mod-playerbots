@@ -471,6 +471,16 @@ private:
     bool MoveStriderAwayFromVashj(Unit* strider, Unit* vashj);
 };
 
+// A Strider that has turned on a non-tank is kited along the Strider holding positions, outside its
+// Panic radius, until a tank taunts it back.
+class LadyVashjKiteCoilfangStriderAction : public MovementAction
+{
+public:
+    LadyVashjKiteCoilfangStriderAction(PlayerbotAI* botAI)
+        : MovementAction(botAI, "lady vashj kite coilfang strider") {}
+    bool Execute(Event event) override;
+};
+
 class LadyVashjPositionCoilfangEliteAction : public MovementAction
 {
 public:

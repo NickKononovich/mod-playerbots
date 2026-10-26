@@ -8,9 +8,11 @@
 #define PLAYERBOTS_QUESTACTION_H
 
 #include "Action.h"
+#include "MovementActions.h"
 #include "Object.h"
 #include "QuestDef.h"
 
+class GameObject;
 class ObjectGuid;
 class Quest;
 class Player;
@@ -25,11 +27,27 @@ public:
     bool Execute(Event event) override;
 
 protected:
-    bool CompleteQuest(Player* player, uint32 entry);
     virtual bool ProcessQuest(Quest const* quest, Object* questGiver) = 0;
     bool AcceptQuest(Quest const* quest, ObjectGuid questGiver);
     bool ProcessQuests(ObjectGuid questGiver);
     bool ProcessQuests(WorldObject* questGiver);
+    bool IsImmediateTurnIn(Quest const* quest, Object* questGiver);
+};
+
+// A group member (the master, the selfbot leader) used a game object: when the bot needs that kind of object for
+// a quest of its own, it walks to the nearest one and uses it too (#2725). Chests are left to the loot strategy.
+class UseQuestGameObjectAction : public MovementAction
+{
+public:
+    UseQuestGameObjectAction(PlayerbotAI* botAI) : MovementAction(botAI, "use quest game object") {}
+    bool Execute(Event event) override;
+
+private:
+    GameObject* FindUsableCopy(uint32 entry);
+    bool NeedsObject(GameObject* go);
+
+    static constexpr float SEARCH_RANGE = 40.0f;
+    static constexpr uint32 PENDING_TIMEOUT_MS = MINUTE * IN_MILLISECONDS;
 };
 
 class QuestUpdateCompleteAction : public Action

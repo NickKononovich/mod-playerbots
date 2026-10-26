@@ -13,6 +13,12 @@
 constexpr uint32 SPELL_CAT_FORM  = 768;
 constexpr uint32 AURA_THICK_HIDE = 16931;
 
+class Player;
+
+// [b31_sd] Any Thick Hide rank (16929 / 16930 / 16931): a bear template has rank 1 at level 20 and rank 2 at 21, a
+// rank 3 check alone reads those bears as cats. The cat templates take no Thick Hide.
+bool DruidHasThickHide(Player* bot);
+
 class PlayerbotAI;
 
 class ShapeshiftDruidStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>

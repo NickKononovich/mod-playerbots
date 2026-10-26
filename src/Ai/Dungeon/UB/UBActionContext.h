@@ -19,6 +19,7 @@ public:
         creators["ub retreat from foul spores"] = &TbcDungeonUnderbogActionContext::ub_retreat_from_foul_spores;
         creators["ub vacate spore cloud"] = &TbcDungeonUnderbogActionContext::ub_vacate_spore_cloud;
         creators["ub clear underbat back"] = &TbcDungeonUnderbogActionContext::ub_clear_underbat_back;
+        creators["ub leave lake"] = &TbcDungeonUnderbogActionContext::ub_leave_lake;
     }
 
 private:
@@ -27,6 +28,8 @@ private:
     static Action* ub_vacate_spore_cloud(PlayerbotAI* botAI) { return new UBVacateSporeCloudAction(botAI); }
 
     static Action* ub_clear_underbat_back(PlayerbotAI* botAI) { return new UBClearUnderbatBackAction(botAI); }
+
+    static Action* ub_leave_lake(PlayerbotAI* botAI) { return new UBLeaveLakeAction(botAI); }
 };
 
 #endif

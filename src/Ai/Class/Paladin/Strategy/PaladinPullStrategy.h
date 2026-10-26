@@ -16,6 +16,8 @@ public:
 
     std::string GetPullActionName() const override;
     std::string GetPreActionName() const override;
+    // [b31_holyshield_pull] a prot tank opens its pull with Holy Shield (CastHolyShieldPrePullAction)
+    std::string GetPrePullBuffActionName() const override;
 };
 
 #endif

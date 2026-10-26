@@ -16,6 +16,8 @@ class CastFeralChargeBearAction : public CastReachTargetSpellAction
 {
 public:
     CastFeralChargeBearAction(PlayerbotAI* botAI) : CastReachTargetSpellAction(botAI, "feral charge - bear", 1.5f) {}
+
+    bool isUseful() override;
 };
 
 class CastGrowlAction : public CastSpellAction

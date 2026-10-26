@@ -297,8 +297,16 @@ bool FindBeamPosition(
     if (length == 0.0f)
         return false;
 
+    // boss_netherspite::UpdatePortals only hands the beam to a player that is closer to the portal
+    // than Netherspite by GetDistance2d(), which subtracts both combat reaches, so a blocker inside
+    // the 18y hitbox (or right on its edge) is skipped and the beam keeps hitting the boss. Stand
+    // a margin outside the hitbox; the red (tank) spot stays inside melee reach.
+    constexpr float hitboxMargin = 2.0f;
+    constexpr float minimumBeamDistance = 18.0f;
+    float const searchMinDist =
+        std::max(minimumBeamDistance, netherspite->GetCombatReach() + hitboxMargin);
+    idealDistance = std::max(idealDistance, searchMinDist);
     constexpr float voidZoneRadius = 4.0f;
-    constexpr float searchMinDist = 18.0f;
     constexpr float searchStep = 0.5f;
     constexpr uint8 numSteps = 24;
 

@@ -8,9 +8,17 @@
 #define PLAYERBOTS_TBCDUNGEONTRIGGERCONTEXT_H
 
 #include "ACTriggerContext.h"
+#include "ArcTriggerContext.h"
+#include "BFTriggerContext.h"
+#include "BMTriggerContext.h"
 #include "MechTriggerContext.h"
+#include "MTTriggerContext.h"
 #include "MgTTriggerContext.h"
 #include "RampTriggerContext.h"
+#include "SHTriggerContext.h"
+#include "SLTriggerContext.h"
+#include "SPTriggerContext.h"
+#include "SVTriggerContext.h"
 #include "SethTriggerContext.h"
 #include "UBTriggerContext.h"
 

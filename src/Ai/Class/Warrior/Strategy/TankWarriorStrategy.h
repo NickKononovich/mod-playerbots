@@ -18,6 +18,7 @@ public:
     TankWarriorStrategy(PlayerbotAI* botAI);
 
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+    void InitMultipliers(std::vector<Multiplier*>& multipliers) override;
     std::string const getName() override { return "prot"; }
     std::vector<NextAction> getDefaultActions() override;
     uint32 GetType() const override { return STRATEGY_TYPE_TANK | STRATEGY_TYPE_MELEE; }

@@ -45,4 +45,20 @@ public:
     bool Execute(Event event) override;
 };
 
+// Pets and guardians of a bot in a dungeon group (a raid too, outside a boss encounter) play as an expert plays them.
+// A pet with a pet bar (hunter and warlock pets, the Water Elemental, a talented ghoul, Feral Spirit wolves, treants,
+// the Shadowfiend) is kept passive and sent only at the mob the owner attacks once the group's tank has engaged it
+// (on its threat list or attacked by it) and while it fights by the tank or in melee with a member; out of combat it
+// follows at the owner's heel, inside the owner's aggro margin. A defensive pet runs at whatever hits its owner
+// (PetAI::OwnerAttackedBy) and after a kill at whatever hits either of them: wave 24 Scholomance, the hunter's Crab
+// fought a caster nuking from its spawn, whose assistance calls (10 yd every 3 s) brought the next packs ("[far
+// engage] ... engaged Crab"). A guardian without a pet bar (Army of the Dead, Snake Trap, Mirror Image, Gargoyle,
+// Dancing Rune Weapon) is stopped on a mob no player of the group fights. Called every AI tick after the tick's
+// actions from PlayerbotAI::UpdateAIInternal, and by "set pet stance"; a command goes out only when the pet does
+// something else. Outside such a group the stance set here is restored.
+namespace DungeonPetControl
+{
+void Update(PlayerbotAI* botAI);
+}
+
 #endif

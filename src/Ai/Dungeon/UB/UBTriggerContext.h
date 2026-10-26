@@ -19,6 +19,7 @@ public:
         creators["ub foul spores"] = &TbcDungeonUnderbogTriggerContext::ub_foul_spores;
         creators["ub spore cloud danger"] = &TbcDungeonUnderbogTriggerContext::ub_spore_cloud_danger;
         creators["ub underbat lash"] = &TbcDungeonUnderbogTriggerContext::ub_underbat_lash;
+        creators["ub ghazan lake"] = &TbcDungeonUnderbogTriggerContext::ub_ghazan_lake;
     }
 
 private:
@@ -27,6 +28,8 @@ private:
     static Trigger* ub_spore_cloud_danger(PlayerbotAI* botAI) { return new UBSporeCloudDangerTrigger(botAI); }
 
     static Trigger* ub_underbat_lash(PlayerbotAI* botAI) { return new UBUnderbatLashTrigger(botAI); }
+
+    static Trigger* ub_ghazan_lake(PlayerbotAI* botAI) { return new UBGhazanLakeTrigger(botAI); }
 };
 
 #endif

@@ -15,6 +15,12 @@ void QuestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode("quest share", {  NextAction("accept quest share", relevance) }));
+
+    // a group member used a quest object this bot needs too (#2725)
+    triggers.push_back(
+        new TriggerNode("use game object", {  NextAction("use quest game object", relevance) }));
+    triggers.push_back(
+        new TriggerNode("quest game object pending", {  NextAction("use quest game object", ACTION_MOVE) }));
 }
 
 void DefaultQuestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

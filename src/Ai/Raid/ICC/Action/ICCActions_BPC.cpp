@@ -11,6 +11,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 
@@ -22,15 +23,13 @@ bool IccBpcKelesethTankAction::Execute(Event /*event*/)
     if (!boss)
         return false;
 
-    static float const Z_TELEPORT_THRESHOLD = 6.0f;
+    static float const Z_OFF_FLOOR_THRESHOLD = 6.0f;
 
-    // Teleport Z-axis back to center-level if the bot is significantly off in Z
-    float centerZ = ICC_BPC_CENTER_POSITION.GetPositionZ();
-    if (std::abs(bot->GetPositionZ() - centerZ) > Z_TELEPORT_THRESHOLD)
-    {
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), centerZ, bot->GetOrientation());
-        return false;
-    }
+    // Off the arena floor level: walk back to the centre on a real path
+    float const centerZ = ICC_BPC_CENTER_POSITION.GetPositionZ();
+    if (std::abs(bot->GetPositionZ() - centerZ) > Z_OFF_FLOOR_THRESHOLD)
+        return MoveTo(bot->GetMapId(), ICC_BPC_CENTER_POSITION.GetPositionX(), ICC_BPC_CENTER_POSITION.GetPositionY(),
+                      centerZ, false, false, false, false, MovementPriority::MOVEMENT_COMBAT);
 
     if (!PlayerbotAI::IsAssistTank(bot))
     {
@@ -220,13 +219,13 @@ bool IccBpcMainTankAction::MarkEmpoweredPrince()
             // guid/unit from before the clear and skips re-marking for a full tick.
             if (markedUnit && (!markedUnit->IsAlive() || markedUnit != empoweredPrince))
             {
-                group->SetTargetIcon(SKULL_RAID_ICON, bot->GetGUID(), ObjectGuid::Empty);
+                RaidMarkOwnership::SetIcon(bot, group, SKULL_RAID_ICON, ObjectGuid::Empty);
                 markedUnit = nullptr;
             }
 
             // Mark alive empowered prince if needed
             if (!markedUnit)
-                group->SetTargetIcon(SKULL_RAID_ICON, bot->GetGUID(), empoweredPrince->GetGUID());
+                RaidMarkOwnership::SetIcon(bot, group, SKULL_RAID_ICON, empoweredPrince->GetGUID());
         }
     }
 
@@ -553,14 +552,12 @@ bool IccBpcKineticBombAction::Execute(Event /*event*/)
 
     static float const MAX_HEIGHT_DIFF = 30.0f;
     static float const SAFE_HEIGHT_Z = 371.16473f;
-    static float const TELEPORT_DOWN_Z = 367.16473f;
+    static float const FLOOR_RETURN_Z = 367.16473f;
 
-    // Fix bot stuck above arena
+    // Above the arena: walk back down before handling bombs
     if (bot->GetPositionZ() > SAFE_HEIGHT_Z)
-    {
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), TELEPORT_DOWN_Z,
-                        bot->GetOrientation());
-    }
+        return MoveTo(bot->GetMapId(), ICC_BPC_CENTER_POSITION.GetPositionX(), ICC_BPC_CENTER_POSITION.GetPositionY(),
+                      FLOOR_RETURN_Z, false, false, false, false, MovementPriority::MOVEMENT_COMBAT);
 
     // Assign bombs 1-to-1 to nearest available ranged DPS
     Unit* assignedBomb = FindNearestBomb();

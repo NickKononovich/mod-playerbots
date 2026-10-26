@@ -14,7 +14,6 @@ public:
         creators["charge"] = &charge;
         creators["death wish"] = &death_wish;
         creators["piercing howl"] = &piercing_howl;
-        creators["mocking blow"] = &mocking_blow;
         creators["heroic strike"] = &heroic_strike;
     }
 
@@ -44,16 +43,7 @@ private:
         return new ActionNode(
             "piercing howl",
             /*P*/ {},
-            /*A*/ { NextAction("mocking blow") },
-            /*C*/ {}
-        );
-    }
-
-    static ActionNode* mocking_blow(PlayerbotAI* /*botAI*/)
-    {
-        return new ActionNode(
-            "mocking blow",
-            /*P*/ {},
+            // [b31_wr] straight to Hamstring: Mocking Blow is a taunt and has no place in a dps snare chain
             /*A*/ { NextAction("hamstring") },
             /*C*/ {}
         );
@@ -78,7 +68,6 @@ ArmsWarriorStrategy::ArmsWarriorStrategy(PlayerbotAI* botAI) : GenericWarriorStr
 std::vector<NextAction> ArmsWarriorStrategy::getDefaultActions()
 {
     return {
-        NextAction("bladestorm", ACTION_DEFAULT + 0.2f),
         NextAction("mortal strike", ACTION_DEFAULT + 0.1f),
         NextAction("sunder armor", ACTION_DEFAULT + 0.05f),
         NextAction("melee", ACTION_DEFAULT)
@@ -133,11 +122,31 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
+    // [b31_deep] Mortal Strike on cooldown once its 30 rage is there (was the "mortal strike" debuff trigger plus a
+    // 20 rage node shared with Slam): 5.1 a minute against a ceiling of ~10.
     triggers.push_back(
         new TriggerNode(
-            "mortal strike",
+            "mortal strike ready",
             {
-                NextAction("mortal strike", ACTION_HIGH + 3)
+                NextAction("mortal strike", ACTION_HIGH + 5)
+            }
+        )
+    );
+    // [b31_deep] wowsims arms: Shattering Throw as a boss cooldown; Arms is in Battle Stance already
+    triggers.push_back(
+        new TriggerNode(
+            "shattering throw boss",
+            {
+                NextAction("shattering throw boss", ACTION_HIGH + 9)
+            }
+        )
+    );
+    // [b31_deep] Warcraft Tavern Arms: Heroic Throw whenever possible; no rage, below every other GCD
+    triggers.push_back(
+        new TriggerNode(
+            "heroic throw ready",
+            {
+                NextAction("heroic throw", ACTION_HIGH + 0.4f)
             }
         )
     );
@@ -146,7 +155,7 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "target critical health",
             {
-                NextAction("execute", ACTION_HIGH + 5)
+                NextAction("execute", ACTION_HIGH + 3)
             }
         )
     );
@@ -155,7 +164,7 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "sudden death",
             {
-                NextAction("execute", ACTION_HIGH + 5)
+                NextAction("execute", ACTION_HIGH + 3)
             }
         )
     );
@@ -173,7 +182,7 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "overpower",
             {
-                NextAction("overpower", ACTION_HIGH + 4)
+                NextAction("overpower", ACTION_HIGH + 7)
             }
         )
     );
@@ -182,26 +191,75 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "taste for blood",
             {
-                NextAction("overpower", ACTION_HIGH + 4)
+                NextAction("overpower", ACTION_HIGH + 7)
             }
         )
     );
 
+    // [b31_deep] Victory Rush is free but weaker than Mortal Strike / Overpower: a filler, above the rotation only
+    // below medium health (it was ACTION_INTERRUPT: 2-2.9 a minute on trash, above Mortal Strike).
     triggers.push_back(
         new TriggerNode(
             "victory rush",
+            {
+                NextAction("victory rush", ACTION_HIGH + 0.5f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "victory rush and medium health",
             {
                 NextAction("victory rush", ACTION_INTERRUPT)
             }
         )
     );
 
+    // [b31_deep] wowsims arms: Heroic Strike from 40 rage (was 60: 2.8 a minute); 45 keeps Mortal Strike's 30
     triggers.push_back(
         new TriggerNode(
-            "high rage available",
+            "arms heroic strike rage",
             {
-                NextAction("heroic strike", ACTION_HIGH),
-                NextAction("slam", ACTION_HIGH + 1)
+                NextAction("heroic strike", ACTION_HIGH)
+            }
+        )
+    );
+
+    // [b31_deep] Slam filler only with rage to spare for Mortal Strike (CastSlamFillerAction)
+    triggers.push_back(
+        new TriggerNode(
+            "light rage available",
+            {
+                NextAction("slam filler", ACTION_HIGH + 1)
+            }
+        )
+    );
+
+    triggers.push_back(
+        new TriggerNode(
+            "execute phase and high rage",
+            {
+                NextAction("execute", ACTION_HIGH + 6)
+            }
+        )
+    );
+
+    triggers.push_back(
+        new TriggerNode(
+            "bladestorm",
+            {
+                NextAction("bladestorm", ACTION_HIGH + 4)
+            }
+        )
+    );
+
+    // Stance-dance: above "battle stance" so the swap back waits until Recklessness is cast.
+    triggers.push_back(
+        new TriggerNode(
+            "recklessness ready",
+            {
+                NextAction("berserker stance", ACTION_HIGH + 12),
+                NextAction("recklessness", ACTION_HIGH + 11)
             }
         )
     );
@@ -225,7 +283,7 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode(
-            "critical health",
+            "critical health solo",
             {
                 NextAction("intimidating shout", ACTION_EMERGENCY)
             }
@@ -236,6 +294,9 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "medium health",
             {
+                // [b31_deep] the enrage Enraged Regeneration needs first (it was only castable on Wrecking Crew)
+                NextAction("berserker rage for enrage", ACTION_EMERGENCY + 0.5f),
+                NextAction("bloodrage for enrage", ACTION_EMERGENCY + 0.3f),
                 NextAction("enraged regeneration", ACTION_EMERGENCY)
             }
         )
@@ -258,4 +319,19 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+
+    // [melee_audit_b30] Interrupts: Pummel needs Berserker Stance; the stance goes up first only when Pummel is ready
+    // ("pummel ready"), and "battle stance" (HIGH + 10) swaps back once it is spent.
+    triggers.push_back(
+        new TriggerNode(
+            "pummel ready",
+            {
+                NextAction("berserker stance", ACTION_INTERRUPT + 0.5f),
+                NextAction("pummel", ACTION_INTERRUPT)
+            }
+        )
+    );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus slam!", { NextAction("slam", ACTION_HIGH + 2) }));
 }

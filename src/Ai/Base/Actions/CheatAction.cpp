@@ -5,92 +5,15 @@
  */
 
 #include "CheatAction.h"
+#include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 
-bool CheatAction::Execute(Event event)
+// Bots play under the same rules as players (user decision 2026-10-23): PlayerbotAI::HasCheat() is always false,
+// so "cheat +gold" and friends could only ever print a mask that does nothing. The command now changes nothing
+// and says so, instead of listing [conf:...] cheats from Playerbots.BotCheats as if they were active.
+bool CheatAction::Execute(Event /*event*/)
 {
-    std::string const param = event.getParam();
-
-    uint32 cheatMask = (uint32)botAI->GetCheat();
-
-    std::vector<std::string> splitted = split(param, ',');
-    for (std::vector<std::string>::iterator i = splitted.begin(); i != splitted.end(); i++)
-    {
-        char const* name = i->c_str();
-        switch (name[0])
-        {
-            case '+':
-                cheatMask |= (uint32)GetCheatMask(name + 1);
-                break;
-            case '-':
-                cheatMask ^= (uint32)GetCheatMask(name + 1);
-                break;
-            case '?':
-                ListCheats();
-                return true;
-        }
-    }
-
-    botAI->SetCheat(BotCheatMask(cheatMask));
-
+    botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+        "cheats_disabled", "Cheats are disabled: I play by the same rules as you.", {}));
     return true;
-}
-
-BotCheatMask CheatAction::GetCheatMask(std::string const cheat)
-{
-    if (cheat == "taxi")
-        return BotCheatMask::taxi;
-
-    if (cheat == "gold")
-        return BotCheatMask::gold;
-
-    if (cheat == "health")
-        return BotCheatMask::health;
-
-    if (cheat == "mana")
-        return BotCheatMask::mana;
-
-    if (cheat == "power")
-        return BotCheatMask::power;
-
-    if (cheat == "raid")
-        return BotCheatMask::raid;
-
-    return BotCheatMask::none;
-}
-
-std::string const CheatAction::GetCheatName(BotCheatMask cheatMask)
-{
-    switch (cheatMask)
-    {
-        case BotCheatMask::taxi:
-            return "taxi";
-        case BotCheatMask::gold:
-            return "gold";
-        case BotCheatMask::health:
-            return "health";
-        case BotCheatMask::mana:
-            return "mana";
-        case BotCheatMask::power:
-            return "power";
-        case BotCheatMask::raid:
-            return "raid";
-        default:
-            return "none";
-    }
-}
-
-void CheatAction::ListCheats()
-{
-    std::ostringstream out;
-    for (int i = 0; i < log2((uint32)BotCheatMask::maxMask); i++)
-    {
-        BotCheatMask cheatMask = BotCheatMask(1 << i);
-        if ((uint32)cheatMask & (uint32)sPlayerbotAIConfig.BotCheatMask)
-            out << "[conf:" << GetCheatName(BotCheatMask(cheatMask)) << "]";
-        else if (botAI->HasCheat(cheatMask))
-            out << "[" << GetCheatName(BotCheatMask(cheatMask)) << "]";
-    }
-
-    botAI->TellMasterNoFacing(out);
 }

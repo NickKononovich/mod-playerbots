@@ -796,7 +796,6 @@ public:
 private:
     static constexpr float PLATFORM_Z      = 840.857f;
     static constexpr float BEHIND_DISTANCE = 4.0f;
-    bool FixPlatformPosition();
     bool ClearInvalidTarget();
     Position const* GetMainTankPosition();
     Position const* GetMainTankRangedPosition();
@@ -810,7 +809,7 @@ public:
         : AttackAction(botAI, "icc lich king adds") {}
     bool Execute(Event event) override;
 
-    bool HandleTeleportationFixes(Difficulty diff, Unit* terenas);
+    bool HandleOutOfAreaState(Difficulty diff, Unit* terenas);
     bool HandleHeroicNonTankPositioning(Difficulty diff, Unit* terenas);
     bool HandleSpiritMarkingAndTargeting(Difficulty diff, Unit* terenas);
     bool HandleQuakeMechanics(Unit* boss);

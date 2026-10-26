@@ -13,6 +13,8 @@ std::vector<NextAction> FollowMasterStrategy::getDefaultActions()
     };
 }
 
-void FollowMasterStrategy::InitTriggers(std::vector<TriggerNode*>& /*triggers*/)
+void FollowMasterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // No progress towards the one we follow: reset, follow again, re-path, and at last a summon-like teleport.
+    triggers.push_back(new TriggerNode("stuck watchdog", { NextAction("stuck recovery", ACTION_MOVE + 5.0f) }));
 }

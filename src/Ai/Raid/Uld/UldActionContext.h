@@ -84,6 +84,7 @@ public:
         creators["yogg-saron move to exit portal action"] = &RaidUlduarActionContext::yogg_saron_move_to_exit_portal_action;
         creators["yogg-saron lunatic gaze action"] = &RaidUlduarActionContext::yogg_saron_lunatic_gaze_action;
         creators["yogg-saron phase 3 positioning action"] = &RaidUlduarActionContext::yogg_saron_phase_3_positioning_action;
+        creators["yogg-saron brain pet passive action"] = &RaidUlduarActionContext::yogg_saron_brain_pet_passive_action;
     }
 
 private:
@@ -154,6 +155,7 @@ private:
     static Action* yogg_saron_move_to_exit_portal_action(PlayerbotAI* botAI) { return new YoggSaronMoveToExitPortalAction(botAI); }
     static Action* yogg_saron_lunatic_gaze_action(PlayerbotAI* botAI) { return new YoggSaronLunaticGazeAction(botAI); }
     static Action* yogg_saron_phase_3_positioning_action(PlayerbotAI* botAI) { return new YoggSaronPhase3PositioningAction(botAI); }
+    static Action* yogg_saron_brain_pet_passive_action(PlayerbotAI* botAI) { return new YoggSaronBrainPetPassiveAction(botAI); }
 };
 
 #endif

@@ -15,9 +15,11 @@ public:
 private:
     static ActionNode* berserker_rage([[maybe_unused]] PlayerbotAI* botAI)
     {
+        // [b31_deep] no "berserker stance" prerequisite: 3.3.5 Berserker Rage (18499) has stance mask 0, and the
+        // stance swap cost a tank Defensive Stance (and its rage) under a fear
         return new ActionNode(
             "berserker rage",
-            /*P*/ { NextAction("berserker stance") },
+            /*P*/ {},
             /*A*/ {},
             /*C*/ {}
         );
@@ -57,13 +59,25 @@ WarriorAoeStrategy::WarriorAoeStrategy(PlayerbotAI* botAI) : CombatStrategy(botA
 
 void WarriorAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // [b31_wr] Stance-aware: each ability only on a trigger its stance passes (Whirlwind berserker, Thunder Clap
+    // battle / defensive, Sweeping Strikes battle / berserker), so Arms no longer tries Whirlwind nor Fury Thunder
+    // Clap; no stance dance for AoE. Bladestorm needs 3+ mobs here (the Arms "bladestorm" boost trigger covers the
+    // rest), Cleave is the rage dump. Shockwave, Demoralizing Shout: any stance.
     triggers.push_back(new TriggerNode(
-        "light aoe", { NextAction("sweeping strikes", ACTION_HIGH + 7),
-                                       NextAction("bladestorm", ACTION_HIGH + 6),
-                                       NextAction("thunder clap", ACTION_HIGH + 5),
-                                       NextAction("shockwave", ACTION_HIGH + 4),
-                                       NextAction("demoralizing shout without life time check", ACTION_HIGH + 1),
-                                       NextAction("cleave", ACTION_HIGH) }));
+        "light aoe berserker stance", { NextAction("whirlwind", ACTION_HIGH + 8) }));
+    triggers.push_back(new TriggerNode(
+        "light aoe sweeping strikes stance", { NextAction("sweeping strikes", ACTION_HIGH + 7) }));
+    // [b31_deep] Bladestorm / Shockwave only once known (Fury: "spell not known" 229 / 244 times on L80 build 30)
+    triggers.push_back(new TriggerNode(
+        "medium aoe bladestorm", { NextAction("bladestorm", ACTION_HIGH + 6) }));
+    triggers.push_back(new TriggerNode(
+        "light aoe thunder clap stance", { NextAction("thunder clap", ACTION_HIGH + 5) }));
+    triggers.push_back(new TriggerNode(
+        "light aoe shockwave", { NextAction("shockwave", ACTION_HIGH + 4) }));
+    triggers.push_back(new TriggerNode(
+        "light aoe", { NextAction("demoralizing shout without life time check", ACTION_HIGH + 1) }));
+    triggers.push_back(new TriggerNode(
+        "light aoe and medium rage", { NextAction("cleave", ACTION_HIGH + 0.5f) }));
     triggers.push_back(
         new TriggerNode("shockwave on snare target",
                         { NextAction("shockwave on snare target", ACTION_HIGH + 5) }));

@@ -8,8 +8,15 @@
 #include "ChatHelper.h"
 #include "CraftValue.h"
 #include "Event.h"
+#include "GlyphActions.h"
+#include "Group.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "Timer.h"
+
+#include <algorithm>
 
 std::map<uint32, SkillLineAbilityEntry const*> SetCraftAction::skillSpells;
 
@@ -164,4 +171,173 @@ uint32 SetCraftAction::GetCraftFee(CraftData& data)
 
     uint32 level = std::max(proto->ItemLevel, proto->RequiredLevel);
     return level * level / 40;
+}
+
+namespace
+{
+    constexpr uint32 AUTO_CRAFT_RETRY_MS = 10 * MINUTE * IN_MILLISECONDS;
+    constexpr uint32 NEEDED_GLYPHS_REFRESH_MS = MINUTE * IN_MILLISECONDS;
+
+    uint32 GetCreatedItem(SpellInfo const* spellInfo)
+    {
+        for (uint8 i = EFFECT_0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (spellInfo->Effects[i].Effect == SPELL_EFFECT_CREATE_ITEM && spellInfo->Effects[i].ItemType)
+                return spellInfo->Effects[i].ItemType;
+        }
+
+        return 0;
+    }
+
+    // Tradeskills that level by casting a recipe from reagents. Mining is here for Smelting;
+    // Enchanting is left out on purpose: its recipes consume the item they enchant.
+    bool IsAutoCraftSkill(uint32 skillLine)
+    {
+        switch (skillLine)
+        {
+            case SKILL_ALCHEMY:
+            case SKILL_BLACKSMITHING:
+            case SKILL_COOKING:
+            case SKILL_ENGINEERING:
+            case SKILL_FIRST_AID:
+            case SKILL_INSCRIPTION:
+            case SKILL_JEWELCRAFTING:
+            case SKILL_LEATHERWORKING:
+            case SKILL_MINING:
+            case SKILL_TAILORING:
+                return true;
+            default:
+                return false;
+        }
+    }
+}
+
+bool AutoCraftAction::isUseful()
+{
+    return !bot->IsInCombat() && !bot->isMoving() && !bot->IsMounted() && !bot->IsNonMeleeSpellCast(true) &&
+           bot->IsAlive();
+}
+
+bool AutoCraftAction::HasReagents(uint32 spellId)
+{
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!spellInfo)
+        return false;
+
+    for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+    {
+        if (spellInfo->Reagent[i] <= 0)
+            continue;
+
+        if (!bot->HasItemCount(spellInfo->Reagent[i], spellInfo->ReagentCount[i]))
+            return false;
+    }
+
+    return true;
+}
+
+void AutoCraftAction::RefreshNeededGlyphs()
+{
+    uint32 const now = getMSTime();
+    if (_neededGlyphsAt && getMSTimeDiff(_neededGlyphsAt, now) < NEEDED_GLYPHS_REFRESH_MS)
+        return;
+
+    _neededGlyphsAt = now;
+    _neededGlyphs.clear();
+
+    Group* group = bot->GetGroup();
+    if (!group || !bot->HasSkill(SKILL_INSCRIPTION))
+        return;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        // Same map only: other maps run on other threads. Random bots get their glyphs from the factory.
+        if (!member || !member->IsInWorld() || member->GetMap() != bot->GetMap() ||
+            sRandomPlayerbotMgr.IsRandomBot(member))
+            continue;
+
+        for (uint32 itemId : GlyphUtil::GetWantedGlyphItems(member))
+        {
+            if (std::find(_neededGlyphs.begin(), _neededGlyphs.end(), itemId) == _neededGlyphs.end() &&
+                GlyphUtil::NeedsGlyphItem(member, itemId))
+                _neededGlyphs.push_back(itemId);
+        }
+    }
+}
+
+uint32 AutoCraftAction::ChooseRecipe()
+{
+    uint32 const now = getMSTime();
+    uint32 bestSpell = 0;
+    uint32 bestScore = 0;
+
+    RefreshNeededGlyphs();
+
+    for (auto const& [spellId, playerSpell] : bot->GetSpellMap())
+    {
+        if (playerSpell->State == PLAYERSPELL_REMOVED || !playerSpell->Active)
+            continue;
+
+        auto retry = _failedAt.find(spellId);
+        if (retry != _failedAt.end() && getMSTimeDiff(retry->second, now) < AUTO_CRAFT_RETRY_MS)
+            continue;
+
+        SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+        {
+            SkillLineAbilityEntry const* ability = itr->second;
+            if (!IsAutoCraftSkill(ability->SkillLine) || !ability->TrivialSkillLineRankHigh)
+                continue;
+
+            // A glyph someone in the group is waiting for; one copy at a time, "give glyph" hands it over.
+            if (ability->SkillLine == SKILL_INSCRIPTION && !_neededGlyphs.empty())
+            {
+                SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+                uint32 const createdItem = spellInfo ? GetCreatedItem(spellInfo) : 0;
+                if (createdItem &&
+                    std::find(_neededGlyphs.begin(), _neededGlyphs.end(), createdItem) != _neededGlyphs.end() &&
+                    !bot->HasItemCount(createdItem, 1) && HasReagents(spellId))
+                    return spellId;
+            }
+
+            uint16 const skill = bot->GetSkillValue(ability->SkillLine);
+            if (!skill || skill >= bot->GetMaxSkillValue(ability->SkillLine))
+                continue;
+
+            // Orange until the "low" rank, yellow until halfway to grey; green and grey rarely raise the skill.
+            uint32 const yellowFrom = ability->TrivialSkillLineRankLow;
+            uint32 const greenFrom = (ability->TrivialSkillLineRankLow + ability->TrivialSkillLineRankHigh) / 2;
+            if (skill >= greenFrom)
+                continue;
+
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!spellInfo || !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) || !HasReagents(spellId))
+                continue;
+
+            uint32 const score = skill < yellowFrom ? 2 : 1;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestSpell = spellId;
+            }
+        }
+    }
+
+    return bestSpell;
+}
+
+bool AutoCraftAction::Execute(Event /*event*/)
+{
+    uint32 const spellId = ChooseRecipe();
+    if (!spellId)
+        return false;
+
+    if (!botAI->CanCastSpell(spellId, bot, true) || !botAI->CastSpell(spellId, bot))
+    {
+        _failedAt[spellId] = getMSTime();
+        return false;
+    }
+
+    return true;
 }

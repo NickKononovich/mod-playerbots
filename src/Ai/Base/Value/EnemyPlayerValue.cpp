@@ -5,6 +5,7 @@
  */
 
 #include "EnemyPlayerValue.h"
+#include "AttackersValue.h"
 #include "CombatManager.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -18,6 +19,9 @@ bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
 
     bool inCannon = botAI->IsInVehicle(false, true);
     Player* enemy = dynamic_cast<Player*>(unit);
+    if (AttackersValue::IsCharmedAlly(enemy, bot))  // [b44_st]
+        return false;
+
     if (enemy && botAI->IsOpposing(enemy) && enemy->IsPvP() &&
         !sPlayerbotAIConfig.IsPvpProhibited(enemy->GetZoneId(), enemy->GetAreaId()) &&
         !enemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2) &&
@@ -60,7 +64,7 @@ Unit* EnemyPlayerValue::Calculate()
     for (auto const& [guid, combatRef] : bot->GetCombatManager().GetPvPCombatRefs())
     {
         Unit* pTarget = combatRef->GetOther(bot);
-        if (!pTarget || pTarget == pVictim || !pTarget->IsPlayer() ||
+        if (!pTarget || pTarget == pVictim || !pTarget->IsPlayer() || AttackersValue::IsCharmedAlly(pTarget, bot) ||
             !(bot->InBattleground() ? bot->CanSeeOrDetect(pTarget) : pTarget->CanSeeOrDetect(bot)) ||
             !bot->IsWithinDist(pTarget, VISIBILITY_DISTANCE_NORMAL))
             continue;
@@ -95,7 +99,7 @@ Unit* EnemyPlayerValue::Calculate()
         if (!pTarget)
             continue;
 
-        if (pTarget == pVictim)
+        if (pTarget == pVictim || AttackersValue::IsCharmedAlly(pTarget, bot))  // [b44_st]
             continue;
 
         if (bot->GetTeamId() == TEAM_HORDE)
@@ -138,7 +142,9 @@ Unit* EnemyPlayerValue::Calculate()
                     continue;
 
                 if (Unit* pAttacker = pMember->getAttackerForHelper())
-                    if (pAttacker->IsPlayer() && bot->IsWithinDist(pAttacker, maxAggroDistance * 2.0f) &&
+                    // [b44_st] a charmed member attacking another is no enemy player
+                    if (pAttacker->IsPlayer() && !AttackersValue::IsCharmedAlly(pAttacker, bot) &&
+                        bot->IsWithinDist(pAttacker, maxAggroDistance * 2.0f) &&
                         bot->IsWithinLOSInMap(pAttacker) && pAttacker != pVictim &&
                         (bot->InBattleground() ? bot->CanSeeOrDetect(pAttacker) : pAttacker->CanSeeOrDetect(bot)))
                         return pAttacker;

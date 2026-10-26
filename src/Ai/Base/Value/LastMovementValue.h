@@ -68,6 +68,9 @@ public:
     TravelPath lastPath;
     time_t nextTeleport;
     std::future<TravelPath> future;
+    // Why the mover chose this destination (test harness "[intent] goingTo"); valid while reasonMs == msTime.
+    std::string reason;
+    uint32 reasonMs = 0;
 };
 
 class LastMovementValue : public ManualSetValue<LastMovement&>

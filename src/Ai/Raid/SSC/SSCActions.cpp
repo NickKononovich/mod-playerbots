@@ -12,6 +12,7 @@
 #include "MoveSpline.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidKiteHelper.h"
 #include "RtiTargetValue.h"
 #include "SSCHelpers.h"
 #include <algorithm>
@@ -1884,11 +1885,12 @@ bool LadyVashjAssignTargetPriorityAction::Execute(Event /*event*/)
     return false;
 }
 
-// Fear Ward makes Striders tankable. This simulates the real-life strategy of meleeing a Strider
-// in an Ogre Suit (due to the extended combat reach). Well, that's me rationalizing cheating.
+// Fear Ward makes Striders tankable. A priest casts it on the tanks; the aura is no longer added
+// for free (bots play without cheats).
 bool LadyVashjTankApplyFearWardAction::Execute(Event /*event*/)
 {
-    return bot->AddAura(Id(SscSpells::SPELL_FEAR_WARD), bot);
+    Player* tank = GetVashjTankWithoutFearWard(bot);
+    return tank && botAI->CanCastSpell("fear ward", tank) && botAI->CastSpell("fear ward", tank);
 }
 
 bool LadyVashjPositionCoilfangStriderAction::Execute(Event /*event*/)
@@ -1947,6 +1949,40 @@ bool LadyVashjPositionCoilfangStriderAction::MoveStriderAwayFromVashj(
     return MoveTo(
         SSC_MAP_ID, stepX, stepY, stepZ, false, false, false, false,
         MovementPriority::MOVEMENT_COMBAT, true, backwards);
+}
+
+bool LadyVashjKiteCoilfangStriderAction::Execute(Event /*event*/)
+{
+    Unit* strider = GetVashjStriderAttackingBot(bot);
+    if (!strider)
+        return false;
+
+    std::vector<Position> const threats = { strider->GetPosition() };
+    if (!RaidKiteHelper::IsKiteNeeded(bot, threats, VASHJ_STRIDER_KITE_DISTANCE))
+        return false;
+
+    std::vector<Position> const& spores = GetToxicSporePositions(botAI);
+    RaidKiteHelper::KiteParams params;
+    params.keepDistance = VASHJ_STRIDER_KITE_DISTANCE;
+    params.stepDistance = 5.0f;
+    params.isHazard = [&spores](float x, float y)
+    {
+        if (!IsOnVashjDais(x, y, VASHJ_DAIS_MARGIN, VASHJ_STANDING_ROCK_CLEARANCE))
+            return true;
+
+        return RaidKiteHelper::MinDistanceToThreats(x, y, spores) < TOXIC_SPORES_AVOID_RADIUS;
+    };
+
+    std::vector<Position> const route(
+        VASHJ_STRIDER_HOLD_POSITIONS.begin(), VASHJ_STRIDER_HOLD_POSITIONS.end());
+    Position step;
+    if (!RaidKiteHelper::FindRouteKiteStep(bot, threats, route, params, step))
+        return false;
+
+    bot->CastStop();
+    return MoveTo(
+        SSC_MAP_ID, step.GetPositionX(), step.GetPositionY(), step.GetPositionZ(), false, false,
+        false, false, MovementPriority::MOVEMENT_FORCED, true, false);
 }
 
 // Two locations: (1) 12y in front of the north rock's tip, and (2) southeast of the dais middle.
@@ -2347,11 +2383,12 @@ bool LadyVashjReturnToTheGroundAction::Execute(Event /*event*/)
     if (floorZ <= INVALID_HEIGHT)
         return false;
 
+    // Fall down like a player would instead of being teleported to the floor.
     bot->AttackStop();
     bot->CastStop();
     bot->StopMoving();
     bot->GetMotionMaster()->Clear();
-    bot->NearTeleportTo(x, y, floorZ, bot->GetOrientation());
+    bot->GetMotionMaster()->MoveFall();
 
     return true;
 }

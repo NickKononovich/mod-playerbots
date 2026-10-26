@@ -5,9 +5,14 @@
  */
 
 #include "AiObjectContext.h"
+#include "BMValueContext.h"
+#include "DungeonHazard.h"
+#include "EscortProtect.h"
+#include "BrdStrategy.h"
 #include "GDValueContext.h"
 #include "GruulValueContext.h"
 #include "HyjalValueContext.h"
+#include "LeaderContext.h"
 #include "MagValueContext.h"
 #include "MechValueContext.h"
 #include "MgTValueContext.h"
@@ -21,6 +26,7 @@ void AiObjectContext::BuildSharedValueContexts(
     SharedNamedObjectContextList<UntypedValue>& valueContexts)
 {
     valueContexts.Add(new ValueContext());
+    valueContexts.Add(new LeaderValueContext());
     valueContexts.Add(new RaidGruulsLairValueContext());
     valueContexts.Add(new RaidHyjalValueContext());
     valueContexts.Add(new RaidMagtheridonValueContext());
@@ -30,5 +36,9 @@ void AiObjectContext::BuildSharedValueContexts(
     valueContexts.Add(new TbcDungeonMechValueContext());
     valueContexts.Add(new TbcDungeonMgTValueContext());
     valueContexts.Add(new TbcDungeonUnderbogValueContext());
+    valueContexts.Add(new TbcDungeonBlackMorassValueContext());
     valueContexts.Add(new WotlkDungeonGDValueContext());
+    valueContexts.Add(new DungeonHazardValueContext());
+    valueContexts.Add(new DungeonEscortValueContext());
+    valueContexts.Add(new ClassicDungeonBrdValueContext());
 }

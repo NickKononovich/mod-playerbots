@@ -174,6 +174,12 @@ float SapphironGenericMultiplier::GetValue(Action* action)
     if (dynamic_cast<CastDeathGripAction*>(action) || dynamic_cast<CombatFormationMoveAction*>(action))
         return 0.0f;
 
+    // AC #27109: Sapphiron can be hit through an Ice Block. While the raid hides behind the blocks for Frost
+    // Breath nothing is aimed at her; heals, self-buffs and the hide movement still run.
+    Unit* target = action->GetTarget();
+    if (target && target == AI_VALUE2(Unit*, "find target", "sapphiron") && helper.WaitForExplosion())
+        return 0.0f;
+
     return 1.0f;
 }
 

@@ -101,15 +101,22 @@ std::string PlayerbotTextMgr::GetBotText(std::string name)
         return "";
     }
 
-    if (botTexts[name].empty())
+    // find(), never operator[]: map threads read this table at once, and operator[] inserts a missing key, a data
+    // race that corrupted the heap (wave 11: two map workers hung 60 s inside RtlFreeHeap under GetBotText).
+    auto const found = botTexts.find(name);
+    if (found == botTexts.end() || found->second.empty())
     {
         LOG_ERROR("playerbots", "Can't get bot text {}! No bots texts for this name!", name);
         return "";
     }
 
-    std::vector<BotTextEntry>& list = botTexts[name];
-    BotTextEntry textEntry = list[urand(0, list.size() - 1)];
-    return !textEntry.m_text[GetLocalePriority()].empty() ? textEntry.m_text[GetLocalePriority()] : textEntry.m_text[0];
+    std::vector<BotTextEntry> const& list = found->second;
+    BotTextEntry const& textEntry = list[urand(0, list.size() - 1)];
+    auto const localized = textEntry.m_text.find(GetLocalePriority());
+    if (localized != textEntry.m_text.end() && !localized->second.empty())
+        return localized->second;
+    auto const fallback = textEntry.m_text.find(0);
+    return fallback != textEntry.m_text.end() ? fallback->second : std::string();
 }
 
 std::string PlayerbotTextMgr::GetBotText(std::string name, std::map<std::string, std::string> placeholders)
@@ -145,26 +152,41 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::map<std::
         LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts loaded!", replyType);
         return "";
     }
-    if (botTexts["reply"].empty())
+    auto const replies = botTexts.find("reply");
+    if (replies == botTexts.end() || replies->second.empty())
     {
         LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts replies!", replyType);
         return "";
     }
 
-    std::vector<BotTextEntry>& list = botTexts["reply"];
-    std::vector<BotTextEntry> proper_list;
-    for (auto text : list)
-    {
+    // Pick by index: copying every matching entry (each holds a locale map) on each reply was the heaviest heap user
+    // of the map threads; the table is read-only after load.
+    std::vector<BotTextEntry> const& list = replies->second;
+    uint32 matching = 0;
+    for (BotTextEntry const& text : list)
         if (text.m_replyType == replyType)
-            proper_list.push_back(text);
-    }
+            ++matching;
 
-    if (proper_list.empty())
+    if (!matching)
         return "";
 
-    BotTextEntry textEntry = proper_list[urand(0, proper_list.size() - 1)];
-    std::string botText =
-        !textEntry.m_text[GetLocalePriority()].empty() ? textEntry.m_text[GetLocalePriority()] : textEntry.m_text[0];
+    uint32 pick = urand(0, matching - 1);
+    BotTextEntry const* textEntry = nullptr;
+    for (BotTextEntry const& text : list)
+        if (text.m_replyType == replyType && !pick--)
+        {
+            textEntry = &text;
+            break;
+        }
+
+    if (!textEntry)
+        return "";
+
+    auto const localized = textEntry->m_text.find(GetLocalePriority());
+    auto const fallback = textEntry->m_text.find(0);
+    std::string botText = localized != textEntry->m_text.end() && !localized->second.empty()
+                              ? localized->second
+                              : (fallback != textEntry->m_text.end() ? fallback->second : std::string());
     ApplyPlaceholders(botText, placeholders);
 
     return botText;
@@ -182,10 +204,11 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::string na
 
 bool PlayerbotTextMgr::rollTextChance(std::string name)
 {
-    if (!botTextChance[name])
+    auto const found = botTextChance.find(name);
+    if (found == botTextChance.end() || !found->second)
         return true;
 
-    return urand(0, 100) < botTextChance[name];
+    return urand(0, 100) < found->second;
 }
 
 bool PlayerbotTextMgr::GetBotText(std::string name, std::string& text)

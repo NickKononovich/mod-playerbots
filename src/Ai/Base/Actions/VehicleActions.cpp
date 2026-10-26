@@ -112,6 +112,17 @@ bool LeaveVehicleAction::Execute(Event /*event*/)
     if (!seat || !seat->CanEnterOrExit())
         return false;
 
+    // The passenger is put down where the vehicle is: never step out of a flying one in mid-air (a vehicle on a
+    // transport, e.g. a gunship cannon, stands on its deck).
+    Unit* vehicleBase = myVehicle->GetBase();
+    if (!vehicleBase)
+        return false;
+
+    if (!vehicleBase->GetTransport() && !PlayerbotAI::HasGroundSupport(vehicleBase, vehicleBase->GetPositionX(),
+                                                                       vehicleBase->GetPositionY(),
+                                                                       vehicleBase->GetPositionZ()))
+        return false;
+
     WorldPacket p;
     bot->GetSession()->HandleRequestVehicleExit(p);
 

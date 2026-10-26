@@ -33,10 +33,11 @@ private:
 
     static ActionNode* obliterate([[maybe_unused]] PlayerbotAI* botAI)
     {
+        // [b31_deep] Death Strike (the same Frost + Unholy runes) at levels 58-60, before Obliterate is learnt (61)
         return new ActionNode(
             "obliterate",
             /*P*/ { NextAction("blood presence") },
-            /*A*/ {},
+            /*A*/ { NextAction("death strike") },
             /*C*/ {}
         );
     }
@@ -96,9 +97,29 @@ std::vector<NextAction> FrostDKStrategy::getDefaultActions()
     };
 }
 
+void FrostDKStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
+{
+    GenericDKStrategy::InitMultipliers(multipliers);
+    multipliers.push_back(new DKDiseaseRefreshMultiplier(botAI));  // [b31_dk]
+}
+
 void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericDKStrategy::InitTriggers(triggers);
+
+    // [b31_dk] Blood Presence for Frost DPS (the 3.3.5 standard; Frost Presence marks a tank, PlayerbotAI::IsTank).
+    // Above movement and peel, below interrupts: an instant, and the rotation's prerequisites expect a presence.
+    triggers.push_back(new TriggerNode("no presence", { NextAction("blood presence", ACTION_MOVE + 9) }));
+
+    // [b31_dk] Killing Machine (51124, 100 % crit on the next Icy Touch / Howling Blast / Frost Strike): Frost Strike
+    // (runic power). Above the default rotation (Obliterate 5.7), below the disease refreshes (22) and Pestilence (29).
+    // [b31_deep] No Howling Blast on Killing Machine: on one target it spends Obliterate's runes for about half the
+    // damage (wowsims frost_bl_pesti: Killing Machine on Frost Strike, Howling Blast with Rime only).
+    triggers.push_back(new TriggerNode("killing machine", { NextAction("frost strike", ACTION_NORMAL + 2) }));
+    // [b31_deep] Frost Strike at >= 115 runic power right below Obliterate, above Unbreakable Armor / Rime / Blood
+    // Strike (wowsims frost_bl_pesti), so runic power does not cap
+    triggers.push_back(
+        new TriggerNode("frost strike runic power", { NextAction("frost strike", ACTION_DEFAULT + 0.65f) }));
 
     triggers.push_back(
         new TriggerNode(
@@ -118,14 +139,22 @@ void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
+    // [b31_deep] every ready Blood rune (was "high blood rune": both slots ready, so the second rune idled ~8 s after
+    // each Blood Strike); a Death rune is left for Obliterate
     triggers.push_back(
         new TriggerNode(
-            "high blood rune",
+            "blood rune ready",
             {
-                NextAction("blood strike", ACTION_DEFAULT + 0.2f)
+                NextAction("blood strike", ACTION_DEFAULT + 0.45f)
             }
         )
     );
+    // [b31_deep] Raise Dead as a damage cooldown (wowsims frost_bl_pesti: after Rime, before the Frost Strike filler)
+    triggers.push_back(new TriggerNode("raise dead boost", { NextAction("raise dead", ACTION_DEFAULT + 0.42f) }));
+
+    // [b35_uh] Empower Rune Weapon on a boss once every rune is down (wowsims frost_bl_pesti: once, in the boss opener
+    // after the runes are spent); "no rune" in GenericDKStrategy spent it on trash too. Same priority as before.
+    triggers.push_back(new TriggerNode("no rune boss", { NextAction("empower rune weapon", ACTION_HIGH + 1) }));
 
     triggers.push_back(
         new TriggerNode(
@@ -138,7 +167,7 @@ void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     triggers.push_back(
         new TriggerNode(
-            "icy touch",
+            "icy touch 3s",
             {
                 NextAction("icy touch", ACTION_HIGH + 2)
             }
@@ -146,13 +175,23 @@ void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "plague strike",
+            "plague strike 3s",
             {
                 NextAction("plague strike", ACTION_HIGH + 2)
             }
         )
     );
+    triggers.push_back(
+        new TriggerNode(
+            "low health",
+            {
+                NextAction("icebound fortitude", ACTION_HIGH + 5)
+            }
+        )
+    );
 
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus ascendant power", { NextAction("frost strike", ACTION_HIGH + 1) }));
 }
 
 void FrostDKAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

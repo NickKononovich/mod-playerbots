@@ -12,6 +12,8 @@
 #include "PlayerbotAIConfig.h"
 #include "Trigger.h"
 
+class Creature;
+
 enum TocC_IDs
 {
     // Spells
@@ -125,6 +127,77 @@ class ToCEadricTrigger : public Trigger
 {
 public:
     ToCEadricTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc eadric") {}
+    bool IsActive() override;
+};
+
+// The announcer offers the next stage and the group is ready for it (joust: everyone sits on a joust mount).
+class ToCStartEventTrigger : public Trigger
+{
+public:
+    ToCStartEventTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc start event", 1000) {}
+    bool IsActive() override;
+
+private:
+    bool IsGroupReady(Creature* announcer, uint32 progress);
+
+    uint32 readySince = 0;
+    uint32 waitingSince = 0;
+};
+
+// Argent soldiers stand passive after the gossip (their DoZoneInCombat is commented out): the tank pulls each pack.
+class ToCArgentSoldiersTrigger : public Trigger
+{
+public:
+    ToCArgentSoldiersTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc argent soldiers", 1000) {}
+    bool IsActive() override;
+};
+
+// Bot (or its pet) still damages Paletress through her Reflective Shield.
+class ToCReflectiveShieldTrigger : public Trigger
+{
+public:
+    ToCReflectiveShieldTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc reflective shield") {}
+    bool IsActive() override;
+};
+
+// Renew / Holy Fire / Holy Smite of Paletress, Waking Nightmare of the Memory, Death's Respite of the Black
+// Knight, while the bot has an interrupt ready that the caster is not immune to.
+class ToCInterruptTrigger : public Trigger
+{
+public:
+    ToCInterruptTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc interrupt", 250) {}
+    bool IsActive() override;
+};
+
+// A Black Knight ghoul within its Explode radius is casting Explode.
+class ToCGhoulExplodeTrigger : public Trigger
+{
+public:
+    ToCGhoulExplodeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc ghoul explode", 250) {}
+    bool IsActive() override;
+};
+
+// Paletress or her Memory carries Paletress's Renew and the bot (not a healer) can purge it.
+class ToCPaletressRenewTrigger : public Trigger
+{
+public:
+    ToCPaletressRenewTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc paletress renew", 500) {}
+    bool IsActive() override;
+};
+
+// The Black Knight marked the bot for death and a personal defensive is ready.
+class ToCMarkedForDeathTrigger : public Trigger
+{
+public:
+    ToCMarkedForDeathTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc marked for death", 250) {}
+    bool IsActive() override;
+};
+
+// A healer sees a group member under Marked For Death losing health.
+class ToCMarkedForDeathHealTrigger : public Trigger
+{
+public:
+    ToCMarkedForDeathHealTrigger(PlayerbotAI* botAI) : Trigger(botAI, "toc marked for death heal", 500) {}
     bool IsActive() override;
 };
 

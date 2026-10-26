@@ -6,7 +6,12 @@
 
 #include "BWLHelpers.h"
 #include "AiObjectContext.h"
+#include "GameObject.h"
 #include "Group.h"
+#include "ObjectAccessor.h"
+#include "Playerbots.h"
+#include <limits>
+#include <list>
 
 namespace BlackwingLairHelpers
 {
@@ -34,6 +39,94 @@ namespace BlackwingLairHelpers
     bool IsRazorgoreOffTank(Player* bot)
     {
         return PlayerbotAI::IsAssistTankOfIndex(bot, 0, true);
+    }
+
+    Unit* FindRazorgore(Player* bot)
+    {
+        return bot->FindNearestCreature(
+            static_cast<uint32>(BlackwingLairNPCs::NPC_RAZORGORE), RAZORGORE_SEARCH_RADIUS, true);
+    }
+
+    bool IsControllingRazorgore(Player* bot)
+    {
+        Unit* charm = bot->GetCharm();
+        return charm && charm->GetEntry() == static_cast<uint32>(BlackwingLairNPCs::NPC_RAZORGORE);
+    }
+
+    // go_orb_of_domination refuses anyone with a pet or Mind Exhaustion. Hunters and Warlocks are
+    // left out even with the pet down because the bots summon it straight back. Tanks and healers
+    // keep their jobs, since any cast of the controller ends the possession channel.
+    bool CanUseOrbOfDomination(Player* member)
+    {
+        if (!member || !member->IsAlive() || member->GetMapId() != BWL_MAP_ID || !GET_PLAYERBOT_AI(member))
+            return false;
+
+        if (PlayerbotAI::IsTank(member) || PlayerbotAI::IsHeal(member) ||
+            member->getClass() == CLASS_HUNTER || member->getClass() == CLASS_WARLOCK)
+        {
+            return false;
+        }
+
+        return !member->GetPet() &&
+            !member->HasAura(static_cast<uint32>(BlackwingLairSpells::SPELL_MIND_EXHAUSTION));
+    }
+
+    // The player holding the possession keeps it; otherwise the first eligible melee dps in group
+    // order, then the first eligible ranged dps. Every bot evaluates the same order, so only one
+    // walks to the orb, and the next one takes over when the previous gets Mind Exhaustion.
+    Player* GetRazorgoreOrbController(Player* bot, Unit* razorgore)
+    {
+        if (!razorgore)
+            return nullptr;
+
+        if (razorgore->IsCharmed())
+            return ObjectAccessor::GetPlayer(*razorgore, razorgore->GetCharmerGUID());
+
+        Group const* group = bot->GetGroup();
+        if (!group)
+            return CanUseOrbOfDomination(bot) ? bot : nullptr;
+
+        Player* rangedController = nullptr;
+        for (GroupReference const* gref = group->GetFirstMember(); gref; gref = gref->next())
+        {
+            Player* member = gref->GetSource();
+            if (!CanUseOrbOfDomination(member))
+                continue;
+
+            if (PlayerbotAI::IsMelee(member))
+                return member;
+
+            if (!rangedController)
+                rangedController = member;
+        }
+
+        return rangedController;
+    }
+
+    GameObject* FindNearestIntactEgg(Unit* razorgore)
+    {
+        std::list<GameObject*> eggs;
+        constexpr float eggSearchRadius = 120.0f;
+        razorgore->GetGameObjectListWithEntryInGrid(
+            eggs, static_cast<uint32>(BlackwingLairGameObjects::GO_BLACK_DRAGON_EGG), eggSearchRadius);
+
+        GameObject* nearest = nullptr;
+        float nearestDistance = std::numeric_limits<float>::max();
+        for (GameObject* egg : eggs)
+        {
+            // A broken egg stays spawned for 10s in GO_STATE_ACTIVE (spell_egg_event).
+            if (!egg || !egg->isSpawned() || egg->GetGoState() != GO_STATE_READY)
+                continue;
+
+            float const distance = razorgore->GetExactDist(egg);
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearest = egg;
+            }
+        }
+
+        return nearest;
     }
 
     bool IsNonBABotNearPosition(Player const* bot, Position const& position, float distance)

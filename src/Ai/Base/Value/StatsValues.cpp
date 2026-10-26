@@ -51,12 +51,20 @@ bool PetIsDeadValue::Calculate()
 
     if (!bot->GetPet())
     {
-        uint32 ownerid = bot->GetGUID().GetCounter();
-        QueryResult result = CharacterDatabase.Query("SELECT id FROM character_pet WHERE owner = {}", ownerid);
-        if (!result)
+        // [b31_shared] The pet stable loaded at login holds every character_pet row of the owner: the synchronous
+        // query it replaces ran on the map thread. Same answer: any pet record means a pet to call or revive.
+        PetStable const* stable = bot->GetPetStable();
+        if (!stable)
             return false;
 
-        return true;
+        if (stable->CurrentPet || !stable->UnslottedPets.empty())
+            return true;
+
+        for (Optional<PetStable::PetInfo> const& stabled : stable->StabledPets)
+            if (stabled)
+                return true;
+
+        return false;
     }
 
     if (bot->GetPetGUID() && !bot->GetPet())

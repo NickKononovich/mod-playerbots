@@ -9,6 +9,9 @@
 #include "CreatureAI.h"
 #include "EncounterHelpers.h"
 #include "Playerbots.h"
+#include "RaidHonesty.h"
+#include "RaidKiteHelper.h"
+#include <list>
 #include <vector>
 
 using namespace BlackTempleHelpers;
@@ -30,6 +33,8 @@ bool BlackTempleEraseTimersAndTrackersAction::Execute(Event /*event*/)
             if (illidanBossDpsWaitTimer.erase(instanceId) > 0)
                 erased = true;
             if (illidanFlameDpsWaitTimer.erase(instanceId) > 0)
+                erased = true;
+            if (illidanNonTankAggroTime.erase(instanceId) > 0)
                 erased = true;
             if (illidanLastPhase.erase(instanceId) > 0)
                 erased = true;
@@ -338,10 +343,45 @@ bool SupremusKiteBossAction::Execute(Event /*event*/)
 
     constexpr float safeDistance = 25.0f;
     const float currentDistance = bot->GetDistance2d(supremus);
-    if (currentDistance < safeDistance)
-        return MoveAway(supremus, safeDistance - currentDistance);
+    if (currentDistance >= safeDistance)
+        return false;
 
-    return false;
+    // Kite inside the room (leash on Supremus' home, well short of his evade box) and around the
+    // volcanos instead of the plain MoveAway, which runs into walls and through geysers.
+    float const volcanoHazardRadius = 16.0f;
+    constexpr float volcanoSearchRadius = 40.0f;
+    std::list<Creature*> volcanoList;
+    bot->GetCreatureListWithEntryInGrid(volcanoList, static_cast<uint32>(
+        BlackTempleNpcs::NPC_SUPREMUS_VOLCANO), volcanoSearchRadius);
+    std::vector<Position> volcanos;
+    for (Creature* volcano : volcanoList)
+    {
+        if (volcano && volcano->IsAlive())
+            volcanos.push_back(volcano->GetPosition());
+    }
+
+    RaidKiteHelper::KiteParams params;
+    params.keepDistance = safeDistance;
+    params.stepDistance = 5.0f;
+    if (Creature* supremusCreature = supremus->ToCreature())
+    {
+        params.leashCenter = supremusCreature->GetHomePosition();
+        params.leashRadius = 50.0f;
+    }
+    params.isHazard = [&volcanos, volcanoHazardRadius](float x, float y)
+    {
+        return RaidKiteHelper::MinDistanceToThreats(x, y, volcanos) < volcanoHazardRadius;
+    };
+
+    Position step;
+    if (RaidKiteHelper::FindOpenKiteStep(bot, { supremus->GetPosition() }, params, step))
+    {
+        return MoveTo(BLACK_TEMPLE_MAP_ID, step.GetPositionX(), step.GetPositionY(),
+                      step.GetPositionZ(), false, false, false, false,
+                      MovementPriority::MOVEMENT_FORCED, true, false);
+    }
+
+    return MoveAway(supremus, safeDistance - currentDistance);
 }
 
 bool SupremusMoveAwayFromVolcanosAction::Execute(Event /*event*/)
@@ -738,7 +778,7 @@ bool TeronGorefiendControlAndDestroyShadowyConstructsAction::Execute(Event /*eve
             priorityTarget->GetHealthPct() == 100.0f)
         {
             spirit->CastSpell(
-                priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS), true);
+                priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS), false);
             spirit->AddSpellCooldown(
                 static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS), 0, 15000);
             return true;
@@ -746,7 +786,7 @@ bool TeronGorefiendControlAndDestroyShadowyConstructsAction::Execute(Event /*eve
         else if (!spirit->HasSpellCooldown(static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE)))
         {
             spirit->CastSpell(
-                priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE), true);
+                priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE), false);
             spirit->AddSpellCooldown(
                 static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE), 0, 1000);
             return true;
@@ -754,7 +794,7 @@ bool TeronGorefiendControlAndDestroyShadowyConstructsAction::Execute(Event /*eve
         else if (!spirit->HasSpellCooldown(static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS)))
         {
             spirit->CastSpell(
-                priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS), true);
+                priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS), false);
             spirit->AddSpellCooldown(
                 static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS), 0, 15000);
             return true;
@@ -762,7 +802,7 @@ bool TeronGorefiendControlAndDestroyShadowyConstructsAction::Execute(Event /*eve
         else if (!spirit->HasSpellCooldown(static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE)))
         {
             spirit->CastSpell
-                (priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE), true);
+                (priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE), false);
             spirit->AddSpellCooldown(
                 static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_LANCE), 0, 1000);
             return true;
@@ -771,7 +811,7 @@ bool TeronGorefiendControlAndDestroyShadowyConstructsAction::Execute(Event /*eve
                  !priorityTarget->HasAura(static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_CHAINS)))
         {
             spirit->CastSpell
-                (priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_VOLLEY), true);
+                (priorityTarget, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_VOLLEY), false);
             spirit->AddSpellCooldown(
                 static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_VOLLEY), 0, 15000);
             return true;
@@ -795,7 +835,7 @@ bool TeronGorefiendControlAndDestroyShadowyConstructsAction::Execute(Event /*eve
         else if (!spirit->HasSpellCooldown(static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_STRIKE)))
         {
             spirit->CastSpell(
-                gorefiend, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_STRIKE), true);
+                gorefiend, static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_STRIKE), false);
             spirit->AddSpellCooldown(
                 static_cast<uint32>(BlackTempleSpells::SPELL_SPIRIT_STRIKE), 0, 1000);
             return true;
@@ -1250,6 +1290,31 @@ bool MotherShahrazRunAwayToBreakFatalAttractionAction::Execute(Event /*event*/)
     const float spreadAngle =
         2.0f * M_PI * std::distance(attractedPlayers.begin(), botIt) / attractedPlayers.size();
 
+    // Shahraz's room has pillars and uneven collision, so a single fixed ray from the centroid often
+    // ends against a pillar and the bot never breaks the link. Walk the collision-checked step that
+    // best separates the bot from the other targets, biased toward its assigned angle.
+    std::vector<Position> otherTargets;
+    for (Player* member : attractedPlayers)
+    {
+        if (member != bot)
+            otherTargets.push_back(member->GetPosition());
+    }
+
+    constexpr float attractionBreakDistance = 26.0f;
+    RaidKiteHelper::KiteParams params;
+    params.keepDistance = attractionBreakDistance;
+    params.stepDistance = 5.0f;
+    params.preferredAngle = spreadAngle;
+    params.usePreferredAngle = true;
+    Position step;
+    if (RaidKiteHelper::IsKiteNeeded(bot, otherTargets, attractionBreakDistance) &&
+        RaidKiteHelper::FindOpenKiteStep(bot, otherTargets, params, step))
+    {
+        return MoveTo(BLACK_TEMPLE_MAP_ID, step.GetPositionX(), step.GetPositionY(),
+                      step.GetPositionZ(), false, false, false, false,
+                      MovementPriority::MOVEMENT_FORCED, true, false);
+    }
+
     constexpr float maxSpreadDistance = 35.0f;
     constexpr float distanceStep = 1.0f;
     float lastValidX = bot->GetPositionX();
@@ -1422,13 +1487,10 @@ bool IllidariCouncilMainTankPositionGathiosAction::Execute(Event /*event*/)
     if (!gathios)
         return false;
 
-    // Failsafe for if bot falls through the floor, which tends to happen upon the pull
+    // A bot that fell through the floor on the pull used to be teleported back. Without cheats it
+    // can only be reported.
     if (bot->GetPositionZ() < COUNCIL_FLOOR_Z_THRESHOLD)
-    {
-        bot->NearTeleportTo(
-            gathios->GetPositionX(), gathios->GetPositionY(),
-            gathios->GetPositionZ(), bot->GetOrientation());
-    }
+        RaidHonesty::LogNeedsHonestTactic(bot, "Illidari Council: fell through the floor on the pull");
 
     if (MarkTargetWithSquare(bot, gathios))
         return true;
@@ -1496,13 +1558,10 @@ bool IllidariCouncilFirstAssistTankFocusMalandeAction::Execute(Event /*event*/)
     if (!malande)
         return false;
 
-    // Failsafe for if bot falls through the floor, which tends to happen upon the pull
+    // A bot that fell through the floor on the pull used to be teleported back. Without cheats it
+    // can only be reported.
     if (bot->GetPositionZ() < COUNCIL_FLOOR_Z_THRESHOLD)
-    {
-        bot->NearTeleportTo(
-            malande->GetPositionX(), malande->GetPositionY(),
-            malande->GetPositionZ(), bot->GetOrientation());
-    }
+        RaidHonesty::LogNeedsHonestTactic(bot, "Illidari Council: fell through the floor on the pull");
 
     if (MarkTargetWithStar(bot, malande))
         return true;
@@ -1521,13 +1580,10 @@ bool IllidariCouncilSecondAssistTankPositionDarkshadowAction::Execute(Event /*ev
     if (!darkshadow)
         return false;
 
-    // Failsafe for if bot falls through the floor, which tends to happen upon the pull
+    // A bot that fell through the floor on the pull used to be teleported back. Without cheats it
+    // can only be reported.
     if (bot->GetPositionZ() < COUNCIL_FLOOR_Z_THRESHOLD)
-    {
-        bot->NearTeleportTo(
-            darkshadow->GetPositionX(), darkshadow->GetPositionY(),
-            darkshadow->GetPositionZ(), bot->GetOrientation());
-    }
+        RaidHonesty::LogNeedsHonestTactic(bot, "Illidari Council: fell through the floor on the pull");
 
     if (MarkTargetWithCircle(bot, darkshadow))
         return true;
@@ -2363,23 +2419,32 @@ bool IllidanStormrageAssistTanksHandleFlamesOfAzzinothAction::RepositionToAvoidB
     auto const& npcs =
         botAI->GetAiObjectContext()->GetValue<GuidVector>("possible triggers")->Get();
 
+    float const blazeRadius = 8.0f;
     bool blazeNearby = false;
+    std::vector<Position> blazes;
     for (auto const& guid : npcs)
     {
         Unit* unit = botAI->GetUnit(guid);
-        if (unit && unit->GetEntry() == static_cast<uint32>(BlackTempleNpcs::NPC_BLAZE) &&
-            bot->GetDistance2d(unit) <= 8.0f)
-        {
+        if (!unit || unit->GetEntry() != static_cast<uint32>(BlackTempleNpcs::NPC_BLAZE))
+            continue;
+
+        blazes.push_back(unit->GetPosition());
+        if (bot->GetDistance2d(unit) <= blazeRadius)
             blazeNearby = true;
-            break;
-        }
     }
 
     float distToPosition =
         bot->GetExactDist2d(target.GetPositionX(), target.GetPositionY());
     if (blazeNearby && distToPosition <= 0.2f)
     {
-        waypointIndex = (waypointIndex + 1) % numWaypoints;
+        // Kite route: skip the waypoints that already burn instead of walking the flame into them.
+        std::vector<Position> const route(waypoints->begin(), waypoints->end());
+        size_t const nextSafe = RaidKiteHelper::NextSafeRouteIndex(route, waypointIndex, 1,
+            [&blazes, blazeRadius](float x, float y)
+            {
+                return RaidKiteHelper::MinDistanceToThreats(x, y, blazes) <= blazeRadius;
+            });
+        waypointIndex = nextSafe != waypointIndex ? nextSafe : (waypointIndex + 1) % numWaypoints;
         Position const& newTarget = (*waypoints)[waypointIndex];
         const float distToNewPosition =
             bot->GetExactDist2d(newTarget.GetPositionX(), newTarget.GetPositionY());
@@ -2915,6 +2980,26 @@ bool IllidanStormrageManageDpsTimerAndRtiAction::Execute(Event /*event*/)
             updated = true;
     }
 
+    // AC keeps Illidan's threat list through the Maiev scene, and he is taunt-immune here
+    // (CreatureImmunities NO_TAUNT), so the tank cannot simply taunt him back. If he comes out of a
+    // transition on a non-tank, keep the DPS wait running (bounded) while the main tank and the
+    // Misdirection hunters rebuild threat.
+    Unit* illidanVictim = illidan->GetVictim();
+    Player* illidanVictimPlayer = illidanVictim ? illidanVictim->ToPlayer() : nullptr;
+    if (phase == 5 && illidanVictimPlayer && !PlayerbotAI::IsTank(illidanVictimPlayer))
+    {
+        auto const [it, inserted] = illidanNonTankAggroTime.try_emplace(instanceId, now);
+        constexpr uint8 maxAggroRecoverySeconds = 10;
+        if (now - it->second < maxAggroRecoverySeconds)
+            illidanBossDpsWaitTimer[instanceId] = now;
+        if (inserted)
+            updated = true;
+    }
+    else if (illidanNonTankAggroTime.erase(instanceId) > 0)
+    {
+        updated = true;
+    }
+
     if (phase == 2)
     {
         if (eastFlameGuid.find(instanceId) == eastFlameGuid.end() &&
@@ -2967,88 +3052,20 @@ bool IllidanStormrageManageDpsTimerAndRtiAction::Execute(Event /*event*/)
     return updated;
 }
 
-bool IllidanStormrageDestroyHazardsAction::Execute(Event /*event*/)
+bool IllidanStormrageMoveOutOfLeftoverHazardAction::Execute(Event /*event*/)
 {
-    Unit* illidan = AI_VALUE2(Unit*, "find target", "illidan stormrage");
-    if (!illidan)
+    std::vector<Position> const hazards = GetLeftoverIllidanHazards(botAI, false);
+    if (hazards.empty())
         return false;
 
-    int phase = GetIllidanPhase(illidan);
-    constexpr float searchRadius = 50.0f;
-    std::list<Creature*> hazards;
-    std::vector<uint32> entries;
-
-    if (phase == 2)
-    {
-        entries = {
-            static_cast<uint32>(BlackTempleNpcs::NPC_FLAME_CRASH)
-        };
-    }
-    else if (phase == 4)
-    {
-        entries = {
-            static_cast<uint32>(BlackTempleNpcs::NPC_FLAME_CRASH)
-        };
-    }
-    else if (phase == 0)
-    {
-        entries = {
-            static_cast<uint32>(BlackTempleNpcs::NPC_DEMON_FIRE),
-            static_cast<uint32>(BlackTempleNpcs::NPC_BLAZE)
-        };
-    }
-
-    if (!entries.empty())
-        bot->GetCreatureListWithEntryInGrid(hazards, entries, searchRadius);
-
-    for (Creature* creature : hazards)
-    {
-        if (creature && creature->IsAlive())
-        {
-            creature->Kill(bot, creature);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// Reduce Shadow Demon to 25% health and kill residual Shadowfiends in Phase 2
-bool IllidanStormrageHandleAddsCheatAction::Execute(Event /*event*/)
-{
-    Unit* illidan = AI_VALUE2(Unit*, "find target", "illidan stormrage");
-    if (!illidan)
+    RaidKiteHelper::KiteParams params;
+    params.keepDistance = ILLIDAN_LEFTOVER_HAZARD_RADIUS;
+    params.stepDistance = 5.0f;
+    Position step;
+    if (!RaidKiteHelper::FindOpenKiteStep(bot, hazards, params, step))
         return false;
 
-    if (GetIllidanPhase(illidan) == 2)
-    {
-        constexpr float searchRadius = 20.0f;
-        if (Unit* shadowfiend = bot->FindNearestCreature(
-                static_cast<uint32>(BlackTempleNpcs::NPC_PARASITIC_SHADOWFIEND),
-                searchRadius, true))
-        {
-            shadowfiend->Kill(bot, shadowfiend);
-            return true;
-        }
-    }
-    else
-    {
-        constexpr float searchRadius = 75.0f;
-        Unit* shadowDemon = bot->FindNearestCreature(
-            static_cast<uint32>(BlackTempleNpcs::NPC_SHADOW_DEMON), searchRadius, true);
-
-        if (shadowDemon && shadowDemon->GetHealthPct() > 25.0f)
-        {
-            uint32 desiredDamage = 0;
-            const uint32 quarterHealth = shadowDemon->GetMaxHealth() / 4;
-            if (shadowDemon->GetHealth() > quarterHealth)
-                desiredDamage = shadowDemon->GetHealth() - quarterHealth;
-
-            Unit::DealDamage(bot, shadowDemon, desiredDamage, nullptr, DIRECT_DAMAGE,
-                             SPELL_SCHOOL_MASK_NORMAL, nullptr, false, false, nullptr);
-            return true;
-        }
-    }
-
-    return false;
+    return MoveTo(BLACK_TEMPLE_MAP_ID, step.GetPositionX(), step.GetPositionY(),
+                  step.GetPositionZ(), false, false, false, false,
+                  MovementPriority::MOVEMENT_FORCED, true, false);
 }

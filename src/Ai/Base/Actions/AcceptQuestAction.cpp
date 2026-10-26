@@ -5,6 +5,7 @@
  */
 
 #include "AcceptQuestAction.h"
+#include "ObjectAccessor.h"
 #include "Event.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -87,6 +88,16 @@ bool AcceptQuestAction::Execute(Event event)
         return false;
 
     hasAccept |= AcceptQuest(qInfo, ObjectGuid(guid));
+
+    // Complete on acceptance and handed in to the same giver (#2495): hand it in now. The master's turn-in packet
+    // may already have been handled, before this accept.
+    if (hasAccept && bot->GetQuestStatus(quest) == QUEST_STATUS_COMPLETE)
+    {
+        Object* giver =
+            ObjectAccessor::GetObjectByTypeMask(*bot, ObjectGuid(guid), TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
+        if (giver && giver->hasInvolvedQuest(quest))
+            botAI->DoSpecificAction("talk to quest giver", Event("accept quest", ObjectGuid(guid)), true);
+    }
 
     if (hasAccept)
     {

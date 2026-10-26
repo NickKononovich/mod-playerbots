@@ -90,6 +90,16 @@ class EnemyOutOfSpellRangeTrigger : public OutOfRangeTrigger
 {
 public:
     EnemyOutOfSpellRangeTrigger(PlayerbotAI* botAI);
+
+    // Also a fighting target in range but out of a ranged bot's sight (a door frame, a corner), checked at most every
+    // SIGHT_CHECK_MS.
+    bool IsActive() override;
+
+private:
+    static constexpr uint32 SIGHT_CHECK_MS = 500;
+    uint32 _sightCheckMs = 0;
+    ObjectGuid _sightTarget;
+    bool _sightBlocked = false;
 };
 
 class PartyMemberToHealOutOfSpellRangeTrigger : public OutOfRangeTrigger

@@ -24,6 +24,7 @@
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
+#include <mutex>
 #include <stack>
 
 class Action;
@@ -552,6 +553,7 @@ public:
     bool HasSkill(SkillType skill);
     bool IsAllowedCommand(std::string const text);
     float GetRange(std::string const type);
+    float GetHunterWeaponRange();  // [b32_engage] Auto Shot range less a margin, 0 without a ranged weapon
 
     Player* GetBot() { return bot; }
     Player* GetMaster() { return master; }
@@ -579,11 +581,9 @@ public:
 
     bool StarterLevelDistanceCheck(Player* player, WorldLocation const& loc, bool fromStartUp = false);
 
-    bool HasCheat(BotCheatMask mask)
-    {
-        return ((uint32)mask & (uint32)cheatMask) != 0 ||
-               ((uint32)mask & (uint32)sPlayerbotAIConfig.BotCheatMask) != 0;
-    }
+    // Bots play under the same rules as players (user decision 2026-10-23): no cheat is ever active,
+    // whatever Playerbots.BotCheats or the "cheat" chat command say. Kept as a kill switch for old call sites.
+    bool HasCheat([[maybe_unused]] BotCheatMask mask) { return false; }
     BotCheatMask GetCheat() { return cheatMask; }
     void SetCheat(BotCheatMask mask) { cheatMask = mask; }
 
@@ -610,6 +610,10 @@ public:
     bool HasItemInInventory(uint32 itemId);
     std::vector<std::pair<Quest const*, uint32>> GetCurrentQuestsRequiringItemId(uint32 itemId);
     uint32 GetReactDelay();
+    // Remaining global cooldown of the last spell this bot cast, in ms (0 when it is over).
+    uint32 GetGlobalCooldownRemaining();
+    // Temporary combat idle diagnostics (LOG_DEBUG "[idle diag]"): the engine executed `action` this tick.
+    void NoteIdleDiagAction(Action* action);
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -628,7 +632,18 @@ public:
     // Schedules a callback to run once after <delayMs> milliseconds.
     void AddTimedEvent(std::function<void()> callback, uint32 delayMs);
 
+    // Ground or liquid within GROUND_SUPPORT_DROP below the point: what a client's gravity would stand on.
+    static bool HasGroundSupport(WorldObject const* object, float x, float y, float z);
+    // Gravity applies to the bot: alive, outside any vehicle, transport or taxi, and without a way to fly.
+    bool IsSubjectToGravity() const;
+    // Next tick, a bot that lost its mount or seat in the air falls and takes the damage where it lands.
+    void RequestFallCheck() { fallCheckRequested = true; }
+
 private:
+    // Bots have no client to apply gravity: stop straight splines that leave the ground, fall when airborne.
+    void GuardAirborneSpline();
+    void UpdateFall();
+    void StartFall();
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
     bool IsTellAllowed(PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
@@ -655,7 +670,10 @@ protected:
     BotState currentState;
     ChatHelper chatHelper;
     std::list<ChatCommandHolder> chatCommands;
+    // Filled from the speaker's thread (SMSG_MESSAGECHAT is handled where it is sent, often another map's worker) and
+    // drained on this bot's map thread: guarded, a bare list corrupted the heap (2026-10-24 freezes in ChatReplyDo).
     std::list<ChatQueuedReply> chatReplies;
+    std::mutex chatRepliesLock;
     PacketHandlingHelper botOutgoingPacketHandlers;
     PacketHandlingHelper masterIncomingPacketHandlers;
     PacketHandlingHelper masterOutgoingPacketHandlers;
@@ -672,6 +690,45 @@ protected:
     Position jumpDestination = Position();
     uint32 nextTransportCheck = 0;
     bool spellInterruptRequested = false;
+    uint32 lastDodgeStopCastMs = 0;  // a bot that cannot get out is not kept from casting forever
+    uint32 checkedSplineId = 0;       // GuardAirborneSpline checks each spline once
+    uint32 lastAirborneLogMs = 0;
+    bool fallCheckRequested = false;  // dismounted or left a vehicle: fall if nothing is below
+    bool fallPending = false;         // falling; HandleFall runs where the fall spline ends
+    bool wasOnVehicle = false;
+    uint32 lastCastSpellId = 0;  // the last spell CastSpell started, for the GCD-aligned wake-up in combat
+
+    // Temporary heal diagnostics: a healer in an instance group casts nothing while a member in combat is below
+    // half health ("[heal diag]", at most every HEAL_DIAG_LOG_MS): its engine, combat state and action trail.
+    void UpdateHealDiag();
+    uint32 healDiagCheckMs = 0;
+    uint32 healDiagLogMs = 0;
+
+    // Temporary combat idle diagnostics: why a dps bot in an instance group cast nothing on a tick.
+    void UpdateIdleDiag(bool casting);
+    struct IdleDiag
+    {
+        uint32 windowStartMs = 0;
+        uint32 ticks = 0;
+        uint32 casts = 0;
+        uint32 castWait = 0;
+        uint32 noTarget = 0;
+        uint32 rangeLos = 0;
+        uint32 moving = 0;
+        uint32 gcd = 0;
+        uint32 threat = 0;
+        uint32 other = 0;
+        uint32 nonCast = 0;
+        uint32 gapCount = 0;
+        uint64 gapSumMs = 0;
+        uint32 gapMaxMs = 0;
+        uint32 gapOver150 = 0;
+        uint32 gapOver400 = 0;
+        uint32 busyEndMs = 0;
+        bool tickCast = false;
+        std::string tickAction;
+        std::map<std::string, uint32> actions;
+    } idleDiag;
 };
 
 #endif

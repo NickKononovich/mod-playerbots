@@ -11,6 +11,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 #include <limits>
@@ -91,6 +92,11 @@ bool IccSindragosaGroupPositionAction::Execute(Event /*event*/)
 
 bool IccSindragosaGroupPositionAction::HandleTankPositioning(Unit* boss)
 {
+    // Mystic Buffet is no longer stripped from tanks and they get no damage shield
+    if (boss->HealthBelowPct(35))
+        IccLogHonestTacticGap(bot, IccHonestGap::Sindragosa, "Sindragosa",
+                              "last phase Mystic Buffet on tanks: tank swap + tomb LoS, defensive cooldowns");
+
     float const distBossToCenter = boss->GetExactDist2d(ICC_SINDRAGOSA_CENTER_POSITION);
     float const distToTankPos = bot->GetExactDist2d(ICC_SINDRAGOSA_TANK_POSITION);
 
@@ -274,7 +280,7 @@ bool IccSindragosaGroupPositionAction::HandleNonTankPositioning()
             {
                 int8 const icon = ICC_BUCKET_MARKERS[i].icon;
                 if (!group->GetTargetIcon(icon).IsEmpty())
-                    group->SetTargetIcon(icon, bot->GetGUID(), ObjectGuid::Empty);
+                    RaidMarkOwnership::SetIcon(bot, group, icon, ObjectGuid::Empty);
             }
 
             context->GetValue<std::string>("rti")->Set("skull");
@@ -310,7 +316,7 @@ bool IccSindragosaGroupPositionAction::HandleNonTankPositioning()
             {
                 int8 const icon = ICC_BUCKET_MARKERS[i].icon;
                 if (!iconTomb[i] && !group->GetTargetIcon(icon).IsEmpty())
-                    group->SetTargetIcon(icon, bot->GetGUID(), ObjectGuid::Empty);
+                    RaidMarkOwnership::SetIcon(bot, group, icon, ObjectGuid::Empty);
             }
 
             // Each DPS keeps its air phase group mark while that tomb lives,
@@ -488,10 +494,8 @@ bool IccSindragosaFrostBeaconAction::TryDropTombFlares(Unit const* boss)
         }
     }
 
+    // Smoke flares are a vendor item; a bot without them in its bags simply does not mark the spot
     uint32 const itemId = phase3 ? ITEM_BLUE_SMOKE_FLARE : ITEM_RED_SMOKE_FLARE;
-    if (bot->GetItemCount(itemId, false) == 0)
-        bot->StoreNewItemInBestSlots(itemId, 10);
-
     Item* flare = bot->GetItemByEntry(itemId);
     if (!flare)
         return false;
@@ -607,11 +611,10 @@ bool IccSindragosaHotAction::Execute(Event /*event*/)
 
 bool IccSindragosaFrostBeaconAction::HandleBeaconedPlayer(Unit const* boss)
 {
-    // Phase 3 positioning (below 35% health, not flying)
+    // Phase 3 positioning (below 35% health, not flying). The core never beacons the current
+    // victim here, so a beaconed main tank has already lost the boss and goes like anyone else.
     if (boss->HealthBelowPct(35) && !IsBossFlying(boss))
     {
-        if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-            bot->AddAura(SPELL_NITRO_BOOSTS, bot);
         botAI->Reset();
         return MoveToPositionIfNeeded(ICC_SINDRAGOSA_THOMBMB2_POSITION, POSITION_TOLERANCE);
     }
@@ -792,8 +795,6 @@ bool IccSindragosaBlisteringColdAction::Execute(Event /*event*/)
 
         if (distToTarget > 0.1f)  // Avoid division by zero
         {
-            if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-                bot->AddAura(SPELL_NITRO_BOOSTS, bot);
             // Calculate direction vector
             float dirX = targetPos.GetPositionX() - bot->GetPositionX();
             float dirY = targetPos.GetPositionY() - bot->GetPositionY();
@@ -891,7 +892,7 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
     {
         int8 const icon = ICC_BUCKET_MARKERS[i].icon;
         if (!group->GetTargetIcon(icon).IsEmpty())
-            group->SetTargetIcon(icon, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, icon, ObjectGuid::Empty);
     }
 
     constexpr uint8 SKULL_ICON = RtiTargetValue::skullIndex;
@@ -936,7 +937,7 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
             {
                 ObjectGuid const currentIcon = group->GetTargetIcon(SKULL_ICON);
                 if (!currentIcon.IsEmpty())
-                    group->SetTargetIcon(SKULL_ICON, bot->GetGUID(), ObjectGuid::Empty);
+                    RaidMarkOwnership::SetIcon(bot, group, SKULL_ICON, ObjectGuid::Empty);
             }
         }
         return false;
@@ -960,8 +961,8 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
 
     // Waiting for the raid to shed Mystic Buffet. Bots are already parked at
     // LOS2, so pre-burn a single tomb down to 50% to make the eventual kill
-    // fast; below 50% park it there (unmark + strip its auras so lingering
-    // DoTs don't push it under) and wait for the debuff to clear, exactly as
+    // fast; below 50% park it there (unmark, stop attacking; lingering DoTs
+    // may still tick) and wait for the debuff to clear, exactly as
     // the air-phase frost bomb holds a tomb at its stop HP. No extra LOS move.
     if (!SgMajorityLostMysticBuffet(bot, botAI))
     {
@@ -976,9 +977,7 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
 
         ObjectGuid const currentIcon = group->GetTargetIcon(SKULL_ICON);
         if (!currentIcon.IsEmpty())
-            group->SetTargetIcon(SKULL_ICON, bot->GetGUID(), ObjectGuid::Empty);
-        if (tombs.size() == 1)
-            tomb->RemoveAllAuras();
+            RaidMarkOwnership::SetIcon(bot, group, SKULL_ICON, ObjectGuid::Empty);
         bot->AttackStop();
         return true;
     }
@@ -1570,14 +1569,14 @@ bool IccSindragosaFrostBombAction::HandleRtiMarking(Group* group, int groupIndex
         // All tombs at/below threshold — clear icon and stand idle
         ObjectGuid const currentIcon = group->GetTargetIcon(iconIndex);
         if (!currentIcon.IsEmpty())
-            group->SetTargetIcon(iconIndex, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, iconIndex, ObjectGuid::Empty);
 
         bot->AttackStop();
         return true;
     }
 
     if (!currentIconUnit || !currentIconUnit->IsAlive() || currentIconUnit != tombToMark)
-        group->SetTargetIcon(iconIndex, bot->GetGUID(), tombToMark->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, iconIndex, tombToMark->GetGUID());
 
     // Let combat actions fire so this bot DPSes the marked tomb
     return false;

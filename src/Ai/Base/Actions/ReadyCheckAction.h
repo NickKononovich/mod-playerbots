@@ -9,7 +9,15 @@
 
 #include "InventoryAction.h"
 
+#include <string>
+
 class PlayerbotAI;
+
+struct BotReadiness
+{
+    bool ready = true;
+    std::string reason;
+};
 
 class ReadyCheckAction : public InventoryAction
 {
@@ -17,6 +25,10 @@ public:
     ReadyCheckAction(PlayerbotAI* botAI, std::string const name = "ready check") : InventoryAction(botAI, name) {}
 
     bool Execute(Event event) override;
+
+    // The answer a bot gives to a ready check; also read by the raid leader for members that did not answer.
+    static BotReadiness EvaluateReadiness(PlayerbotAI* botAI);
+    static void AnswerReadyCheck(PlayerbotAI* botAI);
 
 protected:
     bool ReadyCheck();

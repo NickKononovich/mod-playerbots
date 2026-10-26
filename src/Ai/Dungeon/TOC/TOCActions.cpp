@@ -7,17 +7,23 @@
 #include "TOCActions.h"
 #include "AttackersValue.h"
 #include "CellImpl.h"
+#include "DungeonHoldFire.h"
+#include "DungeonInteract.h"
 #include "GenericSpellActions.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "InstanceScript.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidBotDuty.h"
 #include "SpellMgr.h"
+#include "TOCShared.h"
 #include "Timer.h"
 #include "Vehicle.h"
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace
 {
@@ -172,7 +178,7 @@ bool ToCLanceAction::Execute(Event /*event*/)
     botAI->RemoveShapeshift();
     bot->GetMotionMaster()->Clear();
     bot->StopMoving();
-    lanceRack->Use(bot);
+    DungeonInteract::UseGameObject(bot, lanceRack);
 
     return false;
 }
@@ -739,4 +745,118 @@ bool ToCEadricAction::Execute(Event /*event*/)
     }
 
     return false;
+}
+
+bool ToCStartEventAction::Execute(Event /*event*/)
+{
+    InstanceScript* instance = ToCShared::GetInstance(bot);
+    if (!instance)
+        return false;
+
+    uint32 const progress = instance->GetData(ToCIds::DATA_INSTANCE_PROGRESS);
+    uint32 const gossipAction = ToCShared::StartGossipAction(progress);
+    Creature* announcer = gossipAction ? ToCShared::GetAnnouncer(bot) : nullptr;
+    if (!announcer || !announcer->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP))
+        return false;
+
+    constexpr float GOSSIP_APPROACH = INTERACTION_DISTANCE - 2.0f;
+    if (!bot->IsWithinDistInMap(announcer, INTERACTION_DISTANCE - 1.0f))
+        return MoveTo(announcer, GOSSIP_APPROACH);
+
+    if (!DungeonInteract::OpenGossip(bot, announcer))
+    {
+        RaidBotDuty::LogWorkaroundOnce(bot, "toc-start-gossip", "ToC: announcer did not open a gossip menu");
+        return false;
+    }
+
+    int32 const option = DungeonInteract::FindGossipOption(
+        bot, [gossipAction](GossipMenuItem const& item) { return item.OptionType == gossipAction; });
+    bool const selected = DungeonInteract::SelectGossipOption(bot, announcer, option);
+    bot->PlayerTalkClass->SendCloseGossip();
+
+    if (selected)
+        LOG_INFO("playerbots", "{} started Trial of the Champion stage (progress {}) at the announcer", bot->GetName(),
+                 progress);
+    else
+        RaidBotDuty::LogWorkaroundOnce(bot, "toc-start-option",
+                                       "ToC: announcer menu has no start option for progress " +
+                                           std::to_string(progress));
+
+    return selected;
+}
+
+bool ToCPullArgentSoldiersAction::Execute(Event /*event*/)
+{
+    Creature* soldier = ToCShared::FindIdleSoldier(bot);
+    if (!soldier)
+        return false;
+
+    return Attack(soldier);
+}
+
+bool ToCHoldFireAction::Execute(Event /*event*/)
+{
+    Creature* paletress = ToCShared::GetShieldedPaletress(bot);
+    return paletress && DungeonHoldFire::StopDamage(botAI, paletress);
+}
+
+bool ToCInterruptAction::Execute(Event /*event*/)
+{
+    return ToCShared::CastInterrupt(botAI, ToCShared::FindInterruptTarget(botAI));
+}
+
+bool ToCAvoidGhoulExplodeAction::Execute(Event /*event*/)
+{
+    constexpr float EXPLODE_FLEE_DISTANCE = ToCIds::GHOUL_EXPLODE_RADIUS + 4.0f;
+    constexpr uint32 EXPLODE_FLEE_INTERVAL_MS = 250;
+
+    Position center;
+    if (!ToCShared::GetGhoulExplodeCenter(botAI, center))
+        return false;
+
+    return FleePosition(center, EXPLODE_FLEE_DISTANCE, EXPLODE_FLEE_INTERVAL_MS);
+}
+
+bool ToCDispelRenewAction::Execute(Event /*event*/)
+{
+    Unit* target = ToCShared::FindRenewTarget(botAI);
+    char const* spell = ToCShared::GetRenewDispel(botAI, target);
+    return spell && botAI->CastSpell(spell, target);
+}
+
+bool ToCMarkedDefensiveAction::Execute(Event /*event*/)
+{
+    char const* spell = ToCShared::GetMarkedDefensive(botAI);
+    return spell && botAI->CastSpell(spell, bot);
+}
+
+bool ToCHealMarkedAction::Execute(Event /*event*/)
+{
+    constexpr float SWIFTMEND_BELOW_PCT = 60.0f;
+
+    Player* target = ToCShared::FindMarkedMemberToHeal(botAI);
+    if (!target)
+        return false;
+
+    auto const cast = [this, target](char const* spell)
+    { return botAI->CanCastSpell(spell, target) && botAI->CastSpell(spell, target); };
+    auto const castHot = [this, target, &cast](char const* spell)
+    { return !botAI->HasAura(spell, target, false, true) && cast(spell); };
+
+    // the HoT or shield first while the mark is fresh, then the fast direct heals
+    switch (bot->getClass())
+    {
+        case CLASS_DRUID:
+            return castHot("rejuvenation") || (target->GetHealthPct() < SWIFTMEND_BELOW_PCT && cast("swiftmend")) ||
+                   cast("nourish") || cast("regrowth");
+        case CLASS_PRIEST:
+            return (!botAI->HasAura("weakened soul", target) && cast("power word: shield")) || cast("penance") ||
+                   cast("flash heal");
+        case CLASS_SHAMAN:
+            return cast("riptide") || cast("lesser healing wave") || cast("healing wave");
+        case CLASS_PALADIN:
+            return cast("holy shock") || cast("flash of light") || cast("holy light");
+        default:
+            return false;
+    }
 }

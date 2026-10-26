@@ -15,7 +15,18 @@ namespace
 constexpr uint32 SPELL_UNDERSTUDY_TAUNT = 29060;
 constexpr uint32 SPELL_BONE_BARRIER     = 29061;
 constexpr uint32 SPELL_BLOOD_STRIKE     = 61696;
+
+// Same path as the charm's pet action bar (WorldSession::HandlePetActionHelper): a normal, non-triggered cast
+// that pays the spell's own checks, and the creature cooldown is started only when the cast went through.
+bool CastCharmSpell(Unit* charm, Unit* target, uint32 spellId)
+{
+    if (charm->CastSpell(target, spellId, false) != SPELL_CAST_OK)
+        return false;
+
+    charm->AddSpellCooldown(spellId, 0, 0);
+    return true;
 }
+}  // namespace
 
 bool RazuviousUseObedienceCrystalAction::Execute(Event /*event*/)
 {
@@ -65,23 +76,17 @@ bool RazuviousUseObedienceCrystalAction::Execute(Event /*event*/)
             if (forceObedience->GetDuration() >= int32(duration_time - 500))
                 tauntUseful = false;
 
-            if (tauntUseful && !charm->HasSpellCooldown(29060))
+            if (tauntUseful && !charm->HasSpellCooldown(SPELL_UNDERSTUDY_TAUNT))
             {
                 // shield
                 if (!charm->HasSpellCooldown(SPELL_BONE_BARRIER))
-                {
-                    charm->CastSpell(charm, SPELL_BONE_BARRIER, true);
-                    charm->AddSpellCooldown(SPELL_BONE_BARRIER, 0, 30 * IN_MILLISECONDS);
-                }
-                charm->CastSpell(target, SPELL_UNDERSTUDY_TAUNT, true);
-                charm->AddSpellCooldown(SPELL_UNDERSTUDY_TAUNT, 0, 20 * IN_MILLISECONDS);
+                    CastCharmSpell(charm, charm, SPELL_BONE_BARRIER);
+
+                CastCharmSpell(charm, target, SPELL_UNDERSTUDY_TAUNT);
             }
             // strike
             if (!charm->HasSpellCooldown(SPELL_BLOOD_STRIKE))
-            {
-                charm->CastSpell(target, SPELL_BLOOD_STRIKE, true);
-                charm->AddSpellCooldown(SPELL_BLOOD_STRIKE, 0, 4 * IN_MILLISECONDS);
-            }
+                CastCharmSpell(charm, target, SPELL_BLOOD_STRIKE);
         }
     }
     else

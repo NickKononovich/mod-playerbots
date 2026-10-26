@@ -8,11 +8,18 @@
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "Creature.h"
+#include "CreatureData.h"
+#include "DBCStores.h"
 #include "GameObject.h"
+#include "GameObjectData.h"
+#include "GameObjectModel.h"
+#include "Group.h"
 #include "GatherNodeMgr.h"
 #include "GossipDef.h"
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
+#include "ModelIgnoreFlags.h"
+#include "MotionMaster.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
 #include "Object.h"
@@ -25,6 +32,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "Position.h"
@@ -35,10 +43,763 @@
 #include "SharedDefines.h"
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
+#include "Transport.h"
 #include "TravelMgr.h"
+#include "TravelNode.h"
+#include "WorldPacket.h"
+#include "G3D/Ray.h"
 #include "G3D/Vector2.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <mutex>
+#include <unordered_map>
+
+namespace
+{
+    constexpr float DECK_STEP = 1.5f;              // yards between deck probes on the way from the pier
+    constexpr float DECK_RAY_ABOVE = 8.0f;          // probes start this far over the pier...
+    constexpr float DECK_RAY_LENGTH = 20.0f;        // ...and look this far down for the deck
+    constexpr float DECK_MAX_STEP = 6.0f;           // a deck higher or lower than this is not reachable from the pier
+    constexpr uint32 DECK_SAMPLES_INSIDE = 3;       // stop a few probes past the rail
+    constexpr uint32 UNPLANNED_RIDE_MS = MINUTE * IN_MILLISECONDS;  // a ride nobody planned ends at the next dock
+    constexpr uint32 GROUP_BOARD_GRACE_MS = 12 * IN_MILLISECONDS;   // then the leader boards without stragglers
+    constexpr uint32 PORTAL_GATHER_MS = MINUTE * IN_MILLISECONDS;
+    constexpr float ENVOY_REACHED = 4.0f;
+    constexpr float CRYSTAL_REACHED = 3.0f;
+    constexpr float ENVOY_SEARCH_RANGE = 15.0f;
+
+    float Distance2d(WorldPosition const& a, WorldPosition const& b)
+    {
+        return std::hypot(a.GetPositionX() - b.GetPositionX(), a.GetPositionY() - b.GetPositionY());
+    }
+}
+
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
+{
+    if (dest == WorldPosition())
+        return false;
+
+    // Don't start a ground move while the bot is on a taxi or in a load screen: the MovePoint issued below would
+    // fight the active flight spline. Returning true consumes the tick instead of returning false, because the
+    // callers of MoveFarTo fall through to MoveRandomNear, which is also a ground move.
+    if (bot->IsInFlight() || bot->IsBeingTeleported())
+        return true;
+
+    // Aboard a boat or zeppelin: stay on until it docks where the trip gets off.
+    if (Transport* transport = bot->GetTransport())
+        if (MotionTransport* motionTransport = transport->ToMotionTransport())
+            return RideTransport(motionTransport);
+
+    // A mage in the group opens a portal to Dalaran from anywhere.
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot) && TravelRouteMgr::IsInDalaran(dest) &&
+        !TravelRouteMgr::IsInDalaran(WorldPosition(bot)) && UseDalaranPortal())
+        return true;
+
+    if (TravelTrip(dest))
+        return true;
+
+    if (dest.GetMapId() != bot->GetMapId())
+        return false;
+
+    return WalkTo(dest);
+}
+
+bool NewRpgBaseAction::WalkTo(WorldPosition const& dest)
+{
+    // Random bots keep their old way of travel (walk, teleport when stuck); routing is for player-owned bots.
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot) &&
+        TravelRouteMgr::IsInDalaran(dest) != TravelRouteMgr::IsInDalaran(WorldPosition(bot)))
+        return DalaranStep(dest);
+
+    return MoveFarToDirect(dest);
+}
+
+bool NewRpgBaseAction::HoldPosition(uint32 duration)
+{
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    return ForceToWait(duration);
+}
+
+// Straight line, no path finding: decks and gangways are not on the navmesh. On a transport the spline is
+// computed in its local frame, so walking off a docked boat works the same way.
+void NewRpgBaseAction::MovePointDirect(float x, float y, float z)
+{
+    MotionMaster* mm = bot->GetMotionMaster();
+    if (!mm)
+        return;
+
+    if (bot->IsSitState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+
+    mm->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, false);
+    float delay = IN_MILLISECONDS * MoveDelay(bot->GetExactDist(x, y, z));
+    delay = std::clamp(delay, 0.0f, static_cast<float>(sPlayerbotAIConfig.MaxWaitForMove));
+    AI_VALUE(LastMovement&, "last movement")
+        .Set(bot->GetMapId(), x, y, z, bot->GetOrientation(), delay, MovementPriority::MOVEMENT_NORMAL);
+}
+
+// No living member of the group is left behind on this map.
+bool NewRpgBaseAction::IsGroupGathered(float distance)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return true;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+            member->GetMapId() != bot->GetMapId())
+            continue;
+
+        if (bot->GetDistance(member) > distance)
+            return false;
+    }
+
+    return true;
+}
+
+MotionTransport* NewRpgBaseAction::FindTransport(uint32 entry)
+{
+    for (Transport* transport : bot->GetMap()->GetAllTransports())
+    {
+        if (!transport || transport->GetEntry() != entry || !transport->IsInWorld())
+            continue;
+
+        if (MotionTransport* motionTransport = transport->ToMotionTransport())
+        {
+            sTravelRouteMgr.Observe(motionTransport);
+            return motionTransport;
+        }
+    }
+
+    return nullptr;
+}
+
+// Plans the boat, zeppelin or portal leg of a far move and runs it up to boarding. False hands the move back to
+// plain walking (no leg needed, or the leg was given up).
+bool NewRpgBaseAction::TravelTrip(WorldPosition const& dest)
+{
+    using Phase = NewRpgInfo::TripPhase;
+    NewRpgInfo& info = botAI->rpgInfo;
+    NewRpgInfo::Trip& trip = info.trip;
+    if (sRandomPlayerbotMgr.IsRandomBot(bot))
+        return false;
+
+    // Off the transport after the ride: the leg is done, the rest is planned from the pier next tick.
+    if (trip.phase == Phase::Ride || trip.phase == Phase::Leave)
+    {
+        info.ClearTrip();
+        return HoldPosition(IN_MILLISECONDS);
+    }
+
+    // A new destination drops a leg that has not boarded yet.
+    if (trip.phase != Phase::None && trip.dest != dest)
+        info.ClearTrip();
+
+    if (trip.phase == Phase::None)
+    {
+        bool const otherMap = dest.GetMapId() != bot->GetMapId();
+        if (!otherMap && bot->GetExactDist2d(dest.GetPositionX(), dest.GetPositionY()) < TRIP_PLAN_DISTANCE)
+            return false;
+
+        if (trip.dest == dest && trip.plannedAt && GetMSTimeDiffToNow(trip.plannedAt) < TRIP_REPLAN_MS)
+            return false;
+
+        trip.dest = dest;
+        trip.plannedAt = getMSTime();
+        TravelRouteMgr::Leg leg;
+        float seconds = 0.0f;
+        if (!sTravelRouteMgr.FindRoute(bot, dest, leg, seconds) || leg.kind == TravelRouteMgr::LegKind::Walk)
+            return false;
+
+        trip.leg = leg;
+        info.SetTripPhase(Phase::ToStart);
+        LOG_DEBUG("playerbots", "[New RPG] {} travels by {} {} to map {} ({:.0f}s)", bot->GetName(),
+                  leg.kind == TravelRouteMgr::LegKind::Portal ? "portal" : "transport",
+                  leg.kind == TravelRouteMgr::LegKind::Portal ? leg.portalIndex : leg.lineEntry, dest.GetMapId(),
+                  seconds);
+    }
+
+    if (trip.leg.kind == TravelRouteMgr::LegKind::Portal)
+        return TravelByPortal(trip);
+
+    return TravelByTransport(trip);
+}
+
+bool NewRpgBaseAction::TravelByTransport(NewRpgInfo::Trip& trip)
+{
+    using Phase = NewRpgInfo::TripPhase;
+    NewRpgInfo& info = botAI->rpgInfo;
+    TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(trip.leg.lineEntry);
+    if (!line || trip.leg.fromDock >= line->docks.size() || trip.leg.toDock >= line->docks.size())
+    {
+        info.ClearTrip();
+        return false;
+    }
+
+    TravelRouteMgr::Dock const& dock = line->docks[trip.leg.fromDock];
+    if (bot->GetMapId() != dock.mapId)
+    {
+        info.ClearTrip();
+        return false;
+    }
+
+    MotionTransport* transport = FindTransport(line->entry);
+    uint32 remaining = 0;
+    bool const docked = TravelRouteMgr::IsDocked(transport, dock, remaining);
+
+    switch (trip.phase)
+    {
+        case Phase::ToStart:
+            if (bot->GetExactDist(dock.pier) > PIER_REACHED)
+                return WalkTo(dock.pier);
+
+            info.SetTripPhase(Phase::Wait);
+            [[fallthrough]];
+        case Phase::Wait:
+            if (docked && remaining >= BOARD_MIN_REMAINING_MS)
+            {
+                info.SetTripPhase(Phase::Board);
+                return HoldPosition(IN_MILLISECONDS);
+            }
+
+            // A full loop without the transport turning up: something is wrong with it, walk on for a while.
+            if (GetMSTimeDiffToNow(trip.phaseStart) > line->periodMs + WAIT_SPARE_MS)
+            {
+                WorldPosition const dest = trip.dest;
+                info.ClearTrip();
+                info.trip.dest = dest;
+                info.trip.plannedAt = getMSTime();
+                return false;
+            }
+
+            return HoldPosition(3 * IN_MILLISECONDS);
+        case Phase::Board:
+            if (!docked || GetMSTimeDiffToNow(trip.phaseStart) > BOARD_TIMEOUT_MS)
+            {
+                info.SetTripPhase(Phase::Wait);
+                return HoldPosition();
+            }
+
+            // The followers board after the leader; give stragglers a moment to reach the pier.
+            if (!IsGroupGathered(GROUP_GATHER_DISTANCE) && GetMSTimeDiffToNow(trip.phaseStart) < GROUP_BOARD_GRACE_MS)
+                return HoldPosition();
+
+            return BoardTransport(transport);
+        default:
+            info.ClearTrip();
+            return false;
+    }
+}
+
+bool NewRpgBaseAction::BoardTransport(MotionTransport* transport)
+{
+    Map* map = bot->GetMap();
+    if (map->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                bot) == transport)
+    {
+        transport->AddPassenger(bot, true);
+        bot->StopMovingOnCurrentPos();
+        botAI->rpgInfo.SetTripPhase(NewRpgInfo::TripPhase::Ride);
+        LOG_DEBUG("playerbots", "[New RPG] {} boarded transport {}", bot->GetName(), transport->GetEntry());
+        return true;
+    }
+
+    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+        return true;
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    if (!FindDeckPoint(transport, x, y, z))
+        return HoldPosition();
+
+    MovePointDirect(x, y, z);
+    return true;
+}
+
+// Probes from the pier towards the middle of the transport for a deck at about pier height, using the
+// transport's own collision model.
+bool NewRpgBaseAction::FindDeckPoint(MotionTransport* transport, float& x, float& y, float& z)
+{
+    if (!transport->m_model)
+        return false;
+
+    float const startX = bot->GetPositionX();
+    float const startY = bot->GetPositionY();
+    float const startZ = bot->GetPositionZ();
+    float const dx = transport->GetPositionX() - startX;
+    float const dy = transport->GetPositionY() - startY;
+    float const length = std::sqrt(dx * dx + dy * dy);
+    if (length < DECK_STEP)
+        return false;
+
+    uint32 onDeck = 0;
+    for (float travelled = DECK_STEP; travelled <= length; travelled += DECK_STEP)
+    {
+        float const px = startX + dx / length * travelled;
+        float const py = startY + dy / length * travelled;
+        G3D::Ray const ray(G3D::Vector3(px, py, startZ + DECK_RAY_ABOVE), G3D::Vector3(0.0f, 0.0f, -1.0f));
+        float distance = DECK_RAY_LENGTH;
+        if (!transport->m_model->intersectRay(ray, distance, false, bot->GetPhaseMask(),
+                                              VMAP::ModelIgnoreFlags::Nothing))
+        {
+            if (onDeck)
+                break;
+
+            continue;
+        }
+
+        float const deckZ = startZ + DECK_RAY_ABOVE - distance;
+        if (std::fabs(deckZ - startZ) > DECK_MAX_STEP)
+            continue;
+
+        x = px;
+        y = py;
+        z = deckZ;
+        if (++onDeck >= DECK_SAMPLES_INSIDE)
+            return true;
+    }
+
+    return onDeck > 0;
+}
+
+bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
+{
+    using Phase = NewRpgInfo::TripPhase;
+    NewRpgInfo& info = botAI->rpgInfo;
+    NewRpgInfo::Trip& trip = info.trip;
+    sTravelRouteMgr.Observe(transport);
+
+    TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(transport->GetEntry());
+    if (!line)
+        return HoldPosition();
+
+    bool const plannedLeg = trip.leg.kind == TravelRouteMgr::LegKind::Transport &&
+                            trip.leg.lineEntry == line->entry && trip.leg.toDock < line->docks.size() &&
+                            trip.phase != Phase::None;
+    if (trip.phase != Phase::Ride && trip.phase != Phase::Leave)
+    {
+        if (!plannedLeg)
+            trip.leg = TravelRouteMgr::Leg();
+
+        info.SetTripPhase(Phase::Ride);
+    }
+
+    TravelRouteMgr::Dock const* exitDock = nullptr;
+    uint32 remaining = 0;
+    for (uint8 d = 0; d < line->docks.size() && !exitDock; ++d)
+    {
+        if (plannedLeg ? d != trip.leg.toDock : GetMSTimeDiffToNow(trip.phaseStart) < UNPLANNED_RIDE_MS)
+            continue;
+
+        if (TravelRouteMgr::IsDocked(transport, line->docks[d], remaining))
+            exitDock = &line->docks[d];
+    }
+
+    if (!exitDock)
+    {
+        if (trip.phase == Phase::Leave)
+            info.SetTripPhase(Phase::Ride);
+
+        return HoldPosition();
+    }
+
+    if (trip.phase != Phase::Leave)
+    {
+        info.SetTripPhase(Phase::Leave);
+        LOG_DEBUG("playerbots", "[New RPG] {} leaves transport {} at map {}", bot->GetName(), line->entry,
+                  exitDock->mapId);
+    }
+
+    if (!IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+        MovePointDirect(exitDock->pier.GetPositionX(), exitDock->pier.GetPositionY(), exitDock->pier.GetPositionZ());
+
+    return true;
+}
+
+bool NewRpgBaseAction::TravelByPortal(NewRpgInfo::Trip& trip)
+{
+    using Phase = NewRpgInfo::TripPhase;
+    NewRpgInfo& info = botAI->rpgInfo;
+    std::vector<TravelRouteMgr::Portal> const& portals = sTravelRouteMgr.GetPortals();
+    if (trip.leg.portalIndex >= portals.size() || bot->GetMapId() != portals[trip.leg.portalIndex].from.GetMapId())
+    {
+        info.ClearTrip();
+        return false;
+    }
+
+    TravelRouteMgr::Portal const& portal = portals[trip.leg.portalIndex];
+    if (trip.phase == Phase::ToStart)
+    {
+        if (bot->GetExactDist(portal.from) > INTERACTION_DISTANCE - 1.0f)
+            return WalkTo(portal.from);
+
+        info.SetTripPhase(Phase::Wait);
+    }
+
+    // Everyone steps through together: a member left on another continent has no way to catch up.
+    if (!IsGroupGathered(GROUP_USE_DISTANCE) && GetMSTimeDiffToNow(trip.phaseStart) < PORTAL_GATHER_MS)
+        return HoldPosition();
+
+    GameObject* go = bot->FindNearestGameObject(portal.goEntry, 2.0f * INTERACTION_DISTANCE);
+    WorldPosition const dest = trip.dest;
+    info.ClearTrip();
+    if (!go || !go->isSpawned())
+    {
+        info.trip.dest = dest;
+        info.trip.plannedAt = getMSTime();
+        return false;
+    }
+
+    UseGameObjectWithGroup(go);
+    return HoldPosition(5 * IN_MILLISECONDS);
+}
+
+// Group bots next to the object use it first (it may close behind the first user), the bot last.
+bool NewRpgBaseAction::UseGameObjectWithGroup(GameObject* go)
+{
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() || member->IsInCombat() ||
+                member->GetMapId() != bot->GetMapId() || member->IsBeingTeleported() || !GET_PLAYERBOT_AI(member) ||
+                member->GetDistance(go) > GROUP_USE_DISTANCE)
+                continue;
+
+            go->Use(member);
+        }
+    }
+
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    WorldPacket use(CMSG_GAMEOBJ_USE, 8);
+    use << go->GetGUID();
+    bot->GetSession()->HandleGameObjectUseOpcode(use);
+    return true;
+}
+
+bool NewRpgBaseAction::HasDalaranTeleportQuest(Player* player)
+{
+    using namespace DalaranTravel;
+    return player->GetQuestStatus(QUEST_HORDE) == QUEST_STATUS_COMPLETE ||
+           player->GetQuestStatus(QUEST_ALLIANCE) == QUEST_STATUS_COMPLETE ||
+           player->GetQuestStatus(QUEST_DEATH_KNIGHT) == QUEST_STATUS_COMPLETE;
+}
+
+// Up to or down from Dalaran by its own ways: the Violet Stand crystals, a flight to Krasus' Landing, the
+// Kirin Tor envoy teleport of the level 74 quest, or a group mage's portal (see MoveFarTo). Nothing walks or
+// flies in over the city.
+bool NewRpgBaseAction::DalaranStep(WorldPosition const& dest)
+{
+    using namespace DalaranTravel;
+    WorldPosition const botPos(bot);
+
+    if (TravelRouteMgr::IsInDalaran(botPos))
+    {
+        if (bot->GetQuestRewardStatus(QUEST_LEAVE_AND_RETURN) ||
+            bot->GetQuestStatus(QUEST_LEAVE_AND_RETURN) == QUEST_STATUS_INCOMPLETE)
+            return UseDalaranCrystal(GO_CRYSTAL_DOWN);
+
+        // fly down to the discovered flight path nearest to the destination
+        uint32 toNode = 0;
+        float nearest = std::numeric_limits<float>::max();
+        for (uint32 i = 0; i < sTaxiNodesStore.GetNumRows(); ++i)
+        {
+            TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+            if (!node || node->ID == TAXI_NODE_KRASUS_LANDING || node->map_id != dest.GetMapId() ||
+                !bot->m_taxi.IsTaximaskNodeKnown(node->ID))
+                continue;
+
+            float const distance = std::hypot(node->x - dest.GetPositionX(), node->y - dest.GetPositionY());
+            if (distance < nearest)
+            {
+                nearest = distance;
+                toNode = node->ID;
+            }
+        }
+
+        return FlyTowards(toNode);
+    }
+
+    enum class Way : uint8
+    {
+        None,
+        Taxi,
+        Crystal,
+        Envoy
+    };
+    Way way = Way::None;
+    float best = std::numeric_limits<float>::max();
+    WorldPosition const city(MAP_ID, CENTER_X, CENTER_Y, MIN_Z);
+
+    if (bot->m_taxi.IsTaximaskNodeKnown(TAXI_NODE_KRASUS_LANDING))
+    {
+        if (TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot))
+        {
+            float const seconds = Distance2d(botPos, master->pos) / TravelRouteMgr::WALK_SPEED +
+                                  Distance2d(master->pos, city) / FLIGHT_SPEED;
+            if (seconds < best)
+            {
+                best = seconds;
+                way = Way::Taxi;
+            }
+        }
+    }
+
+    if (bot->GetQuestRewardStatus(QUEST_CRYSTAL_FLAG))
+    {
+        for (WorldPosition const& crystal : sTravelRouteMgr.GetObjectSpawns(GO_CRYSTAL_UP))
+        {
+            float const seconds = Distance2d(botPos, crystal) / TravelRouteMgr::WALK_SPEED;
+            if (crystal.GetMapId() == bot->GetMapId() && seconds < best)
+            {
+                best = seconds;
+                way = Way::Crystal;
+            }
+        }
+    }
+
+    if (HasDalaranTeleportQuest(bot))
+    {
+        for (uint32 envoy : QUEST_GIVERS)
+        {
+            for (WorldPosition const& spawn : sTravelRouteMgr.GetSpawns(envoy))
+            {
+                float const seconds = Distance2d(botPos, spawn) / TravelRouteMgr::WALK_SPEED;
+                if (spawn.GetMapId() == bot->GetMapId() && seconds < best)
+                {
+                    best = seconds;
+                    way = Way::Envoy;
+                }
+            }
+        }
+    }
+
+    switch (way)
+    {
+        case Way::Taxi:
+            return FlyTowards(TAXI_NODE_KRASUS_LANDING);
+        case Way::Crystal:
+            return UseDalaranCrystal(GO_CRYSTAL_UP);
+        case Way::Envoy:
+            return TeleportByDalaranEnvoy();
+        default:
+            return false;
+    }
+}
+
+// Hands over to the flight status: walk to the nearest flight master, fly a route over discovered nodes, pay.
+bool NewRpgBaseAction::FlyTowards(uint32 toNode)
+{
+    TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot);
+    if (!master || !toNode || !master->taxiNodeId)
+        return false;
+
+    std::vector<uint32> path = sTravelNodeMap.FindKnownTaxiPath(bot, master->taxiNodeId, toNode);
+    if (path.empty())
+        return false;
+
+    botAI->rpgInfo.ChangeToTravelFlight(master->templateEntry, master->pos, path);
+    return true;
+}
+
+bool NewRpgBaseAction::UseDalaranCrystal(uint32 entry)
+{
+    WorldPosition crystal;
+    float nearest = std::numeric_limits<float>::max();
+    for (WorldPosition const& spawn : sTravelRouteMgr.GetObjectSpawns(entry))
+    {
+        if (spawn.GetMapId() == bot->GetMapId() && bot->GetExactDist(spawn) < nearest)
+        {
+            nearest = bot->GetExactDist(spawn);
+            crystal = spawn;
+        }
+    }
+
+    if (crystal == WorldPosition())
+        return false;
+
+    if (nearest > CRYSTAL_REACHED)
+        return MoveFarToDirect(crystal);
+
+    GameObject* go = bot->FindNearestGameObject(entry, 2.0f * INTERACTION_DISTANCE);
+    if (!go || !go->isSpawned())
+        return false;
+
+    // The crystal closes for a second after each use: send the members over one by one, the bot last.
+    if (go->HasGameObjectFlag(GO_FLAG_IN_USE))
+        return HoldPosition(IN_MILLISECONDS);
+
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() || member->IsInCombat() ||
+                member->GetMapId() != bot->GetMapId() || member->IsBeingTeleported() || !GET_PLAYERBOT_AI(member) ||
+                member->GetDistance(go) > GROUP_USE_DISTANCE)
+                continue;
+
+            bool const canUse = entry == DalaranTravel::GO_CRYSTAL_UP
+                                    ? member->GetQuestRewardStatus(DalaranTravel::QUEST_CRYSTAL_FLAG)
+                                    : member->GetQuestRewardStatus(DalaranTravel::QUEST_LEAVE_AND_RETURN) ||
+                                          member->GetQuestStatus(DalaranTravel::QUEST_LEAVE_AND_RETURN) ==
+                                              QUEST_STATUS_INCOMPLETE;
+            if (!canUse)
+                continue;
+
+            go->Use(member);
+            return HoldPosition(IN_MILLISECONDS + IN_MILLISECONDS / 2);
+        }
+    }
+
+    WorldPacket use(CMSG_GAMEOBJ_USE, 8);
+    use << go->GetGUID();
+    bot->GetSession()->HandleGameObjectUseOpcode(use);
+    return HoldPosition(3 * IN_MILLISECONDS);
+}
+
+void NewRpgBaseAction::GossipTeleportToDalaran(Player* player, Creature* envoy)
+{
+    uint32 const menuId = envoy->GetCreatureTemplate()->GossipMenuId;
+    WorldPacket hello(CMSG_GOSSIP_HELLO, 8);
+    hello << envoy->GetGUID();
+    player->GetSession()->HandleGossipHelloOpcode(hello);
+
+    WorldPacket select(CMSG_GOSSIP_SELECT_OPTION, 8 + 4 + 4);
+    select << envoy->GetGUID() << menuId << DalaranTravel::GOSSIP_OPTION_TELEPORT;
+    player->GetSession()->HandleGossipSelectOptionOpcode(select);
+}
+
+// "I am ready to be teleported to Dalaran": the envoy only offers it to holders of the completed quest.
+bool NewRpgBaseAction::TeleportByDalaranEnvoy()
+{
+    using namespace DalaranTravel;
+    Creature* envoy = nullptr;
+    for (uint32 entry : QUEST_GIVERS)
+    {
+        Creature* creature = bot->FindNearestCreature(entry, ENVOY_SEARCH_RANGE);
+        if (creature && creature->IsAlive() && (!envoy || bot->GetDistance(creature) < bot->GetDistance(envoy)))
+            envoy = creature;
+    }
+
+    if (!envoy)
+    {
+        WorldPosition target;
+        float nearest = std::numeric_limits<float>::max();
+        for (uint32 entry : QUEST_GIVERS)
+        {
+            for (WorldPosition const& spawn : sTravelRouteMgr.GetSpawns(entry))
+            {
+                if (spawn.GetMapId() == bot->GetMapId() && bot->GetExactDist(spawn) < nearest)
+                {
+                    nearest = bot->GetExactDist(spawn);
+                    target = spawn;
+                }
+            }
+        }
+
+        if (target == WorldPosition())
+            return false;
+
+        return MoveFarToDirect(target);
+    }
+
+    if (!bot->IsWithinDistInMap(envoy, ENVOY_REACHED))
+    {
+        MoveWorldObjectTo(envoy->GetGUID(), 2.0f);
+        return true;
+    }
+
+    // members next to the envoy who hold the quest too go up with the bot
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsInWorld() && member->IsAlive() && GET_PLAYERBOT_AI(member) &&
+                member->GetMapId() == bot->GetMapId() && member->IsWithinDistInMap(envoy, INTERACTION_DISTANCE) &&
+                HasDalaranTeleportQuest(member))
+                GossipTeleportToDalaran(member, envoy);
+        }
+    }
+
+    GossipTeleportToDalaran(bot, envoy);
+    return HoldPosition(3 * IN_MILLISECONDS);
+}
+
+// Portal: Dalaran from a mage in the group (the bot itself or a group bot next to it).
+bool NewRpgBaseAction::UseDalaranPortal()
+{
+    using namespace DalaranTravel;
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (info.dalaranPortalFailedAt && GetMSTimeDiffToNow(info.dalaranPortalFailedAt) < PORTAL_RETRY_MS)
+        return false;
+
+    if (GameObject* portal = bot->FindNearestGameObject(GO_PORTAL_DALARAN, GROUP_GATHER_DISTANCE))
+    {
+        info.dalaranPortalAskedAt = 0;
+        if (!bot->IsWithinDistInMap(portal, INTERACTION_DISTANCE - 1.0f))
+        {
+            MoveWorldObjectTo(portal->GetGUID(), 1.5f);
+            return true;
+        }
+
+        return UseGameObjectWithGroup(portal);
+    }
+
+    if (info.dalaranPortalAskedAt)
+    {
+        if (GetMSTimeDiffToNow(info.dalaranPortalAskedAt) < PORTAL_CAST_WAIT_MS)
+            return HoldPosition();
+
+        info.dalaranPortalAskedAt = 0;
+        info.dalaranPortalFailedAt = getMSTime();
+        return false;
+    }
+
+    Player* mage = nullptr;
+    auto canOpen = [this](Player* player)
+    {
+        return player && player->IsInWorld() && player->IsAlive() && !player->IsInCombat() &&
+               player->getClass() == CLASS_MAGE && player->GetMapId() == bot->GetMapId() &&
+               bot->GetDistance(player) < GROUP_GATHER_DISTANCE && player->HasSpell(SPELL_PORTAL_DALARAN) &&
+               !player->HasSpellCooldown(SPELL_PORTAL_DALARAN) && player->HasItemCount(ITEM_RUNE_OF_PORTALS, 1) &&
+               !player->IsNonMeleeSpellCast(false);
+    };
+
+    if (canOpen(bot))
+        mage = bot;
+    else if (Group* group = bot->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref && !mage; ref = ref->next())
+            if (canOpen(ref->GetSource()) && GET_PLAYERBOT_AI(ref->GetSource()))
+                mage = ref->GetSource();
+
+    if (!mage)
+        return false;
+
+    PlayerbotAI* mageAI = mage == bot ? botAI : GET_PLAYERBOT_AI(mage);
+    if (!mageAI || !mageAI->CastSpell(SPELL_PORTAL_DALARAN, mage))
+    {
+        info.dalaranPortalFailedAt = getMSTime();
+        return false;
+    }
+
+    LOG_DEBUG("playerbots", "[New RPG] {} asked {} for a portal to Dalaran", bot->GetName(), mage->GetName());
+    info.dalaranPortalAskedAt = getMSTime();
+    return HoldPosition();
+}
+
+bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
 {
     if (dest == WorldPosition())
         return false;
@@ -116,6 +877,20 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         // its RPG objective instead of oscillating indefinitely.
         botAI->rpgInfo.stuckTs = getMSTime();
         botAI->rpgInfo.stuckAttempts = 0;
+
+        // Player-owned bots play like players: no teleport shortcut. Give the goal up so the planner picks
+        // another one (the quest drops to low priority, see the callers' fallbacks).
+        if (!sRandomPlayerbotMgr.IsRandomBot(bot))
+        {
+            LOG_DEBUG("playerbots", "[New RPG] {} gives up an unreachable destination ({},{},{},{})", bot->GetName(),
+                      dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId());
+            if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+                botAI->lowPriorityQuest.insert(quest->questId);
+
+            botAI->rpgInfo.ChangeToIdle();
+            return false;
+        }
+
         AreaTableEntry const* entry = sAreaTableStore.LookupEntry(bot->GetZoneId());
         std::string zone_name = PlayerbotAI::GetLocalizedAreaName(entry);
         LOG_DEBUG(
@@ -212,6 +987,10 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 
 bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
 {
+    // never walk off a boat or zeppelin at sea
+    if (bot->GetTransport() && bot->GetTransport()->IsMotionTransport())
+        return false;
+
     if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
     {
         return false;
@@ -247,6 +1026,10 @@ bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
 
 bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority, WorldObject*)
 {
+    // never wander off a boat or zeppelin at sea
+    if (bot->GetTransport() && bot->GetTransport()->IsMotionTransport())
+        return HoldPosition();
+
     if (IsWaitingForLastMove(priority))
         return false;
 
@@ -314,23 +1097,35 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
     //     bot->GetSession()->HandleGossipHelloOpcode(packet);
     // }
 
+    RelayInteractPacketToGroupBots(guid);
+
     bot->PrepareQuestMenu(guid);
     QuestMenu const& menu = bot->PlayerTalkClass->GetQuestMenu();
     if (menu.Empty())
         return true;
 
+    // Accepting and turning in rebuild the giver's menu: walk a copy.
+    std::vector<uint32> questIds;
     for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
+        questIds.push_back(menu.GetItem(idx).QuestId);
+
+    for (uint32 questId : questIds)
     {
-        QuestMenuItem const& item = menu.GetItem(idx);
-        Quest const* quest = sObjectMgr->GetQuestTemplate(item.QuestId);
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest)
             continue;
 
-        QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
+        QuestStatus status = bot->GetQuestStatus(questId);
         if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
             IsQuestWorthDoing(quest) && IsQuestCapableDoing(quest))
         {
             AcceptQuest(quest, guid);
+            // Quests that are complete on acceptance and end here (auto-complete "turn-in" quests, #2495) are handed
+            // in right away below; the relayed accept comes first so the group bots hold the quest by then.
+            status = bot->GetQuestStatus(questId);
+            if (status == QUEST_STATUS_COMPLETE && !object->hasInvolvedQuest(questId))
+                status = QUEST_STATUS_INCOMPLETE;
+            RelayQuestPacketToGroupBots(CMSG_QUESTGIVER_ACCEPT_QUEST, guid, quest->GetQuestId());
             if (botAI->GetMaster())
                 botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "new_rpg_quest_accepted",
@@ -340,8 +1135,10 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
             botAI->rpgStatistic.questAccepted++;
             LOG_DEBUG("playerbots", "[New RPG] {} accept quest {}", bot->GetName(), quest->GetQuestId());
         }
-        if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, 0, false))
+        if (status == QUEST_STATUS_COMPLETE && object->hasInvolvedQuest(questId) &&
+            bot->CanRewardQuest(quest, 0, false))
         {
+            RelayQuestPacketToGroupBots(CMSG_QUESTGIVER_COMPLETE_QUEST, guid, quest->GetQuestId());
             TurnInQuest(quest, guid);
             if (botAI->GetMaster())
                 botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
@@ -354,6 +1151,31 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
         }
     }
     return true;
+}
+
+// A selfbot acts server-side, so its client never sends the packets its own bots react to (accept the same
+// quest, sync the turn-in, use the same object, follow onto a taxi). Feed them the packet a client would send.
+void NewRpgBaseAction::RelayPacketToGroupBots(WorldPacket const& packet)
+{
+    if (PlayerbotMgr* mgr = GET_PLAYERBOT_MGR(bot))
+        mgr->HandleMasterIncomingPacket(packet);
+}
+
+void NewRpgBaseAction::RelayQuestPacketToGroupBots(uint16 opcode, ObjectGuid guid, uint32 questId)
+{
+    WorldPacket packet(opcode, 8 + 4 + 4);
+    packet << guid << questId;
+    if (opcode == CMSG_QUESTGIVER_ACCEPT_QUEST)
+        packet << uint32(0);
+
+    RelayPacketToGroupBots(packet);
+}
+
+void NewRpgBaseAction::RelayInteractPacketToGroupBots(ObjectGuid guid)
+{
+    WorldPacket packet(guid.IsGameObject() ? CMSG_GAMEOBJ_USE : CMSG_GOSSIP_HELLO, 8);
+    packet << guid;
+    RelayPacketToGroupBots(packet);
 }
 
 bool NewRpgBaseAction::CanInteractWithQuestGiver(Object* questGiver)
@@ -584,15 +1406,113 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
     if (highLevelQuest)
         return false;
 
-    // Elite quest and dungeon quest etc
-    if (quest->GetType() != 0)
+    // Dungeon, raid, PvP and the other special quest types stay out.
+    if (quest->GetType() != 0 && quest->GetType() != QUEST_TYPE_ELITE)
         return false;
 
-    // now we only capable of doing solo quests
-    if (quest->GetSuggestedPlayers() >= 2)
+    // Elite and group quests are fine for a group of three or more around the bot's level (a five-man party).
+    bool const groupQuest = quest->GetType() == QUEST_TYPE_ELITE || quest->GetSuggestedPlayers() >= 2;
+    if (groupQuest && (quest->GetSuggestedPlayers() > MAX_GROUP_QUEST_PLAYERS || !HasCapableGroup()))
         return false;
 
     return true;
+}
+
+bool NewRpgBaseAction::HasCapableGroup()
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (info.groupCheckedAt && GetMSTimeDiffToNow(info.groupCheckedAt) < GROUP_CHECK_MS)
+        return info.capableGroup;
+
+    info.groupCheckedAt = std::max(getMSTime(), 1u);
+    uint32 nearLevel = 0;
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
+                std::abs(static_cast<int32>(member->GetLevel()) - static_cast<int32>(bot->GetLevel())) <=
+                    GROUP_LEVEL_SPREAD)
+                ++nearLevel;
+        }
+    }
+
+    info.capableGroup = nearLevel >= MIN_GROUP_FOR_ELITE;
+    return info.capableGroup;
+}
+
+// The quests of the level 74 Dalaran chain end up in the city, outside the zone filter of the quest POIs.
+bool NewRpgBaseAction::GetDalaranQuestTarget(uint32 questId, WorldPosition& pos)
+{
+    using namespace DalaranTravel;
+    QuestStatus const status = bot->GetQuestStatus(questId);
+    uint32 creature = 0;
+    uint32 object = 0;
+    if (IsTeleportQuest(questId) && status == QUEST_STATUS_COMPLETE)
+        creature = NPC_CELINDRA;
+    else if (questId == QUEST_LEAVE_AND_RETURN)
+    {
+        if (status == QUEST_STATUS_INCOMPLETE)
+            object = GO_CRYSTAL_DOWN;
+        else if (status == QUEST_STATUS_COMPLETE)
+            creature = NPC_CELINDRA;
+    }
+
+    std::vector<WorldPosition> const& spawns =
+        creature ? sTravelRouteMgr.GetSpawns(creature) : sTravelRouteMgr.GetObjectSpawns(object);
+    if ((!creature && !object) || spawns.empty())
+        return false;
+
+    pos = spawns.front();
+    return pos.GetMapId() == bot->GetMapId();
+}
+
+// A quest objective that is a game object to use (a goober, the Dalaran crystal): walk up and use it. The core
+// credits the whole group at reward distance; relaying the use lets group bots use their own copy too (#2725).
+bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    auto itr = bot->getQuestStatusMap().find(questId);
+    if (!quest || itr == bot->getQuestStatusMap().end() || itr->second.Status != QUEST_STATUS_INCOMPLETE)
+        return false;
+
+    GameObject* nearest = nullptr;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+    {
+        int32 const required = quest->RequiredNpcOrGo[i];
+        if (required >= 0 || itr->second.CreatureOrGOCount[i] >= quest->RequiredNpcOrGoCount[i])
+            continue;
+
+        GameObject* go = bot->FindNearestGameObject(static_cast<uint32>(-required), QUEST_OBJECT_RANGE);
+        if (go && go->isSpawned() && !go->HasGameObjectFlag(GO_FLAG_IN_USE) &&
+            (!nearest || bot->GetDistance(go) < bot->GetDistance(nearest)))
+            nearest = go;
+    }
+
+    if (!nearest)
+        return false;
+
+    // the Dalaran crystal teleports only its user: the group goes down with the bot
+    if (nearest->GetEntry() == DalaranTravel::GO_CRYSTAL_DOWN)
+        return UseDalaranCrystal(DalaranTravel::GO_CRYSTAL_DOWN);
+
+    if (!nearest->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
+    {
+        MoveWorldObjectTo(nearest->GetGUID(), 1.5f);
+        return true;
+    }
+
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    LOG_DEBUG("playerbots", "[New RPG] {} uses quest object {} for quest {}", bot->GetName(), nearest->GetEntry(),
+              questId);
+    WorldPacket use(CMSG_GAMEOBJ_USE, 8);
+    use << nearest->GetGUID();
+    RelayInteractPacketToGroupBots(nearest->GetGUID());
+    bot->GetSession()->HandleGameObjectUseOpcode(use);
+    return ForceToWait(3 * IN_MILLISECONDS);
 }
 
 bool NewRpgBaseAction::OrganizeQuestLog()
@@ -608,6 +1528,10 @@ bool NewRpgBaseAction::OrganizeQuestLog()
 
     // it's ok if we have two more free slots
     if (freeSlotNum >= 2)
+        return false;
+
+    // Quests of player-owned characters (selfbots, altbots) are never thrown away to make room.
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
     int32 dropped = 0;
@@ -1091,6 +2015,290 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
     return true;
 }
 
+namespace
+{
+    // Where every quest in the database can be picked up: the first spawn of each creature or object that
+    // starts it. Built once, shared by all bots.
+    struct QuestStartPoint
+    {
+        uint32 questId;
+        uint16 mapId;
+        float x, y, z;
+        uint32 creatureFaction;  // 0 for game objects
+    };
+
+    std::vector<QuestStartPoint> const& GetQuestStartPoints()
+    {
+        static std::vector<QuestStartPoint> points;
+        static std::once_flag built;
+        std::call_once(built, []()
+        {
+            std::unordered_map<uint32, CreatureData const*> creatureSpawn;
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+                creatureSpawn.emplace(data.id, &data);
+
+            for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestRelationMap())
+            {
+                auto spawn = creatureSpawn.find(entry);
+                CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(entry);
+                if (spawn == creatureSpawn.end() || !creatureTemplate)
+                    continue;
+
+                CreatureData const* data = spawn->second;
+                points.push_back({questId, data->mapid, data->posX, data->posY, data->posZ, creatureTemplate->faction});
+            }
+
+            std::unordered_map<uint32, GameObjectData const*> objectSpawn;
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+                objectSpawn.emplace(data.id, &data);
+
+            for (auto const& [entry, questId] : *sObjectMgr->GetGOQuestRelationMap())
+            {
+                auto spawn = objectSpawn.find(entry);
+                if (spawn == objectSpawn.end())
+                    continue;
+
+                GameObjectData const* data = spawn->second;
+                points.push_back({questId, data->mapid, data->posX, data->posY, data->posZ, 0});
+            }
+        });
+        return points;
+    }
+
+    constexpr float QUEST_TRAVEL_SPEED = 7.0f;           // yards per second on foot
+    constexpr float QUEST_OBJECTIVE_TIME = 180.0f;       // seconds to clear one quest objectives
+    constexpr float QUEST_UNKNOWN_DISTANCE = 150.0f;     // assumed giver-to-objective distance without POI data
+    constexpr float QUEST_MAX_GIVER_DISTANCE = 3000.0f;  // farther givers are left for a later trip
+    constexpr float QUEST_IN_LOG_BONUS = 1.25f;          // accepted quests cost nothing to start
+    constexpr float REST_KILL_QUEST_BONUS = 1.15f;       // rested experience doubles kill experience only
+    constexpr float DALARAN_QUEST_BONUS = 4.0f;          // opens the city: portals, the crystal, the flight path
+    constexpr float ZONE_IN_ORDER_BONUS = 1.3f;
+    constexpr float ZONE_TOO_EARLY = 0.6f;
+    constexpr float ZONE_OUTLEVELED = 0.8f;
+    constexpr uint8 NORTHREND_ENTRY_LEVEL = 68;
+    constexpr uint32 NORTHREND_MAP_ID = 571;
+
+    // Northrend levelling order (both factions, from their own docks): Borean Tundra or Howling Fjord,
+    // Dragonblight, Grizzly Hills, Zul'Drak, Sholazar Basin, then the Storm Peaks and Icecrown.
+    struct ZoneBand
+    {
+        uint32 zoneId;
+        uint8 low;
+        uint8 high;
+    };
+    constexpr ZoneBand NORTHREND_ZONE_ORDER[] = {
+        {3537, 68, 72},  // Borean Tundra
+        {495, 68, 72},   // Howling Fjord
+        {65, 72, 74},    // Dragonblight
+        {394, 74, 76},   // Grizzly Hills
+        {66, 76, 77},    // Zul'Drak
+        {3711, 77, 78},  // Sholazar Basin
+        {67, 79, 80},    // The Storm Peaks
+        {210, 79, 80},   // Icecrown
+    };
+
+    bool IsKillQuest(Quest const* quest)
+    {
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            if (quest->RequiredNpcOrGo[i] > 0)
+                return true;
+
+        return false;
+    }
+}
+
+// Soft preferences on top of experience per second: kill quests while rested, the Northrend zone order, the
+// Dalaran attunement at 74.
+float NewRpgBaseAction::GetQuestWeight(Quest const* quest, bool rested)
+{
+    uint8 const level = bot->GetLevel();
+    float weight = 1.0f;
+    if (rested && IsKillQuest(quest))
+        weight *= REST_KILL_QUEST_BONUS;
+
+    if (level >= NORTHREND_ENTRY_LEVEL && quest->GetZoneOrSort() > 0)
+    {
+        for (ZoneBand const& band : NORTHREND_ZONE_ORDER)
+        {
+            if (band.zoneId != static_cast<uint32>(quest->GetZoneOrSort()))
+                continue;
+
+            if (level < band.low)
+                weight *= ZONE_TOO_EARLY;
+            else if (level > band.high)
+                weight *= ZONE_OUTLEVELED;
+            else
+                weight *= ZONE_IN_ORDER_BONUS;
+            break;
+        }
+    }
+
+    if (DalaranTravel::IsTeleportQuest(quest->GetQuestId()) ||
+        quest->GetQuestId() == DalaranTravel::QUEST_LEAVE_AND_RETURN)
+        weight *= DALARAN_QUEST_BONUS;
+
+    return weight;
+}
+
+// Kills, object uses and items collected so far towards the quest objectives.
+uint32 NewRpgBaseAction::GetQuestProgress(uint32 questId)
+{
+    auto itr = bot->getQuestStatusMap().find(questId);
+    if (itr == bot->getQuestStatusMap().end())
+        return 0;
+
+    uint32 progress = 0;
+    for (uint32 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        progress += itr->second.CreatureOrGOCount[i];
+    for (uint32 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        progress += itr->second.ItemCount[i];
+
+    return progress;
+}
+
+// The bot knows every quest in the world and picks the one that gives the most experience per second of
+// travel and work: quests already in the log and quests it could still pick up, near or far.
+// giverPos is set when the winner still has to be picked up.
+uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
+{
+    uint8 const level = bot->GetLevel();
+    float bestRate = 0.0f;
+    uint32 bestQuest = 0;
+    giverPos = WorldPosition();
+    bool const rested = bot->GetRestBonus() > 0.0f;
+
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId || botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
+            continue;
+
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+
+        float distance = std::numeric_limits<float>::max();
+        std::vector<POIInfo> poiInfo;
+        WorldPosition dalaranTarget;
+        if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+        {
+            for (POIInfo const& poi : poiInfo)
+                distance = std::min(distance, bot->GetDistance2d(poi.pos.x, poi.pos.y));
+        }
+        else if (GetDalaranQuestTarget(questId, dalaranTarget))
+            distance = bot->GetDistance2d(dalaranTarget.GetPositionX(), dalaranTarget.GetPositionY());
+        else
+            continue;
+
+        bool const complete = bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
+        float time = distance / QUEST_TRAVEL_SPEED;
+        if (!complete)
+            time += QUEST_OBJECTIVE_TIME + QUEST_UNKNOWN_DISTANCE / QUEST_TRAVEL_SPEED;
+
+        float const rate = QUEST_IN_LOG_BONUS * GetQuestWeight(quest, rested) * quest->XPValue(level) /
+                           std::max(time, 1.0f);
+        if (rate > bestRate)
+        {
+            bestRate = rate;
+            bestQuest = questId;
+        }
+    }
+
+    // Random bots only plan over their own log: there can be thousands of them.
+    if (sRandomPlayerbotMgr.IsRandomBot(bot))
+        return bestQuest;
+
+    // From 68 the planner also looks at Northrend, priced by the boats and zeppelins that get there.
+    std::vector<std::pair<WorldPosition, float>> northrendArrivals;
+    if (level >= NORTHREND_ENTRY_LEVEL && bot->GetMapId() != NORTHREND_MAP_ID && !bot->GetMap()->Instanceable())
+        sTravelRouteMgr.GetArrivalCosts(bot, NORTHREND_MAP_ID, northrendArrivals);
+
+    FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+    for (QuestStartPoint const& start : GetQuestStartPoints())
+    {
+        float travelSeconds = 0.0f;
+        if (start.mapId == bot->GetMapId())
+        {
+            float const giverDistance = bot->GetDistance2d(start.x, start.y);
+            if (giverDistance > QUEST_MAX_GIVER_DISTANCE)
+                continue;
+
+            travelSeconds = giverDistance / QUEST_TRAVEL_SPEED;
+        }
+        else if (start.mapId == NORTHREND_MAP_ID && !northrendArrivals.empty())
+        {
+            travelSeconds = std::numeric_limits<float>::max();
+            for (auto const& [arrival, seconds] : northrendArrivals)
+            {
+                float const fromArrival =
+                    std::hypot(arrival.GetPositionX() - start.x, arrival.GetPositionY() - start.y);
+                if (fromArrival <= QUEST_MAX_GIVER_DISTANCE)
+                    travelSeconds = std::min(travelSeconds, seconds + fromArrival / QUEST_TRAVEL_SPEED);
+            }
+
+            if (travelSeconds == std::numeric_limits<float>::max())
+                continue;
+        }
+        else
+            continue;
+
+        Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);
+        if (!quest || quest->GetMinLevel() > level)
+            continue;
+
+        int32 const questLevel = quest->GetQuestLevel() > 0 ? quest->GetQuestLevel() : level;
+        if (questLevel > level + 2 || questLevel + 5 < level)
+            continue;
+
+        if (bot->GetQuestStatus(start.questId) != QUEST_STATUS_NONE || botAI->lowPriorityQuest.count(start.questId))
+            continue;
+
+        if (start.creatureFaction && botFaction)
+        {
+            FactionTemplateEntry const* giverFaction = sFactionTemplateStore.LookupEntry(start.creatureFaction);
+            if (giverFaction && giverFaction->IsHostileTo(*botFaction))
+                continue;
+        }
+
+        if (!IsQuestWorthDoing(quest) || !IsQuestCapableDoing(quest) || !bot->CanTakeQuest(quest, false))
+            continue;
+
+        float objectiveDistance = QUEST_UNKNOWN_DISTANCE;
+        if (QuestPOIVector const* pois = sObjectMgr->GetQuestPOIVector(start.questId))
+        {
+            for (QuestPOI const& poi : *pois)
+            {
+                if (poi.ObjectiveIndex < 0 || poi.MapId != start.mapId || poi.points.empty())
+                    continue;
+
+                float cx = 0.0f;
+                float cy = 0.0f;
+                for (QuestPOIPoint const& point : poi.points)
+                {
+                    cx += point.x;
+                    cy += point.y;
+                }
+                cx /= poi.points.size();
+                cy /= poi.points.size();
+                objectiveDistance = std::sqrt((cx - start.x) * (cx - start.x) + (cy - start.y) * (cy - start.y));
+                break;
+            }
+        }
+
+        // walk to the giver, out to the objective and back to hand it in, plus the work itself
+        float const time = travelSeconds + 2.0f * objectiveDistance / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
+        float const rate = GetQuestWeight(quest, rested) * quest->XPValue(level) / time;
+        if (rate > bestRate)
+        {
+            bestRate = rate;
+            bestQuest = start.questId;
+            giverPos = WorldPosition(start.mapId, start.x, start.y, start.z);
+        }
+    }
+
+    return bestQuest;
+}
+
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
 {
     std::vector<NewRpgStatus> availableStatus;
@@ -1160,30 +2368,14 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
         }
         case RPG_DO_QUEST:
         {
-            std::vector<uint32> availableQuests;
-            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-            {
-                uint32 questId = bot->GetQuestSlotQuestId(slot);
-                if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
-                    continue;
+            WorldPosition giverPos;
+            uint32 questId = ChooseBestQuest(giverPos);
+            Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+            if (!quest)
+                return false;
 
-                std::vector<POIInfo> poiInfo;
-                if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
-                {
-                    availableQuests.push_back(questId);
-                }
-            }
-            if (availableQuests.size())
-            {
-                uint32 questId = availableQuests[urand(0, availableQuests.size() - 1)];
-                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-                if (quest)
-                {
-                    botAI->rpgInfo.ChangeToDoQuest(questId, quest);
-                    return true;
-                }
-            }
-            return false;
+            botAI->rpgInfo.ChangeToDoQuest(questId, quest, giverPos);
+            return true;
         }
         case RPG_TRAVEL_FLIGHT:
         {
@@ -1257,7 +2449,12 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
         }
         case RPG_DO_QUEST:
         {
-            std::vector<uint32> availableQuests;
+            if (!sRandomPlayerbotMgr.IsRandomBot(bot))
+            {
+                WorldPosition giverPos;
+                return ChooseBestQuest(giverPos) != 0;
+            }
+
             for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
             {
                 uint32 questId = bot->GetQuestSlotQuestId(slot);

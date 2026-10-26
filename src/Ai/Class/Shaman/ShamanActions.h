@@ -8,7 +8,9 @@
 #define PLAYERBOTS_SHAMANACTIONS_H
 
 #include "GenericSpellActions.h"
+#include "HealerSupport.h"
 #include "Playerbots.h"
+#include "ShamanTriggers.h"
 #include "SharedDefines.h"
 #include "TotemsShamanStrategy.h"
 
@@ -234,12 +236,16 @@ public:
 
 // Damage and Debuff Actions
 
-class CastFireNovaAction : public CastMeleeSpellAction
+// [b31_sd] Fire Nova bursts from the shaman's fire totem, not from the shaman: no melee-range requirement (a ranged
+// Elemental never stood in melee, so it never cast it). Cast on self; isUseful() checks the totem and the pack.
+class CastFireNovaAction : public CastSpellAction
 {
 public:
     CastFireNovaAction(PlayerbotAI* botAI) :
-        CastMeleeSpellAction(botAI, "fire nova") {}
+        CastSpellAction(botAI, "fire nova") {}
 
+    std::string const GetTargetName() override { return "self target"; }
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
     bool isUseful() override;
 };
 
@@ -261,9 +267,24 @@ class CastFlameShockAction : public CastDebuffSpellAction
 {
 public:
     CastFlameShockAction(PlayerbotAI* botAI) :
-        CastDebuffSpellAction(botAI, "flame shock", true, 6.0f) {}
+        CastDebuffSpellAction(botAI, "flame shock", true, FLAME_SHOCK_MIN_LIFETIME_S)
+    {
+        beforeDuration = FLAME_SHOCK_REFRESH_WINDOW_MS;
+    }
+    // [b31_sd] The isUseful() override to CastAuraSpellAction is gone: it skipped CastDebuffSpellAction's
+    // time-to-live gate, the same dead 6 s argument as FlameShockTrigger.
+};
 
-    bool isUseful() override { return CastAuraSpellAction::isUseful(); }
+// [b31_deep] Elemental Flame Shock multidot (FlameShockOnAttackerTrigger). Shocks share one cooldown, so a second
+// Flame Shock goes out only while the current target's own Flame Shock outlasts that cooldown plus a second (the
+// rule of "earth shock between flame shocks"): the main target's Flame Shock and its Lava Burst crits come first.
+class CastFlameShockOnAttackerAction : public CastDebuffSpellOnAttackerAction
+{
+public:
+    CastFlameShockOnAttackerAction(PlayerbotAI* botAI) :
+        CastDebuffSpellOnAttackerAction(botAI, "flame shock", true, FLAME_SHOCK_MULTIDOT_MIN_LIFETIME_S) {}
+
+    bool isUseful() override;
 };
 
 class CastEarthShockAction : public CastSpellAction
@@ -271,6 +292,29 @@ class CastEarthShockAction : public CastSpellAction
 public:
     CastEarthShockAction(PlayerbotAI* botAI) :
         CastSpellAction(botAI, "earth shock") {}
+};
+
+// [b31_sd] Enhancement filler Earth Shock. It shares the shock cooldown with Flame Shock, which is only refreshed in
+// its last second: an unconditional Earth Shock held that refresh back and Flame Shock dropped. Now only while this
+// shaman's Flame Shock on the target outlasts the shock cooldown plus a second, or when no Flame Shock is coming
+// (not known, or the target dies before Flame Shock's lifetime gate).
+class CastEarthShockBetweenFlameShocksAction : public CastSpellAction
+{
+public:
+    CastEarthShockBetweenFlameShocksAction(PlayerbotAI* botAI) :
+        CastSpellAction(botAI, "earth shock") {}
+
+    std::string const getName() override { return "earth shock between flame shocks"; }
+    bool isUseful() override;
+};
+
+class CastEarthShockOnTheMoveAction : public CastSpellAction
+{
+public:
+    CastEarthShockOnTheMoveAction(PlayerbotAI* botAI) :
+        CastSpellAction(botAI, "earth shock") {}
+
+    bool isUseful() override;
 };
 
 class CastFrostShockAction : public CastSnareSpellAction
@@ -346,6 +390,8 @@ class CastChainHealAction : public HealPartyMemberAction
 public:
     CastChainHealAction(PlayerbotAI* botAI) :
         HealPartyMemberAction(botAI, "chain heal", 15.0f, HealingManaEfficiency::HIGH) {}
+
+    bool isUseful() override;
 };
 
 class CastRiptideAction : public CastHealingSpellAction
@@ -381,6 +427,42 @@ class CastEarthShieldOnMainTankAction : public BuffOnMainTankAction
 public:
     CastEarthShieldOnMainTankAction(PlayerbotAI* botAI) :
         BuffOnMainTankAction(botAI, "earth shield", false) {}
+
+    // [b31_sd] Useful also on the shaman's own Earth Shield down to EARTH_SHIELD_RECAST_CHARGES (the trigger's rule).
+    bool isUseful() override;
+};
+
+class CastRiptideOnMainTankAction : public BuffOnMainTankAction
+{
+public:
+    CastRiptideOnMainTankAction(PlayerbotAI* botAI) :
+        BuffOnMainTankAction(botAI, "riptide", true) {}
+};
+
+// Earth Shield goes back on a battle-resurrected member only when he is a tank.
+class CastEarthShieldOnBattleResurrectedTankAction : public CastBuffOnValueTargetAction
+{
+public:
+    CastEarthShieldOnBattleResurrectedTankAction(PlayerbotAI* botAI)
+        : CastBuffOnValueTargetAction(botAI, "earth shield", "battle resurrected member", "battle resurrected")
+    {
+    }
+
+    bool isUseful() override;
+};
+
+class CastShamanNaturesSwiftnessAction : public CastBuffSpellAction
+{
+public:
+    CastShamanNaturesSwiftnessAction(PlayerbotAI* botAI) :
+        CastBuffSpellAction(botAI, "nature's swiftness") {}
+};
+
+class CastTidalForceAction : public CastBuffSpellAction
+{
+public:
+    CastTidalForceAction(PlayerbotAI* botAI) :
+        CastBuffSpellAction(botAI, "tidal force") {}
 };
 
 // Totem Spells
@@ -393,12 +475,14 @@ public:
         std::string const buffName = "") : CastBuffSpellAction(botAI, spell)
     {
         buff = (buffName == "") ? spell : buffName;
+        auraTotem = buffName != "";
     }
 
     bool isUseful() override;
 
 protected:
     std::string buff;
+    bool auraTotem = false;  // its aura reaches the group around it (strength of earth, wrath of air, ...)
 };
 
 class CastCallOfTheElementsAction : public CastSpellAction
@@ -413,6 +497,21 @@ class CastTotemicRecallAction : public CastSpellAction
 public:
     CastTotemicRecallAction(PlayerbotAI* botAI) :
         CastSpellAction(botAI, "totemic recall") {}
+
+    // [drift_fe_recall] A self cast, out of combat: on "current target" (none after a fight) isUseful was always
+    // false ("no target (current target is empty)", scholo-h 20261025-150737-4), so no totem was ever recalled.
+    std::string const GetTargetName() override { return "self target"; }
+};
+
+// [rot_b31_heal] Out of combat: unsummons the own Searing / Magma / Earthbind / Stoneclaw totem (and a dungeon Fire
+// Elemental) so it does not open the next pack, and keeps the friendly totems for the next pull. No GCD, no mana.
+class DismissHostileTotemsAction : public Action
+{
+public:
+    DismissHostileTotemsAction(PlayerbotAI* botAI) : Action(botAI, "dismiss hostile totems") {}
+
+    bool isUseful() override { return ai::shaman::HasIdleHostileTotem(bot); }
+    bool Execute(Event /*event*/) override { return ai::shaman::DismissIdleHostileTotems(bot) > 0; }
 };
 
 class CastStrengthOfEarthTotemAction : public CastTotemAction
@@ -456,6 +555,8 @@ class CastSearingTotemAction : public CastTotemAction
 public:
     CastSearingTotemAction(PlayerbotAI* botAI) :
         CastTotemAction(botAI, "searing totem", "") {}
+
+    bool isUseful() override;
 };
 
 class CastMagmaTotemAction : public CastTotemAction
@@ -565,6 +666,13 @@ class CastWindfuryTotemAction : public CastTotemAction
 public:
     CastWindfuryTotemAction(PlayerbotAI* botAI) :
         CastTotemAction(botAI, "windfury totem", "windfury totem") {}
+};
+
+// The last fallback of the air totem chain (Wrath of Air -> Windfury -> Grounding) before Windfury is learned.
+class CastGroundingTotemAction : public CastTotemAction
+{
+public:
+    CastGroundingTotemAction(PlayerbotAI* botAI) : CastTotemAction(botAI, "grounding totem") {}
 };
 
 class CastNatureResistanceTotemAction : public CastTotemAction
@@ -707,6 +815,34 @@ class SetGroundingTotemAction : public SetTotemAction
 public:
     SetGroundingTotemAction(PlayerbotAI* botAI) :
         SetTotemAction(botAI, "grounding totem", GROUNDING_TOTEM, TOTEM_BAR_SLOT_AIR) {}
+};
+
+// Raid utility coordinator: swaps buff totem strategies so two shamans of a party do not drop the same totem.
+class ApplyTotemAssignmentAction : public Action
+{
+public:
+    ApplyTotemAssignmentAction(PlayerbotAI* botAI) : Action(botAI, "apply totem assignment") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
+// [b31_sd] Swaps the resto water totem strategy (WaterTotemChoiceTrigger); the water strategies are siblings, so
+// adding one replaces the other.
+class ApplyWaterTotemChoiceAction : public Action
+{
+public:
+    ApplyWaterTotemChoiceAction(PlayerbotAI* botAI) : Action(botAI, "apply water totem choice") {}
+
+    bool Execute(Event /*event*/) override
+    {
+        std::string const strategy = ai::shaman::GetWaterTotemChoiceChange(botAI);
+        if (strategy.empty())
+            return false;
+
+        botAI->ChangeStrategy("+" + strategy, BOT_STATE_COMBAT);
+        return true;
+    }
 };
 
 #endif

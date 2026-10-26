@@ -21,10 +21,11 @@ public:
     bool isUseful() override;
 };
 
-class BwlTurnOffSuppressionDeviceAction : public Action
+class BwlTurnOffSuppressionDeviceAction : public MovementAction
 {
 public:
-    BwlTurnOffSuppressionDeviceAction(PlayerbotAI* botAI) : Action(botAI, "bwl turn off suppression device") {}
+    BwlTurnOffSuppressionDeviceAction(PlayerbotAI* botAI)
+        : MovementAction(botAI, "bwl turn off suppression device") {}
     bool Execute(Event event) override;
 };
 
@@ -43,6 +44,17 @@ public:
     BwlRazorgoreMarkBossAction(PlayerbotAI* botAI) : AttackAction(botAI, "bwl razorgore mark boss") {}
     bool Execute(Event event) override;
     bool isUseful() override;
+};
+
+// Walks to the Orb of Domination, possesses Razorgore and breaks the eggs with him.
+class BwlRazorgoreControlOrbAction : public MovementAction
+{
+public:
+    BwlRazorgoreControlOrbAction(PlayerbotAI* botAI) : MovementAction(botAI, "bwl razorgore control orb") {}
+    bool Execute(Event event) override;
+
+private:
+    bool DestroyNearestEgg(Unit* razorgore);
 };
 
 // Vaelastrasz the Corrupt

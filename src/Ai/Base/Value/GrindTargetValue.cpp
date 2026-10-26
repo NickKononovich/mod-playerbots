@@ -71,7 +71,17 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         if (!bot->IsHostileTo(unit) && unit->GetNpcFlags() != UNIT_NPC_FLAG_NONE)
             continue;
 
-        if (!bot->isHonorOrXPTarget(unit))
+        // While questing, a mob the quest needs is fair game even if it is gray or several levels higher.
+        auto const neededForQuest = [&]()
+        {
+            if (botAI->rpgInfo.GetStatus() != RPG_DO_QUEST)
+                return false;
+            if (needForQuestMap.find(unit->GetEntry()) == needForQuestMap.end())
+                needForQuestMap[unit->GetEntry()] = needForQuest(unit);
+            return needForQuestMap[unit->GetEntry()];
+        };
+
+        if (!bot->isHonorOrXPTarget(unit) && !neededForQuest())
             continue;
 
         if (abs(bot->GetPositionZ() - unit->GetPositionZ()) > INTERACTION_DISTANCE)
@@ -92,7 +102,8 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
             continue;
         }
 
-        if (!bot->InBattleground() && (int)unit->GetLevel() - (int)bot->GetLevel() > 4 && !unit->GetGUID().IsPlayer())
+        if (!bot->InBattleground() && (int)unit->GetLevel() - (int)bot->GetLevel() > 4 && !unit->GetGUID().IsPlayer() &&
+            !neededForQuest())
             continue;
 
         if (Creature* creature = unit->ToCreature())
@@ -120,6 +131,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                 continue;
         }
 
+        float unitDistance = -1.0f;
         if (group)
         {
             Group::MemberSlotList const& groupSlot = group->GetMemberSlots();
@@ -130,22 +142,22 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                     continue;
 
                 float d = member->GetDistance(unit);
-                if (!result || d < distance)
-                {
-                    distance = d;
-                    result = unit;
-                }
+                if (unitDistance < 0.0f || d < unitDistance)
+                    unitDistance = d;
             }
         }
         else
-        {
-            float newdistance = bot->GetDistance(unit);
-            if (!result || (newdistance < distance))
-            {
-                distance = newdistance;
-                result = unit;
-            }
-        }
+            unitDistance = bot->GetDistance(unit);
+
+        if (unitDistance < 0.0f || (result && unitDistance >= distance))
+            continue;
+
+        // Only a would-be pick pays for a (cached) path check: a mob on another floor is not walkable to.
+        if (!_reachability.IsReachable(bot, unit))
+            continue;
+
+        distance = unitDistance;
+        result = unit;
     }
 
     return result;

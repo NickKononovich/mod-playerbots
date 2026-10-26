@@ -196,6 +196,9 @@ float RsHalionMeleeFlankMultiplier::GetValue(Action* action)
     if (!RsHalionEngaged(botAI))
         return 1.0f;
 
+    if (dynamic_cast<RsHalionDispelMarkAction*>(action))
+        return 1.0f;
+
     if (dynamic_cast<CastChargeAction*>(action) || dynamic_cast<CastFeralChargeBearAction*>(action) ||
         dynamic_cast<CastFeralChargeCatAction*>(action))
         return 0.0f;

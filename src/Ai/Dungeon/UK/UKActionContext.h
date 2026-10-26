@@ -18,7 +18,9 @@ class WotlkDungeonUKActionContext : public NamedObjectContext<Action>
     public:
         WotlkDungeonUKActionContext() {
             creators["attack frost tomb"] = &WotlkDungeonUKActionContext::attack_frost_tomb;
-            creators["attack dalronn"] = &WotlkDungeonUKActionContext::attack_dalronn;
+            creators["attack skarvald"] = &WotlkDungeonUKActionContext::attack_skarvald;
+            creators["dalronn interrupt"] = &WotlkDungeonUKActionContext::dalronn_interrupt;
+            creators["ingvar avoid smash"] = &WotlkDungeonUKActionContext::ingvar_avoid_smash;
             creators["ingvar get behind"] = &WotlkDungeonUKActionContext::ingvar_get_behind;
             // creators["ingvar hide los"] = &WotlkDungeonUKActionContext::ingvar_hide_los;
             creators["ingvar dodge smash"] = &WotlkDungeonUKActionContext::ingvar_dodge_smash;
@@ -26,7 +28,9 @@ class WotlkDungeonUKActionContext : public NamedObjectContext<Action>
         }
     private:
         static Action* attack_frost_tomb(PlayerbotAI* botAI) { return new AttackFrostTombAction(botAI); }
-        static Action* attack_dalronn(PlayerbotAI* botAI) { return new AttackDalronnAction(botAI); }
+        static Action* attack_skarvald(PlayerbotAI* botAI) { return new AttackSkarvaldAction(botAI); }
+        static Action* dalronn_interrupt(PlayerbotAI* botAI) { return new DalronnInterruptAction(botAI); }
+        static Action* ingvar_avoid_smash(PlayerbotAI* botAI) { return new IngvarAvoidSmashAction(botAI); }
         static Action* ingvar_get_behind(PlayerbotAI* botAI) { return new SetBehindTargetAction(botAI); }
         // static Action* ingvar_hide_los(PlayerbotAI* botAI) { return new TellLosAction(botAI); }
         static Action* ingvar_dodge_smash(PlayerbotAI* botAI) { return new IngvarDodgeSmashAction(botAI); }

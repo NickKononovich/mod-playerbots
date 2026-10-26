@@ -12,6 +12,7 @@
 #include "NexTriggers.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "SelfTravelActions.h"
 
 class MoveFromWhirlwindAction : public MovementAction
 {
@@ -49,6 +50,17 @@ public:
     DodgeSpikesAction(PlayerbotAI* botAI) : MovementAction(botAI, "dodge spikes") {}
     bool Execute(Event event) override;
     bool isUseful() override;
+};
+
+class NexusClickContainmentSphereAction : public MovementAction
+{
+public:
+    NexusClickContainmentSphereAction(PlayerbotAI* botAI) : MovementAction(botAI, "click containment sphere") {}
+    bool Execute(Event event) override;
+
+private:
+    // The walk to the sphere: from Ormorok's room it runs ~1400 yd round the ring, past PathGenerator's limits.
+    SelfTravel::RouteWalk _route;
 };
 
 class IntenseColdJumpAction : public MovementAction

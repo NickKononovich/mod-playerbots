@@ -6,7 +6,9 @@
 
 #include "UBShared.h"
 #include "Creature.h"
+#include "GridTerrainData.h"
 #include "Group.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
 #include "SpellAuras.h"
@@ -267,4 +269,41 @@ bool RetreatPathUnsafe(Player* bot, GuidVector const& mushrooms, float destX, fl
 
     return false;
 }
+}
+
+namespace UnderbogGhazan
+{
+bool InLakeArea(Unit* unit)
+{
+    if (!unit || unit->GetMapId() != MAP_UNDERBOG)
+        return false;
+
+    float const x = unit->GetPositionX();
+    float const y = unit->GetPositionY();
+    float const z = unit->GetPositionZ();
+    bool const lake = x >= LAKE_X_MIN && x <= LAKE_X_MAX && y >= LAKE_Y_MIN && y <= LAKE_Y_MAX && z <= LAKE_Z_MAX;
+    bool const pool = x >= POOL_X_MIN && x <= POOL_X_MAX && y >= POOL_Y_MIN && y <= POOL_Y_MAX && z <= POOL_Z_MAX;
+    return lake || pool;
+}
+
+bool IsWet(Unit* unit)
+{
+    if (!unit)
+        return false;
+
+    LiquidData const& liquid = unit->GetLiquidData();
+    return (liquid.Status & MAP_LIQUID_STATUS_SWIMMING) && liquid.Level > INVALID_HEIGHT &&
+           liquid.Level - liquid.DepthLevel > WADE_DEPTH;
+}
+
+bool IsDrySpot(Player* bot, float x, float y, float z)
+{
+    LiquidData const liquid = bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, z, bot->GetCollisionHeight(), {});
+    if (!(liquid.Status & MAP_LIQUID_STATUS_SWIMMING))
+        return true;
+
+    return liquid.Level <= INVALID_HEIGHT || liquid.Level - liquid.DepthLevel <= WADE_DEPTH;
+}
+
+bool LakeFight(Player* bot) { return bot->IsInCombat() && InLakeArea(bot); }
 }

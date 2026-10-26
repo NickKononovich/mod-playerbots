@@ -383,12 +383,7 @@ bool EquipFishingPoleAction::isUseful()
         }
     }
 
-    if (sRandomPlayerbotMgr.IsRandomBot(bot))
-    {
-        bot->StoreNewItemInBestSlots(FISHING_POLE, 1);  // Try to get a fishing pole
-        return true;
-    }
-
+    // No free pole for anyone: a bot without one has to buy or loot it like a player.
     Player* master = botAI->GetMaster();
     if (!master)
         return false;

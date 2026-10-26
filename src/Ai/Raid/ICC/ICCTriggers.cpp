@@ -23,8 +23,6 @@ bool IccLmTrigger::IsActive()
     if (!boss)
         return false;
 
-    IccStripExperienced(bot);
-
     return true;
 }
 
@@ -52,8 +50,6 @@ bool IccRottingFrostGiantTankPositionTrigger::IsActive()
     Unit* boss = AI_VALUE2(Unit*, "find target", "rotting frost giant");
     if (!boss)
         return false;
-
-    IccStripExperienced(bot);
 
     return true;
 }
@@ -138,8 +134,6 @@ bool IccDbsTrigger::IsActive()
     if (!boss)
         return false;
 
-    IccStripExperienced(bot);
-
     return true;
 }
 
@@ -178,8 +172,6 @@ bool IccFestergutGroupPositionTrigger::IsActive()
     Unit* boss = AI_VALUE2(Unit*, "find target", "festergut");
     if (!boss)
         return false;
-
-    IccStripExperienced(bot);
 
     return true;
 }
@@ -252,8 +244,6 @@ bool IccRotfaceTankPositionTrigger::IsActive()
     Unit* boss = AI_VALUE2(Unit*, "find target", "rotface");
     if (!boss || !(PlayerbotAI::IsTank(bot) || PlayerbotAI::IsMelee(bot)))
         return false;
-
-    IccStripExperienced(bot);
 
     return true;
 }
@@ -387,29 +377,6 @@ bool IccPutricideMalleableGooTrigger::IsActive()
     if (!boss)
         return false;
 
-    Difficulty const diff = bot->GetRaidDifficulty();
-
-    // Heroic cheat buffs — apply to all group members (bots + real players)
-    if (boss && boss->IsInCombat() && sPlayerbotAIConfig.EnableICCBuffs &&
-        (diff == RAID_DIFFICULTY_10MAN_HEROIC || diff == RAID_DIFFICULTY_25MAN_HEROIC))
-    {
-        if (Group* buffGroup = bot->GetGroup())
-        {
-            for (GroupReference* itr = buffGroup->GetFirstMember(); itr; itr = itr->next())
-            {
-                Player* member = itr->GetSource();
-                if (!member || !member->IsAlive() || !member->IsInWorld())
-                    continue;
-
-                IccApplyHeroicBuffToMember(member, false, true);
-
-                if (PlayerbotAI::IsTank(member) && !member->HasAura(SPELL_SPITEFULL_FURY) &&
-                    boss->GetVictim() != member)
-                    member->AddAura(SPELL_SPITEFULL_FURY, member);
-            }
-        }
-    }
-
     return true;
 }
 
@@ -470,8 +437,6 @@ bool IccBpcKelesethTankTrigger::IsActive()
     if (!boss)
         return false;
 
-    IccStripExperienced(bot);
-
     if (!PlayerbotAI::IsAssistTank(bot))
         return false;
 
@@ -490,8 +455,6 @@ bool IccBpcMainTankTrigger::IsActive()
 
     if (!IccAnyBloodPrincePresent(botAI))
         return false;
-
-    IccStripExperienced(bot);
 
     return true;
 }
@@ -592,8 +555,6 @@ bool IccBqlGroupPositionTrigger::IsActive()
     if (IccAnyBloodPrincePresent(botAI))
         return false;
 
-    IccStripExperienced(bot);
-
     return true;
 }
 
@@ -657,8 +618,6 @@ bool IccValithriaGroupTrigger::IsActive()
     Unit* boss = bot->FindNearestCreature(NPC_VALITHRIA_DREAMWALKER, 100.0f);
     if (!boss)
         return false;
-
-    IccStripExperienced(bot);
 
     return true;
 }
@@ -768,87 +727,6 @@ bool IccSindragosaGroupPositionTrigger::IsActive()
     Unit* boss = bot->FindNearestCreature(NPC_SINDRAGOSA, 200.0f);  // sindra
     if (!boss)
         return false;
-
-    Difficulty diff = bot->GetRaidDifficulty();
-
-    if (sPlayerbotAIConfig.EnableICCBuffs && boss->IsInCombat() && diff &&
-        (diff == RAID_DIFFICULTY_10MAN_HEROIC || diff == RAID_DIFFICULTY_25MAN_HEROIC))
-    {
-        //-------CHEAT-------
-        // Apply to every alive group member so real players benefit too,
-        if (Group* group = bot->GetGroup())
-        {
-            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
-            {
-                Player* member = itr->GetSource();
-                if (!member || !member->IsAlive() || !member->IsInWorld())
-                    continue;
-
-                IccApplyHeroicBuffToMember(member, false, true);
-
-                if (PlayerbotAI::IsMainTank(member) && boss->GetVictim() != member &&
-                    !member->HasAura(SPELL_SPITEFULL_FURY))
-                    member->AddAura(SPELL_SPITEFULL_FURY, member);
-            }
-        }
-        //-------CHEAT-------
-    }
-
-    // Air phase: give all tanks nitro boosts so they can quickly reposition to tombs
-    if (boss->IsInCombat() && PlayerbotAI::IsTank(bot) &&
-        boss->GetExactDist2d(ICC_SINDRAGOSA_FLYING_POSITION.GetPositionX(), ICC_SINDRAGOSA_FLYING_POSITION.GetPositionY()) < 50.0f)
-    {
-        if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-            bot->AddAura(SPELL_NITRO_BOOSTS, bot);
-    }
-
-    // Last phase: the main tank must keep tanking, never run to a tomb spot.
-    // Strip its Frost Beacon so the tomb-positioning logic doesn't apply. The
-    // assist tank keeps its beacon and is allowed to move to the beacon spot.
-    if (PlayerbotAI::IsMainTank(bot) && bot->HasAura(SPELL_FROST_BEACON) && boss->HealthBelowPct(35) &&
-        boss->GetExactDist2d(ICC_SINDRAGOSA_FLYING_POSITION.GetPositionX(), ICC_SINDRAGOSA_FLYING_POSITION.GetPositionY()) >= 30.0f)
-        bot->RemoveAura(SPELL_FROST_BEACON);
-
-    if (PlayerbotAI::IsTank(bot))
-    {
-        // Strip Mystic Buffet: the cheat that makes single-tanking P3 survivable.
-        if (Aura* aura = botAI->GetAura("mystic buffet", bot, false, false))
-            bot->RemoveAura(aura->GetId());
-
-        // Shield tanks while a tomb is up, Blistering Cold is casting, or a last
-        // phase beacon is out (tomb about to form, healers already scattering).
-        bool const shield = (boss->HasUnitState(UNIT_STATE_CASTING) && IccBossCastingBlisteringCold(boss)) ||
-                            (boss->HealthBelowPct(35) && IccAnyGroupMemberHasAura(bot, SPELL_FROST_BEACON)) ||
-                            !IccGetCreaturesByEntries(bot, {NPC_TOMB1, NPC_TOMB2, NPC_TOMB3, NPC_TOMB4}, 150.0f).empty();
-        if (shield && !bot->HasAura(SPELL_MAGIC_BARRIER))
-            bot->AddAura(SPELL_MAGIC_BARRIER, bot);
-        else if (!shield && bot->HasAura(SPELL_MAGIC_BARRIER))
-            bot->RemoveAura(SPELL_MAGIC_BARRIER);
-
-        // Assist tanks generate no threat while another main tank is alive, so
-        // they can never win the threat race at the pull; dropped on promotion.
-        bool mtAlive = false;
-        if (Group* group = bot->GetGroup())
-        {
-            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
-            {
-                Player* member = itr->GetSource();
-                if (member && member != bot && member->IsAlive() && PlayerbotAI::IsMainTank(member))
-                {
-                    mtAlive = true;
-                    break;
-                }
-            }
-        }
-
-        if (mtAlive && !PlayerbotAI::IsMainTank(bot))
-        {
-            if (!bot->HasAura(SPELL_NO_THREAT))
-                bot->AddAura(SPELL_NO_THREAT, bot);
-        }
-        else if (bot->HasAura(SPELL_NO_THREAT))
-            bot->RemoveAura(SPELL_NO_THREAT);
-    }
 
     if (!boss || bot->HasAura(SPELL_FROST_BEACON) || boss->GetExactDist2d(ICC_SINDRAGOSA_FLYING_POSITION.GetPositionX(), ICC_SINDRAGOSA_FLYING_POSITION.GetPositionY()) < 50.0f)
         return false;

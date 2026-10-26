@@ -6,6 +6,7 @@
 
 #include "HoLActions.h"
 #include "Playerbots.h"
+#include <algorithm>
 
 bool BjarngrimTargetAction::Execute(Event /*event*/)
 {
@@ -68,12 +69,37 @@ bool VolkhanTargetAction::Execute(Event /*event*/)
     return Attack(boss);
 }
 
+bool AvoidBrittleGolemAction::Execute(Event /*event*/)
+{
+    Unit* golem = HoLShared::BrittleGolemThreat(bot, AI_VALUE2(Unit*, "find target", "volkhan"));
+    if (!golem)
+        return false;
+
+    // Small steps so the next tick can steer away from a second golem.
+    constexpr float extra = 2.0f;
+    return MoveAway(golem, HoLIds::SHATTER_SAFE_DISTANCE + extra - bot->GetExactDist2d(golem));
+}
+
 bool StaticOverloadSpreadAction::Execute(Event /*event*/)
 {
     float radius = 8.0f;
     float distanceExtra = 2.0f;
 
     GuidVector members = AI_VALUE(GuidVector, "group members");
+    // The carrier moves off the group too: the knock-back 53337 (8 yd, 2.3-2.7k) lands on everybody around it.
+    if (bot->HasAura(SPELL_STATIC_OVERLOAD))
+    {
+        Unit* nearest = nullptr;
+        for (ObjectGuid const& member : members)
+        {
+            Unit* unit = botAI->GetUnit(member);
+            if (unit && unit != bot && unit->IsAlive() && bot->GetExactDist2d(unit) < radius + distanceExtra &&
+                (!nearest || bot->GetExactDist2d(unit) < bot->GetExactDist2d(nearest)))
+                nearest = unit;
+        }
+        if (nearest)
+            return MoveAway(nearest, radius + distanceExtra - bot->GetExactDist2d(nearest));
+    }
     for (auto& member : members)
     {
         if (bot->GetGUID() == member)
@@ -119,42 +145,47 @@ bool IonarTankPositionAction::Execute(Event /*event*/)
                   false, false, false, true, MovementPriority::MOVEMENT_COMBAT);
 }
 
-bool DispersePositionAction::isUseful() { return bot->GetExactDist2d(DISPERSE_POSITION) > 8.0f; }
-bool DispersePositionAction::Execute(Event /*event*/)
+namespace
 {
-    return MoveTo(bot->GetMapId(), DISPERSE_POSITION.GetPositionX(), DISPERSE_POSITION.GetPositionY(), DISPERSE_POSITION.GetPositionZ(),
-                  false, false, false, true, MovementPriority::MOVEMENT_COMBAT);
-}
+// Minimum hunter range is 5, but hunters at 5 drift into melee between shots; 6.5 keeps them shooting.
+constexpr float LOKEN_STACK_HUNTER = 6.5f;
+constexpr float LOKEN_STACK_OTHER = 3.0f;
+constexpr float LOKEN_STACK_TOLERANCE = 1.5f;
 
+float LokenStackDistance(Player* bot)
+{
+    return bot->getClass() == CLASS_HUNTER ? LOKEN_STACK_HUNTER : LOKEN_STACK_OTHER;
+}
+}  // namespace
+
+// Pulsing Shockwave hits everybody for 100 x distance every 2 s. The bot's distance to Loken himself counts here:
+// the "current target" of a ranged bot is not always Loken, which left the action useless at range.
 bool LokenStackAction::isUseful()
 {
-    // Minimum hunter range is 5, but values too close to this seem to cause issues..
-    // Hunter bots will try and melee in between ranged attacks, or just melee entirely at 5 as they are in range.
-    // 6.5 or 7.0 solves this for this boss.
-    if (bot->getClass() == CLASS_HUNTER)
-    {
-        return AI_VALUE2(float, "distance", "current target") > 6.5f;
-    }
-    // else
-    return AI_VALUE2(float, "distance", "current target") > 2.0f;
+    Unit* boss = AI_VALUE2(Unit*, "find target", "loken");
+    if (!boss || HoLShared::IsLightningNova(bot, boss))
+        return false;
+
+    return bot->GetExactDist2d(boss) > LokenStackDistance(bot) + LOKEN_STACK_TOLERANCE;
 }
+
 bool LokenStackAction::Execute(Event /*event*/)
 {
     Unit* boss = AI_VALUE2(Unit*, "find target", "loken");
-    if (!boss) { return false; }
+    if (!boss)
+        return false;
 
-    float maxMovement = 10.0f;
-    if (!boss->HasUnitState(UNIT_STATE_CASTING))
-    {
-        if (bot->getClass() == CLASS_HUNTER)
-        {
-            return Move(bot->GetAngle(boss), fmin(bot->GetExactDist2d(boss) - 6.5f, maxMovement));
-        }
-        // else
-        return Move(bot->GetAngle(boss), fmin(bot->GetExactDist2d(boss), maxMovement));
-    }
+    // UNIT_STATE_CASTING is no test here: Loken channels the Pulsing Shockwave aura (59414) the whole fight, so
+    // Spell::finish never clears that state after his first Lightning Nova and the old check froze every ranged.
+    if (HoLShared::IsLightningNova(bot, boss))
+        return false;
 
-    return false;
+    float const maxMovement = 10.0f;
+    float const distance = bot->GetExactDist2d(boss) - LokenStackDistance(bot);
+    if (distance <= 0.0f)
+        return false;
+
+    return Move(bot->GetAngle(boss), std::min(distance, maxMovement));
 }
 
 bool AvoidLightningNovaAction::Execute(Event /*event*/)

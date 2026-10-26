@@ -5,14 +5,27 @@
  */
 
 #include "AoeValues.h"
+
+#include <algorithm>
+
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "SpellAuraEffects.h"
+#include "TargetValue.h"
 
 GuidVector FindMaxDensity(Player* bot)
 {
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     GuidVector units = *botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets");
+
+    // A cluster holding a crowd-controlled unit is no AoE spot: the AoE would break the CC.
+    std::vector<Unit*> crowdControlled;
+    for (ObjectGuid const& guid : units)
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (IsCrowdControlled(unit))
+            crowdControlled.push_back(unit);
+    }
 
     std::map<ObjectGuid, GuidVector> groups;
     uint32 maxCount = 0;
@@ -20,7 +33,21 @@ GuidVector FindMaxDensity(Player* bot)
     for (GuidVector::iterator i = units.begin(); i != units.end(); ++i)
     {
         Unit* unit = botAI->GetUnit(*i);
-        if (!unit)
+        if (!unit || std::find(crowdControlled.begin(), crowdControlled.end(), unit) != crowdControlled.end())
+            continue;
+
+        bool nearCrowdControl = false;
+        for (Unit* controlled : crowdControlled)
+        {
+            float d = ServerFacade::instance().GetDistance2d(unit, controlled);
+            if (ServerFacade::instance().IsDistanceLessOrEqualThan(d, sPlayerbotAIConfig.AoeRadius * 2))
+            {
+                nearCrowdControl = true;
+                break;
+            }
+        }
+
+        if (nearCrowdControl)
             continue;
 
         for (GuidVector::iterator j = units.begin(); j != units.end(); ++j)

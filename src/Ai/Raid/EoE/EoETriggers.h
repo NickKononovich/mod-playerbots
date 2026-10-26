@@ -61,4 +61,12 @@ public:
     bool IsActive() override;
 };
 
+// Phase 3: the bot rides a Wyrmrest Skytalon. Does not depend on the master riding one (no human leader).
+class EoEDrakeFlyingTrigger : public Trigger
+{
+public:
+    EoEDrakeFlyingTrigger(PlayerbotAI* botAI) : Trigger(botAI, "eoe drake flying") {}
+    bool IsActive() override;
+};
+
 #endif

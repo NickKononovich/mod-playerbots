@@ -108,6 +108,8 @@ public:
         creators["arcane blast stack"] = &MageTriggerFactoryInternal::arcane_blast_stack;
         creators["mirror image"] = &MageTriggerFactoryInternal::mirror_image;
         creators["frost nova on target"] = &MageTriggerFactoryInternal::frost_nova_on_target;
+        creators["healer attacker in frost nova range"] =
+            &MageTriggerFactoryInternal::healer_attacker_in_frost_nova_range;
         creators["frostbite on target"] = &MageTriggerFactoryInternal::frostbite_on_target;
         creators["no focus magic"] = &MageTriggerFactoryInternal::no_focus_magic;
         creators["frostfire bolt"] = &MageTriggerFactoryInternal::frostfire_bolt;
@@ -116,15 +118,30 @@ public:
         creators["flamestrike nearby"] = &MageTriggerFactoryInternal::flamestrike_nearby;
         creators["flamestrike active and medium aoe"] = &MageTriggerFactoryInternal::flamestrike_blizzard;
         creators["arcane blast 4 stacks and missile barrage"] = &MageTriggerFactoryInternal::arcane_blast_4_stacks_and_missile_barrage;
-        creators["icy veins on cd"] = &MageTriggerFactoryInternal::icy_veins_on_cd;
-        creators["deep freeze on cd"] = &MageTriggerFactoryInternal::deep_freeze_on_cd;
+        // [b31_deep] conserve phase / Evocation at <= 25 % mana; "icy veins on cd" / "deep freeze on cd" removed
+        // with the old Cold Snap condition
+        creators["mana at or below 25"] = &MageTriggerFactoryInternal::mana_at_or_below_25;
+        creators["arcane blast 4 stacks and mana at or below 25"] =
+            &MageTriggerFactoryInternal::arcane_blast_4_stacks_and_conserve_mana;
         creators["no mana gem"] = &MageTriggerFactoryInternal::NoManaGem;
+        creators["ritual of refreshment"] = &MageTriggerFactoryInternal::ritual_of_refreshment;
         creators["blizzard channel check"] = &MageTriggerFactoryInternal::blizzard_channel_check;
         creators["blast wave off cd"] = &MageTriggerFactoryInternal::blast_wave_off_cd;
         creators["blast wave off cd and medium aoe"] = &MageTriggerFactoryInternal::blast_wave_off_cd_and_medium_aoe;
         creators["no firestarter strategy"] = &MageTriggerFactoryInternal::no_firestarter_strategy;
         creators["enemy is close and no firestarter strategy"] = &MageTriggerFactoryInternal::enemy_is_close_and_no_firestarter_strategy;
         creators["enemy too close for spell and no firestarter strategy"] = &MageTriggerFactoryInternal::enemy_too_close_for_spell_and_no_firestarter_strategy;
+        creators["solo or being attacked"] = &MageTriggerFactoryInternal::solo_or_being_attacked;
+        creators["enemy is close and solo or being attacked"] =
+            &MageTriggerFactoryInternal::enemy_is_close_and_solo_or_being_attacked;
+        creators["enemy too close for spell and solo or being attacked"] =
+            &MageTriggerFactoryInternal::enemy_too_close_for_spell_and_solo_or_being_attacked;
+        // [b31_deep] Frost Nova / Blink back in a group only in self-defence; Water Elemental autocast every 30 s
+        creators["enemy is close and no firestarter strategy and solo or being attacked"] =
+            &MageTriggerFactoryInternal::enemy_is_close_no_firestarter_and_solo_or_being_attacked;
+        creators["enemy too close for spell and no firestarter strategy and solo or being attacked"] =
+            &MageTriggerFactoryInternal::enemy_too_close_no_firestarter_and_solo_or_being_attacked;
+        creators["water elemental autocast check"] = &MageTriggerFactoryInternal::water_elemental_autocast_check;
     }
 
 private:
@@ -157,6 +174,10 @@ private:
     static Trigger* arcane_blast_stack(PlayerbotAI* botAI) { return new ArcaneBlastStackTrigger(botAI); }
     static Trigger* mirror_image(PlayerbotAI* botAI) { return new MirrorImageTrigger(botAI); }
     static Trigger* frost_nova_on_target(PlayerbotAI* botAI) { return new FrostNovaOnTargetTrigger(botAI); }
+    static Trigger* healer_attacker_in_frost_nova_range(PlayerbotAI* botAI)
+    {
+        return new HealerAttackerInFrostNovaRangeTrigger(botAI);
+    }
     static Trigger* frostbite_on_target(PlayerbotAI* botAI) { return new FrostbiteOnTargetTrigger(botAI); }
     static Trigger* no_focus_magic(PlayerbotAI* botAI) { return new NoFocusMagicTrigger(botAI); }
     static Trigger* frostfire_bolt(PlayerbotAI* botAI) { return new FrostfireBoltTrigger(botAI); }
@@ -165,15 +186,42 @@ private:
     static Trigger* flamestrike_nearby(PlayerbotAI* botAI) { return new FlamestrikeNearbyTrigger(botAI); }
     static Trigger* flamestrike_blizzard(PlayerbotAI* botAI) { return new FlamestrikeBlizzardTrigger(botAI); }
     static Trigger* arcane_blast_4_stacks_and_missile_barrage(PlayerbotAI* botAI) { return new ArcaneBlast4StacksAndMissileBarrageTrigger(botAI); }
-    static Trigger* icy_veins_on_cd(PlayerbotAI* botAI) { return new IcyVeinsCooldownTrigger(botAI); }
-    static Trigger* deep_freeze_on_cd(PlayerbotAI* botAI) { return new DeepFreezeCooldownTrigger(botAI); }
+    // [b31_deep]
+    static Trigger* mana_at_or_below_25(PlayerbotAI* botAI) { return new ManaAtOrBelow25Trigger(botAI); }
+    static Trigger* arcane_blast_4_stacks_and_conserve_mana(PlayerbotAI* botAI)
+    {
+        return new ArcaneBlast4StacksAndConserveManaTrigger(botAI);
+    }
     static Trigger* NoManaGem(PlayerbotAI* botAI) { return new NoManaGemTrigger(botAI); }
+    static Trigger* ritual_of_refreshment(PlayerbotAI* botAI) { return new RitualOfRefreshmentTrigger(botAI); }
     static Trigger* blizzard_channel_check(PlayerbotAI* botAI) { return new BlizzardChannelCheckTrigger(botAI); }
     static Trigger* blast_wave_off_cd(PlayerbotAI* botAI) { return new BlastWaveOffCdTrigger(botAI); }
     static Trigger* blast_wave_off_cd_and_medium_aoe(PlayerbotAI* botAI) { return new BlastWaveOffCdTriggerAndMediumAoeTrigger(botAI); }
     static Trigger* no_firestarter_strategy(PlayerbotAI* botAI) { return new NoFirestarterStrategyTrigger(botAI); }
     static Trigger* enemy_is_close_and_no_firestarter_strategy(PlayerbotAI* botAI) { return new EnemyIsCloseAndNoFirestarterStrategyTrigger(botAI); }
     static Trigger* enemy_too_close_for_spell_and_no_firestarter_strategy(PlayerbotAI* botAI) { return new EnemyTooCloseForSpellAndNoFirestarterStrategyTrigger(botAI); }
+    static Trigger* solo_or_being_attacked(PlayerbotAI* botAI) { return new SoloOrBeingAttackedTrigger(botAI); }
+    static Trigger* enemy_is_close_and_solo_or_being_attacked(PlayerbotAI* botAI)
+    {
+        return new EnemyIsCloseAndSoloOrBeingAttackedTrigger(botAI);
+    }
+    static Trigger* enemy_too_close_for_spell_and_solo_or_being_attacked(PlayerbotAI* botAI)
+    {
+        return new EnemyTooCloseForSpellAndSoloOrBeingAttackedTrigger(botAI);
+    }
+    // [b31_deep]
+    static Trigger* enemy_is_close_no_firestarter_and_solo_or_being_attacked(PlayerbotAI* botAI)
+    {
+        return new EnemyIsCloseNoFirestarterAndSoloOrBeingAttackedTrigger(botAI);
+    }
+    static Trigger* enemy_too_close_no_firestarter_and_solo_or_being_attacked(PlayerbotAI* botAI)
+    {
+        return new EnemyTooCloseNoFirestarterAndSoloOrBeingAttackedTrigger(botAI);
+    }
+    static Trigger* water_elemental_autocast_check(PlayerbotAI* botAI)
+    {
+        return new WaterElementalAutocastCheckTrigger(botAI);
+    }
 };
 
 class MageAiObjectContextInternal : public NamedObjectContext<Action>
@@ -190,11 +238,14 @@ public:
         creators["blizzard"] = &MageAiObjectContextInternal::blizzard;
         creators["cone of cold"] = &MageAiObjectContextInternal::cone_of_cold;
         creators["frost nova"] = &MageAiObjectContextInternal::frost_nova;
+        creators["frost nova on healer attacker"] = &MageAiObjectContextInternal::frost_nova_on_healer_attacker;
         creators["arcane intellect"] = &MageAiObjectContextInternal::arcane_intellect;
         creators["arcane intellect on party"] = &MageAiObjectContextInternal::arcane_intellect_on_party;
         creators["conjure water"] = &MageAiObjectContextInternal::conjure_water;
         creators["conjure food"] = &MageAiObjectContextInternal::conjure_food;
         creators["conjure mana gem"] = &MageAiObjectContextInternal::conjure_mana_gem;
+        creators["conjure refreshment"] = &MageAiObjectContextInternal::conjure_refreshment;
+        creators["ritual of refreshment"] = &MageAiObjectContextInternal::ritual_of_refreshment;
         creators["molten armor"] = &MageAiObjectContextInternal::molten_armor;
         creators["mage armor"] = &MageAiObjectContextInternal::mage_armor;
         creators["ice armor"] = &MageAiObjectContextInternal::ice_armor;
@@ -256,11 +307,17 @@ private:
     static Action* blizzard(PlayerbotAI* botAI) { return new CastBlizzardAction(botAI); }
     static Action* cone_of_cold(PlayerbotAI* botAI) { return new CastConeOfColdAction(botAI); }
     static Action* frost_nova(PlayerbotAI* botAI) { return new CastFrostNovaAction(botAI); }
+    static Action* frost_nova_on_healer_attacker(PlayerbotAI* botAI)
+    {
+        return new CastFrostNovaOnHealerAttackerAction(botAI);
+    }
     static Action* arcane_intellect(PlayerbotAI* botAI) { return new CastArcaneIntellectAction(botAI); }
     static Action* arcane_intellect_on_party(PlayerbotAI* botAI) { return new CastArcaneIntellectOnPartyAction(botAI); }
     static Action* conjure_water(PlayerbotAI* botAI) { return new CastConjureWaterAction(botAI); }
     static Action* conjure_food(PlayerbotAI* botAI) { return new CastConjureFoodAction(botAI); }
     static Action* conjure_mana_gem(PlayerbotAI* botAI) { return new CastConjureManaGemAction(botAI); }
+    static Action* conjure_refreshment(PlayerbotAI* botAI) { return new CastConjureRefreshmentAction(botAI); }
+    static Action* ritual_of_refreshment(PlayerbotAI* botAI) { return new CastRitualOfRefreshmentAction(botAI); }
     static Action* molten_armor(PlayerbotAI* botAI) { return new CastMoltenArmorAction(botAI); }
     static Action* mage_armor(PlayerbotAI* botAI) { return new CastMageArmorAction(botAI); }
     static Action* ice_armor(PlayerbotAI* botAI) { return new CastIceArmorAction(botAI); }

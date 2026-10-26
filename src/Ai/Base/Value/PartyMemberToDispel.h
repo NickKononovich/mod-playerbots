@@ -13,10 +13,24 @@
 class PlayerbotAI;
 class Unit;
 
+// Qualifier: the dispel type. Members with an urgent debuff come first; harmless debuffs are never returned.
 class PartyMemberToDispel : public PartyMemberValue, public Qualified
 {
 public:
     PartyMemberToDispel(PlayerbotAI* botAI, std::string const name = "party member to dispel")
+        : PartyMemberValue(botAI, name, 1000), Qualified()
+    {
+    }
+
+protected:
+    Unit* Calculate() override;
+};
+
+// Only members whose debuff hurts now: damage over time, mana drain, loss of control, healing cut, slowed tank.
+class PartyMemberToDispelUrgent : public PartyMemberValue, public Qualified
+{
+public:
+    PartyMemberToDispelUrgent(PlayerbotAI* botAI, std::string const name = "party member to dispel urgent")
         : PartyMemberValue(botAI, name, 1000), Qualified()
     {
     }

@@ -69,8 +69,10 @@ std::vector<NextAction> FuryWarriorStrategy::getDefaultActions()
     return {
         NextAction("bloodthirst", ACTION_DEFAULT + 0.5f),
         NextAction("whirlwind", ACTION_DEFAULT + 0.4f),
-        NextAction("sunder armor", ACTION_DEFAULT + 0.3f),
-        NextAction("execute", ACTION_DEFAULT + 0.2f),
+        // [melee_audit_b30] Execute (below 20 %) above Sunder Armor: build 30 Fury 80 cast 5 Executes in 22.9 min
+        // against 94 Sunders, the filler took every execute-phase GCD.
+        NextAction("execute", ACTION_DEFAULT + 0.35f),
+        NextAction("sunder armor", ACTION_DEFAULT + 0.2f),
         NextAction("melee", ACTION_DEFAULT)
     };
 }
@@ -122,13 +124,24 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "victory rush",
             {
-                NextAction("victory rush", ACTION_INTERRUPT)
+                // [b31_deep] filler (was ACTION_INTERRUPT, above Bloodthirst); above the rotation below medium health
+                NextAction("victory rush", ACTION_HIGH + 0.5f)
             }
         )
     );
     triggers.push_back(
         new TriggerNode(
-            "bloodthirst",
+            "victory rush and medium health",
+            {
+                NextAction("victory rush", ACTION_INTERRUPT)
+            }
+        )
+    );
+    // [b31_wr] 3.3.5 Fury: Bloodthirst > Whirlwind > Slam! (Bloodsurge) > Execute (below 20 % or Sudden Death) on
+    // cooldown; Heroic Strike / Cleave dump rage off the global cooldown.
+    triggers.push_back(
+        new TriggerNode(
+            "bloodthirst ready",
             {
                 NextAction("bloodthirst", ACTION_HIGH + 7)
             }
@@ -136,7 +149,7 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "whirlwind",
+            "whirlwind ready",
             {
                 NextAction("whirlwind", ACTION_HIGH + 6)
             }
@@ -147,6 +160,22 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             "instant slam",
             {
                 NextAction("slam", ACTION_HIGH + 5)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "target critical health",
+            {
+                NextAction("execute", ACTION_HIGH + 4)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "sudden death",
+            {
+                NextAction("execute", ACTION_HIGH + 4)
             }
         )
     );
@@ -187,8 +216,18 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "critical health",
             {
+                // [b31_deep] Fury 80 has no Enrage talent: Enraged Regeneration was 0 in every log without this
+                NextAction("berserker rage for enrage", ACTION_EMERGENCY + 0.5f),
+                NextAction("bloodrage for enrage", ACTION_EMERGENCY + 0.3f),
                 NextAction("enraged regeneration", ACTION_EMERGENCY)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus sudden death", { NextAction("execute", ACTION_HIGH + 3) }));
+    triggers.push_back(new TriggerNode("set bonus taste for blood",
+        { NextAction("battle stance", ACTION_HIGH + 11),
+          NextAction("overpower", ACTION_HIGH + 10) }));
+    triggers.push_back(new TriggerNode("set bonus ascendant whirl", { NextAction("whirlwind", ACTION_HIGH + 6.5f) }));
 }

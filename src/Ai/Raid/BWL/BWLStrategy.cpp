@@ -22,6 +22,8 @@ void RaidBwlStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         NextAction("bwl razorgore avoid aoe", ACTION_RAID) }));
     triggers.push_back(new TriggerNode("bwl razorgore not mind controlled", {
         NextAction("bwl razorgore mark boss", ACTION_RAID + 1) }));
+    triggers.push_back(new TriggerNode("bwl razorgore orb control", {
+        NextAction("bwl razorgore control orb", ACTION_EMERGENCY + 5) }));
 
     triggers.push_back(new TriggerNode("bwl vaelastrasz fire resistance", {
         NextAction("bwl vaelastrasz fire resistance", ACTION_RAID) }));
@@ -63,16 +65,36 @@ void RaidBwlStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 void RaidBwlStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     multipliers.push_back(new RazorgoreTankMultiplier(botAI));
+    multipliers.push_back(new RazorgoreOrbControllerMultiplier(botAI));
     multipliers.push_back(new VaelastraszTankMultiplier(botAI));
     multipliers.push_back(new VaelastraszBurningAdrenalineMultiplier(botAI));
 }
 
 void RaidBwlStrategy::AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type)
 {
-    if (type != TargetValueExclusionType::TankTarget)
-        return;
-
     AiObjectContext* context = botAI->GetAiObjectContext();
+    if (type != TargetValueExclusionType::TankTarget)
+    {
+        // Razorgore killed while eggs remain casts Explosion on the whole raid; only tank targeting
+        // (the Moon off-tank) holds him between possessions.
+        if (botAI->GetBot()->GetMapId() != BlackwingLairHelpers::BWL_MAP_ID)
+            return;
+
+        uint32 const razorgoreEntry =
+            static_cast<uint32>(BlackwingLairHelpers::BlackwingLairNPCs::NPC_RAZORGORE);
+        for (ObjectGuid const guid : AI_VALUE(GuidVector, "attackers"))
+        {
+            Unit* unit = botAI->GetUnit(guid);
+            if (unit && unit->GetEntry() == razorgoreEntry)
+            {
+                if (BlackwingLairHelpers::AreRazorgoreEggsAlive(botAI))
+                    exclusions.insert(guid);
+                break;
+            }
+        }
+        return;
+    }
+
     if (Unit* broodlord = AI_VALUE2(Unit*, "find target", "broodlord lashlayer"))
     {
         Unit* bossVictim = broodlord->GetVictim();

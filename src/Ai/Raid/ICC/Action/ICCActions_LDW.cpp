@@ -11,6 +11,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 
@@ -118,45 +119,57 @@ bool IccRangedPositionLadyDeathwhisperAction::MaintainRangedSpacing()
     return false;
 }
 
+namespace
+{
+// A player's single-target crowd control usable on a mind-controlled raid member.
+char const* LdwDominateMindCcSpell(uint8 playerClass)
+{
+    switch (playerClass)
+    {
+        case CLASS_MAGE:
+            return "polymorph";
+        case CLASS_DRUID:
+            return "cyclone";
+        case CLASS_SHAMAN:
+            return "hex";
+        case CLASS_WARLOCK:
+            return "fear";
+        case CLASS_ROGUE:
+            return "blind";
+        case CLASS_PALADIN:
+            return "hammer of justice";
+        default:
+            return nullptr;
+    }
+}
+}  // namespace
+
 bool IccAddsLadyDeathwhisperAction::Execute(Event /*event*/)
 {
     Unit* boss = AI_VALUE2(Unit*, "find target", "lady deathwhisper");
     if (!boss)
         return false;
 
-    Difficulty diff = bot->GetRaidDifficulty();
-
-    if (sPlayerbotAIConfig.EnableICCBuffs && boss->IsInCombat() && diff &&
-        (diff == RAID_DIFFICULTY_10MAN_HEROIC || diff == RAID_DIFFICULTY_25MAN_HEROIC))
+    // Dominate Mind (all but 10 normal): crowd-control the mind-controlled raid member with a real class spell
+    char const* const dominateCc = LdwDominateMindCcSpell(bot->getClass());
+    Group* const ccGroup = bot->GetGroup();
+    if (dominateCc && ccGroup && bot->GetRaidDifficulty() != RAID_DIFFICULTY_10MAN_NORMAL)
     {
-        if (!bot->HasAura(SPELL_NO_THREAT) && botAI->HasAggro(boss) && !PlayerbotAI::IsTank(bot))
-            bot->AddAura(SPELL_NO_THREAT, bot);
-
-        if (PlayerbotAI::IsMainTank(bot) && !bot->HasAura(SPELL_SPITEFULL_FURY) && boss->GetVictim() != bot)
-            bot->AddAura(SPELL_SPITEFULL_FURY, bot);
-    }
-
-    if (botAI->HasAura("Dominate Mind", bot, false, false) && !bot->HasAura(SPELL_CYCLONE))
-        bot->AddAura(SPELL_CYCLONE, bot);
-    else if (bot->HasAura(SPELL_CYCLONE) && !botAI->HasAura("Dominate Mind", bot, false, false))
-        bot->RemoveAura(SPELL_CYCLONE);
-
-    if (Group* group = bot->GetGroup())
-    {
-        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        for (GroupReference* ref = ccGroup->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
             if (!member || !member->IsAlive() || member == bot)
                 continue;
 
-            PlayerbotAI* memberBotAI = GET_PLAYERBOT_AI(member);
-            if (memberBotAI && !IsSelfBot(member))
+            if (!botAI->HasAura("Dominate Mind", member, false, false))
                 continue;
 
-            if (botAI->HasAura("Dominate Mind", member, false, false) && !member->HasAura(SPELL_CYCLONE))
-                member->AddAura(SPELL_CYCLONE, member);
-            else if (member->HasAura(SPELL_CYCLONE) && !botAI->HasAura("Dominate Mind", member, false, false))
-                member->RemoveAura(SPELL_CYCLONE);
+            if (member->HasBreakableByDamageCrowdControlAura() || member->HasUnitState(UNIT_STATE_STUNNED) ||
+                !bot->IsValidAttackTarget(member))
+                continue;
+
+            if (botAI->CanCastSpell(dominateCc, member) && botAI->CastSpell(dominateCc, member))
+                return true;
         }
     }
 
@@ -164,8 +177,23 @@ bool IccAddsLadyDeathwhisperAction::Execute(Event /*event*/)
 
     if (PlayerbotAI::IsTank(bot))
     {
-        if (bot->HasAura(SPELL_TOUCH_OF_INSIGNIFICANCE))
-            bot->RemoveAura(SPELL_TOUCH_OF_INSIGNIFICANCE);
+        // Touch of Insignificance (phase 2): the less debuffed tank taunts the boss off the stacked one
+        if (!boss->HealthAbovePct(95))
+        {
+            Unit* const victim = boss->GetVictim();
+            Player* const victimPlayer = victim ? victim->ToPlayer() : nullptr;
+            if (victimPlayer && victimPlayer != bot && PlayerbotAI::IsTank(victimPlayer))
+            {
+                static constexpr uint8 TOUCH_SWAP_STACKS = 3;
+                Aura const* const victimTouch = victimPlayer->GetAura(SPELL_TOUCH_OF_INSIGNIFICANCE);
+                Aura const* const ownTouch = bot->GetAura(SPELL_TOUCH_OF_INSIGNIFICANCE);
+                uint8 const victimStacks = victimTouch ? victimTouch->GetStackAmount() : 0;
+                uint8 const ownStacks = ownTouch ? ownTouch->GetStackAmount() : 0;
+                if (victimStacks >= TOUCH_SWAP_STACKS && ownStacks + 2 <= victimStacks &&
+                    IccCastClassTaunt(bot, botAI, boss))
+                    return true;
+            }
+        }
 
         if (IsTargetedByShade(shadeEntryId))
             return false;
@@ -681,7 +709,7 @@ bool IccAddsLadyDeathwhisperAction::UpdateRaidTargetIcon(Unit* target)
     bool const shouldUpdate = !currentSkullUnit || !currentSkullUnit->IsAlive() || (targetIsAdd && !currentIsAdd);
 
     if (shouldUpdate)
-        group->SetTargetIcon(SKULL_ICON_INDEX, bot->GetGUID(), target->GetGUID());
+        RaidMarkOwnership::SetIcon(bot, group, SKULL_ICON_INDEX, target->GetGUID());
 
     return false;
 }
@@ -764,9 +792,10 @@ bool IccRottingFrostGiantTankPositionAction::Execute(Event /*event*/)
     if (!boss)
         return false;
 
-    Aura* aura = botAI->GetAura("death plague", bot, false, false);
-    if (aura)
-        bot->RemoveAura(aura->GetId());
+    // Death Plague is not removed: the core script mis-stacks it, so the legit cure/spread routine below stays off
+    if (botAI->GetAura("death plague", bot, false, false))
+        IccLogHonestTacticGap(bot, IccHonestGap::RottingFrostGiant, "Rotting Frost Giant",
+                              "Death Plague: pass the plague to a non-recently-infected player");
 
     /* TODO: code works for handling plague, but atm script is bugged and one bot can have 2 plagues at the same time or
        when cured, which should not happen, and it is immpossible to handle plague atm the legit way. const bool hasCure

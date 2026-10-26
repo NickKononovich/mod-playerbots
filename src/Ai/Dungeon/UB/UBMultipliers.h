@@ -30,4 +30,13 @@ public:
     float GetValue(Action* action) override;
 };
 
+// Ghaz'an's lake: a bot on dry land does not reposition towards a target that swims (Frenzies, Ghaz'an on patrol):
+// melee hit what reaches the shore, ranged shoot from it, and Ghaz'an walks out to the tank.
+class UBGhazanDryLandMultiplier : public Multiplier
+{
+public:
+    UBGhazanDryLandMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "ub ghazan dry land") {}
+    float GetValue(Action* action) override;
+};
+
 #endif

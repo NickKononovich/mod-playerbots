@@ -17,7 +17,8 @@ class PlayerbotAI;
 class FleePoint
 {
 public:
-    FleePoint(float x, float y, float z) : x(x), y(y), z(z), sumDistance(0.0f), minDistance(0.0f)
+    FleePoint(float x, float y, float z)
+        : x(x), y(y), z(z), sumDistance(0.0f), minDistance(0.0f), tankDistance(-1.0f)
     {
     }
 
@@ -27,6 +28,7 @@ public:
 
     float sumDistance;
     float minDistance;
+    float tankDistance;  // to the group's nearest living tank, -1 without one
 };
 
 class FleeManager

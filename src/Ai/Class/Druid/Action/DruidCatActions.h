@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_DRUIDCATACTIONS_H
 #define PLAYERBOTS_DRUIDCATACTIONS_H
 
+#include "DruidTriggers.h"
 #include "GenericSpellActions.h"
 #include "ReachTargetActions.h"
 
@@ -51,15 +52,53 @@ public:
 class CastSavageRoarAction : public CastBuffSpellAction
 {
 public:
-    CastSavageRoarAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "savage roar") {}
-    std::string const GetTargetName() override { return "current target"; }
+    // [b31_sd] A self buff: the "current target" override made isUseful() look for the Roar on the mob, where it
+    // never is, so the action was always "useful". Self target now (CastBuffSpellAction); the cast needs no explicit
+    // unit target, the core reads the combo points of the caster (Spell::CheckCast).
+    // [b31_sd] ...with the trigger's refresh window: with beforeDuration 0, isUseful() refused while any Roar was up,
+    // so the 2 s refresh never acted and Roar fell off every cycle (FERAL_CAT_AUDIT.md 2.2.1).
+    // CastBuffSpellAction(botAI, spell, checkIsOwner, beforeDuration).
+    CastSavageRoarAction(PlayerbotAI* botAI)
+        : CastBuffSpellAction(botAI, "savage roar", false, SAVAGE_ROAR_REFRESH_WINDOW_MS) {}
 };
 
-class CastRakeAction : public CastDebuffSpellAction
+// [b31_sd] Roar recast early to desync it from Rip ("savage roar clip", SavageRoarClipTrigger decides when): no
+// refresh-window check, only a combo point and the spell itself.
+class CastSavageRoarClipAction : public CastSpellAction
 {
 public:
-    CastRakeAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "rake", true, 6.0f) {}
+    CastSavageRoarClipAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "savage roar") {}
+
+    std::string const GetTargetName() override { return "self target"; }
+    std::string const getName() override { return "savage roar clip"; }
+    bool isUseful() override
+    {
+        return AI_VALUE2(uint8, "combo", "current target") >= 1 && CastSpellAction::isUseful();
+    }
 };
+
+// [b31_sd] A melee debuff (range = melee, isUseful checks melee range): as a plain debuff it ran at spell range and
+// the core refused it out of melee, a lost tick (FERAL_CAT_AUDIT.md 2.2.9).
+class CastRakeAction : public CastMeleeDebuffSpellAction
+{
+public:
+    CastRakeAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "rake", true, 6.0f)
+    {
+        beforeDuration = FERAL_DOT_REFRESH_WINDOW_MS;
+    }
+};
+
+// [b31_sd] Energy pooling (FERAL_CAT_AUDIT.md 2.2.13): a combo-point builder is held back when its cost would leave
+// too little energy for a finisher that is due (Savage Roar ending with points on the target, Rip missing at 5
+// points on a long-lived target). Never under Clearcasting (the builder is free).
+bool CatBuilderStarvesFinisher(PlayerbotAI* botAI, Player* bot, std::string const& spell);
+// [b31_sd] On a boss without this druid's Rip, at 5 points, Swipe (cat) waits for Rip.
+bool CatSwipeWaitsForRip(PlayerbotAI* botAI, Player* bot);
+// [b31_sd] Shred and Ravage need the cat behind the target (SPELL_FAILED_NOT_BEHIND, Spell::CheckCast).
+inline bool CatIsBehind(Player* bot, Unit* target)
+{
+    return target && !target->HasInArc(static_cast<float>(M_PI), bot);
+}
 
 class CastClawAction : public CastMeleeSpellAction
 {
@@ -72,7 +111,8 @@ public:
         if (botAI->HasAura("prowl", bot) && bot->HasSpell(SPELL_POUNCE_RANK_1))
             return false;
 
-        return CastMeleeSpellAction::isUseful();
+        // [b31_sd] energy pooling for a due finisher
+        return !CatBuilderStarvesFinisher(botAI, bot, spell) && CastMeleeSpellAction::isUseful();
     }
 };
 
@@ -86,7 +126,7 @@ public:
         if (botAI->HasAura("prowl", bot))
             return false;
 
-        return CastMeleeSpellAction::isUseful();
+        return !CatBuilderStarvesFinisher(botAI, bot, spell) && CastMeleeSpellAction::isUseful();  // [b31_sd]
     }
 };
 
@@ -100,7 +140,7 @@ public:
         if (botAI->HasAura("prowl", bot))
             return false;
 
-        return CastMeleeSpellAction::isUseful();
+        return !CatSwipeWaitsForRip(botAI, bot) && CastMeleeSpellAction::isUseful();  // [b31_sd]
     }
 };
 
@@ -128,7 +168,10 @@ public:
 class CastRipAction : public CastMeleeDebuffSpellAction
 {
 public:
-    CastRipAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "rip", true, 12.0f) {}
+    CastRipAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "rip", true, RIP_MIN_TARGET_LIFETIME)
+    {
+        beforeDuration = FERAL_DOT_REFRESH_WINDOW_MS;
+    }
 };
 
 class CastShredAction : public CastMeleeSpellAction
@@ -141,7 +184,13 @@ public:
         if (botAI->HasAura("prowl", bot) && bot->HasSpell(SPELL_RAVAGE_RANK_1))
             return false;
 
-        return CastMeleeSpellAction::isUseful();
+        // [b31_sd] Shred requires the cat behind the target (the core fails it with SPELL_FAILED_NOT_BEHIND when the
+        // target has the caster in its front arc, Spell::CheckCast). In front, every Shred node falls through to the
+        // Mangle (cat) queued next to it.
+        if (!CatIsBehind(bot, GetTarget()))
+            return false;
+
+        return !CatBuilderStarvesFinisher(botAI, bot, spell) && CastMeleeSpellAction::isUseful();  // [b31_sd]
     }
 };
 
@@ -164,7 +213,8 @@ public:
 
     bool isUseful() override
     {
-        if (!botAI->HasAura("prowl", bot))
+        // [b31_sd] Ravage, like Shred, needs the cat behind the target; in front Pounce (5.5) opens instead.
+        if (!botAI->HasAura("prowl", bot) || !CatIsBehind(bot, GetTarget()))
             return false;
 
         return CastMeleeSpellAction::isUseful();

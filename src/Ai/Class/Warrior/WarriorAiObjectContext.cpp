@@ -10,6 +10,7 @@
 #include "GenericWarriorNonCombatStrategy.h"
 #include "NamedObjectContext.h"
 #include "Playerbots.h"
+#include "TankAoeThreat.h"
 #include "TankWarriorStrategy.h"
 #include "WarriorActions.h"
 #include "WarriorPullStrategy.h"
@@ -61,6 +62,10 @@ public:
         creators["rend"] = &WarriorTriggerFactoryInternal::rend;
         creators["rend on attacker"] = &WarriorTriggerFactoryInternal::rend_on_attacker;
         creators["bloodrage"] = &WarriorTriggerFactoryInternal::bloodrage;
+        creators["bloodrage low rage"] = &WarriorTriggerFactoryInternal::bloodrage_low_rage;
+        creators["tank aoe threat"] = &WarriorTriggerFactoryInternal::tank_aoe_threat;
+        creators["tank aoe pack"] = &WarriorTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
+        creators["tank aoe crowd"] = &WarriorTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
         creators["shield bash"] = &WarriorTriggerFactoryInternal::shield_bash;
         creators["disarm"] = &WarriorTriggerFactoryInternal::disarm;
         creators["concussion blow"] = &WarriorTriggerFactoryInternal::concussion_blow;
@@ -75,14 +80,35 @@ public:
         creators["overpower"] = &WarriorTriggerFactoryInternal::overpower;
         creators["mocking blow"] = &WarriorTriggerFactoryInternal::mocking_blow;
         creators["rampage"] = &WarriorTriggerFactoryInternal::rampage;
-        creators["mortal strike"] = &WarriorTriggerFactoryInternal::mortal_strike;
+        // [b31_deep] "mortal strike" (debuff) replaced by "mortal strike ready" (rage gated)
+        creators["mortal strike ready"] = &WarriorTriggerFactoryInternal::mortal_strike_ready;
+        creators["heroic throw ready"] = &WarriorTriggerFactoryInternal::heroic_throw_ready;
+        creators["arms heroic strike rage"] = &WarriorTriggerFactoryInternal::arms_heroic_strike_rage;
+        creators["shattering throw boss"] = &WarriorTriggerFactoryInternal::shattering_throw_boss;
+        creators["victory rush and medium health"] = &WarriorTriggerFactoryInternal::victory_rush_and_medium_health;
+        creators["demoralizing shout"] = &WarriorTriggerFactoryInternal::demoralizing_shout;
+        creators["medium aoe bladestorm"] = &WarriorTriggerFactoryInternal::medium_aoe_bladestorm;
+        creators["light aoe shockwave"] = &WarriorTriggerFactoryInternal::light_aoe_shockwave;
         creators["thunder clap on snare target"] = &WarriorTriggerFactoryInternal::thunder_clap_on_snare_target;
         creators["thunder clap"] = &WarriorTriggerFactoryInternal::thunder_clap;
-        creators["bloodthirst"] = &WarriorTriggerFactoryInternal::bloodthirst;
-        creators["whirlwind"] = &WarriorTriggerFactoryInternal::whirlwind;
+        // [b31_wr] cooldown-ready triggers (were buff triggers named "bloodthirst" / "whirlwind")
+        creators["bloodthirst ready"] = &WarriorTriggerFactoryInternal::bloodthirst_ready;
+        creators["whirlwind ready"] = &WarriorTriggerFactoryInternal::whirlwind_ready;
+        creators["shield slam ready"] = &WarriorTriggerFactoryInternal::shield_slam_ready;
+        creators["concussion blow ready"] = &WarriorTriggerFactoryInternal::concussion_blow_ready;
+        creators["shockwave ready"] = &WarriorTriggerFactoryInternal::shockwave_ready;
+        // [b31_wr] stance-aware AoE and the rage-gated Cleave
+        creators["light aoe berserker stance"] = &WarriorTriggerFactoryInternal::light_aoe_berserker_stance;
+        creators["light aoe thunder clap stance"] = &WarriorTriggerFactoryInternal::light_aoe_thunder_clap_stance;
+        creators["light aoe sweeping strikes stance"] =
+            &WarriorTriggerFactoryInternal::light_aoe_sweeping_strikes_stance;
+        creators["light aoe and medium rage"] = &WarriorTriggerFactoryInternal::light_aoe_and_medium_rage;
+        creators["battle shout no commanding shout"] =
+            &WarriorTriggerFactoryInternal::battle_shout_no_commanding_shout;
         creators["berserker rage"] = &WarriorTriggerFactoryInternal::berserker_rage;
         creators["pummel on enemy healer"] = &WarriorTriggerFactoryInternal::pummel_on_enemy_healer;
         creators["pummel"] = &WarriorTriggerFactoryInternal::pummel;
+        creators["pummel ready"] = &WarriorTriggerFactoryInternal::pummel_ready;  // [melee_audit_b30]
         creators["intercept on enemy healer"] = &WarriorTriggerFactoryInternal::intercept_on_enemy_healer;
         creators["intercept"] = &WarriorTriggerFactoryInternal::intercept;
         creators["taunt on snare target"] = &WarriorTriggerFactoryInternal::taunt_on_snare_target;
@@ -95,15 +121,24 @@ public:
         creators["shockwave on snare target"] = &WarriorTriggerFactoryInternal::shockwave_on_snare_target;
         creators["taste for blood"] = &WarriorTriggerFactoryInternal::taste_for_blood;
         creators["thunder clap and rage"] = &WarriorTriggerFactoryInternal::thunderclap_and_rage;
-        creators["intercept can cast"] = &WarriorTriggerFactoryInternal::intercept_can_cast;
-        creators["intercept and far enemy"] = &WarriorTriggerFactoryInternal::intercept_and_far_enemy;
-        creators["intercept and rage"] = &WarriorTriggerFactoryInternal::intercept_and_rage;
+        // [b31_deep] "intercept can cast" / "intercept and far enemy" / "intercept and rage" removed (unused, dead)
         // creators["slam"] = &WarriorTriggerFactoryInternal::slam;
         creators["vigilance"] = &WarriorTriggerFactoryInternal::vigilance;
         creators["shattering throw trigger"] = &WarriorTriggerFactoryInternal::shattering_throw_trigger;
+        creators["bladestorm"] = &WarriorTriggerFactoryInternal::bladestorm;
+        creators["recklessness ready"] = &WarriorTriggerFactoryInternal::recklessness_ready;
+        creators["execute phase and high rage"] = &WarriorTriggerFactoryInternal::execute_phase_and_high_rage;
+        creators["critical health solo"] = &WarriorTriggerFactoryInternal::critical_health_solo;
     }
 
 private:
+    static Trigger* bladestorm(PlayerbotAI* botAI) { return new BladestormBoostTrigger(botAI); }
+    static Trigger* recklessness_ready(PlayerbotAI* botAI) { return new RecklessnessReadyTrigger(botAI); }
+    static Trigger* execute_phase_and_high_rage(PlayerbotAI* botAI)
+    {
+        return new TwoTriggers(botAI, "target critical health", "high rage available");
+    }
+    static Trigger* critical_health_solo(PlayerbotAI* botAI) { return new CriticalHealthSoloTrigger(botAI); }
     static Trigger* shield_block(PlayerbotAI* botAI) { return new ShieldBlockTrigger(botAI); }
     static Trigger* defensive_stance(PlayerbotAI* botAI) { return new DefensiveStanceTrigger(botAI); }
     static Trigger* berserker_stance(PlayerbotAI* botAI) { return new BerserkerStanceTrigger(botAI); }
@@ -116,6 +151,11 @@ private:
     static Trigger* rend(PlayerbotAI* botAI) { return new RendDebuffTrigger(botAI); }
     static Trigger* rend_on_attacker(PlayerbotAI* botAI) { return new RendDebuffOnAttackerTrigger(botAI); }
     static Trigger* bloodrage(PlayerbotAI* botAI) { return new BloodrageBuffTrigger(botAI); }
+    static Trigger* bloodrage_low_rage(PlayerbotAI* botAI) { return new BloodrageLowRageTrigger(botAI); }
+    // Thunder Clap reaches 8 yd around the warrior
+    static Trigger* tank_aoe_threat(PlayerbotAI* botAI) { return new TankAoeThreatTrigger(botAI, 8.0f); }
+    static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 8.0f); }  // [b32_tank_aoe]
+    static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
     static Trigger* shield_bash(PlayerbotAI* botAI) { return new ShieldBashInterruptSpellTrigger(botAI); }
     static Trigger* disarm(PlayerbotAI* botAI) { return new DisarmDebuffTrigger(botAI); }
     static Trigger* concussion_blow(PlayerbotAI* botAI) { return new ConcussionBlowTrigger(botAI); }
@@ -127,15 +167,6 @@ private:
     static Trigger* thunderclap_and_rage(PlayerbotAI* botAI)
     {
         return new TwoTriggers(botAI, "thunder clap", "light rage available");
-    }
-    static Trigger* intercept_can_cast(PlayerbotAI* botAI) { return new InterceptCanCastTrigger(botAI); }
-    static Trigger* intercept_and_far_enemy(PlayerbotAI* botAI)
-    {
-        return new TwoTriggers(botAI, "enemy is out of melee", "intercept can cast");
-    }
-    static Trigger* intercept_and_rage(PlayerbotAI* botAI)
-    {
-        return new TwoTriggers(botAI, "intercept and far enemy", "light rage available");
     }
     static Trigger* intercept_on_snare_target(PlayerbotAI* botAI) { return new InterceptSnareTrigger(botAI); }
     static Trigger* spell_reflection(PlayerbotAI* botAI) { return new SpellReflectionTrigger(botAI); }
@@ -152,16 +183,77 @@ private:
         return new InterceptInterruptEnemyHealerSpellTrigger(botAI);
     }
     static Trigger* pummel(PlayerbotAI* botAI) { return new PummelInterruptSpellTrigger(botAI); }
+    static Trigger* pummel_ready(PlayerbotAI* botAI) { return new PummelReadyInterruptSpellTrigger(botAI); }
     static Trigger* pummel_on_enemy_healer(PlayerbotAI* botAI)
     {
         return new PummelInterruptEnemyHealerSpellTrigger(botAI);
     }
     static Trigger* berserker_rage(PlayerbotAI* botAI) { return new BerserkerRageBuffTrigger(botAI); }
-    static Trigger* bloodthirst(PlayerbotAI* botAI) { return new BloodthirstBuffTrigger(botAI); }
-    static Trigger* whirlwind(PlayerbotAI* botAI) { return new WhirlwindTrigger(botAI); }
+    // [b31_wr]
+    static Trigger* bloodthirst_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "bloodthirst"); }
+    static Trigger* whirlwind_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "whirlwind"); }
+    static Trigger* shield_slam_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "shield slam"); }
+    static Trigger* concussion_blow_ready(PlayerbotAI* botAI)
+    {
+        return new WarriorSpellReadyTrigger(botAI, "concussion blow");
+    }
+    static Trigger* shockwave_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "shockwave"); }
+    static Trigger* light_aoe_berserker_stance(PlayerbotAI* botAI)
+    {
+        return new WarriorStanceAoeTrigger(botAI, "light aoe berserker stance", WarriorStanceAoeTrigger::BERSERKER,
+                                           "whirlwind");  // [b31_deep] spell known
+    }
+    static Trigger* light_aoe_thunder_clap_stance(PlayerbotAI* botAI)
+    {
+        return new WarriorStanceAoeTrigger(botAI, "light aoe thunder clap stance",
+                                           WarriorStanceAoeTrigger::BATTLE | WarriorStanceAoeTrigger::DEFENSIVE,
+                                           "thunder clap");  // [b31_deep]
+    }
+    static Trigger* light_aoe_sweeping_strikes_stance(PlayerbotAI* botAI)
+    {
+        return new WarriorStanceAoeTrigger(botAI, "light aoe sweeping strikes stance",
+                                           WarriorStanceAoeTrigger::BATTLE | WarriorStanceAoeTrigger::BERSERKER,
+                                           "sweeping strikes");  // [b31_deep]
+    }
+    static Trigger* light_aoe_and_medium_rage(PlayerbotAI* botAI)
+    {
+        return new TwoTriggers(botAI, "light aoe", "medium rage available");
+    }
+    static Trigger* battle_shout_no_commanding_shout(PlayerbotAI* botAI)
+    {
+        return new BattleShoutNoCommandingShoutTrigger(botAI);
+    }
     static Trigger* thunder_clap_on_snare_target(PlayerbotAI* botAI) { return new ThunderClapSnareTrigger(botAI); }
     static Trigger* thunder_clap(PlayerbotAI* botAI) { return new ThunderClapTrigger(botAI); }
-    static Trigger* mortal_strike(PlayerbotAI* botAI) { return new MortalStrikeDebuffTrigger(botAI); }
+    // [b31_deep]
+    static Trigger* mortal_strike_ready(PlayerbotAI* botAI)
+    {
+        return new WarriorSpellReadyTrigger(botAI, "mortal strike", true);
+    }
+    static Trigger* heroic_throw_ready(PlayerbotAI* botAI)
+    {
+        return new WarriorSpellReadyTrigger(botAI, "heroic throw");
+    }
+    // wowsims arms: Heroic Strike at 40 rage; 45 here so it never takes Mortal Strike's 30 (Slam filler uses 45 too)
+    static Trigger* arms_heroic_strike_rage(PlayerbotAI* botAI)
+    {
+        return new WarriorRageAvailableTrigger(botAI, "arms heroic strike rage", 45);
+    }
+    static Trigger* shattering_throw_boss(PlayerbotAI* botAI) { return new ShatteringThrowBossTrigger(botAI); }
+    static Trigger* victory_rush_and_medium_health(PlayerbotAI* botAI)
+    {
+        return new TwoTriggers(botAI, "victory rush", "medium health");
+    }
+    static Trigger* demoralizing_shout(PlayerbotAI* botAI) { return new DemoralizingShoutDebuffTrigger(botAI); }
+    static Trigger* medium_aoe_bladestorm(PlayerbotAI* botAI)
+    {
+        return new WarriorStanceAoeTrigger(botAI, "medium aoe bladestorm", WarriorStanceAoeTrigger::ANY, "bladestorm",
+                                           3);
+    }
+    static Trigger* light_aoe_shockwave(PlayerbotAI* botAI)
+    {
+        return new WarriorStanceAoeTrigger(botAI, "light aoe shockwave", WarriorStanceAoeTrigger::ANY, "shockwave");
+    }
     static Trigger* rampage(PlayerbotAI* botAI) { return new RampageAvailableTrigger(botAI); }
     static Trigger* mocking_blow(PlayerbotAI* botAI) { return new MockingBlowTrigger(botAI); }
     static Trigger* overpower(PlayerbotAI* botAI) { return new OverpowerAvailableTrigger(botAI); }
@@ -205,7 +297,18 @@ public:
         creators["battle shout"] = &WarriorAiObjectContextInternal::battle_shout;
         creators["battle shout taunt"] = &WarriorAiObjectContextInternal::battle_shout_taunt;
         creators["thunder clap"] = &WarriorAiObjectContextInternal::thunder_clap;
+        creators["thunder clap on group member attackers"] =
+            &WarriorAiObjectContextInternal::thunder_clap_on_group_member_attackers;
+        creators["thunder clap tank aoe"] = &WarriorAiObjectContextInternal::thunder_clap_tank_aoe;
+        creators["demoralizing shout tank aoe"] = &WarriorAiObjectContextInternal::demoralizing_shout_tank_aoe;
         creators["taunt"] = &WarriorAiObjectContextInternal::taunt;
+        creators["taunt on group member attacker"] = &WarriorAiObjectContextInternal::taunt_on_group_member_attacker;
+        creators["mocking blow on group member attacker"] =
+            &WarriorAiObjectContextInternal::mocking_blow_on_group_member_attacker;
+        creators["heroic throw on group member attacker"] =
+            &WarriorAiObjectContextInternal::heroic_throw_on_group_member_attacker;
+        creators["shield slam on group member attacker"] =
+            &WarriorAiObjectContextInternal::shield_slam_on_group_member_attacker;
         creators["revenge"] = &WarriorAiObjectContextInternal::revenge;
         creators["slam"] = &WarriorAiObjectContextInternal::slam;
         creators["shield slam"] = &WarriorAiObjectContextInternal::shield_slam;
@@ -230,6 +333,8 @@ public:
         creators["piercing howl"] = &WarriorAiObjectContextInternal::piercing_howl;
         creators["rampage"] = &WarriorAiObjectContextInternal::rampage;
         creators["intervene"] = &WarriorAiObjectContextInternal::intervene;
+        creators["intervene on attacked group member"] =
+            &WarriorAiObjectContextInternal::intervene_on_attacked_group_member;
         creators["spell reflection"] = &WarriorAiObjectContextInternal::spell_reflection;
         creators["thunder clap on snare target"] = &WarriorAiObjectContextInternal::thunder_clap_on_snare_target;
         creators["taunt on snare target"] = &WarriorAiObjectContextInternal::taunt_on_snare_target;
@@ -241,6 +346,11 @@ public:
         creators["shattering throw"] = &WarriorAiObjectContextInternal::shattering_throw;
         creators["vigilance"] = &WarriorAiObjectContextInternal::vigilance;
         creators["enraged regeneration"] = &WarriorAiObjectContextInternal::enraged_regeneration;
+        // [b31_deep]
+        creators["slam filler"] = &WarriorAiObjectContextInternal::slam_filler;
+        creators["berserker rage for enrage"] = &WarriorAiObjectContextInternal::berserker_rage_for_enrage;
+        creators["bloodrage for enrage"] = &WarriorAiObjectContextInternal::bloodrage_for_enrage;
+        creators["shattering throw boss"] = &WarriorAiObjectContextInternal::shattering_throw_boss;
     }
 
 private:
@@ -251,6 +361,22 @@ private:
     static Action* cleave(PlayerbotAI* botAI) { return new CastCleaveAction(botAI); }
     static Action* concussion_blow(PlayerbotAI* botAI) { return new CastConcussionBlowAction(botAI); }
     static Action* taunt(PlayerbotAI* botAI) { return new CastTauntAction(botAI); }
+    static Action* taunt_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "taunt");
+    }
+    static Action* mocking_blow_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "mocking blow");
+    }
+    static Action* heroic_throw_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "heroic throw");
+    }
+    static Action* shield_slam_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "shield slam");
+    }
     static Action* revenge(PlayerbotAI* botAI) { return new CastRevengeAction(botAI); }
     static Action* slam(PlayerbotAI* botAI) { return new CastSlamAction(botAI); }
     static Action* shield_slam(PlayerbotAI* botAI) { return new CastShieldSlamAction(botAI); }
@@ -285,6 +411,18 @@ private:
     static Action* battle_shout(PlayerbotAI* botAI) { return new CastBattleShoutAction(botAI); }
     static Action* battle_shout_taunt(PlayerbotAI* botAI) { return new CastBattleShoutTauntAction(botAI); }
     static Action* thunder_clap(PlayerbotAI* botAI) { return new CastThunderClapAction(botAI); }
+    static Action* thunder_clap_on_group_member_attackers(PlayerbotAI* botAI)
+    {
+        return new CastAreaSpellOnGroupMemberAttackersAction(botAI, "thunder clap", 8.0f);
+    }
+    static Action* thunder_clap_tank_aoe(PlayerbotAI* botAI)
+    {
+        return new CastTankAreaThreatAction(botAI, "thunder clap");
+    }
+    static Action* demoralizing_shout_tank_aoe(PlayerbotAI* botAI)
+    {
+        return new CastDemoralizingShoutTankAoeAction(botAI);
+    }
     static Action* shield_bash_on_enemy_healer(PlayerbotAI* botAI)
     {
         return new CastShieldBashOnEnemyHealerAction(botAI);
@@ -305,6 +443,10 @@ private:
     static Action* piercing_howl(PlayerbotAI* botAI) { return new CastPiercingHowlAction(botAI); }
     static Action* rampage(PlayerbotAI* botAI) { return new CastRampageAction(botAI); }
     static Action* intervene(PlayerbotAI* botAI) { return new CastInterveneAction(botAI); }
+    static Action* intervene_on_attacked_group_member(PlayerbotAI* botAI)
+    {
+        return new CastInterveneOnAttackedGroupMemberAction(botAI);
+    }
     static Action* spell_reflection(PlayerbotAI* botAI) { return new CastSpellReflectionAction(botAI); }
     static Action* shattering_throw(PlayerbotAI* botAI) { return new CastShatteringThrowAction(botAI); }
     static Action* heroic_throw_on_snare_target(PlayerbotAI* botAI) { return new CastHeroicThrowSnareAction(botAI); }
@@ -312,6 +454,11 @@ private:
     static Action* bladestorm(PlayerbotAI* botAI) { return new CastBladestormAction(botAI); }
     static Action* vigilance(PlayerbotAI* botAI) { return new CastVigilanceAction(botAI); }
     static Action* enraged_regeneration(PlayerbotAI* botAI) { return new CastEnragedRegenerationAction(botAI); }
+    // [b31_deep]
+    static Action* slam_filler(PlayerbotAI* botAI) { return new CastSlamFillerAction(botAI); }
+    static Action* berserker_rage_for_enrage(PlayerbotAI* botAI) { return new CastBerserkerRageForEnrageAction(botAI); }
+    static Action* bloodrage_for_enrage(PlayerbotAI* botAI) { return new CastBloodrageForEnrageAction(botAI); }
+    static Action* shattering_throw_boss(PlayerbotAI* botAI) { return new CastShatteringThrowBossAction(botAI); }
 };
 
 SharedNamedObjectContextList<Strategy> WarriorAiObjectContext::sharedStrategyContexts;

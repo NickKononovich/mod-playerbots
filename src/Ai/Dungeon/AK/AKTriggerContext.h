@@ -18,11 +18,22 @@ class WotlkDungeonOKTriggerContext : public NamedObjectContext<Trigger>
             creators["nadox guardian"] = &WotlkDungeonOKTriggerContext::nadox_guardian;
             creators["jedoga volunteer"] = &WotlkDungeonOKTriggerContext::jedoga_volunteer;
             creators["shadow crash"] = &WotlkDungeonOKTriggerContext::shadow_crash;
+            creators["volazj insanity"] = &WotlkDungeonOKTriggerContext::volazj_insanity;
+            creators["taldaram nerubian device"] = &WotlkDungeonOKTriggerContext::taldaram_nerubian_device;
+            creators["jedoga initiates"] = &WotlkDungeonOKTriggerContext::jedoga_initiates;
+            creators["amanitar mini"] = &WotlkDungeonOKTriggerContext::amanitar_mini;  // [b33_ok]
         }
     private:
         static Trigger* nadox_guardian(PlayerbotAI* botAI) { return new NadoxGuardianTrigger(botAI); }
         static Trigger* jedoga_volunteer(PlayerbotAI* botAI) { return new JedogaVolunteerTrigger(botAI); }
         static Trigger* shadow_crash(PlayerbotAI* botAI) { return new ShadowCrashTrigger(botAI); }
+        static Trigger* volazj_insanity(PlayerbotAI* botAI) { return new VolazjInsanityTrigger(botAI); }
+        static Trigger* taldaram_nerubian_device(PlayerbotAI* botAI)
+        {
+            return new TaldaramNerubianDeviceTrigger(botAI);
+        }
+        static Trigger* jedoga_initiates(PlayerbotAI* botAI) { return new JedogaInitiatesTrigger(botAI); }
+        static Trigger* amanitar_mini(PlayerbotAI* botAI) { return new AmanitarMiniTrigger(botAI); }
 };
 
 #endif

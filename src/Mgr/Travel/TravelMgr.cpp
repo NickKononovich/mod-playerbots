@@ -20,9 +20,18 @@
 #include "RaceMgr.h"
 #include "Talentspec.h"
 #include "TransportMgr.h"
+#include "Transport.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "ObjectMgr.h"
+#include "DBCStores.h"
 #include "TravelNode.h"
 #include "VMapFactory.h"
 #include "VMapMgr2.h"
+#include "Timer.h"
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <iomanip>
 #include <numeric>
 
@@ -4408,6 +4417,15 @@ std::vector<uint32> TravelMgr::GetFlightNodesInZone(uint32 zoneId, TeamId team, 
     return result;
 }
 
+std::vector<uint32> TravelMgr::GetKnownFlightNodesInZone(Player* bot, uint32 zoneId, uint32 excludeNode) const
+{
+    std::vector<uint32> nodes = GetFlightNodesInZone(zoneId, bot->GetTeamId(), excludeNode);
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                               [bot](uint32 node) { return !bot->m_taxi.IsTaximaskNodeKnown(node); }),
+                nodes.end());
+    return nodes;
+}
+
 std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player* bot)
 {
     std::vector<std::vector<uint32>> validDestinations;
@@ -4450,7 +4468,7 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         {
             if (botLevel < bracket.low || botLevel > bracket.high)
                 continue;
-            if (GetFlightNodesInZone(zoneId, bot->GetTeamId(), fromNode).empty())
+            if (GetKnownFlightNodesInZone(bot, zoneId, fromNode).empty())
                 continue;
             candidateZones.push_back(zoneId);
         }
@@ -4464,12 +4482,13 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         uint32 zoneIndex = urand(0, candidateZones.size() - 1);
         uint32 pickedZone = candidateZones[zoneIndex];
 
-        std::vector<uint32> usableNodes = GetFlightNodesInZone(pickedZone, bot->GetTeamId(), fromNode);
+        std::vector<uint32> usableNodes = GetKnownFlightNodesInZone(bot, pickedZone, fromNode);
 
         if (!usableNodes.empty())
         {
             uint32 pickedNode = usableNodes[urand(0, usableNodes.size() - 1)];
-            std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, pickedNode);
+            // only over flight paths the bot has discovered; ActivateTaxiPathTo charges the fare
+            std::vector<uint32> path = sTravelNodeMap.FindKnownTaxiPath(bot, fromNode, pickedNode);
             if (!path.empty())
             {
                 validDestinations.push_back(std::move(path));
@@ -4890,4 +4909,595 @@ void TravelMgr::PrepareDestinationCache()
     }
 
     LOG_INFO("playerbots", ">> {} flight masters and {} innkeepers and {} banker locations for level collected.", flightMastersCount, innkeepersCount, bankerCount);
+}
+
+namespace
+{
+    constexpr float DOCK_SEARCH_RADIUS = 90.0f;   // spawns farther from the docked transport are not on its pier
+    constexpr float DOCK_MASTER_BONUS = 40.0f;    // a dock or zeppelin master beats a closer guard
+    constexpr float DOCK_BELOW = 25.0f;           // zeppelin origins float about 18 yards over their platform
+    constexpr float DOCK_ABOVE = 10.0f;
+    constexpr float DOCK_MIN_Z = -1.5f;           // fish and crabs under the pier
+    constexpr float DOCK_DISTINCT = 100.0f;       // two stops closer than this are the same dock
+    constexpr uint32 OBSERVATION_MAX_AGE_MS = 2 * HOUR * IN_MILLISECONDS;
+    constexpr uint32 MAP_EXPANSION_ONE = 530;     // Outland plus the blood elf and draenei islands
+
+    // Faction of each continent boat or zeppelin line (3.3.5 transports). Unknown entries count as neutral and
+    // are still checked against the faction of the spawns on their piers.
+    TeamId GetTransportTeam(uint32 entry)
+    {
+        switch (entry)
+        {
+            case 164871:  // Orgrimmar - Undercity
+            case 175080:  // Orgrimmar - Grom'gol
+            case 176495:  // Undercity - Grom'gol
+            case 181689:  // Undercity - Vengeance Landing
+            case 186238:  // Orgrimmar - Warsong Hold
+            case 190549:  // Orgrimmar - Thunder Bluff
+                return TEAM_HORDE;
+            case 176231:  // Menethil Harbor - Theramore
+            case 176244:  // Auberdine - Rut'theran Village
+            case 176310:  // Stormwind - Auberdine
+            case 177233:  // Feathermoon ferry
+            case 181646:  // Auberdine - Azuremyst Isle
+            case 181688:  // Menethil Harbor - Valgarde
+            case 186371:  // Westguard Keep zeppelin
+            case 190536:  // Stormwind - Valiance Keep
+                return TEAM_ALLIANCE;
+            default:
+                return TEAM_NEUTRAL;  // Booty Bay - Ratchet, the Northrend turtles, Garvan's Reef
+        }
+    }
+
+    bool IsExcludedTransport(uint32 entry)
+    {
+        return entry == 192241 || entry == 192242;  // Icecrown gunships: battle events, not travel
+    }
+
+    bool IsDockMaster(std::string const& subName)
+    {
+        return subName.find("Zeppelin Master") != std::string::npos ||
+               subName.find("Dockmaster") != std::string::npos || subName.find("Shipmaster") != std::string::npos ||
+               subName.find("Harbormaster") != std::string::npos;
+    }
+
+    bool IsWantedSpawn(uint32 entry)
+    {
+        if (entry == DalaranTravel::NPC_CELINDRA)
+            return true;
+
+        for (uint32 giver : DalaranTravel::QUEST_GIVERS)
+            if (giver == entry)
+                return true;
+
+        return false;
+    }
+
+    bool IsHostileFaction(Player* bot, uint32 faction)
+    {
+        if (!faction)
+            return false;
+
+        FactionTemplateEntry const* other = sFactionTemplateStore.LookupEntry(faction);
+        FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+        return other && own && other->IsHostileTo(*own);
+    }
+
+    float Distance2d(WorldPosition const& a, WorldPosition const& b)
+    {
+        float const dx = a.GetPositionX() - b.GetPositionX();
+        float const dy = a.GetPositionY() - b.GetPositionY();
+        return std::sqrt(dx * dx + dy * dy);
+    }
+}
+
+struct TravelRouteMgr::Node
+{
+    WorldPosition pos;
+    int32 line = -1;    // index in _lines when this is a dock
+    uint8 dock = 0;
+    int32 portal = -1;  // index in _portals when this is a portal (entry or exit)
+    bool portalExit = false;
+};
+
+void TravelRouteMgr::Build()
+{
+    for (auto const& [entry, goTemplate] : *sObjectMgr->GetGameObjectTemplates())
+    {
+        if (goTemplate.type != GAMEOBJECT_TYPE_MO_TRANSPORT || IsExcludedTransport(entry))
+            continue;
+
+        TransportTemplate const* transportInfo = sTransportMgr->GetTransportTemplate(entry);
+        if (!transportInfo || transportInfo->inInstance || !transportInfo->pathTime ||
+            transportInfo->keyFrames.size() < 2)
+            continue;
+
+        Line line;
+        line.entry = entry;
+        line.periodMs = transportInfo->pathTime;
+        line.team = GetTransportTeam(entry);
+        for (KeyFrame const& frame : transportInfo->keyFrames)
+        {
+            if (!frame.IsStopFrame())
+                continue;
+
+            Dock dock;
+            dock.mapId = frame.Node->mapid;
+            dock.x = frame.Node->x;
+            dock.y = frame.Node->y;
+            dock.z = frame.Node->z;
+            dock.arriveMs = frame.ArriveTime;
+            dock.departMs = frame.DepartureTime;
+
+            bool duplicate = false;
+            for (Dock const& other : line.docks)
+                if (other.mapId == dock.mapId && std::hypot(other.x - dock.x, other.y - dock.y) < DOCK_DISTINCT)
+                    duplicate = true;
+
+            if (!duplicate)
+                line.docks.push_back(dock);
+        }
+
+        if (line.docks.size() >= 2)
+            _lines.push_back(line);
+    }
+
+    // One pass over the creature spawns: piers, inns and the Dalaran envoys.
+    std::vector<std::vector<float>> pierScore(_lines.size());
+    for (size_t l = 0; l < _lines.size(); ++l)
+        pierScore[l].assign(_lines[l].docks.size(), std::numeric_limits<float>::max());
+
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!creatureTemplate)
+            continue;
+
+        WorldPosition const pos(data.mapid, data.posX, data.posY, data.posZ, data.orientation);
+        if (creatureTemplate->npcflag & UNIT_NPC_FLAG_INNKEEPER)
+            _inns.emplace_back(pos, creatureTemplate->faction);
+
+        if (IsWantedSpawn(data.id))
+            _spawns[data.id].push_back(pos);
+
+        for (size_t l = 0; l < _lines.size(); ++l)
+        {
+            for (size_t d = 0; d < _lines[l].docks.size(); ++d)
+            {
+                Dock& dock = _lines[l].docks[d];
+                if (dock.mapId != data.mapid || std::fabs(dock.x - data.posX) > DOCK_SEARCH_RADIUS ||
+                    std::fabs(dock.y - data.posY) > DOCK_SEARCH_RADIUS)
+                    continue;
+
+                if (data.posZ < dock.z - DOCK_BELOW || data.posZ > dock.z + DOCK_ABOVE || data.posZ < DOCK_MIN_Z)
+                    continue;
+
+                float const distance = std::hypot(dock.x - data.posX, dock.y - data.posY);
+                if (distance > DOCK_SEARCH_RADIUS)
+                    continue;
+
+                float const score = distance - (IsDockMaster(creatureTemplate->SubName) ? DOCK_MASTER_BONUS : 0.0f);
+                if (score < pierScore[l][d])
+                {
+                    pierScore[l][d] = score;
+                    dock.pier = pos;
+                    dock.pierFaction = creatureTemplate->faction;
+                }
+            }
+        }
+    }
+
+    // A dock nobody stands on cannot be waited at.
+    for (size_t l = 0; l < _lines.size(); ++l)
+    {
+        bool allPiers = true;
+        for (size_t d = 0; d < _lines[l].docks.size(); ++d)
+            if (pierScore[l][d] == std::numeric_limits<float>::max())
+                allPiers = false;
+
+        if (!allPiers)
+        {
+            LOG_DEBUG("playerbots", "[Travel] transport {} skipped: a dock has no pier spawn", _lines[l].entry);
+            _lines[l].docks.clear();
+        }
+    }
+    _lines.erase(std::remove_if(_lines.begin(), _lines.end(), [](Line const& line) { return line.docks.empty(); }),
+                 _lines.end());
+
+    // Portals that stand in the world for everyone (Shattrath, Dalaran, the Dark Portal ones in the capitals),
+    // and the two Dalaran crystals.
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+    {
+        if (data.id == DalaranTravel::GO_CRYSTAL_DOWN || data.id == DalaranTravel::GO_CRYSTAL_UP)
+            _objectSpawns[data.id].push_back(WorldPosition(data.mapid, data.posX, data.posY, data.posZ));
+
+        GameObjectTemplate const* goInfo = sObjectMgr->GetGameObjectTemplate(data.id);
+        if (!goInfo || goInfo->type != GAMEOBJECT_TYPE_SPELLCASTER || goInfo->spellcaster.partyOnly)
+            continue;
+
+        MapEntry const* fromMap = sMapStore.LookupEntry(data.mapid);
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(goInfo->spellcaster.spellId);
+        if (!fromMap || !fromMap->IsContinent() || !spellInfo)
+            continue;
+
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (spellInfo->Effects[i].Effect != SPELL_EFFECT_TELEPORT_UNITS)
+                continue;
+
+            SpellTargetPosition const* target = sSpellMgr->GetSpellTargetPosition(spellInfo->Id, SpellEffIndex(i));
+            MapEntry const* toMap = target ? sMapStore.LookupEntry(target->target_mapId) : nullptr;
+            if (!target || !toMap || !toMap->IsContinent() || target->target_mapId == data.mapid)
+                break;
+
+            Portal portal;
+            portal.goEntry = data.id;
+            GameObjectTemplateAddon const* addon = sObjectMgr->GetGameObjectTemplateAddon(data.id);
+            portal.faction = addon ? addon->faction : 0;
+            portal.from = WorldPosition(data.mapid, data.posX, data.posY, data.posZ);
+            portal.to = WorldPosition(target->target_mapId, target->target_X, target->target_Y, target->target_Z);
+            _portals.push_back(portal);
+            break;
+        }
+    }
+
+    LOG_INFO("playerbots", "[Travel] {} boat/zeppelin lines, {} portals, {} inns", _lines.size(), _portals.size(),
+             _inns.size());
+}
+
+std::vector<TravelRouteMgr::Line> const& TravelRouteMgr::GetLines()
+{
+    std::call_once(_built, [this]() { Build(); });
+    return _lines;
+}
+
+TravelRouteMgr::Line const* TravelRouteMgr::GetLine(uint32 entry)
+{
+    for (Line const& line : GetLines())
+        if (line.entry == entry)
+            return &line;
+
+    return nullptr;
+}
+
+std::vector<TravelRouteMgr::Portal> const& TravelRouteMgr::GetPortals()
+{
+    GetLines();
+    return _portals;
+}
+
+std::vector<WorldPosition> const& TravelRouteMgr::GetSpawns(uint32 creatureEntry)
+{
+    static std::vector<WorldPosition> const none;
+    GetLines();
+    auto itr = _spawns.find(creatureEntry);
+    return itr == _spawns.end() ? none : itr->second;
+}
+
+std::vector<WorldPosition> const& TravelRouteMgr::GetObjectSpawns(uint32 gameObjectEntry)
+{
+    static std::vector<WorldPosition> const none;
+    GetLines();
+    auto itr = _objectSpawns.find(gameObjectEntry);
+    return itr == _objectSpawns.end() ? none : itr->second;
+}
+
+WorldPosition TravelRouteMgr::GetNearestInn(Player* bot, float maxDistance)
+{
+    GetLines();
+    WorldPosition const botPos(bot);
+    WorldPosition best;
+    float bestDistance = maxDistance;
+    for (auto const& [pos, faction] : _inns)
+    {
+        if (pos.GetMapId() != bot->GetMapId() || IsHostileFaction(bot, faction))
+            continue;
+
+        float const distance = Distance2d(botPos, pos);
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            best = pos;
+        }
+    }
+
+    return best;
+}
+
+bool TravelRouteMgr::CanUseLine(Player* bot, Line const& line)
+{
+    if (line.team != TEAM_NEUTRAL && line.team != bot->GetTeamId())
+        return false;
+
+    for (Dock const& dock : line.docks)
+        if (IsHostileFaction(bot, dock.pierFaction))
+            return false;
+
+    return true;
+}
+
+bool TravelRouteMgr::CanUsePortal(Player* bot, Portal const& portal) { return !IsHostileFaction(bot, portal.faction); }
+
+void TravelRouteMgr::Observe(MotionTransport* transport)
+{
+    if (!transport || !transport->GetPeriod())
+        return;
+
+    std::lock_guard<std::mutex> guard(_observedLock);
+    _observed[transport->GetEntry()] = {transport->GetPathProgress() % transport->GetPeriod(), getMSTime()};
+}
+
+bool TravelRouteMgr::IsDocked(MotionTransport* transport, Dock const& dock, uint32& remainingMs)
+{
+    remainingMs = 0;
+    if (!transport || !transport->GetPeriod() || transport->GetMapId() != dock.mapId)
+        return false;
+
+    uint32 const phase = transport->GetPathProgress() % transport->GetPeriod();
+    if (phase < dock.arriveMs || phase >= dock.departMs)
+        return false;
+
+    remainingMs = dock.departMs - phase;
+    return true;
+}
+
+uint32 TravelRouteMgr::GetTimeToDepartureMs(Line const& line, uint8 dockIndex, uint32 inMs)
+{
+    Dock const& dock = line.docks[dockIndex];
+    uint32 seenPhase = 0;
+    uint32 seenAt = 0;
+    {
+        std::lock_guard<std::mutex> guard(_observedLock);
+        auto itr = _observed.find(line.entry);
+        if (itr != _observed.end())
+        {
+            seenPhase = itr->second.first;
+            seenAt = itr->second.second;
+        }
+    }
+
+    if (!seenAt || GetMSTimeDiffToNow(seenAt) > OBSERVATION_MAX_AGE_MS)
+        return line.periodMs / 2 + (dock.departMs - dock.arriveMs);
+
+    uint32 const phase = (seenPhase + GetMSTimeDiffToNow(seenAt) + inMs) % line.periodMs;
+    if (phase >= dock.arriveMs && phase < dock.departMs)
+        return dock.departMs - phase;
+
+    return (dock.departMs + line.periodMs - phase) % line.periodMs;
+}
+
+uint32 TravelRouteMgr::GetRideMs(Line const& line, uint8 fromDock, uint8 toDock)
+{
+    return (line.docks[toDock].arriveMs + line.periodMs - line.docks[fromDock].departMs) % line.periodMs;
+}
+
+uint32 TravelRouteMgr::Landmass(WorldPosition const& pos)
+{
+    if (pos.GetMapId() != MAP_EXPANSION_ONE)
+        return pos.GetMapId() * 4;
+
+    if (pos.GetPositionY() < -9000.0f)
+        return MAP_EXPANSION_ONE * 4 + 1;  // Azuremyst and Bloodmyst Isles
+
+    if (pos.GetPositionX() > 6000.0f)
+        return MAP_EXPANSION_ONE * 4 + 2;  // Eversong, Ghostlands, Isle of Quel'Danas
+
+    return MAP_EXPANSION_ONE * 4;  // Outland
+}
+
+bool TravelRouteMgr::IsInDalaran(WorldPosition const& pos)
+{
+    if (pos.GetMapId() != DalaranTravel::MAP_ID || pos.GetPositionZ() < DalaranTravel::MIN_Z)
+        return false;
+
+    float const dx = pos.GetPositionX() - DalaranTravel::CENTER_X;
+    float const dy = pos.GetPositionY() - DalaranTravel::CENTER_Y;
+    return dx * dx + dy * dy < DalaranTravel::RADIUS * DalaranTravel::RADIUS;
+}
+
+bool TravelRouteMgr::CanEnterDalaran(Player* bot)
+{
+    using namespace DalaranTravel;
+    return bot->GetQuestRewardStatus(QUEST_CRYSTAL_FLAG) ||
+           bot->m_taxi.IsTaximaskNodeKnown(TAXI_NODE_KRASUS_LANDING) ||
+           bot->GetQuestStatus(QUEST_HORDE) == QUEST_STATUS_COMPLETE ||
+           bot->GetQuestStatus(QUEST_ALLIANCE) == QUEST_STATUS_COMPLETE ||
+           bot->GetQuestStatus(QUEST_DEATH_KNIGHT) == QUEST_STATUS_COMPLETE;
+}
+
+bool TravelRouteMgr::CanLeaveDalaran(Player* bot)
+{
+    using namespace DalaranTravel;
+    // up there the flight master at Krasus' Landing teaches its node to anyone who talks to it
+    return bot->GetQuestRewardStatus(QUEST_LEAVE_AND_RETURN) ||
+           bot->GetQuestStatus(QUEST_LEAVE_AND_RETURN) == QUEST_STATUS_INCOMPLETE ||
+           bot->m_taxi.IsTaximaskNodeKnown(TAXI_NODE_KRASUS_LANDING) || IsInDalaran(WorldPosition(bot));
+}
+
+void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<Node>& nodes,
+                           std::vector<float>& cost, std::vector<int32>& prev, std::vector<LegKind>& prevKind)
+{
+    std::vector<Line> const& lines = GetLines();
+
+    nodes.clear();
+    Node start;
+    start.pos = WorldPosition(bot);
+    nodes.push_back(start);
+    Node end;
+    end.pos = dest ? *dest : WorldPosition();
+    nodes.push_back(end);
+
+    for (size_t l = 0; l < lines.size(); ++l)
+    {
+        if (!CanUseLine(bot, lines[l]))
+            continue;
+
+        for (size_t d = 0; d < lines[l].docks.size(); ++d)
+        {
+            Node node;
+            node.pos = lines[l].docks[d].pier;
+            node.line = static_cast<int32>(l);
+            node.dock = static_cast<uint8>(d);
+            nodes.push_back(node);
+        }
+    }
+
+    for (size_t p = 0; p < _portals.size(); ++p)
+    {
+        if (!CanUsePortal(bot, _portals[p]))
+            continue;
+
+        Node entry;
+        entry.pos = _portals[p].from;
+        entry.portal = static_cast<int32>(p);
+        nodes.push_back(entry);
+        Node exit = entry;
+        exit.pos = _portals[p].to;
+        exit.portalExit = true;
+        nodes.push_back(exit);
+    }
+
+    bool const canEnterDalaran = CanEnterDalaran(bot);
+    bool const canLeaveDalaran = CanLeaveDalaran(bot);
+    size_t const count = nodes.size();
+    std::vector<bool> inDalaran(count);
+    std::vector<uint32> landmass(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        inDalaran[i] = IsInDalaran(nodes[i].pos);
+        landmass[i] = Landmass(nodes[i].pos);
+    }
+
+    float const infinite = std::numeric_limits<float>::max();
+    cost.assign(count, infinite);
+    prev.assign(count, -1);
+    prevKind.assign(count, LegKind::Walk);
+    std::vector<bool> done(count, false);
+    cost[0] = 0.0f;
+
+    for (;;)
+    {
+        int32 u = -1;
+        for (size_t i = 0; i < count; ++i)
+            if (!done[i] && cost[i] < infinite && (u < 0 || cost[i] < cost[u]))
+                u = static_cast<int32>(i);
+
+        if (u < 0)
+            break;
+
+        done[u] = true;
+        if (u == 1)
+            break;
+
+        auto relax = [&](size_t v, float edge, LegKind kind)
+        {
+            if (cost[u] + edge < cost[v])
+            {
+                cost[v] = cost[u] + edge;
+                prev[v] = u;
+                prevKind[v] = kind;
+            }
+        };
+
+        for (size_t v = 0; v < count; ++v)
+        {
+            if (done[v] || (v == 1 && !dest))
+                continue;
+
+            if (nodes[v].pos.GetMapId() != nodes[u].pos.GetMapId() || landmass[v] != landmass[u])
+                continue;
+
+            float extra = 0.0f;
+            if (inDalaran[u] != inDalaran[v])
+            {
+                if ((inDalaran[v] && !canEnterDalaran) || (inDalaran[u] && !canLeaveDalaran))
+                    continue;
+
+                extra = DALARAN_CROSS_SECONDS;
+            }
+
+            relax(v, Distance2d(nodes[u].pos, nodes[v].pos) / WALK_SPEED + extra, LegKind::Walk);
+        }
+
+        Node const from = nodes[u];
+        if (from.line >= 0)
+        {
+            Line const& line = lines[from.line];
+            uint32 const waitMs = GetTimeToDepartureMs(line, from.dock, static_cast<uint32>(cost[u] * 1000.0f));
+            for (size_t v = 2; v < count; ++v)
+            {
+                if (done[v] || nodes[v].line != from.line || nodes[v].dock == from.dock)
+                    continue;
+
+                relax(v, (waitMs + GetRideMs(line, from.dock, nodes[v].dock)) / 1000.0f, LegKind::Transport);
+            }
+        }
+        else if (from.portal >= 0 && !from.portalExit)
+        {
+            for (size_t v = 2; v < count; ++v)
+                if (!done[v] && nodes[v].portal == from.portal && nodes[v].portalExit)
+                    relax(v, PORTAL_SECONDS, LegKind::Portal);
+        }
+    }
+}
+
+bool TravelRouteMgr::FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds)
+{
+    std::vector<Node> nodes;
+    std::vector<float> cost;
+    std::vector<int32> prev;
+    std::vector<LegKind> prevKind;
+    Solve(bot, &dest, nodes, cost, prev, prevKind);
+
+    if (cost[1] == std::numeric_limits<float>::max())
+        return false;
+
+    seconds = cost[1];
+    std::vector<int32> path;
+    for (int32 v = 1; v >= 0; v = prev[v])
+        path.push_back(v);
+
+    std::reverse(path.begin(), path.end());
+    firstLeg = Leg();
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        LegKind const kind = prevKind[path[i]];
+        if (kind == LegKind::Walk)
+            continue;
+
+        Node const& from = nodes[path[i - 1]];
+        Node const& to = nodes[path[i]];
+        firstLeg.kind = kind;
+        if (kind == LegKind::Transport)
+        {
+            firstLeg.lineEntry = _lines[from.line].entry;
+            firstLeg.fromDock = from.dock;
+            firstLeg.toDock = to.dock;
+        }
+        else
+            firstLeg.portalIndex = static_cast<uint32>(from.portal);
+
+        break;
+    }
+
+    return true;
+}
+
+void TravelRouteMgr::GetArrivalCosts(Player* bot, uint32 mapId, std::vector<std::pair<WorldPosition, float>>& out)
+{
+    out.clear();
+    std::vector<Node> nodes;
+    std::vector<float> cost;
+    std::vector<int32> prev;
+    std::vector<LegKind> prevKind;
+    Solve(bot, nullptr, nodes, cost, prev, prevKind);
+
+    for (size_t i = 2; i < nodes.size(); ++i)
+    {
+        if (nodes[i].pos.GetMapId() != mapId || cost[i] == std::numeric_limits<float>::max())
+            continue;
+
+        if (nodes[i].line >= 0 || nodes[i].portalExit)
+            out.emplace_back(nodes[i].pos, cost[i]);
+    }
 }

@@ -163,6 +163,9 @@ bool PlayerbotAIConfig::Initialize()
         "Playerbots.MissingBuffReagentMessageCooldown", 300);
     ForceRebuffOnReadyCheck = sConfigMgr->GetOption<bool>("Playerbots.ForceRebuffOnReadyCheck", false);
     ForceRebuffMarginSecs = std::min(sConfigMgr->GetOption<uint32>("Playerbots.ForceRebuffMarginSecs", 60), 3600u);
+    RaidLeader = sConfigMgr->GetOption<bool>("Playerbots.RaidLeader", true);
+    RaidLeaderPullHoldSecs = std::min(sConfigMgr->GetOption<uint32>("Playerbots.RaidLeaderPullHoldSecs", 3), 15u);
+    RaidConsumables = sConfigMgr->GetOption<bool>("Playerbots.RaidConsumables", true);
     AutoAvoidAoe = sConfigMgr->GetOption<bool>("Playerbots.AutoAvoidAoe", true);
     MaxAoeAvoidRadius = sConfigMgr->GetOption<float>("Playerbots.MaxAoeAvoidRadius", 15.0f);
     LoadSet<std::set<uint32>>(sConfigMgr->GetOption<std::string>("Playerbots.AoeAvoidSpellWhitelist", "50759,57491,13810,29946"),
@@ -282,10 +285,25 @@ bool PlayerbotAIConfig::Initialize()
                                              "575,576,578,595,599,600,601,602,604,608,619,632,650,658,668,409,469,509,"
                                              "531,532,534,544,548,550,564,565,580,249,533,603,615,616,624,631,649,724"),
         RestrictedHealerDPSMaps);
-
-    //////////////////////////// ICC
-
-    EnableICCBuffs = sConfigMgr->GetOption<bool>("Playerbots.EnableICCBuffs", true);
+    AutoHealerAssignment = sConfigMgr->GetOption<bool>("Playerbots.AutoHealerAssignment", true);
+    TankDamageSpikePct = sConfigMgr->GetOption<float>("Playerbots.TankDamageSpikePct", 30.0f);
+    HealerHealthLossWeight = sConfigMgr->GetOption<float>("Playerbots.HealerHealthLossWeight", 1.5f);
+    HealerFastHealthLossPct = sConfigMgr->GetOption<float>("Playerbots.HealerFastHealthLossPct", 12.0f);
+    AutoCc = sConfigMgr->GetOption<bool>("Playerbots.AutoCc", true);
+    AutoCcPrePull = sConfigMgr->GetOption<bool>("Playerbots.AutoCcPrePull", true);
+    AutoCcMarkMinPackSize = sConfigMgr->GetOption<uint32>("Playerbots.AutoCcMarkMinPackSize", 4);
+    AutoCcMarkMaxPerPack = sConfigMgr->GetOption<uint32>("Playerbots.AutoCcMarkMaxPerPack", 2);
+    LosPullMinCasters = sConfigMgr->GetOption<uint32>("Playerbots.LosPullMinCasters", 2);
+    CarefulPullHeroic = sConfigMgr->GetOption<bool>("Playerbots.CarefulPullHeroic", true);
+    CarefulPullMaxMobs = sConfigMgr->GetOption<uint32>("Playerbots.CarefulPullMaxMobs", 10);
+    CarefulPullMeasuredLevelling = sConfigMgr->GetOption<bool>("Playerbots.CarefulPullMeasuredLevelling", true);
+    CarefulPullMinHealerMana = sConfigMgr->GetOption<float>("Playerbots.CarefulPullMinHealerMana", 50.0f);
+    TankPeelWalkRange = sConfigMgr->GetOption<float>("Playerbots.TankPeelWalkRange", 15.0f);
+    RangedFleeToTank = sConfigMgr->GetOption<bool>("Playerbots.RangedFleeToTank", true);
+    RangedTankLeash = sConfigMgr->GetOption<float>("Playerbots.RangedTankLeash", 30.0f);
+    DpsGroupFightRadius = sConfigMgr->GetOption<float>("Playerbots.DpsGroupFightRadius", 35.0f);
+    TankCooldownHealthPct = sConfigMgr->GetOption<float>("Playerbots.TankCooldownHealthPct", 50.0f);
+    TankCooldownLossPct = sConfigMgr->GetOption<float>("Playerbots.TankCooldownLossPct", 10.0f);
 
     //////////////////////////// Professions
     ClassMatchingProfessionChance =
@@ -650,6 +668,7 @@ bool PlayerbotAIConfig::Initialize()
     AddClassCommand = sConfigMgr->GetOption<int32>("Playerbots.AddClassCommand", 1);
     AddClassAccountPoolSize = sConfigMgr->GetOption<int32>("Playerbots.AddClassAccountPoolSize", 50);
     AddClassRandomCharacter = sConfigMgr->GetOption<bool>("Playerbots.AddClassRandomCharacter", false);
+    AddClassAutoInit = sConfigMgr->GetOption<bool>("Playerbots.AddClassAutoInit", true);
     MaintenanceCommand = sConfigMgr->GetOption<int32>("Playerbots.MaintenanceCommand", 1);
 
     AltMaintenanceAttunementQs = sConfigMgr->GetOption<bool>("Playerbots.AltMaintenanceAttunementQuests", true);
@@ -757,6 +776,13 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotArenaTeamMinRating = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeamMinRating", 1000);
 
     SelfBotLevel = sConfigMgr->GetOption<int32>("Playerbots.SelfBotLevel", 1);
+    SelfBotInputTakesControl = sConfigMgr->GetOption<bool>("Playerbots.SelfBotInputTakesControl", true);
+    SelfBotInputGraceMs =
+        std::min(sConfigMgr->GetOption<uint32>("Playerbots.SelfBotInputGraceSecs", 3), 60u) * 1000u;
+    SelfBotReturnAfterIdleSecs = sConfigMgr->GetOption<uint32>("Playerbots.SelfBotReturnAfterIdleSecs", 0);
+    SelfBotIgnoreOwnGroupCommands = sConfigMgr->GetOption<bool>("Playerbots.SelfBotIgnoreOwnGroupCommands", true);
+    RussianCommandSynonyms = sConfigMgr->GetOption<bool>("Playerbots.RussianCommandSynonyms", true);
+    RaidLeaderForHumanLeader = sConfigMgr->GetOption<bool>("Playerbots.RaidLeaderForHumanLeader", true);
 
     RandomPlayerbotFactory::LoadLocalizedNameColumns();
     RandomPlayerbotFactory::CreateRandomBots();

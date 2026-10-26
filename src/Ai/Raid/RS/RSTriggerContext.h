@@ -38,6 +38,7 @@ public:
         creators["rs halion consumption"] = &RaidRsTriggerContext::rs_halion_consumption;
         creators["rs halion cutter"] = &RaidRsTriggerContext::rs_halion_cutter;
         creators["rs halion heal consumption"] = &RaidRsTriggerContext::rs_halion_heal_consumption;
+        creators["rs halion dispel mark"] = &RaidRsTriggerContext::rs_halion_dispel_mark;
         creators["rs trash adds"] = &RaidRsTriggerContext::rs_trash_adds;
         creators["rs trash main tank"] = &RaidRsTriggerContext::rs_trash_main_tank;
         creators["rs trash assist tank"] = &RaidRsTriggerContext::rs_trash_assist_tank;
@@ -69,6 +70,7 @@ private:
     static Trigger* rs_halion_consumption(PlayerbotAI* botAI) { return new RsHalionConsumptionTrigger(botAI); }
     static Trigger* rs_halion_cutter(PlayerbotAI* botAI) { return new RsHalionCutterTrigger(botAI); }
     static Trigger* rs_halion_heal_consumption(PlayerbotAI* botAI) { return new RsHalionHealConsumptionTrigger(botAI); }
+    static Trigger* rs_halion_dispel_mark(PlayerbotAI* botAI) { return new RsHalionDispelMarkTrigger(botAI); }
     static Trigger* rs_trash_adds(PlayerbotAI* botAI) { return new RsTrashAddsTrigger(botAI); }
     static Trigger* rs_trash_main_tank(PlayerbotAI* botAI) { return new RsTrashMainTankTrigger(botAI); }
     static Trigger* rs_trash_assist_tank(PlayerbotAI* botAI) { return new RsTrashAssistTankTrigger(botAI); }

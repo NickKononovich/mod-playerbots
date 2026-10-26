@@ -213,12 +213,6 @@ bool RsTrashTankAction::HoldAt(std::vector<Unit*> const& assigned, float spotX, 
         if (!mob || !mob->IsAlive())
             continue;
 
-        if (botAI->HasCheat(BotCheatMask::raid) && mob->IsInCombat())
-            RsForceThreat(mob, bot);
-
-        if (hasAway)
-            mob->SetFacingTo(awayOri);
-
         float const d = bot->GetExactDist2d(mob);
         if (d < best)
         {
@@ -233,6 +227,29 @@ bool RsTrashTankAction::HoldAt(std::vector<Unit*> const& assigned, float spotX, 
     if (moveToSpot && bot->GetExactDist2d(spotX, spotY) > RS_TRASH_TANK_SPACE_TOL)
         return MoveTo(bot->GetMapId(), spotX, spotY, spotZ, false, false, false, true,
                       MovementPriority::MOVEMENT_COMBAT);
+
+    // A mob faces its victim, so the tank turns cleaves away from the ranged group the honest way:
+    // by standing on the far side of the mob, never by rotating the mob.
+    if (nearest && hasAway && nearest->GetVictim() == bot)
+    {
+        float const mobToTank = std::atan2(bot->GetPositionY() - nearest->GetPositionY(),
+                                           bot->GetPositionX() - nearest->GetPositionX());
+        float diff = mobToTank - awayOri;
+        while (diff > static_cast<float>(M_PI))
+            diff -= 2.0f * static_cast<float>(M_PI);
+        while (diff < -static_cast<float>(M_PI))
+            diff += 2.0f * static_cast<float>(M_PI);
+
+        if (std::fabs(diff) > static_cast<float>(M_PI) / 2.0f)
+        {
+            float const reach = nearest->GetCombatReach() + 1.5f;
+            float const tx = nearest->GetPositionX() + std::cos(awayOri) * reach;
+            float const ty = nearest->GetPositionY() + std::sin(awayOri) * reach;
+            if (bot->IsWithinLOS(tx, ty, bot->GetPositionZ()))
+                return MoveTo(bot->GetMapId(), tx, ty, bot->GetPositionZ(), false, false, false, true,
+                              MovementPriority::MOVEMENT_COMBAT);
+        }
+    }
 
     if (nearest)
         bot->SetFacingToObject(nearest);

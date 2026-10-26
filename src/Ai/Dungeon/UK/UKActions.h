@@ -11,6 +11,7 @@
 #include "AttackAction.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "TbcHazard.h"
 #include "UKTriggers.h"
 
 class AttackFrostTombAction : public AttackAction
@@ -21,10 +22,26 @@ public:
     bool isUseful() override;
 };
 
-class AttackDalronnAction : public AttackAction
+class AttackSkarvaldAction : public AttackAction
 {
 public:
-    AttackDalronnAction(PlayerbotAI* botAI) : AttackAction(botAI, "attack dalronn") {}
+    AttackSkarvaldAction(PlayerbotAI* botAI) : AttackAction(botAI, "attack skarvald") {}
+    bool Execute(Event event) override;
+};
+
+// Interrupts the living Dalronn's Shadow Bolt / Debilitate with the bot's interrupt (kick, counterspell, ...).
+class DalronnInterruptAction : public Action
+{
+public:
+    DalronnInterruptAction(PlayerbotAI* botAI) : Action(botAI, "dalronn interrupt") {}
+    bool Execute(Event event) override;
+};
+
+// Leaves Smash / Dark Smash: to the nearest spot behind or beside Ingvar outside his boundary.
+class IngvarAvoidSmashAction : public TbcHazardMoveAction
+{
+public:
+    IngvarAvoidSmashAction(PlayerbotAI* botAI) : TbcHazardMoveAction(botAI, "ingvar avoid smash") {}
     bool Execute(Event event) override;
 };
 

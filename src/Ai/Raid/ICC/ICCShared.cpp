@@ -8,8 +8,9 @@
 #include "ICCActions.h"
 #include "ICCScripts.h"
 #include "ICCTriggers.h"
+#include "Log.h"
 #include "Playerbots.h"
-#include "ThreatManager.h"
+#include "RaidMarkOwnership.h"
 #include "Timer.h"
 #include <algorithm>
 #include <map>
@@ -46,6 +47,17 @@ std::vector<Creature*> IccGetCreaturesByEntries(WorldObject* searcher, std::init
     return out;
 }
 
+void IccLogHonestTacticGap(Player* bot, IccHonestGap gap, char const* boss, char const* what)
+{
+    uint32 const bit = 1u << static_cast<uint32>(gap);
+    uint32& logged = IcecrownHelpers::IccState(bot->GetInstanceId()).honestGapLogged;
+    if (logged & bit)
+        return;
+
+    logged |= bit;
+    LOG_INFO("playerbots", "ICC {}: needs honest tactic ({})", boss, what);
+}
+
 bool IccCastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target)
 {
     if (!target || !target->IsAlive())
@@ -57,38 +69,21 @@ bool IccCastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target)
         return false;
     last = now;
 
-    bool const threatReset = botAI->HasCheat(BotCheatMask::raid);
-
-    if (threatReset && target->GetVictim() != bot)
-    {
-        ThreatManager& mgr = target->GetThreatMgr();
-        mgr.AddThreat(bot, 1000000.0f, nullptr, true, true);
-        mgr.FixateTarget(bot);
-    }
-
     switch (bot->getClass())
     {
         case CLASS_PALADIN:
-            if (threatReset)
-                bot->RemoveSpellCooldown(SPELL_TAUNT_PALADIN, true);
             if (botAI->CastSpell("hand of reckoning", target))
                 return true;
             break;
         case CLASS_DEATH_KNIGHT:
-            if (threatReset)
-                bot->RemoveSpellCooldown(SPELL_TAUNT_DK, true);
             if (botAI->CastSpell("dark command", target))
                 return true;
             break;
         case CLASS_DRUID:
-            if (threatReset)
-                bot->RemoveSpellCooldown(SPELL_TAUNT_DRUID, true);
             if (botAI->CastSpell("growl", target))
                 return true;
             break;
         case CLASS_WARRIOR:
-            if (threatReset)
-                bot->RemoveSpellCooldown(SPELL_TAUNT_WARRIOR, true);
             if (botAI->CastSpell("taunt", target))
                 return true;
             break;
@@ -146,34 +141,7 @@ void IccEnsureIconOn(Player* bot, PlayerbotAI* botAI, int8 icon, Unit* target)
 
     Unit* current = botAI->GetUnit(group->GetTargetIcon(icon));
     if (!current || !current->IsAlive() || current != target)
-        group->SetTargetIcon(icon, bot->GetGUID(), target->GetGUID());
-}
-
-void IccApplyHeroicBuffToMember(Player* member, bool applyPainSupp, bool applyNoThreat)
-{
-    uint32 const now = getMSTime();
-    uint32& last = IcecrownHelpers::IccState(member->GetInstanceId()).lastBuffMs[member->GetGUID()];
-    if (last != 0 && getMSTimeDiff(last, now) < 500)
-        return;
-    last = now;
-
-    if (!member->HasAura(SPELL_EXPERIENCED))
-        member->AddAura(SPELL_EXPERIENCED, member);
-
-    if (!member->HasAura(SPELL_AGEIS_OF_DALARAN))
-        member->AddAura(SPELL_AGEIS_OF_DALARAN, member);
-
-    if (applyPainSupp && !member->HasAura(SPELL_PAIN_SUPPRESION))
-        member->AddAura(SPELL_PAIN_SUPPRESION, member);
-
-    if (applyNoThreat && !PlayerbotAI::IsTank(member) && !member->HasAura(SPELL_NO_THREAT))
-        member->AddAura(SPELL_NO_THREAT, member);
-}
-
-void IccStripExperienced(Player* bot)
-{
-    if (bot->HasAura(SPELL_EXPERIENCED))
-        bot->RemoveAura(SPELL_EXPERIENCED);
+        RaidMarkOwnership::SetIcon(bot, group, icon, target->GetGUID());
 }
 
 bool IccBossCastingBlisteringCold(Unit* boss)
@@ -250,10 +218,11 @@ std::optional<bool> IccValithriaShouldHealRaid(Player* bot)
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* member = itr->GetSource();
-        if (!member || !member->IsAlive() || IsSelfBot(bot))
+        // SelfBots take a healer slot like any bot; only client-driven players are left to themselves.
+        if (!member || !member->IsAlive() || IsRealPlayer(member))
             continue;
 
-        if (PlayerbotAI::IsHeal(member) && !IsSelfBot(bot))
+        if (PlayerbotAI::IsHeal(member))
         {
             healerCount++;
             healerGuids.push_back(member->GetGUID());

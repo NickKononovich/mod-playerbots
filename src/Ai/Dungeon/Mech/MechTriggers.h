@@ -46,4 +46,41 @@ public:
     bool IsActive() override;
 };
 
+// The bot's way leads over the lift between the two levels, or it stands on the lift (MechanarLift::ActiveLeg).
+class MechanarLiftTrigger : public Trigger
+{
+public:
+    MechanarLiftTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mechanar lift") {}
+    bool IsActive() override;
+};
+
+// Capacitus heroic: the bot's charge and a member of the other charge within the pulse radius (MechanarCapacitus).
+class CapacitusPolarityTrigger : public Trigger
+{
+public:
+    CapacitusPolarityTrigger(PlayerbotAI* botAI) : Trigger(botAI, "capacitus polarity") {}
+    bool IsActive() override;
+};
+
+// Capacitus normal: a caster casts a magic spell into Reflective Magic Shield, or a melee damage dealer hits him
+// through Reflective Damage Shield.
+class CapacitusReflectiveShieldTrigger : public Trigger
+{
+public:
+    CapacitusReflectiveShieldTrigger(PlayerbotAI* botAI) : Trigger(botAI, "capacitus reflective shield") {}
+    bool IsActive() override;
+};
+
+// The pulling tank by the idle bridge pack before Pathaleon, the group gathered and ready (MechanarBridge).
+class MechanarBridgePullTrigger : public Trigger
+{
+public:
+    MechanarBridgePullTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mechanar bridge pull") {}
+    bool IsActive() override;
+
+private:
+    uint32 _checkMs = 0;
+    bool _due = false;
+};
+
 #endif

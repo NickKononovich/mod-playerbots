@@ -17,11 +17,13 @@ public:
     {
         creators["malygos"] = &RaidEoETriggerContext::malygos;
         creators["power spark"] = &RaidEoETriggerContext::power_spark;
+        creators["eoe drake flying"] = &RaidEoETriggerContext::eoe_drake_flying;
     }
 
 private:
     static Trigger* power_spark(PlayerbotAI* botAI) { return new PowerSparkTrigger(botAI); }
     static Trigger* malygos(PlayerbotAI* botAI) { return new MalygosTrigger(botAI); }
+    static Trigger* eoe_drake_flying(PlayerbotAI* botAI) { return new EoEDrakeFlyingTrigger(botAI); }
 };
 
 #endif

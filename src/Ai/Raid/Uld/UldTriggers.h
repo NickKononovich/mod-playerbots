@@ -355,6 +355,7 @@ public:
     bool IsInChamberOfTheAspectsIllusion();
     bool IsMasterIsInIllusionGroup();
     bool IsMasterIsInBrainRoom();
+    bool IsIllusionDoorOpen();
     Position GetIllusionRoomEntrancePosition();
     Unit* GetIllusionRoomRtiTarget();
     Unit* GetNextIllusionRoomRtiTarget();
@@ -461,6 +462,16 @@ class YoggSaronLunaticGazeTrigger : public YoggSaronTrigger
 {
 public:
     YoggSaronLunaticGazeTrigger(PlayerbotAI* botAI) : YoggSaronTrigger(botAI, "yogg-saron lunatic gaze trigger") {}
+    bool IsActive() override;
+};
+
+// AC #27125: pets do not attack the Brain of Yogg-Saron and get lost in the illusion. Keep them passive at
+// the brain level (illusion rooms + brain chamber) and restore them when the owner is back upstairs.
+class YoggSaronBrainPetPassiveTrigger : public YoggSaronTrigger
+{
+public:
+    YoggSaronBrainPetPassiveTrigger(PlayerbotAI* botAI)
+        : YoggSaronTrigger(botAI, "yogg-saron brain pet passive trigger") {}
     bool IsActive() override;
 };
 

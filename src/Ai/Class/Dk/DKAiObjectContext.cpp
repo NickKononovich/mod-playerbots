@@ -13,6 +13,7 @@
 #include "GenericDKNonCombatStrategy.h"
 #include "GenericTriggers.h"
 #include "Playerbots.h"
+#include "TankAoeThreat.h"
 #include "UnholyDKStrategy.h"
 
 class DeathKnightStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -63,14 +64,13 @@ public:
         creators["plague strike on attacker"] = &DeathKnightTriggerFactoryInternal::plague_strike_on_attacker;
         creators["icy touch"] = &DeathKnightTriggerFactoryInternal::icy_touch;
         creators["icy touch 3s"] = &DeathKnightTriggerFactoryInternal::icy_touch_3s;
-        creators["dd cd and icy touch 3s"] = &DeathKnightTriggerFactoryInternal::dd_cd_and_icy_touch_3s;
         creators["death coil"] = &DeathKnightTriggerFactoryInternal::death_coil;
         creators["icy touch on attacker"] = &DeathKnightTriggerFactoryInternal::icy_touch_on_attacker;
         creators["improved icy talons"] = &DeathKnightTriggerFactoryInternal::improved_icy_talons;
         creators["plague strike"] = &DeathKnightTriggerFactoryInternal::plague_strike;
         creators["plague strike 3s"] = &DeathKnightTriggerFactoryInternal::plague_strike_3s;
-        creators["dd cd and plague strike 3s"] = &DeathKnightTriggerFactoryInternal::dd_cd_and_plague_strike_3s;
         creators["horn of winter"] = &DeathKnightTriggerFactoryInternal::horn_of_winter;
+        creators["horn of winter ready"] = &DeathKnightTriggerFactoryInternal::horn_of_winter_ready;  // [rot_b31_pdd]
         creators["mind freeze"] = &DeathKnightTriggerFactoryInternal::mind_freeze;
         creators["mind freeze on enemy healer"] = &DeathKnightTriggerFactoryInternal::mind_freeze_on_enemy_healer;
         creators["strangulate"] = &DeathKnightTriggerFactoryInternal::strangulate;
@@ -78,6 +78,7 @@ public:
         creators["blood tap"] = &DeathKnightTriggerFactoryInternal::blood_tap;
         creators["raise dead"] = &DeathKnightTriggerFactoryInternal::raise_dead;
         creators["chains of ice"] = &DeathKnightTriggerFactoryInternal::chains_of_ice;
+        creators["death grip far target"] = &DeathKnightTriggerFactoryInternal::death_grip_far_target;
         creators["unbreakable armor"] = &DeathKnightTriggerFactoryInternal::unbreakable_armor;
         creators["high blood rune"] = &DeathKnightTriggerFactoryInternal::high_blood_rune;
         creators["high frost rune"] = &DeathKnightTriggerFactoryInternal::high_frost_rune;
@@ -85,10 +86,35 @@ public:
         creators["no rune"] = &DeathKnightTriggerFactoryInternal::no_rune;
         creators["freezing fog"] = &DeathKnightTriggerFactoryInternal::freezing_fog;
         creators["no desolation"] = &DeathKnightTriggerFactoryInternal::no_desolation;
-        creators["dd cd and no desolation"] = &DeathKnightTriggerFactoryInternal::dd_cd_and_no_desolation;
-        creators["death and decay cooldown"] = &DeathKnightTriggerFactoryInternal::death_and_decay_cooldown;
+        creators["tank aoe threat"] = &DeathKnightTriggerFactoryInternal::tank_aoe_threat;
+        creators["tank aoe pack"] = &DeathKnightTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
+        creators["tank aoe crowd"] = &DeathKnightTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
         creators["army of the dead"] = &DeathKnightTriggerFactoryInternal::army_of_the_dead;
         creators["hysteria no cd"] = &DeathKnightTriggerFactoryInternal::hysteria_no_cd;
+        creators["summon gargoyle"] = &DeathKnightTriggerFactoryInternal::summon_gargoyle;
+        creators["anti-magic shell"] = &DeathKnightTriggerFactoryInternal::anti_magic_shell;
+        creators["rune tap health"] = &DeathKnightTriggerFactoryInternal::rune_tap_health;
+        creators["vampiric blood health"] = &DeathKnightTriggerFactoryInternal::vampiric_blood_health;
+        creators["icebound fortitude health"] = &DeathKnightTriggerFactoryInternal::icebound_fortitude_health;
+        // [b31_dk]
+        creators["no presence"] = &DeathKnightTriggerFactoryInternal::no_presence;
+        creators["killing machine"] = &DeathKnightTriggerFactoryInternal::killing_machine;
+        // [b31_deep]
+        creators["rune strike"] = &DeathKnightTriggerFactoryInternal::rune_strike;
+        creators["blood rune ready"] = &DeathKnightTriggerFactoryInternal::blood_rune_ready;
+        creators["frost strike runic power"] = &DeathKnightTriggerFactoryInternal::frost_strike_runic_power;
+        creators["ghoul frenzy"] = &DeathKnightTriggerFactoryInternal::ghoul_frenzy;
+        creators["raise dead boost"] = &DeathKnightTriggerFactoryInternal::raise_dead_boost;
+        creators["unholy presence after gargoyle"] =
+            &DeathKnightTriggerFactoryInternal::unholy_presence_after_gargoyle;
+        // [b35_uh]
+        creators["empower rune weapon under gargoyle"] =
+            &DeathKnightTriggerFactoryInternal::empower_rune_weapon_under_gargoyle;
+        creators["no rune boss"] = &DeathKnightTriggerFactoryInternal::no_rune_boss;
+        creators["army of the dead under gargoyle"] =
+            &DeathKnightTriggerFactoryInternal::army_of_the_dead_under_gargoyle;
+        creators["army of the dead last frost rune"] =
+            &DeathKnightTriggerFactoryInternal::army_of_the_dead_last_frost_rune;
     }
 
 private:
@@ -97,24 +123,17 @@ private:
     static Trigger* blood_strike(PlayerbotAI* botAI) { return new BloodStrikeTrigger(botAI); }
     static Trigger* plague_strike(PlayerbotAI* botAI) { return new PlagueStrikeDebuffTrigger(botAI); }
     static Trigger* plague_strike_3s(PlayerbotAI* botAI) { return new PlagueStrike3sDebuffTrigger(botAI); }
-    static Trigger* dd_cd_and_plague_strike_3s(PlayerbotAI* botAI)
-    {
-        return new TwoTriggers(botAI, "death and decay cooldown", "plague strike 3s");
-    }
     static Trigger* plague_strike_on_attacker(PlayerbotAI* botAI)
     {
         return new PlagueStrikeDebuffOnAttackerTrigger(botAI);
     }
     static Trigger* icy_touch(PlayerbotAI* botAI) { return new IcyTouchDebuffTrigger(botAI); }
     static Trigger* icy_touch_3s(PlayerbotAI* botAI) { return new IcyTouch3sDebuffTrigger(botAI); }
-    static Trigger* dd_cd_and_icy_touch_3s(PlayerbotAI* botAI)
-    {
-        return new TwoTriggers(botAI, "death and decay cooldown", "icy touch 3s");
-    }
     static Trigger* death_coil(PlayerbotAI* botAI) { return new DeathCoilTrigger(botAI); }
     static Trigger* icy_touch_on_attacker(PlayerbotAI* botAI) { return new IcyTouchDebuffOnAttackerTrigger(botAI); }
     static Trigger* improved_icy_talons(PlayerbotAI* botAI) { return new ImprovedIcyTalonsTrigger(botAI); }
     static Trigger* horn_of_winter(PlayerbotAI* botAI) { return new HornOfWinterTrigger(botAI); }
+    static Trigger* horn_of_winter_ready(PlayerbotAI* botAI) { return new HornOfWinterReadyTrigger(botAI); }
     static Trigger* mind_freeze(PlayerbotAI* botAI) { return new MindFreezeInterruptSpellTrigger(botAI); }
     static Trigger* mind_freeze_on_enemy_healer(PlayerbotAI* botAI)
     {
@@ -128,6 +147,7 @@ private:
     static Trigger* blood_tap(PlayerbotAI* botAI) { return new BloodTapTrigger(botAI); }
     static Trigger* raise_dead(PlayerbotAI* botAI) { return new RaiseDeadTrigger(botAI); }
     static Trigger* chains_of_ice(PlayerbotAI* botAI) { return new ChainsOfIceSnareTrigger(botAI); }
+    static Trigger* death_grip_far_target(PlayerbotAI* botAI) { return new DeathGripFarTargetTrigger(botAI); }
     static Trigger* unbreakable_armor(PlayerbotAI* botAI) { return new UnbreakableArmorTrigger(botAI); }
     static Trigger* high_blood_rune(PlayerbotAI* botAI) { return new HighBloodRuneTrigger(botAI); }
     static Trigger* high_frost_rune(PlayerbotAI* botAI) { return new HighFrostRuneTrigger(botAI); }
@@ -135,13 +155,48 @@ private:
     static Trigger* no_rune(PlayerbotAI* botAI) { return new NoRuneTrigger(botAI); }
     static Trigger* freezing_fog(PlayerbotAI* botAI) { return new FreezingFogTrigger(botAI); }
     static Trigger* no_desolation(PlayerbotAI* botAI) { return new DesolationTrigger(botAI); }
-    static Trigger* dd_cd_and_no_desolation(PlayerbotAI* botAI)
-    {
-        return new TwoTriggers(botAI, "death and decay cooldown", "no desolation");
-    }
-    static Trigger* death_and_decay_cooldown(PlayerbotAI* botAI) { return new DeathAndDecayCooldownTrigger(botAI); }
+    // Blood Boil and Death and Decay reach 10 yd
+    static Trigger* tank_aoe_threat(PlayerbotAI* botAI) { return new TankAoeThreatTrigger(botAI, 10.0f, 6.0f); }
+    static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 10.0f); }  // [b32_tank_aoe]
+    // [b32_peel]
+    static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 10.0f); }
     static Trigger* army_of_the_dead(PlayerbotAI* botAI) { return new ArmyOfTheDeadTrigger(botAI); }
     static Trigger* hysteria_no_cd(PlayerbotAI* botAI) { return new HysteriaNoCooldownTrigger(botAI); }
+    static Trigger* summon_gargoyle(PlayerbotAI* botAI) { return new SummonGargoyleTrigger(botAI); }
+    static Trigger* anti_magic_shell(PlayerbotAI* botAI) { return new AntiMagicShellTrigger(botAI); }
+    static Trigger* rune_tap_health(PlayerbotAI* botAI) { return new RuneTapHealthTrigger(botAI); }
+    static Trigger* vampiric_blood_health(PlayerbotAI* botAI) { return new VampiricBloodHealthTrigger(botAI); }
+    static Trigger* icebound_fortitude_health(PlayerbotAI* botAI)
+    {
+        return new IceboundFortitudeHealthTrigger(botAI);
+    }
+    // [b31_dk]
+    static Trigger* no_presence(PlayerbotAI* botAI) { return new DKPresenceTrigger(botAI); }
+    static Trigger* killing_machine(PlayerbotAI* botAI) { return new KillingMachineTrigger(botAI); }
+    // [b31_deep]
+    static Trigger* rune_strike(PlayerbotAI* botAI) { return new RuneStrikeTrigger(botAI); }
+    static Trigger* blood_rune_ready(PlayerbotAI* botAI) { return new BloodRuneReadyTrigger(botAI); }
+    static Trigger* frost_strike_runic_power(PlayerbotAI* botAI) { return new FrostStrikeRunicPowerTrigger(botAI); }
+    static Trigger* ghoul_frenzy(PlayerbotAI* botAI) { return new GhoulFrenzyTrigger(botAI); }
+    static Trigger* raise_dead_boost(PlayerbotAI* botAI) { return new RaiseDeadBoostTrigger(botAI); }
+    static Trigger* unholy_presence_after_gargoyle(PlayerbotAI* botAI)
+    {
+        return new UnholyPresenceAfterGargoyleTrigger(botAI);
+    }
+    // [b35_uh]
+    static Trigger* empower_rune_weapon_under_gargoyle(PlayerbotAI* botAI)
+    {
+        return new EmpowerRuneWeaponUnderGargoyleTrigger(botAI);
+    }
+    static Trigger* no_rune_boss(PlayerbotAI* botAI) { return new NoRuneBossTrigger(botAI); }
+    static Trigger* army_of_the_dead_under_gargoyle(PlayerbotAI* botAI)
+    {
+        return new ArmyOfTheDeadUnderGargoyleTrigger(botAI);
+    }
+    static Trigger* army_of_the_dead_last_frost_rune(PlayerbotAI* botAI)
+    {
+        return new ArmyOfTheDeadLastFrostRuneTrigger(botAI);
+    }
 };
 
 class DeathKnightAiObjectContextInternal : public NamedObjectContext<Action>
@@ -163,8 +218,8 @@ public:
         creators["raise dead"] = &DeathKnightAiObjectContextInternal::raise_dead;
         creators["army of the dead"] = &DeathKnightAiObjectContextInternal::army_of_the_dead;
         creators["summon gargoyle"] = &DeathKnightAiObjectContextInternal::summon_gargoyle;
-        creators["anti magic shell"] = &DeathKnightAiObjectContextInternal::anti_magic_shell;
-        creators["anti magic zone"] = &DeathKnightAiObjectContextInternal::anti_magic_zone;
+        creators["anti-magic shell"] = &DeathKnightAiObjectContextInternal::anti_magic_shell;
+        creators["anti-magic zone"] = &DeathKnightAiObjectContextInternal::anti_magic_zone;
         creators["ghoul frenzy"] = &DeathKnightAiObjectContextInternal::ghoul_frenzy;
         creators["corpse explosion"] = &DeathKnightAiObjectContextInternal::corpse_explosion;
         // Frost
@@ -177,7 +232,6 @@ public:
         creators["rune strike"] = &DeathKnightAiObjectContextInternal::rune_strike;
         // creators["icy clutch"] = &DeathKnightAiObjectContextInternal::icy_clutch;
         creators["horn of winter"] = &DeathKnightAiObjectContextInternal::horn_of_winter;
-        creators["killing machine"] = &DeathKnightAiObjectContextInternal::killing_machine;
         creators["frost presence"] = &DeathKnightAiObjectContextInternal::frost_presence;
         creators["deathchill"] = &DeathKnightAiObjectContextInternal::deathchill;
         creators["icebound fortitude"] = &DeathKnightAiObjectContextInternal::icebound_fortitude;
@@ -189,19 +243,36 @@ public:
         // blood
         creators["blood strike"] = &DeathKnightAiObjectContextInternal::blood_strike;
         creators["blood tap"] = &DeathKnightAiObjectContextInternal::blood_tap;
+        // [bear_aoe_threat]
+        creators["blood tap for defense"] = &DeathKnightAiObjectContextInternal::blood_tap_for_defense;
         creators["pestilence"] = &DeathKnightAiObjectContextInternal::pestilence;
         creators["strangulate"] = &DeathKnightAiObjectContextInternal::strangulate;
         creators["blood boil"] = &DeathKnightAiObjectContextInternal::blood_boil;
+        creators["blood boil on group member attackers"] =
+            &DeathKnightAiObjectContextInternal::blood_boil_on_group_member_attackers;
+        creators["blood boil tank aoe"] = &DeathKnightAiObjectContextInternal::blood_boil_tank_aoe;
         creators["heart strike"] = &DeathKnightAiObjectContextInternal::heart_strike;
-        creators["mark of_blood"] = &DeathKnightAiObjectContextInternal::mark_of_blood;
+        // [b31_deep] was "mark of_blood"
+        creators["mark of blood"] = &DeathKnightAiObjectContextInternal::mark_of_blood;
         creators["blood presence"] = &DeathKnightAiObjectContextInternal::blood_presence;
         creators["rune tap"] = &DeathKnightAiObjectContextInternal::rune_tap;
         creators["vampiric blood"] = &DeathKnightAiObjectContextInternal::vampiric_blood;
         creators["death pact"] = &DeathKnightAiObjectContextInternal::death_pact;
         creators["death rune_mastery"] = &DeathKnightAiObjectContextInternal::death_rune_mastery;
         creators["hysteria"] = &DeathKnightAiObjectContextInternal::hysteria;
+        creators["raise ally"] = &DeathKnightAiObjectContextInternal::raise_ally;
         creators["dancing rune weapon"] = &DeathKnightAiObjectContextInternal::dancing_rune_weapon;
         creators["dark command"] = &DeathKnightAiObjectContextInternal::dark_command;
+        creators["dark command on group member attacker"] =
+            &DeathKnightAiObjectContextInternal::dark_command_on_group_member_attacker;
+        creators["death grip on group member attacker"] =
+            &DeathKnightAiObjectContextInternal::death_grip_on_group_member_attacker;
+        creators["icy touch on group member attacker"] =
+            &DeathKnightAiObjectContextInternal::icy_touch_on_group_member_attacker;
+        creators["heart strike on group member attacker"] =
+            &DeathKnightAiObjectContextInternal::heart_strike_on_group_member_attacker;
+        // [b31_deep] the "mind freeze on enemy healer" trigger (GenericDKStrategy) queued an unregistered action
+        creators["mind freeze on enemy healer"] = &DeathKnightAiObjectContextInternal::mind_freeze_on_enemy_healer;
     }
 
 private:
@@ -233,7 +304,6 @@ private:
     static Action* rune_strike(PlayerbotAI* botAI) { return new CastRuneStrikeAction(botAI); }
     // static Action* icy_clutch(PlayerbotAI* botAI) { return new CastIcyClutchAction(botAI); }
     static Action* horn_of_winter(PlayerbotAI* botAI) { return new CastHornOfWinterAction(botAI); }
-    static Action* killing_machine(PlayerbotAI* botAI) { return new CastKillingMachineAction(botAI); }
     static Action* frost_presence(PlayerbotAI* botAI) { return new CastFrostPresenceAction(botAI); }
     static Action* deathchill(PlayerbotAI* botAI) { return new CastDeathchillAction(botAI); }
     static Action* icebound_fortitude(PlayerbotAI* botAI) { return new CastIceboundFortitudeAction(botAI); }
@@ -245,9 +315,15 @@ private:
     // blood
     static Action* blood_strike(PlayerbotAI* botAI) { return new CastBloodStrikeAction(botAI); }
     static Action* blood_tap(PlayerbotAI* botAI) { return new CastBloodTapAction(botAI); }
+    static Action* blood_tap_for_defense(PlayerbotAI* botAI) { return new CastBloodTapForDefenseAction(botAI); }
     static Action* pestilence(PlayerbotAI* botAI) { return new CastPestilenceAction(botAI); }
     static Action* strangulate(PlayerbotAI* botAI) { return new CastStrangulateAction(botAI); }
     static Action* blood_boil(PlayerbotAI* botAI) { return new CastBloodBoilAction(botAI); }
+    static Action* blood_boil_on_group_member_attackers(PlayerbotAI* botAI)
+    {
+        return new CastAreaSpellOnGroupMemberAttackersAction(botAI, "blood boil", 10.0f);
+    }
+    static Action* blood_boil_tank_aoe(PlayerbotAI* botAI) { return new CastTankAreaThreatAction(botAI, "blood boil"); }
     static Action* heart_strike(PlayerbotAI* botAI) { return new CastHeartStrikeAction(botAI); }
     static Action* mark_of_blood(PlayerbotAI* botAI) { return new CastMarkOfBloodAction(botAI); }
     static Action* blood_presence(PlayerbotAI* botAI) { return new CastBloodPresenceAction(botAI); }
@@ -256,8 +332,25 @@ private:
     static Action* death_pact(PlayerbotAI* botAI) { return new CastDeathPactAction(botAI); }
     static Action* death_rune_mastery(PlayerbotAI* botAI) { return new CastDeathRuneMasteryAction(botAI); }
     static Action* hysteria(PlayerbotAI* botAI) { return new CastHysteriaAction(botAI); }
+    static Action* raise_ally(PlayerbotAI* botAI) { return new CastRaiseAllyAction(botAI); }
     static Action* dancing_rune_weapon(PlayerbotAI* botAI) { return new CastDancingRuneWeaponAction(botAI); }
     static Action* dark_command(PlayerbotAI* botAI) { return new CastDarkCommandAction(botAI); }
+    static Action* dark_command_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "dark command");
+    }
+    static Action* icy_touch_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "icy touch");
+    }
+    static Action* heart_strike_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "heart strike");
+    }
+    static Action* death_grip_on_group_member_attacker(PlayerbotAI* botAI)
+    {
+        return new CastSpellOnGroupMemberAttackerAction(botAI, "death grip");
+    }
     static Action* mind_freeze_on_enemy_healer(PlayerbotAI* botAI)
     {
         return new CastMindFreezeOnEnemyHealerAction(botAI);

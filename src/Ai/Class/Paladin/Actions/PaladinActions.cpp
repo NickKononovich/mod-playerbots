@@ -8,10 +8,13 @@
 #include "AiFactory.h"
 #include "Event.h"
 #include "GenericBuffUtils.h"
+#include "ObjectAccessor.h"
 #include "PaladinGreaterBlessingAction.h"
 #include "PaladinHelper.h"
 #include "Playerbots.h"
 #include "SharedDefines.h"
+#include "SpellAuras.h"
+#include <algorithm>
 
 static bool IsBlessingTargetCandidate(Player* bot, Player* player)
 {
@@ -547,7 +550,7 @@ Value<Unit*>* CastTurnUndeadAction::GetTargetValue()
 
 Unit* CastHandOfFreedomOnPartyAction::GetTarget()
 {
-    bool const selfImpaired = botAI->IsMovementImpaired(bot);
+    bool const selfImpaired = ai::paladin::HasFreedomRemovableImpairment(bot);  // [b33_class] root/snare only
     bool const hasSelfHand =
         selfImpaired && ai::paladin::HasAnyPaladinHandFromCaster(bot, bot);
 
@@ -604,4 +607,513 @@ bool CastCancelDivineSacrificeAction::Execute(Event /*event*/)
 bool CastCancelDivineSacrificeAction::isUseful()
 {
     return botAI->HasAura("divine sacrifice", GetTarget(), false, true, -1, true);
+}
+
+bool CastLayOnHandsOnPartyAction::isUseful()
+{
+    Unit* target = GetTarget();
+    return target && target != bot && HealPartyMemberAction::isUseful();
+}
+
+bool CastDivineShieldAction::isUseful() { return !PlayerbotAI::IsTank(bot) && CastBuffSpellAction::isUseful(); }
+
+bool CastHandOfSacrificeOnSpikingTankAction::isUseful()
+{
+    Unit* target = GetTarget();
+    return target && target != bot && !PlayerbotAI::IsTank(bot) &&
+           bot->GetHealthPct() > sPlayerbotAIConfig.MediumHealth && CastSpikeProtectSpellAction::isUseful();
+}
+
+bool DropStaleSealAction::Execute(Event /*event*/)
+{
+    // [rot_b31_pdd] PlayerbotAI::RemoveAura removes a seal only when the bot has it
+    for (char const* seal : {"seal of righteousness", "seal of justice", "seal of light", "seal of wisdom",
+                             "seal of command", "seal of vengeance", "seal of corruption"})
+        botAI->RemoveAura(seal);
+
+    LOG_INFO("playerbots", "[rot_b31_pdd] {} dropped a seal without AURA_STATE_JUDGEMENT", bot->GetName());
+    return true;
+}
+
+// [b31_deep]
+bool ai::paladin::HasHolyWrathTargetWithin(PlayerbotAI* botAI, Player* bot, float range)
+{
+    auto const isHolyWrathType = [](Unit* unit)
+    {
+        if (!unit || !unit->IsAlive())
+            return false;
+
+        uint32 const creatureType = unit->GetCreatureType();
+        return creatureType == CREATURE_TYPE_UNDEAD || creatureType == CREATURE_TYPE_DEMON;
+    };
+
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    Unit* target = context->GetValue<Unit*>("current target")->Get();
+    if (isHolyWrathType(target) && bot->GetDistance(target) <= range)
+        return true;
+
+    for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (unit != target && isHolyWrathType(unit) && bot->GetDistance(unit) <= range)
+            return true;
+    }
+
+    return false;
+}
+
+// [b31_deep]
+bool CastHolyWrathAction::isUseful()
+{
+    return CastMeleeSpellAction::isUseful() && ai::paladin::HasHolyWrathTargetWithin(botAI, bot, HOLY_WRATH_RADIUS);
+}
+
+// [b31_deep]
+bool CastHolyWrathOnGroupMemberAttackersAction::isUseful()
+{
+    return CastAreaSpellOnGroupMemberAttackersAction::isUseful() &&
+           ai::paladin::HasHolyWrathTargetWithin(botAI, bot, CastHolyWrathAction::HOLY_WRATH_RADIUS);
+}
+
+// [b34_pal]
+static bool IsHolyWrathCreatureType(Unit* unit)
+{
+    if (!unit || !unit->IsAlive())
+        return false;
+
+    uint32 const creatureType = unit->GetCreatureType();
+    return creatureType == CREATURE_TYPE_UNDEAD || creatureType == CREATURE_TYPE_DEMON;
+}
+
+// [b34_pal]
+uint32 ai::paladin::CountHolyWrathTargetsWithin(PlayerbotAI* botAI, Player* bot, float range)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    Unit* target = context->GetValue<Unit*>("current target")->Get();
+    uint32 count = IsHolyWrathCreatureType(target) && bot->GetDistance(target) <= range ? 1 : 0;
+
+    for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (unit != target && IsHolyWrathCreatureType(unit) && bot->GetDistance(unit) <= range)
+            ++count;
+    }
+
+    return count;
+}
+
+// [b34_pal] Holy Wrath damages undead and demons only: only those can lose a crowd control to it or be pulled by it.
+bool ai::paladin::HolyWrathWouldBreakCcOrPull(PlayerbotAI* botAI, Player* bot)
+{
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->Get())
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!IsHolyWrathCreatureType(unit) || bot->GetDistance(unit) > CastHolyWrathAction::HOLY_WRATH_RADIUS)
+            continue;
+
+        if (unit->HasBreakableByDamageCrowdControlAura() || (unit->IsCreature() && !unit->IsInCombat()))
+            return true;
+    }
+
+    return false;
+}
+
+// [b34_pal]
+bool CastHolyWrathUndeadPackAction::isUseful()
+{
+    return CastSpellAction::isUseful() &&
+           ai::paladin::CountHolyWrathTargetsWithin(botAI, bot, ai::paladin::HOLY_WRATH_PACK_RANGE) >=
+               ai::paladin::HOLY_WRATH_PACK_MIN &&
+           !ai::paladin::HolyWrathWouldBreakCcOrPull(botAI, bot);
+}
+
+// [b31_deep]
+bool CastRetConsecrationAction::isUseful()
+{
+    if (!CastConsecrationAction::isUseful())
+        return false;
+
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive())
+        return false;
+
+    float const groupDps = AI_VALUE(float, "estimated group dps");
+    return groupDps <= 0.0f || target->GetHealth() / groupDps >= MIN_TARGET_LIFE_SECS;
+}
+
+// [b31_pal]
+bool CastAvengingWrathAction::isUseful()
+{
+    constexpr uint32 FORBEARANCE = 25771;
+    constexpr uint32 AVENGING_WRATH_MARKER = 61987;
+    return !bot->HasAura(FORBEARANCE) && !bot->HasAura(AVENGING_WRATH_MARKER) && CastBuffSpellAction::isUseful();
+}
+
+bool CastDivinePleaAction::isUseful()
+{
+    // [b31_deep] trained at 71 (Spell.dbc spellLevel 71): the tank's "high mana" queued it at 60-70 and it failed on
+    // "spell not known" (build 30 L60s: 2504 refusals); the cached spell id is 0 then
+    if (!AI_VALUE2(uint32, "spell id", "divine plea"))
+        return false;
+
+    if (!CastBuffSpellAction::isUseful())
+        return false;
+
+    if (!PlayerbotAI::IsHeal(bot))
+        return true;
+
+    // Divine Plea halves healing done, so a healer holds it while someone needs big heals or the group takes
+    // area damage; between pulls nothing holds it back.
+    if (!bot->IsInCombat())
+        return true;
+
+    Unit* target = AI_VALUE(Unit*, "party member to heal");
+    if (target && target->GetHealthPct() < sPlayerbotAIConfig.MediumHealth)
+        return false;
+
+    return AI_VALUE2(uint8, "aoe heal", "medium") < 3;
+}
+
+// [pal-bless-role] Sunken Temple 2026-10-25 (st-n-5A-92, section E #6): the group's only paladin, a protection tank
+// with Kings / Might / Wisdom, never blessed the other four in the whole run (they kept "missing: Blessing of Kings"
+// through two 15 s buffing waits). Its non-combat strategy was "bsanc", which blesses tanks only, and the greater
+// blessing assignments are for raids (Playerbots.AutoGreaterBlessings 1). Out of combat every paladin gives each
+// member that has no blessing of its own the best one by role that nobody gave it yet: Kings first, then Might for
+// a physical damage dealer, Wisdom for a mana user, Sanctuary for a tank; the greater version (a 30 min buff for the
+// whole class) when it knows it, has the reagent, and every member of that class wants the same blessing.
+//
+// [pal-bless-split] Two paladins in one group (a protection tank and a holy healer): a blessing of one type from
+// another paladin replaces the first, different types stack, and one paladin keeps one blessing per member. Both
+// picking "the best one nobody gave yet" on the same tick gave the member Kings twice (the second overwrote the
+// first), and the legacy buff strategies (bwisdom / bsanc / bmight) blessed over the split. With two or more bot
+// paladins every one of them computes the same split: a type already on the member stays with its caster; the free
+// bot paladins, sorted by GUID, take the remaining types in the member's order of need, each type going to the
+// paladin that knows it and knows the fewest of the types still to give (Sanctuary to a tank paladin first), ties
+// to the lower GUID. A paladin casts only the type the split gives it, never one another paladin holds or was
+// given; the legacy party blessings stand aside. With one paladin nothing changes.
+namespace
+{
+    constexpr float ROLE_BLESSING_RANGE = 30.0f;
+
+    struct BlessingKind
+    {
+        char const* lesser;
+        char const* greater;
+        char const* label;
+    };
+
+    constexpr BlessingKind BLESSING_KINGS = {"blessing of kings", "greater blessing of kings", "Kings"};
+    constexpr BlessingKind BLESSING_MIGHT = {"blessing of might", "greater blessing of might", "Might"};
+    constexpr BlessingKind BLESSING_WISDOM = {"blessing of wisdom", "greater blessing of wisdom", "Wisdom"};
+    constexpr BlessingKind BLESSING_SANCTUARY = {"blessing of sanctuary", "greater blessing of sanctuary",
+                                                 "Sanctuary"};
+
+    bool SameKind(BlessingKind const& a, BlessingKind const& b)
+    {
+        return a.lesser && b.lesser && std::string(a.lesser) == std::string(b.lesser);
+    }
+
+    bool HasBlessingFrom(PlayerbotAI* botAI, Unit* target, bool mine)
+    {
+        for (BlessingKind const& kind : {BLESSING_KINGS, BLESSING_MIGHT, BLESSING_WISDOM, BLESSING_SANCTUARY})
+            if (botAI->HasAura(kind.lesser, target, false, mine) || botAI->HasAura(kind.greater, target, false, mine))
+                return true;
+        return false;
+    }
+
+    // The blessings a member wants, best first.
+    std::vector<BlessingKind> WantedBlessings(Player* member)
+    {
+        if (IsTankRole(member))
+            return {BLESSING_KINGS, BLESSING_SANCTUARY, BLESSING_MIGHT};
+
+        if (GetActualBlessingOfWisdom(member) == "blessing of wisdom")
+            return {BLESSING_KINGS, BLESSING_WISDOM};
+
+        return {BLESSING_KINGS, BLESSING_MIGHT, BLESSING_WISDOM};
+    }
+
+    // The first wanted blessing this paladin knows that nobody gave the member yet (lesser nullptr when none).
+    BlessingKind PickBlessing(PlayerbotAI* botAI, Player* member)
+    {
+        for (BlessingKind const& kind : WantedBlessings(member))
+        {
+            if (!botAI->HasSpell(kind.lesser))
+                continue;
+            if (botAI->HasAura(kind.lesser, member) || botAI->HasAura(kind.greater, member))
+                continue;
+            return kind;
+        }
+        return {nullptr, nullptr, nullptr};
+    }
+
+    // The bot paladins of the group that bless by the split (alive, on the bot's map and instance), sorted by GUID.
+    std::vector<Player*> SplitPaladins(Player* bot)
+    {
+        std::vector<Player*> paladins;
+        Group* group = bot->GetGroup();
+        if (!group)
+            return paladins;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member->IsInWorld() && member->IsAlive() && member->getClass() == CLASS_PALADIN &&
+                member->GetMapId() == bot->GetMapId() && member->GetInstanceId() == bot->GetInstanceId() &&
+                GET_PLAYERBOT_AI(member))
+                paladins.push_back(member);
+        }
+
+        std::sort(paladins.begin(), paladins.end(), [](Player const* a, Player const* b)
+                  { return a->GetGUID().GetRawValue() < b->GetGUID().GetRawValue(); });
+        return paladins;
+    }
+
+    bool PaladinKnows(Player* paladin, BlessingKind const& kind)
+    {
+        PlayerbotAI* paladinAI = GET_PLAYERBOT_AI(paladin);
+        return paladinAI && paladinAI->HasSpell(kind.lesser);
+    }
+
+    // One member's split ([pal-bless-split]): the type the split gives `self` (lesser nullptr: none), and each
+    // type the member wants with who holds it (the caster of the aura on it) or whom the split gives it.
+    struct BlessingSplit
+    {
+        BlessingKind mine = {nullptr, nullptr, nullptr};
+        std::string describe;
+    };
+
+    BlessingSplit SplitFor(PlayerbotAI* botAI, Player* self, Player* member, std::vector<Player*> const& paladins)
+    {
+        BlessingSplit split;
+        // The wanted types, and as a last one Sanctuary for a non-tank (3% less damage taken): a third paladin has
+        // something to give too.
+        std::vector<BlessingKind> wanted = WantedBlessings(member);
+        if (std::none_of(wanted.begin(), wanted.end(),
+                         [](BlessingKind const& kind) { return SameKind(kind, BLESSING_SANCTUARY); }))
+            wanted.push_back(BLESSING_SANCTUARY);
+
+        // Held: a blessing on the member stays with its caster (a bot or not); that paladin is done with the member.
+        std::vector<ObjectGuid> holders(wanted.size());
+        std::vector<ObjectGuid> done;
+        for (BlessingKind const& kind : {BLESSING_KINGS, BLESSING_MIGHT, BLESSING_WISDOM, BLESSING_SANCTUARY})
+        {
+            Aura* aura = botAI->GetAura(kind.lesser, member);
+            if (!aura)
+                aura = botAI->GetAura(kind.greater, member);
+            if (!aura)
+                continue;
+
+            done.push_back(aura->GetCasterGUID());
+            for (size_t i = 0; i < wanted.size(); ++i)
+                if (SameKind(wanted[i], kind))
+                    holders[i] = aura->GetCasterGUID();
+        }
+
+        std::vector<Player*> available;
+        for (Player* paladin : paladins)
+            if (std::find(done.begin(), done.end(), paladin->GetGUID()) == done.end())
+                available.push_back(paladin);
+
+        for (size_t i = 0; i < wanted.size(); ++i)
+        {
+            if (!holders[i].IsEmpty())
+                continue;
+
+            Player* chosen = nullptr;
+            int chosenOthers = 0;
+            bool chosenTank = false;
+            for (Player* paladin : available)
+            {
+                if (!PaladinKnows(paladin, wanted[i]))
+                    continue;
+
+                int others = 0;  // the types still to give after this one that the paladin knows
+                for (size_t j = i + 1; j < wanted.size(); ++j)
+                    if (holders[j].IsEmpty() && PaladinKnows(paladin, wanted[j]))
+                        ++others;
+
+                bool const tank = SameKind(wanted[i], BLESSING_SANCTUARY) && IsTankRole(paladin);
+                if (!chosen || (tank && !chosenTank) || (tank == chosenTank && others < chosenOthers))
+                {
+                    chosen = paladin;
+                    chosenOthers = others;
+                    chosenTank = tank;
+                }
+            }
+
+            if (!chosen)
+                continue;
+
+            holders[i] = chosen->GetGUID();
+            available.erase(std::find(available.begin(), available.end(), chosen));
+            if (chosen == self)
+                split.mine = wanted[i];
+        }
+
+        for (size_t i = 0; i < wanted.size(); ++i)
+        {
+            if (holders[i].IsEmpty())
+                continue;
+
+            Player* holder = ObjectAccessor::FindConnectedPlayer(holders[i]);
+            if (!split.describe.empty())
+                split.describe += ", ";
+            split.describe += std::string(wanted[i].label) + "=" + (holder ? holder->GetName() : std::string("?"));
+        }
+
+        return split;
+    }
+}
+
+namespace ai::paladin
+{
+bool RoleBlessingSplit(Player* bot)
+{
+    return bot && bot->GetGroup() && !IsGreaterBlessingMode(bot) && SplitPaladins(bot).size() >= 2;
+}
+
+RoleBlessing FindRoleBlessing(PlayerbotAI* botAI)
+{
+    RoleBlessing found;
+    Player* bot = botAI->GetBot();
+    if (!bot || !bot->IsAlive() || bot->IsInCombat() || IsGreaterBlessingMode(bot))
+        return found;
+
+    std::vector<Player*> members;
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member->IsInWorld() && member->IsAlive() && !member->IsGameMaster() &&
+                member->GetMapId() == bot->GetMapId() && member->GetInstanceId() == bot->GetInstanceId())
+                members.push_back(member);
+        }
+    }
+    else
+        members.push_back(bot);
+
+    // [pal-bless-split] Two or more bot paladins: each member's type comes from the split; with one, the first
+    // wanted type nobody gave (PickBlessing, as before).
+    std::vector<Player*> const paladins = SplitPaladins(bot);
+    bool const split = paladins.size() >= 2 && std::find(paladins.begin(), paladins.end(), bot) != paladins.end();
+    auto pick = [&](Player* member, std::string* describe) -> BlessingKind
+    {
+        if (!split)
+            return PickBlessing(botAI, member);
+
+        BlessingSplit const memberSplit = SplitFor(botAI, bot, member, paladins);
+        if (describe)
+            *describe = memberSplit.describe;
+        return memberSplit.mine;
+    };
+
+    for (Player* member : members)
+    {
+        if (member->IsInCombat() || bot->GetExactDist(member) > ROLE_BLESSING_RANGE ||
+            !bot->IsWithinLOSInMap(member) || HasBlessingFrom(botAI, member, true))
+            continue;
+
+        BlessingKind const kind = pick(member, &found.split);
+        if (!kind.lesser)
+            continue;
+
+        found.target = member;
+        found.spell = kind.lesser;
+
+        // The greater version blesses every member of the class: only when they all want this one and none of them
+        // has it from another paladin.
+        uint32 const greaterId =
+            botAI->HasSpell(kind.greater)
+                ? botAI->GetAiObjectContext()->GetValue<uint32>("spell id", kind.greater)->Get()
+                : 0;
+        if (greaterId && ai::buff::HasRequiredReagents(bot, greaterId))
+        {
+            bool sameForClass = true;
+            for (Player* other : members)
+            {
+                if (other == member || other->getClass() != member->getClass())
+                    continue;
+                BlessingKind const wants = pick(other, nullptr);
+                if (HasBlessingFrom(botAI, other, true) || !SameKind(wants, kind))
+                {
+                    sameForClass = false;
+                    break;
+                }
+            }
+            if (sameForClass)
+                found.spell = kind.greater;
+        }
+        return found;
+    }
+
+    found.split.clear();
+    return found;
+}
+}
+
+bool CastBlessingOnPartyByRoleAction::isUseful() { return ai::paladin::FindRoleBlessing(botAI).target != nullptr; }
+
+bool CastBlessingOnPartyByRoleAction::Execute(Event /*event*/)
+{
+    ai::paladin::RoleBlessing const blessing = ai::paladin::FindRoleBlessing(botAI);
+    if (!blessing.target)
+        return false;
+
+    if (!botAI->CastSpell(blessing.spell, blessing.target))
+        return false;
+
+    char const* role = IsTankRole(blessing.target)                                           ? "tank"
+                       : GetActualBlessingOfWisdom(blessing.target) == "blessing of wisdom" ? "mana user"
+                                                                                             : "physical";
+    if (!blessing.split.empty())
+        LOG_INFO("playerbots", "[pal-bless-split] {} gives {} to {} ({}); split: {}", bot->GetName(), blessing.spell,
+                 blessing.target->GetName(), role, blessing.split);
+    else
+        LOG_INFO("playerbots", "[pal-bless-role] {} gives {} to {} ({})", bot->GetName(), blessing.spell,
+                 blessing.target->GetName(), role);
+    return true;
+}
+
+// [pal-bless-split] The legacy party blessings (bwisdom / bmight / bsanc / bkings) pick by their own rules and would
+// bless over the split of two paladins: they stand aside while it is on.
+bool CastBlessingOfMightOnPartyAction::isUseful()
+{
+    return !ai::paladin::RoleBlessingSplit(bot) && BuffOnPartyAction::isUseful();
+}
+
+bool CastBlessingOfWisdomOnPartyAction::isUseful()
+{
+    return !ai::paladin::RoleBlessingSplit(bot) && BuffOnPartyAction::isUseful();
+}
+
+bool CastBlessingOfKingsOnPartyAction::isUseful()
+{
+    return !ai::paladin::RoleBlessingSplit(bot) && BuffOnPartyAction::isUseful();
+}
+
+bool CastBlessingOfSanctuaryOnPartyAction::isUseful()
+{
+    return !ai::paladin::RoleBlessingSplit(bot) && BuffOnPartyAction::isUseful();
+}
+
+// [b31_holyshield_pull] A paladin tank out of combat, at 30 % mana or more, that knows Holy Shield and has none up.
+bool CastHolyShieldPrePullAction::isUseful()
+{
+    if (bot->IsInCombat() || !PlayerbotAI::IsTank(bot) || bot->GetPowerPct(POWER_MANA) < MIN_MANA_PCT)
+        return false;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    return spellId && bot->HasSpell(spellId) && CastBuffSpellAction::isUseful();
+}
+
+bool CastHolyShieldPrePullAction::Execute(Event event)
+{
+    if (!CastBuffSpellAction::Execute(event))
+        return false;
+
+    LOG_INFO("playerbots", "[holy shield pre-pull] {}: Holy Shield before the pull ({:.0f} % mana)", bot->GetName(),
+             bot->GetPowerPct(POWER_MANA));
+    return true;
 }

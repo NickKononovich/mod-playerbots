@@ -6,115 +6,169 @@
 
 #include "ImbueAction.h"
 #include "Event.h"
+#include "Group.h"
+#include "Log.h"
 #include "Playerbots.h"
+#include "RoguePoisons.h"
+#include "Timer.h"
 
-ImbueWithPoisonAction::ImbueWithPoisonAction(PlayerbotAI* botAI) : Action(botAI, "apply poison") {}
+#include <algorithm>
+
+namespace
+{
+    // [rjoin-imbue] Sunken Temple 2026-10-25 (20261025-081744-st-n-5A-92): "apply oil" / "apply stone" "executed" on
+    // every "often" tick of a hunter and a mage that had nothing to apply (always true, no isUseful), stood eating
+    // bots up, and ran while the rest of the group fought (the hunter's whole pull 48). A weapon enhancement is put on
+    // between fights, once: never while the bot or a member of its group nearby fights, only on a weapon without
+    // one, and a look that found nothing to apply is not repeated for IMBUE_RECHECK_MS.
+    constexpr uint32 IMBUE_RECHECK_MS = 30 * IN_MILLISECONDS;
+    constexpr float IMBUE_GROUP_FIGHT_RANGE = 100.0f;
+
+    bool GroupFights(Player* bot)
+    {
+        if (bot->IsInCombat())
+            return true;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            return false;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsAlive() && member->IsInCombat() &&
+                member->GetMap() == bot->GetMap() && bot->IsWithinDist(member, IMBUE_GROUP_FIGHT_RANGE))
+                return true;
+        }
+
+        return false;
+    }
+
+    // [b34_gnomer] gnomer-n 5B 20261026-014521: a warrior tank's off hand is a shield, "apply stone" cast a
+    // sharpening stone on it every tick (the stone matched the shield's subclass 6 as a polearm, the cast failed,
+    // Done(true) cleared the backoff). Only a weapon counts; a slot that already carries any temporary enchant is
+    // never overwritten (so a better enhancement is kept); an apply that did not take backs off, doubling.
+    constexpr uint32 IMBUE_VERIFY_MS = 10 * IN_MILLISECONDS;
+    constexpr uint32 IMBUE_FAILED_BACKOFF_MS = 30 * IN_MILLISECONDS;
+    constexpr uint32 IMBUE_FAILED_BACKOFF_MAX_MS = 10 * MINUTE * IN_MILLISECONDS;
+
+    bool LacksTempEnchant(Player* bot, uint8 slot)
+    {
+        Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        return weapon && weapon->GetTemplate() && weapon->GetTemplate()->Class == ITEM_CLASS_WEAPON &&
+               weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 0;
+    }
+
+    uint8 SlotBit(uint8 slot) { return slot == EQUIPMENT_SLOT_OFFHAND ? 2 : 1; }
+
+    bool ImbueUseful(Player* bot, uint32 retryAfterMs, bool offhand)
+    {
+        if (retryAfterMs && static_cast<int32>(retryAfterMs - getMSTime()) > 0)
+            return false;
+
+        if (!LacksTempEnchant(bot, EQUIPMENT_SLOT_MAINHAND) &&
+            (!offhand || !LacksTempEnchant(bot, EQUIPMENT_SLOT_OFFHAND)))
+            return false;
+
+        return !GroupFights(bot);
+    }
+
+    void LogImbue(Player* bot, char const* what, Item* item, uint8 slot)
+    {
+        LOG_INFO("playerbots", "[rjoin-imbue] {} applies {} {} to the {} hand", bot->GetName(), what,
+                 item->GetTemplate()->Name1, slot == EQUIPMENT_SLOT_OFFHAND ? "off" : "main");
+    }
+}
+
+void ImbueAction::PrepareImbue()
+{
+    // remove stealth
+    if (bot->HasAura(SPELL_AURA_MOD_STEALTH))
+        bot->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
+
+    if (bot->getStandState() != UNIT_STAND_STATE_STAND)
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+}
+
+void ImbueAction::Tried(uint8 slot) { _triedSlotMask |= SlotBit(slot); }
+
+bool ImbueAction::Done(bool applied)
+{
+    // [b34_gnomer] after an apply, wait for the cast before isUseful() checks whether it took (was: retry at once).
+    _retryAfterMs = getMSTime() + (applied ? IMBUE_VERIFY_MS : IMBUE_RECHECK_MS);
+    return applied;
+}
+
+bool ImbueAction::isUseful()
+{
+    // [b34_gnomer] verify the last apply: a tried slot still without an enhancement is a failed apply (wrong item,
+    // interrupted cast, rejected spell), and the action backs off 30 s, 60 s, ... up to 10 min instead of repeating.
+    if (_triedSlotMask && !(_retryAfterMs && static_cast<int32>(_retryAfterMs - getMSTime()) > 0))
+    {
+        bool failed = false;
+        for (uint8 slot : { EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND })
+            if ((_triedSlotMask & SlotBit(slot)) && LacksTempEnchant(bot, slot))
+                failed = true;
+
+        _triedSlotMask = 0;
+        if (failed)
+        {
+            uint32 backoff = IMBUE_FAILED_BACKOFF_MS << std::min<uint8>(_failures, 5);
+            if (_failures < 255)
+                ++_failures;
+
+            _retryAfterMs = getMSTime() + std::min(backoff, IMBUE_FAILED_BACKOFF_MAX_MS);
+            LOG_INFO("playerbots", "[b34_gnomer] {} {} did not take, retry in {}s", bot->GetName(), getName(),
+                     std::min(backoff, IMBUE_FAILED_BACKOFF_MAX_MS) / IN_MILLISECONDS);
+            return false;
+        }
+
+        _failures = 0;
+    }
+
+    return ImbueUseful(bot, _retryAfterMs, _offhand);
+}
+
+ImbueWithPoisonAction::ImbueWithPoisonAction(PlayerbotAI* botAI) : ImbueAction(botAI, "apply poison", true) {}
 
 bool ImbueWithPoisonAction::Execute(Event /*event*/)
 {
-    if (bot->IsInCombat())
+    if (GroupFights(bot))
         return false;
 
-    // remove stealth
-    if (bot->HasAura(SPELL_AURA_MOD_STEALTH))
-        bot->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
+    bool applied = false;
 
-    if (bot->getStandState() != UNIT_STAND_STATE_STAND)
-        bot->SetStandState(UNIT_STAND_STATE_STAND);
-
-    static const std::vector<uint32_t> prioritizedInstantPoisons = {
-        INSTANT_POISON_IX, INSTANT_POISON_VIII, INSTANT_POISON_VII, INSTANT_POISON_VI, INSTANT_POISON_V, INSTANT_POISON_IV,
-        INSTANT_POISON_III, INSTANT_POISON_II, INSTANT_POISON
-    };
-
-    static const std::vector<uint32_t> prioritizedDeadlyPoisons = {
-        DEADLY_POISON_IX, DEADLY_POISON_VIII, DEADLY_POISON_VII, DEADLY_POISON_VI, DEADLY_POISON_V, DEADLY_POISON_IV,
-        DEADLY_POISON_III, DEADLY_POISON_II, DEADLY_POISON
-    };
-
-    // Check if we have any deadly or instant poisons
-    Item* deadlyPoison = nullptr;
-    for (auto id : prioritizedDeadlyPoisons)
+    // [b31_wr] Which poison goes on which hand (spec, Wound next to another rogue's Deadly) is RoguePoisons' call, the
+    // same as the rogue's own poison actions; this was a second, hard-wired Instant MH / Deadly OH copy.
+    for (uint8 slot : { EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND })
     {
-        deadlyPoison = botAI->FindConsumable(id);
-        if (deadlyPoison) break;
+        if (!LacksTempEnchant(bot, slot))
+            continue;
+
+        Item* poison = RoguePoisons::ItemFor(botAI, slot);
+        if (!poison)
+            continue;
+
+        PrepareImbue();
+        LogImbue(bot, "poison", poison, slot);
+        botAI->ImbueItem(poison, slot);
+        Tried(slot);  // [b34_gnomer]
+        botAI->SetNextCheckDelay(5);
+        applied = true;
     }
 
-    Item* instantPoison = nullptr;
-    for (auto id : prioritizedInstantPoisons)
-    {
-        instantPoison = botAI->FindConsumable(id);
-        if (instantPoison) break;
-    }
-
-    // Mainhand
-    Item* poison = nullptr;
-    Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
-    if (weapon && weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 0)
-    {
-        if (instantPoison && deadlyPoison)
-        {
-            poison = instantPoison;
-        }
-        else if (deadlyPoison)
-        {
-            poison = deadlyPoison;
-        }
-        else if (instantPoison)
-        {
-            poison = instantPoison;
-        }
-
-        if (poison)
-        {
-            botAI->ImbueItem(poison, EQUIPMENT_SLOT_MAINHAND);
-            botAI->SetNextCheckDelay(5);
-        }
-    }
-
-    // Offhand
-    poison = nullptr;
-    weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
-    if (weapon && weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 0)
-    {
-        if (deadlyPoison && instantPoison)
-        {
-            poison = deadlyPoison;
-        }
-        else if (instantPoison)
-        {
-            poison = instantPoison;
-        }
-        else if (deadlyPoison)
-        {
-            poison = deadlyPoison;
-        }
-
-        if (poison)
-        {
-            botAI->ImbueItem(poison, EQUIPMENT_SLOT_OFFHAND);
-            botAI->SetNextCheckDelay(5);
-        }
-    }
-
-    return true;
+    return Done(applied);
 }
 
 // Search and apply stone to weapons
-ImbueWithStoneAction::ImbueWithStoneAction(PlayerbotAI* botAI) : Action(botAI, "apply stone") {}
+ImbueWithStoneAction::ImbueWithStoneAction(PlayerbotAI* botAI) : ImbueAction(botAI, "apply stone", true) {}
 
 bool ImbueWithStoneAction::Execute(Event /*event*/)
 {
-    if (bot->IsInCombat())
+    if (GroupFights(bot))
         return false;
 
-    // remove stealth
-    if (bot->HasAura(SPELL_AURA_MOD_STEALTH))
-        bot->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
-
-    // hp check
-    if (bot->getStandState() != UNIT_STAND_STATE_STAND)
-        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    bool applied = false;
 
     // Search and apply stone to weapons
     // Mainhand ...
@@ -125,8 +179,12 @@ bool ImbueWithStoneAction::Execute(Event /*event*/)
         stone = botAI->FindStoneFor(weapon);
         if (stone)
         {
+            PrepareImbue();
+            LogImbue(bot, "stone", stone, EQUIPMENT_SLOT_MAINHAND);
             botAI->ImbueItem(stone, EQUIPMENT_SLOT_MAINHAND);
+            Tried(EQUIPMENT_SLOT_MAINHAND);  // [b34_gnomer]
             botAI->SetNextCheckDelay(5);
+            applied = true;
         }
     }
 
@@ -137,29 +195,27 @@ bool ImbueWithStoneAction::Execute(Event /*event*/)
         stone = botAI->FindStoneFor(weapon);
         if (stone)
         {
+            PrepareImbue();
+            LogImbue(bot, "stone", stone, EQUIPMENT_SLOT_OFFHAND);
             botAI->ImbueItem(stone, EQUIPMENT_SLOT_OFFHAND);
+            Tried(EQUIPMENT_SLOT_OFFHAND);  // [b34_gnomer]
             botAI->SetNextCheckDelay(5);
+            applied = true;
         }
     }
 
-    return true;
+    return Done(applied);
 }
 
 // Search and apply oil to weapons
-ImbueWithOilAction::ImbueWithOilAction(PlayerbotAI* botAI) : Action(botAI, "apply oil") {}
+ImbueWithOilAction::ImbueWithOilAction(PlayerbotAI* botAI) : ImbueAction(botAI, "apply oil", false) {}
 
 bool ImbueWithOilAction::Execute(Event /*event*/)
 {
-    if (bot->IsInCombat())
+    if (GroupFights(bot))
         return false;
 
-    // remove stealth
-    if (bot->HasAura(SPELL_AURA_MOD_STEALTH))
-        bot->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
-
-    // hp check
-    if (bot->getStandState() != UNIT_STAND_STATE_STAND)
-        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    bool applied = false;
 
     // Search and apply oil to weapons
     Item* oil = nullptr;
@@ -169,12 +225,16 @@ bool ImbueWithOilAction::Execute(Event /*event*/)
         oil = botAI->FindOilFor(weapon);
         if (oil)
         {
+            PrepareImbue();
+            LogImbue(bot, "oil", oil, EQUIPMENT_SLOT_MAINHAND);
             botAI->ImbueItem(oil, EQUIPMENT_SLOT_MAINHAND);
+            Tried(EQUIPMENT_SLOT_MAINHAND);  // [b34_gnomer]
             botAI->SetNextCheckDelay(5);
+            applied = true;
         }
     }
 
-    return true;
+    return Done(applied);
 }
 
 static const uint32 uPrioritizedHealingItemIds[19] = {

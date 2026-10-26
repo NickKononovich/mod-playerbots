@@ -81,7 +81,7 @@ namespace IcecrownHelpers
         std::map<ObjectGuid, uint32> rotfaceVileGasWaitUntil;
         std::map<ObjectGuid, uint32> lastTauntMs;
         std::map<ObjectGuid, uint32> lastCcMs;
-        std::map<ObjectGuid, uint32> lastBuffMs;
+        uint32 honestGapLogged = 0;
         uint32 lastBossCombatMs = 0;
 
         std::map<ObjectGuid, WinterStageState> winterStage;

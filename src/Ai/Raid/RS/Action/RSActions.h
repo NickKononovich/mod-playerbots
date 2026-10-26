@@ -64,39 +64,27 @@ inline bool RsSpotInFrontArc(Unit* caster, float x, float y, float range)
     return std::fabs(diff) <= static_cast<float>(M_PI) / 2.0f;
 }
 
+// Real class taunt with its real cooldown; no threat injection, no cooldown reset.
 inline bool RsCastClassTaunt(PlayerbotAI* botAI, Player* bot, Unit* target)
 {
     if (!target || !target->IsAlive())
         return false;
 
-    bool const threatReset = botAI->HasCheat(BotCheatMask::raid);
-
-    if (threatReset)
-        RsForceThreat(target, bot);
-
     switch (bot->getClass())
     {
         case CLASS_PALADIN:
-            if (threatReset)
-                bot->RemoveSpellCooldown(RS_SPELL_TAUNT_PALADIN, true);
             if (botAI->CastSpell("hand of reckoning", target))
                 return true;
             break;
         case CLASS_DEATH_KNIGHT:
-            if (threatReset)
-                bot->RemoveSpellCooldown(RS_SPELL_TAUNT_DK, true);
             if (botAI->CastSpell("dark command", target))
                 return true;
             break;
         case CLASS_DRUID:
-            if (threatReset)
-                bot->RemoveSpellCooldown(RS_SPELL_TAUNT_DRUID, true);
             if (botAI->CastSpell("growl", target))
                 return true;
             break;
         case CLASS_WARRIOR:
-            if (threatReset)
-                bot->RemoveSpellCooldown(RS_SPELL_TAUNT_WARRIOR, true);
             if (botAI->CastSpell("taunt", target))
                 return true;
             break;
@@ -321,8 +309,13 @@ inline bool RsHalionP3TwilightAssigned(Player* bot)
             assignment[guids[i]] = (i >= half);
     };
 
+    // AC #21386: Halion turns on pets and totems when nobody is in the twilight realm. A raid without melee
+    // would leave only healers there (no damage, corporeality drifts), so split the ranged instead.
     for (ObjectGuid const& guid : ranged)
         assignment[guid] = false;
+    if (melee.empty())
+        assignHalf(ranged);
+
     for (ObjectGuid const& guid : melee)
         assignment[guid] = true;
 
@@ -738,6 +731,49 @@ inline Player* RsHalionConsumptionHealTarget(PlayerbotAI* botAI)
             worst = member;
     }
     return worst;
+}
+
+inline bool RsHalionCanDispelMagic(Player* p)
+{
+    return p && (p->getClass() == CLASS_PRIEST || p->getClass() == CLASS_PALADIN);
+}
+
+// Fiery Combustion / Soul Consumption are Magic debuffs: a priest or paladin dispels them once the carrier
+// stands at its drop spot, so the pool lands away from the raid. One dispeller per realm (lowest GUID).
+inline Player* RsHalionDispelMarkTarget(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    if (!RsHalionCanDispelMagic(bot))
+        return nullptr;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    bool const botTwilight = RsHalionInTwilight(bot);
+    Player* target = nullptr;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || member->GetMapId() != bot->GetMapId())
+            continue;
+        if (RsHalionInTwilight(member) != botTwilight)
+            continue;
+
+        if (member != bot && RsHalionCanDispelMagic(member) && GET_PLAYERBOT_AI(member) &&
+            member->GetGUID() < bot->GetGUID())
+            return nullptr;
+
+        if (target)
+            continue;
+
+        bool const combustionReady = member->HasAura(SPELL_FIERY_COMBUSTION) && RsHalionCombustionAtSpot(member);
+        bool const consumptionReady = member->HasAura(SPELL_SOUL_CONSUMPTION) &&
+                                      RsHalionConsumptionAtSpot(botAI, member);
+        if (combustionReady || consumptionReady)
+            target = member;
+    }
+    return target;
 }
 
 inline bool RsHalionIsAdd(Unit* unit)
@@ -1348,6 +1384,13 @@ class RsHalionHealConsumptionAction : public AttackAction
 {
 public:
     RsHalionHealConsumptionAction(PlayerbotAI* botAI) : AttackAction(botAI, "rs halion heal consumption") {}
+    bool Execute(Event event) override;
+};
+
+class RsHalionDispelMarkAction : public AttackAction
+{
+public:
+    RsHalionDispelMarkAction(PlayerbotAI* botAI) : AttackAction(botAI, "rs halion dispel mark") {}
     bool Execute(Event event) override;
 };
 

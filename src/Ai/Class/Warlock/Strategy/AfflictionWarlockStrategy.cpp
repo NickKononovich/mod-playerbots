@@ -16,9 +16,9 @@ AfflictionWarlockStrategy::AfflictionWarlockStrategy(PlayerbotAI* botAI) : Gener
 std::vector<NextAction> AfflictionWarlockStrategy::getDefaultActions()
 {
     return {
-       NextAction("corruption", 5.5f),
+       NextAction("haunt", 5.5f),
        NextAction("unstable affliction", 5.4f),
-       NextAction("haunt", 5.3f),
+       NextAction("corruption", 5.3f),
        NextAction("shadow bolt", 5.2f),
        NextAction("shoot", 5.0f)
     };
@@ -29,28 +29,12 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
 {
     GenericWarlockStrategy::InitTriggers(triggers);
 
-    // Main DoT triggers for high uptime
+    // Main target first: Corruption, Haunt on cooldown, then Unstable Affliction
     triggers.push_back(
         new TriggerNode(
-            "corruption on attacker",
+            "haunt",
             {
-                NextAction("corruption on attacker", 19.5f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "unstable affliction on attacker",
-            {
-                NextAction("unstable affliction on attacker", 19.0f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "corruption",
-            {
-                NextAction("corruption", 18.0f)
+                NextAction("haunt", 20.0f)
             }
         )
     );
@@ -58,20 +42,40 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         new TriggerNode(
             "unstable affliction",
             {
-                NextAction("unstable affliction", 17.5f)
+                NextAction("unstable affliction", 19.5f)
+            }
+        )
+    );
+    // [b31_deep] wowsims opener Corruption -> Haunt -> UA -> CoA: Haunt and Shadow Bolt roll Corruption (Everlasting
+    // Affliction) only once it is up, so it ranks above Haunt. With EA it rarely needs a refresh after that.
+    triggers.push_back(
+        new TriggerNode(
+            "corruption",
+            {
+                NextAction("corruption", 20.2f)
+            }
+        )
+    );
+
+    // Multi-dotting other attackers ranks below the main target and its curse
+    triggers.push_back(
+        new TriggerNode(
+            "unstable affliction on attacker",
+            {
+                NextAction("unstable affliction on attacker", 17.4f)
             }
         )
     );
     triggers.push_back(
         new TriggerNode(
-            "haunt",
+            "corruption on attacker",
             {
-                NextAction("haunt", 16.5f)
+                NextAction("corruption on attacker", 17.2f)
             }
         )
     );
 
-    // Drain Soul as execute if target is low HP // Shadow Trance for free casts
+    // Shadow Trance for free casts; Drain Soul is the filler at or below 25 % (four times its damage there)
     triggers.push_back(
         new TriggerNode(
             "shadow trance",
@@ -82,9 +86,17 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
     );
     triggers.push_back(
         new TriggerNode(
-            "target critical health",
+            "drain soul execute",
             {
                 NextAction("drain soul", 15.5f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
+            "drain soul clip",
+            {
+                NextAction("cancel channel", 20.5f)
             }
         )
     );
@@ -115,4 +127,8 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus backlash", { NextAction("shadow bolt", 16.1f) }));
+    triggers.push_back(new TriggerNode("set bonus ascendant pact", { NextAction("life tap", 5.65f) }));
 }

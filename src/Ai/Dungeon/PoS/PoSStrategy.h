@@ -16,6 +16,10 @@ public:
     std::string const getName() override { return "wotlk-pos"; }
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
     void InitMultipliers(std::vector<Multiplier*>& multipliers) override;
+
+    // [b33_pos] the Fallen Warriors fighting the freed slaves during Tyrannus (PoSShared::IsSlaveFightWarrior)
+    bool HasTargetExclusions() const override { return true; }
+    void AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type) override;
 };
 
 #endif

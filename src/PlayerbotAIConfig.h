@@ -106,7 +106,6 @@ public:
 
     bool Enabled;
     bool DisabledWithoutRealPlayer;
-    bool EnableICCBuffs;
     bool AllowAccountBots, AllowGuildBots, AllowTrustedAccountBots;
     bool RandomBotGuildNearby, RandomBotInvitePlayer, InviteChat;
     uint32 GlobalCoolDown, ReactDelay, MaxWaitForMove, DisableMoveSplinePath, MaxMovementSearchTime, ExpireActionTime,
@@ -125,6 +124,9 @@ public:
     uint32 MissingBuffReagentMessageCooldown;
     bool ForceRebuffOnReadyCheck;
     uint32 ForceRebuffMarginSecs;
+    bool RaidLeader;
+    uint32 RaidLeaderPullHoldSecs;
+    bool RaidConsumables;
     bool AutoAvoidAoe;
     float MaxAoeAvoidRadius;
     std::set<uint32> AoeAvoidSpellWhitelist;
@@ -412,6 +414,12 @@ public:
     bool DeleteRandomBotArenaTeams;
 
     uint32 SelfBotLevel;
+    bool SelfBotInputTakesControl;        // client movement/cast/target input turns the SelfBot off
+    uint32 SelfBotInputGraceMs;           // input right after the SelfBot came on is not counted
+    uint32 SelfBotReturnAfterIdleSecs;    // 0 = stays off; N = back on after N seconds without client input
+    bool SelfBotIgnoreOwnGroupCommands;   // party/raid chat of the SelfBot's own player does not command it
+    bool RussianCommandSynonyms;
+    bool RaidLeaderForHumanLeader;        // a bot coordinates (pull hold, wipe calls) when a person leads
     bool DowngradeMaxLevelBot;
     bool EquipAndSpecPersistence;
     int32 EquipAndSpecPersistenceLevel;
@@ -430,6 +438,7 @@ public:
     int32 AddClassCommand;
     int32 AddClassAccountPoolSize;
     bool AddClassRandomCharacter;
+    bool AddClassAutoInit;
     int32 MaintenanceCommand;
     bool AltMaintenanceAttunementQs,
             AltMaintenanceBags,
@@ -485,6 +494,26 @@ public:
     bool RestrictHealerDPS = false;
     std::vector<uint32> RestrictedHealerDPSMaps;
     bool IsRestrictedHealerDPSMap(uint32 mapId) const;
+
+    bool AutoHealerAssignment = true;
+    float TankDamageSpikePct = 30.0f;
+    float HealerHealthLossWeight = 1.5f;
+    float HealerFastHealthLossPct = 12.0f;
+    bool AutoCc = true;
+    bool AutoCcPrePull = true;
+    uint32 AutoCcMarkMinPackSize = 4;
+    uint32 AutoCcMarkMaxPerPack = 2;
+    uint32 LosPullMinCasters = 2;
+    bool CarefulPullHeroic = true;
+    uint32 CarefulPullMaxMobs = 10;
+    bool CarefulPullMeasuredLevelling = true;
+    float CarefulPullMinHealerMana = 50.0f;
+    float TankPeelWalkRange = 15.0f;
+    bool RangedFleeToTank = true;
+    float RangedTankLeash = 30.0f;
+    float DpsGroupFightRadius = 35.0f;
+    float TankCooldownHealthPct = 50.0f;
+    float TankCooldownLossPct = 10.0f;
 
     std::vector<uint32> ExcludedHunterPetFamilies;
 

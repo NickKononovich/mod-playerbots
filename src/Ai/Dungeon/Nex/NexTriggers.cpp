@@ -7,6 +7,8 @@
 #include "NexTriggers.h"
 #include "AiObject.h"
 #include "AiObjectContext.h"
+#include "DungeonInteract.h"
+#include "InstanceScript.h"
 #include "Playerbots.h"
 
 bool FactionCommanderWhirlwindTrigger::IsActive()
@@ -66,10 +68,23 @@ bool TelestraSplitPhaseTrigger::IsActive()
     return boss && boss->GetEntry() != NPC_TELESTRA;
 }
 
+Unit* NexIds::FindChaoticRift(PlayerbotAI* botAI)
+{
+    // Rifts never enter the threat table, so they are not findable through "find target".
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (unit && unit->IsAlive() && unit->GetEntry() == NPC_CHAOTIC_RIFT)
+            return unit;
+    }
+    return nullptr;
+}
+
 bool ChaoticRiftTrigger::IsActive()
 {
+    // Kill every rift as it opens (wiki tactic): left alone they stack wraith spawns, worst on heroic (15 s).
     Unit* boss = AI_VALUE2(Unit*, "find target", "anomalus");
-    return boss && boss->HasAura(BUFF_RIFT_SHIELD);
+    return boss && (boss->HasAura(BUFF_RIFT_SHIELD) || NexIds::FindChaoticRift(botAI));
 }
 
 bool OrmorokSpikesTrigger::IsActive()
@@ -110,4 +125,35 @@ bool KeristraszaPositioningTrigger::IsActive()
     // Include healers here for now, otherwise they stand in things
     return boss && !PlayerbotAI::IsTank(bot) && !PlayerbotAI::IsRangedDps(bot);
     // return boss && PlayerbotAI::IsMelee(bot) && !PlayerbotAI::IsTank(bot);
+}
+
+NexIds::ContainmentSphere const* NexIds::FindReadySphere(Player* bot)
+{
+    InstanceScript* instance = bot->GetInstanceScript();
+    if (!instance || instance->GetBossState(DATA_KERISTRASZA_EVENT) == DONE)
+        return nullptr;
+
+    ContainmentSphere const* nearest = nullptr;
+    float nearestDistSq = 0.0f;
+    for (auto const& sphere : CONTAINMENT_SPHERES)
+    {
+        if (instance->GetBossState(sphere.bossData) != DONE || instance->GetBossState(sphere.orbData) == DONE)
+            continue;
+
+        float const distSq = bot->GetExactDistSq(sphere.x, sphere.y, sphere.z);
+        if (!nearest || distSq < nearestDistSq)
+        {
+            nearest = &sphere;
+            nearestDistSq = distSq;
+        }
+    }
+    return nearest;
+}
+
+bool NexusContainmentSphereTrigger::IsActive()
+{
+    if (bot->IsInCombat() || !NexIds::FindReadySphere(bot))
+        return false;
+
+    return DungeonInteract::IsInteractor(botAI);
 }

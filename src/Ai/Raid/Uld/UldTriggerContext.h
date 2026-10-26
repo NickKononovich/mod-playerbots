@@ -85,6 +85,7 @@ public:
         creators["yogg-saron move to exit portal trigger"] = &RaidUlduarTriggerContext::yogg_saron_move_to_exit_portal_trigger;
         creators["yogg-saron lunatic gaze trigger"] = &RaidUlduarTriggerContext::yogg_saron_lunatic_gaze_trigger;
         creators["yogg-saron phase 3 positioning trigger"] = &RaidUlduarTriggerContext::yogg_saron_phase_3_positioning_trigger;
+        creators["yogg-saron brain pet passive trigger"] = &RaidUlduarTriggerContext::yogg_saron_brain_pet_passive_trigger;
     }
 
 private:
@@ -157,6 +158,7 @@ private:
     static Trigger* yogg_saron_move_to_exit_portal_trigger(PlayerbotAI* botAI) { return new YoggSaronMoveToExitPortalTrigger(botAI); }
     static Trigger* yogg_saron_lunatic_gaze_trigger(PlayerbotAI* botAI) { return new YoggSaronLunaticGazeTrigger(botAI); }
     static Trigger* yogg_saron_phase_3_positioning_trigger(PlayerbotAI* botAI) { return new YoggSaronPhase3PositioningTrigger(botAI); }
+    static Trigger* yogg_saron_brain_pet_passive_trigger(PlayerbotAI* botAI) { return new YoggSaronBrainPetPassiveTrigger(botAI); }
 };
 
 #endif

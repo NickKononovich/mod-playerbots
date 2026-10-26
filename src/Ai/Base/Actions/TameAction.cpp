@@ -488,9 +488,8 @@ bool TameAction::CreateAndSetPet(uint32 creatureEntry)
     // Further initialize pet stats to match the bot's level
     pet->InitStatsForLevel(bot->GetLevel());
     pet->SetLevel(bot->GetLevel());
-    // Set happiness and health of the pet to maximum values
-    pet->SetPower(POWER_HAPPINESS, pet->GetMaxPower(Powers(POWER_HAPPINESS)));
-    pet->SetHealth(pet->GetMaxHealth());
+    // No free refill: happiness stays at the fresh-tame value the core gives every new pet, and health is what
+    // InitStatsForLevel set, exactly as for a player's tame.
 
     // Enable autocast for all active (not removed) non-passive spells the pet knows
     for (PetSpellMap::const_iterator itr = pet->m_spells.begin(); itr != pet->m_spells.end(); ++itr)

@@ -18,6 +18,7 @@
 #include "RogueFinishingActions.h"
 #include "RogueOpeningActions.h"
 #include "RogueTriggers.h"
+#include "SubtletyRogueStrategy.h"
 
 class RogueStrategyFactoryInternal : public NamedObjectContext<Strategy>
 {
@@ -50,13 +51,13 @@ public:
     {
         creators["combat"] = &RogueCombatStrategyFactoryInternal::combat;
         creators["assassin"] = &RogueCombatStrategyFactoryInternal::assassin;
-        // creators["subtlety"] = &RogueCombatStrategyFactoryInternal::subtlety;
+        creators["subtlety"] = &RogueCombatStrategyFactoryInternal::subtlety;  // [b31_wr]
     }
 
 private:
     static Strategy* combat(PlayerbotAI* botAI) { return new CombatRogueStrategy(botAI); }
     static Strategy* assassin(PlayerbotAI* botAI) { return new AssassinationRogueStrategy(botAI); }
-    // static Strategy* subtlety(PlayerbotAI* botAI) { return new SubtletyRogueStrategy(botAI); }
+    static Strategy* subtlety(PlayerbotAI* botAI) { return new SubtletyRogueStrategy(botAI); }
 };
 
 class RogueTriggerFactoryInternal : public NamedObjectContext<Trigger>
@@ -77,14 +78,25 @@ public:
         creators["no stealth"] = &RogueTriggerFactoryInternal::no_stealth;
         creators["stealth"] = &RogueTriggerFactoryInternal::stealth;
         creators["sprint"] = &RogueTriggerFactoryInternal::sprint;
-        creators["main hand weapon no enchant"] =
-            &RogueTriggerFactoryInternal::main_hand_weapon_no_enchant;
-        creators["off hand weapon no enchant"] =
-            &RogueTriggerFactoryInternal::off_hand_weapon_no_enchant;
+        // [b31_wr] poisons: in combat only a missing one on a long fight, out of combat also one running out
+        creators["main hand poison missing long fight"] =
+            &RogueTriggerFactoryInternal::main_hand_poison_missing_long_fight;
+        creators["off hand poison missing long fight"] =
+            &RogueTriggerFactoryInternal::off_hand_poison_missing_long_fight;
+        creators["main hand poison expiring"] = &RogueTriggerFactoryInternal::main_hand_poison_expiring;
+        creators["off hand poison expiring"] = &RogueTriggerFactoryInternal::off_hand_poison_expiring;
         creators["tricks of the trade on main tank"] =
             &RogueTriggerFactoryInternal::tricks_of_the_trade_on_main_tank;
         creators["adrenaline rush"] = &RogueTriggerFactoryInternal::adrenaline_rush;
-        creators["blade flurry"] = &RogueTriggerFactoryInternal::blade_flurry;
+        creators["killing spree"] = &RogueTriggerFactoryInternal::killing_spree;
+        creators["shadow dance"] = &RogueTriggerFactoryInternal::shadow_dance;
+        creators["in shadow dance"] = &RogueTriggerFactoryInternal::in_shadow_dance;
+        creators["hemorrhage"] = &RogueTriggerFactoryInternal::hemorrhage;  // [b31_wr]
+        creators["premeditation"] = &RogueTriggerFactoryInternal::premeditation;  // [b31_wr]
+        creators["blade flurry ready"] = &RogueTriggerFactoryInternal::blade_flurry_ready;  // [b31_wr]
+        creators["slice and dice pre-refresh"] = &RogueTriggerFactoryInternal::slice_and_dice_pre_refresh;  // [b31_wr]
+        creators["assassination rupture"] = &RogueTriggerFactoryInternal::assassination_rupture;  // [b31_wr]
+        creators["cold blood finisher"] = &RogueTriggerFactoryInternal::cold_blood_finisher;  // [b31_wr]
     }
 
 private:
@@ -104,20 +116,43 @@ private:
     static Trigger* no_stealth(PlayerbotAI* botAI) { return new NoStealthTrigger(botAI); }
     static Trigger* stealth(PlayerbotAI* botAI) { return new StealthTrigger(botAI); }
     static Trigger* sprint(PlayerbotAI* botAI) { return new SprintTrigger(botAI); }
-    static Trigger* main_hand_weapon_no_enchant(PlayerbotAI* botAI)
+    // [b31_wr]
+    static constexpr float POISON_IN_COMBAT_MIN_TARGET_LIFETIME = 30.0f;
+    static constexpr uint32 POISON_OUT_OF_COMBAT_MIN_REMAINING_MS = 10 * MINUTE * IN_MILLISECONDS;
+    static Trigger* main_hand_poison_missing_long_fight(PlayerbotAI* botAI)
     {
-        return new MainHandWeaponNoEnchantTrigger(botAI);
+        return new WeaponPoisonTrigger(botAI, "main hand poison missing long fight", EQUIPMENT_SLOT_MAINHAND, 0,
+                                       POISON_IN_COMBAT_MIN_TARGET_LIFETIME);
     }
-    static Trigger* off_hand_weapon_no_enchant(PlayerbotAI* botAI)
+    static Trigger* off_hand_poison_missing_long_fight(PlayerbotAI* botAI)
     {
-        return new OffHandWeaponNoEnchantTrigger(botAI);
+        return new WeaponPoisonTrigger(botAI, "off hand poison missing long fight", EQUIPMENT_SLOT_OFFHAND, 0,
+                                       POISON_IN_COMBAT_MIN_TARGET_LIFETIME);
+    }
+    static Trigger* main_hand_poison_expiring(PlayerbotAI* botAI)
+    {
+        return new WeaponPoisonTrigger(botAI, "main hand poison expiring", EQUIPMENT_SLOT_MAINHAND,
+                                       POISON_OUT_OF_COMBAT_MIN_REMAINING_MS, 0.0f);
+    }
+    static Trigger* off_hand_poison_expiring(PlayerbotAI* botAI)
+    {
+        return new WeaponPoisonTrigger(botAI, "off hand poison expiring", EQUIPMENT_SLOT_OFFHAND,
+                                       POISON_OUT_OF_COMBAT_MIN_REMAINING_MS, 0.0f);
     }
     static Trigger* tricks_of_the_trade_on_main_tank(PlayerbotAI* botAI)
     {
         return new TricksOfTheTradeOnMainTankTrigger(botAI);
     }
     static Trigger* adrenaline_rush(PlayerbotAI* botAI) { return new AdrenalineRushTrigger(botAI); }
-    static Trigger* blade_flurry(PlayerbotAI* botAI) { return new BladeFlurryTrigger(botAI); }
+    static Trigger* killing_spree(PlayerbotAI* botAI) { return new KillingSpreeTrigger(botAI); }
+    static Trigger* shadow_dance(PlayerbotAI* botAI) { return new ShadowDanceTrigger(botAI); }
+    static Trigger* in_shadow_dance(PlayerbotAI* botAI) { return new InShadowDanceTrigger(botAI); }
+    static Trigger* hemorrhage(PlayerbotAI* botAI) { return new HemorrhageDebuffTrigger(botAI); }
+    static Trigger* premeditation(PlayerbotAI* botAI) { return new PremeditationTrigger(botAI); }
+    static Trigger* blade_flurry_ready(PlayerbotAI* botAI) { return new BladeFlurryReadyTrigger(botAI); }
+    static Trigger* slice_and_dice_pre_refresh(PlayerbotAI* botAI) { return new SliceAndDicePreRefreshTrigger(botAI); }
+    static Trigger* assassination_rupture(PlayerbotAI* botAI) { return new AssassinationRuptureTrigger(botAI); }
+    static Trigger* cold_blood_finisher(PlayerbotAI* botAI) { return new ColdBloodFinisherTrigger(botAI); }
 };
 
 class RogueAiObjectContextInternal : public NamedObjectContext<Action>
@@ -156,15 +191,15 @@ public:
         creators["envenom"] = &RogueAiObjectContextInternal::envenom;
         creators["tricks of the trade on main tank"] =
             &RogueAiObjectContextInternal::tricks_of_the_trade_on_main_tank;
-        creators["use instant poison on main hand"] =
-            &RogueAiObjectContextInternal::use_instant_poison;
-        creators["use deadly poison on off hand"] =
-            &RogueAiObjectContextInternal::use_deadly_poison;
-        creators["use instant poison on off hand"] =
-            &RogueAiObjectContextInternal::use_instant_poison_off_hand;
+        // [b31_wr] the kind per hand comes from RoguePoisons
+        creators["use poison on main hand"] = &RogueAiObjectContextInternal::use_poison_on_main_hand;
+        creators["use poison on off hand"] = &RogueAiObjectContextInternal::use_poison_on_off_hand;
         creators["fan of knives"] = &RogueAiObjectContextInternal::fan_of_knives;
         creators["killing spree"] = &RogueAiObjectContextInternal::killing_spree;
         creators["cold blood"] = &RogueAiObjectContextInternal::cold_blood;
+        creators["hemorrhage"] = &RogueAiObjectContextInternal::hemorrhage;
+        creators["shadow dance"] = &RogueAiObjectContextInternal::shadow_dance;
+        creators["premeditation"] = &RogueAiObjectContextInternal::premeditation;  // [b31_wr]
     }
 
 private:
@@ -216,21 +251,20 @@ private:
     {
         return new CastTricksOfTheTradeOnMainTankAction(botAI);
     }
-    static Action* use_instant_poison(PlayerbotAI* botAI)
+    static Action* use_poison_on_main_hand(PlayerbotAI* botAI)
     {
-        return new UseInstantPoisonAction(botAI);
+        return new UseRoguePoisonAction(botAI, "use poison on main hand", EQUIPMENT_SLOT_MAINHAND);
     }
-    static Action* use_deadly_poison(PlayerbotAI* botAI)
+    static Action* use_poison_on_off_hand(PlayerbotAI* botAI)
     {
-        return new UseDeadlyPoisonAction(botAI);
-    }
-    static Action* use_instant_poison_off_hand(PlayerbotAI* botAI)
-    {
-        return new UseInstantPoisonOffHandAction(botAI);
+        return new UseRoguePoisonAction(botAI, "use poison on off hand", EQUIPMENT_SLOT_OFFHAND);
     }
     static Action* fan_of_knives(PlayerbotAI* botAI) { return new FanOfKnivesAction(botAI); }
     static Action* killing_spree(PlayerbotAI* botAI) { return new CastKillingSpreeAction(botAI); }
     static Action* cold_blood(PlayerbotAI* botAI) { return new CastColdBloodAction(botAI); }
+    static Action* hemorrhage(PlayerbotAI* botAI) { return new CastHemorrhageAction(botAI); }
+    static Action* shadow_dance(PlayerbotAI* botAI) { return new CastShadowDanceAction(botAI); }
+    static Action* premeditation(PlayerbotAI* botAI) { return new CastPremeditationAction(botAI); }
 };
 
 SharedNamedObjectContextList<Strategy> RogueAiObjectContext::sharedStrategyContexts;

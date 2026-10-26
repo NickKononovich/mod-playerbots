@@ -6,6 +6,8 @@
 
 #include "NewRpgAction.h"
 #include "AreaDefines.h"
+#include "Group.h"
+#include "NewRpgTriggers.h"
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "DBCStores.h"
@@ -24,12 +26,15 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotTextMgr.h"
+#include "Playerbots.h"
+#include "RandomPlayerbotMgr.h"
 #include "QuestDef.h"
 #include "Random.h"
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
+#include "WorldPacket.h"
 #include "G3D/Vector2.h"
 #include <cmath>
 #include <cstdlib>
@@ -179,21 +184,10 @@ bool TellRpgStatusAction::Execute(Event event)
     }
     else if (status == RPG_DO_QUEST)
     {
+        WorldPosition giverPos;
         if (!questId)
-        {
-            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-            {
-                uint32 qid = bot->GetQuestSlotQuestId(slot);
-                if (!qid)
-                    continue;
-                std::vector<POIInfo> poi;
-                if (GetQuestPOIPosAndObjectiveIdx(qid, poi, true))
-                {
-                    questId = qid;
-                    break;
-                }
-            }
-        }
+            questId = ChooseBestQuest(giverPos);
+
         if (!questId)
         {
             std::string msg = PlayerbotTextMgr::instance().GetBotTextOrDefault(
@@ -203,7 +197,8 @@ bool TellRpgStatusAction::Execute(Event event)
         }
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         QuestStatus questStatus = bot->GetQuestStatus(questId);
-        if (!quest || (questStatus != QUEST_STATUS_INCOMPLETE && questStatus != QUEST_STATUS_COMPLETE))
+        bool const toPickUp = questStatus == QUEST_STATUS_NONE && giverPos != WorldPosition();
+        if (!quest || (questStatus != QUEST_STATUS_INCOMPLETE && questStatus != QUEST_STATUS_COMPLETE && !toPickUp))
         {
             std::string msg = PlayerbotTextMgr::instance().GetBotTextOrDefault(
                 "rpg_invalid_quest_error", "Invalid quest %quest_id",
@@ -211,7 +206,7 @@ bool TellRpgStatusAction::Execute(Event event)
             bot->Whisper(msg, LANG_UNIVERSAL, owner);
             return false;
         }
-        info.ChangeToDoQuest(questId, quest);
+        info.ChangeToDoQuest(questId, quest, giverPos);
         WhisperStatusChange(owner, "DO_QUEST " + std::to_string(questId));
         return true;
     }
@@ -251,8 +246,22 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     switch (status)
     {
         case RPG_IDLE:
+        {
+            // A level-up makes quests that were given up on worth another try.
+            if (info.lastQuestLevel != bot->GetLevel())
+            {
+                botAI->lowPriorityQuest.clear();
+                info.lastQuestLevel = bot->GetLevel();
+            }
+
+            // Player-owned bots mostly go straight on to the next quest instead of rolling for something else.
+            if (!sRandomPlayerbotMgr.IsRandomBot(bot) && urand(1, 100) <= QUEST_FIRST_CHANCE &&
+                CheckRpgStatusAvailable(RPG_DO_QUEST) && RandomChangeStatus({RPG_DO_QUEST}))
+                return true;
+
             return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
                                        RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER});
+        }
 
         case RPG_GO_GRIND:
         {
@@ -301,6 +310,15 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_DO_QUEST:
         {
+            // Progress on the quest keeps it going past the status duration.
+            auto& data = std::get<NewRpgInfo::DoQuest>(info.data);
+            uint32 const progress = GetQuestProgress(data.questId);
+            if (progress > data.progress)
+            {
+                data.progress = progress;
+                info.startT = getMSTime();
+            }
+
             // DO_QUEST -> IDLE
             if (info.HasStatusPersisted(statusDoQuestDuration))
             {
@@ -462,6 +480,34 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
     auto& data = *dataPtr;
     uint32 questId = data.questId;
     uint8 questStatus = bot->GetQuestStatus(questId);
+
+    // The quest planner picked a quest that still has to be picked up: walk to its giver. Once in range,
+    // SearchQuestGiverAndAcceptOrReward above takes it (and anything else that giver offers).
+    if (questStatus == QUEST_STATUS_NONE && data.giverPos != WorldPosition())
+    {
+        if (data.giverPos.GetMapId() != bot->GetMapId() || bot->GetExactDist(data.giverPos) > 30.0f)
+            return MoveFarTo(data.giverPos);
+
+        // reached the giver but it did not offer the quest (despawned, phased, wrong spawn)
+        botAI->lowPriorityQuest.insert(questId);
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
+    }
+
+    // The level 74 Dalaran chain: up to the city, the crystal down and back, Archmage Celindra.
+    WorldPosition dalaranTarget;
+    if (GetDalaranQuestTarget(questId, dalaranTarget))
+    {
+        if (questStatus == QUEST_STATUS_INCOMPLETE && UseQuestGameObject(questId))
+            return true;
+
+        if (bot->GetExactDist(dalaranTarget) > INTERACTION_DISTANCE * 2.0f)
+            return MoveFarTo(dalaranTarget);
+
+        // next to Celindra: SearchQuestGiverAndAcceptOrReward above hands the quest in
+        return ForceToWait(5 * IN_MILLISECONDS);
+    }
+
     switch (questStatus)
     {
         case QUEST_STATUS_INCOMPLETE:
@@ -514,9 +560,14 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
-        uint32 rndIdx = urand(0, poiInfo.size() - 1);
-        G3D::Vector2 nearestPoi = poiInfo[rndIdx].pos;
-        int32 objectiveIdx = poiInfo[rndIdx].objectiveIdx;
+        size_t nearestIdx = 0;
+        for (size_t i = 1; i < poiInfo.size(); ++i)
+            if (bot->GetDistance2d(poiInfo[i].pos.x, poiInfo[i].pos.y) <
+                bot->GetDistance2d(poiInfo[nearestIdx].pos.x, poiInfo[nearestIdx].pos.y))
+                nearestIdx = i;
+
+        G3D::Vector2 nearestPoi = poiInfo[nearestIdx].pos;
+        int32 objectiveIdx = poiInfo[nearestIdx].objectiveIdx;
 
         float dx = nearestPoi.x, dy = nearestPoi.y;
 
@@ -586,6 +637,10 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.objectiveIdx = 0;
         return true;
     }
+
+    // objects to use for the quest (#2725)
+    if (UseQuestGameObject(questId))
+        return true;
 
     // At the POI: keep the bot actively placed but avoid large
     // random 20yd hops that look like pacing back and forth. A small
@@ -693,6 +748,12 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
 
     bot->GetSession()->SendLearnNewTaxiNode(flightMaster);
 
+    WorldPacket taxiPacket(CMSG_ACTIVATETAXIEXPRESS, 8 + 4 + 4 * nodes.size());
+    taxiPacket << flightMaster->GetGUID() << uint32(nodes.size());
+    for (uint32 node : nodes)
+        taxiPacket << node;
+    RelayPacketToGroupBots(taxiPacket);
+
     if (!bot->ActivateTaxiPathTo(nodes, flightMaster, 0))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed", bot->GetName(),
@@ -741,4 +802,128 @@ void NewRpgTravelFlightAction::ContinueCrossMapTaxi()
     flight->SkipCurrentNode();
 
     bot->TeleportTo(nextNode->map_id, node->x, node->y, node->z, bot->GetOrientation(), TELE_TO_NOT_LEAVE_TAXI);
+}
+
+bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
+{
+    if (bot->isMoving())
+        bot->StopMoving();
+
+    return ForceToWait(2 * IN_MILLISECONDS);
+}
+
+bool NewRpgRestAtInnAction::isUseful()
+{
+    return bot->HasRestFlag(REST_FLAG_IN_TAVERN) ||
+           sTravelRouteMgr.GetNearestInn(bot, INN_SEARCH_DISTANCE) != WorldPosition();
+}
+
+bool NewRpgRestAtInnAction::Execute(Event /*event*/)
+{
+    WorldPosition const inn = sTravelRouteMgr.GetNearestInn(bot, INN_SEARCH_DISTANCE);
+    if (bot->HasRestFlag(REST_FLAG_IN_TAVERN) || (inn != WorldPosition() && bot->GetExactDist(inn) <= INN_REACHED))
+    {
+        if (bot->isMoving())
+            bot->StopMoving();
+
+        if (!bot->IsSitState())
+            bot->SetStandState(UNIT_STAND_STATE_SIT);
+
+        return ForceToWait(10 * IN_MILLISECONDS);
+    }
+
+    if (inn == WorldPosition())
+        return false;
+
+    return MoveFarTo(inn);
+}
+
+bool NewRpgTaxiUnstallAction::Execute(Event /*event*/)
+{
+    bool recovered = false;
+    TaxiStallWatch::ForEachWatched(bot, [&recovered](Player* player, NewRpgInfo& info)
+    {
+        if (!info.taxiStillSince || !player->IsInFlight() ||
+            GetMSTimeDiffToNow(info.taxiStillSince) < TaxiStallWatch::STALL_MS)
+            return;
+
+        recovered = true;
+        info.taxiStillSince = 0;
+        MotionMaster* mm = player->GetMotionMaster();
+        FlightPathMovementGenerator* flight = nullptr;
+        if (mm && mm->GetCurrentMovementGeneratorType() == FLIGHT_MOTION_TYPE)
+            flight = dynamic_cast<FlightPathMovementGenerator*>(mm->top());
+
+        // Re-request: relaunch the spline from the node the flight is at.
+        if (flight && !flight->HasArrived() && info.taxiRecoveries < MAX_RESTARTS)
+        {
+            ++info.taxiRecoveries;
+            LOG_DEBUG("playerbots", "[New RPG] {} taxi stalled, restarting the flight (attempt {})",
+                      player->GetName(), info.taxiRecoveries);
+            flight->DoReset(player);
+            return;
+        }
+
+        // Fall back: end the flight here and set the bot down on the ground below; it walks on from there.
+        LOG_DEBUG("playerbots", "[New RPG] {} taxi stalled for good, ending the flight", player->GetName());
+        info.taxiRecoveries = 0;
+        if (mm)
+            mm->Clear();
+
+        player->CleanupAfterTaxiFlight();
+        float const x = player->GetPositionX();
+        float const y = player->GetPositionY();
+        float const z = player->GetPositionZ();
+        float const ground = player->GetMap()->GetHeight(player->GetPhaseMask(), x, y, z, true, GROUND_SEARCH);
+        if (ground > INVALID_HEIGHT && ground < z)
+            player->NearTeleportTo(x, y, ground, player->GetOrientation());
+    });
+
+    return recovered;
+}
+
+bool NewRpgDiscoverFlightMasterAction::Execute(Event /*event*/)
+{
+    bool learned = false;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+    {
+        Creature* flightMaster = botAI->GetCreature(guid);
+        if (!flightMaster || !flightMaster->IsAlive() || !flightMaster->HasNpcFlag(UNIT_NPC_FLAG_FLIGHTMASTER) ||
+            bot->GetDistance(flightMaster) > DISCOVER_FLIGHT_MASTER_DISTANCE || flightMaster->IsHostileTo(bot))
+            continue;
+
+        uint32 const node = sObjectMgr->GetNearestTaxiNode(flightMaster->GetPositionX(), flightMaster->GetPositionY(),
+                                                           flightMaster->GetPositionZ(), flightMaster->GetMapId(),
+                                                           bot->GetTeamId());
+        if (!node)
+            continue;
+
+        auto discover = [&learned, node, flightMaster](Player* player)
+        {
+            if (player->m_taxi.IsTaximaskNodeKnown(node) ||
+                player->GetDistance(flightMaster) > DISCOVER_FLIGHT_MASTER_DISTANCE)
+                return;
+
+            player->GetSession()->SendLearnNewTaxiNode(flightMaster);
+            learned = true;
+        };
+
+        discover(bot);
+        if (Group* group = bot->GetGroup())
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (member && member != bot && member->IsInWorld() && member->IsAlive() &&
+                    member->GetMapId() == bot->GetMapId() && GET_PLAYERBOT_AI(member) &&
+                    !flightMaster->IsHostileTo(member))
+                    discover(member);
+            }
+        }
+
+        if (learned)
+            LOG_DEBUG("playerbots", "[New RPG] {} discovered flight path {}", bot->GetName(), node);
+    }
+
+    return learned;
 }

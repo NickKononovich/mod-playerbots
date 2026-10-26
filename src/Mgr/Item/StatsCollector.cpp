@@ -364,6 +364,10 @@ bool StatsCollector::SpecialSpellFilter(uint32 spellId)
         case 55381:  // Insightful Earthsiege Diamond
             stats[STATS_TYPE_MANA_REGENERATION] += 40;
             return true;
+        case 55344:  // Austere Earthsiege Diamond: +2% armor from items, ~400 on a level 80 tank
+            if (type_ & CollectorType::MELEE_TANK)
+                stats[STATS_TYPE_ARMOR] += 400;
+            return true;
         case 39442:  // Darkmoon Card: Wrath
             if (!(type_ & CollectorType::SPELL_HEAL))
                 stats[STATS_TYPE_CRIT] += 50;
@@ -835,7 +839,8 @@ void StatsCollector::HandleApplyAura(SpellEffectInfo const& effectInfo, float mu
         }
         case SPELL_AURA_MOD_CRIT_DAMAGE_BONUS:
         {
-            if (type_ != CollectorType::SPELL_HEAL)
+            // Crit damage is a DPS stat; a tank (bear: Relentless vs Austere) must not trade survival for it.
+            if (type_ != CollectorType::SPELL_HEAL && type_ != CollectorType::MELEE_TANK)
             {
                 int32 statType = effectInfo.MiscValue;
                 if (statType & SPELL_SCHOOL_MASK_NORMAL)  // physical

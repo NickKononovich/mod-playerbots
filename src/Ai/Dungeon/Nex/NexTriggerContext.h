@@ -23,6 +23,7 @@ class WotlkDungeonNexTriggerContext : public NamedObjectContext<Trigger>
             creators["ormorok stack"] = &WotlkDungeonNexTriggerContext::ormorok_stack;
             creators["intense cold"] = &WotlkDungeonNexTriggerContext::intense_cold;
             creators["keristrasza positioning"] = &WotlkDungeonNexTriggerContext::keristrasza_positioning;
+            creators["nexus containment sphere"] = &WotlkDungeonNexTriggerContext::nexus_containment_sphere;
         }
     private:
         static Trigger* faction_commander_whirlwind(PlayerbotAI* botAI) { return new FactionCommanderWhirlwindTrigger(botAI); }
@@ -33,6 +34,10 @@ class WotlkDungeonNexTriggerContext : public NamedObjectContext<Trigger>
         static Trigger* ormorok_stack(PlayerbotAI* botAI) { return new OrmorokStackTrigger(botAI); }
         static Trigger* intense_cold(PlayerbotAI* botAI) { return new IntenseColdTrigger(botAI); }
         static Trigger* keristrasza_positioning(PlayerbotAI* botAI) { return new KeristraszaPositioningTrigger(botAI); }
+        static Trigger* nexus_containment_sphere(PlayerbotAI* botAI)
+        {
+            return new NexusContainmentSphereTrigger(botAI);
+        }
 };
 
 #endif

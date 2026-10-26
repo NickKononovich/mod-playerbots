@@ -11,6 +11,7 @@
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
+#include "RaidMarkOwnership.h"
 #include "RtiValue.h"
 #include "Vehicle.h"
 #include <unordered_map>
@@ -295,7 +296,7 @@ bool IccValithriaGroupAction::Handle25ManGroupLogic()
             continue;
 
         PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
-        if (!memberAI || IsSelfBot(member))
+        if (!memberAI)
             continue;
 
         if (PlayerbotAI::IsHeal(member) && member->HasAura(SPELL_DREAM_STATE))
@@ -553,18 +554,18 @@ bool IccValithriaGroupAction::HandleMarkingLogic(bool inGroup1, bool inGroup2, b
     if (!bestTarget)
     {
         if (currentIconUnit && !group->GetTargetIcon(iconIndex).IsEmpty())
-            group->SetTargetIcon(iconIndex, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, iconIndex, ObjectGuid::Empty);
         return false;
     }
 
-    group->SetTargetIcon(iconIndex, bot->GetGUID(), bestTarget->GetGUID());
+    RaidMarkOwnership::SetIcon(bot, group, iconIndex, bestTarget->GetGUID());
 
     if (singleMarkMode)
     {
         uint8 const crossIcon = CROSS_ICON;
         Unit* currentCrossUnit = botAI->GetUnit(group->GetTargetIcon(crossIcon));
         if (currentCrossUnit && !group->GetTargetIcon(crossIcon).IsEmpty())
-            group->SetTargetIcon(crossIcon, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, crossIcon, ObjectGuid::Empty);
     }
 
     tryDispatchRti(bestTarget->GetGUID());
@@ -586,7 +587,7 @@ bool IccValithriaGroupAction::Handle10ManGroupLogic()
         return false;
 
     PlayerbotAI* selfAI = GET_PLAYERBOT_AI(bot);
-    if (!selfAI || IsSelfBot(bot))
+    if (!selfAI)
         return false;
     if (PlayerbotAI::IsHeal(bot) && bot->HasAura(SPELL_DREAM_STATE))
         return false;
@@ -692,11 +693,11 @@ bool IccValithriaGroupAction::Handle10ManGroupLogic()
     if (!bestTarget)
     {
         if (currentIconUnit && !group->GetTargetIcon(DEFAULT_ICON).IsEmpty())
-            group->SetTargetIcon(DEFAULT_ICON, bot->GetGUID(), ObjectGuid::Empty);
+            RaidMarkOwnership::SetIcon(bot, group, DEFAULT_ICON, ObjectGuid::Empty);
         return false;
     }
 
-    group->SetTargetIcon(DEFAULT_ICON, bot->GetGUID(), bestTarget->GetGUID());
+    RaidMarkOwnership::SetIcon(bot, group, DEFAULT_ICON, bestTarget->GetGUID());
 
     tryDispatchRti(bestTarget->GetGUID());
 
@@ -707,13 +708,6 @@ bool IccValithriaPortalAction::Execute(Event /*event*/)
 {
     if (!PlayerbotAI::IsHeal(bot) || bot->HasAura(SPELL_DREAM_STATE))
         return false;
-
-    // Healer just dropped Dream State - if still airborne (portal exit leaves
-    // bots above the floor) snap to floor Z immediately so they don't fall and die.
-    constexpr float MAX_Z = 367.961f;
-    constexpr float TARGET_Z = 365.0f;
-    if (bot->GetPositionZ() > MAX_Z)
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), TARGET_Z, bot->GetOrientation());
 
     constexpr float SEARCH_RANGE = 200.0f;
 
@@ -848,23 +842,8 @@ bool IccValithriaHealAction::Execute(Event /*event*/)
     if (!PlayerbotAI::IsHeal(bot))
         return false;
 
-    // Snap to floor Z first - healer may have just dropped Dream State and be
-    // airborne above MAX_Z. Run BEFORE the HP gate so it fires every tick.
-    constexpr float MAX_Z = 367.961f;
-    constexpr float TARGET_Z = 365.0f;
-    if (bot->GetPositionZ() > MAX_Z)
-        bot->TeleportTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), TARGET_Z, bot->GetOrientation());
-
     if (bot->GetHealthPct() < 50.0f)
         return false;
-
-    if (!bot->HasAura(SPELL_DREAM_STATE))
-    {
-        constexpr float NORMAL_SPEED = 1.0f;
-        bot->SetSpeed(MOVE_RUN, NORMAL_SPEED, true);
-        bot->SetSpeed(MOVE_WALK, NORMAL_SPEED, true);
-        bot->SetSpeed(MOVE_FLIGHT, NORMAL_SPEED, true);
-    }
 
     Creature* valithria = bot->FindNearestCreature(NPC_VALITHRIA_DREAMWALKER, 100.0f);
     if (!valithria)
@@ -921,12 +900,17 @@ bool IccValithriaHealAction::Execute(Event /*event*/)
 
 bool IccValithriaDreamCloudAction::Execute(Event /*event*/)
 {
-    if (!bot->HasAura(SPELL_DREAM_STATE))
+    Aura const* const dreamState = bot->GetAura(SPELL_DREAM_STATE);
+    if (!dreamState)
         return false;
 
-    bot->SetSpeed(MOVE_RUN, 2.0f, true);
-    bot->SetSpeed(MOVE_WALK, 2.0f, true);
-    bot->SetSpeed(MOVE_FLIGHT, 2.0f, true);
+    // Fly down before Dream State runs out so its end does not drop the healer from cloud height
+    constexpr int32 DREAM_STATE_DESCEND_MS = 3000;
+    constexpr float FLOOR_Z = 365.0f;
+    int32 const dreamLeftMs = dreamState->GetDuration();
+    if (dreamLeftMs > 0 && dreamLeftMs < DREAM_STATE_DESCEND_MS)
+        return MoveTo(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), FLOOR_Z, false, false, false, true,
+                      MovementPriority::MOVEMENT_FORCED);
 
     std::vector<Player*> allDream;
     std::vector<Player*> realDream;
@@ -940,8 +924,8 @@ bool IccValithriaDreamCloudAction::Execute(Event /*event*/)
 
         allDream.push_back(player);
 
-        PlayerbotAI* playerBotAI = GET_PLAYERBOT_AI(player);
-        if (!playerBotAI || IsSelfBot(player))
+        // A SelfBot collects clouds with the bot cloud logic; only a client-driven player leads the stack.
+        if (IsRealPlayer(player))
             realDream.push_back(player);
     }
 
@@ -959,10 +943,8 @@ bool IccValithriaDreamCloudAction::Execute(Event /*event*/)
     {
         constexpr float STACK_DIST = 1.0f;
         if (bot->GetDistance(leader) > STACK_DIST)
-        {
-            bot->TeleportTo(bot->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(),
-                            bot->GetOrientation());
-        }
+            return MoveTo(bot->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(),
+                          false, false, false, true, MovementPriority::MOVEMENT_FORCED);
         return false;
     }
 
@@ -1000,7 +982,7 @@ bool IccValithriaDreamCloudAction::Execute(Event /*event*/)
     }
 
     // Advance to a new cloud only when the current one is gone or the wait window has passed.
-    // The wait window gives every portal bot time to teleport in and collect the same cloud.
+    // The wait window gives every portal bot time to fly in and collect the same cloud.
     if (!target || nowMs >= sync.moveOnAfterMs)
     {
         Creature* closest = nullptr;
@@ -1023,10 +1005,10 @@ bool IccValithriaDreamCloudAction::Execute(Event /*event*/)
         sync.moveOnAfterMs = nowMs + CLOUD_SYNC_WAIT_MS;
     }
 
-    // All bots teleport to the shared target so none miss the cloud
-    if (target)
-        bot->TeleportTo(target->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(),
-                        bot->GetOrientation());
+    // All bots fly to the shared target so they collect the same cloud chain
+    if (target && bot->GetExactDist(target) > 1.0f)
+        return MoveTo(bot->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(),
+                      false, false, false, true, MovementPriority::MOVEMENT_FORCED);
 
     return false;
 }
@@ -1084,9 +1066,6 @@ bool IccValithriaZombieKiteAction::Execute(Event /*event*/)
 
     if (threatZombies.empty())
         return false;
-
-    if (!bot->HasAura(SPELL_NITRO_BOOSTS))
-        bot->AddAura(SPELL_NITRO_BOOSTS, bot);
 
     // Stop active channeling that would root the bot
     bot->CastStop();

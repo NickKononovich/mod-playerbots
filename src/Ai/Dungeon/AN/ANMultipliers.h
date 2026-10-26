@@ -18,4 +18,15 @@ class KrikthirMultiplier : public Multiplier
         float GetValue(Action* action) override;
 };
 
+// Krik'thir's room (ANWatcherRoom in ANTriggers.h): the room tactic owns the pulls (the careful planner and its
+// lone-mob minimum would split the timed event into slow single pulls), and nobody walks into, or casts an area
+// spell next to, a pack that is not in the fight yet.
+class KrikthirWatcherRoomMultiplier : public Multiplier
+{
+public:
+    KrikthirWatcherRoomMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "krik'thir watcher room") {}
+
+    float GetValue(Action* action) override;
+};
+
 #endif

@@ -38,9 +38,10 @@ void FrostMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [b31_deep] every 30 s instead of every 5 s ("has pet"): the permanent pet rarely needs it
     triggers.push_back(
         new TriggerNode(
-            "has pet",
+            "water elemental autocast check",
             {
                 NextAction("toggle pet spell", 60.0f)
             }
@@ -84,7 +85,7 @@ void FrostMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "fingers of frost",
             {
-                NextAction("deep freeze", 19.0f),
+                NextAction("deep freeze", 19.6f),  // [b31_deep] above Brain Freeze FFB (19.5): DF first under FoF
                 NextAction("frostbolt", 18.0f)
             }
         )
@@ -93,7 +94,7 @@ void FrostMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "frostbite on target",
             {
-                NextAction("deep freeze", 19.0f),
+                NextAction("deep freeze", 19.6f),  // [b31_deep] above Brain Freeze FFB (19.5): DF first under FoF
                 NextAction("frostbolt", 18.0f)
             }
         )
@@ -102,9 +103,13 @@ void FrostMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "frost nova on target",
             {
-                NextAction("deep freeze", 19.0f),
+                NextAction("deep freeze", 19.6f),  // [b31_deep] above Brain Freeze FFB (19.5): DF first under FoF
                 NextAction("frostbolt", 18.0f)
             }
         )
     );
+
+    // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
+    triggers.push_back(new TriggerNode("set bonus ice lance", { NextAction("ice lance", 18.5f) }));
+    triggers.push_back(new TriggerNode("set bonus arcane surge", { NextAction("frostbolt", 18.4f) }));
 }

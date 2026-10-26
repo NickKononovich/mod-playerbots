@@ -5,11 +5,15 @@
  */
 
 #include "FollowActions.h"
+#include "CheckMountStateAction.h"
+#include "Creature.h"
+#include "EscortProtect.h"
 #include "Event.h"
 #include "Formations.h"
 #include "LastMovementValue.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "PathGenerator.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -98,6 +102,14 @@ namespace
 
 bool FollowAction::Execute(Event /*event*/)
 {
+    // [escort_anchor] A leashed escort under way (Old Hillsbrad's Thrall) is the anchor of every member, the group
+    // leader included: the group walks with the NPC it protects, not after the leader on the harness route (ohb-h
+    // 163739: "follow" to the leader against "escort stay close" to Thrall, 78 move_conflict flips).
+    // [b42_ohb] ... except while the NPC waits and the leader is not with it yet: the members follow the leader
+    // back (EscortProtect::EscortFollowAnchor).
+    if (Creature* escort = EscortProtect::EscortFollowAnchor(botAI))
+        return Follow(escort);
+
     Formation* formation = AI_VALUE(Formation*, "formation");
     std::string const target = formation->GetTargetName();
 
@@ -245,9 +257,24 @@ bool FollowAction::isUseful()
     if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) != nullptr)
         return false;
 
+    // Following stops casts, which would cancel the mount we start when the leader rides off.
+    if (CheckMountStateAction::IsCastingMount(bot))
+        return false;
+
     Formation* formation = AI_VALUE(Formation*, "formation");
     if (!formation)
         return false;
+
+    // [escort_anchor] the escort NPC instead of the formation's target (see Execute; [b42_ohb] EscortFollowAnchor).
+    if (Creature* escort = EscortProtect::EscortFollowAnchor(botAI))
+    {
+        // Keep eating / drinking next to it.
+        if (!bot->IsInCombat() && !bot->IsStandState() && bot->GetDistance(escort) < 40.0f)
+            return false;
+
+        return ServerFacade::instance().IsDistanceGreaterThan(bot->GetExactDist2d(escort),
+                                                              formation->GetMaxDistance());
+    }
 
     std::string const target = formation->GetTargetName();
 
@@ -268,6 +295,11 @@ bool FollowAction::isUseful()
             return false;
 
         if (fTarget->GetGUID() == bot->GetGUID())
+            return false;
+
+        // Keep eating/drinking while the one we follow is still close; a selfbot leader waits for us.
+        if (!bot->IsInCombat() && !bot->IsStandState() && fTarget->GetMapId() == bot->GetMapId() &&
+            bot->GetDistance(fTarget) < 40.0f)
             return false;
     }
 
@@ -299,6 +331,22 @@ bool FollowAction::CanDeadFollow(Unit* target)
     // Move to corpse when dead and player is alive or not a ghost.
     if (!bot->IsAlive() && (target->IsAlive() || !target->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST)))
         return false;
+
+    // [ledge_drop_false] a living bot does not follow a dead leader's body far below it that no ground path
+    // reaches (bot-n 20261025-184229-56: the tank fell through the floor to 85 yd under it, the members walked
+    // "follow" at the ledge guard 144 times); it holds, and the resurrection logic takes the body. Only for a dead
+    // target more than DEAD_FOLLOW_MAX_DZ below, so the path query stays off the per-tick path.
+    constexpr float DEAD_FOLLOW_MAX_DZ = 10.0f;
+    if (bot->IsAlive() && !target->IsAlive() && target->GetMapId() == bot->GetMapId() &&
+        bot->GetPositionZ() - target->GetPositionZ() > DEAD_FOLLOW_MAX_DZ)
+    {
+        PathGenerator path(bot);
+        path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
+        PathType const type = path.GetPathType();
+        if (!(type & PATHFIND_NORMAL) ||
+            (type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOT_USING_PATH)))
+            return false;
+    }
 
     return true;
 }

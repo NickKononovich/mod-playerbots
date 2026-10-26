@@ -95,6 +95,9 @@ enum UlduarIDs
     // General Vezax
     SPELL_MARK_OF_THE_FACELESS = 63276,
     SPELL_VEZAX_SHADOW_CRASH = 63277,
+    NPC_SARONITE_VAPORS = 33488,
+    SPELL_SARONITE_VAPORS_STACK = 63322,  // stacking player aura, damage 100 * 2^stacks, half returned as mana
+    SPELL_SARONITE_VAPORS_CLOUD = 63323,  // on the dead Vapors, 30 s, 8 yd
 
     // Yogg-Saron
     ACTION_ILLUSION_DRAGONS = 1,
@@ -150,6 +153,14 @@ enum UlduarIDs
 
 constexpr float ULDUAR_KOLOGARN_AXIS_Z_PATHING_ISSUE_DETECT = 420.0f;
 constexpr float ULDUAR_KOLOGARN_EYEBEAM_RADIUS = 3.0f;
+constexpr float ULDUAR_MIMIRON_MINE_AVOID_RADIUS = 4.0f;
+constexpr float ULDUAR_MIMIRON_BOMB_BOT_AVOID_RADIUS = 6.0f;
+constexpr float ULDUAR_MIMIRON_HAZARD_AVOID_DISTANCE = 6.0f;
+constexpr float ULDUAR_VEZAX_VAPORS_SEARCH_RANGE = 30.0f;
+constexpr float ULDUAR_VEZAX_VAPORS_STAND_DISTANCE = 1.5f;
+constexpr float ULDUAR_VEZAX_VAPORS_LEAVE_RADIUS = 10.0f;
+constexpr uint8 ULDUAR_VEZAX_VAPORS_MAX_STACKS = 3;
+constexpr float ULDUAR_YOGG_SARON_CLOUD_AVOID_RADIUS = 9.0f;  // a cloud summons a Guardian at 6 yd
 constexpr float ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD = 429.6094f;
 constexpr float ULDUAR_THORIM_AXIS_Z_PATHING_ISSUE_DETECT = 410.0f;
 constexpr float ULDUAR_AURIAYA_AXIS_Z_PATHING_ISSUE_DETECT = 410.0f;
@@ -197,6 +208,11 @@ extern const Position ULDUAR_YOGG_SARON_ICECROWN_CITADEL_ENTRANCE;
 extern const Position ULDUAR_YOGG_SARON_CHAMBER_OF_ASPECTS_ENTRANCE;
 extern const Position ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT;
 extern const Position ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT;
+
+// Nearest live Proximity Mine or Bomb Bot inside its avoid radius, or nullptr.
+Unit* FindMimironGroundHazard(PlayerbotAI* botAI, Player* bot);
+// Nearest dead Saronite Vapors still carrying its mana-returning cloud (63323, 30 s) within range, or nullptr.
+Creature* FindSaroniteVaporsCloud(Player* bot, float range);
 
 class RazorscaleBossHelper : public AiObject
 {

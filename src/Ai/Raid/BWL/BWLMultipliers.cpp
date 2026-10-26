@@ -40,6 +40,14 @@ float RazorgoreTankMultiplier::GetValue(Action* action)
     return 1.0f;
 }
 
+float RazorgoreOrbControllerMultiplier::GetValue(Action* action)
+{
+    if (!IsControllingRazorgore(bot))
+        return 1.0f;
+
+    return dynamic_cast<BwlRazorgoreControlOrbAction*>(action) ? 1.0f : 0.0f;
+}
+
 float VaelastraszTankMultiplier::GetValue(Action* action)
 {
     if (!PlayerbotAI::IsTank(bot))

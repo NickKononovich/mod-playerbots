@@ -79,7 +79,7 @@ public:
 
     void OnUpdate(DynamicObject* debris, uint32 /*diff*/) override
     {
-        if (debris->GetSpellId() != Id(MagSpells::SPELL_DEBRIS_SPAWN))
+        if (debris->GetSpellId() != Id(MagSpells::SPELL_DEBRIS_VISUAL))
             return;
 
         Map::PlayerList const& players = debris->GetMap()->GetPlayers();

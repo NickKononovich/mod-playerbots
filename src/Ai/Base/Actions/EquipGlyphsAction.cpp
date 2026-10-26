@@ -9,6 +9,7 @@
 #include "DBCStores.h"
 #include "Log.h"
 #include "ObjectMgr.h"
+#include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "SpellMgr.h"
 #include <sstream>
@@ -97,6 +98,14 @@ bool EquipGlyphsAction::CollectGlyphs(std::vector<uint32> const& itemIds,
 /// -----------------------------------------------------------------
 bool EquipGlyphsAction::Execute(Event event)
 {
+    // Applies glyphs without the items; non-random bots learn them from glyph items instead (LearnGlyphAction).
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot))
+    {
+        botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "glyph_equip_items_only", "I learn glyphs only from glyph items in my bags.", {}));
+        return false;
+    }
+
     // 1) parse IDs
     std::vector<uint32> itemIds;
     std::istringstream iss(event.getParam());

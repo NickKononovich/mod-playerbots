@@ -33,6 +33,7 @@ class CastIceArmorAction : public CastBuffSpellAction
 {
 public:
     CastIceArmorAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "ice armor") {}
+    std::vector<NextAction> getAlternatives() override;  // [b31_deep] Frost Armor below level 30
 };
 
 class CastFrostArmorAction : public CastBuffSpellAction
@@ -158,22 +159,50 @@ public:
     std::string const GetTargetName() override { return "self target"; }
 };
 
+// [conjure_outside_instances] Mages conjure food / water / Mana Gems / Refreshment Tables before the run or in the
+// open world, never in a dungeon or raid (user rule 2026-10-25; hor-h-5A-1: the mage conjured and handed out food
+// for 50 s at the entrance while the group walked on). In an instance one conjure is allowed only when the mage's
+// own stock of that kind is completely empty and the group rests anyway. Outside, the mage still waits while its
+// group leader walks away from it. what: the spell for the once-per-run skip log line.
+constexpr bool CONJURE_OUTSIDE_INSTANCES = true;
+bool MageConjureAllowed(PlayerbotAI* botAI, Player* bot, bool ownStockEmpty, char const* what);
+
 class CastConjureManaGemAction : public CastBuffSpellAction
 {
 public:
     CastConjureManaGemAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure mana gem") {}
+    bool isUseful() override;
 };
 
 class CastConjureFoodAction : public CastBuffSpellAction
 {
 public:
     CastConjureFoodAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure food") {}
+    bool isUseful() override;
 };
 
 class CastConjureWaterAction : public CastBuffSpellAction
 {
 public:
     CastConjureWaterAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure water") {}
+    bool isUseful() override;
+};
+
+// Level 75+: Conjured Mana Pie / Strudel, food that also restores mana (counted as conjured food by the bots)
+class CastConjureRefreshmentAction : public CastBuffSpellAction
+{
+public:
+    CastConjureRefreshmentAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "conjure refreshment") {}
+    bool isUseful() override;
+};
+
+// Reagent: Arcane Powder; creates the Refreshment Portal that two more group members click
+class CastRitualOfRefreshmentAction : public CastSpellAction
+{
+public:
+    CastRitualOfRefreshmentAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "ritual of refreshment") {}
+    std::string const GetTargetName() override { return "self target"; }
+    bool isUseful() override;
 };
 
 class UseManaSapphireAction : public UseItemAction
@@ -251,11 +280,25 @@ public:
     bool isUseful() override;
 };
 
+// Frost Nova for the healer ("healer attacker in frost nova range"), whatever the mage's own target is.
+class CastFrostNovaOnHealerAttackerAction : public CastSpellAction
+{
+public:
+    CastFrostNovaOnHealerAttackerAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "frost nova") {}
+
+    std::string const GetTargetName() override { return "self target"; }
+    std::string const getName() override { return "frost nova on healer attacker"; }
+};
+
 class CastDeepFreezeAction : public CastSpellAction
 {
 public:
     CastDeepFreezeAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "deep freeze") {}
-    bool isPossible() override { return true; }
+    // [b31_deep] was "return true": known / cooldown / range / mana were never checked and the cast failed 9056
+    // times on cooldown. The frozen state (Fingers of Frost counts as frozen) is still left to the core.
+    bool isPossible() override;
+    // [ranged_audit_b30] In a group only on a stun-immune creature, the only one it damages.
+    bool isUseful() override;
 };
 
 class CastRemoveCurseAction : public CastCureSpellAction
@@ -330,21 +373,17 @@ public:
 class CastLivingBombAction : public CastDebuffSpellAction
 {
 public:
-    CastLivingBombAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "living bomb", true) {}
-    bool isUseful() override
-    {
-        return CastAuraSpellAction::isUseful();
-    }
+    // [b31_deep] 12 s target lifetime, as the trigger (LIVING_BOMB_MIN_TARGET_LIFETIME, MageTriggers.h)
+    CastLivingBombAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "living bomb", true, 12.0f) {}
+    bool isUseful() override;
 };
 
 class CastLivingBombOnAttackersAction : public CastDebuffSpellOnAttackerAction
 {
 public:
-    CastLivingBombOnAttackersAction(PlayerbotAI* botAI) : CastDebuffSpellOnAttackerAction(botAI, "living bomb", true) {}
-    bool isUseful() override
-    {
-        return CastAuraSpellAction::isUseful();
-    }
+    CastLivingBombOnAttackersAction(PlayerbotAI* botAI)
+        : CastDebuffSpellOnAttackerAction(botAI, "living bomb", true, 12.0f) {}  // [b31_deep] 12 s lifetime
+    bool isUseful() override;
 };
 
 class CastFrostboltAction : public CastSpellAction
@@ -370,6 +409,7 @@ class CastBlizzardAction : public CastSpellAction
 public:
     CastBlizzardAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "blizzard") {}
     ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
+    bool isUseful() override;
 };
 
 class CastConeOfColdAction : public CastSpellAction
@@ -385,6 +425,7 @@ class CastFlamestrikeAction : public CastDebuffSpellAction
 public:
     CastFlamestrikeAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "flamestrike", true, 0.0f) {}
     ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
+    bool isUseful() override;
 };
 
 class CastDragonsBreathAction : public CastSpellAction

@@ -26,9 +26,11 @@
 #include "DistanceValue.h"
 #include "DpsTargetValue.h"
 #include "DuelTargetValue.h"
+#include "EncounterValues.h"
 #include "EnemyHealerTargetValue.h"
 #include "EnemyPlayerValue.h"
 #include "EstimatedLifetimeValue.h"
+#include "FearCounterValues.h"  // [fear_counter]
 #include "FishValues.h"
 #include "Formations.h"
 #include "GrindTargetValue.h"
@@ -37,6 +39,7 @@
 #include "GuildValues.h"
 #include "HasAvailableLootValue.h"
 #include "HasTotemValue.h"
+#include "InterruptValues.h"
 #include "InvalidTargetValue.h"
 #include "IsBehindValue.h"
 #include "IsFacingValue.h"
@@ -66,10 +69,13 @@
 #include "PartyMemberSnaredTargetValue.h"
 #include "PartyMemberToDispel.h"
 #include "PartyMemberToHeal.h"
+#include "HealAssignmentValues.h"
+#include "DamageSpikeValues.h"
 #include "PartyMemberToResurrect.h"
 #include "PartyMemberValue.h"
 #include "PartyMemberWithoutAuraValue.h"
 #include "PartyMemberWithoutItemValue.h"
+#include "PartyStrengthValue.h"
 #include "PetTargetValue.h"
 #include "PositionValue.h"
 #include "PossibleRpgTargetsValue.h"
@@ -77,6 +83,7 @@
 #include "PvpValues.h"
 #include "QuestValues.h"
 #include "RTSCValues.h"
+#include "RaidUtilityAssignment.h"
 #include "RandomBotUpdateValue.h"
 #include "RangeValues.h"
 #include "RpgValues.h"
@@ -89,6 +96,8 @@
 #include "SpellIdValue.h"
 #include "Stances.h"
 #include "StatsValues.h"
+#include "StuckWatchdog.h"
+#include "RangedPositionActions.h"
 #include "TankTargetValue.h"
 #include "TargetValue.h"
 #include "ThreatValues.h"
@@ -150,11 +159,21 @@ public:
         creators["old target"] = &ValueContext::old_target;
         creators["grind target"] = &ValueContext::grind_target;
         creators["aggressive target"] = &ValueContext::aggressive_target;
+        creators["stuck watchdog"] = &ValueContext::stuck_watchdog;
+        creators["group ranged position"] = &ValueContext::group_ranged_position;
+        creators["heal walk"] = &ValueContext::heal_walk;
+        creators["ranged approach stall"] = &ValueContext::ranged_approach_stall;
         creators["rti target"] = &ValueContext::rti_target;
         creators["rti cc target"] = &ValueContext::rti_cc_target;
         creators["duel target"] = &ValueContext::duel_target;
         creators["party member to dispel"] = &ValueContext::party_member_to_dispel;
+        creators["party member to dispel urgent"] = &ValueContext::party_member_to_dispel_urgent;
         creators["party member to protect"] = &ValueContext::party_member_to_protect;
+        creators["incoming heals"] = &ValueContext::incoming_heals;
+        creators["group health loss"] = &ValueContext::group_health_loss;
+        creators["auto focus heal targets"] = &ValueContext::auto_focus_heal_targets;
+        creators["recent health loss"] = &ValueContext::recent_health_loss;
+        creators["tank damage spike target"] = &ValueContext::tank_damage_spike_target;
         creators["party member snared target"] = &ValueContext::party_member_snared_target;
         creators["health"] = &ValueContext::health;
         creators["rage"] = &ValueContext::rage;
@@ -168,6 +187,14 @@ public:
         creators["attacker count"] = &ValueContext::attacker_count;
         creators["my attacker count"] = &ValueContext::my_attacker_count;
         creators["has aggro"] = &ValueContext::has_aggro;
+        creators["group member attacker"] = &ValueContext::group_member_attacker;
+        creators["fleeing mob"] = &ValueContext::fleeing_mob;
+        creators["fled survivor"] = &ValueContext::fled_survivor;
+        creators["group member attacker count"] = &ValueContext::group_member_attacker_count;
+        creators["attacked group member"] = &ValueContext::attacked_group_member;
+        creators["far healer attacker"] = &ValueContext::far_healer_attacker;
+        creators["defend member target"] = &ValueContext::defend_member_target;
+        creators["healer attacker near"] = &ValueContext::healer_attacker_near;
         creators["mounted"] = &ValueContext::mounted;
         creators["custom_glyphs"] = &ValueContext::custom_glyphs;   // Added for custom glyphs
 
@@ -183,6 +210,7 @@ public:
         creators["last area trigger"] = &ValueContext::last_movement;
         creators["distance"] = &ValueContext::distance;
         creators["moving"] = &ValueContext::moving;
+        creators["encounter in progress"] = &ValueContext::encounter_in_progress;
         creators["swimming"] = &ValueContext::swimming;
         creators["behind"] = &ValueContext::behind;
         creators["facing"] = &ValueContext::facing;
@@ -203,11 +231,16 @@ public:
         creators["aoe heal"] = &ValueContext::aoe_heal;
 
         creators["rti cc"] = &ValueContext::rti_cc;
+        creators["auto cc mark"] = &ValueContext::auto_cc_mark;
+        creators["auto cc hard pack"] = &ValueContext::auto_cc_hard_pack;
+        creators["tank kill marks"] = &ValueContext::tank_kill_marks;
+        creators["interrupt assignment"] = &ValueContext::interrupt_assignment;
         creators["rti"] = &ValueContext::rti;
         creators["position"] = &ValueContext::position;
         creators["pos"] = &ValueContext::pos;
         creators["current position"] = &ValueContext::current_position;
         creators["threat"] = &ValueContext::threat;
+        creators["next cast threat"] = &ValueContext::next_cast_threat;
 
         creators["balance"] = &ValueContext::balance;
         creators["attackers"] = &ValueContext::attackers;
@@ -314,6 +347,7 @@ public:
         creators["has area debuff"] = &ValueContext::has_area_debuff;
 
         creators["main tank"] = &ValueContext::main_tank;
+        creators["fear counter state"] = &ValueContext::fear_counter_state;  // [fear_counter]
         creators["find target"] = &ValueContext::find_target;
         creators["boss target"] = &ValueContext::boss_target;
         creators["nearest triggers"] = &ValueContext::nearest_triggers;
@@ -330,6 +364,18 @@ public:
         creators["fishing spot"] = &ValueContext::fishing_spot;
         creators["wait for attack time"] = &ValueContext::wait_for_attack_time;
         creators["combat start time"] = &ValueContext::combat_start_time;
+        creators["party strength"] = &CreatePartyStrengthValue;
+        creators["pull grace start"] = &CreatePullGraceStartValue;
+
+        // Raid utility coordinator (RaidUtilityAssignment.h)
+        creators["raid utility assignment"] = &ai::raidutil::CreateRaidUtilityAssignmentValue;
+        creators["battle res target"] = &ai::raidutil::CreateBattleResTargetValue;
+        creators["innervate target"] = &ai::raidutil::CreateInnervateTargetValue;
+        creators["threat redirect target"] = &ai::raidutil::CreateThreatRedirectTargetValue;
+        creators["utility buff target"] = &ai::raidutil::CreateUtilityBuffTargetValue;
+        creators["hand of salvation target"] = &ai::raidutil::CreateHandOfSalvationTargetValue;
+        creators["pull imminent"] = &ai::raidutil::CreatePullImminentValue;
+        creators["low mana healer count"] = &ai::raidutil::CreateLowManaHealerCountValue;
     }
 
 private:
@@ -367,6 +413,10 @@ private:
     static UntypedValue* current_position(PlayerbotAI* botAI) { return new CurrentPositionValue(botAI); }
     static UntypedValue* rti(PlayerbotAI* botAI) { return new RtiValue(botAI); }
     static UntypedValue* rti_cc(PlayerbotAI* botAI) { return new RtiCcValue(botAI); }
+    static UntypedValue* auto_cc_mark(PlayerbotAI* botAI) { return new AutoCcMarkValue(botAI); }
+    static UntypedValue* auto_cc_hard_pack(PlayerbotAI* botAI) { return new AutoCcHardPackValue(botAI); }
+    static UntypedValue* tank_kill_marks(PlayerbotAI* botAI) { return new TankKillMarksValue(botAI); }
+    static UntypedValue* interrupt_assignment(PlayerbotAI* botAI) { return new InterruptAssignmentValue(botAI); }
 
     static UntypedValue* aoe_heal(PlayerbotAI* botAI) { return new AoeHealValue(botAI); }
 
@@ -383,6 +433,7 @@ private:
     static UntypedValue* behind(PlayerbotAI* botAI) { return new IsBehindValue(botAI); }
     static UntypedValue* facing(PlayerbotAI* botAI) { return new IsFacingValue(botAI); }
     static UntypedValue* moving(PlayerbotAI* botAI) { return new IsMovingValue(botAI); }
+    static UntypedValue* encounter_in_progress(PlayerbotAI* botAI) { return new EncounterInProgressValue(botAI); }
     static UntypedValue* swimming(PlayerbotAI* botAI) { return new IsSwimmingValue(botAI); }
     static UntypedValue* distance(PlayerbotAI* botAI) { return new DistanceValue(botAI); }
     static UntypedValue* last_movement(PlayerbotAI* botAI) { return new LastMovementValue(botAI); }
@@ -398,6 +449,17 @@ private:
     static UntypedValue* attacker_count(PlayerbotAI* botAI) { return new AttackerCountValue(botAI); }
     static UntypedValue* my_attacker_count(PlayerbotAI* botAI) { return new MyAttackerCountValue(botAI); }
     static UntypedValue* has_aggro(PlayerbotAI* botAI) { return new HasAggroValue(botAI); }
+    static UntypedValue* group_member_attacker(PlayerbotAI* botAI) { return new GroupMemberAttackerValue(botAI); }
+    static UntypedValue* fleeing_mob(PlayerbotAI* botAI) { return new FleeingMobValue(botAI); }
+    static UntypedValue* fled_survivor(PlayerbotAI* botAI) { return new FledSurvivorValue(botAI); }
+    static UntypedValue* group_member_attacker_count(PlayerbotAI* botAI)
+    {
+        return new GroupMemberAttackerCountValue(botAI);
+    }
+    static UntypedValue* attacked_group_member(PlayerbotAI* botAI) { return new AttackedGroupMemberValue(botAI); }
+    static UntypedValue* far_healer_attacker(PlayerbotAI* botAI) { return new FarHealerAttackerValue(botAI); }
+    static UntypedValue* defend_member_target(PlayerbotAI* botAI) { return new DefendMemberTargetValue(botAI); }
+    static UntypedValue* healer_attacker_near(PlayerbotAI* botAI) { return new HealerAttackerNearValue(botAI); }
     static UntypedValue* mounted(PlayerbotAI* botAI) { return new IsMountedValue(botAI); }
     static UntypedValue* health(PlayerbotAI* botAI) { return new HealthValue(botAI); }
     static UntypedValue* rage(PlayerbotAI* botAI) { return new RageValue(botAI); }
@@ -455,7 +517,16 @@ private:
     static UntypedValue* healer_low_mana(PlayerbotAI* botAI) { return new HealerLowMana(botAI); }
     static UntypedValue* party_member_to_resurrect(PlayerbotAI* botAI) { return new PartyMemberToResurrect(botAI); }
     static UntypedValue* party_member_to_dispel(PlayerbotAI* botAI) { return new PartyMemberToDispel(botAI); }
+    static UntypedValue* party_member_to_dispel_urgent(PlayerbotAI* botAI)
+    {
+        return new PartyMemberToDispelUrgent(botAI);
+    }
     static UntypedValue* party_member_to_protect(PlayerbotAI* botAI) { return new PartyMemberToProtect(botAI); }
+    static UntypedValue* incoming_heals(PlayerbotAI* botAI) { return new IncomingHealsValue(botAI); }
+    static UntypedValue* group_health_loss(PlayerbotAI* botAI) { return new GroupHealthLossValue(botAI); }
+    static UntypedValue* auto_focus_heal_targets(PlayerbotAI* botAI) { return new AutoFocusHealTargetsValue(botAI); }
+    static UntypedValue* recent_health_loss(PlayerbotAI* botAI) { return new RecentHealthLossValue(botAI); }
+    static UntypedValue* tank_damage_spike_target(PlayerbotAI* botAI) { return new TankDamageSpikeTargetValue(botAI); }
     static UntypedValue* party_member_snared_target(PlayerbotAI* botAI) { return new PartyMemberSnaredTargetValue(botAI); }
     static UntypedValue* current_target(PlayerbotAI* botAI) { return new CurrentTargetValue(botAI); }
     static UntypedValue* old_target(PlayerbotAI* botAI) { return new CurrentTargetValue(botAI); }
@@ -472,11 +543,16 @@ private:
     static UntypedValue* pet_target(PlayerbotAI* botAI) { return new PetTargetValue(botAI); }
     static UntypedValue* grind_target(PlayerbotAI* botAI) { return new GrindTargetValue(botAI); }
     static UntypedValue* aggressive_target(PlayerbotAI* botAI) { return new AggressiveTargetValue(botAI); }
+    static UntypedValue* stuck_watchdog(PlayerbotAI* botAI) { return new StuckWatchdogValue(botAI); }
+    static UntypedValue* group_ranged_position(PlayerbotAI* botAI) { return new RangedPositionValue(botAI); }
+    static UntypedValue* heal_walk(PlayerbotAI* botAI) { return new HealWalkValue(botAI); }
+    static UntypedValue* ranged_approach_stall(PlayerbotAI* botAI) { return new RangedApproachStallValue(botAI); }
     static UntypedValue* rti_target(PlayerbotAI* botAI) { return new RtiTargetValue(botAI); }
     static UntypedValue* rti_cc_target(PlayerbotAI* botAI) { return new RtiCcTargetValue(botAI); }
     static UntypedValue* duel_target(PlayerbotAI* botAI) { return new DuelTargetValue(botAI); }
     static UntypedValue* has_totem(PlayerbotAI* botAI) { return new HasTotemValue(botAI); }
     static UntypedValue* threat(PlayerbotAI* botAI) { return new ThreatValue(botAI); }
+    static UntypedValue* next_cast_threat(PlayerbotAI* botAI) { return new NextCastThreatValue(botAI); }
     static UntypedValue* combat(PlayerbotAI* botAI) { return new IsInCombatValue(botAI); }
     static UntypedValue* lfg_proposal(PlayerbotAI* botAI) { return new LfgProposalValue(botAI); }
     static UntypedValue* bag_space(PlayerbotAI* botAI) { return new BagSpaceValue(botAI); }
@@ -568,6 +644,8 @@ private:
     static UntypedValue* has_area_debuff(PlayerbotAI* botAI) { return new HasAreaDebuffValue(botAI); }
 
     static UntypedValue* main_tank(PlayerbotAI* botAI) { return new PartyMemberMainTankValue(botAI); }
+    // [fear_counter]
+    static UntypedValue* fear_counter_state(PlayerbotAI* botAI) { return new FearCounterStateValue(botAI); }
     static UntypedValue* find_target(PlayerbotAI* botAI) { return new FindTargetValue(botAI); }
     static UntypedValue* boss_target(PlayerbotAI* botAI) { return new BossTargetValue(botAI); }
     static UntypedValue* nearest_triggers(PlayerbotAI* botAI) { return new NearestTriggersValue(botAI); }

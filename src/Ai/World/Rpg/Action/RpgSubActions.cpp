@@ -163,7 +163,7 @@ bool RpgTaxiAction::Execute(Event /*event*/)
     for (uint32 i = 0; i < sTaxiPathStore.GetNumRows(); ++i)
     {
         TaxiPathEntry const* entry = sTaxiPathStore.LookupEntry(i);
-        if (entry && entry->from == node && (bot->m_taxi.IsTaximaskNodeKnown(entry->to) || bot->isTaxiCheater()))
+        if (entry && entry->from == node && bot->m_taxi.IsTaximaskNodeKnown(entry->to))
         {
             nodes.push_back(i);
         }
@@ -176,11 +176,12 @@ bool RpgTaxiAction::Execute(Event /*event*/)
     }
 
     uint32 path = nodes[urand(0, nodes.size() - 1)];
-    uint32 money = bot->GetMoney();
-    bot->SetMoney(money + 100000);
-
     TaxiPathEntry const* entry = sTaxiPathStore.LookupEntry(path);
     if (!entry)
+        return false;
+
+    // The bot pays the fare with its own gold; no flight when it cannot afford it.
+    if (bot->GetMoney() < entry->price)
         return false;
 
     TaxiNodesEntry const* nodeFrom = sTaxiNodesStore.LookupEntry(entry->from);
@@ -202,8 +203,6 @@ bool RpgTaxiAction::Execute(Event /*event*/)
 
     LOG_INFO("playerbots", "Bot {} <{}> is flying from {} to {} ({} location available)",
              bot->GetGUID().ToString().c_str(), bot->GetName(), nodeFrom->name[0], nodeTo->name[0], nodes.size());
-
-    bot->SetMoney(money);
 
     rpg->AfterExecute();
 

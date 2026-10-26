@@ -22,13 +22,56 @@ bool KelesethFrostTombTrigger::IsActive()
     return false;
 }
 
-bool DalronnDpsTrigger::IsActive()
+bool UKIds::IsIngvarSmashing(Player* bot, Unit* boss)
 {
-    Unit* boss = AI_VALUE2(Unit*, "find target", "dalronn the controller");
-    if (!boss || !boss->isTargetableForAttack()) { return false; }
+    return boss && boss->HasUnitState(UNIT_STATE_CASTING) &&
+           (boss->FindCurrentSpellBySpellId(SPELL_SMASH) || boss->FindCurrentSpellBySpellId(SPELL_DARK_SMASH));
+}
 
-    // This doesn't cause issues with healers currently and they will continue to heal even when included here
-    return !PlayerbotAI::IsTank(bot);
+float UKIds::SmashBoundaryRadius(Player* bot, Unit* boss)
+{
+    return SMASH_ALWAYS_HIT_REACH + boss->GetCombatReach() + bot->GetCombatReach() + SMASH_MARGIN;
+}
+
+bool UKIds::InSmashDanger(Player* bot, Unit* boss, float x, float y)
+{
+    float const dist = boss->GetExactDist2d(x, y);
+    if (dist < SmashBoundaryRadius(bot, boss))
+        return true;
+
+    Position const point(x, y, boss->GetPositionZ());
+    float const coneReach = SMASH_CONE_RADIUS + boss->GetCombatReach() + bot->GetCombatReach() + SMASH_MARGIN;
+    return dist < coneReach && boss->HasInArc(SMASH_SAFE_ARC, &point);
+}
+
+bool SkarvaldPriorityTrigger::IsActive()
+{
+    if (PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot))
+        return false;
+
+    // The ghost carries the same name but is unselectable, so it never passes isTargetableForAttack.
+    Unit* boss = AI_VALUE2(Unit*, "find target", "skarvald the constructor");
+    return boss && boss->GetEntry() == UKIds::NPC_SKARVALD && boss->IsAlive() && boss->isTargetableForAttack();
+}
+
+bool DalronnInterruptTrigger::IsActive()
+{
+    if (PlayerbotAI::IsHeal(bot))
+        return false;
+
+    Unit* boss = AI_VALUE2(Unit*, "find target", "dalronn the controller");
+    return boss && boss->GetEntry() == UKIds::NPC_DALRONN && boss->IsAlive() && boss->IsNonMeleeSpellCast(false) &&
+           bot->GetExactDist2d(boss) <= UKIds::DALRONN_INTERRUPT_RANGE;
+}
+
+bool IngvarSmashDangerTrigger::IsActive()
+{
+    if (PlayerbotAI::IsTank(bot))
+        return false;
+
+    Unit* boss = AI_VALUE2(Unit*, "find target", "ingvar the plunderer");
+    return UKIds::IsIngvarSmashing(bot, boss) &&
+           UKIds::InSmashDanger(bot, boss, bot->GetPositionX(), bot->GetPositionY());
 }
 
 bool IngvarDreadfulRoarTrigger::IsActive()
@@ -70,7 +113,12 @@ bool IngvarSmashTankReturnTrigger::IsActive()
 bool NotBehindIngvarTrigger::IsActive()
 {
     Unit* boss = AI_VALUE2(Unit*, "find target", "ingvar the plunderer");
-    if (!boss || PlayerbotAI::IsTank(bot)) { return false; }
+    if (!boss || PlayerbotAI::IsTank(bot) || !PlayerbotAI::IsMelee(bot)) { return false; }
 
-    return AI_VALUE2(bool, "behind", "current target");
+    // Melee damage dealers stand behind him (this used to fire when they already were). Ranged stay where they are:
+    // "set behind" would pull them into melee range.
+    if (AI_VALUE(Unit*, "current target") != boss)
+        return false;
+
+    return !AI_VALUE2(bool, "behind", "current target");
 }

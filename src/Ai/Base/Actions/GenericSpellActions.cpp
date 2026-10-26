@@ -5,19 +5,33 @@
  */
 
 #include "GenericSpellActions.h"
+#include "AttackerCountValues.h"
+#include "BotMoveEvents.h"
 #include "Chat.h"
+#include "Creature.h"
 #include "Event.h"
+#include "FearCounterValues.h"  // [fear_counter]
 #include "GenericBuffUtils.h"
 #include "Group.h"
+#include "HealAssignmentValues.h"
 #include "ItemTemplate.h"
+#include "MotionMaster.h"
 #include "ObjectDefines.h"
 #include "Opcodes.h"
+#include "PartyMemberToHeal.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "RtiValue.h"
 #include "ServerFacade.h"
+#include "TankAoeThreat.h"  // [b32_peel]
+#include "TargetValue.h"
+#include "TerrainHazard.h"  // [b40_strat] GapCloserLeavesGround
+#include "Timer.h"
 #include "WorldPacket.h"
+#include <algorithm>
 #include <ctime>
+#include <iterator>
 #include <unordered_set>
 
 using ai::buff::BuffBelowRefreshTarget;
@@ -180,6 +194,105 @@ bool CastSpellAction::Execute(Event /*event*/)
     return botAI->CastSpell(spell, GetTarget());
 }
 
+namespace
+{
+    // [drift_guardian_gate] The summons that put an aggressive guardian out (the core makes every guardian
+    // REACT_AGGRESSIVE: it attacks what comes into its sight, the tank or not). `longCooldown`: saved for a boss or a
+    // dangerous trash fight, as a player saves them.
+    struct GuardianSummon
+    {
+        char const* spell;
+        bool longCooldown;
+    };
+
+    constexpr GuardianSummon GUARDIAN_SUMMONS[] = {
+        {"fire elemental totem", true}, {"earth elemental totem", true}, {"army of the dead", true},
+        {"summon infernal", true},      {"inferno", true},               {"shadowfiend", false},
+        {"force of nature", false},     {"feral spirit", false},         {"summon gargoyle", false},
+        {"mirror image", false}};
+    constexpr uint8 GUARDIAN_DANGEROUS_TRASH = 4;  // attackers: a trash fight worth a long cooldown
+
+    Player* FindDungeonTank(Player* bot)
+    {
+        Group* group = bot->GetGroup();
+        if (!group)
+            return nullptr;
+
+        ObjectGuid const mainTank = PlayerbotAI::GetMainTankGuid(group);
+        Player* fallback = nullptr;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap() ||
+                !PlayerbotAI::IsTank(member))
+                continue;
+
+            if (member->GetGUID() == mainTank)
+                return member;
+
+            if (!fallback)
+                fallback = member;
+        }
+
+        return fallback;
+    }
+
+    bool IsBossUnit(Unit* unit)
+    {
+        Creature* creature = unit ? unit->ToCreature() : nullptr;
+        return creature && (creature->IsDungeonBoss() || creature->isWorldBoss() ||
+                            creature->GetCreatureTemplate()->rank == CREATURE_ELITE_WORLDBOSS);
+    }
+
+    // scholo-h 20261025-150737-4 pull 6: the Enhancement Shaman's Greater Fire Elemental opened a 12-mob pack the
+    // planner had refused, 0.9 s before the tank. In a dungeon group with a tank, a guardian summon waits until the
+    // tank holds the bot's target (in combat, on the tank or on its threat list), and a long cooldown also waits for
+    // a boss or a dangerous trash fight. Empty when the summon may go out, else why not.
+    std::string GuardianSummonRefusal(PlayerbotAI* botAI, std::string const& spell)
+    {
+        GuardianSummon const* summon = nullptr;
+        for (GuardianSummon const& entry : GUARDIAN_SUMMONS)
+        {
+            if (spell == entry.spell)
+            {
+                summon = &entry;
+                break;
+            }
+        }
+
+        if (!summon)
+            return std::string();
+
+        Player* bot = botAI->GetBot();
+        Map* map = bot->GetMap();
+        if (!map || !map->IsDungeon() || bot->InBattleground() || PlayerbotAI::IsTank(bot))
+            return std::string();
+
+        Player* tank = FindDungeonTank(bot);
+        if (!tank)
+            return std::string();
+
+        Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+        if (!target || !target->IsAlive())
+            return "no target";
+
+        if (target->ToPlayer())
+            return std::string();
+
+        bool const held = tank->IsInCombat() && target->IsInCombat() &&
+                          (target->GetVictim() == tank ||
+                           (target->CanHaveThreatList() && target->GetThreatMgr().GetThreat(tank) > 0.0f));
+        if (!held)
+            return "the tank does not hold " + target->GetName() + " yet";
+
+        if (summon->longCooldown && !IsBossUnit(target) && !IsBossUnit(tank->GetVictim()) &&
+            botAI->GetAiObjectContext()->GetValue<uint8>("attacker count")->Get() < GUARDIAN_DANGEROUS_TRASH)
+            return "saved for a boss or a dangerous trash fight";
+
+        return std::string();
+    }
+}
+
 bool CastSpellAction::isUseful()
 {
     if (botAI->IsInVehicle() && !botAI->IsInVehicle(false, false, true))
@@ -228,8 +341,29 @@ bool CastSpellAction::isPossible()
         return false;
     }
 
+    // [drift_guardian_gate] no guardian before the tank holds the target
+    if (!GuardianSummonRefusal(botAI, spell).empty())
+        return false;
+
     // Spell* currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL); //not used, line marked for removal.
     return botAI->CanCastSpell(spell, GetTarget());
+}
+
+// Out of combat a corpse round a corner fails the cast check (no line of sight is not SPELL_FAILED_OUT_OF_RANGE), and
+// the prerequisite walk into its sight never ran: RFC 2026-10-24 18:28, the paladin stood 12-19 yd from the tank's
+// corpse ("redemption ... no line of sight") until the tank released 3.5 minutes later.
+bool ResurrectPartyMemberAction::isPossible()
+{
+    if (CastSpellAction::isPossible())
+        return true;
+
+    Unit* target = GetTarget();
+    if (!target || bot->IsInCombat() || botAI->IsInVehicle() || target->GetMap() != bot->GetMap() ||
+        bot->IsWithinLOSInMap(target))
+        return false;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    return spellId && bot->HasSpell(spellId) && !bot->HasSpellCooldown(spellId);
 }
 
 CastMeleeSpellAction::CastMeleeSpellAction(
@@ -287,6 +421,16 @@ bool CastBuffSpellAction::Execute(Event /*event*/)
     botAI->forceRebuff.NoteBuffWork();
 
     return botAI->CastSpell(spell, GetTarget());
+}
+
+// [b31_shared] Lifebloom on the tank was vetoed 7076 times at L80, Bone Shield / Beacon of Light the same way
+Action::ActionThreatType CastBuffSpellAction::getThreatType()
+{
+    Unit* target = GetTarget();
+    if (!target || target == bot || bot->IsFriendlyTo(target))
+        return ActionThreatType::None;
+
+    return ActionThreatType::Single;
 }
 
 bool GroupBuffSpellAction::isUseful()
@@ -376,6 +520,33 @@ CastHealingSpellAction::CastHealingSpellAction(PlayerbotAI* botAI, std::string c
 
 bool CastHealingSpellAction::isUseful() { return CastAuraSpellAction::isUseful(); }
 
+// The threat strategy holds Aoe actions at 50 % (30 % careful) of the tank's threat on any mob near the bot or its
+// target, and reads 100 % for a mob the tank has not touched yet. Every heal is Aoe, so on a pack the tank was still
+// picking up the holy paladin held all its heals: Stockade 2026-10-24, Bazil Thredd, the tank went 87 -> 25 % in
+// 13 s while Lay on Hands, Holy Light and Flash of Light dropped to relevance 0 (Deadmines the same day: "flash of
+// light on party ... multiplier threat x0.00") and Judgement of Light (single target) ran instead. Only a top-off
+// waits for the threat now; a hurt member is healed whatever it costs.
+Action::ActionThreatType CastHealingSpellAction::getThreatType()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive())
+        return ActionThreatType::Aoe;
+
+    float const health = target->GetHealthPct();
+    if (health < sPlayerbotAIConfig.MediumHealth)
+        return ActionThreatType::None;
+
+    // No early bypass for a tank above MediumHealth: AzerothCore splits heal threat (0.5 per point) evenly over every
+    // mob in combat with the healed target (ThreatManager::ForwardThreatForAssistingMe), and a mob the tank has not
+    // hit yet holds ~0 threat on him, so a top-off heal right after the pull turns that mob to the healer.
+    float const fastLoss = sPlayerbotAIConfig.HealerFastHealthLossPct;
+    if (fastLoss > 0.0f &&
+        RecentHealthLossPct(target, context->GetValue<HealthLossMap>("group health loss")->RefGet()) >= fastLoss)
+        return ActionThreatType::None;
+
+    return ActionThreatType::Aoe;
+}
+
 bool CastAoeHealSpellAction::isUseful() { return CastSpellAction::isUseful(); }
 
 CastCureSpellAction::CastCureSpellAction(
@@ -387,6 +558,517 @@ CastCureSpellAction::CastCureSpellAction(
 Value<Unit*>* CurePartyMemberAction::GetTargetValue()
 {
     return context->GetValue<Unit*>("party member to dispel", dispelType);
+}
+
+Value<Unit*>* CastSpellOnGroupMemberAttackerAction::GetTargetValue()
+{
+    return context->GetValue<Unit*>("group member attacker");
+}
+
+// A short-reach peel spell (Hammer of the Righteous, Shield of Righteousness, Judgement, Hammer of Justice) goes to
+// the best loose mob within its reach when the pick stands further away: wave 25 trails show "hammer of the
+// righteous on group member attacker - USELESS" with other loose mobs 0-3 yd from the tank, and the tick ended with
+// "no actions executed".
+Unit* CastSpellOnGroupMemberAttackerAction::GetTarget()
+{
+    Unit* pick = GetTargetValue()->Get();
+    if (!pick)
+        return nullptr;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    float const reach = spellInfo ? spellInfo->GetMaxRange(false, bot) : 0.0f;
+    if (reach <= 0.0f)
+        return pick;
+
+    uint32 const now = getMSTime();
+    // [taunt_far_first] A taunt or a ranged threat spell goes to the loose mob out of the tank's reach first: the
+    // hands and the area threat hold the one beside the tank.
+    if (reach > SHORT_REACH)
+    {
+        if (!_reachCheckedMs || getMSTimeDiff(_reachCheckedMs, now) >= GroupMemberAttackerValue::CHECK_INTERVAL_MS)
+        {
+            _reachCheckedMs = now;
+            Unit* forTaunt = GroupMemberAttackerValue::FindForTaunt(botAI, reach);
+            _reachTarget = forTaunt ? forTaunt->GetGUID() : ObjectGuid::Empty;
+        }
+
+        Unit* forTaunt = _reachTarget ? botAI->GetUnit(_reachTarget) : nullptr;
+        Unit* victim = forTaunt && forTaunt->IsAlive() ? forTaunt->GetVictim() : nullptr;
+        Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+        bool const stillLoose = victimPlayer && victimPlayer != bot && !PlayerbotAI::IsTank(victimPlayer);
+        return stillLoose ? forTaunt : pick;  // a mob back on a tank since the last look is not taunted
+    }
+
+    if (bot->IsWithinCombatRange(pick, reach))
+        return pick;
+
+    if (!_reachCheckedMs || getMSTimeDiff(_reachCheckedMs, now) >= GroupMemberAttackerValue::CHECK_INTERVAL_MS)
+    {
+        _reachCheckedMs = now;
+        Unit* inReach = GroupMemberAttackerValue::FindInReach(botAI, reach);
+        _reachTarget = inReach ? inReach->GetGUID() : ObjectGuid::Empty;
+    }
+
+    Unit* inReach = _reachTarget ? botAI->GetUnit(_reachTarget) : nullptr;
+    return inReach && inReach->IsAlive() ? inReach : pick;
+}
+
+bool CastSpellOnGroupMemberAttackerAction::isUseful()
+{
+    if (!CastSpellAction::isUseful())
+        return false;
+
+    // An out-of-range cast passes CanCastSpell and fails every tick: Hammer of Justice reaches 10 yd, not 30.
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    Unit* target = GetTarget();
+    if (!spellInfo || !target || !bot->IsWithinCombatRange(target, spellInfo->GetMaxRange(false, bot)))
+        return false;
+
+    // [b32_peel] a peel only on a mob in the pack or on a group member; a gap closer (Feral Charge) only onto a mob
+    // next to the member it hits: a caster hitting from range is taunted or pulled in, not charged (dmn-n-5H-48)
+    if (PlayerbotAI::IsTank(bot) &&
+        (!TankPeel::MayPeel(bot, target) || (TankPeel::IsGapCloser(spellInfo) && !TankPeel::MayCloseGap(bot, target))))
+        return false;
+
+    // [b40_strat] the gap closer's own ground and door guard (GapCloserLeavesGround: a target in the air, down a ledge,
+    // through an open auto-closing door). This generic peel path ("feral charge - bear on group member attacker") ran
+    // past it: strat-h 20261026-060218-strat-h-5H-1, the bear charged through King's Square Gate 175353.
+    if (TankPeel::IsGapCloser(spellInfo) && GapCloserLeavesGround(bot, target, spell.c_str()))
+        return false;
+
+    if (!healerOnly)
+        return true;
+
+    Unit* victim = target->GetVictim();
+    Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+    return victimPlayer && PlayerbotAI::IsHeal(victimPlayer);
+}
+
+bool CastSpellOnGroupMemberAttackerAction::Execute(Event event)
+{
+    Unit* target = GetTarget();
+    ObjectGuid const guid = target ? target->GetGUID() : ObjectGuid::Empty;
+    Unit* victim = target ? target->GetVictim() : nullptr;  // before the cast turns it
+    if (!CastSpellAction::Execute(event))
+        return false;
+
+    GroupMemberAttackerValue::NoteReaction(botAI, target, victim, spell, name);
+
+    // The next peel spell goes to another victim's mob while this one is held. Only a taunt or a stun holds it:
+    // after a Hammer of the Righteous or an Icy Touch the mob stays on the healer, and marking it peeled sent the
+    // taunts and Righteous Defense to other victims for PEEL_SPREAD_MS.
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (guid && spellInfo &&
+        (spellInfo->HasEffect(SPELL_EFFECT_ATTACK_ME) || spellInfo->HasAura(SPELL_AURA_MOD_TAUNT) ||
+         spellInfo->HasAura(SPELL_AURA_MOD_STUN)))
+        GroupMemberAttackerValue::RecordPeel(botAI, {guid});
+
+    return true;
+}
+
+Unit* CastSpellOnAttackedGroupMemberAction::GetTarget() { return AI_VALUE(Unit*, "attacked group member"); }
+
+bool CastSpellOnAttackedGroupMemberAction::isUseful()
+{
+    if (!CastSpellAction::isUseful())
+        return false;
+
+    if (minFreshMobs <= 1)
+        return true;
+
+    Unit* friendUnit = GetTarget();
+    if (!friendUnit)
+        return false;
+
+    uint32 fresh = 0;
+    for (Unit* mob : friendUnit->getAttackers())
+    {
+        if (mob && mob->GetVictim() == friendUnit && !GroupMemberAttackerValue::IsRecentlyPeeled(botAI, mob->GetGUID()))
+            ++fresh;
+    }
+
+    return fresh >= minFreshMobs;
+}
+
+bool CastSpellOnAttackedGroupMemberAction::Execute(Event event)
+{
+    Unit* friendUnit = GetTarget();
+    if (!friendUnit)
+        return false;
+
+    // Righteous Defense takes the friend's attackers: these are the mobs it covers (read from the friend: "attackers"
+    // lags a second and misses some, see GatherPeelCandidates)
+    GuidVector taken;
+    for (Unit* mob : friendUnit->getAttackers())
+    {
+        if (mob && mob->GetVictim() == friendUnit)
+            taken.push_back(mob->GetGUID());
+    }
+
+    if (!CastSpellAction::Execute(event))
+        return false;
+
+    for (ObjectGuid const& guid : taken)
+        GroupMemberAttackerValue::NoteReaction(botAI, botAI->GetUnit(guid), friendUnit, spell, name);
+
+    GroupMemberAttackerValue::RecordPeel(botAI, taken);
+    return true;
+}
+
+TauntReactionAction::Spells const* TauntReactionAction::ClassSpells(Player* bot)
+{
+    static Spells const PALADIN = {"hand of reckoning", "avenger's shield", "righteous defense", true};
+    static Spells const WARRIOR = {"taunt", "heroic throw", "challenging shout", false};
+    static Spells const DRUID = {"growl", "faerie fire (feral)", "challenging roar", false};
+    static Spells const DEATH_KNIGHT = {"dark command", "death grip", nullptr, false};
+    switch (bot->getClass())
+    {
+        case CLASS_PALADIN:
+            return &PALADIN;
+        case CLASS_WARRIOR:
+            return &WARRIOR;
+        case CLASS_DRUID:
+            return &DRUID;
+        case CLASS_DEATH_KNIGHT:
+            return &DEATH_KNIGHT;
+        default:
+            return nullptr;
+    }
+}
+
+bool TauntReactionAction::SpellReady(PlayerbotAI* botAI, char const* spell)
+{
+    if (!spell)
+        return false;
+
+    Player* bot = botAI->GetBot();
+    uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", spell)->Get();
+    return spellId && bot->HasSpell(spellId) && !bot->HasSpellCooldown(spellId);
+}
+
+float TauntReactionAction::SpellRange(PlayerbotAI* botAI, char const* spell, float fallback)
+{
+    uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", spell)->Get();
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    float const range = spellInfo ? spellInfo->GetMaxRange(spellInfo->IsPositive(), botAI->GetBot()) : 0.0f;
+    return range > 0.0f ? range : fallback;
+}
+
+// Ready, the target in range and in sight, and the cast's own checks (form, stance, global cooldown) pass.
+bool TauntReactionAction::Usable(PlayerbotAI* botAI, char const* spell, Unit* target)
+{
+    Player* bot = botAI->GetBot();
+    if (!spell || !target || !SpellReady(botAI, spell))
+        return false;
+
+    if (target != bot)
+    {
+        float const range = SpellRange(botAI, spell, DEFAULT_TAUNT_RANGE);
+        bool const inRange = target->ToPlayer() ? bot->IsWithinDistInMap(target, range)
+                                                : bot->IsWithinCombatRange(target, range);
+        if (!inRange || !bot->IsWithinLOSInMap(target))
+            return false;
+    }
+
+    return botAI->CanCastSpell(spell, target);
+}
+
+std::string TauntReactionAction::ReadyFor(PlayerbotAI* botAI, Unit* mob)
+{
+    Player* bot = botAI->GetBot();
+    Spells const* spells = ClassSpells(bot);
+    if (!spells || !mob || !mob->IsAlive())
+        return "";
+
+    if (Usable(botAI, spells->taunt, mob))
+        return spells->taunt;
+
+    if (bot->IsWithinMeleeRange(mob))
+        return "";
+
+    // Death Grip on a caster only: a melee mob on its way is held by Dark Command and the hands
+    if (bot->getClass() == CLASS_DEATH_KNIGHT)
+    {
+        Unit* victim = mob->GetVictim();
+        bool const caster = mob->IsNonMeleeSpellCast(false) || (victim && !mob->IsWithinMeleeRange(victim));
+        if (!caster)
+            return "";
+    }
+
+    return Usable(botAI, spells->ranged, mob) ? spells->ranged : "";
+}
+
+bool TauntReactionAction::MakePlan(Plan& plan)
+{
+    plan = Plan();
+    Spells const* spells = ClassSpells(bot);
+    if (!spells || !PlayerbotAI::IsTank(bot) || !bot->IsInCombat())
+        return false;
+
+    // 1. two or more fresh mobs on one member: the area taunt takes them all
+    if (spells->swarm && SpellReady(botAI, spells->swarm))
+    {
+        Unit* friendUnit = AI_VALUE(Unit*, "attacked group member");
+        Player* friendPlayer = friendUnit ? friendUnit->ToPlayer() : nullptr;
+        if (friendPlayer && friendPlayer->IsAlive())
+        {
+            GuidVector fresh;
+            GuidVector beside;  // within the shouts' reach of the tank
+            for (Unit* mob : friendPlayer->getAttackers())
+            {
+                if (!mob || !mob->IsAlive() || mob->GetVictim() != friendPlayer ||
+                    GroupMemberAttackerValue::IsRecentlyPeeled(botAI, mob->GetGUID()))
+                    continue;
+
+                fresh.push_back(mob->GetGUID());
+                if (bot->IsWithinDistInMap(mob, AOE_TAUNT_RADIUS))
+                    beside.push_back(mob->GetGUID());
+            }
+
+            if (spells->swarmOnFriend && fresh.size() >= MIN_SWARM_MOBS &&
+                Usable(botAI, spells->swarm, friendPlayer))
+            {
+                plan.spell = spells->swarm;
+                plan.target = friendPlayer->GetGUID();
+                plan.victim = friendPlayer->GetGUID();
+                plan.mobs = fresh;
+                plan.holds = true;
+                return true;
+            }
+
+            // a three-minute shout: for the healer's mobs, or with the single taunt cooling
+            if (!spells->swarmOnFriend && beside.size() >= MIN_SWARM_MOBS &&
+                (PlayerbotAI::IsHeal(friendPlayer) || !SpellReady(botAI, spells->taunt)) &&
+                Usable(botAI, spells->swarm, bot))
+            {
+                plan.spell = spells->swarm;
+                plan.target = bot->GetGUID();
+                plan.victim = friendPlayer->GetGUID();
+                plan.mobs = beside;
+                plan.holds = true;
+                return true;
+            }
+        }
+
+        // [bear_aoe_threat] The shouts (Challenging Shout, Challenging Roar) once SWARM_SPREAD_MOBS or more mobs
+        // around the tank hit non-tank members, spread over several of them: the step above counts only the one
+        // "attacked group member". gd-h build 30 (20261025-184229-gd-h-5B-38, Slad'ran): Constrictors and Vipers from
+        // the pipes went to the stacked healer and priest, 74 aggro losses in 60 s, the Prot Warrior never shouted.
+        if (!spells->swarmOnFriend && Usable(botAI, spells->swarm, bot))
+        {
+            GuidVector spread;
+            ObjectGuid firstVictim;
+            for (ObjectGuid const& guid : AI_VALUE(GuidVector, "attackers"))
+            {
+                Unit* mob = botAI->GetUnit(guid);
+                Unit* victim = mob && mob->IsAlive() ? mob->GetVictim() : nullptr;
+                Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+                if (!victimPlayer || victimPlayer == bot || !victimPlayer->IsInSameGroupWith(bot) ||
+                    PlayerbotAI::IsTank(victimPlayer) || !bot->IsWithinDistInMap(mob, AOE_TAUNT_RADIUS) ||
+                    GroupMemberAttackerValue::IsRecentlyPeeled(botAI, guid))
+                    continue;
+
+                if (spread.empty())
+                    firstVictim = victimPlayer->GetGUID();
+                spread.push_back(guid);
+            }
+
+            if (spread.size() >= SWARM_SPREAD_MOBS)
+            {
+                plan.spell = spells->swarm;
+                plan.target = bot->GetGUID();
+                plan.victim = firstVictim;
+                plan.mobs = spread;
+                plan.holds = true;
+                return true;
+            }
+        }
+    }
+
+    // 2. / 3. the single taunt, else a ranged threat spell, on the mob out of the tank's reach first
+    float const reach = std::max(SpellRange(botAI, spells->taunt, DEFAULT_TAUNT_RANGE),
+                                 SpellRange(botAI, spells->ranged, DEFAULT_TAUNT_RANGE));
+    Unit* mob = GroupMemberAttackerValue::FindForTaunt(botAI, reach);
+    Unit* victim = mob ? mob->GetVictim() : nullptr;
+    if (!victim)
+        return false;
+
+    std::string const spell = ReadyFor(botAI, mob);
+    if (spell.empty())
+        return false;
+
+    plan.spell = spell;
+    plan.target = mob->GetGUID();
+    plan.victim = victim->GetGUID();
+    plan.mobs = {mob->GetGUID()};
+    // Death Grip pulls the mob to the tank and taunts it; Avenger's Shield, Heroic Throw and Faerie Fire only add
+    // threat
+    plan.holds = spell == spells->taunt || spell == "death grip";
+    return true;
+}
+
+bool TauntReactionAction::isUseful()
+{
+    uint32 const now = getMSTime();
+    if (_plan.madeMs && getMSTimeDiff(_plan.madeMs, now) < PLAN_MS)
+        return !_plan.spell.empty();
+
+    MakePlan(_plan);
+    _plan.madeMs = now ? now : 1;
+    return !_plan.spell.empty();
+}
+
+bool TauntReactionAction::Execute(Event /*event*/)
+{
+    Plan const plan = _plan;
+    _plan = Plan();  // chosen afresh next time
+    Unit* target = plan.spell.empty() ? nullptr : botAI->GetUnit(plan.target);
+    Unit* victim = botAI->GetUnit(plan.victim);
+    if (!target || !target->IsAlive() || !victim)
+        return false;
+
+    // the mobs still on the victim, read before the cast turns them
+    std::vector<Unit*> mobs;
+    for (ObjectGuid const& guid : plan.mobs)
+    {
+        Unit* mob = botAI->GetUnit(guid);
+        if (mob && mob->IsAlive() && mob->GetVictim() == victim)
+            mobs.push_back(mob);
+    }
+
+    if (mobs.empty() || !botAI->CastSpell(plan.spell, target))
+        return false;
+
+    for (Unit* mob : mobs)
+        GroupMemberAttackerValue::NoteReaction(botAI, mob, victim, plan.spell, getName());
+
+    if (plan.holds)
+        GroupMemberAttackerValue::RecordPeel(botAI, plan.mobs);
+
+    return true;
+}
+
+FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob)
+{
+    static Stop const PALADIN[] = {{"hammer of justice", false}};
+    static Stop const HUNTER[] = {{"concussive shot", false}, {"wing clip", false}};
+    static Stop const MAGE[] = {{"frost nova", true}, {"frostbolt", false}};
+    static Stop const WARRIOR[] = {{"concussion blow", false}, {"hamstring", false}, {"piercing howl", true}};
+    static Stop const SHAMAN[] = {{"frost shock", false}, {"earthbind totem", true}};
+    static Stop const DRUID[] = {{"bash", false}, {"entangling roots", false}};
+    static Stop const DEATH_KNIGHT[] = {{"death grip", false}, {"chains of ice", false}};
+    static Stop const ROGUE[] = {{"kidney shot", false}, {"gouge", false}};
+    static Stop const WARLOCK[] = {{"curse of exhaustion", false}};
+    static Stop const PRIEST[] = {{"mind flay", false}};
+
+    Stop const* begin = nullptr;
+    Stop const* end = nullptr;
+    auto const use = [&begin, &end](auto const& list)
+    {
+        begin = std::begin(list);
+        end = std::end(list);
+    };
+    switch (bot->getClass())
+    {
+        case CLASS_PALADIN:
+            use(PALADIN);
+            break;
+        case CLASS_HUNTER:
+            use(HUNTER);
+            break;
+        case CLASS_MAGE:
+            use(MAGE);
+            break;
+        case CLASS_WARRIOR:
+            use(WARRIOR);
+            break;
+        case CLASS_SHAMAN:
+            use(SHAMAN);
+            break;
+        case CLASS_DRUID:
+            use(DRUID);
+            break;
+        case CLASS_DEATH_KNIGHT:
+            use(DEATH_KNIGHT);
+            break;
+        case CLASS_ROGUE:
+            use(ROGUE);
+            break;
+        case CLASS_WARLOCK:
+            use(WARLOCK);
+            break;
+        case CLASS_PRIEST:
+            use(PRIEST);
+            break;
+        default:
+            return nullptr;
+    }
+
+    for (Stop const* stop = begin; stop != end; ++stop)
+    {
+        if (stop->aroundSelf)
+        {
+            if (bot->IsWithinDistInMap(mob, SELF_REACH) && TauntReactionAction::Usable(botAI, stop->spell, bot))
+                return stop;
+        }
+        else if (TauntReactionAction::Usable(botAI, stop->spell, mob))
+            return stop;
+    }
+
+    return nullptr;
+}
+
+bool FleeStopAction::isUseful()
+{
+    Unit* mob = AI_VALUE(Unit*, "fleeing mob");
+    if (!mob || PlayerbotAI::IsHeal(bot) || FledMobs::StoppedRecently(mob->GetGUID()))
+        return false;
+
+    // already held: a stun or a root from somebody else stops it as well
+    if (mob->HasAuraType(SPELL_AURA_MOD_STUN) || mob->HasAuraType(SPELL_AURA_MOD_ROOT) || IsCrowdControlled(mob))
+        return false;
+
+    return Pick(mob) != nullptr;
+}
+
+bool FleeStopAction::Execute(Event /*event*/)
+{
+    Unit* mob = AI_VALUE(Unit*, "fleeing mob");
+    Stop const* stop = mob ? Pick(mob) : nullptr;
+    if (!stop || !botAI->CastSpell(stop->spell, stop->aroundSelf ? static_cast<Unit*>(bot) : mob))
+        return false;
+
+    FledMobs::MarkStopped(mob->GetGUID());
+    MotionMaster* motion = mob->GetMotionMaster();
+    char const* kind =
+        motion && motion->GetCurrentMovementGeneratorType() == ASSISTANCE_MOTION_TYPE ? "for help" : "in fear";
+    float const distance = bot->GetExactDist(mob);
+    LOG_INFO("playerbots", "[flee stop] {}: {} on {} {} running {} at {:.0f} % health, {:.1f} yd", bot->GetName(),
+             stop->spell, mob->GetName(), mob->GetEntry(), kind, mob->GetHealthPct(), distance);
+    BotMoveEvents::Push(bot->GetGUID(), BotMoveEvents::Event{"flee_stop", {}, {}}
+                                            .Str("name", bot->GetName())
+                                            .Str("mob", mob->GetName())
+                                            .Num("entry", mob->GetEntry())
+                                            .Str("spell", stop->spell)
+                                            .Str("kind", kind)
+                                            .Real("hpPct", mob->GetHealthPct())
+                                            .Real("distance", distance));
+    return true;
+}
+
+bool CastAreaSpellOnGroupMemberAttackersAction::isUseful()
+{
+    if (!PlayerbotAI::IsTank(bot))
+        return false;
+
+    // the "group member attacker count" qualifier is the range in yards around the bot
+    if (!AI_VALUE2(uint8, "group member attacker count", std::to_string(static_cast<int32>(radius))))
+        return false;
+
+    return CastSpellAction::isUseful();
 }
 
 Value<Unit*>* BuffOnPartyAction::GetTargetValue()
@@ -472,7 +1154,15 @@ Value<Unit*>* CastCrowdControlSpellAction::GetTargetValue() { return context->Ge
 
 bool CastCrowdControlSpellAction::Execute(Event /*event*/) { return botAI->CastSpell(getName(), GetTarget()); }
 
-bool CastCrowdControlSpellAction::isPossible() { return botAI->CanCastSpell(getName(), GetTarget()); }
+bool CastCrowdControlSpellAction::isPossible()
+{
+    // Crowd control only on a mob the group does not fight now (IsGroupKillTarget), never its kill target.
+    Unit* target = GetTarget();
+    if (target && RefuseCrowdControlOnKillTarget(botAI, target, getName()))
+        return false;
+
+    return botAI->CanCastSpell(getName(), target);
+}
 
 bool CastCrowdControlSpellAction::isUseful() { return true; }
 
@@ -504,6 +1194,30 @@ bool CastWillOfTheForsakenAction::isPossible()
 {
     uint32 spellId = AI_VALUE2(uint32, "spell id", spell);
     return spellId && !HasSpellOrCategoryCooldown(bot, spellId);
+}
+
+// [fear_counter] The racial breaks log a "[fear_counter]" line when they removed a fear / charm / sleep (Every Man
+// for Himself also answers stuns and roots, which are not logged).
+bool CastEveryManForHimselfAction::Execute(Event event)
+{
+    uint32 const aura = FearCounter::TremorableAuraSpell(bot);
+    if (!CastSpellAction::Execute(event))
+        return false;
+
+    if (aura)
+        FearCounter::Log(bot, spell, bot, aura);
+    return true;
+}
+
+bool CastWillOfTheForsakenAction::Execute(Event event)
+{
+    uint32 const aura = FearCounter::TremorableAuraSpell(bot);
+    if (!CastSpellAction::Execute(event))
+        return false;
+
+    if (aura)
+        FearCounter::Log(bot, spell, bot, aura);
+    return true;
 }
 
 bool UseTrinketAction::Execute(Event /*event*/)
@@ -663,6 +1377,21 @@ bool UseTrinketAction::UseTrinket(Item* item)
 }
 
 Value<Unit*>* BuffOnMainTankAction::GetTargetValue() { return context->GetValue<Unit*>("main tank", spell); }
+
+// [heal_triage] Lifebloom / Rejuvenation / Renew / Riptide on the main tank (any spell with a periodic heal; Earth
+// Shield, Beacon of Light, Thorns and the like keep their upkeep): HoR heroic Falric 2026-10-25, "lifebloom on main
+// tank" (20.8) and "rejuvenation on main tank" (20.7) ran on a 96 % tank while the dps sat at 17-40 %.
+bool BuffOnMainTankAction::HotUpkeepYields()
+{
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!spellInfo || !spellInfo->HasAura(SPELL_AURA_PERIODIC_HEAL))
+        return false;
+
+    return HealTriage::TankUpkeepYields(botAI, GetTarget());
+}
+
+bool BuffOnMainTankAction::isUseful() { return !HotUpkeepYields() && CastBuffSpellAction::isUseful(); }
 
 bool CastDebuffSpellAction::isUseful()
 {

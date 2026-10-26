@@ -51,6 +51,13 @@ public:
     float GetValue(Action* action) override;
 };
 
+class MgTDelrissaHealerHoldMultiplier : public Multiplier
+{
+public:
+    MgTDelrissaHealerHoldMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "mgt delrissa healer hold") {}
+    float GetValue(Action* action) override;
+};
+
 class MgTFlameStrikeMultiplier : public Multiplier
 {
 public:
@@ -70,6 +77,21 @@ class MgTKaelUnattackableMultiplier : public Multiplier
 public:
     MgTKaelUnattackableMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "mgt kael unattackable") {}
     float GetValue(Action* action) override;
+};
+
+// Selin's room (MagistersTerrace::SelinRoom, MgTShared.h): the room tactic owns the pulls (the careful planner, its
+// lone-mob minimum and its walk to the next mob would bring the pair and Selin), the group holds the rally instead
+// of following the tank to its cast spot, and nobody walks into, or casts an area spell next to, an idle pack.
+class MgTSelinRoomMultiplier : public Multiplier
+{
+public:
+    MgTSelinRoomMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "mgt selin room") {}
+    float GetValue(Action* action) override;
+    // [b41_mgt] the room's walk vetoes (leash, entry order, no walk up to her) hold through the no-damage release
+    bool KeepsVeto(Action* action) override;
+
+private:
+    uint32 _entryLogMs = 0;
 };
 
 class MgTGravityLapseMultiplier : public Multiplier

@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_HUNTERTRIGGERS_H
 #define PLAYERBOTS_HUNTERTRIGGERS_H
 
+#include "AiObjectContext.h"
 #include "CureTriggers.h"
 #include "GenericTriggers.h"
 #include "PlayerbotAI.h"
@@ -81,22 +82,31 @@ public:
 
 // Cooldown Triggers
 
+// [b35_bal] Rapid Fire (5 min) is paced like Bloodlust/Heroism (ShouldCastLust): in an instance only on an engaged
+// boss (or a player / ordered burst / lust window), never on trash. The plain BoostTrigger fired on any trash pack
+// with "balance" <= 50, so RF was on cooldown in 47 of 98 level-80 BM boss attempts.
 class RapidFireTrigger : public BoostTrigger
 {
 public:
     RapidFireTrigger(PlayerbotAI* botAI) : BoostTrigger(botAI, "rapid fire") {}
+
+    bool IsActive() override;
 };
 
-class BestialWrathTrigger : public BuffTrigger
+class BestialWrathTrigger : public BoostTrigger
 {
 public:
-    BestialWrathTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "bestial wrath") {}
+    BestialWrathTrigger(PlayerbotAI* botAI) : BoostTrigger(botAI, "bestial wrath") {}
+    std::string const GetTargetName() override { return "pet target"; }
 };
 
 class IntimidationTrigger : public BuffTrigger
 {
 public:
     IntimidationTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "intimidation") {}
+    // [guide_b31_dead] was a self-aura check that never matched, so it fired at 40 above every shot. Now a peel /
+    // interrupt: off cooldown, and the pet's target is hitting the hunter or a healer, or is casting.
+    bool IsActive() override;
 };
 
 class KillCommandTrigger : public BuffTrigger
@@ -106,15 +116,16 @@ public:
     bool IsActive() override;
 };
 
+// [b31_deep] The proc buff (2 charges: no cooldown, no cost on Arcane/Explosive Shot). The talent's passive
+// (56342-56344) is also named "Lock and Load", so the old by-name check was always true for every SV with the talent.
+constexpr uint32 SPELL_LOCK_AND_LOAD_PROC = 56453;
+
 class LockAndLoadTrigger : public BuffTrigger
 {
 public:
     LockAndLoadTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "lock and load") {}
 
-    bool IsActive() override
-    {
-        return botAI->HasAura("lock and load", botAI->GetBot());
-    }
+    bool IsActive() override { return bot->HasAura(SPELL_LOCK_AND_LOAD_PROC); }  // [b31_deep]
 };
 
 // CC Triggers
@@ -145,11 +156,14 @@ public:
 
 // DoT/Debuff Triggers
 
+// Any hunter's Mark counts (one per target); trash dying within a few seconds is not worth the GCD
+constexpr float HUNTERS_MARK_MIN_TARGET_LIFETIME = 10.0f;
+
 class HuntersMarkTrigger : public DebuffTrigger
 {
 public:
-    HuntersMarkTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "hunter's mark", 1, true, 0.5f) {}
-    bool IsActive() override { return BuffTrigger::IsActive(); }
+    HuntersMarkTrigger(PlayerbotAI* botAI)
+        : DebuffTrigger(botAI, "hunter's mark", 1, false, HUNTERS_MARK_MIN_TARGET_LIFETIME) {}
 };
 
 class ExplosiveShotTrigger : public DebuffTrigger
@@ -192,6 +206,8 @@ class MisdirectionOnMainTankTrigger : public BuffOnMainTankTrigger
 {
 public:
     MisdirectionOnMainTankTrigger(PlayerbotAI* botAI) : BuffOnMainTankTrigger(botAI, "misdirection", true) {}
+    bool IsActive() override;
+    Value<Unit*>* GetTargetValue() override { return context->GetValue<Unit*>("threat redirect target"); }
 };
 
 class TargetRemoveEnrageTrigger : public TargetAuraDispelTrigger
@@ -214,6 +230,23 @@ public:
 
 BEGIN_TRIGGER(HuntersPetDeadTrigger, Trigger)
 END_TRIGGER()
+
+// [b31_deep] In combat: the pet died fighting a boss with enough fight left for the Revive Pet cast to pay off.
+// The "pet dead" value queries the database when no pet is summoned, so this reads the pet and the pet stable.
+class HuntersPetDeadOnBossTrigger : public Trigger
+{
+public:
+    HuntersPetDeadOnBossTrigger(PlayerbotAI* botAI) : Trigger(botAI, "hunters pet dead on boss") {}
+    bool IsActive() override;
+};
+
+// [b31_deep] In combat: the living current pet is not summoned (dismissed), so Call Pet brings it back.
+class HuntersPetDismissedTrigger : public Trigger
+{
+public:
+    HuntersPetDismissedTrigger(PlayerbotAI* botAI) : Trigger(botAI, "hunters pet dismissed") {}
+    bool IsActive() override;
+};
 
 BEGIN_TRIGGER(HuntersPetLowHealthTrigger, Trigger)
 END_TRIGGER()

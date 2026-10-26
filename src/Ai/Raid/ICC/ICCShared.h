@@ -83,11 +83,29 @@ struct IccGuidLess
     bool operator()(WorldObject const* a, WorldObject const* b) const { return a->GetGUID() < b->GetGUID(); }
 };
 
+// Encounters whose old cheat shortcut was removed and still lack a full honest tactic.
+enum class IccHonestGap : uint8
+{
+    Marrowgar = 0,
+    Deathwhisper,
+    Gunship,
+    RottingFrostGiant,
+    Saurfang,
+    Festergut,
+    Rotface,
+    Putricide,
+    BloodPrinces,
+    BloodQueen,
+    Valithria,
+    Sindragosa,
+    LichKing,
+};
+
+// Logs "ICC <boss>: needs honest tactic (<what>)" once per encounter pull.
+void IccLogHonestTacticGap(Player* bot, IccHonestGap gap, char const* boss, char const* what);
 bool IccCastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target);
 std::optional<bool> IccTryClassCC(Player* bot, PlayerbotAI* botAI, Unit* target);
 void IccEnsureIconOn(Player* bot, PlayerbotAI* botAI, int8 icon, Unit* target);
-void IccApplyHeroicBuffToMember(Player* member, bool applyPainSupp, bool applyNoThreat);
-void IccStripExperienced(Player* bot);
 bool IccBossCastingBlisteringCold(Unit* boss);
 bool IccBossHasRemorselessWinter(Unit* boss);
 bool IccBossCastingRemorselessWinter(Unit* boss);

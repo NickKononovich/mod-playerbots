@@ -40,10 +40,10 @@ public:
     bool isUseful() override;
 };
 
-class EmalonFallFromFloorAction : public Action
+class EmalonFallFromFloorAction : public MovementAction
 {
 public:
-    EmalonFallFromFloorAction(PlayerbotAI* botAI) : Action(botAI, "emalon fall from floor action") {}
+    EmalonFallFromFloorAction(PlayerbotAI* botAI) : MovementAction(botAI, "emalon fall from floor action") {}
     bool Execute(Event event) override;
     bool isUseful() override;
 };

@@ -272,6 +272,14 @@ bool RsHalionHealConsumptionTrigger::IsActive()
     return RsHalionConsumptionHealTarget(botAI) != nullptr;
 }
 
+bool RsHalionDispelMarkTrigger::IsActive()
+{
+    if (!RsHalionCanDispelMagic(bot) || !RsHalionEngaged(botAI))
+        return false;
+
+    return RsHalionDispelMarkTarget(botAI) != nullptr;
+}
+
 bool RsTrashAddsTrigger::IsActive()
 {
     if (PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot))

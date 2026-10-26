@@ -5,11 +5,20 @@
  */
 
 #include "DruidTriggers.h"
+#include "DruidActions.h"
+#include "Creature.h"
 #include "DynamicObject.h"
+#include "InstanceScript.h"
 #include "Player.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "TargetValue.h"
+#include "HealthTriggers.h"  // [b32_tank_aoe] RestState
+#include "Timer.h"           // [b32_tank_aoe] getMSTime
+#include "FeralDruidStrategy.h"  // [b32_brez] DruidHasThickHide
+#include "Group.h"               // [b32_brez]
+#include "SpellMgr.h"            // [b32_brez]
+#include "TankAoeThreat.h"       // [b32_brez] TankPeel, TankAoePackTrigger
 
 bool MarkOfTheWildTrigger::IsActive()
 {
@@ -29,6 +38,33 @@ bool EntanglingRootsKiteTrigger::IsActive()
 bool ThornsTrigger::IsActive() { return BuffTrigger::IsActive() && !botAI->HasAura("thorns", GetTarget()); }
 
 bool BearFormTrigger::IsActive() { return !botAI->HasAnyAuraOf(bot, "bear form", "dire bear form", nullptr); }
+
+bool BearTankFormTrigger::IsActive()
+{
+    // [b32_tank_aoe] cheap flags first
+    if (bot->IsInCombat() || !bot->IsAlive() || bot->IsMounted() || bot->IsInWater() || bot->IsInFlight())
+        return false;
+
+    uint32 const now = getMSTime();
+    if (botAI->HasAnyAuraOf(bot, "dire bear form", "bear form", nullptr))
+    {
+        _inFormMs = now;
+        return false;
+    }
+
+    // left the form for a buff / heal a moment ago: let that sequence finish
+    if (_inFormMs && getMSTimeDiff(_inFormMs, now) < LEFT_FORM_GRACE_MS)
+        return false;
+
+    if (!PlayerbotAI::IsTank(bot) || !botAI->HasStrategy("bear", BOT_STATE_COMBAT))
+        return false;
+
+    // sitting with food / drink, or about to: the rest flow keeps caster form (drinking needs it)
+    if (bot->IsSitState() || RestState::IsDrinking(bot) || RestState::IsEating(bot))
+        return false;
+
+    return !RestState::WantsDrink(bot) && !RestState::WantsFood(bot);
+}
 
 bool TreeFormTrigger::IsActive()
 {
@@ -59,6 +95,18 @@ bool AquaticFormTrigger::IsActive()
 {
     return !bot->IsInCombat() && !botAI->HasAura("aquatic form", bot) &&
            bot->GetLiquidData().Status == LIQUID_MAP_UNDER_WATER;
+}
+
+bool RebirthTargetLowHealthTrigger::IsActive()
+{
+    Unit* target = RebirthFollowUp::GetTarget(botAI);
+    return target && target->GetHealthPct() < RebirthFollowUp::SAFE_HEALTH_PCT;
+}
+
+bool RebirthTargetNoMarkTrigger::IsActive()
+{
+    Unit* target = RebirthFollowUp::GetTarget(botAI);
+    return target && !botAI->HasAura("mark of the wild", target) && !botAI->HasAura("gift of the wild", target);
 }
 
 bool ProwlTrigger::IsActive()
@@ -129,4 +177,254 @@ bool HurricaneChannelCheckTrigger::IsActive()
     }
 
     return false;
+}
+
+bool LifebloomOnMainTankTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive() || !target->IsInCombat())
+        return false;
+
+    Aura* lifebloom = botAI->GetAura("lifebloom", target, true, true);
+    if (LifebloomLetBloom(bot, target, lifebloom))  // [b31_sd]
+        return false;
+
+    return !lifebloom || lifebloom->GetStackAmount() < 3 || lifebloom->GetDuration() < LIFEBLOOM_REFRESH_WINDOW_MS;
+}
+
+bool LifebloomLetBloom(Player* bot, Unit* tank, Aura* lifebloom)
+{
+    if (!lifebloom || !tank || tank->GetHealthPct() < LIFEBLOOM_BLOOM_TANK_HEALTH_PCT)
+        return false;
+
+    if (InstanceScript* instance = bot->GetInstanceScript())
+        if (instance->IsEncounterInProgress())
+            return false;
+
+    Creature* victim = tank->GetVictim() ? tank->GetVictim()->ToCreature() : nullptr;
+    return !victim || !(victim->IsDungeonBoss() || victim->isWorldBoss());
+}
+
+bool RejuvenationOnMainTankTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    return target && target->IsAlive() && target->IsInCombat() && BuffOnMainTankTrigger::IsActive();
+}
+
+// ---- [b32_brez] bear tank battle res ---------------------------------------------------------------------------
+
+namespace
+{
+    BearBattleResTargetValue* BearBattleResValue(PlayerbotAI* botAI)
+    {
+        return dynamic_cast<BearBattleResTargetValue*>(
+            botAI->GetAiObjectContext()->GetValue<Unit*>("bear battle res target"));
+    }
+
+    bool InBearForm(PlayerbotAI* botAI, Player* bot)
+    {
+        return botAI->HasAnyAuraOf(bot, "dire bear form", "bear form", nullptr);
+    }
+
+    // Another druid's Rebirth, read from its spell book (not its AI context): its highest rank known and ready.
+    bool KnownRebirthReady(Player* druid)
+    {
+        constexpr uint32 SPELL_REBIRTH_RANK_1 = 20484;
+        uint32 known = 0;
+        for (uint32 spellId = SPELL_REBIRTH_RANK_1; spellId; spellId = sSpellMgr->GetNextSpellInChain(spellId))
+        {
+            if (druid->HasSpell(spellId))
+                known = spellId;
+        }
+
+        return known && !druid->HasSpellCooldown(known);
+    }
+}  // namespace
+
+void BearBattleRes::RecordAttempt(PlayerbotAI* botAI, Unit* target)
+{
+    if (BearBattleResTargetValue* value = BearBattleResValue(botAI))
+        value->RecordAttempt(target ? target->GetGUID() : ObjectGuid::Empty, getMSTime());
+}
+
+uint32 BearBattleRes::LastAttemptMs(PlayerbotAI* botAI)
+{
+    BearBattleResTargetValue const* value = BearBattleResValue(botAI);
+    return value ? value->LastAttemptMs() : 0;
+}
+
+void BearBattleResTargetValue::RecordAttempt(ObjectGuid guid, uint32 now)
+{
+    _lastAttemptMs = now;
+    if (!guid.IsEmpty())
+        _attempts[guid] = now;
+
+    // the next scan sees the attempt at once (no second cast on the same corpse from the cached answer)
+    Reset();
+}
+
+bool BearBattleResTargetValue::AttemptedRecently(ObjectGuid guid, uint32 now) const
+{
+    auto const attempt = _attempts.find(guid);
+    return attempt != _attempts.end() && getMSTimeDiff(attempt->second, now) < BearBattleRes::RETRY_MS;
+}
+
+bool BearBattleResTargetValue::CanAffordCast(uint32 rebirthId) const
+{
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(rebirthId);
+    if (!spellInfo)
+        return false;
+
+    // CanCastSpell ignores power and reagents (TRIGGERED_IGNORE_POWER_AND_REAGENT_COST): leaving the form for a cast
+    // that then fails on them only costs the tank its form. The mana covers the shift back as well: a bear that
+    // cannot pay for Dire Bear Form after Rebirth stays in caster form under its pack.
+    int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+    uint32 formId = AI_VALUE2(uint32, "spell id", "dire bear form");
+    if (!formId)
+        formId = AI_VALUE2(uint32, "spell id", "bear form");
+    if (SpellInfo const* formInfo = formId ? sSpellMgr->GetSpellInfo(formId) : nullptr)
+        cost += formInfo->CalcPowerCost(bot, formInfo->GetSchoolMask());
+    if (static_cast<int32>(bot->GetPower(POWER_MANA)) < cost)
+        return false;
+
+    if (bot->CanNoReagentCast(spellInfo))
+        return true;
+
+    for (uint32 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+    {
+        if (spellInfo->Reagent[index] > 0 &&
+            !bot->HasItemCount(static_cast<uint32>(spellInfo->Reagent[index]), spellInfo->ReagentCount[index]))
+            return false;
+    }
+
+    return true;
+}
+
+bool BearBattleResTargetValue::PackHeld() const
+{
+    uint32 const onBear = static_cast<uint32>(bot->getAttackers().size());
+    float const floor = bot->GetLevel() * TankAoePackTrigger::SAFE_FLOOR_PER_LEVEL;
+    bool held = true;
+    GuidVector const attackers = AI_VALUE(GuidVector, "attackers");
+    for (ObjectGuid const& guid : attackers)
+    {
+        Unit* mob = botAI->GetUnit(guid);
+        if (!mob || !mob->IsAlive() || mob->IsPlayer() || !mob->IsInWorld() || mob->GetMap() != bot->GetMap())
+            continue;
+
+        // a boss mid-cast: its hit lands while the bear is out of form (any range: a boss cast reaches the tank)
+        if (TankPeel::IsBoss(mob) &&
+            (mob->GetCurrentSpell(CURRENT_GENERIC_SPELL) || mob->GetCurrentSpell(CURRENT_CHANNELED_SPELL)))
+            return false;
+
+        if (!held || !bot->IsWithinDistInMap(mob, TankPeel::ANCHOR_RANGE) || IsCrowdControlled(mob))
+            continue;
+
+        Unit* victim = mob->GetVictim();
+        if (victim && victim != bot)
+        {
+            held = false;
+            continue;
+        }
+
+        if (!mob->CanHaveThreatList())
+            continue;
+
+        float mine = 0.0f;
+        float others = 0.0f;
+        for (ThreatReference const* ref : mob->GetThreatMgr().GetUnsortedThreatList())
+        {
+            if (ref->GetVictim() == bot)
+                mine = ref->GetThreat();
+            else
+                others = std::max(others, ref->GetThreat());
+        }
+
+        if (mine < floor || mine < others * TankAoePackTrigger::SAFE_LEAD)
+            held = false;
+    }
+
+    return onBear <= BearBattleRes::MAX_ATTACKERS || held;
+}
+
+Unit* BearBattleResTargetValue::Calculate()
+{
+    // cheap flags first
+    if (!bot->IsInCombat() || !bot->IsAlive() || bot->getClass() != CLASS_DRUID || !PlayerbotAI::IsTank(bot))
+        return nullptr;
+
+    if (bot->GetHealthPct() <= BearBattleRes::MIN_HEALTH_PCT ||
+        AI_VALUE(float, "recent health loss") >= sPlayerbotAIConfig.TankCooldownLossPct)
+        return nullptr;
+
+    Group* group = bot->GetGroup();
+    uint32 const rebirthId = AI_VALUE2(uint32, "spell id", "rebirth");
+    if (!group || !rebirthId || !bot->HasSpell(rebirthId) || bot->HasSpellCooldown(rebirthId) ||
+        !CanAffordCast(rebirthId))
+        return nullptr;
+
+    uint32 const now = getMSTime();
+    Player* healer = nullptr;
+    Player* valuable = nullptr;
+    bool healerDead = false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || member->GetMap() != bot->GetMap())
+            continue;
+
+        if (member->IsAlive())
+        {
+            // Another druid rezzes first ("rebirth" nodes of a resto / balance / cat druid, GenericDruidStrategy;
+            // the "battle res target" queue puts the tanks last): the bear keeps its pack.
+            if (member->getClass() == CLASS_DRUID && GET_PLAYERBOT_AI(member) && !PlayerbotAI::IsTank(member) &&
+                !DruidHasThickHide(member))
+            {
+                if (KnownRebirthReady(member))
+                    return nullptr;
+            }
+
+            continue;
+        }
+
+        // as the "battle res target" queue: Soulstone / Reincarnation holders and pending requests are handled
+        if (member->getDeathState() != DeathState::Corpse || member->isResurrectRequested() ||
+            member->GetUInt32Value(PLAYER_SELF_RES_SPELL))
+            continue;
+
+        bool const isHealer = PlayerbotAI::IsHeal(member);
+        healerDead = healerDead || isHealer;
+        if (!isHealer && !PlayerbotAI::IsTank(member) && !IsRealPlayer(member))
+            continue;
+
+        if (AttemptedRecently(member->GetGUID(), now) || !bot->IsWithinDistInMap(member, BearBattleRes::RANGE) ||
+            !bot->IsWithinLOSInMap(member))
+            continue;
+
+        Player*& pick = isHealer ? healer : valuable;
+        if (!pick || member->GetGUID() < pick->GetGUID())
+            pick = member;
+    }
+
+    // another member only while no healer is dead
+    Player* target = healer ? healer : (healerDead ? nullptr : valuable);
+    if (!target || !PackHeld())
+        return nullptr;
+
+    return target;
+}
+
+bool BearBattleResTrigger::IsActive()
+{
+    // cheap flags, then the cached scan
+    return bot->IsInCombat() && bot->GetHealthPct() > BearBattleRes::MIN_HEALTH_PCT && GetTarget();
+}
+
+bool BearBattleResReshiftTrigger::IsActive()
+{
+    if (!bot->IsInCombat() || !bot->IsAlive() || bot->IsNonMeleeSpellCast(false) || InBearForm(botAI, bot))
+        return false;
+
+    uint32 const attempt = BearBattleRes::LastAttemptMs(botAI);
+    return attempt && getMSTimeDiff(attempt, getMSTime()) < BearBattleRes::RESHIFT_WINDOW_MS;
 }

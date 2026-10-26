@@ -11,6 +11,10 @@
 
 class PlayerbotAI;
 
+// Resto dispels sit between its low (17-19) and medium (14-16) health heals.
+inline constexpr float SHAMAN_RESTO_DISPEL_RELEVANCE = 16.6f;
+inline constexpr float SHAMAN_RESTO_URGENT_DISPEL_RELEVANCE = 22.0f;  // between low (17-19) and critical heals
+
 class GenericShamanStrategy : public CombatStrategy
 {
 public:

@@ -14,7 +14,6 @@
 #include "Playerbots.h"
 
 const Position IONAR_TANK_POSITION = Position(1078.860f, -261.928f, 61.226f);
-const Position DISPERSE_POSITION = Position(1161.152f, -261.584f, 53.223f);
 
 class BjarngrimTargetAction : public AttackAction
 {
@@ -37,6 +36,13 @@ public:
     bool Execute(Event event) override;
 };
 
+class AvoidBrittleGolemAction : public MovementAction
+{
+public:
+    AvoidBrittleGolemAction(PlayerbotAI* botAI) : MovementAction(botAI, "avoid brittle golem") {}
+    bool Execute(Event event) override;
+};
+
 class StaticOverloadSpreadAction : public MovementAction
 {
 public:
@@ -55,14 +61,6 @@ class IonarTankPositionAction : public MovementAction
 {
 public:
     IonarTankPositionAction(PlayerbotAI* botAI) : MovementAction(botAI, "ionar tank position") {}
-    bool Execute(Event event) override;
-    bool isUseful() override;
-};
-
-class DispersePositionAction : public MovementAction
-{
-public:
-    DispersePositionAction(PlayerbotAI* botAI) : MovementAction(botAI, "disperse position") {}
     bool Execute(Event event) override;
     bool isUseful() override;
 };

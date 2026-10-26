@@ -23,6 +23,13 @@ public:
     bool Execute(Event event) override;
 };
 
+class TrollgoreHoldRoomAction : public MovementAction
+{
+public:
+    TrollgoreHoldRoomAction(PlayerbotAI* botAI) : MovementAction(botAI, "trollgore hold room") {}
+    bool Execute(Event event) override;
+};
+
 class AvoidArcaneFieldAction : public MovementAction
 {
 public:
@@ -44,6 +51,35 @@ public:
     NovosTargetPriorityAction(PlayerbotAI* botAI) : AttackAction(botAI, "novos target priority") {}
     bool Execute(Event event) override;
     // bool isUseful() override;
+};
+
+class NovosPullAction : public AttackAction
+{
+public:
+    NovosPullAction(PlayerbotAI* botAI) : AttackAction(botAI, "novos pull") {}
+    bool Execute(Event event) override;
+};
+
+class NovosDropSummonTargetAction : public Action
+{
+public:
+    NovosDropSummonTargetAction(PlayerbotAI* botAI) : Action(botAI, "novos drop summon target") {}
+    bool Execute(Event event) override;
+};
+
+class KingDredFearGuardAction : public Action
+{
+public:
+    KingDredFearGuardAction(PlayerbotAI* botAI) : Action(botAI, "king dred fear guard") {}
+    bool Execute(Event event) override;
+};
+
+// The efficient direct heal of the class on the bitten member: Grievous Bite ticks until the target is at full.
+class KingDredGrievousBiteHealAction : public Action
+{
+public:
+    KingDredGrievousBiteHealAction(PlayerbotAI* botAI) : Action(botAI, "king dred grievous bite heal") {}
+    bool Execute(Event event) override;
 };
 
 class CastSlayingStrikeAction : public CastMeleeSpellAction

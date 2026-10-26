@@ -10,6 +10,7 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "Timer.h"
 
 bool EnemyTooCloseForSpellTrigger::IsActive()
 {
@@ -166,6 +167,44 @@ bool OutOfRangeTrigger::IsActive()
 EnemyOutOfSpellRangeTrigger::EnemyOutOfSpellRangeTrigger(PlayerbotAI* botAI)
     : OutOfRangeTrigger(botAI, "enemy out of spell range", botAI->GetRange("spell"))
 {
+}
+
+// Stockade 2026-10-24 (user: «второй стоял за углом»): a caster 20 yd from its target round a cell door is in spell
+// range, so nothing moved it, and every cast failed on line of sight. A target that fights the group (not an idle
+// mob the step could pull) out of sight counts as out of range for ranged bots.
+bool EnemyOutOfSpellRangeTrigger::IsActive()
+{
+    // [heal_triage] A grouped healer with a member to heal does not walk to its enemy: HoR heroic Falric 2026-10-25,
+    // the resto druid ran "reach spell -> Falric" with the group at 18-40 % (its own heals stay in reach through
+    // "party member to heal out of spell range").
+    if (PlayerbotAI::IsHeal(bot) && bot->GetGroup())
+    {
+        Unit* toHeal = AI_VALUE(Unit*, "party member to heal");
+        if (toHeal && toHeal->IsAlive() && toHeal->GetHealthPct() < sPlayerbotAIConfig.AlmostFullHealth)
+            return false;
+    }
+
+    distance = botAI->GetRange("spell");  // [b32_engage] a hunter's weapon range, read after it equipped one
+    if (OutOfRangeTrigger::IsActive())
+        return true;
+
+    // A healer's own target is a side job: its sight walks follow the tank and the heal target.
+    if (!PlayerbotAI::IsRanged(bot) || PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot))
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, GetTargetName());
+    if (!target || !target->IsInCombat() || target->GetMap() != bot->GetMap())
+        return false;
+
+    uint32 const now = getMSTime();
+    if (_sightTarget != target->GetGUID() || !_sightCheckMs || getMSTimeDiff(_sightCheckMs, now) >= SIGHT_CHECK_MS)
+    {
+        _sightTarget = target->GetGUID();
+        _sightCheckMs = now;
+        _sightBlocked = !bot->IsWithinLOSInMap(target);
+    }
+
+    return _sightBlocked;
 }
 
 // bool EnemyOutOfSpellRangeTrigger::IsActive()

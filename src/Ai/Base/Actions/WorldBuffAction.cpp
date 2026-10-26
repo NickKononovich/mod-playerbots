@@ -9,18 +9,10 @@
 #include "Event.h"
 #include "Playerbots.h"
 
-bool WorldBuffAction::Execute(Event event)
-{
-    std::string const text = event.getParam();
-
-    std::vector<uint32> buffs = NeedWorldBuffs(bot);  // Get matching buffs
-
-    for (auto& wb : buffs)
-    {
-        bot->AddAura(wb, bot);
-    }
-    return false;
-}
+// Bots play under the same rules as players (2026-10-23): the old action put the configured flask, food and
+// rune auras on the bot for free with AddAura. It is kept registered so "nc +worldbuff" stays harmless, but it
+// grants nothing; buffs come from real consumables and real casts. NeedWorldBuffs() still reports the matrix.
+bool WorldBuffAction::Execute(Event /*event*/) { return false; }
 
 std::vector<uint32> WorldBuffAction::NeedWorldBuffs(Unit* unit)
 {
@@ -50,7 +42,8 @@ std::vector<uint32> WorldBuffAction::NeedWorldBuffs(Unit* unit)
     // If this is a druid in the Feral tab, decide Bear vs. Cat
     if (botClass == CLASS_DRUID && tab == 1)  // 1 = feral
     {
-        bool isBear = bot->HasTalent(16931, bot->GetActiveSpec()); // Thick Hide rank 3
+        bool isBear = bot->HasTalent(16929, bot->GetActiveSpec()) || bot->HasTalent(16930, bot->GetActiveSpec()) ||
+                      bot->HasTalent(16931, bot->GetActiveSpec());  // Thick Hide, any rank [b31_sd]
         if (!isBear)
         {
             // If not bear, then treat it as "cat" spec = 3

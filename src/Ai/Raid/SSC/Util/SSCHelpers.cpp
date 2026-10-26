@@ -2457,6 +2457,50 @@ bool IsTankedStriderInStepInReach(Player* bot, Unit* unit)
         bot->GetExactDist(unit) <= VASHJ_STRIDER_STEP_IN_DISTANCE && IsVashjAddHeldByTank(unit);
 }
 
+// The bot's attacker set is small and kept by the core, so this stays cheap enough for a trigger.
+Unit* GetVashjStriderAttackingBot(Player* bot)
+{
+    for (Unit* attacker : bot->getAttackers())
+    {
+        if (attacker && attacker->IsAlive() &&
+            attacker->GetEntry() == Id(SscNpcs::NPC_COILFANG_STRIDER) && attacker->GetVictim() == bot)
+        {
+            return attacker;
+        }
+    }
+
+    return nullptr;
+}
+
+Player* GetVashjTankWithoutFearWard(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    constexpr float fearWardRange = 30.0f;
+    Player* nearest = nullptr;
+    float nearestDistance = std::numeric_limits<float>::max();
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->IsAlive() || member->GetMapId() != SSC_MAP_ID ||
+            !PlayerbotAI::IsTank(member) || member->HasAura(Id(SscSpells::SPELL_FEAR_WARD)))
+        {
+            continue;
+        }
+
+        float const distance = bot->GetExactDist(member);
+        if (distance <= fearWardRange && distance < nearestDistance)
+        {
+            nearestDistance = distance;
+            nearest = member;
+        }
+    }
+
+    return nearest;
+}
+
 Unit* GetVashjPetTarget(PlayerbotAI* botAI, Creature* pet, Unit* vashj)
 {
     if (!pet || !vashj)
