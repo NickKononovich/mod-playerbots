@@ -104,6 +104,19 @@ namespace LeaderCommand
         return true;
     }
 
+    // [lead16] PreSave: the leader foresees a big hit on this bot - use a personal save now (Barkskin, Ice Block,
+    // Divine Shield, Icebound Fortitude, Shield Wall...); `why` the leader's reason. False: none (the bot's own saves
+    // are for critical health only).
+    inline bool AssignedPreSave(Player* bot, std::string* why = nullptr)
+    {
+        Leader::MemberEvents command;
+        if (!CurrentCommand(bot, command) || !command.preSaveUntilMs)
+            return false;
+        if (why)
+            *why = command.preSaveWhy;
+        return true;
+    }
+
     // A mob loose on a member the bot must not damage until the tank has it back (Empty: none).
     inline ObjectGuid DontAttack(Player* bot)
     {

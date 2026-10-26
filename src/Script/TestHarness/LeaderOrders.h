@@ -128,9 +128,32 @@ namespace Leader
     constexpr bool LEADER_NO_OWN_POSITIONS = true;      // ranged / melee / formation / flee moves off
     constexpr bool LEADER_NO_OWN_CLEAVE_DODGE = true;   // "dungeon avoid frontal cleave" off: the leader's MoveTo
     constexpr bool LEADER_NO_OWN_LOS_GATHER = true;     // "move to los pull spot" off: the leader's StandAt
-    // own crowd control picks off ("pre pull cc" runs the leader's published plan and stays). OFF until the leader
-    // fills the CC assignments (MemberEvents::cc): the CC marks are still the members' own ("auto cc mark")
-    constexpr bool LEADER_NO_OWN_CC = false;
+    // [lead16] the leader assigns the in-fight crowd control (MemberEvents::cc: which mob, which member; the member
+    // casts it, "leader cc"), so the members' own CC picks are off: "auto cc mark", "cast auto cc", "emergency cc"
+    // and every "<spell> on cc". "pre pull cc" (it answers the tank's published pre-pull plan: Sap, a trap) and
+    // "control charmed member" stay.
+    constexpr bool LEADER_NO_OWN_CC = true;
+    constexpr bool LEADER_CC_ASSIGN = true;  // the leader's CC assignments (off: none)
+    // [lead16] Hold while the leader holds the group (a patrol wait, a harness "stay"); StopDps when no target of the
+    // fight takes damage (immune: a boss phase)
+    constexpr bool LEADER_HOLD_EVENTS = true;
+    // [lead16] the tank executes too: in a fight its target is the leader's Attack (a mob loose on a member first,
+    // else its own victim, else the kill order's head), its own target picks yield to it ("tank assist", "attack
+    // anything", "dps assist", "tank defend on attacked group member", "reach healer attacker")
+    constexpr bool LEADER_TANK_EXECUTES = true;
+    // [lead16] after a fight the leader tells one member to loot (LEADER_LOOT_MS); nobody else loots
+    constexpr bool LEADER_LOOT_EVENTS = true;
+    // [lead16] rot2: a DK tank's Army of the Dead before a boss pull runs only under a fresh Prepare: the leader
+    // issues it to the tank and holds the pull LEADER_BOSS_PREPARE_MS for the channel
+    constexpr bool LEADER_BOSS_PREPARE = true;
+    // [lead16] PreSave(member, until): the leader foresees a big hit (a heavy cast on the member or the tank, an
+    // enraged boss on the tank, the tank low under a boss) and tells the member to use its personal save now; the
+    // bot's own saves are for critical health only (the rotation side)
+    constexpr bool LEADER_PRESAVE = true;
+    constexpr float LEADER_PRESAVE_HIT_PCT = 35.0f;   // a cast whose damage is this share of the victim's max health
+    constexpr float LEADER_PRESAVE_TANK_PCT = 40.0f;  // the tank under a boss below this health
+    constexpr uint32 LEADER_BOSS_PREPARE_MS = 4500;
+    constexpr uint32 LEADER_LOOT_MS = 15000;
     constexpr bool LEADER_NO_OWN_BUFF_TIMING = true;    // out of combat buffs only under Prepare / Ready? / Rest
     // step 2 / 3 of the correction, NOT built yet: the leader does not detect these hazards / tactics itself, so the
     // member's own rules stay until it does (true would leave the members standing in them)
@@ -390,6 +413,11 @@ namespace Leader
         uint32 threatMs = 0;
         ObjectGuid dontAttack;  // a mob loose on a member: no damage on it until the tank has it back
         uint32 dontAttackMs = 0;
+        bool loot = false;  // [lead16] loot the fight's corpses
+        uint32 lootMs = 0;
+        uint32 preSaveUntilMs = 0;  // [lead16] PreSave: use a personal save now, a big hit lands before this
+        std::string preSaveWhy;
+        uint32 preSaveMs = 0;
         ReadyEvent ready = ReadyEvent::None;
         uint32 readyMs = 0;
     };
@@ -421,6 +449,8 @@ namespace Leader
         bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob);
+        bool SetLoot(ObjectGuid member, bool loot);
+        bool SetPreSave(ObjectGuid member, uint32 untilMs, std::string const& why);
         bool SetReady(ObjectGuid member, ReadyEvent ready);
         void Clear(ObjectGuid member);
         // Member side: the member's fresh events (stale fields come back None); false: none at all.
@@ -430,6 +460,9 @@ namespace Leader
         // [lead15] the member's own decisions (member thread) and their drain (the leader)
         void NoteOwn(ObjectGuid member, OwnDecision const& own);
         bool TakeOwn(ObjectGuid member, OwnDecision& out);
+        // [lead16] a member tick in a fight with no fresh Attack / Heal (the rotation's stale_command fallback)
+        void NoteStale(ObjectGuid member);
+        uint32 TakeStale(ObjectGuid member);
     }
 }
 

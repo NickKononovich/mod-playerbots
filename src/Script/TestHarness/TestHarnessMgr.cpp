@@ -5103,9 +5103,17 @@ namespace TestHarness
             JsonObject byAction;
             for (auto const& [action, count] : actions)
                 byAction.Num(action.c_str(), count);
+            JsonObject stale;
+            uint32 staleTotal = 0;
+            for (auto const& [name, count] : party.lead.staleCommands)
+            {
+                stale.Num(name.c_str(), count);
+                staleTotal += count;
+            }
             LogEvent(party, "own_decisions",
                      JsonObject().Num("total", total).Raw("byMember", byMember.Build())
-                         .Raw("byAction", byAction.Build()));
+                         .Raw("byAction", byAction.Build()).Num("staleCommandTotal", staleTotal)
+                         .Raw("staleCommands", stale.Build()));
         }
 
         // [lead7] LEADER_PLANNER_DIFF: the planner library's shadow looks against the tank's own (plan_diff lines in

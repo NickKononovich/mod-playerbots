@@ -430,6 +430,13 @@ namespace TestHarness
             std::map<ObjectGuid, Position> hazardSpots;
             std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpots;  // member -> {target, spot}
             std::map<ObjectGuid, uint32> combatSpotLosMs;
+            std::map<ObjectGuid, ObjectGuid> ccAssign;  // [lead16] mob -> the member that crowd-controls it
+            ObjectGuid looter;          // [lead16] the member told to loot after the last fight, and since when
+            uint32 lootSinceMs = 0;
+            bool lastFighting = false;
+            std::map<std::string, uint32> staleCommands;  // [lead16] member -> stale_command ticks
+            ObjectGuid bossPrepareFor;                     // [lead16] the boss pull the tank prepares for
+            uint32 bossPrepareSinceMs = 0;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;
             // [lead8] where the group fought and cleared this run (the tank at each fight's end)

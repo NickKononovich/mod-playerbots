@@ -111,7 +111,8 @@ void RaidConsumablesStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 namespace
 {
     // [lead15] the member's own decisions the executor model turns off (LeaderOrders.h LEADER_NO_OWN_*)
-    bool OwnDecisionOff(Action* action, std::string const& name, Leader::MemberEvents const& events, bool combat)
+    bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
+                        bool combat)
     {
         if (name == "leader move order" || name == "leader attack order")
             return false;
@@ -123,6 +124,10 @@ namespace
             return false;
         };
         if (Leader::LEADER_NO_OWN_FOLLOW && in({"follow"}))
+            return true;
+        // [lead16] loot only under the leader's Loot
+        if (Leader::LEADER_LOOT_EVENTS && !events.loot &&
+            in({"loot", "move to loot", "open loot", "add all loot", "add loot", "store loot", "release loot"}))
             return true;
         if (Leader::LEADER_NO_OWN_ASSIST && in({"dps assist", "dps aoe", "attack anything", "attack rti target"}))
             return true;
@@ -142,6 +147,8 @@ namespace
             (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
              events.move == Leader::MoveEvent::Hold))
             return true;
+        if (Leader::LEADER_NO_OWN_CC && in({"auto cc mark", "cast auto cc", "emergency cc"}))
+            return true;
         if (Leader::LEADER_NO_OWN_CC && name != "pre pull cc" &&
             (dynamic_cast<CastCrowdControlSpellAction*>(action) ||
              (name.size() > 6 && name.compare(name.size() - 6, 6, " on cc") == 0)))
@@ -149,10 +156,13 @@ namespace
         bool const prepare = events.ready == Leader::ReadyEvent::Prepare ||
                              events.ready == Leader::ReadyEvent::ReadyCheck ||
                              events.ready == Leader::ReadyEvent::Rest;
+        // [lead16] rot2: only a buff on ANOTHER member waits for Prepare; a self buff (a shapeshift form, Inner Fire,
+        // an armor, a seal, a presence) is the bot's own upkeep
         if (Leader::LEADER_NO_OWN_BUFF_TIMING && !combat && !prepare && dynamic_cast<CastBuffSpellAction*>(action))
-            return true;
+            if (Unit* buffTarget = action->GetTarget(); buffTarget && buffTarget != self)
+                return true;
         // out of combat a member told only to walk / stand does just that
-        if (!combat && !prepare && events.attack == Leader::AttackEvent::None &&
+        if (!combat && !prepare && !events.loot && events.attack == Leader::AttackEvent::None &&
             (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
              events.move == Leader::MoveEvent::Hold) &&
             !in({"stand up", "reach party member to resurrect"}))
@@ -161,7 +171,11 @@ namespace
     }
 }
 
-bool RaidLeaderHoldMultiplier::KeepsVeto(Action* /*action*/) { return Leader::ExecutorMember(bot); }
+bool RaidLeaderHoldMultiplier::KeepsVeto(Action* /*action*/)
+{
+    return Leader::ExecutorMember(bot) || (Leader::LEADER_TANK_EXECUTES && Leader::LedBot(bot) &&
+                                           Leader::Orders::IsTracked(bot->GetGUID()));
+}
 
 void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* victimBefore)
 {
@@ -212,7 +226,8 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
         bool const rotationRange = combat && fights && in({"reach melee", "reach spell"});
         bool const resurrect = prepare && in({"reach party member to resurrect"});
         bool const plannedCc = !events.cc.IsEmpty() && in({"pre pull cc"});
-        if (!rotationRange && !resurrect && !plannedCc && !in({"stand up"}))
+        bool const looting = events.loot && in({"move to loot", "loot", "open loot"});
+        if (!rotationRange && !resurrect && !plannedCc && !looting && !in({"stand up"}))
             note("move", "moves without a leader MoveTo / StandAt");
         return;
     }
@@ -253,12 +268,26 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
     if (!action || !RaidLeader::IsEnabled())
         return 1.0f;
 
+    // [lead16] LEADER_TANK_EXECUTES: in a fight the tank's target is the leader's Attack
+    if (Leader::LEADER_TANK_EXECUTES && bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) &&
+        Leader::LedBot(bot))
+    {
+        Leader::MemberEvents events;
+        static constexpr std::string_view tankPicks[] = {"tank assist", "attack anything", "dps assist",
+                                                         "tank defend on attacked group member",
+                                                         "reach healer attacker"};
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack)
+            for (std::string_view pick : tankPicks)
+                if (action->getName() == pick)
+                    return 0.0f;
+    }
+
     // [lead15] LEADER_MEMBER_EXECUTOR: the member executes the leader's command, its own decisions are off
     if (Leader::ExecutorMember(bot))
     {
         Leader::MemberEvents events;
         Leader::Events::Get(bot->GetGUID(), events);  // none: every field None
-        if (OwnDecisionOff(action, action->getName(), events, bot->IsInCombat()))
+        if (OwnDecisionOff(bot, action, action->getName(), events, bot->IsInCombat()))
             return 0.0f;
     }
 

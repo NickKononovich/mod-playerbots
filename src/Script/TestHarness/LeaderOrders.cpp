@@ -423,6 +423,7 @@ namespace Leader
                 MemberEvents events;
                 std::deque<MemberAck> acks;
                 std::deque<OwnDecision> owns;
+                uint32 stale = 0;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
             };
@@ -527,6 +528,31 @@ namespace Leader
             return changed;
         }
 
+        bool SetPreSave(ObjectGuid member, uint32 untilMs, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.preSaveUntilMs != untilMs || Stale(e.preSaveMs, getMSTime());
+            e.preSaveUntilMs = untilMs;
+            e.preSaveWhy = why;
+            e.preSaveMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetLoot(ObjectGuid member, bool loot)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            MemberEvents& e = eventSlots[member].events;
+            bool const changed = e.loot != loot || Stale(e.lootMs, getMSTime());
+            e.loot = loot;
+            e.lootMs = NowMs();
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob)
         {
             std::lock_guard<std::mutex> lock(eventLock);
@@ -598,6 +624,13 @@ namespace Leader
             }
             if (Stale(out.dontAttackMs, now))
                 out.dontAttack.Clear();
+            if (Stale(out.lootMs, now))
+                out.loot = false;
+            if (Stale(out.preSaveMs, now) || (out.preSaveUntilMs && int32(now - out.preSaveUntilMs) > 0))
+            {
+                out.preSaveUntilMs = 0;
+                out.preSaveWhy.clear();
+            }
             if (Stale(out.externalMs, now))
             {
                 out.externalSpell = 0;
@@ -608,7 +641,7 @@ namespace Leader
             return out.move != MoveEvent::None || out.attack != AttackEvent::None ||
                    out.intensity != Intensity::Normal || out.ready != ReadyEvent::None || !out.cc.IsEmpty() ||
                    !out.interrupt.IsEmpty() || out.externalSpell || !out.threatTarget.IsEmpty() ||
-                   !out.dontAttack.IsEmpty();
+                   !out.dontAttack.IsEmpty() || out.loot || out.preSaveUntilMs;
         }
 
         void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why)
@@ -635,6 +668,23 @@ namespace Leader
                 slot.owns.pop_front();
             slot.owns.push_back(own);
             slot.owns.back().ms = NowMs();
+        }
+
+        void NoteStale(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            ++eventSlots[member].stale;
+        }
+
+        uint32 TakeStale(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end())
+                return 0;
+            uint32 const stale = found->second.stale;
+            found->second.stale = 0;
+            return stale;
         }
 
         bool TakeOwn(ObjectGuid member, OwnDecision& out)

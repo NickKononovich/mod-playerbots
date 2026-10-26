@@ -2038,6 +2038,15 @@ void PlayerbotAI::DoNextAction(bool min)
     // [lead15] LEADER_IDLE_WITHOUT_COMMAND: a member the dungeon leader leads executes its commands only; with no
     // command and out of combat it does not wake up to look for something to do (the leader's event wakes it,
     // TestHarnessMgr::TickLeaderEvents). A buff pass the harness opened (forceRebuff) is the leader's command too.
+    // [lead16] a member tick in a fight without a fresh Attack / Heal: counted (stale_command, should be 0)
+    if (isBotAlive && bot->IsInCombat() && Leader::LEADER_ATTACK_EVENTS && Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        Leader::Events::Get(bot->GetGUID(), events);
+        if (events.attack == Leader::AttackEvent::None)
+            Leader::Events::NoteStale(bot->GetGUID());
+    }
+
     if (Leader::LEADER_IDLE_WITHOUT_COMMAND && isBotAlive && !bot->IsInCombat() &&
         currentEngine == engines[BOT_STATE_NON_COMBAT] && !forceRebuff.IsPending() && !bot->IsInWater() &&
         Leader::ExecutorMember(bot))

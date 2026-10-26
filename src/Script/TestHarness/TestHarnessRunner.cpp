@@ -65,6 +65,7 @@
 #include "StuckWatchdog.h"
 #include "DamageTaken.h"
 #include "DungeonHazard.h"   // [lead16] the leader's hazard view
+#include "RtiValue.h"        // [lead16] the leader's CC assignments
 #include "DungeonTactics.h"  // [lead15] the leader's cleave dodge (InFrontalCleave)
 #include "InstanceScript.h"
 #include "InstanceSaveMgr.h"
@@ -19652,6 +19653,12 @@ namespace TestHarness
                 DecisionLog::Instance().CountConflict(run, "own_decision");
                 ++party.lead.ownDecisions[member.name][own.action];
             }
+            if (uint32 const stale = Leader::Events::TakeStale(member.guid))
+            {
+                party.lead.staleCommands[member.name] += stale;
+                for (uint32 i = 0; i < stale; ++i)
+                    DecisionLog::Instance().CountConflict(run, "stale_command");
+            }
         }
 
         // [lead7] LEADER_PLANNER_DIFF: where the planner library's shadow look disagreed with the tank's own look
@@ -20150,6 +20157,7 @@ namespace TestHarness
         constexpr uint32 LEADER_CALM_TICK_MS = 250;                    // the calm cadence (out of combat)
         constexpr uint32 LEADER_AOE_RECHECK_MS = 500;
         constexpr float LEADER_LOOSE_TANK_YD = 2.5f;                   // the victim's spot next to the tank
+        constexpr uint32 SPELL_ARMY_OF_THE_DEAD = 42650;
         // the tank's taunts and AoE threat spells (3.3.5a; every rank the leader may assign, highest last)
         constexpr uint32 TANK_TAUNTS[] = {355, 6795, 62124, 56222, 31789};
         constexpr uint32 TANK_AOE_THREAT[] = {43265, 49936, 49937, 49938, 48721, 49939, 49940, 49941, 26573, 20116,
@@ -20975,6 +20983,204 @@ namespace TestHarness
                             killOrder.end());
         }
 
+        // [lead16] LEADER_CC_ASSIGN: the fight's crowd control - which mob, which member. A mob a member already
+        // marked for the pack (the pre-pull plan's claim) stays its; more come from the tail of the kill order (never
+        // the target, a boss, a backed-off or a group kill target) for a member that can hold it and reaches it (same
+        // floor, sight: CrowdControlMarkReachable). The CC'd mobs leave the kill order.
+        if (fighting && Leader::LEADER_CC_ASSIGN && target)
+        {
+            for (auto it = lead.ccAssign.begin(); it != lead.ccAssign.end();)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, it->first);
+                Player* member = ObjectAccessor::FindPlayer(it->second);
+                if (!mob || !mob->IsAlive() || !mob->IsInCombat() || !member || !member->IsAlive() ||
+                    mob == target || looseOn.count(member->GetGUID()))
+                    it = lead.ccAssign.erase(it);
+                else
+                    ++it;
+            }
+            std::set<ObjectGuid> controlling;
+            for (auto const& [mob, member] : lead.ccAssign)
+                controlling.insert(member);
+            for (Player* bot : seats)
+                if (bot != healer && !controlling.count(bot->GetGUID()))
+                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+                        if (Unit* marked = GetAutoCcTarget(botAI);
+                            marked && marked->IsAlive() && marked != target && !lead.ccAssign.count(marked->GetGUID()))
+                        {
+                            lead.ccAssign[marked->GetGUID()] = bot->GetGUID();
+                            controlling.insert(bot->GetGUID());
+                        }
+            PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
+            bool const hardPack =
+                tankAI && tankAI->GetAiObjectContext()->GetValue<bool>("auto cc hard pack")->Get();
+            size_t const wanted = !hardPack ? 0 : killOrder.size() >= 5 ? 2 : 1;
+            for (size_t i = killOrder.size(); i-- > 2 && lead.ccAssign.size() < wanted;)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, killOrder[i]);
+                Creature* creature = mob ? mob->ToCreature() : nullptr;
+                if (!creature || mob == target || lead.ccAssign.count(mob->GetGUID()) || creature->IsDungeonBoss() ||
+                    IsCrowdControlBackedOff(mob) || IsGroupKillTarget(tank, mob))
+                    continue;
+                for (Player* bot : seats)
+                {
+                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                    if (bot == healer || !botAI || controlling.count(bot->GetGUID()) || looseOn.count(bot->GetGUID()) ||
+                        !FindCrowdControl(botAI, mob, false) || !CrowdControlMarkReachable(bot, mob))
+                        continue;
+                    lead.ccAssign[mob->GetGUID()] = bot->GetGUID();
+                    controlling.insert(bot->GetGUID());
+                    break;
+                }
+            }
+            for (auto const& [mobGuid, memberGuid] : lead.ccAssign)
+            {
+                Player* member = ObjectAccessor::FindPlayer(memberGuid);
+                Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
+                if (!member || !mob)
+                    continue;
+                if (Leader::Events::SetCc(memberGuid, mobGuid))
+                    logEvent(member, "Cc", JsonObject().Str("mob", mob->GetName()).Num("entry", mob->GetEntry())
+                                               .Bool("held", IsHeldByCrowdControl(mob, 0)));
+                killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), mobGuid), killOrder.end());
+            }
+        }
+        else if (!fighting)
+            lead.ccAssign.clear();
+
+        // [lead16] LEADER_PRESAVE: a big hit foreseen - a heavy cast (its damage >= LEADER_PRESAVE_HIT_PCT of the
+        // victim's health) of a fight mob on a member or the tank, an enraged boss on the tank, the tank low under a
+        // boss: PreSave to that bot until the hit lands (a decision line leader_presave with the reason)
+        if (fighting && Leader::LEADER_PRESAVE)
+        {
+            std::vector<Player*> everyone = seats;
+            everyone.push_back(tank);
+            auto const preSave = [&](Player* who, uint32 untilMs, std::string const& why)
+            {
+                if (!who || !who->IsAlive())
+                    return;
+                if (Leader::Events::SetPreSave(who->GetGUID(), untilMs, why))
+                {
+                    DecisionLog::Instance().Write(run, "leader", "leader_presave", who->GetGUID(), who->GetName(),
+                                                  true, JsonObject().Str("member", who->GetName()).Str("why", why)
+                                                            .Num("inMs", getMSTimeDiff(now, untilMs)));
+                    wake(who);
+                }
+            };
+            for (ObjectGuid const guid : killOrder)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, guid);
+                Spell* spell = mob ? mob->GetCurrentSpell(CURRENT_GENERIC_SPELL) : nullptr;
+                SpellInfo const* info = spell ? spell->GetSpellInfo() : nullptr;
+                if (!info || info->IsPositive())
+                    continue;
+                int32 damage = 0;
+                bool area = false;
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    if (info->Effects[i].Effect == SPELL_EFFECT_SCHOOL_DAMAGE ||
+                        info->Effects[i].Effect == SPELL_EFFECT_WEAPON_DAMAGE ||
+                        info->Effects[i].Effect == SPELL_EFFECT_NORMALIZED_WEAPON_DMG ||
+                        info->Effects[i].Effect == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE)
+                    {
+                        damage += info->Effects[i].CalcValue(mob);
+                        area |= info->Effects[i].HasRadius();
+                    }
+                if (damage <= 0)
+                    continue;
+                uint32 const until = now + uint32(std::max(0, spell->GetCastTime() > 0 ? int32(spell->GetCastTime())
+                                                                                        : 0)) +
+                                     IN_MILLISECONDS;
+                std::string const why = Acore::StringFormat("{} casts {} ({} damage)", mob->GetName(),
+                                                            info->SpellName[LOCALE_enUS], damage);
+                Unit* victim = spell->m_targets.GetUnitTarget();
+                for (Player* bot : everyone)
+                {
+                    bool const hit = victim == bot ||
+                                     (area && bot->GetExactDist(victim ? victim : mob) <=
+                                                  info->Effects[EFFECT_0].CalcRadius(mob) + bot->GetCombatReach());
+                    if (hit && float(damage) >= float(bot->GetMaxHealth()) * Leader::LEADER_PRESAVE_HIT_PCT / 100.0f)
+                        preSave(bot, until, why);
+                }
+            }
+            if (Unit* victim = tank->GetVictim();
+                victim && victim->ToCreature() && victim->ToCreature()->IsDungeonBoss())
+            {
+                bool enraged = false;
+                for (auto const& [id, application] : victim->GetAppliedAuras())
+                    if (application && application->GetBase() && application->GetBase()->GetSpellInfo()->Dispel ==
+                                                                      DISPEL_ENRAGE)
+                        enraged = true;
+                if (enraged)
+                    preSave(tank, now + 2 * IN_MILLISECONDS, victim->GetName() + " is enraged");
+                else if (tank->GetHealthPct() < Leader::LEADER_PRESAVE_TANK_PCT && victim->GetVictim() == tank)
+                    preSave(tank, now + 2 * IN_MILLISECONDS,
+                            Acore::StringFormat("the tank at {:.0f} % under {}", tank->GetHealthPct(),
+                                                victim->GetName()));
+            }
+        }
+
+        // [lead16] LEADER_HOLD_EVENTS: no target of the fight takes damage (immune: a boss phase) - the next one
+        // that does, else StopDps for everyone
+        bool stopDps = false;
+        if (fighting && Leader::LEADER_HOLD_EVENTS && target && target->IsImmunedToDamage(SPELL_SCHOOL_MASK_ALL))
+        {
+            Unit* other = nullptr;
+            for (ObjectGuid const guid : killOrder)
+                if (Unit* mob = ObjectAccessor::GetUnit(*tank, guid);
+                    mob && mob != target && mob->IsAlive() && !mob->IsImmunedToDamage(SPELL_SCHOOL_MASK_ALL))
+                {
+                    other = mob;
+                    break;
+                }
+            if (other)
+                target = other;
+            else
+                stopDps = true;
+        }
+        // [lead16] LEADER_TANK_EXECUTES: the tank's target (no aggro loss: its own victim, else the kill order's head)
+        if (fighting && Leader::LEADER_TANK_EXECUTES && looseOn.empty() && Leader::LEADER_ATTACK_EVENTS)
+        {
+            Unit* tankTarget = tank->GetVictim();
+            if (!tankTarget || !tankTarget->IsAlive() || !tankTarget->IsInCombat() ||
+                lead.ccAssign.count(tankTarget->GetGUID()))
+                tankTarget = target;
+            if (tankTarget && Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack,
+                                                        tankTarget->GetGUID(), killOrder))
+                logEvent(tank, "Attack", JsonObject().Str("target", tankTarget->GetName())
+                                             .Num("targetEntry", tankTarget->GetEntry()).Str("who", "tank"));
+        }
+        // [lead16] LEADER_LOOT_EVENTS: when a fight ends, one member (a damage dealer) loots for LEADER_LOOT_MS
+        if (Leader::LEADER_LOOT_EVENTS)
+        {
+            if (lead.lastFighting && !fighting)
+            {
+                lead.looter.Clear();
+                for (Player* bot : seats)
+                    if (bot != healer)
+                    {
+                        lead.looter = bot->GetGUID();
+                        break;
+                    }
+                lead.lootSinceMs = now;
+            }
+            if (fighting || (lead.lootSinceMs && getMSTimeDiff(lead.lootSinceMs, now) > Leader::LEADER_LOOT_MS))
+                lead.looter.Clear();
+            if (!lead.looter.IsEmpty())
+                if (Player* looter = ObjectAccessor::FindPlayer(lead.looter))
+                    if (Leader::Events::SetLoot(lead.looter, true))
+                        logEvent(looter, "Loot", JsonObject().Str("why", "the fight is over"));
+        }
+        lead.lastFighting = fighting;
+        // [lead16] LEADER_BOSS_PREPARE: the tank's Prepare until the pull is on (and a moment after the commit)
+        if (fighting)
+            lead.bossPrepareFor.Clear();
+        else if (!lead.bossPrepareFor.IsEmpty() &&
+                 getMSTimeDiff(lead.bossPrepareSinceMs, now) < Leader::LEADER_BOSS_PREPARE_MS + 3 * IN_MILLISECONDS)
+        {
+            if (Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Prepare))
+                logEvent(tank, "Prepare", JsonObject().Str("why", "Army of the Dead before the boss pull"));
+        }
+
         // [lead16] the hazard scan (slow layer, every LEADER_HAZARD_SCAN_MS); membership is checked every tick
         if (Leader::LEADER_HAZARD_SPOTS &&
             (!lead.hazardScanMs || getMSTimeDiff(lead.hazardScanMs, now) >= LEADER_HAZARD_SCAN_MS))
@@ -21191,6 +21397,16 @@ namespace TestHarness
                 }
             // the member's own follow is off (LEADER_NO_OWN_FOLLOW): the leader walks it along with the tank; a
             // member the harness holds ("stay", a regroup) or one that sits is not moved
+            // [lead16] LEADER_HOLD_EVENTS: the group is held (a patrol wait, the harness's "stay"): Hold, no walk
+            if (!moved && !combat && Leader::LEADER_HOLD_EVENTS && Leader::ExecutorMember(bot) &&
+                ((!lead.waitPatrol.IsEmpty() && !tank->isMoving()) ||
+                 botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT)))
+            {
+                if (Leader::Events::SetMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the group holds"))
+                    logEvent(bot, "Hold", JsonObject().Str("why", lead.waitPatrol.IsEmpty() ? "stay (regroup)"
+                                                                                          : "patrol wait"));
+                moved = true;
+            }
             if (!moved && !combat && Leader::LEADER_NO_OWN_FOLLOW && Leader::ExecutorMember(bot) &&
                 !bot->IsSitState() && !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
             {
@@ -21230,7 +21446,17 @@ namespace TestHarness
                     if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
                         logEvent(bot, "Heal", JsonObject().Str("why", "the group fights"));
                 }
-                else if (target)
+                else if (stopDps)
+                {
+                    if (Leader::Events::SetAttack(guid, Leader::AttackEvent::StopDps, ObjectGuid::Empty, {}))
+                        logEvent(bot, "StopDps", JsonObject().Str("why", "no target of the fight takes damage"));
+                }
+                else if (!target)
+                {
+                    if (Leader::Events::SetAttack(guid, Leader::AttackEvent::DontAttack, ObjectGuid::Empty, {}))
+                        logEvent(bot, "DontAttack", JsonObject().Str("why", "the fight has no target for it yet"));
+                }
+                else
                 {
                     bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
                                                                    target->GetGUID(), killOrder);
@@ -21874,6 +22100,23 @@ namespace TestHarness
                 }
                 lead.spotsWaiting = false;
                 lead.spotsIssuedMs = now;
+            }
+            // [lead16] LEADER_BOSS_PREPARE: a DK tank with Army of the Dead ready gets Prepare before a boss pull,
+            // and the pull waits LEADER_BOSS_PREPARE_MS for the channel
+            if (decides && Leader::LEADER_BOSS_PREPARE && lookMob && lookMob->ToCreature() &&
+                lookMob->ToCreature()->IsDungeonBoss() && tank->getClass() == CLASS_DEATH_KNIGHT &&
+                tank->HasSpell(SPELL_ARMY_OF_THE_DEAD) && !tank->HasSpellCooldown(SPELL_ARMY_OF_THE_DEAD))
+            {
+                if (lead.bossPrepareFor != lookMob->GetGUID())
+                {
+                    lead.bossPrepareFor = lookMob->GetGUID();
+                    lead.bossPrepareSinceMs = now;
+                    LogEvent(party, "leader_boss_prepare",
+                             JsonObject().Str("boss", lookMob->GetName()).Str("why", "Army of the Dead before the pull")
+                                 .Num("waitMs", Leader::LEADER_BOSS_PREPARE_MS));
+                }
+                if (getMSTimeDiff(lead.bossPrepareSinceMs, now) < Leader::LEADER_BOSS_PREPARE_MS)
+                    return;
             }
             issue(decision, pickWhy);
             return;
