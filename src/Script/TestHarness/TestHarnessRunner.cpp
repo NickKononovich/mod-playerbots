@@ -5147,50 +5147,10 @@ namespace TestHarness
             return -1;
         }
 
-        // [b44_strat] Stratholme's two King's Square Gates 175352 / 175353 (lock 879 = Key to the City, data2 3000:
-        // they shut 3 s after a use) close a 22 yd street between the Hearthsinger street and King's Square. They are a
-        // shortcut, not the way in: from the Service Entrance the living side lies open through Market Row (The
-        // Unforgiven's street) north to Crusaders' Square (tools/navmesh_probe.py graph with both gates cut:
-        // Hearthsinger street -> Timmy 555 yd round vs 549 yd through them, Market Row -> King's Square / Timmy
-        // connected). The shortest navmesh path runs through them, so every living-side boss counted "behind a closed
-        // door (King's Square Gate 175352)", the key starters were promoted and the group crossed them back and forth:
-        // strat-n / -h 20261026-075135 2423 s door_hold at 175353 with dead-side trash behind it, 0 clean runs in the
-        // last 20. Like a passage door they are walked round (DoorFreeRoute) whenever there is a way round; from the
-        // street between them there is none and the key is used as before. Any value >= 0: the callers only ask whether
-        // there is a slot.
-        constexpr int32 WAY_ROUND_KEY_GATE_SLOT = 0;
-
-        bool WayRoundKeyGate(WorldObject const* object)
-        {
-            GameObject const* go = object ? object->ToGameObject() : nullptr;
-            return go && go->GetMapId() == 329 && (go->GetEntry() == 175352 || go->GetEntry() == 175353);
-        }
-
-        // [b44_strat] `who` stands in the street between the two King's Square Gates (spawns 47707 at 3571.6,-3451.7
-        // and 47985 at 3555.8,-3434.9, z 136.4): strictly between their planes along the street, within 8 yd of its
-        // axis. Only from there the key is the way out.
-        bool BetweenKingsSquareGates(WorldObject const* who)
-        {
-            constexpr float GATE_A_X = 3571.6f, GATE_A_Y = -3451.7f, GATE_B_X = 3555.8f, GATE_B_Y = -3434.9f;
-            constexpr float STREET_Z = 136.4f, STREET_HALF_WIDTH = 8.0f, STREET_DZ = 8.0f;
-            if (!who || who->GetMapId() != 329 || std::fabs(who->GetPositionZ() - STREET_Z) > STREET_DZ)
-                return false;
-            float const axisX = GATE_B_X - GATE_A_X;
-            float const axisY = GATE_B_Y - GATE_A_Y;
-            float const length = std::sqrt(axisX * axisX + axisY * axisY);
-            float const relX = who->GetPositionX() - GATE_A_X;
-            float const relY = who->GetPositionY() - GATE_A_Y;
-            float const along = (relX * axisX + relY * axisY) / length;
-            float const lateral = std::fabs(relX * axisY - relY * axisX) / length;
-            return along > 0.0f && along < length && lateral <= STREET_HALF_WIDTH;
-        }
-
         int32 PassageDoorBoss(InstanceScript const* script, GameObject* door)
         {
             if (!ROUTE_PASSAGE_DOOR_DETOUR || !script || !door)
                 return -1;
-            if (WayRoundKeyGate(door))  // [b44_strat]
-                return WAY_ROUND_KEY_GATE_SLOT;
             for (uint32 id = 0; id < script->GetEncounterCount(); ++id)
                 if (BossInfo const* info = script->GetBossInfo(id);
                     info && info->state != DONE && info->door[DOOR_TYPE_PASSAGE].count(door))
@@ -9606,12 +9566,12 @@ namespace TestHarness
                                                                    door->GetEntry()) != starter.def->passDoors.end();
                                               }),
                                barriers.end());
-                // [b44_strat] ...unless the walk goes round that door (a passage door or a King's Square Gate,
-                // PassageDoorBoss): strat-n / -h 20261026-075135 "Key to the City on the Gauntlet Gate 175357 - walk
-                // runs through closed King's Square Gate 175352" from King's Square. Not for a King's Square Gate's own
-                // key (WayRoundKeyGate): it is used from its KeyDoorPassDef side, never walked round to.
+                // [b44_strat] ...unless the walk goes round that door (a passage door, PassageDoorBoss). [b50_strat]
+                // A key gate is no passage door (user rule 2026-10-26: the key is there, the gate is there - it is
+                // opened): a key starter whose walk runs through another key gate is blocked here and that gate's own
+                // key joins the chain ([b35_brd2] key_door_chain).
                 GameObject* door = RouteThroughClosedDoor(path.points, barriers, leader->GetPhaseMask());
-                if (door && !WayRoundKeyGate(object) && GoesRoundPassageDoor(leader, script, object, door, barriers))
+                if (door && GoesRoundPassageDoor(leader, script, object, door, barriers))
                     door = nullptr;
                 if (door)
                 {
@@ -9653,22 +9613,6 @@ namespace TestHarness
             constexpr uint32 REARM_BEHIND_PRIORITY_MS = 3 * MINUTE * IN_MILLISECONDS;
             bool const rearmedBehind = starter.rearmedBehindMs && starter.uses < starter.def->maxUses &&
                                        getMSTimeDiff(starter.rearmedBehindMs, now) < REARM_BEHIND_PRIORITY_MS;
-            // [b44_strat] A King's Square Gate key serves only the 22 yd street between the two gates (no spawn stands
-            // there): it is no target while nobody of the group is in that street and no member is stranded behind
-            // the gate (rearmedBehind). Everything beyond is walked round (WayRoundKeyGate / PassageDoorBoss).
-            if (WayRoundKeyGate(object) && !rearmedBehind)
-            {
-                bool someoneBetween = false;
-                for (Member const& member : party.members)
-                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                        bot && bot->GetMap() == map && BetweenKingsSquareGates(bot))
-                        someoneBetween = true;
-                if (!someoneBetween)
-                {
-                    blocked("[b44_strat] walked round: nobody between the King's Square Gates");
-                    continue;
-                }
-            }
             // [queue-door-starter-match] a key (UseItem) for a door none of the blocking doors is: not promoted
             bool keyForOtherDoor = false;
             if (nextBossDoorBlocked && !blockingDoors.empty() && starter.def->kind == StarterKind::UseItem)

@@ -18,6 +18,7 @@
 #include "InstanceSaveMgr.h"
 #include "Item.h"
 #include "Map.h"
+#include "MapMgr.h"  // [b50_watchmap]
 #include "Player.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -1045,12 +1046,139 @@ public:
 
 // Redraws the "playerbots route show" markers (TestHarnessMgr::TickRouteViz). World thread: World::Update runs the
 // world scripts after MapMgr::Update has waited for the map threads, so summoning in an instance map is safe here.
+// [b50_watchmap] User request 2026-10-26: the spectator ("playerbots watch") sees himself and the whole bot group on
+// the World Map. The 3.3.5 client knows no position inside Classic/TBC instances (no WorldMapArea there; the BossPins
+// addon draws Cataclysm map tiles instead), and the watcher is not in the bots' group, so the server tells him.
+// Once a second, for every active test run inside its instance, each real player in GM mode (or with GM security)
+// on that map instance gets addon whispers from himself (LANG_ADDON, as AddonChannelCommandHandler::Send does):
+//   prefix "BPPOS", body "<mapId>;<run seq>;<unit>;<unit>;..." (at most WATCH_MAP_MAX_BODY characters, more
+//   messages when the group does not fit), unit = "name,class,role,flag,x,y,z,orientationDeg,wmoGroup"
+//   role T tank / H healer / D damage / - the watcher; flag W watcher, A alive, D dead;
+//   wmoGroup = Map::GetAreaInfo's WMO group id under the unit (the id WMOAreaTable / DungeonMapChunk /
+//   UiMapAssignment use), -1 when it stands in no WMO. BossPins turns that into the floor and the map position.
+// Only members inside the run's instance are sent. Cost: a party scan and one vmap area query per sent unit per
+// second, only for runs a GM is watching. World thread (World::Update, after MapMgr::Update waited for the maps).
+namespace WatchMap
+{
+    constexpr bool ENABLED = true;
+    constexpr uint32 TICK_MS = 1000;
+    constexpr char const* PREFIX = "BPPOS";
+    constexpr size_t MAX_BODY = 230;  // the client takes 255 characters for prefix + tab + body
+
+    bool IsWatcher(Player* player)
+    {
+        WorldSession* session = player ? player->GetSession() : nullptr;
+        return session && !session->IsHeadless() && IsRealPlayer(player) && player->IsInWorld() &&
+               (player->IsGameMaster() || session->GetSecurity() >= SEC_GAMEMASTER);
+    }
+
+    std::string Unit(Map* map, Player* unit, char role, char flag)
+    {
+        uint32 mogpFlags = 0;
+        int32 adtId = 0, rootId = 0, groupId = 0;
+        int32 const group = map->GetAreaInfo(unit->GetPhaseMask(), unit->GetPositionX(), unit->GetPositionY(),
+                                             unit->GetPositionZ(), mogpFlags, adtId, rootId, groupId)
+                                ? groupId
+                                : -1;
+        int32 const degrees = int32(unit->GetOrientation() * 180.0f / float(M_PI) + 0.5f) % 360;
+        return Acore::StringFormat("{},{},{},{},{:.0f},{:.0f},{:.0f},{},{}", unit->GetName(), uint32(unit->getClass()),
+                                   role, flag, unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(),
+                                   degrees, group);
+    }
+
+    void Send(Player* watcher, std::string const& body)
+    {
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, watcher, watcher,
+                                     std::string(PREFIX) + "\t" + body);
+        watcher->GetSession()->SendPacket(&data);
+    }
+
+    void SendAll(Player* watcher, std::string const& header, std::vector<std::string> const& units)
+    {
+        std::string body = header;
+        bool any = false;
+        for (std::string const& unit : units)
+        {
+            if (any && body.size() + 1 + unit.size() > MAX_BODY)
+            {
+                Send(watcher, body);
+                body = header;
+                any = false;
+            }
+            body += ";" + unit;
+            any = true;
+        }
+        if (any)
+            Send(watcher, body);
+    }
+
+    void Tick()
+    {
+        for (auto const& party : TestHarness::TestHarnessMgr::Instance().Parties())
+        {
+            if (!party->content || TestHarness::IsTerminalPhase(party->phase) || !party->instanceId)
+                continue;
+            Map* map = sMapMgr->FindMap(party->content->mapId, party->instanceId);
+            if (!map || !map->IsDungeon())
+                continue;
+
+            std::vector<Player*> watchers;
+            map->DoForAllPlayers(
+                [&watchers](Player* player)
+                {
+                    if (IsWatcher(player))
+                        watchers.push_back(player);
+                });
+            if (watchers.empty())
+                continue;
+
+            std::vector<std::string> members;
+            for (TestHarness::Member const& member : party->members)
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported() || bot->GetMap() != map)
+                    continue;
+                char role = 'D';
+                if (member.spec && member.spec->role == TestHarness::Role::Tank)
+                    role = 'T';
+                else if (member.spec && member.spec->role == TestHarness::Role::Healer)
+                    role = 'H';
+                members.push_back(Unit(map, bot, role, bot->IsAlive() ? 'A' : 'D'));
+            }
+
+            std::string const header = Acore::StringFormat("{};{}", map->GetId(), party->seq);
+            for (Player* watcher : watchers)
+            {
+                std::vector<std::string> units;
+                units.reserve(members.size() + 1);
+                units.push_back(Unit(map, watcher, '-', 'W'));
+                units.insert(units.end(), members.begin(), members.end());
+                SendAll(watcher, header, units);
+            }
+        }
+    }
+}
+
 class playerbots_routeviz_worldscript : public WorldScript
 {
 public:
     playerbots_routeviz_worldscript() : WorldScript("playerbots_routeviz_worldscript", {WORLDHOOK_ON_UPDATE}) {}
 
-    void OnUpdate(uint32 /*diff*/) override { TestHarness::TestHarnessMgr::Instance().TickRouteViz(); }
+    void OnUpdate(uint32 diff) override
+    {
+        TestHarness::TestHarnessMgr::Instance().TickRouteViz();
+        // [b50_watchmap] positions for the watcher's World Map, 1 Hz
+        _watchMapMs += diff;
+        if (WatchMap::ENABLED && _watchMapMs >= WatchMap::TICK_MS)
+        {
+            _watchMapMs = 0;
+            WatchMap::Tick();
+        }
+    }
+
+private:
+    uint32 _watchMapMs = 0;
 };
 
 void AddPlayerbotsCommandscripts()
