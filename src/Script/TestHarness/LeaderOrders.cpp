@@ -154,7 +154,7 @@ namespace Leader
         }
 
         void Report(Player* tank, Unit* target, OrderState state, PullMethod method, std::string const& why,
-                    uint32 mobs, float cost, bool single)
+                    uint32 mobs, float cost, bool single, bool leaderIssued)
         {
             if (!tank)
                 return;
@@ -180,7 +180,7 @@ namespace Leader
                 order.changedMs = now;
                 order.changedAt = tank->GetPosition();
                 slot.open = false;
-                Queue(slot, ReportOf(order, why, TankDecides(state)));
+                Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued));
                 return;
             }
 
@@ -212,13 +212,13 @@ namespace Leader
                 order.expected = mobs;
                 order.cost = cost;
                 order.singleOnly = single;
-                order.origin = why;
+                order.origin = leaderIssued ? "leader: " + why : why;  // [lead7]
                 order.why = why;
                 order.openedMs = now;
                 order.changedMs = now;
                 order.changedAt = tank->GetPosition();
                 slot.open = true;
-                Queue(slot, ReportOf(order, why, TankDecides(state)));
+                Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued));
                 return;
             }
 
@@ -239,10 +239,10 @@ namespace Leader
             order.why = why;
             order.changedMs = now;
             order.changedAt = tank->GetPosition();
-            Queue(slot, ReportOf(order, why, TankDecides(state)));
+            Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued));
         }
 
-        void Note(Player* tank, Unit* target, std::string const& what, std::string const& why)
+        void Note(Player* tank, Unit* target, std::string const& what, std::string const& why, bool leaderIssued)
         {
             if (!tank)
                 return;
@@ -263,10 +263,16 @@ namespace Leader
             report.method = slot.open ? slot.order.method : PullMethod::Unknown;
             report.what = what;
             report.why = why;
-            report.decides = true;
+            report.decides = !leaderIssued;  // [lead7]
             report.at = tank->GetPosition();
             report.ms = NowMs();
             Queue(slot, std::move(report));
+        }
+
+        bool IsTracked(ObjectGuid tank)
+        {
+            std::lock_guard<std::mutex> lock(orderLock);
+            return tracked.count(tank) != 0;
         }
 
         bool GetOpen(ObjectGuid tank, PullOrder& order)
@@ -325,6 +331,51 @@ namespace Leader
                 return false;
             report = std::move(it->second.queue.front());
             it->second.queue.pop_front();
+            return true;
+        }
+    }
+
+    // [lead6] Step 6: the leader's readiness verdict per group (LeaderOrders.h Readiness).
+    namespace Readiness
+    {
+        namespace
+        {
+            struct Verdict
+            {
+                bool ready = false;
+                std::string why;
+                uint32 ms = 0;
+            };
+            std::mutex readyLock;
+            std::unordered_map<ObjectGuid, Verdict> verdicts;
+        }
+
+        void Publish(ObjectGuid group, bool ready, std::string const& why)
+        {
+            if (group.IsEmpty())
+                return;
+            std::lock_guard<std::mutex> lock(readyLock);
+            Verdict& verdict = verdicts[group];
+            verdict.ready = ready;
+            verdict.why = why;
+            verdict.ms = NowMs();
+        }
+
+        void Clear(ObjectGuid group)
+        {
+            std::lock_guard<std::mutex> lock(readyLock);
+            verdicts.erase(group);
+        }
+
+        bool Get(ObjectGuid group, bool& ready, std::string* why)
+        {
+            std::lock_guard<std::mutex> lock(readyLock);
+            auto const found = verdicts.find(group);
+            if (found == verdicts.end() || getMSTimeDiff(found->second.ms, getMSTime()) > LEADER_READY_FRESH_MS)
+                return false;
+            ready = found->second.ready;
+            if (why)
+                *why = found->second.why;
             return true;
         }
     }

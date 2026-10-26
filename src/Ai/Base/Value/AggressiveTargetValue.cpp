@@ -631,16 +631,29 @@ namespace
     }
 }
 
-Unit* AggressiveTargetValue::Calculate()
+Unit* AggressiveTargetValue::Calculate() { return PickFor(botAI, DungeonRouteTarget(bot), _reachability); }
+
+// [lead5] The pick itself, for the tank's own value (its route target from the RouteTarget registry) and for the
+// dungeon leader (LEADER_ONE_PICKER: the harness's own route target, its own reachability cache, on the world thread
+// while no map thread runs): one choice, two callers.
+Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, TargetReachability& reachability)
 {
-    Player* master = GetMaster();
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return nullptr;
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    // the route target only for a dungeon tank out of combat (the registry's own rule)
+    ObjectGuid const routeTarget = bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) && !bot->IsInCombat()
+                                       ? pickRoute
+                                       : ObjectGuid::Empty;
+    Player* master = botAI->GetMaster();
 
     if (master && (master == bot || master->GetMapId() != bot->GetMapId() || master->IsBeingTeleported() ||
                    !GET_PLAYERBOT_AI(master)))
         master = nullptr;
 
     GuidVector targets = AI_VALUE(GuidVector, "possible targets");
-    if (targets.empty() && DungeonRouteTarget(bot).IsEmpty())
+    if (targets.empty() && routeTarget.IsEmpty())
         return nullptr;
 
     float aggroRange = sPlayerbotAIConfig.AggroDistance;
@@ -654,7 +667,6 @@ Unit* AggressiveTargetValue::Calculate()
         bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) ? CarefulPullSkip::Get(bot) : std::vector<ObjectGuid>();
     // The harness walks this tank to this mob: it is a candidate up to ROUTE_TARGET_PICK_RANGE, and always gets its
     // path check (the planner plans the harness's pull at once instead of waiting for the walk into pull range).
-    ObjectGuid const routeTarget = DungeonRouteTarget(bot);
     // The route target round a corner is a candidate too ("possible targets" keeps the tank's sight): the planner
     // plans it from the list that ignores sight (its cast spot walks in until it sees the mob, PullBackSpot) and an
     // engage walks into sight first (AggressiveTargetAction::Execute). hos-n wave 7: a Crystalline Shardling "not
@@ -827,7 +839,7 @@ Unit* AggressiveTargetValue::Calculate()
         if (!isRouteTarget && (tall ? tallChecks++ >= MAX_TALL_PATH_CHECKS : checks++ >= MAX_PATH_CHECKS))
             continue;
 
-        if (_reachability.IsReachable(bot, candidate.second))
+        if (reachability.IsReachable(bot, candidate.second))
         {
             if (PlayerbotAI::IsTank(bot))
                 TankRejects::Set(bot, rejected);
@@ -856,6 +868,12 @@ Unit* AggressiveTargetValue::Calculate()
 
 std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit)
 {
+    return Explain(bot, unit, DungeonRouteTarget(bot));
+}
+
+// [lead5] `routeTarget`: the route target the pick sees (the leader's own with LEADER_ONE_PICKER).
+std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit, ObjectGuid routeTarget)
+{
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI || !unit)
         return "no unit";
@@ -873,7 +891,7 @@ std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit)
         return std::string("possible targets: ") + reason;
     if (AttackersValue::IsIgnoredCritter(unit, bot))
         return "possible targets: ignored critter";
-    if (!bot->IsWithinLOSInMap(unit) && unit->GetGUID() != DungeonRouteTarget(bot))
+    if (!bot->IsWithinLOSInMap(unit) && unit->GetGUID() != routeTarget)
         return "possible targets: no line of sight from the bot's eyes";
 
     GuidVector const cached = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->LazyGet();
@@ -893,7 +911,7 @@ std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit)
              (unit->IsInWater() || unit->IsFlying() || bot->IsInWater() || bot->IsFlying()))
         verdict = "aggressive target: height (a swimmer or a flier)";
     else if (bot->GetDistance(unit) > aggroRange &&
-             (unit->GetGUID() != DungeonRouteTarget(bot) || bot->GetDistance(unit) > ROUTE_TARGET_PICK_RANGE))
+             (unit->GetGUID() != routeTarget || bot->GetDistance(unit) > ROUTE_TARGET_PICK_RANGE))
         verdict = "aggressive target: beyond pull range";
     else
     {

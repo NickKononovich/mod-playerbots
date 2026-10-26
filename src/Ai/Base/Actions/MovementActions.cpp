@@ -20,6 +20,7 @@
 #include "GameObject.h"
 #include "Group.h"
 #include "LastMovementValue.h"
+#include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
 #include "LootObjectStack.h"
 #include "HoRTriggers.h"
 #include "Map.h"
@@ -37,6 +38,7 @@
 #include "PullStrategy.h"
 #include "EstimatedLifetimeValue.h"
 #include "Random.h"
+#include "SafeZone.h"  // [lead9] the fight's safe zone
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Spell.h"
@@ -1609,10 +1611,20 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         // The walk is judged as it is walked: an exact waypoint on the ground still goes by the navmesh (DoMovePoint
         // generatePath), only a flyer or a swimmer goes straight. RFC 2026-10-24: the formation follow (exact) was
         // judged as a straight line from the boss room down through the rock, under an Earthborer's ledge.
+        // [lead9] a harness group's fight: the destination ends inside the leader's safe zone (SafeZone.h), else the
+        // bot stays and takes the hit. The zone is the radius authority there in place of the fight hold below.
+        Leader::SafeZone zone;
+        bool zoned = false;
+        if (!ClampToFightZone(x, y, z, zone, zoned))
+            return false;
+
         // [drift_fight_hold] a trash fight's chase stays at the tank's fight spot (before the path guard: the walk
         // it judges is the shortened one)
-        if (bot->IsInCombat() && !HoldFightSpot(x, y, z))
+        if (!zoned && bot->IsInCombat() && !HoldFightSpot(x, y, z))
             return false;
+        float const zonedX = x;
+        float const zonedY = y;
+        float const zonedZ = z;
 
         // [hazard_melee_spot] a melee walk into a ground effect the bot just left: a spot round the target outside
         // it, or stand in a light one, or wait at its edge (no out-in-out-in)
@@ -1621,6 +1633,22 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
 
         if (IsPathGuarded() && !GuardIdleMobPath(x, y, z, bot->IsFlying() || bot->isSwimming()))
             return false;
+
+        // [lead9] a guard above picked another destination (a melee spot out of a ground effect, a ring spot, a trail
+        // leg, a spot by the tank): it stays inside the zone too, or the bot stays
+        if (zoned && (x != zonedX || y != zonedY || z != zonedZ))
+        {
+            Leader::ZoneRole const role = Leader::FightZone::RoleOf(bot);
+            Position const here = bot->GetPosition();
+            Position const alt(x, y, z);
+            std::string why;
+            if (!zone.Contains(alt, role, &here, &why) || !zone.Standable(bot, alt, &why) ||
+                !zone.PathInside(bot, alt, role, &why))
+            {
+                Leader::FightZone::NoteClamp(bot, getName(), alt, nullptr, "a guard's other spot: " + why);
+                return false;
+            }
+        }
     }
 
     // No walk through a closed door, grouped or not, tank included (the forge walls of flame, Utgarde Keep).
@@ -2844,6 +2872,22 @@ bool MovementAction::Follow(Unit* target, float distance, float angle)
         return MoveTo(target, distance);
     }
 
+    // [lead9] MoveFollow's spline bypasses MoveTo and so every guard on it (the idle-mob path guard, the fight's safe
+    // zone): a harness group's follow in a dungeon is a walk to the target judged as every other walk is (plan 1.9,
+    // [b40_open] / [b44_gerst]: a follow body-pulled Gerstahn).
+    if (target->GetMap() == bot->GetMap() && !bot->GetVehicle() && !bot->GetTransport() &&
+        Leader::FightZone::Applies(bot))
+    {
+        if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        {
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+        }
+
+        ClearIdleState();
+        return MoveTo(target, distance);
+    }
+
     bot->HandleEmoteCommand(0);
 
     if (bot->IsSitState())
@@ -2918,6 +2962,12 @@ bool MovementAction::ChaseTo(WorldObject* obj, float distance)
                                                       hit.door->GetName(), hit.door->GetEntry()));
                 return false;
             }
+
+    // [lead9] MoveChase's spline bypasses MoveTo and so every guard on it (the idle-mob path guard, the fight's safe
+    // zone): a harness group's chase is a walk to the target judged as every other walk is.
+    if (Unit* unit = obj ? obj->ToUnit() : nullptr;
+        unit && unit->GetMap() == bot->GetMap() && !bot->GetVehicle() && Leader::FightZone::Applies(bot))
+        return MoveTo(unit, distance, MovementPriority::MOVEMENT_COMBAT);
 
     if (Vehicle* vehicle = bot->GetVehicle())
     {
@@ -3343,13 +3393,70 @@ bool MovementAction::HoldFightSpot(float& x, float& y, float& z)
     return true;
 }
 
+bool MovementAction::ClampToFightZone(float& x, float& y, float& z, Leader::SafeZone& zone, bool& applied)
+{
+    applied = false;
+    if (!Leader::LEADER_SAFE_ZONE || SkipsIdleGuard() || !Leader::FightZone::Get(bot, zone))
+        return true;
+
+    std::string const name = getName();
+    if (Leader::FightZone::ExemptMover(bot, name))
+        return true;
+
+    applied = true;
+    // the same ask again within a second: no new search (a stay stays, a clamped walk goes on to its spot)
+    uint32 const now = getMSTime();
+    if (_zoneVetoMs && getMSTimeDiff(_zoneVetoMs, now) < GUARD_VETO_MEMO_MS &&
+        G3D::Vector3(x - _zoneVetoX, y - _zoneVetoY, z - _zoneVetoZ).length() < GUARD_VETO_MEMO_DISTANCE)
+    {
+        if (!_zoneClamped)
+            return false;
+
+        x = _zoneGotX;
+        y = _zoneGotY;
+        z = _zoneGotZ;
+        return !IsDuplicateMove(x, y, z);
+    }
+
+    Leader::ZoneRole const role = Leader::FightZone::RoleOf(bot);
+    Position const here = bot->GetPosition();
+    Position const want(x, y, z);
+    std::string why;
+    if (zone.Contains(want, role, &here, &why) && zone.Standable(bot, want, &why) &&
+        zone.PathInside(bot, want, role, &why))
+        return true;
+
+    // avoid aoe: no spot inside the effect it leaves
+    Position const avoidCenter = _avoidCenter;
+    float const avoidRadius = _guardedMove == GuardedMove::AVOID ? _avoidRadius : 0.0f;
+    auto const reject = [avoidCenter, avoidRadius](Position const& p)
+    { return avoidRadius > 0.0f && p.GetExactDist2d(&avoidCenter) < avoidRadius; };
+
+    Position got;
+    std::string how;
+    _zoneVetoX = x;
+    _zoneVetoY = y;
+    _zoneVetoZ = z;
+    _zoneVetoMs = now ? now : 1;
+    _zoneClamped = zone.Clamp(bot, want, role, got, how, reject);
+    Leader::FightZone::NoteClamp(bot, name, want, _zoneClamped ? &got : nullptr, why + " -> " + how);
+    if (!_zoneClamped)
+        return false;
+
+    x = _zoneGotX = got.GetPositionX();
+    y = _zoneGotY = got.GetPositionY();
+    z = _zoneGotZ = got.GetPositionZ();
+    return true;
+}
+
 bool MovementAction::IsPathGuarded()
 {
     Map* map = bot->GetMap();
     return map && map->IsDungeon() && !bot->InBattleground() && bot->IsAlive() && bot->GetGroup() &&
            !bot->GetVehicle() && !bot->GetTransport() && !bot->IsFlying() && !bot->HasStealthAura() &&
            !bot->HasInvisibilityAura() &&
-           (!PlayerbotAI::IsTank(bot) || ((bot->IsInCombat() || GuardsIdleTankWalk()) && GuardsTankWalk())) &&
+           (!PlayerbotAI::IsTank(bot) || ((bot->IsInCombat() || GuardsIdleTankWalk()) && GuardsTankWalk()) ||
+            Leader::FightZone::GuardsIdleTankWalk(bot, getName())) &&  // [lead9] the harness tank between pulls
            !SkipsIdleGuard();
 }
 
@@ -3533,9 +3640,11 @@ bool MovementAction::GuardIdleMobPath(float& x, float& y, float& z, bool straigh
         // far ahead (or for DEADLOCK_HARD_MS whatever the tank does) goes: along the trail when it has one, else as
         // asked. The guard never leaves a member behind for good (RFC 2026-10-24: the priest stood 60 yd behind
         // while the harness walked the tank back and forth to fetch it).
+        // [lead9] In a harness group the breaker is off: a follow or a regroup never walks into an idle mob's reach
+        // (user, step 9); the member takes another spot below or stays, and the leader regroups (MeetMember).
         bool breaking = false;
         uint32 const vetoedMs = FollowVetoAge(bot, now, breaking);
-        if (bot->GetExactDist(tank) > DEADLOCK_TANK_DISTANCE &&
+        if (bot->GetExactDist(tank) > DEADLOCK_TANK_DISTANCE && !Leader::FightZone::Applies(bot) &&
             ((vetoedMs >= DEADLOCK_VETO_MS && !tank->IsInCombat()) || vetoedMs >= DEADLOCK_HARD_MS))
         {
             std::string outcome = Acore::StringFormat("allowed: deadlock (vetoed {} s)", vetoedMs / IN_MILLISECONDS);
@@ -5395,6 +5504,15 @@ bool MovementAction::EscapeRoom(Position& centre, float& radius, Unit*& boss)
     if (KiteRoomLookupFn const lookup = KiteRoomLookup(); lookup && lookup(bot, boss, centre, radius) && radius > 0.0f)
         return true;
 
+    // [lead9] a harness group's fight: the leader's safe zone, its disc for the bot's role (in place of the fight
+    // spot's radius plus ESCAPE_ROOM_FIGHT_SPOT_SLACK below)
+    if (Leader::SafeZone zone; Leader::FightZone::Get(bot, zone))
+    {
+        centre = zone.centre;
+        radius = zone.RadiusFor(Leader::FightZone::RoleOf(bot));
+        return true;
+    }
+
     Player* tank = PlayerbotAI::IsTank(bot) ? bot : FindGroupTank(bot);
     if (tank && FightHold::Get(tank, centre))
     {
@@ -5464,6 +5582,14 @@ bool MovementAction::SafeEscapeSpot(Position const& center, float radius, Positi
                 return true;
         return false;
     };
+    // [lead9] a harness group's fight: every escape spot inside the leader's safe zone (none left: the bot stays and
+    // takes the hit, MoveTo's clamp has the last word on the fallbacks)
+    Leader::SafeZone zone;
+    bool const zoned = Leader::FightZone::Get(bot, zone);
+    Leader::ZoneRole const zoneRole = Leader::FightZone::RoleOf(bot);
+    Position const zoneFrom = bot->GetPosition();
+    auto const outOfZone = [&](float x, float y, float z)
+    { return zoned && !zone.Contains(Position(x, y, z), zoneRole, &zoneFrom); };
 
     // [escape_tank_side] A tank with mobs on it never steps toward the group: the mobs follow it into the dps and the
     // healer (cleaves, their AoE). It steps sideways off the tank-to-group line, the least out of the effect, onto a
@@ -5555,6 +5681,7 @@ bool MovementAction::SafeEscapeSpot(Position const& center, float radius, Positi
                                                                   bot->GetPositionZ(), x, y, z) ||
                             !EscapeSpotUsable(bot, center, radius, x, y, z, std::max(maxWalk, ESCAPE_KITE_MAX_STEP)) ||
                             EscapeWakesIdle(mobs, bot, x, y, z) || outOfRoom(x, y, z) || inCloud(x, y) ||
+                            outOfZone(x, y, z) ||
                             (healer && (healer->GetExactDist(x, y, z) > ESCAPE_TANK_HEAL_RANGE ||
                                         !healer->IsWithinLOS(x, y, z + bot->GetCollisionHeight()))))
                             continue;
@@ -5597,7 +5724,7 @@ bool MovementAction::SafeEscapeSpot(Position const& center, float radius, Positi
                                                               bot->GetPositionZ(), x, y, z) ||
                         !EscapeSpotUsable(bot, center, radius, x, y, z, maxWalk) ||
                         EscapeWakesIdle(mobs, bot, x, y, z) || goesBack(x, y) || outOfRoom(x, y, z) ||
-                        inCloud(x, y) ||
+                        inCloud(x, y) || outOfZone(x, y, z) ||
                         (healer && (healer->GetExactDist(x, y, z) > ESCAPE_TANK_HEAL_RANGE ||
                                     !healer->IsWithinLOS(x, y, z + bot->GetCollisionHeight()))))
                         continue;
@@ -5639,7 +5766,7 @@ bool MovementAction::SafeEscapeSpot(Position const& center, float radius, Positi
             float const walk = bot->GetExactDist(point.x, point.y, point.z);
             if (walk >= best || !EscapeSpotUsable(bot, center, radius, point.x, point.y, point.z, maxWalk) ||
                 EscapeWakesIdle(mobs, bot, point.x, point.y, point.z) || outOfRoom(point.x, point.y, point.z) ||
-                inCloud(point.x, point.y))
+                inCloud(point.x, point.y) || outOfZone(point.x, point.y, point.z))
                 continue;
 
             best = walk;
@@ -5670,7 +5797,7 @@ bool MovementAction::SafeEscapeSpot(Position const& center, float radius, Positi
         if (!map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
                                                   x, y, z) ||
             !EscapeSpotUsable(bot, center, radius, x, y, z, maxWalk) || EscapeWakesIdle(mobs, bot, x, y, z) ||
-            goesBack(x, y) || outOfRoom(x, y, z) || inCloud(x, y))
+            goesBack(x, y) || outOfRoom(x, y, z) || inCloud(x, y) || outOfZone(x, y, z))
             continue;
 
         // the walk, plus 1 yd for every 30 degrees off the group's side

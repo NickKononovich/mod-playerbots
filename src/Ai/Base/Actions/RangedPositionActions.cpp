@@ -27,6 +27,7 @@
 #include "AggressiveTargetValue.h"
 #include "ChooseTargetActions.h"
 #include "PullStrategy.h"
+#include "SafeZone.h"  // [lead9]
 #include "TerrainHazard.h"
 #include "Timer.h"
 
@@ -792,8 +793,67 @@ RangedPositionInfo RangedPositionValue::Calculate()
         return false;
     };
 
+    // [lead9] A harness group's fight (SafeZone.h, C:/WoW/LEADER_REFACTOR_PLAN.md step 9): every spot inside the
+    // leader's safe zone and in sight of the fight spot (the healer's of the tank too: sightAnchor); the fight plan's
+    // spot for the bot's role first when the leader published one.
+    Leader::FightPlan plan;
+    bool const zoned = Leader::FightZone::GetPlan(bot, plan) && plan.zone.valid;
+    Leader::ZoneRole const zoneRole = Leader::FightZone::RoleOf(bot);
+    Position const zoneFrom = bot->GetPosition();
+    auto const zoneRejects = [&](float x, float y, float z) -> bool
+    {
+        if (!zoned)
+            return false;
+        if (!plan.zone.Contains(Position(x, y, z), zoneRole, &zoneFrom))
+            return true;
+        Position const& spot = plan.zone.centre;
+        return !map->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + 2.0f, x, y,
+                                     z + bot->GetCollisionHeight(), bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                     VMAP::ModelIgnoreFlags::Nothing);
+    };
+    bool roleSpotTaken = false;
+    if (zoned)
+        for (Leader::RoleSpot const& roleSpot : plan.roleSpots)
+        {
+            if (found || roleSpot.role != zoneRole)
+                continue;
+            for (Position const& spot : {roleSpot.spot, roleSpot.fallback})
+            {
+                float const x = spot.GetPositionX();
+                float const y = spot.GetPositionY();
+                float const z = spot.GetPositionZ();
+                if (spot == Position() || zoneRejects(x, y, z) || !sightAnchor->IsWithinLOS(x, y, z))
+                    continue;
+                float meleeGap = SAFE_GAP * 10.0f;
+                for (Unit const* enemy : enemies)
+                    meleeGap = std::min(meleeGap, MeleeGapTo(enemy, bot, x, y));
+                G3D::Vector3 const botAt(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                bool pullsIdle = false;
+                for (Creature* mob : idle)
+                    if (!MovementAction::IdleAggroBlocker(mob, bot, x, y, z, IDLE_AGGRO_MARGIN, false) ||
+                        WalkWakesIdle(mob, bot, botAt, G3D::Vector3(x, y, z), IDLE_AGGRO_MARGIN))
+                    {
+                        pullsIdle = true;
+                        break;
+                    }
+                if (meleeGap <= MELEE_DANGER_GAP || pullsIdle || !safe(x, y, z))
+                    continue;
+                if (improve && bot->GetExactDist2d(x, y) < SAME_SPOT)
+                    return info;  // it stands on its spot already
+                found = true;
+                roleSpotTaken = true;
+                info.x = x;
+                info.y = y;
+                info.z = z;
+                break;
+            }
+        }
+
     for (float const offset : CANDIDATE_ANGLES)
     {
+        if (roleSpotTaken)
+            break;  // [lead9] the plan's role spot
+
         float const angle = Position::NormalizeOrientation(baseAngle + spread + offset);
         float x = center->GetPositionX() + std::cos(angle) * radius;
         float y = center->GetPositionY() + std::sin(angle) * radius;
@@ -844,6 +904,9 @@ RangedPositionInfo RangedPositionValue::Calculate()
             continue;
 
         if (!sightAnchor->IsWithinLOS(x, y, z))
+            continue;
+
+        if (zoneRejects(x, y, z))  // [lead9]
             continue;
 
         // A better view only: a short walk, out of the cleaves with room to spare, and clearly better than here.

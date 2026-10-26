@@ -99,7 +99,9 @@ namespace TestHarness
 {
     // A body pull is the last resort when the pull logic keeps holding back. A real tank only walks into a pack
     // with the whole group present, alive, healthy and the healers' mana up.
-    static bool GroupFullyReady(Party const& party, Player* leader)
+    // [lead6] The group's readiness with its reason ("" = ready): GroupFullyReady, and the leader's one readiness
+    // verdict (TestHarnessMgr::LeaderReadyWhy) built on it.
+    static std::string GroupNotReadyWhy(Party const& party, Player* leader)
     {
         for (Member const& member : party.members)
         {
@@ -113,21 +115,29 @@ namespace TestHarness
                 bot->GetDistance(leader) > 30.0f && member.apartIgnoreUntilMs &&
                 int32(getMSTime() - member.apartIgnoreUntilMs) < 0 && !PlayerbotAI::IsHeal(bot))
                 continue;
-            if (!bot || !bot->IsAlive() || bot->GetMap() != leader->GetMap() || bot->GetDistance(leader) > 30.0f ||
-                bot->GetHealthPct() < 80.0f)
-                return false;
+            if (!bot || !bot->IsAlive())
+                return member.name + " is dead or gone";
+            if (bot->GetMap() != leader->GetMap())
+                return member.name + " is not in the instance";
+            if (bot->GetDistance(leader) > 30.0f)
+                return Acore::StringFormat("{} is {:.0f} yd from the leader", member.name, bot->GetDistance(leader));
+            if (bot->GetHealthPct() < 80.0f)
+                return Acore::StringFormat("{} at {:.0f} % health", member.name, bot->GetHealthPct());
             // [b33_bodypull] the healer also sees the leader (the planner's "healer not with the tank")
             if (bot != leader && PlayerbotAI::IsHeal(bot) && !bot->IsWithinLOSInMap(leader))
-                return false;
+                return "the healer " + member.name + " does not see the leader";
             if (PlayerbotAI::IsHeal(bot) && bot->getPowerType() == POWER_MANA && bot->GetPowerPct(POWER_MANA) < 80.0f)
-                return false;
+                return Acore::StringFormat("the healer {} at {:.0f} % mana", member.name,
+                                           bot->GetPowerPct(POWER_MANA));
         }
         // [hleft-mgt-selin-entry] Magisters' Terrace: nobody pulls Selin while a member is still outside her room
         // (MagistersTerrace::SelinRoom::EntryHolds: the room door shuts on IN_PROGRESS).
         if (MagistersTerrace::SelinRoom::EntryHolds(leader))
-            return false;
-        return true;
+            return "a member is outside Selin's room";
+        return std::string();
     }
+
+    static bool GroupFullyReady(Party const& party, Player* leader) { return GroupNotReadyWhy(party, leader).empty(); }
 
     namespace
     {
@@ -683,9 +693,14 @@ namespace TestHarness
                 hold.sinceMs = 0;
                 return std::string();
             }
+            // [lead6] LEADER_ONE_READINESS: the rest ends when the members stand (the leader's one readiness judge),
+            // not after REST_HOLD_MAX_MS - the timeout walked the leader on while they still sat
+            bool const leaderJudges = Leader::Leads(Leader::LEADER_ONE_READINESS) && party.content &&
+                                      !party.content->raid && party.content->size <= 5 &&
+                                      Leader::Orders::IsTracked(party.leader);
             if (!hold.sinceMs)
                 hold.sinceMs = now;
-            else if (getMSTimeDiff(hold.sinceMs, now) > REST_HOLD_MAX_MS)
+            else if (!leaderJudges && getMSTimeDiff(hold.sinceMs, now) > REST_HOLD_MAX_MS)
             {
                 hold.sinceMs = 0;
                 hold.cooldownUntilMs = now + REST_HOLD_COOLDOWN_MS;
@@ -2912,8 +2927,110 @@ namespace TestHarness
         constexpr float STOP_TRAIL_BACK_MAX = 30.0f;
         constexpr float STOP_TRAIL_FLOOR = 8.0f;  // a trail point this far above / below the leader is another floor
 
+        // [lead3] C:/WoW/LEADER_REFACTOR_PLAN.md section 9: the leader decides this party's pulls (its planner runs
+        // on the world thread, LEADER_PLANNER_IN_LEADER): a tracked 5-man tank. Raids keep the old harness pulls.
+        bool LeaderDecidesFor(Party const& party)
+        {
+            return Leader::LEADER_PLANNER_IN_LEADER && party.content && !party.content->raid &&
+                   party.content->size <= 5 && !party.leader.IsEmpty() && Leader::Orders::IsTracked(party.leader);
+        }
+
+        // [lead5] LEADER_ONE_PICKER: Steer reads the leader planner's own verdict memory (Party::lead, written by
+        // TickLeaderPlanner from the look's Decision), not the CarefulPlanVerdict registry; the same semantics (one
+        // latest verdict, its target or any mob of its pack, fresh LEADER_VERDICT_TTL_MS).
+        constexpr uint32 LEADER_VERDICT_TTL_MS = 10 * IN_MILLISECONDS;  // CarefulPlanVerdict's TTL
+        bool LeaderPicksFor(Party const& party)
+        {
+            return Leader::Leads(Leader::LEADER_ONE_PICKER) && LeaderDecidesFor(party);
+        }
+
+        bool LeaderVerdictCovers(Party const& party, ObjectGuid mob)
+        {
+            auto const& lead = party.lead;
+            return lead.verdictMs && getMSTimeDiff(lead.verdictMs, getMSTime()) <= LEADER_VERDICT_TTL_MS &&
+                   (lead.verdictTarget == mob ||
+                    std::find(lead.verdictPack.begin(), lead.verdictPack.end(), mob) != lead.verdictPack.end());
+        }
+
+        bool PartyVerdict(Party const& party, ObjectGuid mob, bool& accepted, uint32& mobs)
+        {
+            if (!LeaderPicksFor(party))
+                return CarefulPlanVerdict::Get(party.leader, mob, accepted, mobs);
+            if (!LeaderVerdictCovers(party, mob))
+                return false;
+            accepted = party.lead.verdictAccepted;
+            mobs = party.lead.verdictMobs;
+            return true;
+        }
+
+        bool PartyRefusal(Party const& party, ObjectGuid mob, bool& hopeless, uint32& waitMs, std::string& why)
+        {
+            if (!LeaderPicksFor(party))
+                return CarefulPlanVerdict::GetRefusal(party.leader, mob, hopeless, waitMs, why);
+            if (party.lead.verdictAccepted || !LeaderVerdictCovers(party, mob))
+                return false;
+            hopeless = party.lead.verdictHopeless;
+            uint32 const age = getMSTimeDiff(party.lead.verdictMs, getMSTime());
+            waitMs = party.lead.verdictWaitMs > age ? party.lead.verdictWaitMs - age : 0;
+            why = party.lead.verdictWhy;
+            return true;
+        }
+
+        // [lead5] the leader planner's aoe_pull_plan (its own memory, Decision::aoePlan) and the leader's required
+        // marks it hands the planner (LeaderInputs::required), else the AoePull registry
+        bool PartyAoePlanned(Party const& party, ObjectGuid mob, uint32* sinceMs = nullptr)
+        {
+            if (!LeaderPicksFor(party))
+                return AoePull::Planned(party.leader, mob, sinceMs);
+            auto const& lead = party.lead;
+            if (!lead.aoePlanMs || getMSTimeDiff(lead.aoePlanMs, getMSTime()) > LEADER_VERDICT_TTL_MS ||
+                std::find(lead.aoePlan.begin(), lead.aoePlan.end(), mob) == lead.aoePlan.end())
+                return false;
+            if (sinceMs)
+                *sinceMs = lead.aoePlanSinceMs;
+            return true;
+        }
+
+        void PartyMarkRequired(Party& party, ObjectGuid mob)
+        {
+            if (!LeaderPicksFor(party))
+            {
+                AoePull::MarkRequired(party.leader, mob);
+                return;
+            }
+            uint32 const now = getMSTime();
+            party.lead.requiredMarks[mob] = now ? now : 1;
+        }
+
+        // [lead5] the tank's view of `unit` (AggressiveTargetValue::Explain) with the leader's own route target
+        std::string PartyTankView(Party const& party, Player* leader, Unit* unit)
+        {
+            if (!LeaderPicksFor(party))
+                return AggressiveTargetValue::Explain(leader, unit);
+            return AggressiveTargetValue::Explain(leader, unit,
+                                                  party.targetIsStarter ? ObjectGuid::Empty : party.target);
+        }
+
+        // [lead5] LEADER_ONE_PICKER: EncounterOrder::IsLocked is the one encounter-order rule (the planner's and the
+        // pick's: the Utgarde Keep forge order with its formations, Blackheart's room), not the harness's own copy of
+        // the forge rule (UKIds::IsForgeMasterLocked) for the route's target choice.
+        bool EncounterLockedFor(Party const& party, Creature* creature, InstanceScript const* script)
+        {
+            if (LeaderPicksFor(party))
+                return EncounterOrder::IsLocked(creature);
+            return UKIds::IsForgeMasterLocked(creature, script);
+        }
+
+        // [lead4] LEADER_ONE_PATROL_OWNER: the leader owns the patrol decision (LeaderPatrolTick); the harness's
+        // patrol hold is its forecast only (no wait budget, no handover, no hold clock or cooldown).
+        bool LeaderOwnsPatrols(Party const& party)
+        {
+            return Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && LeaderDecidesFor(party);
+        }
+
         bool ApproachStop(Player* leader, WorldObject* target, Movement::PointsArray const& points, float length,
-                          G3D::Vector3& stop, Creature*& blocker, bool& unseenStop, Creature* exemptPack = nullptr)
+                          G3D::Vector3& stop, Creature*& blocker, bool& unseenStop, Creature* exemptPack = nullptr,
+                          Party const* party = nullptr)
         {
             unseenStop = false;
             std::list<Creature*> mobs;
@@ -2938,7 +3055,7 @@ namespace TestHarness
             // instead of stopping at the edge, and the tank pulled 7 mobs mounted. The edge is the pull's place.
             Creature* const walkTarget = target ? target->ToCreature() : nullptr;
             mobs.remove_if(
-                [leader, walkTarget](Creature* mob)
+                [leader, walkTarget, party](Creature* mob)
                 {
                     if (!TankRejects::IsRejected(leader->GetGUID(), mob->GetGUID()))
                         return false;
@@ -2949,7 +3066,10 @@ namespace TestHarness
                     // harness walk into a refused 20-mob pack, no [pull plan] before the pull).
                     bool accepted = true;
                     uint32 planMobs = 0;
-                    if (CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, planMobs) && !accepted)
+                    // [lead5] the leader planner's own memory with LEADER_ONE_PICKER (PartyVerdict)
+                    if ((party ? PartyVerdict(*party, mob->GetGUID(), accepted, planMobs)
+                               : CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, planMobs)) &&
+                        !accepted)
                         return false;
                     if (ROUTE_LOG_TANK_REJECTS && leader->GetExactDist(mob) < AggroReach(mob, leader))
                     {
@@ -3198,14 +3318,14 @@ namespace TestHarness
         // (ApproachStop around the leader, or around exemptPack, whose own pack is exempt). True: `point` is the stop,
         // `held`: the leader stands there already.
         bool HarnessWalkStop(Player* leader, Movement::PointsArray const& points, float length, Creature* exemptPack,
-                             G3D::Vector3& point, Creature*& blocker, bool& held)
+                             G3D::Vector3& point, Creature*& blocker, bool& held, Party const* party = nullptr)
         {
             G3D::Vector3 stop;
             bool unseenStop = false;
             blocker = nullptr;
             held = false;
             WorldObject* const centre = exemptPack ? static_cast<WorldObject*>(exemptPack) : leader;
-            if (!ApproachStop(leader, centre, points, length, stop, blocker, unseenStop, exemptPack) || !blocker)
+            if (!ApproachStop(leader, centre, points, length, stop, blocker, unseenStop, exemptPack, party) || !blocker)
                 return false;
             G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
             held = (stop - here).length() <= APPROACH_ARRIVED;
@@ -3476,7 +3596,7 @@ namespace TestHarness
             {
                 bool accepted = false;
                 uint32 mobs = 0;
-                if (!CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, mobs))
+                if (!PartyVerdict(party, mob->GetGUID(), accepted, mobs))  // [lead5]
                     continue;
                 if (!accepted)
                     return PlanVerdict::Refused;
@@ -3874,13 +3994,14 @@ namespace TestHarness
         // The patrol that holds the walk, with why ("planner pulls it" / "<yd> from <member>"); empty: no hold.
         std::string PatrolHoldWhy(Party const& party, Player* leader)
         {
+            bool const leaderOwns = LeaderOwnsPatrols(party);  // [lead4]
             if (!ROUTE_PATROL_HOLD || !leader->IsAlive() || leader->IsInCombat() || party.inCombat ||
                 !party.escort.IsEmpty())
                 return std::string();
             uint32 const now = getMSTime();
             PatrolHold& hold = patrolHolds[party.instanceId];
             // [b48_scholo] the cooldown keeps the planner / "comes" holds off only; the lane hold has the wait budget
-            bool const cooling = hold.cooldownUntilMs && int32(now - hold.cooldownUntilMs) < 0;
+            bool const cooling = !leaderOwns && hold.cooldownUntilMs && int32(now - hold.cooldownUntilMs) < 0;
             auto const release = [&hold]()
             {
                 hold.sinceMs = 0;
@@ -3905,13 +4026,13 @@ namespace TestHarness
             {
                 if (party.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
                     continue;
-                if (PatrolHandedOver(party.instanceId, mob->GetGUID(), now))
+                if (!leaderOwns && PatrolHandedOver(party.instanceId, mob->GetGUID(), now))
                     continue;  // [b47_patrol] the tank's planner has it (PATROL_WAIT_BUDGET)
                 if (!cooling)
                 {
                     bool accepted = false;
                     uint32 mobs = 0;
-                    if (CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, mobs) && accepted)
+                    if (PartyVerdict(party, mob->GetGUID(), accepted, mobs) && accepted)  // [lead5]
                     {
                         why = Acore::StringFormat("patrol {} {:.1f} yd: the tank's planner pulls it ({} mobs)",
                                                   mob->GetName(), leader->GetExactDist(mob), mobs);
@@ -3973,7 +4094,7 @@ namespace TestHarness
                 Creature* last = leader->GetMap()->GetCreature(hold.patrol);
                 if (last && last->IsAlive() && !last->IsInCombat() &&
                     leader->GetExactDist(last) <= PATROL_HOLD_SCAN + PATROL_HOLD_MARGIN &&
-                    !PatrolHandedOver(party.instanceId, last->GetGUID(), now))
+                    (leaderOwns || !PatrolHandedOver(party.instanceId, last->GetGUID(), now)))
                 {
                     why = hold.why;
                     comesMob = hold.comes ? last : nullptr;
@@ -3991,11 +4112,12 @@ namespace TestHarness
             if (why.empty())
                 return release();
             // [b47_patrol] PATROL_WAIT_BUDGET: spent, no more hold for it (PatrolStepBack hands it over)
-            if (comesMob && ChargePatrolWait(party.instanceId, comesMob->GetGUID(), now, !hold.sinceMs))
+            // [lead4] not for the leader: its patrol decision is a wait with a forecast window or a pull, no budget
+            if (!leaderOwns && comesMob && ChargePatrolWait(party.instanceId, comesMob->GetGUID(), now, !hold.sinceMs))
                 return release();
             if (!hold.sinceMs)
                 hold.sinceMs = now ? now : 1;
-            else if (!laneHold && getMSTimeDiff(hold.sinceMs, now) > PATROL_HOLD_MAX_MS)
+            else if (!leaderOwns && !laneHold && getMSTimeDiff(hold.sinceMs, now) > PATROL_HOLD_MAX_MS)
             {
                 hold.cooldownUntilMs = now + PATROL_HOLD_COOLDOWN_MS;
                 hold.timedOut = true;
@@ -6516,7 +6638,7 @@ namespace TestHarness
         uint32 waitMs = 0;
         std::string refusalWhy;
         bool refused =
-            CarefulPlanVerdict::GetRefusal(party.leader, blocker->GetGUID(), hopeless, waitMs, refusalWhy);
+            PartyRefusal(party, blocker->GetGUID(), hopeless, waitMs, refusalWhy);  // [lead5]
         // [b34_strat] the tank keeps ONE verdict, about the mob it planned: strat-h 20261026-014521-strat-h-5E-1
         // (299 s) refused the target BEHIND ("Skeletal Guardian: no safe pull: Ravaged Cadaver brings 20 mobs, over
         // 18"), the lookup by the blocker's own guid found nothing and the Ravaged Cadaver became the route target
@@ -6526,7 +6648,7 @@ namespace TestHarness
             bool behindHopeless = false;
             uint32 behindWaitMs = 0;
             std::string behindWhy;
-            if (CarefulPlanVerdict::GetRefusal(party.leader, behind->GetGUID(), behindHopeless, behindWaitMs,
+            if (PartyRefusal(party, behind->GetGUID(), behindHopeless, behindWaitMs,  // [lead5]
                                                behindWhy) &&
                 RefusalIsOverCap(behindWhy) && behindWhy.find(blocker->GetName()) != std::string::npos)
             {
@@ -6574,7 +6696,7 @@ namespace TestHarness
                 }
         // [b33_aoepull] a refused (or aoe-planned) pack on the only way to a required target is marked for the
         // planner's aoe_pull_plan; TargetRouteBlocker (bodyPull false) checked the required way before the gate
-        bool const aoePlanned = AoePull::Planned(party.leader, blocker->GetGUID());
+        bool const aoePlanned = PartyAoePlanned(party, blocker->GetGUID());  // [lead5]
         bool requiredBlocker = false;
         if ((refused || aoePlanned) && !blocker->IsDungeonBoss() && !party.bossCreatures.count(blocker->GetGUID()))
         {
@@ -6583,7 +6705,7 @@ namespace TestHarness
                               RouteBlockerBehindRequired(party, leader->GetMap(), behind ? behind : blocker,
                                                          requiredWhy);
             if (requiredBlocker)
-                AoePull::MarkRequired(party.leader, blocker->GetGUID());
+                PartyMarkRequired(party, blocker->GetGUID());  // [lead5]
         }
         if (refused && hopeless && requiredBlocker && AoePullAskRuns(party.leader, blocker->GetGUID(), getMSTime()))
         {
@@ -6778,6 +6900,18 @@ namespace TestHarness
 
     void TestHarnessMgr::RouteBlockerBodyPull(Party& party, Player* leader, Creature* target, std::string const& why)
     {
+        // [lead3] LEADER_NO_BODY_FALLBACK: no harness walk-in. The route blocker is the leader's to clear: asked of
+        // its planner whole (the walk-in priced by the planner's own count, the aoe_pull_plan allowed: required), a
+        // boss's pack as the boss pull. Its answer is the leader's (TickLeaderPlanner).
+        if (Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && LeaderDecidesFor(party) && target)
+        {
+            party.approach = 0;
+            if (target->IsDungeonBoss() || party.bossCreatures.count(target->GetGUID()))
+                LeaderBossPull(party, leader, target, "route blocker: " + why);
+            else
+                LeaderWholePack(party, leader, target, "route blocker: " + why, true, true);
+            return;
+        }
         // the group gets ready first (the user rule: full health and mana, everyone here), then the walk in; the
         // leader holds where it stands meanwhile (TestHarnessMgr's regen wait tops the group up)
         // [queue-blocker-pull-gate] and never into a pack the chain count refused, nor off the required way
@@ -6804,7 +6938,7 @@ namespace TestHarness
 
         // [b33_aoepull] the planner's issued aoe_pull_plan is the pull: the tank takes the chain to its stack spot,
         // the leader is not walked in while the plan is fresh and younger than AOE_PULL_WALK_MS
-        if (uint32 aoeSinceMs = 0; AoePull::Planned(party.leader, target->GetGUID(), &aoeSinceMs) &&
+        if (uint32 aoeSinceMs = 0; PartyAoePlanned(party, target->GetGUID(), &aoeSinceMs) &&  // [lead5]
                                    getMSTimeDiff(aoeSinceMs, getMSTime()) < AOE_PULL_WALK_MS)
         {
             TestRunner::ClearWaypoint(party.leader);
@@ -7694,7 +7828,7 @@ namespace TestHarness
         if (ROUTE_FORGE_ORDER)
             for (Creature* creature : candidates)
                 if (creature && creature->IsInWorld() && creature->IsAlive() &&
-                    (UKIds::IsForgeMasterLocked(creature, script) || DoorKeyLocked(creature, script)))
+                    (EncounterLockedFor(party, creature, script) || DoorKeyLocked(creature, script)))
                     lockedForgeMasters.push_back(creature);
 
         // Event chain (pass 3, ROUTE_CHAIN_GUARD): once a starter of this dungeon was used and further steps are
@@ -8502,7 +8636,7 @@ namespace TestHarness
             }
 
             // Script-ordered trash: a forge master pulled before the previous one evades at once (utgarde_keep.cpp).
-            if (UKIds::IsForgeMasterLocked(creature, script) || DoorKeyLocked(creature, script))
+            if (EncounterLockedFor(party, creature, script) || DoorKeyLocked(creature, script))
                 continue;
 
             // Flying mobs high above their floor (Oculus Azure Ring Guardians) are fought from drakes, not walked to:
@@ -10180,7 +10314,8 @@ namespace TestHarness
                 party.approach = 0;
                 party.approachBlocker.Clear();
                 party.stopSinceMs = 0;
-                RouteTarget::Set(party.leader, handed);
+                if (!LeaderPicksFor(party))  // [lead5]
+                    RouteTarget::Set(party.leader, handed);
                 TestRunner::ClearWaypoint(party.leader);
                 holdClocks();
                 return true;
@@ -10200,8 +10335,8 @@ namespace TestHarness
                 end = "timeout";
             else if (state.arrived && gap > state.reach + PATROL_STEP_BACK_GONE)
                 end = "walked on";
-            else if (ChargePatrolWait(party.instanceId, state.patrol, now, false))
-                end = "wait budget spent";  // [b47_patrol] handed over on the next tick
+            else if (!LeaderOwnsPatrols(party) && ChargePatrolWait(party.instanceId, state.patrol, now, false))
+                end = "wait budget spent";  // [b47_patrol] handed over on the next tick ([lead4] not the leader's)
             // [b48_patrol] the patrol came onto the way back: no walk toward it, the group stands (the planner
             // meets it)
             else if (!state.arrived && state.hop < state.hops.size() &&
@@ -10264,7 +10399,7 @@ namespace TestHarness
                 continue;
             bool accepted = false;
             uint32 mobs = 0;
-            if (CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, mobs) && accepted)
+            if (PartyVerdict(party, mob->GetGUID(), accepted, mobs) && accepted)
                 return false;
             float const reach = AggroReach(mob, leader) + PATROL_HOLD_MARGIN;
             for (Member const& member : party.members)
@@ -10332,7 +10467,7 @@ namespace TestHarness
         }
         // [b47_patrol] a new wait for the same patrol counts against its budget; spent: handed over next tick
         // ([b48_patrol] only a step back that walks: a search that found no spot is no wait)
-        if (ChargePatrolWait(party.instanceId, patrol->GetGUID(), now, true))
+        if (!LeaderOwnsPatrols(party) && ChargePatrolWait(party.instanceId, patrol->GetGUID(), now, true))  // [lead4]
             return false;
 
         state.patrol = patrol->GetGUID();
@@ -10614,7 +10749,9 @@ namespace TestHarness
         }
 
         // [b46_patrol] PATROL_STEP_BACK: out of a patrol's way first; the rest hold then holds at the step-back spot.
-        if (PatrolStepBack(party, leader))
+        // [lead4] LEADER_ONE_PATROL_OWNER: one patrol decision (LeaderPatrolTick: wait or pull the patrol), the step
+        // back only as its wait's spot; the old independent step back and patrol hold below are off
+        if (LeaderOwnsPatrols(party) ? LeaderPatrolTick(party, leader) : PatrolStepBack(party, leader))
             return;
 
         // ROUTE_REST_HOLD: no walk while a member sits eating / drinking or is about to; the leader stands.
@@ -10659,7 +10796,8 @@ namespace TestHarness
         // [b43_harn] ROUTE_PATROL_HOLD (PatrolHoldWhy): no walk while a patrol comes to the group or the tank's planner
         // pulls one; the leader stands, the planner meets it where the group is. A running patrol wait spot walk
         // ([patrol_wait_spot]) is the planner's own patrol answer and keeps its waypoint.
-        if (!(party.patrolWaitUntilMs && party.patrolWaitTarget == party.target &&
+        if (!LeaderOwnsPatrols(party) &&  // [lead4] the leader's patrol decision ran above (LeaderPatrolTick)
+            !(party.patrolWaitUntilMs && party.patrolWaitTarget == party.target &&
               int32(party.patrolWaitUntilMs - getMSTime()) > 0))
         {
             std::string const patrolWhy = PatrolHoldWhy(party, leader);
@@ -10678,7 +10816,7 @@ namespace TestHarness
                                                        .Real("z", leader->GetPositionZ()));
                 }
                 // The tank keeps planning the route target meanwhile; the hold is no route stall.
-                if (!party.target.IsEmpty() && !party.targetIsStarter)
+                if (!party.target.IsEmpty() && !party.targetIsStarter && !LeaderPicksFor(party))  // [lead5]
                     RouteTarget::Set(party.leader, party.target);
                 party.steerSinceMs = holdNow;
                 party.steerAnchor = leader->GetPosition();
@@ -10915,7 +11053,8 @@ namespace TestHarness
 
         // The tank plans the harness's route target out to 70 yd (AggressiveTargetValue RouteTarget, TTL 10 s,
         // refreshed every steer tick), not only its own 40 yd pick; a starter is no pull.
-        if (!party.targetIsStarter && object->ToCreature())
+        // [lead5] LEADER_ONE_PICKER: no registry - the leader picks with its own route target (TickLeaderPlanner)
+        if (!party.targetIsStarter && object->ToCreature() && !LeaderPicksFor(party))
             RouteTarget::Set(party.leader, party.target);
         else
             RouteTarget::Clear(party.leader);
@@ -11084,7 +11223,8 @@ namespace TestHarness
                 bool unseenStop = false;
                 float const walk = leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP;
                 if (!(leg.type & PATHFIND_NOPATH) &&
-                    ApproachStop(leader, mob, leg.points, walk, approachStop, blocker, unseenStop) && blocker)
+                    ApproachStop(leader, mob, leg.points, walk, approachStop, blocker, unseenStop, nullptr, &party) &&
+                    blocker)
                 {
                     G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
                     approachStopped = true;
@@ -11347,12 +11487,12 @@ namespace TestHarness
                         uint32 holdWaitMs = 0;
                         std::string holdWhy;
                         bool const targetHeld =
-                            CarefulPlanVerdict::GetRefusal(leader->GetGUID(), party.target, holdHopeless, holdWaitMs,
+                            PartyRefusal(party, party.target, holdHopeless, holdWaitMs,
                                                            holdWhy) &&
                             holdWhy.rfind("held for now", 0) == 0;
                         holdWhy.clear();
                         bool const blockerHeld =
-                            CarefulPlanVerdict::GetRefusal(leader->GetGUID(), blocker->GetGUID(), holdHopeless,
+                            PartyRefusal(party, blocker->GetGUID(), holdHopeless,
                                                            holdWaitMs, holdWhy) &&
                             holdWhy.rfind("held for now", 0) == 0;
                         bool const patrolWait = party.patrolWaitMs && party.patrolWaitTarget == party.target &&
@@ -11421,7 +11561,9 @@ namespace TestHarness
                             if (!leader->IsInCombat() && held != sightHolds.end() &&
                                 held->second.blocker == blocker->GetGUID() && held->second.unknownSinceMs &&
                                 getMSTimeDiff(held->second.unknownSinceMs, now) >= unknownHoldMs)
-                                gaveWay = verdict == PlanVerdict::Unknown;  // [queue-blocker-pull-gate]
+                                gaveWay = verdict == PlanVerdict::Unknown &&  // [queue-blocker-pull-gate]
+                                          !(Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) &&
+                                            LeaderDecidesFor(party));  // [lead3] the leader never gives way
                             // Accepted (or given way): walking into sight of the pack is the pull - but of that pack
                             // only. Every other idle pack stays kept out (SightKeepOutOthers; BRS heroic 22:10:30). A
                             // give-way approaches the target's own pack alone, a neighbour blocker's pack included in
@@ -11491,7 +11633,7 @@ namespace TestHarness
                                          pullSearch.best.angleOffDeg, pullSearch.best.walk);
                             }
                         }
-                        std::string const view = AggressiveTargetValue::Explain(leader, blocker);
+                        std::string const view = PartyTankView(party, leader, blocker);
                         // The tank takes it as it stands (its view "accepted ..."): no skip, the normal wait at the
                         // stop decides, as for "skip at once: no LoS" below (lbrs-n build 10: the Scarshield Worg
                         // skipped "accepted", 21 targets behind it skipped with it, 0/9 in 12 minutes).
@@ -11584,6 +11726,16 @@ namespace TestHarness
                                     areaBoss ? BossAreaTrashOf(leader, areaBoss, mob,
                                                                party.bossCreatures.count(mob->GetGUID()) != 0)
                                              : nullptr;
+                                if ((area || IsRouteBlocker(party, party.target)) &&
+                                    Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && LeaderDecidesFor(party))
+                                {
+                                    // [lead3] no sight fallback walk into more mobs, no body pull: the planner whole
+                                    LeaderWholePack(party, leader, mob,
+                                                    Acore::StringFormat("{}: no clean sight spot ({})",
+                                                                        area ? area : "route blocker", view),
+                                                    true, true);
+                                    return;
+                                }
                                 if (area || IsRouteBlocker(party, party.target))
                                 {
                                     if (pullIdle.empty())
@@ -11807,7 +11959,7 @@ namespace TestHarness
             G3D::Vector3 stop;
             if (!(leg.type & PATHFIND_NOPATH) &&
                 ApproachStop(leader, object, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, stop, blocker,
-                             unseen) &&
+                             unseen, nullptr, &party) &&
                 blocker && !blocker->IsInCombat())
             {
                 static std::set<std::pair<uint32, ObjectGuid>> starterBlockerLogged;  // world thread
@@ -11837,7 +11989,7 @@ namespace TestHarness
                 bool const walkStopped =
                     !(leg.type & PATHFIND_NOPATH) &&
                     HarnessWalkStop(leader, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, mob, stop,
-                                    blocker, held);
+                                    blocker, held, &party);
                 // [route_blocker_walk_through] The walk into a route blocker (IsRouteBlocker: the user's body pull of
                 // a pack on the only way) is not ended by the next idle pack of the same crowd: it is part of that
                 // pull, it joins the route blocker's pack and the walk goes on. st-h 2026-10-25 2705-2823 s: the
@@ -12571,10 +12723,10 @@ namespace TestHarness
             bool const plannerRefused =
                 ROUTE_CAREFUL_GUARANTEE_HOLD && !party.approach && !party.targetIsBoss && !atEventHold &&
                 !party.content->raid && party.content->size <= 5 &&
-                (CarefulPlanVerdict::GetRefusal(leader->GetGUID(), party.target, refusalHopeless, refusalWaitMs,
+                (PartyRefusal(party, party.target, refusalHopeless, refusalWaitMs,
                                                 refusalWhy) ||
                  (!party.approachBlocker.IsEmpty() &&
-                  CarefulPlanVerdict::GetRefusal(leader->GetGUID(), party.approachBlocker, refusalHopeless,
+                  PartyRefusal(party, party.approachBlocker, refusalHopeless,
                                                  refusalWaitMs, refusalWhy)));
             // No verdict at all (GetRefusal false: unknown) while the tank sees the target: held up to
             // GUARANTEE_UNKNOWN_HOLD_MS before the careful-refused skip below, the planner may still take it.
@@ -12582,7 +12734,7 @@ namespace TestHarness
                 !atEventHold && !party.content->raid && party.content->size <= 5 && waited > pullWaitMs &&
                 waited < GUARANTEE_UNKNOWN_HOLD_MS && !holdForce)
                 if (Unit* unit = object->ToUnit();
-                    unit && AggressiveTargetValue::Explain(leader, unit).rfind("accepted", 0) == 0)
+                    unit && PartyTankView(party, leader, unit).rfind("accepted", 0) == 0)
                 {
                     if (party.guaranteeTarget != party.target || !party.guaranteeHolding)
                     {
@@ -12605,13 +12757,19 @@ namespace TestHarness
             // scholo-h held "fallback plan costs 0.9x tank hp" / "overlap wait ... (0 s)" with the group at 100 %
             // until the 4-minute stall.
             bool heldForNowCapped = false;
+            // [lead3] LEADER_NO_BODY_FALLBACK: the leader never turns its planner's hold into a walk-in; a hold no rest
+            // can change is its planner_no_option report (TickLeaderPlanner, LEADER_HELD_READY_MAX_MS)
+            bool const leaderPulls = Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && LeaderDecidesFor(party);
             // [held_for_now_cap] a route blocker keeps its clock: its walk-in comes after ROUTE_BLOCKER_PREP_MS
             // whatever the planner holds (nex-h wave 23: the Horde Ranger route blocker held "fallback plan costs
             // 0.92" from 593 s to the stall, the walk-in never came)
-            if (routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS)
+            if (leaderPulls)
+                heldForNowCapped = false;
+            else if (routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS)
                 heldForNowCapped = true;
             // [pull_after_hold] a ready group's "held for now" (not a patrol / overlap wait) is a refusal now
-            else if (holdForce && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0 &&
+            else if (!leaderPulls && holdForce && plannerRefused && !refusalHopeless &&
+                     refusalWhy.rfind("held for now", 0) == 0 &&
                      refusalWhy.find("patrol wait") == std::string::npos &&
                      refusalWhy.find("overlap wait") == std::string::npos)
             {
@@ -12623,7 +12781,7 @@ namespace TestHarness
                 party.guaranteeDueMs = 0;
                 party.guaranteeHolding = false;
             }
-            else if (plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
+            else if (!leaderPulls && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
             {
                 if (party.heldForNowTarget != party.target || !party.heldForNowSinceMs)
                 {
@@ -12655,7 +12813,8 @@ namespace TestHarness
             {
                 // [patrol_wait_spot] a patrol wait: the group waits out of every idle pack's reach (the patrol fight
                 // happens where the group stands).
-                if (refusalWhy.find("patrol wait") != std::string::npos &&
+                if (!LeaderOwnsPatrols(party) &&  // [lead4] the leader's patrol decision owns the wait's spot
+                    refusalWhy.find("patrol wait") != std::string::npos &&
                     (party.patrolWaitTarget != party.target || !party.patrolWaitMs ||
                      getMSTimeDiff(party.patrolWaitMs, now) > PATROL_WAIT_HOLD_MS))
                 {
@@ -12740,10 +12899,24 @@ namespace TestHarness
                 party.stopSinceMs = now;
                 return;
             }
+            // [lead3] a boss pull the leader issued that brought no fight: "not pulled", as the old walk-in's was
+            if (leaderPulls && party.targetIsBoss && party.lead.bossPullIssued == party.target &&
+                party.lead.bossPullIssuedMs && getMSTimeDiff(party.lead.bossPullIssuedMs, now) > BOSS_PULL_HOLD_WAIT_MS)
+            {
+                party.lead.bossPullIssued.Clear();
+                party.lead.bossPullIssuedMs = 0;
+                SkipTarget(party, party.target, ROUTE_OCULUS_DRAKE_ONLY ? BOSS_NOT_PULLED_SKIP_MS : NOT_PULLED_SKIP_MS,
+                           "not pulled (the leader's boss pull brought no fight)");
+                return;
+            }
+            // [lead6] the leader's one readiness verdict, not the body pull's own 80 % lines
+            bool const pullReady = leaderPulls && Leader::Leads(Leader::LEADER_ONE_READINESS)
+                                       ? party.lead.ready
+                                       : GroupFullyReady(party, leader);
             if (!party.approach &&
                 (waited > pullWaitMs || bossPullNow || (plannerRefused && refusalHopeless) ||
                  (routeBlocker && waited > ROUTE_BLOCKER_PREP_MS) || holdForce) &&
-                GroupFullyReady(party, leader))
+                pullReady)
             {
                 // [b33_mech2] BossAreaBodyPullHold: no body pull of a boss while killable trash of his area stands
                 // (BossAreaTrashOf: what joins his fight, his room, BOSS_AREA_EXTRA) - it becomes the target first
@@ -12831,7 +13004,7 @@ namespace TestHarness
                 bool targetUnseen = false;
                 if (Unit* unit = object->ToUnit())
                 {
-                    std::string const targetView = AggressiveTargetValue::Explain(leader, unit);
+                    std::string const targetView = PartyTankView(party, leader, unit);
                     // [b36_scholo] "accepted (not in the cached possible targets)" is seen: in sight and accepted,
                     // only the tank's cached list is stale. scholo-n 20261026-034959-scholo-n-5H-4: the entrance
                     // Adepts at 22 yd were skipped as "tank does not see it" and their pack marked unseen.
@@ -12839,7 +13012,7 @@ namespace TestHarness
                     targetUnseen = !accepted;
                     Creature* stopper = map->GetCreature(party.approachBlocker);
                     std::string const blockerView =
-                        stopper ? AggressiveTargetValue::Explain(leader, stopper) : std::string();
+                        stopper ? PartyTankView(party, leader, stopper) : std::string();
                     LogEvent(party, "tank_view", JsonObject().Str("name", unit->GetName())
                                                      .Num("entry", unit->GetEntry())
                                                      .Real("distance", leader->GetExactDist(unit))
@@ -12984,6 +13157,25 @@ namespace TestHarness
                                              "pull_after_hold (" + requiredWhy + ")");
                         return;
                     }
+                // [lead3] LEADER_NO_BODY_FALLBACK: no careful-refused skip of a pack the tank sees. A hopeless pack the
+                // way on does not need keeps the old skip (a route decision); any other is asked of the planner whole
+                // (walked in when the leader must clear it), and its answer is the leader's (TickLeaderPlanner: the
+                // plan, or planner_no_option: a stop for a pack it must clear, a skip for one it need not).
+                if (leaderPulls && !party.targetIsBoss && !atEventHold && !bossFormation && !guardBodyPull &&
+                    !routeBlocker && tankView.empty() && object->ToCreature())
+                {
+                    std::string needWhy;
+                    bool const needs = LeaderNeedsPack(party, map, object, needWhy);
+                    if (needs || !(plannerRefused && refusalHopeless))
+                    {
+                        LeaderWholePack(party, leader, object->ToCreature(),
+                                        Acore::StringFormat("the stop's wait ({} s{}{})", waited / IN_MILLISECONDS,
+                                                            plannerRefused ? ": " + refusalWhy : std::string(),
+                                                            needs ? ", " + needWhy : std::string()),
+                                        needs, needs);
+                        return;
+                    }
+                }
                 if (!party.content->raid && party.content->size <= 5 && !party.targetIsBoss && !atEventHold &&
                     !bossFormation && !guardBodyPull && !routeBlocker &&
                     (levelling || ++party.carefulRefused[party.target] > 0))
@@ -13002,9 +13194,9 @@ namespace TestHarness
                         bool verdictAccepted = false;
                         uint32 verdictMobs = 0;
                         bool const anyVerdict =
-                            CarefulPlanVerdict::Get(leader->GetGUID(), party.target, verdictAccepted, verdictMobs) ||
+                            PartyVerdict(party, party.target, verdictAccepted, verdictMobs) ||
                             (!party.approachBlocker.IsEmpty() &&
-                             CarefulPlanVerdict::Get(leader->GetGUID(), party.approachBlocker, verdictAccepted,
+                             PartyVerdict(party, party.approachBlocker, verdictAccepted,
                                                      verdictMobs));
                         if (!plannerRefused && !anyVerdict)
                         {
@@ -13021,7 +13213,7 @@ namespace TestHarness
                                 uint32 nearWaitMs = 0;
                                 std::string nearWhy;
                                 if (mob->GetGUID() != party.target && leader->GetExactDist(mob) < targetDist &&
-                                    CarefulPlanVerdict::GetRefusal(leader->GetGUID(), mob->GetGUID(), nearHopeless,
+                                    PartyRefusal(party, mob->GetGUID(), nearHopeless,
                                                                    nearWaitMs, nearWhy) &&
                                     (!refusedNearer ||
                                      leader->GetExactDist(mob) < leader->GetExactDist(refusedNearer)))
@@ -13150,6 +13342,55 @@ namespace TestHarness
                     return;
                 }
                 Creature* pack = object->ToCreature();
+                // [lead3] LEADER_NO_BODY_FALLBACK: the leader's pull of what the harness body-pulled - a boss, his
+                // formation: the leader's BossPull order; a door guard, an event pack, a trash pack the stop's wait
+                // ended at: asked of its planner whole, walked in (priced by its count). The boss-on-the-way rule
+                // ([b51_dme]) still makes a boss the pack brings the next pull first.
+                if (leaderPulls && pack)
+                {
+                    for (ObjectGuid const& guid : party.bossCreatures)
+                    {
+                        Creature* boss = map->GetCreature(guid);
+                        if (!party.targetIsBoss && !pack->IsDungeonBoss() && boss && boss->IsAlive() &&
+                            !boss->IsInCombat() && boss->GetGUID() != party.target &&
+                            BossBroughtBy(leader, boss, pack) &&
+                            !ClassGatedBoss(party.content->mapId, party.content->difficulty, boss->GetEntry()))
+                        {
+                            LogEvent(party, "boss_on_the_way_first",
+                                     JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
+                                         .Real("firstDistance", leader->GetExactDist(boss))
+                                         .Str("via", pack->GetName()).Num("viaEntry", pack->GetEntry())
+                                         .Str("why", "[lead3] the pack on the way brings this boss: he is pulled "
+                                                     "first"));
+                            party.target = boss->GetGUID();
+                            party.targetIsBoss = true;
+                            party.targetIsStarter = false;
+                            party.targetRouteRule = "boss on the way";
+                            party.targetSinceMs = getMSTime();
+                            party.arrivedMs = 0;
+                            party.stopSinceMs = 0;
+                            party.approachBlocker.Clear();
+                            party.orderHoldSinceMs.erase(boss->GetGUID());
+                            TestRunner::ClearWaypoint(party.leader);
+                            return;
+                        }
+                    }
+                    if (party.targetIsBoss || pack->IsDungeonBoss() || bossFormation)
+                        LeaderBossPull(party, leader, pack,
+                                       Acore::StringFormat("{}{} (waited {} s)", bossPullNow ? "ready" : "the wait",
+                                                           bossFormation ? ", his formation" : "",
+                                                           waited / IN_MILLISECONDS));
+                    else
+                        LeaderWholePack(party, leader, pack,
+                                        Acore::StringFormat("{} (waited {} s)",
+                                                            guardBodyPull ? "a pending door guard"
+                                                            : atEventHold ? "the event's pack"
+                                                            : holdForce   ? "the ready group's hold"
+                                                                          : "the stop's wait",
+                                                            waited / IN_MILLISECONDS),
+                                        true, true);
+                    return;
+                }
                 // [body_pull_via_planner] a trash pack: the planner first
                 if (BODY_PULL_VIA_PLANNER && pack && !party.targetIsBoss && !pack->IsDungeonBoss())
                 {
@@ -15848,14 +16089,57 @@ namespace TestHarness
                         uint32 waitMs = 0;
                         std::string why;
                         if (refusedWhy.empty() &&
-                            CarefulPlanVerdict::GetRefusal(party.leader, mob->GetGUID(), hopeless, waitMs, why) &&
+                            PartyRefusal(party, mob->GetGUID(), hopeless, waitMs, why) &&  // [lead5]
                             (hopeless || RefusalIsOverCap(why) || why.find("over the hard cap") != std::string::npos))
                             refusedWhy = why;
                     }
                     static std::unordered_map<uint64, uint32> farPackSince;  // the harness's world thread only
                     uint64 const farKey = (uint64(party.instanceId) << 32) | go->GetEntry();
                     bool const farPack = first && (woken.size() >= KEY_PASS_FAR_PACK_MIN || !refusedWhy.empty());
-                    if (!farPack)
+                    // [lead10] LEADER_DOOR_INPUTS: the opening is the leader's pull of the far side, priced with it
+                    // (no KEY_PASS_FAR_PACK_MAX_MS give-up): within the planner's whole-pack cap (WholePackCap) and
+                    // not refused over its cap, the key is used now and the fight is held on the use side
+                    // (OpeningFight); over it, the pass waits while a mover of it may walk off, else no option.
+                    bool const leaderPrices = farPack && Leader::Leads(Leader::LEADER_DOOR_INPUTS) &&
+                                              LeaderDecidesFor(party);
+                    if (leaderPrices)
+                    {
+                        farPackSince.erase(farKey);
+                        uint32 const cap = PullPlanner::WholePackCap(leader);
+                        bool const fits = refusedWhy.empty() && cap && woken.size() <= cap;
+                        bool mover = false;
+                        for (ObjectGuid const& guid : woken)
+                            if (Creature* mob = leader->GetMap()->GetCreature(guid);
+                                mob && (PatrolWalkPath(mob) || (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE &&
+                                                                mob->GetWanderDistance() > 0.0f)))
+                                mover = true;
+                        static std::set<std::pair<uint32, uint32>> pricedLogged;  // party seq, door entry
+                        if (fits)
+                        {
+                            if (pricedLogged.insert({party.seq, go->GetEntry()}).second)
+                                LogEvent(party, "door_far_side_priced",
+                                         JsonObject().Str("note", pass->note).Str("door", go->GetName())
+                                             .Num("doorEntry", go->GetEntry()).Num("farPackMobs", uint32(woken.size()))
+                                             .Num("cap", cap).Str("first", first->GetName())
+                                             .Str("action", "keyed: the far side fits"));
+                        }
+                        else
+                        {
+                            waitFor = Acore::StringFormat(
+                                "far side: {} mobs in reach of the opening, over the whole-pack cap {} ({} {:.1f} yd "
+                                "past the use point){}", woken.size(), cap, first->GetName(),
+                                first->GetExactDist(usePoint.x, usePoint.y, usePoint.z),
+                                refusedWhy.empty() ? "" : ", refused by the planner: " + refusedWhy);
+                            if (!mover)
+                                LeaderNoOption(party, leader, first,
+                                               std::vector<ObjectGuid>(woken.begin(), woken.end()),
+                                               "the key pass opens into " + std::to_string(woken.size()) +
+                                                   " static mobs over the whole-pack cap " + std::to_string(cap) +
+                                                   (refusedWhy.empty() ? std::string() : " (" + refusedWhy + ")"),
+                                               true, JsonObject().Str("kind", "door").Str("door", go->GetName()));
+                        }
+                    }
+                    else if (!farPack)
                         farPackSince.erase(farKey);
                     else
                     {
@@ -17625,7 +17909,7 @@ namespace TestHarness
         bool refusedBlocker = false;
         if (ROUTE_HARNESS_WALK_GUARD &&
             HarnessWalkStop(leader, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, nullptr, walkTo,
-                            blocker, held))
+                            blocker, held, &party))
         {
             bool accepted = true;
             uint32 mobs = 0;
@@ -17634,7 +17918,7 @@ namespace TestHarness
             Acore::CreatureListSearcher<PackMobCheck> packSearcher(blocker, pack, packCheck);
             Cell::VisitObjects(blocker, packSearcher, PACK_RADIUS);
             // Refused now, refused or skipped before (the verdict ages out in seconds), or a real pack: held.
-            refusedBlocker = (CarefulPlanVerdict::Get(leader->GetGUID(), blocker->GetGUID(), accepted, mobs) &&
+            refusedBlocker = (PartyVerdict(party, blocker->GetGUID(), accepted, mobs) &&
                               !accepted) ||
                              party.carefulRefused.count(blocker->GetGUID()) ||
                              party.skipUntil.count(blocker->GetGUID()) ||
@@ -17668,7 +17952,7 @@ namespace TestHarness
         loggedMs = now ? now : 1;
         bool accepted = true;
         uint32 mobs = 0;
-        bool const known = CarefulPlanVerdict::Get(leader->GetGUID(), blocker->GetGUID(), accepted, mobs);
+        bool const known = PartyVerdict(party, blocker->GetGUID(), accepted, mobs);
         char const* verdict = !known ? "none" : accepted ? "accepted" : "refused";
         // [b30_mech_pos] packMobs was the planner's count only: 0 with no verdict (zf-h 20261025-184229: "Sandfury
         // Blood Drinker, none, 0 mobs" with ~20 Sandfury round the pool). The idle pack round the blocker is counted
@@ -19291,6 +19575,18 @@ namespace TestHarness
                                           fields, report.ms);
         }
 
+        // [lead7] LEADER_PLANNER_DIFF: where the planner library's shadow look disagreed with the tank's own look
+        PullPlanner::DiffLine diff;
+        while (PullPlanner::TakeDiff(party.leader, diff))
+        {
+            Unit* mob = diff.mob.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*leader, diff.mob);
+            DecisionLog::Instance().Write(run, "leader", "plan_diff", diff.mob, mob ? mob->GetName() : std::string(),
+                                          false,
+                                          JsonObject().Str("kinds", diff.kinds).Str("tank", diff.own)
+                                              .Str("library", diff.library).Num("repeats", diff.repeats),
+                                          diff.ms);
+        }
+
         struct OrderWatch
         {
             uint32 pullSeq = 0;
@@ -19313,9 +19609,37 @@ namespace TestHarness
             if (open)
                 fields.Str("state", Leader::StateName(order.state)).Str("method", Leader::MethodName(order.method))
                     .Bool("orderTargetIsRouteTarget", order.target == party.target);
-            DecisionLog::Instance().Write(run, open ? tankWho : (party.approach ? "leader" : "none"), "pull_start",
-                                          open ? order.target : party.target, open ? order.targetName : "", false,
-                                          fields);
+            // [lead1] a start the dungeon's script made is "event", not "none" (Party::pullScript)
+            if (!open && !party.approach && !party.pullScript.empty())
+                fields.Str("script", party.pullScript);
+            DecisionLog::Instance().Write(run,
+                                          open ? tankWho
+                                               : (party.approach ? "leader"
+                                                                 : (party.pullScript.empty() ? "none" : "event")),
+                                          "pull_start", open ? order.target : party.target,
+                                          open ? order.targetName : "", false, fields);
+        }
+        // [lead8] the spot the group fought and cleared (the tank at each fight's end): a fight spot candidate of the
+        // leader's planner (LeaderInputs::cleared)
+        {
+            static std::unordered_map<uint32, uint32> clearedEnds;  // party seq -> the last fight end seen
+            uint32& seenEnd = clearedEnds[party.seq];
+            if (Leader::Leads(Leader::LEADER_FIGHT_SPOT_COUNT) && party.lastPullEndMs &&
+                seenEnd != party.lastPullEndMs && !party.inCombat && leader->IsAlive() && leader->IsInWorld())
+            {
+                constexpr size_t CLEARED_SPOTS_MAX = 32;
+                constexpr float CLEARED_SPOT_APART = 8.0f;
+                Position const here = leader->GetPosition();
+                auto& cleared = party.lead.cleared;
+                if (std::none_of(cleared.begin(), cleared.end(),
+                                 [&here](Position const& at) { return at.GetExactDist(here) < CLEARED_SPOT_APART; }))
+                {
+                    if (cleared.size() >= CLEARED_SPOTS_MAX)
+                        cleared.erase(cleared.begin());
+                    cleared.push_back(here);
+                }
+            }
+            seenEnd = party.lastPullEndMs;
         }
         if (!open)
             return;
@@ -19392,6 +19716,661 @@ namespace TestHarness
                                              JsonObject().Num("order", order.id));
         closeOrder(Leader::OrderState::Aborted, why, "order_orphan");
         watch.orderId = 0;
+    }
+
+    // [lead3] .. [lead10] C:/WoW/LEADER_REFACTOR_PLAN.md section 9: the dungeon leader's own decisions around its
+    // planner library. The leader decides what and how; the tank only executes its PullOrder. Every function here is
+    // the world thread's (the harness tick, no map thread runs).
+
+    bool TestHarnessMgr::LeaderDecides(Party const& party) const { return LeaderDecidesFor(party); }
+
+    // [lead6] The one readiness judge: the group here (alive, in the instance, within LEADER_READY_RANGE, the
+    // healer sees the leader), nobody buffing (needBuff), sitting, or preparing (PullReadiness::GroupPreparing). The
+    // health and mana levels a pull needs stay the planner's (its danger-scaled topped-up rules: IsGroupToppedUp,
+    // BossReadyGap); the harness's 80 % lines (GroupFullyReady) were the body pull's own gate, gone with it.
+    std::string TestHarnessMgr::LeaderReadyWhy(Party& party, Player* leader)
+    {
+        constexpr float LEADER_READY_RANGE = 40.0f;  // the planner's GATHER_HEALER_SIGHT_RANGE
+        if (!leader || !leader->IsAlive())
+            return "the leader is dead";
+        for (Member const& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot || bot == leader)
+                continue;
+            if (!bot->IsAlive())
+                return member.name + " is dead";
+            if (bot->GetMap() != leader->GetMap())
+                return member.name + " is not in the instance";
+            // a far member the far wait gave up on (far_wait_dropped) holds no readiness while far, never a healer
+            bool const dropped = member.apartIgnoreUntilMs && int32(getMSTime() - member.apartIgnoreUntilMs) < 0 &&
+                                 !PlayerbotAI::IsHeal(bot);
+            if (!dropped && bot->GetDistance(leader) > LEADER_READY_RANGE)
+                return Acore::StringFormat("{} is {:.0f} yd from the leader", member.name, bot->GetDistance(leader));
+            if (PlayerbotAI::IsHeal(bot) && !bot->IsWithinLOSInMap(leader))
+                return "the healer " + member.name + " does not see the leader";
+            if (bot->IsSitState())
+                return member.name + " sits";
+        }
+        if (party.needBuff)
+            return "the group buffs";
+        if (MagistersTerrace::SelinRoom::EntryHolds(leader))
+            return "a member is outside Selin's room";
+        std::string preparing;
+        if (PullReadiness::GroupPreparing(leader, &preparing))
+            return preparing.empty() ? std::string("the group prepares") : preparing;
+        return std::string();
+    }
+
+    bool TestHarnessMgr::LeaderNeedsPack(Party const& party, Map* map, WorldObject const* object,
+                                         std::string& why) const
+    {
+        if (!object)
+            return false;
+        if (IsRouteBlocker(party, object->GetGUID()))
+        {
+            why = "route blocker";
+            return true;
+        }
+        return RouteBlockerBehindRequired(party, map, object, why);
+    }
+
+    void TestHarnessMgr::LeaderWholePack(Party& party, Player* leader, Creature* pack, std::string const& why,
+                                         bool walkIn, bool required)
+    {
+        if (!pack || !leader)
+            return;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        TestRunner::ClearWaypoint(party.leader);
+        // the tank's pull order runs: the leader's decision is being executed, no new ask meanwhile
+        if (Leader::Orders::IsOpen(party.leader))
+            return;
+        auto& lead = party.lead;
+        bool const fresh = lead.wholePack != pack->GetGUID() || !lead.wholeSeenMs ||
+                           getMSTimeDiff(lead.wholeSeenMs, now) > Leader::LEADER_REQUEST_TTL_MS;
+        if (fresh)
+        {
+            lead.wholePack = pack->GetGUID();
+            lead.wholeSinceMs = now;
+            LOG_INFO("playerbots", "[lead3] leader_whole_pack {}: {} {} ({:.1f} yd): the planner takes it whole{} ({})",
+                     party.id, pack->GetName(), pack->GetEntry(), leader->GetExactDist(pack),
+                     walkIn ? ", walked in if it has no ranged pull" : "", why);
+            LogEvent(party, "leader_whole_pack",
+                     JsonObject().Str("name", pack->GetName()).Num("entry", pack->GetEntry()).Str("why", why)
+                         .Bool("walkIn", walkIn).Bool("required", required)
+                         .Real("distance", leader->GetExactDist(pack)));
+        }
+        lead.wholeSeenMs = now;
+        lead.walkIn = walkIn;
+        lead.required = required;
+        lead.wholeWhy = why;
+        if (required)
+            PartyMarkRequired(party, pack->GetGUID());
+        party.steerSinceMs = now;  // the leader's declared wait is no lack of progress
+        TestRunner::ClearWaypoint(party.leader);
+    }
+
+    void TestHarnessMgr::LeaderBossPull(Party& party, Player* leader, Creature* boss, std::string const& why)
+    {
+        if (!boss || !leader)
+            return;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        TestRunner::ClearWaypoint(party.leader);
+        if (Leader::Orders::IsOpen(party.leader))  // the tank's pull order runs
+            return;
+        auto& lead = party.lead;
+        if (lead.bossPull != boss->GetGUID() || !lead.bossPullMs ||
+            getMSTimeDiff(lead.bossPullMs, now) > Leader::LEADER_REQUEST_TTL_MS)
+            LogEvent(party, "leader_boss_pull",
+                     JsonObject().Str("name", boss->GetName()).Num("entry", boss->GetEntry()).Str("why", why)
+                         .Real("distance", leader->GetExactDist(boss)));
+        lead.bossPull = boss->GetGUID();
+        lead.bossPullMs = now;
+        lead.bossPullWhy = why;
+        party.steerSinceMs = now;
+        TestRunner::ClearWaypoint(party.leader);
+    }
+
+    bool TestHarnessMgr::LeaderNoOption(Party& party, Player* leader, Unit* mob, std::vector<ObjectGuid> const& pack,
+                                        std::string const& why, bool stops, JsonObject fields)
+    {
+        if (!mob || !leader)
+            return false;
+        auto& lead = party.lead;
+        if (lead.noOption.count(mob->GetGUID()) ||
+            std::any_of(pack.begin(), pack.end(),
+                        [&lead](ObjectGuid const& guid) { return lead.noOption.count(guid) != 0; }))
+            return false;
+        lead.noOption.insert(mob->GetGUID());
+        lead.noOption.insert(pack.begin(), pack.end());
+        bool const stopping = stops && Leader::LEADER_STOP_ON_NO_OPTION;
+        fields.Str("name", mob->GetName()).Num("entry", mob->GetEntry()).Num("pack", int64(pack.size()))
+            .Str("why", why).Bool("stops", stopping)
+            .Real("tankX", leader->GetPositionX()).Real("tankY", leader->GetPositionY())
+            .Real("tankZ", leader->GetPositionZ()).Real("mobX", mob->GetPositionX())
+            .Real("mobY", mob->GetPositionY()).Real("mobZ", mob->GetPositionZ());
+        LOG_INFO("playerbots", "[lead3] planner_no_option {}: {} {} ({} mobs){}: {}", party.id, leader->GetName(),
+                 mob->GetName(), pack.size(), stopping ? ", the run stops" : "", why);
+        DecisionLog::Instance().Write(DecisionRun{party.id, party.seq, party.runStartMs}, "leader", "planner_no_option",
+                                      mob->GetGUID(), mob->GetName(), true, fields);
+        LogEvent(party, "planner_no_option", fields);
+        if (stopping)
+            Finish(party, "failed", "planner_no_option: " + mob->GetName() + ": " + why);
+        return true;
+    }
+
+    // [lead4] One patrol owner. The harness's forecast (PatrolHoldWhy: a patrol comes to the group, the walk to the
+    // next waypoint enters its lane, the planner pulls it) feeds one decision:
+    // - the leader's planner pulls it (an accepted verdict on it): the group stands, the order comes;
+    // - the walk enters its lane, or its forecast walk never leaves the group's spot (PullPlanner::PatrolLeavesReach,
+    //   the planner's own forecast): pull it - an intercept request (LeaderInputs::intercept: planned as the target,
+    //   no patrol wait for it);
+    // - else wait (a declared Wait, ended by the forecast, no clock), standing, or back along the way in when a member
+    //   rests or the patrol walks beside an idle pack (PatrolStepBack's spot).
+    // No PATROL_WAIT_BUDGET, no handover, no PATROL_HOLD_MAX_MS / COOLDOWN, and the planner holds for a patrol only
+    // while its forecast shows a window (mayHoldFor, ChooseTargetActions.cpp).
+    bool TestHarnessMgr::LeaderPatrolTick(Party& party, Player* leader)
+    {
+        auto& lead = party.lead;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        Map* map = leader->GetMap();
+        auto const endWait = [&](char const* why)
+        {
+            if (!lead.waitPatrol.IsEmpty())
+                LogEvent(party, "leader_patrol_wait",
+                         JsonObject().Str("state", "done").Str("why", why).Str("was", lead.waitWhy)
+                             .Num("sec", getMSTimeDiff(lead.waitSinceMs, now) / IN_MILLISECONDS));
+            lead.waitPatrol.Clear();
+            lead.waitSinceMs = 0;
+            lead.waitWhy.clear();
+            PatrolStepBackState& step = patrolStepBacks[party.instanceId];
+            step.patrol.Clear();
+            step.arrived = false;
+        };
+        if (!map || !leader->IsAlive() || leader->IsInCombat() || party.inCombat || !party.escort.IsEmpty())
+        {
+            endWait("fight or escort");
+            return false;
+        }
+        std::string const why = PatrolHoldWhy(party, leader);
+        PatrolHold const& hold = patrolHolds[party.instanceId];
+        Creature* patrol = why.empty() || hold.patrol.IsEmpty() ? nullptr : map->GetCreature(hold.patrol);
+        if (!patrol || !patrol->IsAlive() || patrol->IsInCombat())
+        {
+            endWait(why.empty() ? "no patrol holds the group" : "the patrol is gone or fights");
+            return false;
+        }
+        party.steerSinceMs = now;
+        party.steerAnchor = leader->GetPosition();
+        party.steerNoNearerMs = 0;
+        party.driveSinceMs = now;
+        party.driveAnchor = leader->GetPosition();
+        float const reach = AggroReach(patrol, leader) + PATROL_HOLD_MARGIN;
+        bool accepted = false;
+        uint32 mobs = 0;
+        bool const plannerPulls = PartyVerdict(party, patrol->GetGUID(), accepted, mobs) && accepted;
+        bool known = false;
+        bool const window = PullPlanner::PatrolLeavesReach(patrol, leader->GetPosition(), reach, &known);
+        bool const pull = !plannerPulls && (hold.lane || !window);
+        auto const halt = [&](char const* kind)
+        {
+            if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
+                LogEvent(party, "harness_walk_halt", JsonObject().Str("hold", kind).Str("why", why)
+                                                         .Real("x", leader->GetPositionX())
+                                                         .Real("y", leader->GetPositionY())
+                                                         .Real("z", leader->GetPositionZ())
+                                                         .Real("toX", haltedTo.x).Real("toY", haltedTo.y)
+                                                         .Real("toZ", haltedTo.z));
+            TestRunner::ClearWaypoint(party.leader);
+        };
+        if (pull)
+        {
+            if (lead.intercept != patrol->GetGUID() || !lead.interceptMs ||
+                getMSTimeDiff(lead.interceptMs, now) > Leader::LEADER_REQUEST_TTL_MS)
+            {
+                LOG_INFO("playerbots", "[lead4] leader_patrol_pull {}: patrol {} {} ({:.1f} yd): {} - pulled ({})",
+                         party.id, patrol->GetName(), patrol->GetEntry(), leader->GetExactDist(patrol),
+                         hold.lane ? "the route crosses its walk" : "its walk never leaves the group's spot", why);
+                LogEvent(party, "leader_patrol_pull",
+                         JsonObject().Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
+                             .Str("why", why).Bool("lane", hold.lane).Bool("window", window).Bool("forecast", known)
+                             .Real("distance", leader->GetExactDist(patrol)));
+            }
+            if (lead.intercept != patrol->GetGUID() || !lead.interceptMs ||
+                getMSTimeDiff(lead.interceptMs, now) > Leader::LEADER_REQUEST_TTL_MS)
+                lead.interceptSinceMs = now;
+            lead.intercept = patrol->GetGUID();
+            lead.interceptMs = now;
+            lead.interceptWhy = why;
+            endWait("the patrol is pulled");
+            halt("patrol pull");
+            return true;
+        }
+        if (lead.waitPatrol != patrol->GetGUID())
+        {
+            lead.waitPatrol = patrol->GetGUID();
+            lead.waitSinceMs = now;
+            lead.waitWhy = why;
+            party.lastEvent = "patrol wait: " + why;
+            LogEvent(party, "leader_patrol_wait",
+                     JsonObject().Str("state", "start").Str("patrol", patrol->GetName())
+                         .Num("entry", patrol->GetEntry()).Str("why", why).Bool("plannerPulls", plannerPulls)
+                         .Bool("window", window).Bool("forecast", known)
+                         .Real("distance", leader->GetExactDist(patrol)));
+        }
+        // the wait's spot: back along the way in while a member rests or the patrol walks beside an idle pack
+        if (!plannerPulls && PatrolStepBack(party, leader))
+            return true;
+        halt("patrol wait");
+        return true;
+    }
+
+    // [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7, LEADER_PLANNER_IN_LEADER: the leader plans the tank's pull.
+    // Called on every world update (the world thread, after the map updates: no map thread runs), it looks only when
+    // the tank asked (its engine looked at "aggressive target", as it looked at the tank's own planner before). The
+    // planner instance's look publishes the verdicts as the tank's did (CarefulPlanVerdict, the crowd control plan);
+    // a Go decision is issued (the tank executes it, PullPlanner::TakeIssued) and logged as the leader's pull_order;
+    // a hopeless refusal (no pull of the pack fits at all) is the planner_no_option bug event (user decision 1).
+    void TestHarnessMgr::TickLeaderPlanner(Party& party)
+    {
+        if (!Leader::LEADER_PLANNER_IN_LEADER || party.leader.IsEmpty() || !party.content ||
+            !Leader::Orders::IsTracked(party.leader))
+            return;
+
+        Player* tank = ObjectAccessor::FindPlayer(party.leader);
+        PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        if (!tank || !tankAI || !tank->IsInWorld() || tank->IsBeingTeleported())
+            return;
+
+        auto& lead = party.lead;
+        bool const decides = LeaderDecidesFor(party);  // [lead3] steps 3-10 (a 5-man): the leader's own inputs
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+
+        // [lead6] LEADER_ONE_READINESS: the one readiness verdict, at most every LEADER_READY_CHECK_MS, published for
+        // the bot layers that judged it themselves (RaidLeader's ready-check pull hold)
+        constexpr uint32 LEADER_READY_CHECK_MS = 500;
+        if (decides && Leader::Leads(Leader::LEADER_ONE_READINESS) &&
+            (!lead.readyCheckMs || getMSTimeDiff(lead.readyCheckMs, now) >= LEADER_READY_CHECK_MS))
+        {
+            lead.readyCheckMs = now;
+            lead.notReadyWhy = LeaderReadyWhy(party, tank);
+            lead.ready = lead.notReadyWhy.empty();
+            if (Group* group = tank->GetGroup())
+                Leader::Readiness::Publish(group->GetGUID(), lead.ready, lead.notReadyWhy);
+        }
+
+        if (!PullPlanner::TakeAsk(party.leader, Leader::LEADER_ASK_FRESH_MS))
+            return;
+
+        DecisionRun const run{party.id, party.seq, party.runStartMs};
+        auto const spot = [](JsonObject& fields, char const* key, Position const& at)
+        {
+            JsonArray xyz;
+            xyz.Raw(Acore::StringFormat("{:.1f}", at.GetPositionX()))
+                .Raw(Acore::StringFormat("{:.1f}", at.GetPositionY()))
+                .Raw(Acore::StringFormat("{:.1f}", at.GetPositionZ()));
+            fields.Raw(key, xyz.Build());
+        };
+        Map* map = tank->GetMap();
+        auto const fresh = [now](uint32 ms) { return ms && getMSTimeDiff(ms, now) <= Leader::LEADER_REQUEST_TTL_MS; };
+        auto const idleAlive = [map](ObjectGuid guid) -> Creature*
+        {
+            Creature* creature = guid.IsEmpty() || !map ? nullptr : map->GetCreature(guid);
+            return creature && creature->IsInWorld() && creature->IsAlive() && !creature->IsInCombat() ? creature
+                                                                                                     : nullptr;
+        };
+
+        // The issued decision's pull_order line: one per new order (another mob or kind), or again after
+        // PULL_ORDER_LOG_MS. `pickWhy`: [lead5] what the leader's pick was.
+        auto const issue = [&](PullPlanner::Decision const& decision, std::string const& pickWhy)
+        {
+            PullPlanner::Issue(party.leader, decision);
+            struct IssueLog
+            {
+                std::string sig;
+                uint32 ms = 0;
+            };
+            static std::unordered_map<uint32, IssueLog> issueLogs;  // party seq -> last line (world thread)
+            ObjectGuid const mobGuid =
+                !decision.planTarget.IsEmpty()
+                    ? decision.planTarget
+                    : (!decision.approach.IsEmpty()
+                           ? decision.approach
+                           : (!decision.attack.IsEmpty() ? decision.attack : decision.lookTarget));
+            std::string const sig = decision.kind + ":" + std::to_string(mobGuid.GetRawValue());
+            IssueLog& last = issueLogs[party.seq];
+            if (last.sig == sig && last.ms && getMSTimeDiff(last.ms, now) < Leader::PULL_ORDER_LOG_MS)
+                return;
+            last.sig = sig;
+            last.ms = now;
+
+            Unit* mob = mobGuid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mobGuid);
+            JsonObject fields;
+            fields.Str("kind", decision.kind).Str("method", Leader::MethodName(decision.method))
+                .Num("expected", decision.mobs).Real("cost", decision.cost).Bool("single", decision.single)
+                .Bool("careful", decision.careful).Num("pack", int64(decision.pack.size()))
+                .Str("reason", decision.reason);
+            if (!pickWhy.empty())
+                fields.Str("pick", pickWhy);
+            if (decision.side)
+                spot(fields, "sideSpot", decision.sideSpot);
+            if (decision.los)
+            {
+                spot(fields, "standSpot", decision.losSpot);
+                spot(fields, "gather", decision.losGather);
+            }
+            else if (decision.hasCast)
+                spot(fields, "standSpot", decision.castSpot);
+            if (!decision.killFor.IsEmpty() && decision.killFor == decision.planTarget)
+                spot(fields, "fightSpot", decision.kill);
+            else if (!decision.fightFor.IsEmpty() && decision.fightFor == decision.planTarget)
+                spot(fields, "fightSpot", decision.fight);
+            spot(fields, "tank", tank->GetPosition());
+            DecisionLog::Instance().Write(run, "leader", "pull_order", mobGuid, mob ? mob->GetName() : std::string(),
+                                          true, fields);
+        };
+
+        // [lead3] LEADER_NO_BODY_FALLBACK: a boss pull the leader decided (Steer, LeaderBossPull) is issued at once
+        if (decides && Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && fresh(lead.bossPullMs))
+        {
+            Creature* boss = idleAlive(lead.bossPull);
+            std::string const why = lead.bossPullWhy;
+            lead.bossPull.Clear();
+            lead.bossPullMs = 0;
+            PullPlanner::Decision bossPull;
+            if (boss && PullPlanner::BossPullDecision(tank, boss, why, bossPull))
+            {
+                if (lead.bossPullIssued != boss->GetGUID())
+                {
+                    lead.bossPullIssued = boss->GetGUID();
+                    lead.bossPullIssuedMs = now;
+                }
+                issue(bossPull, "boss pull: " + why);
+                return;
+            }
+        }
+
+        // [lead3] .. [lead10] the leader's inputs to its planner: its pick and requests, readiness, doors, cleared
+        PullPlanner::Snapshot snap(tankAI);
+        std::string pickWhy;
+        if (decides)
+        {
+            PullPlanner::LeaderInputs inputs;
+            inputs.ready = !Leader::Leads(Leader::LEADER_ONE_READINESS) || lead.ready;
+            inputs.notReadyWhy = lead.notReadyWhy;
+            if (Leader::Leads(Leader::LEADER_DOOR_INPUTS) && party.doorCutHold && !party.doorCutMember.IsEmpty())
+                inputs.doorCut.push_back(party.doorCutMember);
+            if (Leader::Leads(Leader::LEADER_FIGHT_SPOT_COUNT))
+                inputs.cleared = lead.cleared;
+            for (auto it = lead.requiredMarks.begin(); it != lead.requiredMarks.end();)
+            {
+                if (getMSTimeDiff(it->second, now) > 10 * IN_MILLISECONDS)
+                    it = lead.requiredMarks.erase(it);
+                else
+                {
+                    inputs.required.push_back(it->first);
+                    ++it;
+                }
+            }
+            Creature* const intercept = Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && fresh(lead.interceptMs)
+                                            ? idleAlive(lead.intercept)
+                                            : nullptr;
+            Creature* const whole = Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && fresh(lead.wholeSeenMs)
+                                        ? idleAlive(lead.wholePack)
+                                        : nullptr;
+            if (whole)
+            {
+                inputs.wholePack = whole->GetGUID();
+                inputs.walkIn = lead.walkIn;
+            }
+            if (intercept)
+                inputs.intercept = intercept->GetGUID();
+            if (Leader::Leads(Leader::LEADER_ONE_PICKER))
+            {
+                // [lead5] the leader's pick: a patrol it decided to pull, the pack it must clear, else the same
+                // choice the tank's own value makes (AggressiveTargetValue::PickFor) with the leader's route target
+                if (intercept)
+                {
+                    inputs.pick = intercept->GetGUID();
+                    pickWhy = "patrol pull: " + lead.interceptWhy;
+                }
+                else if (whole)
+                {
+                    inputs.pick = whole->GetGUID();
+                    pickWhy = "whole pack: " + lead.wholeWhy;
+                }
+                else
+                {
+                    static std::unordered_map<uint32, TargetReachability> reach;  // party seq (world thread)
+                    ObjectGuid const route = party.targetIsStarter ? ObjectGuid::Empty : party.target;
+                    if (Unit* picked = AggressiveTargetValue::PickFor(tankAI, route, reach[party.seq]))
+                    {
+                        inputs.pick = picked->GetGUID();
+                        pickWhy = picked->GetGUID() == party.target ? "route target" : "nearest pick";
+                    }
+                    else
+                        pickWhy = party.target.IsEmpty() ? "no route target" : "the route target out of the pick";
+                }
+                inputs.pickWhy = pickWhy;
+            }
+            snap.BindLeader(inputs);
+        }
+
+        PullPlanner::Decision decision;
+        if (!PullPlanner::Decide(tank, snap, false, decision))
+            return;
+
+        // [lead5] the leader's own verdict memory (Steer reads it: PartyRefusal / PartyVerdict) and its aoe plan
+        if (decides && decision.hasVerdict)
+        {
+            lead.verdictMs = now;
+            lead.verdictTarget = decision.verdictTarget;
+            lead.verdictPack = decision.verdictPack;
+            lead.verdictAccepted = decision.verdictAccepted;
+            lead.verdictMobs = decision.verdictMobs;
+            lead.verdictHopeless = decision.verdictHopeless;
+            lead.verdictWaitMs = decision.verdictWaitMs;
+            lead.verdictWhy = decision.verdictWhy;
+        }
+        if (decides && !decision.aoePlan.empty())
+        {
+            if (lead.aoePlan != decision.aoePlan || !fresh(lead.aoePlanMs))
+                lead.aoePlanSinceMs = now;
+            lead.aoePlan = decision.aoePlan;
+            lead.aoePlanMs = now;
+        }
+
+        Unit* const lookMob =
+            decision.lookTarget.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, decision.lookTarget);
+        auto const packOf = [&decision]()
+        {
+            std::vector<ObjectGuid> pack = decision.pack.empty() ? decision.verdictPack : decision.pack;
+            if (!decision.lookTarget.IsEmpty() &&
+                std::find(pack.begin(), pack.end(), decision.lookTarget) == pack.end())
+                pack.push_back(decision.lookTarget);
+            return pack;
+        };
+        bool const requestCovers = decides && !lead.wholePack.IsEmpty() && fresh(lead.wholeSeenMs) &&
+                                   (decision.lookTarget == lead.wholePack ||
+                                    std::find(decision.pack.begin(), decision.pack.end(), lead.wholePack) !=
+                                        decision.pack.end());
+
+        if (decision.verdict == PullPlanner::Verdict::Go)
+        {
+            lead.heldReadyMob.Clear();
+            lead.heldReadySinceMs = 0;
+            // [lead5] an attack of the leader's own pick names its mob (the tank's aggressive target may differ)
+            if (decides && Leader::Leads(Leader::LEADER_ONE_PICKER) && decision.kind == "attack" &&
+                decision.attack.IsEmpty())
+                decision.attack = decision.lookTarget;
+
+            // [lead10] LEADER_DOOR_INPUTS: a pull whose walk (the tank to its stand spot, the stand to the fight
+            // spot, the tank to the group's gather) crosses a closed door is no valid order: not issued
+            if (decides && Leader::Leads(Leader::LEADER_DOOR_INPUTS))
+            {
+                Position const here = tank->GetPosition();
+                Position stand = here;
+                if (decision.side)
+                    stand = decision.sideSpot;
+                else if (decision.los)
+                    stand = decision.losSpot;
+                else if (decision.hasCast)
+                    stand = decision.castSpot;
+                else if (Unit* engaged = ObjectAccessor::GetUnit(
+                             *tank, !decision.planTarget.IsEmpty() ? decision.planTarget : decision.attack))
+                    stand = engaged->GetPosition();
+                Position fightAt = stand;
+                if (!decision.killFor.IsEmpty() && decision.killFor == decision.planTarget)
+                    fightAt = decision.kill;
+                else if (!decision.fightFor.IsEmpty() && decision.fightFor == decision.planTarget)
+                    fightAt = decision.fight;
+                auto const crosses = [&](Position const& from, Position const& to) -> GameObject*
+                {
+                    if (from.GetExactDist(to) < 1.0f ||
+                        !ClosedDoorNear(tank, from.GetPositionX(), from.GetPositionY(), to.GetPositionX(),
+                                        to.GetPositionY(), 5.0f))
+                        return nullptr;
+                    std::vector<G3D::Vector3> points{G3D::Vector3(from.GetPositionX(), from.GetPositionY(),
+                                                                  from.GetPositionZ()),
+                                                     G3D::Vector3(to.GetPositionX(), to.GetPositionY(),
+                                                                  to.GetPositionZ())};
+                    if (from.GetExactDist(here) < 1.0f)
+                    {
+                        PathGenerator path(tank);
+                        path.CalculatePath(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
+                        if (!(path.GetPathType() & PATHFIND_NOPATH) && path.GetPath().size() >= 2)
+                            points.assign(path.GetPath().begin(), path.GetPath().end());
+                    }
+                    ClosedDoorHit const hit = PathThroughClosedDoor(tank, points);
+                    return hit.Found() ? hit.door : nullptr;
+                };
+                GameObject* door = crosses(here, stand);
+                char const* leg = "the walk to the stand spot";
+                if (!door && (door = crosses(stand, fightAt)))
+                    leg = "the walk back to the fight spot";
+                if (!door && decision.los && (door = crosses(here, decision.losGather)))
+                    leg = "the group's walk to the gather spot";
+                if (door)
+                {
+                    if (lead.doorInvalidMob != decision.lookTarget)
+                    {
+                        lead.doorInvalidMob = decision.lookTarget;
+                        lead.doorInvalidLooks = 0;
+                    }
+                    if (++lead.doorInvalidLooks == 1)
+                        LogEvent(party, "plan_through_door",
+                                 JsonObject().Str("kind", decision.kind).Str("name", lookMob ? lookMob->GetName() : "?")
+                                     .Str("door", door->GetName()).Num("doorEntry", door->GetEntry()).Str("leg", leg));
+                    std::string why;
+                    if (lead.ready && lead.doorInvalidLooks >= Leader::LEADER_DOOR_INVALID_LOOKS && lookMob)
+                        LeaderNoOption(party, tank, lookMob, packOf(),
+                                       Acore::StringFormat("every plan's walk crosses the closed {} {} ({})",
+                                                           door->GetName(), door->GetEntry(), leg),
+                                       LeaderNeedsPack(party, map, lookMob, why), JsonObject().Str("kind", "door"));
+                    return;
+                }
+                lead.doorInvalidLooks = 0;
+            }
+
+            issue(decision, pickWhy);
+            return;
+        }
+
+        // [lead3] [lead6] a "held for now" with the leader's group ready: the hold no rest can change (the old
+        // [held_for_now_cap] walked in after it) is reported as no option after LEADER_HELD_READY_MAX_MS. The
+        // declared waits with their own end (a patrol / overlap wait: the forecast; crowd control claims) do not
+        // count.
+        if (decides && decision.verdict == PullPlanner::Verdict::Held && lookMob)
+        {
+            bool const declaredWait = decision.why.find("patrol wait") != std::string::npos ||
+                                      decision.why.find("overlap wait") != std::string::npos ||
+                                      decision.why.find("pre-pull cc") != std::string::npos ||
+                                      decision.why.find("the leader:") != std::string::npos ||
+                                      decision.why.find("the leader picks no mob") != std::string::npos;
+            if (!lead.ready || declaredWait || lead.heldReadyMob != decision.lookTarget)
+            {
+                lead.heldReadyMob = lead.ready && !declaredWait ? decision.lookTarget : ObjectGuid::Empty;
+                lead.heldReadySinceMs = now;
+            }
+            else if (getMSTimeDiff(lead.heldReadySinceMs, now) >= Leader::LEADER_HELD_READY_MAX_MS)
+            {
+                std::string why;
+                bool const needs = LeaderNeedsPack(party, map, lookMob, why);
+                bool const reported =
+                    LeaderNoOption(party, tank, lookMob, packOf(),
+                                   Acore::StringFormat("held {} s with the group ready: {}",
+                                                       getMSTimeDiff(lead.heldReadySinceMs, now) / IN_MILLISECONDS,
+                                                       decision.why),
+                                   needs, JsonObject().Str("kind", "held").Str("rule", why));
+                if (reported && !needs && lookMob->GetGUID() == party.target)
+                {
+                    LogEvent(party, "leader_skip_no_option",
+                             JsonObject().Str("name", lookMob->GetName()).Str("why", decision.why).Str("rule", why));
+                    SkipTarget(party, party.target, CAREFUL_REFUSED_SKIP_MS,
+                               "the leader: no pull option, not on the required way (" + decision.why + ")");
+                }
+                lead.heldReadyMob.Clear();
+                lead.heldReadySinceMs = 0;
+            }
+            return;
+        }
+
+        if (decision.verdict != PullPlanner::Verdict::Refused || !lookMob)
+            return;
+        lead.heldReadyMob.Clear();
+        lead.heldReadySinceMs = 0;
+
+        // [lead4] the patrol the leader decided to pull, refused by its planner with the group ready and topped up:
+        // no option (the route crosses its walk, or it never leaves the group's spot: no wait is valid either)
+        if (decides && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && fresh(lead.interceptMs) &&
+            decision.lookTarget == lead.intercept && decision.toppedUp && lead.ready &&
+            getMSTimeDiff(lead.interceptSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS)
+        {
+            LeaderNoOption(party, tank, lookMob, packOf(), "the patrol pull refused: " + decision.why, true,
+                           JsonObject().Str("kind", "patrol").Str("patrolWhy", lead.interceptWhy));
+            return;
+        }
+
+        // planner_no_option (user decision 1): a hopeless refusal (no pull of the pack fits at all), or [lead3] any
+        // refusal of the pack the leader asked for whole (LEADER_REQUEST_ANSWER_MS after the ask: the planner's 1 s
+        // plan cache may answer before it). It stops the run when the pack is one the leader must clear; a hopeless
+        // side pack is a route decision: the walks go round it, the route target of it is skipped.
+        bool const requestAnswered = requestCovers && decision.toppedUp && lead.ready &&
+                                     getMSTimeDiff(lead.wholeSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS;
+        if (!decision.hopeless && !requestAnswered)
+            return;
+        std::string rule;
+        bool const needs =
+            decides && ((requestAnswered && lead.required) || LeaderNeedsPack(party, map, lookMob, rule));
+        // a hopeless pack the leader must clear is asked of the planner whole first (marked required: its
+        // aoe_pull_plan may run, the stand's guarantee takes it whole); only that ask's refusal is no option
+        if (needs && !requestAnswered && lookMob->ToCreature())
+        {
+            LeaderWholePack(party, tank, lookMob->ToCreature(), "hopeless as it stands (" + rule + "): " + decision.why,
+                            true, true);
+            return;
+        }
+        JsonObject fields;
+        fields.Num("smallestPull", decision.mobs).Real("cost", decision.cost).Bool("hopeless", decision.hopeless)
+            .Bool("wholePackAsked", requestAnswered).Str("rule", rule);
+        std::string const why = (requestAnswered ? "the whole pack offered, refused: " : std::string()) + decision.why;
+        if (!LeaderNoOption(party, tank, lookMob, packOf(), why, needs, fields) || !decides || needs)
+            return;
+        if (Creature* hopelessMob = lookMob->ToCreature(); hopelessMob && decision.hopeless)
+            NoteHopelessPack(tank, hopelessMob);  // [b32_brs] the walks go round it (HopelessDetourLeg)
+        std::vector<ObjectGuid> const pack = packOf();
+        if (!party.target.IsEmpty() && std::find(pack.begin(), pack.end(), party.target) != pack.end())
+        {
+            LogEvent(party, "leader_skip_no_option",
+                     JsonObject().Str("name", lookMob->GetName()).Str("why", why).Str("rule", rule));
+            SkipTarget(party, party.target, CAREFUL_REFUSED_SKIP_MS,
+                       "the leader: no pull option, not on the required way (" + why + ")");
+        }
+        if (lead.wholePack == decision.lookTarget || requestAnswered)
+        {
+            lead.wholePack.Clear();
+            lead.wholeSeenMs = 0;
+        }
     }
 
     void TestHarnessMgr::SetMemberWaypoint(Party& party, Member& member, Player* bot, float x, float y, float z)

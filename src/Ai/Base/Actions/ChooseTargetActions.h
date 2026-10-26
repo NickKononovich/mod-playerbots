@@ -8,17 +8,236 @@
 #define PLAYERBOTS_CHOOSETARGETACTIONS_H
 
 #include "AttackAction.h"
+#include "LeaderOrders.h"  // [lead7] Leader::PullMethod in PullPlanner::Decision
 #include "ObjectGuid.h"
+#include "PartyStrengthValue.h"  // [lead7] PartyStrength in PullPlanner::Snapshot
 #include "Position.h"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+class Creature;  // [lead4]
 class Player;
 class PlayerbotAI;
 class Unit;
+
+namespace CarefulPlanVerdict
+{
+    struct Fight;  // [lead5] AggressiveTargetValue.h
+}
+
+// [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7: the careful pull planner as the dungeon leader's library.
+//
+// The planner (AggressiveTargetAction's look: the readiness gates, PlanCarefulPull, PlanLosPull, the split search,
+// the guarantee, FindApproachTarget, HoldForPrePullCc) runs on a planner instance of its own per tank, not on the
+// tank's action: its clocks and memos are the planner's, keyed by the tank. It reads the tank's value context once
+// per look through a Snapshot, and returns a Decision instead of acting: the tank's Execute is the executor.
+//
+// Callers:
+// - LEADER_PLANNER_IN_LEADER (Leader:: switches, LeaderOrders.h): the test harness, on the world thread after the map
+//   updates (no map thread runs then), plans for its party's tank whenever the tank asks (Ask: its engine looked at
+//   "aggressive target", as it looked at the tank's own planner before), publishes the planner's verdicts as before
+//   and issues a Go decision (Issue); the tank only takes it (TakeIssued) and executes it.
+// - LEADER_PLANNER_DIFF: the tank decides as before, and right after its own look the planner instance looks in
+//   shadow (no side effect, no log line) at the same instant; disagreements are queued (TakeDiff, "plan_diff").
+// - Every other group (a real player leads, LEADER_* off): the tank's own action plans as before.
+namespace PullPlanner
+{
+    // [lead3] [lead4] [lead5] [lead6] [lead8] [lead10] What the leader (the test harness) hands its planner on a look,
+    // on top of the tank's value context: its own pick and requests, its readiness verdict, its door state and its
+    // cleared spots. Only a leader look binds it (Snapshot::BindLeader); the tank's own look and every group the
+    // harness does not lead see none, so their planner runs as before.
+    struct LeaderInputs
+    {
+        bool bound = false;
+        // [lead5] the look target the leader picked (AggressiveTargetValue::PickFor with its route target, or a
+        // request's mob); empty: the leader picks no mob (no look, no approach walk of the planner's own)
+        ObjectGuid pick;
+        std::string pickWhy;
+        // [lead3] the pack the leader must clear (the old harness body pull's domain): the planner's stand's
+        // guarantee offers it whole at once (allowWholePack, up to the over-cap scale), walked in when `walkIn` (the
+        // walk's wakes counted by the guarantee's own rounds)
+        ObjectGuid wholePack;
+        bool walkIn = false;
+        // [lead5] the packs the leader marked required (the old AoePull::MarkRequired): the aoe_pull_plan may run
+        GuidVector required;
+        // [lead4] the patrol the leader decided to pull (an intercept): planned as the target, no patrol hold for it
+        ObjectGuid intercept;
+        // [lead6] the leader's one readiness verdict (LeaderReadiness): not ready holds the look
+        bool ready = true;
+        std::string notReadyWhy;
+        // [lead10] members the leader found cut off behind a closed door (the old TestRunner::IsDoorCut)
+        GuidVector doorCut;
+        // [lead8] spots the group fought and cleared this run (the leader's record): pull-back fight spot candidates
+        std::vector<Position> cleared;
+    };
+
+    // [lead3] The leader inputs of the library look running on this thread (nullptr: none, the tank's own look).
+    LeaderInputs const* CurrentLeaderInputs();
+
+    // What a look reads from the tank's value context, read once per look and lazily: a field the look does not
+    // need is never computed, so the tank's own value caches keep their timing.
+    class Snapshot
+    {
+    public:
+        explicit Snapshot(PlayerbotAI* tankAI);
+
+        // [lead3] a leader look: its pick, requests, readiness, doors, cleared spots (LeaderInputs)
+        void BindLeader(LeaderInputs const& inputs) { _leader = inputs; _leader.bound = true; }
+        LeaderInputs const* Leader() const { return _leader.bound ? &_leader : nullptr; }
+
+        Player* Tank() const { return _tank; }
+        uint32 Ms() const { return _ms; }
+        Position const& TankPos() const { return _tankPos; }
+        Unit* Target();  // "aggressive target"
+        PartyStrength Strength();  // "party strength"
+        GuidVector Possible();  // "possible targets"
+        GuidVector PossibleNoLos();  // "possible targets no los"
+        float GroupDps();  // "estimated group dps"
+
+    private:
+        PlayerbotAI* _ai = nullptr;
+        Player* _tank = nullptr;
+        uint32 _ms = 0;
+        Position _tankPos;
+        bool _hasTarget = false;
+        Unit* _target = nullptr;
+        bool _hasStrength = false;
+        PartyStrength _strength;
+        bool _hasPossible = false;
+        GuidVector _possible;
+        bool _hasPossibleNoLos = false;
+        GuidVector _possibleNoLos;
+        bool _hasGroupDps = false;
+        float _groupDps = 0.0f;
+        LeaderInputs _leader;  // [lead3]
+    };
+
+    enum class Verdict : uint8
+    {
+        None,     // no look: the tank fights, is no tank, or a room tactic owns the pull
+        Go,       // the tank executes the decision now
+        Held,     // a readiness gate or a wait holds the pull (a re-check soon)
+        Refused   // the planner found no pull it may make around the target
+    };
+    char const* VerdictName(Verdict verdict);
+
+    // One look's decision. Go: what the tank executes (AggressiveTargetAction::Execute's inputs, nothing else).
+    struct Decision
+    {
+        uint32 ms = 0;
+        ObjectGuid tank;
+        Verdict verdict = Verdict::None;
+        bool hopeless = false;     // Refused: even the smallest pull is over the mob cap (no guarantee comes)
+        bool careful = false;      // the careful planner looked (else the default pull mode)
+        ObjectGuid lookTarget;     // the mob the look was about (the aggressive target, or the crowd control swap)
+        std::string why;           // Held / Refused: the reason; Go: the plan's reason
+        GuidVector pack;           // the verdict's pack
+        // Go
+        std::string kind;          // "approach", "side walk", "attack", "engage", "pull back", "los pull", "one"
+        Leader::PullMethod method = Leader::PullMethod::Unknown;
+        ObjectGuid approach;       // kind "approach": walk toward this mob (no pick in range for long)
+        ObjectGuid planTarget;     // the mob to tag (empty: attack lookTarget, no careful plan)
+        bool pullBack = false;
+        bool los = false;
+        bool single = false;
+        bool countsSap = false;
+        bool patrolFirst = false;
+        uint32 mobs = 0;           // expected mobs (0: not a careful plan)
+        float cost = 0.0f;
+        float drop = 0.0f;
+        std::string reason;
+        bool side = false;         // walk to sideSpot first, the plan goes on from there
+        Position sideSpot;
+        ObjectGuid sideFor;
+        uint32 sideMs = 0;
+        std::string sideNote;
+        bool hasCast = false;      // the stand spot of a ranged pull (PullCastSpot)
+        Position castSpot;
+        ObjectGuid killFor;        // a pull back is fought at kill (its call for help reaches fewer)
+        Position kill;
+        ObjectGuid fightFor;       // an engage whose fight the tank walks back to fight once it is on
+        Position fight;
+        float fightBack = 0.0f;
+        std::string fightNote;
+        Position losSpot;          // a line-of-sight pull: the tank's corner and the group's gather spot
+        Position losGather;
+        GuidVector losPack;
+        // [lead3] a leader-issued attack / boss pull: the tank attacks this mob (not its own aggressive target)
+        ObjectGuid attack;
+        // [lead5] the verdict this look published (CarefulPlanVerdict's data, for the leader's own memory: Steer reads
+        // it instead of the cross-thread registry)
+        bool hasVerdict = false;
+        ObjectGuid verdictTarget;
+        bool verdictAccepted = false;
+        uint32 verdictMobs = 0;
+        GuidVector verdictPack;
+        bool verdictHopeless = false;
+        std::string verdictWhy;
+        uint32 verdictWaitMs = 0;
+        // [lead5] the look issued an aoe_pull_plan on this pack (the old AoePull::NotePlan)
+        GuidVector aoePlan;
+        // [lead3] a refusal: the group stood topped up at the look (IsGroupToppedUp), so the refusal is no readiness
+        bool toppedUp = false;
+
+        std::string Describe() const;  // one short line (diff log)
+    };
+
+    // [lead3] A boss pull is a leader option (the planner never picks a boss): the leader issues it as an engage of
+    // `boss` with its own encounter pack counted where he stands. false: the boss is locked (EncounterOrder) or gone.
+    bool BossPullDecision(Player* tank, Unit* boss, std::string const& why, Decision& out);
+    // [lead10] The whole-pack cap of the tank's group (the stand's guarantee's over-cap scale, the proven size
+    // included); 0: no cap (the default pull mode).
+    uint32 WholePackCap(Player* tank);
+    // [lead4] The one patrol forecast both sides read: true when the patrol's waypoint walk (its formation leader's)
+    // takes it farther than `reach` from `spot` somewhere (a window to wait for); false: it never leaves (a loop round
+    // the spot): a wait is no option, the patrol is pulled. `known` false: no waypoint walk to forecast (the answer is
+    // true then, and the caller keeps its own bound).
+    bool PatrolLeavesReach(Creature* patrol, Position const& spot, float reach, bool* known = nullptr);
+
+    // The planner's thread-local shadow flag: no log line, no side effect while a shadow look runs.
+    bool IsShadow();
+
+    // Runs one look of the tank's planner instance (created on first use, rebuilt when the tank's AI changes) on
+    // `snap`. false: no instance could run (no AI). `shadow`: the diff mode's look (no side effect, no log line).
+    bool Decide(Player* tank, Snapshot& snap, bool shadow, Decision& out);
+    // The run ended: the tank's planner instance, its asks, issued decisions and diff counts go.
+    void Release(ObjectGuid tank);
+
+    // LEADER_PLANNER_IN_LEADER: the tank's engine asked for a decision (any thread); the leader takes the ask (true:
+    // one newer than `maxAgeMs` and not taken yet) and issues a Go decision; the tank takes it once while fresh.
+    void Ask(Player* tank);
+    bool TakeAsk(ObjectGuid tank, uint32 maxAgeMs);
+    void Issue(ObjectGuid tank, Decision const& decision);
+    bool TakeIssued(ObjectGuid tank, uint32 maxAgeMs, Decision& out);
+
+    // LEADER_PLANNER_DIFF: the tank's own decision against the planner instance's shadow look at the same instant.
+    // `kinds` empty: they agree. Counted always; queued as a line when the disagreement is new (another signature)
+    // or PLAN_DIFF_LOG_MS after the last queued one.
+    std::string DiffKinds(Decision const& own, Decision const& library, bool& whyOnly);
+    void NoteDiff(Player* tank, Decision const& own, Decision const& library);
+    struct DiffLine
+    {
+        uint32 ms = 0;
+        ObjectGuid mob;
+        std::string kinds;
+        std::string own;
+        std::string library;
+        uint32 repeats = 0;  // the same disagreement since the last line
+    };
+    bool TakeDiff(ObjectGuid tank, DiffLine& out);
+    struct DiffCounts
+    {
+        uint32 compared = 0;
+        uint32 same = 0;
+        uint32 whyOnly = 0;  // the same decision, its reason in other words (a clock's seconds)
+        std::map<std::string, uint32> byKind;
+    };
+    bool GetDiffCounts(ObjectGuid tank, DiffCounts& out);
+}
 
 // An idle mob whose aggro range reaches the spot (and sees it), a wanderer whose wander radius brings it there, or a
 // patrol that walks into it: the careful pull's test, for anyone who stands somewhere before a pull (a rogue's Sap).
@@ -139,7 +358,48 @@ public:
     bool Execute(Event event) override;
     bool isUseful() override;
 
+    // [lead7] One look of this planner instance on `snap` (PullPlanner::Decide): the decision, and this instance's
+    // state as after the tank executed a Go decision (MirrorExecute). `shadow`: no side effect, no log line.
+    bool LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out);
+
 private:
+    // [lead7] The look itself (the tank's own isUseful before step 7): the readiness gates, the plan, the verdicts.
+    bool DecideLook();
+    // [lead7] LEADER_PLANNER_IN_LEADER, the tank's side: ask the leader, take its fresh Go decision (loaded into the
+    // members Execute reads) or do nothing. The tank decides nothing here.
+    bool TakeLeaderDecision();
+    void FillDecision(bool go, PullPlanner::Decision& out);
+    void LoadDecision(PullPlanner::Decision const& decision);
+    void MirrorExecute();
+    // [lead7] The planner's reads of the tank's value context: from the look's snapshot when one is bound (a library
+    // look), else the tank's own (AI_VALUE, as before).
+    Unit* PlanAggressiveTarget();
+    PartyStrength PlanStrength();
+    GuidVector PlanPossible(bool noLos);
+    float PlanGroupDps();
+    PullPlanner::Snapshot* _snap = nullptr;
+    bool _shadow = false;      // a diff-mode look: no verdict, no crowd control registration, no aoe plan note
+    bool _fromLeader = false;  // the decision Execute runs was issued by the leader (the tank only executes)
+    // [lead5] CarefulPlanVerdict::Set for this look (not by a shadow look), recorded for the leader's own memory
+    // (Decision::verdict*): the leader's Steer reads its planner's verdicts there, not from the registry.
+    void PublishVerdict(ObjectGuid target, bool accepted, uint32 mobs, GuidVector const& pack,
+                        CarefulPlanVerdict::Fight const& fight, bool hopeless, std::string const& why);
+    bool _verdictRec = false;
+    ObjectGuid _verdictTarget;
+    bool _verdictAccepted = false;
+    uint32 _verdictMobs = 0;
+    GuidVector _verdictPack;
+    bool _verdictHopeless = false;
+    std::string _verdictWhy;
+    uint32 _verdictWaitMs = 0;
+    GuidVector _aoePlanNoted;   // [lead5] this look's aoe_pull_plan pack (AoePull::NotePlan)
+    ObjectGuid _leaderAttack;   // [lead3] a leader-issued attack / boss pull: the mob Execute attacks
+    Leader::PullMethod _leaderMethod = Leader::PullMethod::Unknown;  // [lead3] its method in the reports
+    PullPlanner::Verdict _lookVerdict = PullPlanner::Verdict::None;  // what DecideLook's last return meant
+    bool _lookCareful = false;
+    ObjectGuid _lookTarget;
+    std::string _lookWhy;
+
     // A levelling 5-man tank plans its pull: the mob to open on (the target itself, or an add at the edge of a room
     // or before a boss) and whether it pulls it at range back to where it stands. `measured`: a heroic or max-level
     // 5-man (Playerbots.CarefulPullHeroic) or a levelling one (Playerbots.CarefulPullMeasuredLevelling), where the

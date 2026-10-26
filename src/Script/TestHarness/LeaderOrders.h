@@ -10,6 +10,7 @@
 #include "Define.h"
 #include "ObjectGuid.h"
 #include "Position.h"
+#include "SafeZone.h"  // [lead9] Leader::FightPlan / SafeZone (Ai/Base/Util)
 
 #include <string>
 
@@ -41,6 +42,85 @@ namespace Leader
     // [lead2] An engage order (the tank walks in / charges: no pull strategy) owns the tank's movement too. The old
     // heuristics never covered it; false narrows step 2 to the pull strategy's pulls (TankPullRunning's set) for triage.
     constexpr bool LEADER_ENGAGE_OWNS_MOVEMENT = true;
+
+    // [lead7] Step 7 (C:/WoW/LEADER_REFACTOR_PLAN.md section 8): the careful pull planner as the leader's library
+    // (PullPlanner in ChooseTargetActions.h). LEADER_PLANNER_IN_LEADER: the harness plans for its party's tank on the
+    // world thread whenever the tank asks, publishes the planner's verdicts and issues the Go decisions; the tank only
+    // executes them (no look of its own). LEADER_PLANNER_DIFF (used while IN_LEADER is off): the tank still decides,
+    // and the planner instance looks in shadow at the same instant; disagreements become "plan_diff" decision lines
+    // and the run's "plan_diff_summary" event. Groups the harness does not lead are never affected.
+    // [lead3] true since steps 3-6, 8 and 10 (C:/WoW/LEADER_REFACTOR_PLAN.md section 9): the leader is the only
+    // decider of its party's pulls. LEADER_PLANNER_DIFF stays for an A/B with IN_LEADER off; it is off by default
+    // (it only runs while IN_LEADER is off, and doubles the planner's CPU there).
+    constexpr bool LEADER_PLANNER_IN_LEADER = true;
+    constexpr bool LEADER_PLANNER_DIFF = false;
+    // [lead7] User decision 1: the leader's planner finds no pull at all -> "planner_no_option" bug event, once per
+    // pack. [lead3] true: it stops the run when the pack is one the leader must clear (its whole-pack request: a
+    // route blocker, a required way, a boss's area, an event pack); a hopeless side pack the route can leave is
+    // logged and skipped by the leader (a route decision, not a refusal).
+    constexpr bool LEADER_STOP_ON_NO_OPTION = true;
+
+    // [lead3] Step 3: no harness body pull. Where the harness walked the group into a pack (RouteBlockerBodyPull,
+    // Steer's PULL_WAIT_MS body / attack pull, the guard / boss formation / event body pulls, the give-way walk into
+    // sight, the careful-refused skips) the leader asks its planner for the pack as a whole (Snapshot request:
+    // allowWholePack, walk-in priced by the planner's own count) or, for a boss, issues a BossPull order. A pack that
+    // still has no option is planner_no_option. false: the old harness body pulls (A/B; IN_LEADER must be on too).
+    constexpr bool LEADER_NO_BODY_FALLBACK = true;
+    // [lead4] Step 4: one patrol owner. The harness patrol hold / lane hold / step-back and the planner's patrol and
+    // overlap waits end in one leader decision (LeaderPatrolTick): wait (a declared Wait with its forecast window) or
+    // pull the patrol (an intercept request). No wait budget, no handover, no hold clocks.
+    constexpr bool LEADER_ONE_PATROL_OWNER = true;
+    // [lead5] Step 5: one target picker. The leader picks the look target (AggressiveTargetValue::PickFor with its
+    // own route target, no RouteTarget registry), reads its own planner's verdicts (no CarefulPlanVerdict /
+    // GuaranteeRequest / AoePull channel in Steer), and EncounterOrder::IsLocked is the one encounter-order rule.
+    constexpr bool LEADER_ONE_PICKER = true;
+    // [lead6] Step 6: one readiness judge. The leader's verdict (LeaderReadiness, published per tick) gates the
+    // planner's look and replaces the RaidLeader ready check's pull hold for harness groups (user decision 3);
+    // CheckStall reports instead of skipping while an order or a declared wait is open.
+    constexpr bool LEADER_ONE_READINESS = true;
+    // [lead8] Step 8: the pack is counted from the fight spot for every method (CollectPack's required fight
+    // argument), and the leader's cleared spots are pull-back fight spot candidates.
+    constexpr bool LEADER_FIGHT_SPOT_COUNT = true;
+    // [lead10] Step 10: doors as planner inputs. The door rules stay the leader's (key / lever doors, the tight
+    // gather with no cap, the re-open for a stranded member); the planner reads the leader's door cut (no
+    // TestRunner::IsDoorCut), a plan whose stand / fight / gather walk crosses a closed door is not issued, and a key
+    // pass opens only when its far side is priced within the whole-pack cap (no 60 s give-up).
+    constexpr bool LEADER_DOOR_INPUTS = true;
+    // A step is on only with the leader planning (IN_LEADER).
+    constexpr bool Leads(bool step) { return LEADER_PLANNER_IN_LEADER && step; }
+
+    // [lead3] The leader's whole-pack request (the old body pull's domain) lives this long without a refresh.
+    constexpr uint32 LEADER_REQUEST_TTL_MS = 5000;
+    // [lead3] A refusal is the request's answer only this long after the request began (the planner's 1 s plan
+    // cache may still answer the look before it).
+    constexpr uint32 LEADER_REQUEST_ANSWER_MS = 2500;
+    // [lead3] "held for now" with the leader's readiness verdict ready this long: a planner_no_option report (the
+    // hold no rest can change; the old [held_for_now_cap] turned it into a body pull).
+    constexpr uint32 LEADER_HELD_READY_MAX_MS = 75000;
+    // [lead10] A pull whose stand / fight / gather walk crosses a closed door: not issued; this many such looks of
+    // one pack in a row with the group ready are planner_no_option.
+    constexpr uint32 LEADER_DOOR_INVALID_LOOKS = 10;
+    // [lead6] A published readiness verdict is fresh this long.
+    constexpr uint32 LEADER_READY_FRESH_MS = 3000;
+    // [lead7] The leader plans on an ask at most this old; the tank takes an issued decision at most this old.
+    constexpr uint32 LEADER_ASK_FRESH_MS = 1000;
+    constexpr uint32 LEADER_ISSUE_FRESH_MS = 1000;
+    // [lead7] The same disagreement (or the same issued order) is logged again after this long.
+    constexpr uint32 PLAN_DIFF_LOG_MS = 10000;
+    constexpr uint32 PULL_ORDER_LOG_MS = 5000;
+
+    // [lead9] Step 9: the fight's safe zone (SafeZone.h). In a fight of a harness group every bot's move (MoveTo,
+    // and Follow / ChaseTo, which used to bypass MoveTo by MoveFollow / MoveChase) ends inside the zone or the bot
+    // stays; avoid aoe / flee / ranged position pick their spots inside it; a tank gap closer never leaves it. It
+    // replaces FightHold::RADIUS / MELEE_SLACK as the authority, ESCAPE_ROOM_FIGHT_SPOT_SLACK, [b43_move]
+    // fight_hold_edge_below and the [b47_idle] stay_chase for these groups. Between pulls a follow keeps off MoveFollow
+    // (the idle-mob path guard judges it) and the deadlock breaker no longer walks a member into idle reach. false:
+    // today's behaviour (FightHold, the old guards) for the A/B. Groups the harness does not lead never change.
+    constexpr bool LEADER_SAFE_ZONE = true;
+    // [lead9] ... and between pulls the harness tank's own walks (no order open: no leader waypoint, no pull, no
+    // planner commit) are judged by the idle-mob path guard as a member's are (the "who: none" starts by the tank's
+    // reach melee / tank face). false narrows step 9 to fights and members.
+    constexpr bool LEADER_SAFE_ZONE_IDLE_TANK = true;
 
     // Two owners deciding about one mob within this long count as one conflict (plan step 1 "Verify").
     constexpr uint32 DECISION_CONFLICT_MS = 2000;
@@ -99,6 +179,9 @@ namespace Leader
         uint32 openedMs = 0;
         uint32 changedMs = 0;  // the last state change
         Position changedAt;    // the tank at the last state change
+        // [lead9] The order's fight plan (plan 2.2): fight spot, safe zone, role spots. fight.zone.valid false: none
+        // published, the bots build the default zone round FightHold's anchor (FightZone::GetPlan).
+        FightPlan fight;
     };
 
     // One line for the decision log: a state change of the tank's order, or a decision-only note (`what` set).
@@ -130,10 +213,15 @@ namespace Leader
         // Issued / Walking / Tagged open an order when none is open (a different target supersedes the open one);
         // the other states only advance the open order of the same target. A repeat of the current state is no
         // report.
+        // [lead7] `leaderIssued`: the tank executes the leader's decision (PullPlanner::Issue): no decision of its own.
         void Report(Player* tank, Unit* target, OrderState state, PullMethod method, std::string const& why,
-                    uint32 mobs = 0, float cost = 0.0f, bool single = false);
-        // A decision of the tank that is no order state (logged, counted, no order change).
-        void Note(Player* tank, Unit* target, std::string const& what, std::string const& why);
+                    uint32 mobs = 0, float cost = 0.0f, bool single = false, bool leaderIssued = false);
+        // A decision of the tank that is no order state (logged, counted, no order change); [lead7] with
+        // `leaderIssued` the line is a report of the leader's decision being executed.
+        void Note(Player* tank, Unit* target, std::string const& what, std::string const& why,
+                  bool leaderIssued = false);
+        // [lead7] The harness leads this tank (Track ... Untrack).
+        bool IsTracked(ObjectGuid tank);
 
         // Leader side (world thread).
         bool GetOpen(ObjectGuid tank, PullOrder& order);
@@ -144,6 +232,17 @@ namespace Leader
         bool Close(ObjectGuid tank, OrderState state, std::string const& why, Position const& at, PullOrder* closed);
         // The oldest queued report of the tank; false when none.
         bool TakeReport(ObjectGuid tank, OrderReport& report);
+    }
+
+    // [lead6] Step 6: the leader's one readiness verdict for its group, published by the harness every tick (world
+    // thread) and read by the bot layers that used to judge it themselves (RaidLeader's ready-check pull hold).
+    // Keyed by the group's guid; a verdict older than LEADER_READY_FRESH_MS is no verdict (the group is not led).
+    namespace Readiness
+    {
+        void Publish(ObjectGuid group, bool ready, std::string const& why);
+        void Clear(ObjectGuid group);
+        // false: no fresh verdict (not a harness group, or the run ended)
+        bool Get(ObjectGuid group, bool& ready, std::string* why = nullptr);
     }
 }
 

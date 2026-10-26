@@ -759,7 +759,10 @@ namespace TestHarness
             "blocker_pull_gate", "held_for_now_cap", "rest_hold", "trash_stalemate", "stale_idle_victim_release",
             "aoe_pull_plan_accepted", "pull_alone_first", "pack_too_big", "route_blocker_walk_through",
             "route_blocker_required_only", "detour_fallback", "boss_order_hold", "meet_member", "assist_member",
-            "regroup", "pull_option", "stall_recovery", "regen_stall_release"};
+            "regroup", "pull_option", "stall_recovery", "regen_stall_release",
+            // [lead3] [lead4] [lead10] the leader's own decisions around its planner (C:/WoW/LEADER_REFACTOR_PLAN.md 9)
+            "leader_whole_pack", "leader_boss_pull", "leader_patrol_wait", "leader_patrol_pull",
+            "leader_skip_no_option", "plan_through_door", "door_far_side_priced"};
         static std::unordered_set<std::string> const reporting = {"pull_hold"};
         if (deciding.count(type))
         {
@@ -1128,6 +1131,18 @@ namespace TestHarness
         if (atStart)
         {
             party.pullStarter = starter;
+            // [lead1] a start the dungeon's script made (no decision of the leader nor the tank): the chain from the
+            // last fight into the next pack, a vehicle phase (ToC5 / Oculus drakes), a scripted summon (HoR waves,
+            // the Black Morass rift guardians: no DB spawn), an escort's own fight
+            party.pullScript.clear();
+            if (starter == "chain")
+                party.pullScript = "chain";
+            else if (starter.find("drake phase") != std::string::npos)
+                party.pullScript = "vehicle";
+            else if (fresh(note.mobMs) && !note.mob.empty() && !note.mobSpawnId)
+                party.pullScript = "summon";
+            else if (!party.escort.IsEmpty())
+                party.pullScript = "escort";
             if (!planned && firstMember)
                 for (Member& member : party.members)
                     if (member.guid == firstMember->guid)
@@ -1604,6 +1619,31 @@ namespace TestHarness
                                          .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ())
                                          .Raw("members", diagnosis.Build()));
 
+            // [lead6] LEADER_ONE_READINESS: while the tank's order is open or the leader declared a wait (its group
+            // not ready, a patrol wait, a whole-pack ask of its planner) the stall is a report, not a skip of the
+            // leader's target: the wait has its own end, and a stuck one is the run's level-2 stall below.
+            if (LeaderDecides(party) && Leader::Leads(Leader::LEADER_ONE_READINESS))
+            {
+                uint32 const askMs = party.lead.wholeSeenMs;
+                std::string leaderWait;
+                if (Leader::Orders::IsOpen(party.leader))
+                    leaderWait = "the tank's pull order is open";
+                else if (!party.lead.waitPatrol.IsEmpty())
+                    leaderWait = "patrol wait: " + party.lead.waitWhy;
+                else if (askMs && getMSTimeDiff(askMs, now) <= Leader::LEADER_REQUEST_TTL_MS)
+                    leaderWait = "the whole pack asked of the planner: " + party.lead.wholeWhy;
+                else if (!party.lead.ready && !party.lead.notReadyWhy.empty())
+                    leaderWait = "not ready: " + party.lead.notReadyWhy;
+                if (!leaderWait.empty())
+                {
+                    party.stallLevel = 1;
+                    party.lastProgressMs = now;
+                    LogEvent(party, "stall_recovery",
+                             JsonObject().Str("action", "report only: the leader's declared wait")
+                                 .Str("wait", leaderWait));
+                    return;
+                }
+            }
             // One automatic recovery: drop the current target (the leader's intent). Bots walk by themselves: their
             // movement and AI are not reset from outside; HARNESS_MOVES_BOTS restarts every member's movement too.
             if (!party.target.IsEmpty())

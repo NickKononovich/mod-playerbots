@@ -61,12 +61,46 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <deque>   // [lead7]
 #include <iterator>
 #include <map>
+#include <memory>  // [lead7]
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+// [lead7] The leader's planner library (C:/WoW/LEADER_REFACTOR_PLAN.md step 7, PullPlanner in ChooseTargetActions.h):
+// a shadow look (LEADER_PLANNER_DIFF) writes no log line. LOG_INFO / LOG_DEBUG are redefined for this file only
+// (after every include), so each of its log lines is skipped while a shadow look runs on this thread.
+namespace PullPlanner
+{
+    namespace
+    {
+        thread_local bool shadowLook = false;
+        // [lead3] the leader inputs of the library look running on this thread (LibraryLook binds them)
+        thread_local LeaderInputs const* currentInputs = nullptr;
+    }
+
+    bool IsShadow() { return shadowLook; }
+    LeaderInputs const* CurrentLeaderInputs() { return currentInputs; }
+}
+
+#undef LOG_INFO
+#define LOG_INFO(filterType__, ...)                                                \
+    do                                                                             \
+    {                                                                              \
+        if (!PullPlanner::IsShadow())                                              \
+            LOG_MESSAGE_BODY(filterType__, LogLevel::LOG_LEVEL_INFO, __VA_ARGS__); \
+    } while (0)
+
+#undef LOG_DEBUG
+#define LOG_DEBUG(filterType__, ...)                                                \
+    do                                                                              \
+    {                                                                               \
+        if (!PullPlanner::IsShadow())                                               \
+            LOG_MESSAGE_BODY(filterType__, LogLevel::LOG_LEVEL_DEBUG, __VA_ARGS__); \
+    } while (0)
 
 namespace PullReadiness
 {
@@ -834,6 +868,9 @@ namespace
     // Why the tank makes no pull of its own now ("[pull gate] waiting: ..."), one line per tank per 10 s.
     void LogPullGate(Player* bot, std::string const& reason)
     {
+        if (PullPlanner::IsShadow())
+            return;  // [lead7] no slot of the tank's own lines
+
         static std::mutex mutex;
         static std::unordered_map<uint64, uint32> last;
         uint32 const now = getMSTime();
@@ -916,10 +953,21 @@ namespace
         // [b32_strat_gate] a member the harness found cut off behind a closed door (TestRunner::SetDoorCut) holds every
         // pull, however near it stands: strat-n 20261025-221216-strat-n-5H-2, the healer 8 yd behind the shut Service
         // Entrance Gate counted "with the group" (GATHER_HEALER_RANGE) while it could neither heal nor come.
+        // [lead10] LEADER_DOOR_INPUTS: on a leader look the leader's own door cut (LeaderInputs::doorCut), not the
+        // TestRunner registry the harness wrote for the tank's thread.
+        PullPlanner::LeaderInputs const* const doorInputs =
+            Leader::Leads(Leader::LEADER_DOOR_INPUTS) ? PullPlanner::CurrentLeaderInputs() : nullptr;
+        auto const doorCut = [doorInputs](Player* member)
+        {
+            if (doorInputs)
+                return std::find(doorInputs->doorCut.begin(), doorInputs->doorCut.end(), member->GetGUID()) !=
+                       doorInputs->doorCut.end();
+            return TestRunner::IsDoorCut(member->GetGUID());
+        };
         if (Group* group = bot->GetGroup())
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 if (Player* member = ref->GetSource();
-                    member && member != bot && member->IsAlive() && TestRunner::IsDoorCut(member->GetGUID()))
+                    member && member != bot && member->IsAlive() && doorCut(member))
                 {
                     std::string const reason =
                         Acore::StringFormat("{} behind a closed door", member->GetName());
@@ -1977,6 +2025,9 @@ namespace
     // per 5 s; `channel` 1: the "[pull overlap]" lines, limited on their own.
     void LogPatrol(Player* bot, std::string const& line, uint32 channel = 0)
     {
+        if (PullPlanner::IsShadow())
+            return;  // [lead7] no slot of the tank's own lines
+
         static std::mutex mutex;
         static std::unordered_map<uint64, uint32> last;
         uint32 const now = getMSTime();
@@ -2672,10 +2723,24 @@ namespace
         return !creature || !creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE);
     }
 
-    void CollectPack(PlayerbotAI* botAI, Player* bot, Unit* target, Position const& spot, GuidVector const& possible,
-                     std::vector<Unit*>& pack, bool assistChain = false, bool losPull = false,
-                     std::vector<PackOverlap>* overlaps = nullptr, Position const* killSpot = nullptr)
+    // [lead8] LEADER_REFACTOR_PLAN.md step 8 / 2.5: where the pack's fight is, a required argument of every count.
+    // FightHere: the fight is at `spot` itself (an engage at the mob, a stand where the tank pulls and fights);
+    // FightAt: a separate fight spot (a pull back's kill spot, a line-of-sight corner, a sight fight spot), from which
+    // the calls for help, the social / formation links and the "draws the fight" chains are counted (KILL_SPOT_DRIFT
+    // round it), the walk's own aggro along the way to `spot`.
+    struct PackFight
     {
+        Position at;
+        bool separate = false;
+    };
+    PackFight FightHere(Position const& spot) { return PackFight{spot, false}; }
+    PackFight FightAt(Position const& kill) { return PackFight{kill, true}; }
+
+    void CollectPack(PlayerbotAI* botAI, Player* bot, Unit* target, Position const& spot, GuidVector const& possible,
+                     std::vector<Unit*>& pack, PackFight const& fight, bool assistChain = false, bool losPull = false,
+                     std::vector<PackOverlap>* overlaps = nullptr)
+    {
+        Position const* const killSpot = fight.separate ? &fight.at : nullptr;  // [lead8]
         Position const kill = killSpot ? *killSpot : spot;
         bool const killApart = killSpot && kill.GetExactDist(spot) > CAREFUL_AGGRO_MARGIN;
         // [b47_plan] the fight's spread round a pull back's kill spot (the spot itself when they coincide)
@@ -3354,6 +3419,9 @@ namespace
     // "[patrol_meet_imminent]" lines that follow them still log)
     void LogPatrolSurroundings(Player* bot, std::string const& line)
     {
+        if (PullPlanner::IsShadow())
+            return;  // [lead7] no slot of the tank's own lines
+
         static std::mutex mutex;
         static std::unordered_map<uint64, uint32> last;
         uint32 const now = getMSTime();
@@ -3526,7 +3594,7 @@ namespace
             if (out.mobs.size() >= PACK_CHAIN_MAX_MOBS)
                 return first;
 
-            CollectPack(botAI, bot, source, spot, possible, around, assistChain, false, nullptr, nullptr);
+            CollectPack(botAI, bot, source, spot, possible, around, FightHere(spot), assistChain, false, nullptr);
             for (Unit* joined : around)
             {
                 if (joined && std::find(out.mobs.begin(), out.mobs.end(), joined) == out.mobs.end() &&
@@ -5760,8 +5828,8 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
     if (!group || !map || !map->IsNonRaidDungeon() || bot->InBattleground() || IsGroupFighting(bot))
         return false;
 
-    bool const measured = GetPullMode(bot, AI_VALUE(PartyStrength, "party strength")) == PullMode::Measured;
-    GuidVector const& possible = AI_VALUE(GuidVector, measured ? "possible targets no los" : "possible targets");
+    bool const measured = GetPullMode(bot, PlanStrength()) == PullMode::Measured;  // [lead7] the look's snapshot
+    GuidVector const possible = PlanPossible(measured);
     uint32 const now = getMSTime();
     // Sweep batch4 (Scholomance Risen Guard "pull back 1 -> came 4" 3/3, Gnomeregan "pull back 2 -> came 4", BRS
     // "los pull 5 -> came 11", all "via cc"): the plan was registered on the pack as it stands where its pull target
@@ -5775,7 +5843,8 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
         if (!splits)
         {
             std::vector<Unit*> atSpot;
-            CollectPack(botAI, bot, pullTarget, pullTarget->GetPosition(), possible, atSpot, measured);
+            CollectPack(botAI, bot, pullTarget, pullTarget->GetPosition(), possible, atSpot,
+                        FightHere(pullTarget->GetPosition()), measured);
             splits = plannedMobs < atSpot.size();
             if (splits)
             {
@@ -5790,8 +5859,8 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
         if (splits)
         {
             PrePullCc::Plan current;
-            if (PrePullCc::Get(bot, current) && current.tank == bot->GetGUID() && !current.pulledMs)
-                PrePullCc::Cancel(bot);
+            if (!_shadow && PrePullCc::Get(bot, current) && current.tank == bot->GetGUID() && !current.pulledMs)
+                PrePullCc::Cancel(bot);  // [lead7] a shadow look cancels nothing
 
             return false;
         }
@@ -5806,7 +5875,8 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
     {
         if (reopen)
         {
-            PrePullCc::Register(bot, pullTarget, current.pack, current.controllers, heavy, true);
+            if (!_shadow)  // [lead7] a shadow look registers nothing
+                PrePullCc::Register(bot, pullTarget, current.pack, current.controllers, heavy, true);
             _ccRefusedPlanId = 0;
         }
         else if (refused && PrePullCc::Get(bot, current) && current.tank == bot->GetGUID())
@@ -5826,7 +5896,8 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
     // measured careful pull follows the assistance chain): Scholomance wave 27 read the 27-mob hall as 4-5 here,
     // so a trap was laid at its edge and the whole hall came.
     std::vector<Unit*> pack;
-    CollectPack(botAI, bot, pullTarget, pullTarget->GetPosition(), possible, pack, measured);
+    CollectPack(botAI, bot, pullTarget, pullTarget->GetPosition(), possible, pack, FightHere(pullTarget->GetPosition()),
+                measured);
     uint32 healers = 0;
     uint32 casters = 0;
     for (Unit* mob : pack)
@@ -5924,6 +5995,10 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
     }
 
     _ccSkipFor.Clear();
+    // [lead7] a shadow look registers nothing: a plan registered now would hold the pull (its claims are pending)
+    if (_shadow)
+        return true;
+
     PrePullCc::Register(bot, pullTarget, order, controllers, heavy, reopen);
     if (reopen)
         _ccRefusedPlanId = 0;
@@ -6623,20 +6698,32 @@ namespace PullEstimate
 // Temporary diagnostics (wave 12): why a tank out of combat does not pull. One line per bot per 10 s.
 // [lead1] The tank's commit of a pull, posted to the leader's order registry (Leader::Orders, a no-op for a tank no
 // harness party leads): a commit that went through opens / refreshes the tank's order, one that did not is a note.
+// [lead7] Set by Execute: the decision it runs was issued by the leader (LEADER_PLANNER_IN_LEADER), so the commit is a
+// report of the leader's decision, not one of the tank's own.
+namespace
+{
+    thread_local bool executingLeaderDecision = false;
+}
+
 static bool PostCommit(Player* bot, Unit* target, bool ok, Leader::PullMethod method, std::string const& why,
                        uint32 mobs, float cost, bool single)
 {
     if (!target)
         return ok;
     if (ok)
-        Leader::Orders::Report(bot, target, Leader::OrderState::Issued, method, why, mobs, cost, single);
+        Leader::Orders::Report(bot, target, Leader::OrderState::Issued, method, why, mobs, cost, single,
+                               executingLeaderDecision);
     else
-        Leader::Orders::Note(bot, target, "commit_failed", std::string(Leader::MethodName(method)) + ": " + why);
+        Leader::Orders::Note(bot, target, "commit_failed", std::string(Leader::MethodName(method)) + ": " + why,
+                             executingLeaderDecision);
     return ok;
 }
 
 static void LogPullHold(Player* bot, char const* reason, Unit* target)
 {
+    if (PullPlanner::IsShadow())
+        return;  // [lead7] no slot of the tank's own lines
+
     static std::mutex mutex;
     static std::unordered_map<uint64, uint32> last;
     uint32 const now = getMSTime();
@@ -6655,6 +6742,9 @@ static void LogPullHold(Player* bot, char const* reason, Unit* target)
 // even the hard minimum. One line per bot per 10 s.
 static void LogPullBlocked(Player* bot, std::string const& reason, Unit* target)
 {
+    if (PullPlanner::IsShadow())
+        return;  // [lead7] no slot of the tank's own lines
+
     static std::mutex mutex;
     static std::unordered_map<uint64, uint32> last;
     uint32 const now = getMSTime();
@@ -6669,13 +6759,51 @@ static void LogPullBlocked(Player* bot, std::string const& reason, Unit* target)
              target ? target->GetName() : std::string("no target"), target ? bot->GetDistance(target) : 0.0f);
 }
 
+// [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7. A tank the harness leads: LEADER_PLANNER_IN_LEADER asks the leader
+// and executes its decision (no look of its own); LEADER_PLANNER_DIFF looks as before, and the tank's planner
+// instance looks in shadow right after (the same instant, the same world state), the two decisions compared. Every
+// other bot looks as before.
 bool AggressiveTargetAction::isUseful()
 {
+    if ((Leader::LEADER_PLANNER_IN_LEADER || Leader::LEADER_PLANNER_DIFF) && PlayerbotAI::IsTank(bot) &&
+        Leader::Orders::IsTracked(bot->GetGUID()))
+    {
+        if (Leader::LEADER_PLANNER_IN_LEADER)
+            return TakeLeaderDecision();
+
+        if (Leader::LEADER_PLANNER_DIFF)
+        {
+            _fromLeader = false;
+            bool const go = DecideLook();
+            PullPlanner::Decision own;
+            FillDecision(go, own);
+            PullPlanner::Snapshot snap(botAI);
+            PullPlanner::Decision library;
+            if (PullPlanner::Decide(bot, snap, true, library))
+                PullPlanner::NoteDiff(bot, own, library);
+            return go;
+        }
+    }
+
+    _fromLeader = false;
+    return DecideLook();
+}
+
+bool AggressiveTargetAction::DecideLook()
+{
+    _lookVerdict = PullPlanner::Verdict::None;  // [lead7] what this look's return means (FillDecision)
+    _lookCareful = false;
+    _lookTarget.Clear();
+    _lookWhy.clear();
+    _verdictRec = false;  // [lead5] this look's verdict, for the leader's memory
+    _aoePlanNoted.clear();
     if (bot->IsInCombat())
     {
         _blockedSinceMs = 0;  // a fight ends the stand the hard cap's escalation counts
         return false;
     }
+    // [lead3] a leader look (LeaderInputs bound): the leader picked the target and judges readiness
+    PullPlanner::LeaderInputs const* const leaderInputs = _snap ? _snap->Leader() : nullptr;
 
     _planTarget.Clear();
     _approach.Clear();
@@ -6688,16 +6816,48 @@ bool AggressiveTargetAction::isUseful()
 
     if (PlayerbotAI::IsTank(bot))
     {
-        Unit* target = AI_VALUE(Unit*, "aggressive target");
+        Unit* target = PlanAggressiveTarget();  // [lead7] the look's snapshot
         if (!target)
         {
+            // [lead5] LEADER_ONE_PICKER: the leader picked no mob, so there is none to plan: the leader's route walks
+            // the group on, no approach walk of the planner's own (FindApproachTarget is the tank's own look only).
+            if (leaderInputs && Leader::Leads(Leader::LEADER_ONE_PICKER))
+            {
+                _lookVerdict = PullPlanner::Verdict::Held;
+                _lookWhy = "the leader picks no mob" + (leaderInputs->pickWhy.empty()
+                                                            ? std::string()
+                                                            : " (" + leaderInputs->pickWhy + ")");
+                return false;
+            }
             LogPullHold(bot, "no aggressive target", nullptr);
             // Nobody stands still while mobs are there: the tank walks toward the nearest one it cannot pick.
             _approach = FindApproachTarget();
+            _lookVerdict = PullPlanner::Verdict::Held;
+            _lookWhy = "no aggressive target";
             return !_approach.IsEmpty();
         }
 
+        _lookTarget = target->GetGUID();
         _noTargetMs = 0;
+        // [lead6] LEADER_ONE_READINESS: the leader's one readiness verdict (the harness's LeaderReadiness: the group
+        // here and topped up, nobody buffing or sitting, PullReadiness::GroupPreparing) holds the look first; the
+        // library's own boss / buff specifics below still apply to a ready group.
+        if (leaderInputs && Leader::Leads(Leader::LEADER_ONE_READINESS) && !leaderInputs->ready &&
+            !target->IsInCombat())
+        {
+            std::string const reason = "held for now: the leader: " + (leaderInputs->notReadyWhy.empty()
+                                                                         ? std::string("the group is not ready")
+                                                                         : leaderInputs->notReadyWhy);
+            LogPullHold(bot, reason.c_str(), target);
+            CarefulPlanVerdict::Fight fight;
+            CarefulPlanVerdict::GetNextFight(bot->GetGUID(), fight);
+            fight.guaranteeWaitMs = PULL_BUFF_WAIT_MS;
+            fight.boss = fight.boss || IsBossMob(target);
+            PublishVerdict(target->GetGUID(), false, 1, GuidVector{target->GetGUID()}, fight, false, reason);
+            _lookVerdict = PullPlanner::Verdict::Held;
+            _lookWhy = reason;
+            return false;
+        }
         // A pull of the tank's own waits for the group's buffs (user rule: everyone buffed).
         if (!target->IsInCombat() && bot->GetMap()->IsNonRaidDungeon() && WaitForBuffs())
         {
@@ -6705,8 +6865,10 @@ bool AggressiveTargetAction::isUseful()
             CarefulPlanVerdict::Fight fight;
             CarefulPlanVerdict::GetNextFight(bot->GetGUID(), fight);
             fight.guaranteeWaitMs = PULL_BUFF_WAIT_MS;
-            CarefulPlanVerdict::Set(bot, target->GetGUID(), false, 1, GuidVector{target->GetGUID()}, fight, false,
-                                    "held for now: waits for " + _buffMissing);
+            PublishVerdict(target->GetGUID(), false, 1, GuidVector{target->GetGUID()}, fight, false,
+                           "held for now: waits for " + _buffMissing);  // [lead5] [lead7]
+            _lookVerdict = PullPlanner::Verdict::Held;
+            _lookWhy = "waits for " + _buffMissing;
             return false;
         }
 
@@ -6756,8 +6918,10 @@ bool AggressiveTargetAction::isUseful()
                 CarefulPlanVerdict::GetNextFight(bot->GetGUID(), fight);
                 fight.guaranteeWaitMs = PULL_BUFF_WAIT_MS;
                 fight.boss = fight.boss || IsBossMob(target);
-                CarefulPlanVerdict::Set(bot, target->GetGUID(), false, 1, GuidVector{target->GetGUID()}, fight, false,
-                                        reason);
+                PublishVerdict(target->GetGUID(), false, 1, GuidVector{target->GetGUID()}, fight, false,
+                               reason);  // [lead5] [lead7]
+                _lookVerdict = PullPlanner::Verdict::Held;
+                _lookWhy = reason;
                 return false;
             }
         }
@@ -6776,15 +6940,18 @@ bool AggressiveTargetAction::isUseful()
             {
                 target = planned;
                 swapped = true;
+                _lookTarget = target->GetGUID();
             }
         }
 
-        PartyStrength const strength = AI_VALUE(PartyStrength, "party strength");
+        PartyStrength const strength = PlanStrength();  // [lead7] the look's snapshot
         PullMode const mode = GetPullMode(bot, strength);
         if (mode != PullMode::Default)
         {
+            _lookCareful = true;
             bool const planned = PlanCarefulPull(target, mode == PullMode::Measured, IsHeroicPace(bot, strength));
             // Published for the group's crowd control and the test harness, on every look (the cached plan too).
+            // [lead7] not by a shadow look ([lead5] PublishVerdict records it for the leader either way)
             if (_planVerdict != PlanVerdictState::None)
             {
                 CarefulPlanVerdict::Fight fight;
@@ -6794,9 +6961,8 @@ bool AggressiveTargetAction::isUseful()
                 fight.boss = _planVerdictBoss;
                 fight.realBoss = _planVerdictBoss && PackHasEncounterBoss(botAI, _planVerdictPack);
                 fight.guaranteeWaitMs = _planVerdictGuaranteeWaitMs;
-                CarefulPlanVerdict::Set(bot, planned ? _planTarget : target->GetGUID(),
-                                        _planVerdict == PlanVerdictState::Accepted, _planVerdictMobs,
-                                        _planVerdictPack, fight, _planVerdictHopeless, _planVerdictWhy);
+                PublishVerdict(planned ? _planTarget : target->GetGUID(), _planVerdict == PlanVerdictState::Accepted,
+                               _planVerdictMobs, _planVerdictPack, fight, _planVerdictHopeless, _planVerdictWhy);
             }
             else if (!planned)
             {
@@ -6828,12 +6994,18 @@ bool AggressiveTargetAction::isUseful()
                 std::string const why = "held for now: " + (_planNotReadyWhy.empty()
                                                                  ? std::string("the group rests or gathers")
                                                                  : _planNotReadyWhy);
-                CarefulPlanVerdict::Set(bot, target->GetGUID(), false, uint32(_planLookPack.size()), _planLookPack,
-                                        fight, false, why);
+                PublishVerdict(target->GetGUID(), false, uint32(_planLookPack.size()), _planLookPack, fight, false,
+                               why);  // [lead5]
             }
 
             if (!planned)
             {
+                // [lead7] the look's verdict for the leader / the diff
+                bool const refused = _planRefused || _planVerdict == PlanVerdictState::Refused;
+                _lookVerdict = refused ? PullPlanner::Verdict::Refused : PullPlanner::Verdict::Held;
+                _lookWhy = refused ? _planVerdictWhy
+                                   : (_planNotReadyWhy.empty() ? std::string("the group rests or gathers")
+                                                               : _planNotReadyWhy);
                 // The stand the hard cap's escalation counts: every look the group stands topped up without a pull,
                 // whichever hold or refusal it was (a refusal, an overlap or patrol wait, a lone mob over the cap).
                 uint32 const standNow = getMSTime();
@@ -6870,7 +7042,11 @@ bool AggressiveTargetAction::isUseful()
                               HoldForPrePullCc(pull ? pull : target, _planFallback, false,
                                                uint32(std::max<size_t>(_planVerdictPack.size(), 1)));
             if (held)
+            {
                 LogPullHold(bot, "held for pre-pull cc", pull ? pull : target);
+                _lookVerdict = PullPlanner::Verdict::Held;  // [lead7]
+                _lookWhy = "held for pre-pull cc";
+            }
             return !held;
         }
 
@@ -6887,7 +7063,7 @@ bool AggressiveTargetAction::isUseful()
             if (!raidEncounter)
             {
                 constexpr float RAID_ENCOUNTER_BOSS_RANGE = 40.0f;
-                GuidVector const encounterCandidates = AI_VALUE(GuidVector, "possible targets no los");
+                GuidVector const encounterCandidates = PlanPossible(true);  // [lead7]
                 for (ObjectGuid const& guid : encounterCandidates)
                 {
                     Unit* unit = botAI->GetUnit(guid);
@@ -6907,17 +7083,23 @@ bool AggressiveTargetAction::isUseful()
                 HoldForPrePullCc(target, true, true);
 
             LogPullHold(bot, "pack not manageable", target);
+            _lookVerdict = PullPlanner::Verdict::Refused;  // [lead7]
+            _lookWhy = "pack not manageable";
             return false;
         }
 
         if (!IsGroupReadyToPull(bot, danger, strength))
         {
             LogPullHold(bot, "group not ready", target);
+            _lookVerdict = PullPlanner::Verdict::Held;  // [lead7]
+            _lookWhy = "group not ready";
             return false;
         }
         if (HoldForPrePullCc(target, false))
         {
             LogPullHold(bot, "held for pre-pull cc", target);
+            _lookVerdict = PullPlanner::Verdict::Held;  // [lead7]
+            _lookWhy = "held for pre-pull cc";
             return false;
         }
 
@@ -6936,7 +7118,7 @@ bool AggressiveTargetAction::isUseful()
             _losTempoResult = false;
             if (!target->IsInCombat() && !IsGroupFighting(bot))
             {
-                GuidVector const possible = AI_VALUE(GuidVector, "possible targets");
+                GuidVector const possible = PlanPossible(false);  // [lead7]
                 _losTempoResult = PlanLosPull(target, possible, [](std::vector<Unit*> const&) { return true; });
             }
         }
@@ -6951,6 +7133,9 @@ bool AggressiveTargetAction::isUseful()
 
 bool AggressiveTargetAction::Execute(Event event)
 {
+    // [lead7] the decision below was issued by the leader (TakeLeaderDecision): the reports say the tank executes it
+    executingLeaderDecision = _fromLeader;
+    _fromLeader = false;
     if (!_approach.IsEmpty())
     {
         Unit* mob = botAI->GetUnit(_approach);
@@ -6958,7 +7143,8 @@ bool AggressiveTargetAction::Execute(Event event)
         bool const walked = mob && MoveTo(mob, APPROACH_DISTANCE);
         // [lead1] a walk of the tank's own (no pull plan): a decision line, no order
         if (walked)
-            Leader::Orders::Note(bot, mob, "approach_walk", "no aggressive target: walks toward the nearest mob");
+            Leader::Orders::Note(bot, mob, "approach_walk", "no aggressive target: walks toward the nearest mob",
+                                 executingLeaderDecision);
         return walked;
     }
 
@@ -6971,7 +7157,8 @@ bool AggressiveTargetAction::Execute(Event event)
         // [lead1] the walk to the side spot is the pull order's walk (the plan goes on from there)
         if (walked)
             Leader::Orders::Report(bot, botAI->GetUnit(_planTarget), Leader::OrderState::Walking,
-                                   Leader::PullMethod::Unknown, "side spot walk: " + _sideNote, _planMobs, _planCost);
+                                   Leader::PullMethod::Unknown, "side spot walk: " + _sideNote, _planMobs, _planCost,
+                                   false, executingLeaderDecision);
         return walked;
     }
 
@@ -6985,6 +7172,28 @@ bool AggressiveTargetAction::Execute(Event event)
 
     if (_planTarget.IsEmpty())
     {
+        // [lead3] a leader-issued attack (a BossPull order, or an attack of the leader's pick): that mob, walked in
+        // for sight first as an engage is
+        if (executingLeaderDecision && !_leaderAttack.IsEmpty())
+        {
+            Unit* attacked = botAI->GetUnit(_leaderAttack);
+            Leader::PullMethod const method =
+                _leaderMethod != Leader::PullMethod::Unknown ? _leaderMethod : Leader::PullMethod::Engage;
+            _leaderAttack.Clear();
+            _leaderMethod = Leader::PullMethod::Unknown;
+            if (!attacked || !attacked->IsInWorld() || !attacked->IsAlive())
+                return false;
+            std::string const why = std::string(Leader::MethodName(method)) + " (the leader's order)";
+            if (!attacked->IsInCombat() && !bot->IsWithinLOSInMap(attacked))
+            {
+                bool const walked = MoveToLOS(attacked) || ReachCombatTo(attacked, 0.0f);
+                return PostCommit(bot, attacked, walked, method, why + ": walks for sight", 0, 0.0f, false);
+            }
+            bool const attackedOk = Attack(attacked);
+            if (!attacked->IsInCombat())
+                PostCommit(bot, attacked, attackedOk, method, why, 0, 0.0f, false);
+            return attackedOk;
+        }
         // [lead1] the tank's own attack of its aggressive target (no careful plan): an engage order
         Unit* attacked = GetTarget();
         bool const attackedOk = AttackAction::Execute(event);
@@ -7174,7 +7383,7 @@ ObjectGuid AggressiveTargetAction::FindApproachTarget()
         return ObjectGuid::Empty;
 
     std::vector<std::pair<float, Unit*>> candidates;
-    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "possible targets"))
+    for (ObjectGuid const& guid : PlanPossible(false))  // [lead7] the look's snapshot
     {
         Unit* mob = botAI->GetUnit(guid);
         if (!IsIdleEnemy(bot, mob) || IsCrowdControlled(mob) || EncounterOrder::IsLocked(mob) ||
@@ -7199,7 +7408,8 @@ ObjectGuid AggressiveTargetAction::FindApproachTarget()
     // attack distance, combat distance and a margin, the mob sees the point; the mobs out of the tank's sight too
     // (the pack behind a corner). The harness approach and the side pull use the same test.
     std::vector<std::pair<Creature*, float>> reaches;
-    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "possible targets no los"))
+    GuidVector const approachNoLos = PlanPossible(true);  // [lead7] the look's snapshot
+    for (ObjectGuid const& guid : approachNoLos)
     {
         Creature* mob = botAI->GetCreature(guid);
         if (!mob || !IsIdleEnemy(bot, mob) || !mob->HasReactState(REACT_AGGRESSIVE))
@@ -7273,7 +7483,7 @@ ObjectGuid AggressiveTargetAction::FindApproachTarget()
         {
             if (!patrolsFound)
             {
-                patrols = FindPatrols(botAI, bot, AI_VALUE(GuidVector, "possible targets no los"));
+                patrols = FindPatrols(botAI, bot, approachNoLos);
                 patrolsFound = true;
             }
 
@@ -7365,8 +7575,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
     // The dungeon bosses' own fights (BossDrawnIn), sampled on every look (at most once per CAREFUL_PLAN_CACHE_MS).
     Map* const planMap = bot->GetMap();
-    GuidVector const bossWatch =
-        planMap && planMap->IsDungeon() ? AI_VALUE(GuidVector, "possible targets no los") : GuidVector();
+    GuidVector const bossWatch = planMap && planMap->IsDungeon() ? PlanPossible(true) : GuidVector();  // [lead7]
     SampleBossCycles(botAI, bot, bossWatch);
 
     // A mob already fighting the group is an add: take it at once.
@@ -7500,11 +7709,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         return false;
     }
 
-    PartyStrength const strength = AI_VALUE(PartyStrength, "party strength");
+    PartyStrength const strength = PlanStrength();  // [lead7] the look's snapshot
     GroupSupport const support = CountSupport(bot);
     TankKit const kit = PartyStrengthShared::GetTankKit(bot);
     // Measured: what comes is not limited to what the tank sees from where it stands (a room behind a door frame).
-    GuidVector const possible = AI_VALUE(GuidVector, measured ? "possible targets no los" : "possible targets");
+    GuidVector const possible = PlanPossible(measured);  // [lead7]
     // User rule (packs stand apart at spawn): every possible target is sampled where it stands (once a second at
     // most), so a mob that walks is told from one that stands, and a group that crosses a pack now is noted with
     // the plan instead of merged into it (split), unless a wait for one ran out a moment ago.
@@ -7528,7 +7737,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     std::vector<PackOverlap> chosenOverlaps;
     // The fight's length and cost, in every careful mode: the tank's health carries part of the fight.
     float const groupDps =
-        std::max({AI_VALUE(float, "estimated group dps"), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});
+        std::max({PlanGroupDps(), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});  // [lead7]
     EstimateMode estimateMode;
     estimateMode.measured = measured;
     estimateMode.rescaledSpells = measured && rescaled;
@@ -7780,7 +7989,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (!creature || !KeepsRange(creature) || mergedHops[index].second)
                 continue;
 
-            CollectPack(botAI, bot, mob, mob->GetPosition(), possible, around, measured, false, nullptr, nullptr);
+            CollectPack(botAI, bot, mob, mob->GetPosition(), possible, around, FightHere(mob->GetPosition()), measured,
+                        false, nullptr);
             for (Unit* joined : around)
                 if (joined && std::find(merged.begin(), merged.end(), joined) == merged.end())
                 {
@@ -7797,7 +8007,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     auto const collectPullBack = [&](Unit* candidate, Position const& castSpot, Position& kill)
     {
         kill = bot->GetPosition();
-        CollectPack(botAI, bot, candidate, castSpot, possible, pack, measured, false, overlapsOut, &kill);
+        CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(kill), measured, false, overlapsOut);
         Creature* creature = candidate->ToCreature();
         // [b47_plan] a kill spot that brings a neighbour pack (KILL_SPOT_DRIFT: the fight's spread reaches it) is
         // moved back too, as the scripted calls' and flights' spots are: a player pulls to a clear spot behind
@@ -7810,7 +8020,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             auto const atKillHops = lastPackHops;
             std::vector<PackOverlap> const atKillOverlaps(overlaps);
             std::vector<Unit*> atCast;
-            CollectPack(botAI, bot, candidate, castSpot, possible, atCast, measured, false, nullptr);
+            CollectPack(botAI, bot, candidate, castSpot, possible, atCast, FightHere(castSpot), measured, false,
+                        nullptr);
             pack = atKill;
             lastPackHops = atKillHops;
             if (overlapsOut)
@@ -7849,7 +8060,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (!HealerSees(bot, option))
                 continue;
 
-            CollectPack(botAI, bot, candidate, castSpot, possible, pack, measured, false, overlapsOut, &option);
+            CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(option), measured, false, overlapsOut);
             if (pack.size() >= fewest.size())
                 continue;
 
@@ -7864,6 +8075,53 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             fewestOverlaps = overlaps;
             fewestHops = lastPackHops;  // [b33_brs]
             fewestKill = option;
+        }
+
+        // [lead8] LEADER_FIGHT_SPOT_COUNT, a leader look: the spots the group already fought and cleared this run
+        // (the leader's record, LeaderInputs::cleared) are fight spot candidates too, nearest to the tank first,
+        // counted from there as every other option (the healer's sight, the walk back out of every idle reach).
+        if (PullPlanner::LeaderInputs const* inputs =
+                Leader::Leads(Leader::LEADER_FIGHT_SPOT_COUNT) && _snap ? _snap->Leader() : nullptr;
+            inputs && fewest.size() > 1 && !inputs->cleared.empty())
+        {
+            constexpr float CLEARED_SPOT_MAX = KILL_SPOT_RETREAT_STEP * float(KILL_SPOT_RETREATS) + 5.0f;
+            constexpr size_t CLEARED_SPOT_TRIES = 3;
+            std::vector<Position> cleared;
+            for (Position const& spot : inputs->cleared)
+                if (bot->GetExactDist(spot) <= CLEARED_SPOT_MAX &&
+                    std::fabs(spot.GetPositionZ() - bot->GetPositionZ()) <= PULL_PATH_HEIGHT &&
+                    spot.GetExactDist(fewestKill) > CAREFUL_AGGRO_MARGIN)
+                    cleared.push_back(spot);
+            std::sort(cleared.begin(), cleared.end(), [this](Position const& a, Position const& b)
+                      { return bot->GetExactDist(a) < bot->GetExactDist(b); });
+            if (cleared.size() > CLEARED_SPOT_TRIES)
+                cleared.resize(CLEARED_SPOT_TRIES);
+            for (Position const& option : cleared)
+            {
+                if (fewest.size() <= 1 || !HealerSees(bot, option))
+                    continue;
+
+                CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(option), measured, false,
+                            overlapsOut);
+                if (pack.size() >= fewest.size())
+                    continue;
+
+                bool walkable = false;
+                float const straight = castSpot.GetExactDist(option);
+                if (WalkEntersAggro(botAI, bot, possible, castSpot, option, pack,
+                                    straight * 2.0f + KILL_SPOT_RETREAT_STEP, CAREFUL_AGGRO_MARGIN, walkable) ||
+                    !walkable)
+                    continue;
+
+                LOG_DEBUG("playerbots", "[lead8] cleared_fight_spot: {}: {} pulled back to the cleared spot ({:.1f} "
+                          "{:.1f} {:.1f}): {} mobs, was {}", bot->GetName(), candidate->GetName(),
+                          option.GetPositionX(), option.GetPositionY(), option.GetPositionZ(), pack.size(),
+                          fewest.size());
+                fewest = pack;
+                fewestOverlaps = overlaps;
+                fewestHops = lastPackHops;
+                fewestKill = option;
+            }
         }
 
         pack = fewest;
@@ -7928,7 +8186,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 !walkable)
                 continue;
 
-            CollectPack(botAI, bot, candidate, from, possible, pack, measured, false, overlapsOut, &option);
+            CollectPack(botAI, bot, candidate, from, possible, pack, FightAt(option), measured, false, overlapsOut);
             if (found && pack.size() >= fewest.size())
                 continue;
 
@@ -7994,7 +8252,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             return false;
 
         OverloadTerms terms;
-        CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack, measured, false, overlapsOut);
+        CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack,
+                    FightHere(candidate->GetPosition()), measured, false, overlapsOut);
         PackEstimate estimate = EstimatePack(pack, bot, groupDps, estimateMode);
         CarefulOverload(bot, estimate, strength, support, kit, measured, &terms);
         float overload = terms.Max(comfort);
@@ -8154,8 +8413,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 // the pack where the fight is walked back to, against the same gate
                 std::vector<Unit*> const atSpot(pack);
                 std::vector<PackOverlap> const atSpotOverlaps(overlaps);
-                CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack, measured, false,
-                            overlapsOut, &back);
+                CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack, FightAt(back), measured,
+                            false, overlapsOut);
                 PackEstimate const backEstimate = EstimatePack(pack, bot, groupDps, estimateMode);
                 OverloadTerms backTerms;
                 CarefulOverload(bot, backEstimate, strength, support, kit, measured, &backTerms);
@@ -8221,8 +8480,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     fightNote = FightIntruderNote(atKill);
                     fightBack = kill.GetExactDist(back);
                     kill = back;
-                    CollectPack(botAI, bot, candidate, castSpot, possible, pack, measured, false, overlapsOut,
-                                &kill);
+                    CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(kill), measured, false,
+                                overlapsOut);
                     estimate = EstimatePack(pack, bot, groupDps, estimateMode);
                 }
                 else if (engageCrossed)
@@ -8307,7 +8566,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     };
     std::vector<Unit*> adds;
     {
-        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, measured, false, overlapsOut);
+        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()),
+                    measured, false, overlapsOut);
         for (Unit* mob : pack)
         {
             if (mob != target && !IsBossMob(mob) && !highFlier(mob))  // [b40_occ]
@@ -8360,8 +8620,22 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     Map* map = bot->GetMap();
 
     // A patrol held for this long already is planned as usual (it walks in anyway).
-    auto const mayHoldFor = [&](Creature* walker) -> bool
+    // [lead4] LEADER_ONE_PATROL_OWNER, a leader look: no hold clock. The patrol the leader decided to pull
+    // (LeaderInputs::intercept) is never waited for; any other is waited for only while its forecast walk leaves the
+    // group's spot (PatrolLeavesReach: a window), else it is planned as usual now (it walks in anyway).
+    PullPlanner::LeaderInputs const* const patrolInputs =
+        _snap && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) ? _snap->Leader() : nullptr;
+    auto const mayHoldFor = [&](Creature* walker, float reach) -> bool
     {
+        if (patrolInputs)
+        {
+            if (walker->GetGUID() == patrolInputs->intercept)
+                return false;
+            bool known = false;
+            bool const window = PullPlanner::PatrolLeavesReach(walker, bot->GetPosition(), reach, &known);
+            if (known)
+                return window;
+        }
         if (_patrolHoldFor != walker->GetGUID() || getMSTimeDiff(_patrolHoldSeenMs, now) > PATROL_HOLD_GAP_MS)
         {
             _patrolHoldFor = walker->GetGUID();
@@ -8552,7 +8826,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 // clear (mayHoldFor, at most PATROL_MAX_HOLD_MS, then the [b39_strat] pull back). A patrol clear of
                 // the pack now whose next seconds of walk (the eta plus PATROL_IMMINENT_SEC) or whose walk-in from the
                 // tank pass an idle pack is pulled back from here (no walk to it).
-                if (atIdlePack && mayHoldFor(incoming->walker))
+                if (atIdlePack && mayHoldFor(incoming->walker, incoming->reach))
                 {
                     _planCached.Clear();
                     LogPatrol(bot, Acore::StringFormat("[b39_ohb] [pull hold] {}: patrol {} reaches the group ({:.1f} "
@@ -8613,7 +8887,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                                    bot->GetName(), member->GetName(), distance, eta,
                                                    chosenPack.size()));
             }
-            else if (mayHoldFor(incoming->walker))
+            else if (mayHoldFor(incoming->walker, incoming->reach))
             {
                 LogPatrol(bot, Acore::StringFormat(
                                    "[pull hold] {}: patrol {} approaches ({:.1f} yd, eta {:.0f} s): comes to the "
@@ -8640,7 +8914,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     {
         if (!targetBlocker)
         {
-            CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, measured, false, overlapsOut);
+            CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()),
+                        measured, false, overlapsOut);
             if (walkPulls(target, bot->GetPosition(), target->GetPosition()))
                 targetBlocker = lastWoken;
         }
@@ -8653,7 +8928,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         if (takeBlocker)
         {
             std::vector<Unit*> blockerPack;
-            CollectPack(botAI, bot, blocker, blocker->GetPosition(), possible, blockerPack, measured, false, nullptr);
+            CollectPack(botAI, bot, blocker, blocker->GetPosition(), possible, blockerPack,
+                        FightHere(blocker->GetPosition()), measured, false, nullptr);
             takeBlocker =
                 std::none_of(blockerPack.begin(), blockerPack.end(), [](Unit* mob) { return IsBossMob(mob); });
             if (takeBlocker)
@@ -8718,7 +8994,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         Position defaultSpot;
         if (!IsCrowdControlled(target) && PullBackSpot(target, defaultSpot, false, &range))
         {
-            CollectPack(botAI, bot, target, defaultSpot, possible, pack, measured, false, overlapsOut);
+            CollectPack(botAI, bot, target, defaultSpot, possible, pack, FightHere(defaultSpot), measured, false,
+                        overlapsOut);
             size_t const defaultMobs = pack.size();
             size_t bestMobs = defaultMobs;
             Position bestSpot;
@@ -8780,7 +9057,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     continue;
 
                 Position const spot(x, y, z);
-                CollectPack(botAI, bot, target, spot, possible, pack, measured, false, overlapsOut);
+                CollectPack(botAI, bot, target, spot, possible, pack, FightHere(spot), measured, false, overlapsOut);
                 if (pack.size() >= bestMobs)
                     continue;
 
@@ -8845,7 +9122,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     Creature* bossWalkWakes = nullptr;
     if (!found && boss)
     {
-        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, measured, false, overlapsOut);
+        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()),
+                    measured, false, overlapsOut);
         if (walkPulls(target, bot->GetPosition(), target->GetPosition()))
             bossWalkWakes = lastWoken;
     }
@@ -9136,8 +9414,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 {
                     if (walkIn)
                     {
-                        CollectPack(botAI, bot, one, one->GetPosition(), possible, pack, measured, false,
-                                    overlapsOut);
+                        CollectPack(botAI, bot, one, one->GetPosition(), possible, pack, FightHere(one->GetPosition()),
+                                    measured, false, overlapsOut);
                         oneKill = one->GetPosition();
                     }
                     else
@@ -9478,10 +9756,25 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // an encounter tactic's request (GuaranteeRequest) takes the pack at once, walked in when asked
         ObjectGuid requestedMob;
         bool requestedWalkIn = false;
-        bool const requested = GuaranteeRequest::Get(bot->GetGUID(), requestedMob, requestedWalkIn) &&
-                               std::find(packGuids.begin(), packGuids.end(), requestedMob) != packGuids.end();
+        bool requested = GuaranteeRequest::Get(bot->GetGUID(), requestedMob, requestedWalkIn) &&
+                         std::find(packGuids.begin(), packGuids.end(), requestedMob) != packGuids.end();
+        // [lead3] LEADER_NO_BODY_FALLBACK: the leader's whole-pack request (a pack it must clear: the old harness body
+        // pull's domain) comes in the look's inputs, not the GuaranteeRequest registry, and is offered whole at once
+        // (allowWholePack: the over-cap scale, no stand clock); the walk-in is priced by the rounds below.
+        bool leaderWhole = false;
+        if (PullPlanner::LeaderInputs const* inputs = _snap ? _snap->Leader() : nullptr;
+            inputs && Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && !inputs->wholePack.IsEmpty() &&
+            std::find(packGuids.begin(), packGuids.end(), inputs->wholePack) != packGuids.end())
+        {
+            leaderWhole = true;
+            requested = true;
+            requestedMob = inputs->wholePack;
+            requestedWalkIn = requestedWalkIn || inputs->walkIn;
+        }
         uint32 const stood = PackBlockedMs(packGuids, now);
-        uint32 const packBlocked = requested ? std::max(stood, CAREFUL_BLOCK_GUARANTEE_MS) : stood;
+        uint32 const packBlocked =
+            leaderWhole ? std::max(stood, CAREFUL_BLOCK_GUARANTEE_OVER_MS)
+                        : (requested ? std::max(stood, CAREFUL_BLOCK_GUARANTEE_MS) : stood);
         // within the cap after the stand, up to the over-cap scale after the longer one
         size_t const allowed = packBlocked >= CAREFUL_BLOCK_GUARANTEE_OVER_MS ? guaranteeOverCap : lastResortMobs;
         if (packBlocked >= CAREFUL_BLOCK_GUARANTEE_MS && smallestPull <= allowed && !IsCrowdControlled(target) &&
@@ -9495,7 +9788,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (back)
                 collectPullBack(target, castSpot, kill);
             else
-                CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, measured, false, nullptr);
+                CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()),
+                            measured, false, nullptr);
             std::vector<Unit*> guaranteed(pack);
             if (std::find(guaranteed.begin(), guaranteed.end(), target) == guaranteed.end())
                 guaranteed.insert(guaranteed.begin(), target);
@@ -9523,7 +9817,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     firstWoken = woken;
 
                 std::vector<Unit*> wokenPack;
-                CollectPack(botAI, bot, woken, woken->GetPosition(), possible, wokenPack, measured, false, nullptr);
+                CollectPack(botAI, bot, woken, woken->GetPosition(), possible, wokenPack,
+                            FightHere(woken->GetPosition()), measured, false, nullptr);
                 if (std::find(wokenPack.begin(), wokenPack.end(), woken) == wokenPack.end())
                     wokenPack.push_back(woken);
 
@@ -9810,7 +10105,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     if (!HealerSees(bot, option))
                         continue;
                 }
-                CollectPack(botAI, bot, candidate, castSpot, possible, pack, measured, false, overlapsOut, &option);
+                CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(option), measured, false,
+                            overlapsOut);
                 addCasterStands();
                 if (std::find(pack.begin(), pack.end(), candidate) == pack.end())
                     pack.insert(pack.begin(), candidate);
@@ -9870,7 +10166,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (!PullBackSpot(candidate, losCast))  // the cast spot of a line-of-sight pull (StartLosPull)
                 continue;
             // the pack at the cast spot: what the tank's spot must be hidden from and out of the aggro of
-            CollectPack(botAI, bot, candidate, losCast, possible, pack, measured, true, overlapsOut);
+            CollectPack(botAI, bot, candidate, losCast, possible, pack, FightHere(losCast), measured, true,
+                        overlapsOut);
             if (std::find(pack.begin(), pack.end(), candidate) == pack.end())
                 pack.insert(pack.begin(), candidate);
             std::vector<Unit*> others;
@@ -9896,7 +10193,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 continue;
             }
             // the fight is at the tank's spot round the corner: the pack counted there (the walks' calls included)
-            CollectPack(botAI, bot, candidate, losCast, possible, pack, measured, true, overlapsOut, &losSpot);
+            CollectPack(botAI, bot, candidate, losCast, possible, pack, FightAt(losSpot), measured, true, overlapsOut);
             if (std::find(pack.begin(), pack.end(), candidate) == pack.end())
                 pack.insert(pack.begin(), candidate);
             if (!losFewest || pack.size() < losFewest)
@@ -10051,7 +10348,19 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         std::vector<ObjectGuid> packGuids = {target->GetGUID()};
         for (Unit* mob : adds)
             packGuids.push_back(mob->GetGUID());
-        if (AoePull::IsRequired(bot->GetGUID(), packGuids))
+        // [lead5] LEADER_ONE_PICKER: on a leader look the leader's own required marks (LeaderInputs::required), not
+        // the AoePull registry the harness wrote for the tank's thread
+        PullPlanner::LeaderInputs const* const aoeInputs =
+            _snap && Leader::Leads(Leader::LEADER_ONE_PICKER) ? _snap->Leader() : nullptr;
+        bool const aoeRequired =
+            aoeInputs ? std::any_of(packGuids.begin(), packGuids.end(),
+                                    [aoeInputs](ObjectGuid const& guid)
+                                    {
+                                        return std::find(aoeInputs->required.begin(), aoeInputs->required.end(),
+                                                         guid) != aoeInputs->required.end();
+                                    })
+                      : AoePull::IsRequired(bot->GetGUID(), packGuids);
+        if (aoeRequired)
         {
             AoeMemo& memo = aoeMemos[bot->GetGUID().GetRawValue()];
             if (std::find(memo.pack.begin(), memo.pack.end(), target->GetGUID()) == memo.pack.end())
@@ -10108,7 +10417,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             auto const tryOption = [&](Unit* candidate, Position const& castSpot, Position const& option, bool corner,
                                        uint32 step, Position const* gather = nullptr) -> bool
             {
-                CollectPack(botAI, bot, candidate, castSpot, possible, pack, measured, false, overlapsOut, &option);
+                CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(option), measured, false,
+                            overlapsOut);
                 addCasterStands();
                 if (std::find(pack.begin(), pack.end(), candidate) == pack.end())
                     pack.insert(pack.begin(), candidate);
@@ -10413,7 +10723,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     for (Unit* mob : choice.pack)
                         if (std::find(planGuids.begin(), planGuids.end(), mob->GetGUID()) == planGuids.end())
                             planGuids.push_back(mob->GetGUID());
-                    AoePull::NotePlan(bot->GetGUID(), planGuids);
+                    if (!_shadow)  // [lead7] a shadow look publishes nothing
+                        AoePull::NotePlan(bot->GetGUID(), planGuids);
+                    _aoePlanNoted = planGuids;  // [lead5] the leader's own memory (Decision::aoePlan)
                     if (logDue)
                     {
                         memo.logMs = now ? now : 1;
@@ -10770,14 +11082,31 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             char const* trend =
                 change < -OVERLAP_TREND_MIN ? "closing in" : (change > OVERLAP_TREND_MIN ? "walking off" : "steady");
             // [b36_sv] the hold came back too often with no fight between (OVERLAP_MAX_CYCLES)
-            bool const cycledOut = !staysPut && _overlapCycles > OVERLAP_MAX_CYCLES;
+            // [lead4] LEADER_ONE_PATROL_OWNER, a leader look: no cycle count and no wait clock for a waypoint patrol
+            // that crosses the pack itself. The one forecast decides: its walk leaves the pack's reach (a window):
+            // wait for it; it never does, or the leader decided to pull it (intercept): pulled first now.
+            PullPlanner::LeaderInputs const* const overlapInputs =
+                _snap && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) ? _snap->Leader() : nullptr;
+            bool overlapWindow = false;  // a forecast window for a waypoint patrol: waited for without a clock
+            bool overlapNoWindow = false;
+            if (overlapInputs && motion == MobMotion::Patrol && binding.mover == binding.outside)
+            {
+                bool known = false;
+                bool const window = PullPlanner::PatrolLeavesReach(binding.mover, binding.anchor,
+                                                                   binding.reach + OVERLAP_MARGIN, &known);
+                overlapWindow = known && window && binding.mover->GetGUID() != overlapInputs->intercept;
+                overlapNoWindow = (known && !window) || binding.mover->GetGUID() == overlapInputs->intercept;
+            }
+            bool const forecastDecides = overlapInputs && (overlapWindow || overlapNoWindow);
+            bool const cycledOut =
+                !staysPut && (forecastDecides ? overlapNoWindow : _overlapCycles > OVERLAP_MAX_CYCLES);
             std::string decision;
             if (staysPut)
                 decision = "does not walk off, counted in the pack (plans it merged)";
             else if (cycledOut)
                 decision = Acore::StringFormat("held {} times with no fight between, [b36_sv] gives up the wait",
                                                _overlapCycles);
-            else if (held < OVERLAP_MAX_HOLD_MS)
+            else if (held < OVERLAP_MAX_HOLD_MS || overlapWindow)
                 decision = change > OVERLAP_TREND_MIN
                                ? Acore::StringFormat("holds until the gap is over {:.0f} yd",
                                                      binding.reach + OVERLAP_MARGIN)
@@ -10835,7 +11164,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             }
 
             // [b36_sv] the patrol taken first above: planned on below with it (the overlap hold is over)
-            if (!patrolFirst && (staysPut || cycledOut || held >= OVERLAP_MAX_HOLD_MS))
+            if (!patrolFirst && (staysPut || cycledOut || (held >= OVERLAP_MAX_HOLD_MS && !overlapWindow)))
             {
                 _overlapGiveUpMs = now;
                 _overlapHoldMs = 0;
@@ -10907,7 +11236,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             float const eta = float(first) * PATROL_SAMPLE_SEC;
             float const distance = bot->GetExactDist(member);
             int32 const wait = PatrolWait(flags, window, maxWait);
-            if (wait > 0 && mayHoldFor(patrol.walker))
+            if (wait > 0 && mayHoldFor(patrol.walker, patrol.reach))
             {
                 LogPatrol(bot, Acore::StringFormat(
                                    "[pull hold] {}: patrol {} approaches ({:.1f} yd, eta {:.0f} s): walks into the "
@@ -10946,7 +11275,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             OverloadTerms withPatrol;
             CarefulOverload(bot, chosen, strength, support, kit, measured, &withPatrol);
             bool const fits = chosen.boss || (withinCap(chosen) && withPatrol.Max() <= limit);
-            if (!fits && mayHoldFor(patrol.walker))
+            if (!fits && mayHoldFor(patrol.walker, patrol.reach))
             {
                 LogPatrol(bot, Acore::StringFormat(
                                    "[pull hold] {}: patrol {} approaches ({:.1f} yd, eta {:.0f} s): cannot be waited "
@@ -11450,7 +11779,7 @@ bool AggressiveTargetAction::PlanLosPull(Unit* candidate, GuidVector const& seen
     // pillars: scholo-h 20261025-132016 pull 6, "los pull 3 at the tank's spot round the corner" on a Spectral
     // Researcher at (212.7, 9.7) -> came 23, 34 kills in 152 s, wipe at 372 s; the tank's spot (~201, 17) stood
     // 5 yd from a Spectral Researcher and an Acolyte and 10 yd from a Risen Guard and a Neophyte the list lacked.
-    GuidVector const& everyUnit = AI_VALUE(GuidVector, "possible targets no los");
+    GuidVector const everyUnit = PlanPossible(true);  // [lead7] the look's snapshot
     GuidVector const& possible = everyUnit.empty() ? seen : everyUnit;
     uint32 const minCasters = sPlayerbotAIConfig.LosPullMinCasters;
     Map* map = bot->GetMap();
@@ -11470,7 +11799,8 @@ bool AggressiveTargetAction::PlanLosPull(Unit* candidate, GuidVector const& seen
     // Counted as a pull round a corner: the casters walk out of their room instead of standing in it and calling
     // the rest of it (the Scholomance hall: 27 mobs where they stand, 4-9 round the corner).
     std::vector<Unit*> pack;
-    CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack, assistChain, true);
+    CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack, FightHere(candidate->GetPosition()),
+                assistChain, true);
     uint32 const casters = CountRanged(pack);
     if (casters < minCasters)
         return false;
@@ -11479,7 +11809,7 @@ bool AggressiveTargetAction::PlanLosPull(Unit* candidate, GuidVector const& seen
     if (!PullBackSpot(candidate, castSpot))
         return false;
 
-    CollectPack(botAI, bot, candidate, castSpot, possible, pack, assistChain, true);
+    CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightHere(castSpot), assistChain, true);
     for (Unit* mob : pack)
     {
         if (IsBossMob(mob))
@@ -11595,9 +11925,12 @@ bool AggressiveTargetAction::PlanLosPull(Unit* candidate, GuidVector const& seen
 
     // The fight is at the tank's spot round the corner: the pack counted there too (what reaches it, the calls and
     // flights from it), against the same gate.
-    if (castSpot.GetExactDist(spot) > CAREFUL_AGGRO_MARGIN)
+    // [lead8] LEADER_FIGHT_SPOT_COUNT, a leader look: counted from the corner whatever its distance from the cast spot
+    // (one rule for every method: the fight spot), not only past CAREFUL_AGGRO_MARGIN
+    if (castSpot.GetExactDist(spot) > CAREFUL_AGGRO_MARGIN ||
+        (Leader::Leads(Leader::LEADER_FIGHT_SPOT_COUNT) && PullPlanner::CurrentLeaderInputs()))
     {
-        CollectPack(botAI, bot, candidate, castSpot, possible, pack, assistChain, true, nullptr, &spot);
+        CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(spot), assistChain, true, nullptr);
         if (std::any_of(pack.begin(), pack.end(), [](Unit* mob) { return IsBossMob(mob); }) || !accept(pack))
         {
             LOG_DEBUG("playerbots", "[los pull] {}: {} mobs at the tank's spot round the corner for {}: no los pull",
@@ -11964,4 +12297,734 @@ bool AttackRtiTargetAction::isUseful()
         return false;
 
     return true;
+}
+
+// [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7: the careful pull planner as the leader's library (PullPlanner in
+// ChooseTargetActions.h). The look (DecideLook) is the tank's own isUseful before step 7, unchanged in its gates,
+// costs and thresholds; what changed is who runs it (a planner instance of its own per tank), what it reads (the
+// look's Snapshot) and what it returns (a Decision the tank's Execute runs).
+
+// [lead5] Every verdict of a look goes through here: published for the group's crowd control and rest logic (not by a
+// shadow look), and kept for the Decision, so the leader reads its own planner's verdict (Steer's PartyRefusal /
+// PartyVerdict) instead of the cross-thread registry.
+void AggressiveTargetAction::PublishVerdict(ObjectGuid target, bool accepted, uint32 mobs, GuidVector const& pack,
+                                            CarefulPlanVerdict::Fight const& fight, bool hopeless,
+                                            std::string const& why)
+{
+    _verdictRec = true;
+    _verdictTarget = target;
+    _verdictAccepted = accepted;
+    _verdictMobs = mobs;
+    _verdictPack = pack;
+    _verdictHopeless = hopeless;
+    _verdictWhy = why;
+    _verdictWaitMs = fight.guaranteeWaitMs;
+    if (!_shadow)
+        CarefulPlanVerdict::Set(bot, target, accepted, mobs, pack, fight, hopeless, why);
+}
+
+Unit* AggressiveTargetAction::PlanAggressiveTarget()
+{
+    return _snap ? _snap->Target() : AI_VALUE(Unit*, "aggressive target");
+}
+
+PartyStrength AggressiveTargetAction::PlanStrength()
+{
+    return _snap ? _snap->Strength() : AI_VALUE(PartyStrength, "party strength");
+}
+
+GuidVector AggressiveTargetAction::PlanPossible(bool noLos)
+{
+    if (_snap)
+        return noLos ? _snap->PossibleNoLos() : _snap->Possible();
+
+    return AI_VALUE(GuidVector, noLos ? "possible targets no los" : "possible targets");
+}
+
+float AggressiveTargetAction::PlanGroupDps()
+{
+    return _snap ? _snap->GroupDps() : AI_VALUE(float, "estimated group dps");
+}
+
+bool AggressiveTargetAction::LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out)
+{
+    _snap = &snap;
+    _shadow = shadow;
+    _fromLeader = false;
+    bool const wasShadow = PullPlanner::shadowLook;
+    PullPlanner::shadowLook = shadow;
+    PullPlanner::LeaderInputs const* const wasInputs = PullPlanner::currentInputs;  // [lead3]
+    PullPlanner::currentInputs = snap.Leader();
+    bool const go = DecideLook();
+    FillDecision(go, out);
+    // The tank executes a Go decision (Execute): this instance's caches and memos as after it, so the next look
+    // plans afresh as the tank's own did.
+    if (go)
+        MirrorExecute();
+
+    PullPlanner::currentInputs = wasInputs;
+    PullPlanner::shadowLook = wasShadow;
+    _shadow = false;
+    _snap = nullptr;
+    return go;
+}
+
+void AggressiveTargetAction::FillDecision(bool go, PullPlanner::Decision& out)
+{
+    out = PullPlanner::Decision();
+    uint32 const now = getMSTime();
+    out.ms = now ? now : 1;
+    out.tank = bot->GetGUID();
+    out.careful = _lookCareful;
+    out.lookTarget = _lookTarget;
+    // [lead5] the verdict this look published, and its aoe_pull_plan, for the leader's own memory
+    out.hasVerdict = _verdictRec;
+    if (_verdictRec)
+    {
+        out.verdictTarget = _verdictTarget;
+        out.verdictAccepted = _verdictAccepted;
+        out.verdictMobs = _verdictMobs;
+        out.verdictPack = _verdictPack;
+        out.verdictHopeless = _verdictHopeless;
+        out.verdictWhy = _verdictWhy;
+        out.verdictWaitMs = _verdictWaitMs;
+    }
+    out.aoePlan = _aoePlanNoted;
+    if (!go)
+    {
+        out.verdict = _lookVerdict;
+        out.why = _lookWhy;
+        // [lead3] a refusal the leader may take as its whole-pack request's answer only with the group topped up
+        if (_lookVerdict == PullPlanner::Verdict::Refused)
+            out.toppedUp = IsGroupToppedUp(bot);
+        if (_lookVerdict == PullPlanner::Verdict::Refused && _lookCareful)
+        {
+            out.hopeless = _planVerdictHopeless;
+            out.pack = _planVerdictPack;
+            out.mobs = _planVerdictFightMobs;  // the refused pack's smallest plan
+            out.cost = _planVerdictCost;
+        }
+        return;
+    }
+
+    out.verdict = PullPlanner::Verdict::Go;
+    out.why = _planReason;
+    out.approach = _approach;
+    out.planTarget = _planTarget;
+    out.pullBack = _planPullBack;
+    out.los = _planLos;
+    out.single = _planSingle;
+    out.countsSap = _planCountsSap;
+    out.patrolFirst = _planPatrol;
+    out.mobs = _planMobs;
+    out.cost = _planCost;
+    out.drop = _planDrop;
+    out.reason = _planReason;
+    out.side = _planSide;
+    out.sideSpot = _sideSpot;
+    out.sideFor = _sideFor;
+    out.sideMs = _sideMs;
+    out.sideNote = _sideNote;
+    out.killFor = _planKillFor;
+    out.kill = _planKill;
+    out.fightFor = _planFightFor;
+    out.fight = _planFight;
+    out.fightBack = _planFightBack;
+    out.fightNote = _planFightNote;
+    out.losSpot = _losSpot;
+    out.losGather = _losGather;
+    out.losPack = _losPack;
+    out.pack = _planVerdictPack;
+    if (!_planTarget.IsEmpty())
+    {
+        constexpr uint32 CAST_SPOT_FRESH_MS = 5 * IN_MILLISECONDS;  // as PublishCastSpot
+        auto const found = _castSpots.find(_planTarget);
+        if (found != _castSpots.end() && getMSTimeDiff(found->second.second, now) <= CAST_SPOT_FRESH_MS)
+        {
+            out.hasCast = true;
+            out.castSpot = found->second.first;
+        }
+    }
+
+    // What Execute does with it, in its order.
+    if (!_approach.IsEmpty())
+        out.kind = "approach";
+    else if (_planSide && !_planTarget.IsEmpty() && bot->GetExactDist(_sideSpot) > SIDE_PULL_ARRIVED)
+        out.kind = "side walk";
+    else if (_planTarget.IsEmpty())
+    {
+        out.kind = "attack";
+        out.method = Leader::PullMethod::Engage;
+    }
+    else if (!_planPullBack && !_planLos)
+    {
+        out.kind = "engage";
+        out.method = Leader::PullMethod::Engage;
+    }
+    else
+    {
+        out.method = _planLos ? Leader::PullMethod::LosPull
+                              : (_planSingle ? Leader::PullMethod::One : Leader::PullMethod::PullBack);
+        out.kind = Leader::MethodName(out.method);
+    }
+}
+
+void AggressiveTargetAction::LoadDecision(PullPlanner::Decision const& decision)
+{
+    _approach = decision.approach;
+    _planTarget = decision.planTarget;
+    _planPullBack = decision.pullBack;
+    _planLos = decision.los;
+    _planSingle = decision.single;
+    _planCountsSap = decision.countsSap;
+    _planPatrol = decision.patrolFirst;
+    _planMobs = decision.mobs;
+    _planCost = decision.cost;
+    _planDrop = decision.drop;
+    _planReason = decision.reason;
+    _planSide = decision.side;
+    _sideSpot = decision.sideSpot;
+    _sideFor = decision.sideFor;
+    _sideMs = decision.sideMs;
+    _sideNote = decision.sideNote;
+    _planKillFor = decision.killFor;
+    _planKill = decision.kill;
+    _planFightFor = decision.fightFor;
+    _planFight = decision.fight;
+    _planFightBack = decision.fightBack;
+    _planFightNote = decision.fightNote;
+    _losSpot = decision.losSpot;
+    _losGather = decision.losGather;
+    _losPack = decision.losPack;
+    _leaderAttack = decision.attack;  // [lead3]
+    _leaderMethod = decision.attack.IsEmpty() ? Leader::PullMethod::Unknown : decision.method;
+    if (decision.hasCast && !decision.planTarget.IsEmpty())
+        _castSpots[decision.planTarget] = {decision.castSpot, getMSTime()};
+}
+
+// Execute's resets of the planner's own state, on a library instance that does not execute (the tank does).
+void AggressiveTargetAction::MirrorExecute()
+{
+    if (!_approach.IsEmpty())
+    {
+        _approach.Clear();
+        return;
+    }
+
+    if (_planSide && !_planTarget.IsEmpty() && bot->GetExactDist(_sideSpot) > SIDE_PULL_ARRIVED)
+    {
+        _planFor.Clear();
+        return;
+    }
+
+    if (_planTarget.IsEmpty())
+        return;
+
+    Unit* target = botAI->GetUnit(_planTarget);
+    _planFor.Clear();
+    _losTempoFor.Clear();
+    if (!target || !target->IsInWorld() || !target->IsAlive())
+        return;
+
+    bool pullBack = _planPullBack;
+    bool losPull = _planLos;
+    if ((pullBack || losPull) && Arcatraz::IsCorpseTrap(target) && !target->IsInCombat())
+    {
+        pullBack = false;
+        losPull = false;
+    }
+
+    if (_planMobs)
+    {
+        if (_sideFor == target->GetGUID())
+            _sideFor.Clear();
+
+        _planMobs = 0;
+    }
+
+    if (!pullBack && !losPull)
+    {
+        if (bot->IsWithinLOSInMap(target))
+            _planFightFor.Clear();
+
+        return;
+    }
+
+    _lastPullBack = target->GetGUID();
+    _lastPullBackMs = getMSTime();
+    if (!losPull && PullStrategy::Get(botAI))
+    {
+        _planKillFor.Clear();  // PullBack's
+        _planFightFor.Clear();
+    }
+}
+
+// LEADER_PLANNER_IN_LEADER, the tank: it asks, and executes the leader's fresh Go decision; nothing else.
+bool AggressiveTargetAction::TakeLeaderDecision()
+{
+    _fromLeader = false;
+    _planTarget.Clear();
+    _approach.Clear();
+    PullPlanner::Ask(bot);  // the engine looked at the tank's pull: the leader looks (in combat too: its stand clock)
+    if (bot->IsInCombat())
+        return false;
+
+    PullPlanner::Decision decision;
+    if (!PullPlanner::TakeIssued(bot->GetGUID(), Leader::LEADER_ISSUE_FRESH_MS, decision) ||
+        decision.verdict != PullPlanner::Verdict::Go)
+        return false;
+
+    // An attack without a careful plan (AttackAction::Execute) attacks the aggressive target: only the leader's one.
+    // [lead3] [lead5] a leader-issued attack (a boss pull, the leader's own pick) names its mob: no aggressive target
+    // match needed, Execute attacks that mob
+    if (decision.planTarget.IsEmpty() && decision.approach.IsEmpty() && decision.attack.IsEmpty())
+    {
+        Unit* current = AI_VALUE(Unit*, "aggressive target");
+        if (!current || current->GetGUID() != decision.lookTarget)
+            return false;
+    }
+
+    LoadDecision(decision);
+    _fromLeader = true;
+    return true;
+}
+
+namespace PullPlanner
+{
+    namespace
+    {
+        struct PlannerEntry
+        {
+            PlayerbotAI* ai = nullptr;
+            Player* tank = nullptr;
+            bool shadow = false;
+            std::unique_ptr<AggressiveTargetAction> planner;
+        };
+
+        struct LeaderSlot
+        {
+            uint32 askMs = 0;
+            bool askTaken = true;
+            bool issued = false;
+            Decision decision;
+        };
+
+        struct DiffState
+        {
+            DiffCounts counts;
+            std::string lastSig;
+            uint32 lastLogMs = 0;
+            uint32 repeats = 0;
+            std::deque<DiffLine> queue;
+        };
+
+        constexpr size_t MAX_DIFF_LINES = 64;
+        constexpr uint32 DIFF_MIN_GAP_MS = 1000;  // a new disagreement is queued at most once a second
+
+        // The registry maps only: an instance is used by one thread at a time (diff mode: the tank's map thread;
+        // leader mode: the world thread while no map thread runs).
+        std::mutex plannerLock;
+        std::unordered_map<ObjectGuid, PlannerEntry> planners;
+        std::mutex leaderLock;
+        std::unordered_map<ObjectGuid, LeaderSlot> leaderSlots;
+        std::mutex diffLock;
+        std::unordered_map<ObjectGuid, DiffState> diffs;
+
+        uint32 NowMs()
+        {
+            uint32 const now = getMSTime();
+            return now ? now : 1;
+        }
+
+        std::string GuidShort(ObjectGuid guid)
+        {
+            return guid.IsEmpty() ? std::string("-") : Acore::StringFormat("{}:{}", guid.GetEntry(), guid.GetCounter());
+        }
+    }
+
+    Snapshot::Snapshot(PlayerbotAI* tankAI) : _ai(tankAI), _tank(tankAI ? tankAI->GetBot() : nullptr)
+    {
+        _ms = NowMs();
+        if (_tank)
+            _tankPos = _tank->GetPosition();
+    }
+
+    Unit* Snapshot::Target()
+    {
+        if (!_hasTarget && _ai)
+        {
+            // [lead5] LEADER_ONE_PICKER: the leader's own pick (it ran the same choice, AggressiveTargetValue::PickFor,
+            // with its own route target), not the tank's "aggressive target"
+            if (_leader.bound && Leader::Leads(Leader::LEADER_ONE_PICKER))
+            {
+                Unit* picked = _leader.pick.IsEmpty() ? nullptr : _ai->GetUnit(_leader.pick);
+                _target = picked && picked->IsAlive() && picked->IsInWorld() ? picked : nullptr;
+            }
+            else
+                _target = _ai->GetAiObjectContext()->GetValue<Unit*>("aggressive target")->Get();
+            _hasTarget = true;
+        }
+        return _target;
+    }
+
+    PartyStrength Snapshot::Strength()
+    {
+        if (!_hasStrength && _ai)
+        {
+            _strength = _ai->GetAiObjectContext()->GetValue<PartyStrength>("party strength")->Get();
+            _hasStrength = true;
+        }
+        return _strength;
+    }
+
+    GuidVector Snapshot::Possible()
+    {
+        if (!_hasPossible && _ai)
+        {
+            _possible = _ai->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->Get();
+            _hasPossible = true;
+        }
+        return _possible;
+    }
+
+    GuidVector Snapshot::PossibleNoLos()
+    {
+        if (!_hasPossibleNoLos && _ai)
+        {
+            _possibleNoLos = _ai->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
+            _hasPossibleNoLos = true;
+        }
+        return _possibleNoLos;
+    }
+
+    float Snapshot::GroupDps()
+    {
+        if (!_hasGroupDps && _ai)
+        {
+            _groupDps = _ai->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get();
+            _hasGroupDps = true;
+        }
+        return _groupDps;
+    }
+
+    char const* VerdictName(Verdict verdict)
+    {
+        switch (verdict)
+        {
+            case Verdict::Go:
+                return "go";
+            case Verdict::Held:
+                return "held";
+            case Verdict::Refused:
+                return "refused";
+            default:
+                return "none";
+        }
+    }
+
+    std::string Decision::Describe() const
+    {
+        std::string line = VerdictName(verdict);
+        if (verdict == Verdict::Go)
+            line += Acore::StringFormat(" {} {} mobs {} cost {:.2f}{}", kind,
+                                        GuidShort(planTarget.IsEmpty() ? approach : planTarget), mobs, cost,
+                                        side ? " (side)" : "");
+        else if (verdict != Verdict::None)
+            line += Acore::StringFormat("{} {}: {}", hopeless ? " hopeless" : "", GuidShort(lookTarget), why);
+
+        return line;
+    }
+
+    bool Decide(Player* tank, Snapshot& snap, bool shadow, Decision& out)
+    {
+        PlayerbotAI* ai = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        if (!ai || snap.Tank() != tank)
+            return false;
+
+        AggressiveTargetAction* planner = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(plannerLock);
+            PlannerEntry& entry = planners[tank->GetGUID()];
+            if (!entry.planner || entry.ai != ai || entry.tank != tank || entry.shadow != shadow)
+            {
+                entry.planner = std::make_unique<AggressiveTargetAction>(ai);
+                entry.ai = ai;
+                entry.tank = tank;
+                entry.shadow = shadow;
+            }
+            planner = entry.planner.get();
+        }
+
+        planner->LibraryLook(snap, shadow, out);
+        return true;
+    }
+
+    void Release(ObjectGuid tank)
+    {
+        {
+            std::lock_guard<std::mutex> lock(plannerLock);
+            planners.erase(tank);
+        }
+        {
+            std::lock_guard<std::mutex> lock(leaderLock);
+            leaderSlots.erase(tank);
+        }
+        std::lock_guard<std::mutex> lock(diffLock);
+        diffs.erase(tank);
+    }
+
+    void Ask(Player* tank)
+    {
+        if (!tank)
+            return;
+
+        std::lock_guard<std::mutex> lock(leaderLock);
+        LeaderSlot& slot = leaderSlots[tank->GetGUID()];
+        slot.askMs = NowMs();
+        slot.askTaken = false;
+    }
+
+    bool TakeAsk(ObjectGuid tank, uint32 maxAgeMs)
+    {
+        std::lock_guard<std::mutex> lock(leaderLock);
+        auto const found = leaderSlots.find(tank);
+        if (found == leaderSlots.end() || found->second.askTaken ||
+            getMSTimeDiff(found->second.askMs, getMSTime()) > maxAgeMs)
+            return false;
+
+        found->second.askTaken = true;
+        return true;
+    }
+
+    void Issue(ObjectGuid tank, Decision const& decision)
+    {
+        std::lock_guard<std::mutex> lock(leaderLock);
+        LeaderSlot& slot = leaderSlots[tank];
+        slot.decision = decision;
+        slot.issued = true;
+    }
+
+    bool TakeIssued(ObjectGuid tank, uint32 maxAgeMs, Decision& out)
+    {
+        std::lock_guard<std::mutex> lock(leaderLock);
+        auto const found = leaderSlots.find(tank);
+        if (found == leaderSlots.end() || !found->second.issued)
+            return false;
+
+        found->second.issued = false;  // taken once
+        if (getMSTimeDiff(found->second.decision.ms, getMSTime()) > maxAgeMs)
+            return false;
+
+        out = found->second.decision;
+        return true;
+    }
+
+    std::string DiffKinds(Decision const& own, Decision const& library, bool& whyOnly)
+    {
+        whyOnly = false;
+        std::string kinds;
+        auto const add = [&kinds](char const* kind)
+        {
+            if (!kinds.empty())
+                kinds += ",";
+            kinds += kind;
+        };
+
+        if (own.verdict != library.verdict)
+            add("verdict");
+        else if (own.verdict == Verdict::Go)
+        {
+            if (own.kind != library.kind)
+                add("method");
+            if (own.planTarget != library.planTarget || own.approach != library.approach)
+                add("target");
+            if (own.mobs != library.mobs)
+                add("mobs");
+            else if (std::fabs(own.cost - library.cost) > 0.01f)
+                add("cost");
+            if (own.side != library.side)
+                add("side");
+        }
+        else if (own.verdict != Verdict::None)
+        {
+            if (own.lookTarget != library.lookTarget)
+                add("target");
+            if (own.hopeless != library.hopeless)
+                add("hopeless");
+        }
+
+        if (kinds.empty() && own.why != library.why)
+            whyOnly = true;
+
+        return kinds;
+    }
+
+    void NoteDiff(Player* tank, Decision const& own, Decision const& library)
+    {
+        if (!tank)
+            return;
+
+        bool whyOnly = false;
+        std::string const kinds = DiffKinds(own, library, whyOnly);
+        uint32 const now = NowMs();
+        std::lock_guard<std::mutex> lock(diffLock);
+        DiffState& state = diffs[tank->GetGUID()];
+        ++state.counts.compared;
+        if (kinds.empty())
+        {
+            ++state.counts.same;
+            if (whyOnly)
+                ++state.counts.whyOnly;
+            return;
+        }
+
+        size_t start = 0;
+        while (start <= kinds.size())
+        {
+            size_t const comma = kinds.find(',', start);
+            size_t const length = comma == std::string::npos ? std::string::npos : comma - start;
+            std::string const kind = kinds.substr(start, length);
+            if (!kind.empty())
+                ++state.counts.byKind[kind];
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+
+        // the same disagreement (kinds, verdicts, what and whom) again: counted, not queued
+        std::string const sig = kinds + "|" + VerdictName(own.verdict) + own.kind + GuidShort(own.lookTarget) +
+                                GuidShort(own.planTarget) + "|" + VerdictName(library.verdict) + library.kind +
+                                GuidShort(library.lookTarget) + GuidShort(library.planTarget);
+        uint32 const since = state.lastLogMs ? getMSTimeDiff(state.lastLogMs, now) : Leader::PLAN_DIFF_LOG_MS;
+        if ((sig == state.lastSig && since < Leader::PLAN_DIFF_LOG_MS) || since < DIFF_MIN_GAP_MS)
+        {
+            ++state.repeats;
+            return;
+        }
+
+        DiffLine line;
+        line.ms = now;
+        line.mob = own.lookTarget.IsEmpty() ? library.lookTarget : own.lookTarget;
+        line.kinds = kinds;
+        line.own = own.Describe();
+        line.library = library.Describe();
+        line.repeats = state.repeats;
+        state.repeats = 0;
+        state.lastSig = sig;
+        state.lastLogMs = now;
+        if (state.queue.size() >= MAX_DIFF_LINES)
+            state.queue.pop_front();
+        state.queue.push_back(std::move(line));
+    }
+
+    bool TakeDiff(ObjectGuid tank, DiffLine& out)
+    {
+        std::lock_guard<std::mutex> lock(diffLock);
+        auto const found = diffs.find(tank);
+        if (found == diffs.end() || found->second.queue.empty())
+            return false;
+
+        out = std::move(found->second.queue.front());
+        found->second.queue.pop_front();
+        return true;
+    }
+
+    bool GetDiffCounts(ObjectGuid tank, DiffCounts& out)
+    {
+        std::lock_guard<std::mutex> lock(diffLock);
+        auto const found = diffs.find(tank);
+        if (found == diffs.end() || !found->second.counts.compared)
+            return false;
+
+        out = found->second.counts;
+        return true;
+    }
+
+    // [lead3] LEADER_NO_BODY_FALLBACK: the boss pull as a leader option (the planner never picks a boss; the harness's
+    // ROUTE_BOSS_PULL_IMMEDIATE body pull is gone in leader mode). An engage of the boss where he stands: his own
+    // encounter pack counted there (the assistance chain in the measured mode, as the careful plan counts it), so
+    // the order's expected count is priced. The tank's Execute walks in for sight first, then attacks him.
+    bool BossPullDecision(Player* tank, Unit* boss, std::string const& why, Decision& out)
+    {
+        out = Decision();
+        PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        if (!tankAI || !boss || !boss->IsInWorld() || !boss->IsAlive() || boss->IsInCombat() ||
+            EncounterOrder::IsLocked(boss))
+            return false;
+
+        out.ms = NowMs();
+        out.tank = tank->GetGUID();
+        out.verdict = Verdict::Go;
+        out.careful = true;
+        out.lookTarget = boss->GetGUID();
+        out.attack = boss->GetGUID();
+        out.kind = "boss pull";
+        out.method = Leader::PullMethod::BossPull;
+        out.why = why;
+        out.reason = why;
+        PartyStrength const strength =
+            tankAI->GetAiObjectContext()->GetValue<PartyStrength>("party strength")->Get();
+        bool const measured = GetPullMode(tank, strength) == PullMode::Measured;
+        GuidVector const possible =
+            tankAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
+        std::vector<Unit*> pack;
+        CollectPack(tankAI, tank, boss, boss->GetPosition(), possible, pack, FightHere(boss->GetPosition()),
+                    measured, false, nullptr);
+        if (std::find(pack.begin(), pack.end(), boss) == pack.end())
+            pack.insert(pack.begin(), boss);
+        out.mobs = uint32(pack.size());
+        for (Unit* mob : pack)
+            out.pack.push_back(mob->GetGUID());
+        return true;
+    }
+
+    // [lead10] The stand's guarantee's whole-pack cap (PlanCarefulPull's overCapMobs: the configured cap scaled by
+    // the party strength, the proven size, GUARANTEE_OVER_CAP_SCALE).
+    uint32 WholePackCap(Player* tank)
+    {
+        PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        if (!tankAI)
+            return 0;
+
+        PartyStrength const strength =
+            tankAI->GetAiObjectContext()->GetValue<PartyStrength>("party strength")->Get();
+        PullMode const mode = GetPullMode(tank, strength);
+        if (mode == PullMode::Default)
+            return 0;
+
+        bool const measured = mode == PullMode::Measured;
+        uint32 const maxMobs =
+            measured && sPlayerbotAIConfig.CarefulPullMaxMobs
+                ? std::max(CAREFUL_MIN_MAX_MOBS,
+                           uint32(std::lround(float(sPlayerbotAIConfig.CarefulPullMaxMobs) *
+                                              std::clamp(strength.PullScale(), CAREFUL_MAX_MOBS_SCALE_MIN,
+                                                         CAREFUL_MAX_MOBS_SCALE_MAX))))
+                : 0;
+        ProvenCap const proven = ProvenFor(tank);
+        uint32 const baseLastResortMobs = maxMobs ? maxMobs : CAREFUL_LAST_RESORT_DEFAULT_CAP;
+        uint32 const lastResortMobs =
+            std::max(baseLastResortMobs,
+                     std::min(uint32(proven.mobs), uint32(float(baseLastResortMobs) * PROVEN_MAX_CAP_SCALE)));
+        return std::max<uint32>(uint32(std::ceil(float(baseLastResortMobs) * GUARANTEE_OVER_CAP_SCALE)),
+                                lastResortMobs);
+    }
+
+    // [lead4] The one patrol forecast (see the header): its waypoint walk against the spot.
+    bool PatrolLeavesReach(Creature* patrol, Position const& spot, float reach, bool* known)
+    {
+        if (known)
+            *known = false;
+        WaypointPath const* path = patrol ? PatrolPath(patrol) : nullptr;
+        if (!path || path->Nodes.empty())
+            return true;
+
+        if (known)
+            *known = true;
+        for (WaypointNode const& node : path->Nodes)
+            if (std::fabs(node.Z - spot.GetPositionZ()) > PULL_PATH_HEIGHT ||
+                spot.GetExactDist2d(node.X, node.Y) > reach)
+                return true;
+
+        return false;
+    }
 }

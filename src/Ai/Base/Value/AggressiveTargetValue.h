@@ -204,8 +204,13 @@ public:
     AggressiveTargetValue(PlayerbotAI* botAI, std::string const name = "aggressive target") : TargetValue(botAI, name) {}
 
     Unit* Calculate() override;
+    // [lead5] The choice Calculate makes, with the route target given (Calculate: the RouteTarget registry's; the
+    // dungeon leader with LEADER_ONE_PICKER: its own, on the world thread) and the caller's reachability cache.
+    static Unit* PickFor(PlayerbotAI* botAI, ObjectGuid routeTarget, TargetReachability& reachability);
     // Diagnostics (test harness): why this bot's possible / aggressive target rejects the unit, "accepted" when not.
     static std::string Explain(Player* bot, Unit* unit);
+    // [lead5] ... with the route target the pick sees given (the leader's own)
+    static std::string Explain(Player* bot, Unit* unit, ObjectGuid routeTarget);
 
 private:
     TargetReachability _reachability;

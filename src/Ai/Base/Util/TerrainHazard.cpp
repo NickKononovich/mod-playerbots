@@ -9,6 +9,7 @@
 #include "Optional.h"
 #include "BotMoveEvents.h"
 #include "PathGenerator.h"
+#include "SafeZone.h"  // [lead9] GapCloserLeavesZone
 #include <array>
 #include "GameObject.h"
 #include "GameObjectModel.h"
@@ -1057,6 +1058,11 @@ bool GapCloserLeavesGround(Unit* caster, Unit* target, char const* what)
 {
     if (!caster || !target || caster->GetMap() != target->GetMap() || caster->GetVehicle() || caster->IsFlying())
         return false;
+
+    // [lead9] a harness tank's Charge / Intercept / Feral Charge never leaves the fight's safe zone and never opens a
+    // pull of its own between the leader's orders (SafeZone.h, C:/WoW/LEADER_REFACTOR_PLAN.md step 9)
+    if (Leader::FightZone::GapCloserLeavesZone(caster, target, what))
+        return true;
 
     // a target in the air: the charge ends on whatever ground lies under it
     float level = target->GetMapWaterOrGroundLevel(target->GetPositionX(), target->GetPositionY(),

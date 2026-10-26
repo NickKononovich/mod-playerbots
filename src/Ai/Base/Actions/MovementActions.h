@@ -23,6 +23,11 @@ class WorldObject;
 
 struct Position;
 
+namespace Leader
+{
+    struct SafeZone;  // [lead9] SafeZone.h
+}
+
 #define ANGLE_45_DEG (static_cast<float>(M_PI) / 4.f)
 #define ANGLE_90_DEG M_PI_2
 #define ANGLE_120_DEG (2.f * static_cast<float>(M_PI) / 3.f)
@@ -218,6 +223,20 @@ private:
     // dealer's walk to a mob far out of it is refused. True to go (to x, y, z, maybe shortened).
     bool HoldFightSpot(float& x, float& y, float& z);
     uint32 _fightHoldLogMs = 0;
+    // [lead9] A harness group's fight with a safe zone (SafeZone.h, C:/WoW/LEADER_REFACTOR_PLAN.md step 9): the
+    // destination, its stand and its walk stay inside the zone, else the nearest usable spot inside (zone.Clamp), else
+    // the bot stays (false; logged zone_clamp). `applied`: the zone judged this move (HoldFightSpot is then not asked:
+    // the zone is the radius authority); `zone` is kept for the check of a guard's other spot after it.
+    bool ClampToFightZone(float& x, float& y, float& z, Leader::SafeZone& zone, bool& applied);
+    // The last ask the zone judged (for GUARD_VETO_MEMO_MS) and its answer: a stay, or the clamped spot.
+    float _zoneVetoX = 0.0f;
+    float _zoneVetoY = 0.0f;
+    float _zoneVetoZ = 0.0f;
+    uint32 _zoneVetoMs = 0;
+    bool _zoneClamped = false;
+    float _zoneGotX = 0.0f;
+    float _zoneGotY = 0.0f;
+    float _zoneGotZ = 0.0f;
     // [hazard_melee_spot] A melee walk ("reach melee", "set behind") into a ground effect the bot left within 3 s: to
     // a melee spot round its target outside it (x, y, z replaced), or into a light one (true), or no walk (false).
     bool HazardMeleeSpot(float& x, float& y, float& z);

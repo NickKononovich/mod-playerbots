@@ -11,6 +11,7 @@
 #include "AttackerCountValues.h"
 #include "AiObjectContext.h"
 #include "Bag.h"
+#include "ChooseTargetActions.h"  // [lead7] PullPlanner
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "CoSTriggers.h"
@@ -969,6 +970,12 @@ namespace TestHarness
         }
 
         uint32 const now = getMSTime();
+        // [lead7] the leader's pull planner looks on every world update (the tank's ask is the clock), not on the
+        // party's 1 s tick: the tank waits one world update for its decision, as it waited for its own look before
+        for (auto const& party : _parties)
+            if (!IsTerminal(party->phase))
+                TickLeaderPlanner(*party);
+
         for (auto const& party : _parties)
         {
             if (IsTerminal(party->phase) || int32(now - party->nextTickMs) < 0)
@@ -4562,7 +4569,10 @@ namespace TestHarness
                         else if (!passing)
                             TestRunner::ClearWaypoint(party.leader);
                     }
-                    else if (!low.empty() && PatrolStepBack(party, leader))
+                    else if (!low.empty() &&
+                             (LeaderDecides(party) && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER)
+                                  ? LeaderPatrolTick(party, leader)  // [lead4] the leader's one patrol decision
+                                  : PatrolStepBack(party, leader)))
                     {
                         // [b46_patrol] a member rests or is about to while a patrol walks in: the group steps back
                         // out of its way first (the step-back walk holds the leader's waypoint), then rests there
@@ -5030,6 +5040,20 @@ namespace TestHarness
             LogEvent(party, "leader_decisions",
                      JsonObject().Raw("summary", DecisionLog::Instance().SummaryJson(party.seq)));
 
+        // [lead7] LEADER_PLANNER_DIFF: the planner library's shadow looks against the tank's own (plan_diff lines in
+        // <runId>.decisions.jsonl): how many looks were compared, agreed, and disagreed by kind
+        PullPlanner::DiffCounts diffCounts;
+        if (party.content && party.runStartMs && PullPlanner::GetDiffCounts(party.leader, diffCounts))
+        {
+            JsonObject kinds;
+            for (auto const& [kind, count] : diffCounts.byKind)
+                kinds.Num(kind.c_str(), count);
+            LogEvent(party, "plan_diff_summary",
+                     JsonObject().Num("compared", diffCounts.compared).Num("same", diffCounts.same)
+                         .Num("differ", diffCounts.compared - diffCounts.same).Num("whyOnly", diffCounts.whyOnly)
+                         .Raw("byKind", kinds.Build()));
+        }
+
         std::string result = requestedResult;
         std::string reason = requestedReason;
         JsonArray missing;
@@ -5177,6 +5201,8 @@ namespace TestHarness
         }
         StatsRegistry::Instance().UntrackRun(party.seq);
         Leader::Orders::Untrack(party.leader);  // [lead1]
+        PullPlanner::Release(party.leader);     // [lead7] the leader's planner instance for this tank
+        Leader::Readiness::Clear(party.groupGuid);  // [lead6] the leader's readiness verdict for its group
         DecisionLog::Instance().EndRun(party.seq);
 
         if (Player* leader = ObjectAccessor::FindPlayer(party.leader))

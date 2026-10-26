@@ -11,6 +11,7 @@
 #include "GameObject.h"
 #include "Group.h"
 #include "HealthTriggers.h"
+#include "LeaderOrders.h"  // [lead6] Leader::Readiness
 #include "InstanceScript.h"  // [b44_hos]
 #include "Log.h"
 #include "Map.h"
@@ -704,6 +705,21 @@ bool PullHoldValue::Calculate()
 
     if (!HasCoordinator(context))
         return false;
+
+    // [lead6] C:/WoW/LEADER_REFACTOR_PLAN.md step 6, user decision 3: a group the dungeon leader (the test harness)
+    // leads has one readiness judge, the leader's (Leader::Readiness, published every half second): the boss pull is
+    // held while the leader says not ready, never by this ready check's own answers and clocks (PULL_HOLD_MAX_MS,
+    // PULL_HOLD_READY_MAX_MS). The check itself still runs (its announces and the members' rebuff on it).
+    if (Leader::Leads(Leader::LEADER_ONE_READINESS))
+    {
+        bool leaderReady = false;
+        if (Leader::Readiness::Get(group->GetGUID(), leaderReady))
+        {
+            bool const holdsBoss = Registry::Instance().With(group->GetGUID(), [](GroupState& state)
+                                                             { return !state.holdBoss.IsEmpty(); });
+            return holdsBoss && !leaderReady;
+        }
+    }
 
     // A person leads: the boss is held until the fight starts (the person pulls, or orders the pull).
     bool const ledByPerson = RaidLeader::IsLedByPerson(bot);

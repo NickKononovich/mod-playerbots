@@ -26,6 +26,7 @@ class GameObject;
 class InstanceScript;
 class Map;
 class Player;
+class Unit;  // [lead3]
 class WorldObject;
 struct AreaTrigger;
 
@@ -318,6 +319,61 @@ namespace TestHarness
         uint32 targetSinceMs = 0;
         uint32 arrivedMs = 0;
         uint8 approach = 0;  // 0: pull range, 1: walk into the pack (body pull)
+        // [lead3] .. [lead10] C:/WoW/LEADER_REFACTOR_PLAN.md section 9: the dungeon leader's own decision state (the
+        // harness is the leader, the PullPlanner its library). World thread only.
+        struct LeaderState
+        {
+            // [lead3] the pack the leader must clear, asked of its planner whole (the old harness body pull's
+            // domain); `required`: no option for it stops the run (user decision 1)
+            ObjectGuid wholePack;
+            bool walkIn = false;
+            bool required = false;
+            uint32 wholeSinceMs = 0;
+            uint32 wholeSeenMs = 0;
+            std::string wholeWhy;
+            // [lead3] the boss pull the leader issues at the tank's next ask
+            ObjectGuid bossPull;
+            uint32 bossPullMs = 0;
+            std::string bossPullWhy;
+            ObjectGuid bossPullIssued;  // the boss pull issued last, when (its "not pulled" end)
+            uint32 bossPullIssuedMs = 0;
+            // [lead4] the patrol the leader decided to pull (an intercept), and the declared wait
+            ObjectGuid intercept;
+            uint32 interceptMs = 0;
+            uint32 interceptSinceMs = 0;
+            std::string interceptWhy;
+            ObjectGuid waitPatrol;
+            uint32 waitSinceMs = 0;
+            std::string waitWhy;
+            // [lead5] the leader planner's last verdict (CarefulPlanVerdict's data, kept by the leader itself)
+            uint32 verdictMs = 0;
+            ObjectGuid verdictTarget;
+            std::vector<ObjectGuid> verdictPack;
+            bool verdictAccepted = false;
+            uint32 verdictMobs = 0;
+            bool verdictHopeless = false;
+            uint32 verdictWaitMs = 0;
+            std::string verdictWhy;
+            // [lead5] its aoe_pull_plan (the old AoePull::NotePlan), and the packs the leader marked required
+            std::vector<ObjectGuid> aoePlan;
+            uint32 aoePlanMs = 0;
+            uint32 aoePlanSinceMs = 0;
+            std::map<ObjectGuid, uint32> requiredMarks;
+            // [lead6] the leader's one readiness verdict, this tick; the "held for now" a ready group stands in
+            bool ready = false;
+            std::string notReadyWhy;
+            uint32 readyCheckMs = 0;
+            ObjectGuid heldReadyMob;
+            uint32 heldReadySinceMs = 0;
+            // [lead8] where the group fought and cleared this run (the tank at each fight's end)
+            std::vector<Position> cleared;
+            // [lead10] a Go decision whose walk crosses a closed door: not issued, counted per pack
+            ObjectGuid doorInvalidMob;
+            uint32 doorInvalidLooks = 0;
+            // [lead3] packs reported planner_no_option this run
+            std::set<ObjectGuid> noOption;
+        };
+        LeaderState lead;
         // Steering progress towards the target: where the leader stood when steerSinceMs began (Steer resets it on
         // every 3 yd of walking). No progress for STEER_STUCK_MS: the route has nothing left to walk or the leader's
         // own move refuses the waypoint (Utgarde Pinnacle wave 8: 21 minutes under a Mindless Servant on a ledge).
@@ -509,6 +565,9 @@ namespace TestHarness
         uint32 pullStartMs = 0;
         uint32 lastPullEndMs = 0;  // [pull_label] when the last pull_end was logged (getMSTime, 0: none yet)
         std::string pullStarter;  // pull_start: "planned" or "unplanned: <name> <spec>/<role>"
+        // [lead1] a pull the dungeon's script started, not a pull decision ("chain", "vehicle", "summon", "escort";
+        // empty: none known): the decision log's pull_start names it who "event" instead of "none"
+        std::string pullScript;
         bool pullIsBoss = false;
         uint32 pullKills = 0;
         // [b30_mech_pos] trash_stalemate: the pull this watch belongs to, since when nothing died and no enemy reached
@@ -916,6 +975,36 @@ namespace TestHarness
         // [lead1] The tank's pull order reports (Leader::Orders) into the decision log, the order states the leader
         // observes (Fighting, Done), the pull_start owner line; [lead2] order_orphan.
         void DrainOrderReports(Party& party, Player* leader);
+        // [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7, LEADER_PLANNER_IN_LEADER: the leader plans the tank's pull
+        // (PullPlanner::Decide on the world thread, every world update, when the tank asked) and issues the decision;
+        // a hopeless refusal is the planner_no_option bug event.
+        void TickLeaderPlanner(Party& party);
+        // [lead3] .. [lead10] C:/WoW/LEADER_REFACTOR_PLAN.md section 9: the leader's own decisions around its planner.
+        // The leader decides this party's pulls (LEADER_PLANNER_IN_LEADER, a tracked 5-man tank; raids keep the old
+        // harness pulls).
+        bool LeaderDecides(Party const& party) const;
+        // [lead6] the leader's one readiness verdict ("" = ready): the group here and topped up, nobody buffing,
+        // sitting or preparing (PullReadiness::GroupPreparing)
+        std::string LeaderReadyWhy(Party& party, Player* leader);
+        // [lead3] the pack the leader must clear: asked of its planner whole (walk-in priced by the planner); the
+        // leader holds where it stands meanwhile. `required`: no option for it is planner_no_option with a stop.
+        void LeaderWholePack(Party& party, Player* leader, Creature* pack, std::string const& why, bool walkIn,
+                             bool required);
+        // [lead3] a boss pull: a BossPull order at the tank's next ask (PullPlanner::BossPullDecision)
+        void LeaderBossPull(Party& party, Player* leader, Creature* boss, std::string const& why);
+        // [lead3] the pack must be cleared (a route blocker, the only way to a boss / event / required target, a
+        // boss's area trash); `why` names the rule
+        bool LeaderNeedsPack(Party const& party, Map* map, WorldObject const* object, std::string& why) const;
+        // [lead3] user decision 1: planner_no_option, once per pack; `stops` ends the run (LEADER_STOP_ON_NO_OPTION)
+        // true: reported now (a pack reported before is not again)
+        bool LeaderNoOption(Party& party, Player* leader, Unit* mob, std::vector<ObjectGuid> const& pack,
+                            std::string const& why, bool stops, JsonObject fields);
+        // [lead4] the one patrol owner: the harness's hold / lane hold / step-back and the planner's patrol waits as
+        // one decision, a declared wait or an intercept; true: the leader holds this tick
+        bool LeaderPatrolTick(Party& party, Player* leader);
+        // [lead5] the leader planner's own verdict memory, aoe plan and required marks, the tank's view with the
+        // leader's route target: free helpers in TestHarnessRunner.cpp (PartyRefusal, PartyVerdict, PartyAoePlanned,
+        // PartyMarkRequired, PartyTankView).
         void SetMemberWaypoint(Party& party, Member& member, Player* bot, float x, float y, float z);
         // The leader's waypoint, cut before a closed door its walk runs through (ROUTE_CLOSED_DOORS_ALL: door_hold).
         // straight: a walked route link's far end (TestRunner::Waypoint::straight).
