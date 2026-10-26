@@ -2863,6 +2863,15 @@ namespace
                                      distance, radius, step});
             }
 
+            // [b51_strat] A formation member engages by itself where it stands: CreatureGroup::MemberEngagingTarget
+            // -> EngageWithTarget -> AtEngage -> AttackStart -> Unit::Attack -> CallAssistance, with no
+            // SetNoCallAssistance (only AssistDelayEvent sets that). Round a corner its spawn call was dropped (not in
+            // `direct`), so a split of one linked formation counted 7 while its engage calls woke the next one:
+            // strat-h 20261026-130307-5H-2 pull 2 (Mangled Cadaver of formation 52157, "7 come", 19 engaged: 52157 +
+            // formation 52158 + Mangled Cadaver 52189), strat-n 122322-5B-3 (7 -> 17), strat-h 093620-5E-2 (7 -> 32).
+            if (kind == PackWhyKind::Formation && std::find(direct.begin(), direct.end(), mob) == direct.end())
+                direct.push_back(mob);
+
             addFormation(mob);
         };
 
@@ -4956,8 +4965,34 @@ namespace
     // most LOS_CORNER_MAX_PATH from the cast spot, with a group spot behind it.
     constexpr float LOS_TRAIL_MAX_BACK = 70.0f;  // along the trail from the tank
     constexpr float LOS_TRAIL_SAMPLE = 4.0f;
+
+    // [b51_strat] User 2026-10-26 (strat-h 130307-5H-2 street wipe): pull back to a part of the street the group has
+    // ALREADY cleared, so a mob that flees or calls for help there finds nobody. A spot is clear when every idle mob
+    // outside the pack is farther from it than its aggro reach (wander radius included) plus `margin` (the core's
+    // CreatureFamilyAssistanceRadius: an engage / periodic call from a pack mob fighting there reaches nobody).
+    // Line of sight is not asked: a call through a corner is the cheaper mistake to avoid.
+    bool ClearOfIdle(Player* bot, std::vector<Unit*> const& others, Position const& at, float margin)
+    {
+        for (Unit* mob : others)
+        {
+            Creature* creature = mob ? mob->ToCreature() : nullptr;
+            if (!creature || !creature->HasReactState(REACT_AGGRESSIVE))
+                continue;
+
+            float reach = MovementAction::IdleAggroReach(creature, bot, CAREFUL_AGGRO_MARGIN) + margin;
+            if (creature->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                reach += creature->GetWanderDistance();
+
+            if (mob->GetExactDist(at) <= reach)
+                return false;
+        }
+
+        return true;
+    }
+
+    // `clearMargin` above 0 ([b51_strat]): only a trail point (and its group spot) ClearOfIdle by that margin.
     bool FindLosPullTrailSpot(Player* bot, std::vector<Unit*> const& pack, std::vector<Unit*> const& others,
-                              Position const& cast, Position& spot, Position& gather)
+                              Position const& cast, Position& spot, Position& gather, float clearMargin = 0.0f)
     {
         if (!bot || pack.empty())
             return false;
@@ -5001,7 +5036,8 @@ namespace
             Position const candidate(x, y, z);
             if (std::fabs(z - cast.GetPositionZ()) > LOS_CORNER_FLOOR ||
                 candidate.GetExactDist2d(centerX, centerY) <= castFromPack || !OutOfPackAggro(bot, pack, x, y, z) ||
-                !HiddenFromPack(pack, x, y, z) || ReachedByOthers(bot, others, candidate))
+                !HiddenFromPack(pack, x, y, z) || ReachedByOthers(bot, others, candidate) ||
+                (clearMargin > 0.0f && !ClearOfIdle(bot, others, candidate, clearMargin)))  // [b51_strat]
                 continue;
 
             if (!ShortWalk(bot, cast, candidate, LOS_CORNER_MAX_PATH, budget))
@@ -5020,10 +5056,14 @@ namespace
                 continue;
             }
 
+            if (clearMargin > 0.0f && !ClearOfIdle(bot, others, gather, clearMargin))  // [b51_strat]
+                continue;
+
             spot = candidate;
             LOG_DEBUG("playerbots", "[b47_plan] los_trail: {}: the way in hides the pack ({} mobs): tank spot ({:.1f} "
-                      "{:.1f} {:.1f}), {:.0f} yd back along its trail, {:.0f} yd from the cast spot", bot->GetName(),
-                      pack.size(), x, y, z, back, cast.GetExactDist(candidate));
+                      "{:.1f} {:.1f}), {:.0f} yd back along its trail, {:.0f} yd from the cast spot{}", bot->GetName(),
+                      pack.size(), x, y, z, back, cast.GetExactDist(candidate),
+                      clearMargin > 0.0f ? " ([b51_strat] cleared: no idle mob within its reach + assist radius)" : "");
             return true;
         }
 
@@ -9797,7 +9837,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             Position losSpot;
             Position losGather;
             // [b40_mgt] ... else the corner this group already pulled round (FindLosPullCornerSpot)
-            if (!FindLosPullSpot(bot, pack, others, losCast, losSpot, losGather) &&
+            // [b51_strat] first the tank's own cleared trail, out of every idle mob's reach + assist radius
+            float const clearMargin = std::max(sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS), 0.0f);
+            if (!(clearMargin > 0.0f &&
+                  FindLosPullTrailSpot(bot, pack, others, losCast, losSpot, losGather, clearMargin)) &&
+                !FindLosPullSpot(bot, pack, others, losCast, losSpot, losGather) &&
                 !FindLosPullCornerSpot(bot, pack, others, losCast, losSpot, losGather) &&
                 !FindLosPullTrailSpot(bot, pack, others, losCast, losSpot, losGather))  // [b47_plan]
             {
@@ -11464,7 +11508,10 @@ bool AggressiveTargetAction::PlanLosPull(Unit* candidate, GuidVector const& seen
                 others.push_back(mob);
         }
 
-        found = FindLosPullSpot(bot, pack, others, castSpot, spot, gather) ||
+        // [b51_strat] the tank's own cleared trail first (ClearOfIdle by the assistance radius)
+        float const clearMargin = std::max(sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS), 0.0f);
+        found = (clearMargin > 0.0f && FindLosPullTrailSpot(bot, pack, others, castSpot, spot, gather, clearMargin)) ||
+                FindLosPullSpot(bot, pack, others, castSpot, spot, gather) ||
                 FindLosPullTrailSpot(bot, pack, others, castSpot, spot, gather);  // [b47_plan]
 
         if (_losMemo.size() >= LOS_PULL_MEMO_SIZE)

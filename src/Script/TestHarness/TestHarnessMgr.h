@@ -666,6 +666,10 @@ namespace TestHarness
         // The leader casts an event item on its object (Old Hillsbrad's 5 s bomb): no retarget and no waypoint until
         // then, a new walk would interrupt the cast.
         uint32 castHoldUntilMs = 0;
+        // [b51_strat] TickGateTrapGather: the group gathers inside a Stratholme rat-trap alley before anyone walks over
+        // the armed trap point; no retarget and no leader waypoint until then (refreshed every tick while it holds).
+        uint32 trapHoldUntilMs = 0;
+        bool doorGatherHeld = false;  // [b51_strat] the last DoorGatherHolds held the use (no progress)
         uint32 ghostPosMs = 0;  // last "ghost_pos" event
         // A wing change walked (Scarlet Monastery, Dire Maul, Maraudon): out through the exit, in through the next
         // entrance, every member on its own (SelfTravel portal goal).
@@ -895,6 +899,13 @@ namespace TestHarness
         // of a member, a lock that needs a skill (lockpicking, herbalism, ...) the skill. Generic locks are open.
         bool CanOpenLock(Party const& party, GameObject const* go) const;
         bool UseStarterItem(Party& party, Player* leader, StarterTrack& starter, GameObject* go);
+        // [b51_strat] User 2026-10-26: before a door that closes again by itself (door / button autoCloseTime, or a
+        // KeyDoorPassDef gate) is opened, every living member who can come stands within DOOR_GATHER_RANGE of the
+        // opener, out of combat; true while it holds (the members are walked to the opener). No cap: a member who
+        // cannot come is a stall for the stall recovery, the door is never opened early.
+        bool DoorGatherHolds(Party& party, Player* opener, GameObject* door);
+        // [b51_strat] the rat-trap alleys of Stratholme: the group walks over an armed trap point together.
+        void TickGateTrapGather(Party& party, Player* leader);
         // [brd_bar_buy] [brd_bar_turnin] StarterKind::VendorBuy / QuestTurnIn at its creature; false: not done.
         bool UseStarterAtNpc(Party& party, Player* leader, StarterTrack& starter, Creature* creature);
         // Bots walk by themselves: the event for what a bot's own movement could not do (throttled), the reports the

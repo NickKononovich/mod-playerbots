@@ -4518,9 +4518,44 @@ namespace TestHarness
                         TestRunner::Waypoint passWalk;
                         bool const passing = !party.keyPassDoor.IsEmpty() &&
                                              TestRunner::GetWaypoint(party.leader, passWalk) && passWalk.gatePass;
-                        if (!passing && low.empty())
-                            SetLeaderWaypoint(party, leader, cutBot->GetPositionX(), cutBot->GetPositionY(),
-                                              cutBot->GetPositionZ());
+                        // [b51_strat] User 2026-10-26: the door is opened for the stranded member, nobody crosses
+                        // back to fetch it. The leader walks to its OWN side of the door (DOOR_REOPEN_STEP yd from
+                        // the door's centre toward the leader), never to the member: a waypoint at the member ran
+                        // the leader through the door the moment it opened.
+                        GameObject* cutDoor = leader->GetMap()->GetGameObject(party.doorCutDoor);
+                        if (!passing && low.empty() && cutDoor)
+                        {
+                            constexpr float DOOR_REOPEN_STEP = 3.0f;
+                            float const dx = leader->GetPositionX() - cutDoor->GetPositionX();
+                            float const dy = leader->GetPositionY() - cutDoor->GetPositionY();
+                            float const len = std::max(0.1f, std::hypot(dx, dy));
+                            float const step = std::min(DOOR_REOPEN_STEP, len);
+                            float const x = cutDoor->GetPositionX() + dx / len * step;
+                            float const y = cutDoor->GetPositionY() + dy / len * step;
+                            float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), x, y,
+                                                                             cutDoor->GetPositionZ() + 3.0f, true,
+                                                                             10.0f);
+                            if (leader->GetExactDist2d(x, y) > 2.0f)
+                                SetLeaderWaypoint(party, leader, x, y,
+                                                  ground > INVALID_HEIGHT ? ground : leader->GetPositionZ());
+                            else
+                                TestRunner::ClearWaypoint(party.leader);
+                            static std::unordered_map<uint64, uint32> reopenLogMs;  // world thread only
+                            uint32& logged = reopenLogMs[cutBot->GetGUID().GetRawValue()];
+                            if (!logged || getMSTimeDiff(logged, now) >= 10 * IN_MILLISECONDS)
+                            {
+                                logged = now ? now : 1;
+                                LogEvent(party, "door_reopen_for",
+                                         JsonObject().Str("member", cutBot->GetName()).Str("door", cutDoor->GetName())
+                                             .Num("doorEntry", cutDoor->GetEntry())
+                                             .Real("leaderToDoor", leader->GetExactDist(cutDoor))
+                                             .Real("memberToDoor", cutBot->GetExactDist(cutDoor)));
+                                LOG_INFO("playerbots", "[b51_strat] door_reopen_for {}: {} waits on its side of {} {} "
+                                         "({:.1f} yd), the door is opened for the member, nobody crosses back",
+                                         cutBot->GetName(), leader->GetName(), cutDoor->GetName(),
+                                         cutDoor->GetEntry(), leader->GetExactDist(cutDoor));
+                            }
+                        }
                         else if (!passing)
                             TestRunner::ClearWaypoint(party.leader);
                     }
@@ -4648,7 +4683,9 @@ namespace TestHarness
                     }
                     if (waveHold)
                         TestRunner::ClearWaypoint(party.leader);
-                    if (!wingWalking && !castHold && !waveHold)
+                    // [b51_strat] the group gathers inside a rat-trap alley first (TickGateTrapGather walks it)
+                    bool const trapHold = party.trapHoldUntilMs && int32(now - party.trapHoldUntilMs) < 0;
+                    if (!wingWalking && !castHold && !waveHold && !trapHold)
                     {
                         if (now >= party.nextRetargetMs || party.target.IsEmpty())
                         {
@@ -4967,6 +5004,7 @@ namespace TestHarness
         if (!IsTerminalPhase(party.phase))
         {
             CheckExpectedDoors(party, leader);  // [expect_door]
+            TickGateTrapGather(party, leader);  // [b51_strat] rat-trap alleys: in together
             TickKeyDoorPass(party, leader);     // [strat_key_pass]
             TickDoorCut(party, leader);         // [b32_strat_gate] a member cut off behind a closed door
             MemberKeyAtDoor(party, leader);     // [b32_strat_gate] ... keys it from its side (in a fight too)

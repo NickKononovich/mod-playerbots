@@ -337,7 +337,9 @@ namespace TestHarness
         constexpr uint32 STARTER_NO_NEARER_MS = 90 * IN_MILLISECONDS;
         // A key door that closes again by itself (door data2 autoCloseTime: Stratholme's Service Entrance Gate 175368,
         // 3 s): the key is used again while a member's way to the leader runs through it, at most this often.
-        constexpr uint32 DOOR_REARM_MAX = 6;
+        // [b51_strat] User 2026-10-26: «Кто-то застрял за воротами - открываешь»: re-keyed as often as needed (was 6
+        // per starter; strat-n 014521-5C-2 ran out and held 230 s with the healer 0.7 yd from the gate).
+        constexpr uint32 DOOR_REARM_MAX = 1000;
         constexpr float KEY_DOOR_CAST_RANGE = 3.0f;  // a key door cast without line of sight: from here, in front of it
         constexpr uint32 KEY_DOOR_HOLD_FRESH_MS = 5 * IN_MILLISECONDS;  // a door_hold this recent re-arms its key
         // ReopenKeyDoorHeld: the leader this close to the closed key door.
@@ -346,9 +348,11 @@ namespace TestHarness
         constexpr float KEY_DOOR_REACH = 60.0f;  // a key door this close to the leader keeps the targets behind it
         // In-combat re-keys (ReopenKeyDoorInCombat), within DOOR_REARM_MAX: strat-h wave 11 spent all 6 in 70 s of one
         // fight. At most 3, 15 s apart, and only while nothing hits the leader (a hit interrupts the Opening cast).
-        constexpr uint32 DOOR_REARM_COMBAT_MAX = 3;
-        constexpr uint32 DOOR_REARM_COMBAT_GAP_MS = 15 * IN_MILLISECONDS;
-        constexpr uint32 DOOR_REARM_GAP_MS = 10 * IN_MILLISECONDS;  // an item starter's object, steering time
+        // [b51_strat] no small budget and a short gap: the gate is shut again (GO_STATE_READY) before any re-key, and a
+        // key's 5 s Opening + 3 s open is the natural spacing
+        constexpr uint32 DOOR_REARM_COMBAT_MAX = 1000;
+        constexpr uint32 DOOR_REARM_COMBAT_GAP_MS = 6 * IN_MILLISECONDS;
+        constexpr uint32 DOOR_REARM_GAP_MS = 4 * IN_MILLISECONDS;  // an item starter's object, steering time
         constexpr uint32 STARTER_OBJECT_STUCK_SKIP_MS = 10 * MINUTE * IN_MILLISECONDS;  // StarterTrack::stuckUntilMs
         // A target on another navmesh part next to the route's end (a ramp without polygons): walked over straight.
         constexpr float GAP_CROSS_MAX_DISTANCE = 45.0f;
@@ -5219,6 +5223,23 @@ namespace TestHarness
         {
             if (!leader || !target || PassageDoorBoss(script, door) < 0)
                 return false;
+            // [b51_strat] User rule 2026-10-26: «Ключ есть - открыл ворота, пустил ... Не надо ходить в обходы»: a door
+            // a click opens (DoorOpensByUse: a lever / an Iron Gate) or whose lock takes a key item a member of the
+            // leader's group carries is opened, never walked round.
+            if (DoorOpensByUse(door))
+                return false;
+            if (LockEntry const* lock = sLockStore.LookupEntry(door->GetGOInfo()->GetLockId()))
+                for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+                    if (lock->Type[i] == LOCK_KEY_ITEM && lock->Index[i])
+                    {
+                        if (leader->HasItemCount(lock->Index[i], 1))
+                            return false;
+                        if (Group* group = leader->GetGroup())
+                            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                                if (Player const* member = ref->GetSource();
+                                    member && member->HasItemCount(lock->Index[i], 1))
+                                    return false;
+                    }
             uint32 const now = getMSTime();
             PassageRoundMemo& memo = passageRoundMemos[target->GetGUID()];
             if (memo.ms && memo.door == door->GetGUID() && getMSTimeDiff(memo.ms, now) <= PASSAGE_ROUND_MEMO_MS)
@@ -6868,6 +6889,36 @@ namespace TestHarness
                                  .Num("blockerEntry", target->GetEntry())
                                  .Str("why", "[b49_voone] brings boss " + boss->GetName() + " (unpriced)")
                                  .Str("was", why).Bool("hold", false));
+                    // [b51_dme] User rule 2026-10-26 (open the way, no detours): a pack that is the way on and stands
+                    // in an idle boss's reach is no skip - the boss is pulled deliberately first, as his own fight (the
+                    // boss logic: his buffs, ready check and the planner's boss pull, which prices him with what he
+                    // brings). dme-h 20261026-130307-5E-11 stalled 0/16: "body pull refused: brings boss Hydrospawn"
+                    // x3, "behind skipped Wildspawn Hellcaller" x8. The Voone intent stays: no blind walk-in to the
+                    // pack; a class-gated boss keeps the old skip.
+                    if (!ClassGatedBoss(party.content->mapId, party.content->difficulty, boss->GetEntry()) &&
+                        boss->GetGUID() != party.target)
+                    {
+                        LogEvent(party, "boss_on_the_way_first",
+                                 JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
+                                     .Real("firstDistance", leader->GetExactDist(boss)).Str("via", target->GetName())
+                                     .Num("viaEntry", target->GetEntry())
+                                     .Str("why", "[b51_dme] the pack on the way brings this boss: he is pulled first"));
+                        LOG_INFO("playerbots", "[b51_dme] {}: {} brings boss {}: the boss is the next pull (his "
+                                 "fight), no skip",
+                                 leader->GetName(), target->GetName(), boss->GetName());
+                        party.target = boss->GetGUID();
+                        party.targetIsBoss = true;
+                        party.targetIsStarter = false;
+                        party.targetRouteRule = "boss on the way";
+                        party.targetSinceMs = getMSTime();
+                        party.approach = 0;
+                        party.arrivedMs = 0;
+                        party.stopSinceMs = 0;
+                        party.approachBlocker.Clear();
+                        party.orderHoldSinceMs.erase(boss->GetGUID());
+                        TestRunner::ClearWaypoint(party.leader);
+                        return;
+                    }
                     TestRunner::ClearWaypoint(party.leader);
                     party.approach = 0;
                     SkipTarget(party, target->GetGUID(), CAREFUL_REFUSED_SKIP_MS,
@@ -13158,6 +13209,37 @@ namespace TestHarness
                                      .Num("blockerEntry", pack->GetEntry())
                                      .Str("why", "[b49_voone] brings boss " + boss->GetName() + " (unpriced)")
                                      .Bool("hold", false));
+                        // [b51_dme] User rule 2026-10-26 (open the way, no detours): a pack that is the way on and
+                        // stands in an idle boss's reach is no skip - the boss is pulled deliberately first, as his own
+                        // fight (the boss logic: his buffs, ready check and the planner's boss pull, which prices him
+                        // with what he brings). dme-h 20261026-130307-5E-11 stalled 0/16: "body pull refused: brings
+                        // boss Hydrospawn" x3, "behind skipped Wildspawn Hellcaller" x8. The Voone intent stays: no
+                        // blind walk-in to the pack; a class-gated boss keeps the old skip.
+                        if (!ClassGatedBoss(party.content->mapId, party.content->difficulty, boss->GetEntry()) &&
+                            boss->GetGUID() != party.target)
+                        {
+                            LogEvent(party, "boss_on_the_way_first",
+                                     JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
+                                         .Real("firstDistance", leader->GetExactDist(boss)).Str("via", pack->GetName())
+                                         .Num("viaEntry", pack->GetEntry())
+                                         .Str("why", "[b51_dme] the pack on the way brings this boss: he is "
+                                                     "pulled first"));
+                            LOG_INFO("playerbots", "[b51_dme] {}: {} brings boss {}: the boss is the next pull (his "
+                                     "fight), no skip",
+                                     leader->GetName(), pack->GetName(), boss->GetName());
+                            party.target = boss->GetGUID();
+                            party.targetIsBoss = true;
+                            party.targetIsStarter = false;
+                            party.targetRouteRule = "boss on the way";
+                            party.targetSinceMs = getMSTime();
+                            party.approach = 0;
+                            party.arrivedMs = 0;
+                            party.stopSinceMs = 0;
+                            party.approachBlocker.Clear();
+                            party.orderHoldSinceMs.erase(boss->GetGUID());
+                            TestRunner::ClearWaypoint(party.leader);
+                            return;
+                        }
                         TestRunner::ClearWaypoint(party.leader);
                         SkipTarget(party, party.target, CAREFUL_REFUSED_SKIP_MS,
                                    "body pull refused: brings boss " + boss->GetName());
@@ -13940,7 +14022,40 @@ namespace TestHarness
                 passBack.clear();
             latched = passBack.emplace(passKey, !anyUseSide).first;
         }
-        bool const back = latched->second;
+        bool back = latched->second;
+        // [b51_strat] A re-open for a member stranded behind this gate (TickDoorCut: Party::doorCutDoor): only the
+        // stranded side walks through, to the group; the group's side (the side with more living members, the leader's
+        // on a tie) stays where it is - nobody crosses back to fetch it (user 2026-10-26). Latched per pass.
+        static std::unordered_map<uint64, int8> reopenSide;  // passKey -> 0 no re-open, 1 the use side stays, 2 far
+        auto reopenAt = reopenSide.find(passKey);
+        if (reopenAt == reopenSide.end())
+        {
+            int8 stay = 0;
+            if (!party.doorCutMember.IsEmpty() && party.doorCutDoor == door->GetGUID())
+            {
+                uint32 onUse = 0;
+                uint32 onFar = 0;
+                for (Member const& member : party.members)
+                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                        bot && bot->IsAlive() && bot->GetMap() == map)
+                        ++(useSide(bot) ? onUse : onFar);
+                bool const useStays = onUse != onFar ? onUse > onFar : useSide(leader);
+                stay = useStays ? 1 : 2;
+                Player* cutBot = ObjectAccessor::FindPlayer(party.doorCutMember);
+                LogEvent(party, "door_reopen_for",
+                         JsonObject().Str("member", cutBot ? cutBot->GetName() : "?").Str("door", door->GetName())
+                             .Num("doorEntry", door->GetEntry()).Str("stays", useStays ? "use side" : "far side")
+                             .Num("useSide", onUse).Num("farSide", onFar));
+                LOG_INFO("playerbots", "[b51_strat] door_reopen_for {}: {} {} opened, the {} side ({} members) stays, "
+                         "only the other side walks through", cutBot ? cutBot->GetName() : "?", door->GetName(),
+                         door->GetEntry(), useStays ? "use" : "far", useStays ? onUse : onFar);
+            }
+            if (reopenSide.size() > 32)
+                reopenSide.clear();
+            reopenAt = reopenSide.emplace(passKey, stay).first;
+        }
+        if (reopenAt->second)
+            back = reopenAt->second == 1;  // the use side stays: the far side walks back to the use point
         auto nearSide = [&](Player const* bot) { return useSide(bot) != back; };
         float const destX = back ? pass->useX : pass->farX;
         float const destY = back ? pass->useY : pass->farY;
@@ -14144,6 +14259,313 @@ namespace TestHarness
         }
     }
 
+    // [b51_strat] User 2026-10-26: «Ключ есть - открыл ворота, пустил»; before the door is opened the WHOLE group
+    // stands right next to the opener («совсем рядом», ~3-4 yd), out of combat, and passes in the same opening. Every
+    // door that closes again by itself: GameObjectTemplate::GetAutoCloseTime() on a DOOR / BUTTON (world DB, 5-man
+    // maps: Stratholme 175368 / 175352 / 175353 / 175369, Dire Maul 177211-177215 Doors, BRD 170555-170557 / 170572 /
+    // 161461, UBRS 175185, Deadmines / SFK / Gnomeregan / SM levers and buttons, ...) or a KeyDoorPassDef gate. No cap
+    // (user correction 2026-10-26: "never open early"): a member who cannot come is a stall for the stall recovery; the
+    // wait is logged every DOOR_GATHER_LOG_MS. A member whose walk to the opener runs through this closed door is on
+    // its far side (it is the one the door is opened for) and the door-cut member of this door too: not waited for.
+    // Dead members do not count.
+    bool TestHarnessMgr::DoorGatherHolds(Party& party, Player* opener, GameObject* door)
+    {
+        constexpr float DOOR_GATHER_RANGE = 4.0f;   // 2D, from the opener
+        constexpr float DOOR_GATHER_DZ = 4.0f;
+        constexpr float DOOR_GATHER_SPREAD = 1.5f;  // members are walked to points this far round the opener
+        constexpr uint32 DOOR_GATHER_SEND_MS = 3 * IN_MILLISECONDS;
+        constexpr uint32 DOOR_GATHER_LOG_MS = 10 * IN_MILLISECONDS;
+        if (!opener || !door || !opener->IsInWorld())
+            return false;
+        GameObjectTemplate const* info = door->GetGOInfo();
+        bool const autoCloses =
+            ((door->GetGoType() == GAMEOBJECT_TYPE_DOOR || door->GetGoType() == GAMEOBJECT_TYPE_BUTTON) && info &&
+             info->GetAutoCloseTime() > 0) ||
+            (door->GetGoType() == GAMEOBJECT_TYPE_DOOR && KeyDoorPass(door->GetMapId(), door->GetEntry()));
+        party.doorGatherHeld = false;
+        if (!autoCloses)
+            return false;
+        Map* map = opener->GetMap();
+        uint32 const now = getMSTime();
+        // per instance and door (the harness's world thread only): (waiting since, last log), the members walked
+        static std::unordered_map<uint64, std::pair<uint32, uint32>> gatherMs;
+        static std::unordered_map<uint64, std::set<ObjectGuid>> walked;
+        static std::unordered_map<uint64, uint32> sentMs;
+        uint64 const key = (uint64(party.instanceId) << 32) | uint32(door->GetSpawnId());
+        std::string waitFor;
+        if (opener->IsInCombat())
+            waitFor = std::string(opener->GetName()) + " (opener in combat)";
+        bool const send = !sentMs.count(key) || getMSTimeDiff(sentMs[key], now) >= DOOR_GATHER_SEND_MS;
+        uint32 slot = 0;
+        for (Member& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot || bot == opener || !bot->IsAlive() || bot->GetMap() != map)
+                continue;
+            if (member.guid == party.doorCutMember && party.doorCutDoor == door->GetGUID())
+                continue;  // stranded behind this door: it is opened for it
+            bool const close = bot->GetExactDist2d(opener) <= DOOR_GATHER_RANGE &&
+                               std::fabs(bot->GetPositionZ() - opener->GetPositionZ()) <= DOOR_GATHER_DZ;
+            if (close && !bot->IsInCombat())
+                continue;
+            if (!close && door->GetGoType() == GAMEOBJECT_TYPE_DOOR && door->GetGoState() == GO_STATE_READY)
+            {
+                PathResult const way =
+                    RoutePath(bot, opener->GetPositionX(), opener->GetPositionY(), opener->GetPositionZ());
+                if (way.reachable &&
+                    RouteThroughClosedDoor(way.points, std::vector<GameObject*>{door}, opener->GetPhaseMask()))
+                    continue;  // on the far side: cannot come, the opening is for it
+            }
+            if (!close && !bot->IsInCombat() && send)
+            {
+                float const angle = opener->GetOrientation() + float(M_PI) + (float(slot++ % 5) - 2.0f) * 0.9f;
+                float const x = opener->GetPositionX() + std::cos(angle) * DOOR_GATHER_SPREAD;
+                float const y = opener->GetPositionY() + std::sin(angle) * DOOR_GATHER_SPREAD;
+                float const ground =
+                    map->GetHeight(bot->GetPhaseMask(), x, y, opener->GetPositionZ() + 3.0f, true, 10.0f);
+                SetMemberWaypoint(party, member, bot, x, y, ground > INVALID_HEIGHT ? ground : opener->GetPositionZ());
+                walked[key].insert(member.guid);
+            }
+            waitFor += (waitFor.empty() ? "" : ",") + member.name +
+                       Acore::StringFormat(" ({}{:.1f} yd)", bot->IsInCombat() ? "combat, " : "",
+                                           bot->GetExactDist2d(opener));
+        }
+        if (send)
+            sentMs[key] = now ? now : 1;
+        auto& [sinceMs, logMs] = gatherMs[key];
+        if (waitFor.empty())
+        {
+            if (sinceMs)
+            {
+                LogEvent(party, "door_gather", JsonObject().Str("state", "together").Str("door", door->GetName())
+                                                   .Num("doorEntry", door->GetEntry()).Str("opener", opener->GetName())
+                                                   .Num("waitSec", getMSTimeDiff(sinceMs, now) / IN_MILLISECONDS));
+                LOG_INFO("playerbots", "[b51_strat] door_gather: {} opens {} {} with the group within {:.0f} yd ({} s)",
+                         opener->GetName(), door->GetName(), door->GetEntry(), DOOR_GATHER_RANGE,
+                         getMSTimeDiff(sinceMs, now) / IN_MILLISECONDS);
+            }
+            // the gather walks are over: the members follow again (a key pass sends them through itself)
+            for (ObjectGuid const& guid : walked[key])
+                for (Member& member : party.members)
+                    if (member.guid == guid && member.hasWaypoint)
+                        ClearMemberWaypoint(member);
+            walked.erase(key);
+            gatherMs.erase(key);
+            sentMs.erase(key);
+            return false;
+        }
+        if (!sinceMs)
+            sinceMs = now ? now : 1;
+        if (!logMs || getMSTimeDiff(logMs, now) >= DOOR_GATHER_LOG_MS)
+        {
+            logMs = now ? now : 1;
+            uint32 const waitSec = getMSTimeDiff(sinceMs, now) / IN_MILLISECONDS;
+            LogEvent(party, "door_gather", JsonObject().Str("state", "waiting").Str("door", door->GetName())
+                                               .Num("doorEntry", door->GetEntry()).Str("opener", opener->GetName())
+                                               .Str("waitFor", waitFor).Num("waitSec", waitSec));
+            LOG_INFO("playerbots", "[b51_strat] door_gather waiting for {} ({} s): {} holds {} {} until everyone "
+                     "stands within {:.0f} yd", waitFor, waitSec, opener->GetName(), door->GetName(), door->GetEntry(),
+                     DOOR_GATHER_RANGE);
+        }
+        party.doorGatherHeld = true;
+        return true;
+    }
+
+    // [b51_strat] Stratholme's two rat-trap alleys (instance_stratholme.cpp aGateTrap / Update / StartGateTrap): a
+    // non-GM player within 5.5 yd 2D of the trap point drops both portcullises at once (Scarlet 175350 / 175351, 9.3 yd
+    // either side of the point; Undead 175354 / 175355, 11.5 yd), the plagued critters come 2 s later, the gates open
+    // after 20 s, then the trap rests 30 min. strat-h 20261026-122322-strat-h-5B-2 at 1598 s: the tank's waypoint
+    // ran over the Scarlet point with the group 17-30 yd behind (follow): tank inside, everyone else outside for 21 s.
+    // User: «Танк за воротами, а все остальные с другой стороны. Ну ошибка же.» The player way: before anyone
+    // steps within TRAP_HOLD_RANGE of an armed point, the group walks in to the band between the trigger circle and the
+    // approach-side gate and waits there for each other; then the leader walks on over it, everyone inside. Each
+    // member's spot is TRAP_SPOT_AXIS yd from the point on the alley's axis: a walk that stops at it is outside the
+    // trigger, one that stops the runner's 2.5 yd short of it is still inside the gate. The cooldown is not instance
+    // data (InstanceScript::GetData exposes no trap state): a trap counts armed until one of its portcullises is seen
+    // shut in this run, then resting for GATE_TRAP_REST_MS.
+    void TestHarnessMgr::TickGateTrapGather(Party& party, Player* leader)
+    {
+        constexpr uint32 STRATHOLME_MAP = 329;
+        struct GateTrapDef
+        {
+            float x;
+            float y;
+            uint32 gateA;
+            uint32 gateB;
+            char const* note;
+        };
+        static GateTrapDef const traps[] = {
+            {3612.29f, -3335.39f, 175350, 175351, "Scarlet side rat trap"},
+            {3919.88f, -3547.34f, 175354, 175355, "Undead side rat trap"},
+        };
+        constexpr float TRAP_TRIGGER = 5.5f;      // the script's 2D radius
+        constexpr float TRAP_HOLD_RANGE = 8.0f;   // nobody steps this close to an armed point before the gather
+        constexpr float TRAP_SPOT_AXIS = 6.3f;    // a member's spot on the axis (see above)
+        constexpr float TRAP_INSIDE_MIN = 5.9f;   // inside the band: past this from the point ...
+        constexpr float TRAP_GATE_MARGIN = 0.4f;  // ... and this far inside the approach-side gate
+        constexpr float TRAP_WATCH = 25.0f;       // the leader this close: the alley is looked at
+        constexpr uint32 GATE_TRAP_REST_MS = 30 * MINUTE * IN_MILLISECONDS + 25 * IN_MILLISECONDS;
+        constexpr uint32 TRAP_GO_MS = 30 * IN_MILLISECONDS;  // after the gather, the walk over it is free this long
+        constexpr uint32 TRAP_SEND_MS = 3 * IN_MILLISECONDS;
+        constexpr uint32 TRAP_LOG_MS = 10 * IN_MILLISECONDS;
+        Map* map = leader ? leader->GetMap() : nullptr;
+        if (!map || map->GetId() != STRATHOLME_MAP || map->GetInstanceId() != party.instanceId || !leader->IsAlive())
+            return;
+        uint32 const now = getMSTime();
+        struct TrapState
+        {
+            uint32 restUntilMs = 0;
+            uint32 goUntilMs = 0;
+            uint32 holdSinceMs = 0;
+            uint32 logMs = 0;
+            uint32 sentMs = 0;
+        };
+        static std::unordered_map<uint64, TrapState> states;  // the harness's world thread only
+        for (uint32 i = 0; i < 2; ++i)
+        {
+            GateTrapDef const& trap = traps[i];
+            TrapState& state = states[(uint64(party.instanceId) << 32) | i];
+            if (leader->GetExactDist2d(trap.x, trap.y) > TRAP_WATCH)
+            {
+                state.holdSinceMs = 0;
+                continue;
+            }
+            GameObject* gateA = nullptr;
+            GameObject* gateB = nullptr;
+            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                if (go && go->isSpawned() && go->GetExactDist2d(trap.x, trap.y) <= 15.0f)
+                {
+                    if (go->GetEntry() == trap.gateA)
+                        gateA = go;
+                    else if (go->GetEntry() == trap.gateB)
+                        gateB = go;
+                }
+            if (!gateA || !gateB)
+                continue;
+            // seen shut: it fired (in this run) - resting
+            if (gateA->GetGoState() == GO_STATE_READY || gateB->GetGoState() == GO_STATE_READY)
+            {
+                if (!state.restUntilMs || int32(now - state.restUntilMs) >= 0)
+                    LogEvent(party, "trap_fired", JsonObject().Str("note", trap.note)
+                                                      .Num("restSec", GATE_TRAP_REST_MS / IN_MILLISECONDS));
+                state.restUntilMs = now + GATE_TRAP_REST_MS;
+                state.holdSinceMs = 0;
+                continue;
+            }
+            if (state.restUntilMs && int32(now - state.restUntilMs) < 0)
+                continue;
+            if (state.goUntilMs && int32(now - state.goUntilMs) < 0)
+                continue;  // gathered: the leader walks over it with everyone inside
+            // the alley's axis: from the point toward the gate on the leader's side (the approach)
+            GameObject* nearGate = leader->GetExactDist2d(gateA) <= leader->GetExactDist2d(gateB) ? gateA : gateB;
+            float ax = nearGate->GetPositionX() - trap.x;
+            float ay = nearGate->GetPositionY() - trap.y;
+            float const gateDist = std::max(0.1f, std::hypot(ax, ay));
+            ax /= gateDist;
+            ay /= gateDist;
+            auto const inside = [&](WorldObject const* unit)
+            {
+                float const along = (unit->GetPositionX() - trap.x) * ax + (unit->GetPositionY() - trap.y) * ay;
+                return unit->GetExactDist2d(trap.x, trap.y) >= TRAP_INSIDE_MIN && along > 0.0f &&
+                       along <= gateDist - TRAP_GATE_MARGIN;
+            };
+            // Does the leader's walk come within TRAP_HOLD_RANGE (its waypoint's line, or where it stands)?
+            bool heading = leader->GetExactDist2d(trap.x, trap.y) <= TRAP_HOLD_RANGE;
+            TestRunner::Waypoint waypoint;
+            if (!heading && TestRunner::GetWaypoint(party.leader, waypoint))
+            {
+                float const sx = leader->GetPositionX();
+                float const sy = leader->GetPositionY();
+                float const dx = waypoint.x - sx;
+                float const dy = waypoint.y - sy;
+                float const len2 = dx * dx + dy * dy;
+                float const share =
+                    len2 > 0.0f ? std::clamp(((trap.x - sx) * dx + (trap.y - sy) * dy) / len2, 0.0f, 1.0f) : 0.0f;
+                heading = std::hypot(sx + dx * share - trap.x, sy + dy * share - trap.y) <= TRAP_HOLD_RANGE;
+            }
+            if (!heading && !state.holdSinceMs)
+                continue;
+            bool anyCombat = false;
+            for (Member const& member : party.members)
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                    bot && bot->IsAlive() && bot->GetMap() == map && bot->IsInCombat())
+                    anyCombat = true;
+            if (anyCombat)
+            {
+                state.holdSinceMs = 0;  // a fight is on: nobody is walked; the gather starts again after it
+                continue;
+            }
+            std::string waitFor;
+            bool const send = !state.sentMs || getMSTimeDiff(state.sentMs, now) >= TRAP_SEND_MS;
+            uint32 slot = 0;
+            for (Member& member : party.members)
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                if (!bot || bot == leader || !bot->IsAlive() || bot->GetMap() != map)
+                    continue;
+                if (inside(bot))
+                    continue;
+                if (send)
+                {
+                    // on the axis, side by side: 0, +0.9, -0.9, +1.6, -1.6 yd off it
+                    static float const offsets[] = {0.0f, 0.9f, -0.9f, 1.6f, -1.6f};
+                    float const off = offsets[slot++ % 5];
+                    float const x = trap.x + ax * TRAP_SPOT_AXIS - ay * off;
+                    float const y = trap.y + ay * TRAP_SPOT_AXIS + ax * off;
+                    float const ground =
+                        map->GetHeight(bot->GetPhaseMask(), x, y, nearGate->GetPositionZ() + 3.0f, true, 10.0f);
+                    SetMemberWaypoint(party, member, bot, x, y, ground > INVALID_HEIGHT ? ground : bot->GetPositionZ());
+                    TestRunner::Waypoint spot;
+                    if (TestRunner::GetWaypoint(bot->GetGUID(), spot))
+                    {
+                        spot.gatePass = true;  // walked as asked, not shortened by the idle-mob guard
+                        TestRunner::SetWaypoint(bot->GetGUID(), spot);
+                    }
+                }
+                waitFor += (waitFor.empty() ? "" : ",") + member.name +
+                           Acore::StringFormat(" ({:.1f} yd)", bot->GetExactDist2d(trap.x, trap.y));
+            }
+            if (send)
+                state.sentMs = now ? now : 1;
+            if (!state.holdSinceMs)
+                state.holdSinceMs = now ? now : 1;
+            uint32 const waitSec = getMSTimeDiff(state.holdSinceMs, now) / IN_MILLISECONDS;
+            if (waitFor.empty())
+            {
+                // everyone inside the band: the leader walks over the point now, the gates drop behind the group
+                for (Member& member : party.members)
+                    if (member.guid != party.leader && member.hasWaypoint)
+                        ClearMemberWaypoint(member);
+                state.goUntilMs = now + TRAP_GO_MS;
+                state.holdSinceMs = 0;
+                party.trapHoldUntilMs = 0;
+                party.nextRetargetMs = now;
+                LogEvent(party, "trap_gather", JsonObject().Str("note", trap.note).Str("state", "together, in")
+                                                   .Num("waitSec", waitSec));
+                LOG_INFO("playerbots", "[b51_strat] trap_gather: the group is inside the {} band, {} walks in",
+                         trap.note, leader->GetName());
+                continue;
+            }
+            // the leader holds outside TRAP_HOLD_RANGE: no retarget, no walk (Party::trapHoldUntilMs), it stops here
+            party.trapHoldUntilMs = now + 2 * IN_MILLISECONDS;
+            if (leader->GetExactDist2d(trap.x, trap.y) > TRAP_TRIGGER + 0.5f)
+            {
+                TestRunner::ClearWaypoint(party.leader);
+                if (leader->isMoving() && leader->GetExactDist2d(trap.x, trap.y) <= TRAP_HOLD_RANGE + 4.0f)
+                    leader->StopMoving();
+            }
+            if (!state.logMs || getMSTimeDiff(state.logMs, now) >= TRAP_LOG_MS)
+            {
+                state.logMs = now ? now : 1;
+                LogEvent(party, "trap_gather", JsonObject().Str("note", trap.note).Str("state", "waiting")
+                                                   .Str("waitFor", waitFor).Num("waitSec", waitSec)
+                                                   .Real("leaderToTrap", leader->GetExactDist2d(trap.x, trap.y)));
+                LOG_INFO("playerbots", "[b51_strat] trap_gather waiting for {} ({} s): {} holds before the armed {}",
+                         waitFor, waitSec, leader->GetName(), trap.note);
+            }
+        }
+    }
+
     // [b32_strat_gate] Who is cut off behind a closed door: a living member whose own walk to the leader runs through a
     // closed door within DOOR_CUT_DOOR_RANGE of it (the healer first). While one is, the group holds (the far wait in
     // TestHarnessMgr.cpp: no wait_timeout, no route, no new pull) and the door is keyed again - by the member itself
@@ -14292,7 +14714,8 @@ namespace TestHarness
         // never not at all: with DOOR_REARM_MAX spent as well, a key door's hold (TickDoorCut keyDoor) had nobody left
         // to open it - strat-n 20261026-014521-5C-2, uses 12/12 and re-arms 6/6 at 2121 s, the healer 0.7 yd from
         // King's Square Gate 175353 and the group held 230 s until the stop.
-        constexpr uint32 MEMBER_KEY_SLOW_GAP_MS = 30 * IN_MILLISECONDS;
+        // [b51_strat] no slow-down past the budget (user 2026-10-26: open it at once, as often as needed)
+        constexpr uint32 MEMBER_KEY_SLOW_GAP_MS = MEMBER_KEY_GAP_MS;
         constexpr float MEMBER_KEY_CAST_RANGE = 4.5f;  // Opening 3366: 5 yd to the object's centre
         constexpr float MEMBER_KEY_STEP = 3.0f;        // the step in: this far from the centre, on the member's side
         uint32 const now = getMSTime();
@@ -14506,7 +14929,11 @@ namespace TestHarness
                 }
             bool const atDoor = !leader->isMoving() && leader->GetExactDist(door) <= KEY_DOOR_HELD_RANGE;
             bool const recentHold = party.doorHoldMs && getMSTimeDiff(party.doorHoldMs, now) <= KEY_DOOR_HOLD_RECENT_MS;
-            bool const held = party.doorHold == door->GetGUID() || wingWalkHeld || (atDoor && (skipHeld || recentHold));
+            // [b51_strat] the leader waiting on its own side of the door a member is stranded behind (the far wait's
+            // door_reopen_for walk, which no longer runs through the door, so it makes no door_hold)
+            bool const reopenHeld = atDoor && party.doorCutHold && party.doorCutDoor == door->GetGUID();
+            bool const held = party.doorHold == door->GetGUID() || wingWalkHeld || reopenHeld ||
+                              (atDoor && (skipHeld || recentHold));
             // [b36_ss] Held this long with the whole group through: the walk back IS what the route wants (every
             // target behind the gate, 5A-2: "fallback (nothing on the route)" targets all behind 175353, wing walk
             // done at 2129 s) - the re-key goes ahead, and TickKeyDoorPass sends the far side back (its pass back).
@@ -14606,14 +15033,17 @@ namespace TestHarness
             {
                 if (!sinceMs)
                     sinceMs = now ? now : 1;
-                bool const gaveUp = getMSTimeDiff(sinceMs, now) >= STARTER_GATHER_MAX_MS;
+                // [b51_strat] never used early (user 2026-10-26); the cap is only logged
+                bool const overCap = getMSTimeDiff(sinceMs, now) >= STARTER_GATHER_MAX_MS;
+                bool const gaveUp = false;
                 if (!logMs || getMSTimeDiff(logMs, now) >= STARTER_GATHER_LOG_MS || gaveUp)
                 {
                     logMs = now ? now : 1;
                     LogEvent(party, "starter_wait_group",
                              JsonObject().Str("note", starter.def->note).Str("away", away)
                                  .Real("radius", starter.def->gatherRadius)
-                                 .Num("waitSec", getMSTimeDiff(sinceMs, now) / IN_MILLISECONDS).Bool("gaveUp", gaveUp));
+                                 .Num("waitSec", getMSTimeDiff(sinceMs, now) / IN_MILLISECONDS).Bool("gaveUp", gaveUp)
+                                 .Bool("overCap", overCap));
                 }
                 if (!gaveUp)
                 {
@@ -14626,7 +15056,11 @@ namespace TestHarness
         ++starter.uses;
         starter.wipesAtUse = party.wipes;
         starter.nextAllowedMs = now + starter.def->cooldownMs;
+        // [b51_strat] a door_gather hold (DoorGatherHolds) is no progress: the stall recovery sees a member who
+        // cannot come
+        uint32 const progressBefore = party.lastProgressMs;
         party.lastProgressMs = now;
+        party.doorGatherHeld = false;
 
         JsonArray options;
         if (starter.def->kind == StarterKind::UseItem)
@@ -14638,6 +15072,8 @@ namespace TestHarness
                 // counted (pass 3); UseStarterItem set when to try again.
                 if (ROUTE_STARTER_ITEM_CHECK)
                     --starter.uses;
+                if (party.doorGatherHeld)
+                    party.lastProgressMs = progressBefore;  // [b51_strat]
                 return false;
             }
             starter.usedObjects.insert(go->GetGUID());
@@ -14865,6 +15301,15 @@ namespace TestHarness
                 if (SpellInfo const* info = sSpellMgr->GetSpellInfo(openSpell))
                     party.castHoldUntilMs = now + info->CalcCastTime(leader) + 1000;  // 1 s: a walk would break it
                 TestRunner::ClearWaypoint(party.leader);
+            }
+            else if (!leader->IsInCombat() && party.doorCutDoor != go->GetGUID() &&
+                     DoorGatherHolds(party, users.empty() ? leader : users.front(), go))
+            {
+                // [b51_strat] door_gather: a lever / button / door that closes again, used with the group next to it
+                --starter.uses;
+                party.lastProgressMs = progressBefore;
+                starter.nextAllowedMs = now + STARTER_GATHER_RETRY_MS;
+                return false;
             }
             else
                 for (Player* user : users)
@@ -15242,7 +15687,9 @@ namespace TestHarness
             if (!gatherSince || getMSTimeDiff(gatherSeen, now) > 10 * IN_MILLISECONDS)
                 gatherSince = now ? now : 1;
             gatherSeen = now ? now : 1;
-            bool const gatherGaveUp = getMSTimeDiff(gatherSince, now) >= KEY_PASS_GATHER_MAX_MS;
+            // [b51_strat] no cap any more (user 2026-10-26: "if someone has not come up, the door is NOT opened"); a
+            // member who cannot come is the stall recovery's
+            bool const gatherGaveUp = false && getMSTimeDiff(gatherSince, now) >= KEY_PASS_GATHER_MAX_MS;
             if (leader->IsInCombat())
                 waitFor = "leader in combat";
             else if (!atUse)
@@ -15448,6 +15895,17 @@ namespace TestHarness
                 }
                 return false;
             }
+        }
+
+        // [b51_strat] door_gather: an auto-closing door is keyed with the whole group next to the leader. Not for a
+        // re-open for a member stranded behind it (the rest stay where they are) nor an in-combat re-key.
+        if (go->GetGoType() == GAMEOBJECT_TYPE_DOOR && go->GetGoState() == GO_STATE_READY && !leader->IsInCombat() &&
+            party.doorCutDoor != go->GetGUID() && DoorGatherHolds(party, leader, go))
+        {
+            starter.nextAllowedMs = now + KEY_PASS_RETRY_MS;
+            if (!leader->IsInCombat())
+                TestRunner::ClearWaypoint(party.leader);
+            return false;
         }
 
         // Bots walk by themselves: the leader stopped on arriving, nothing stops or turns it here.
