@@ -473,6 +473,7 @@ namespace TestHarness
             uint32 spotGateProgressMs = 0;       // [lead20] the spot gate's last progress (a sitter counts)
             std::string spotGateLast;
             uint32 commitTickMs = 0;              // [lead20] rest time does not age a commitment
+            std::map<ObjectGuid, uint32> holdWaitMs;  // [lead20] combat re-spot waiting for the tank's hold
             uint32 lostCheckMs = 0;
             uint32 bossPrepareSinceMs = 0;
             ObjectGuid heldReadyMob;

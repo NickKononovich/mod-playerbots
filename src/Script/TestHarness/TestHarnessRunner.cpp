@@ -20968,6 +20968,23 @@ namespace TestHarness
             static constexpr float SHRINK[] = {1.0f, 0.75f, 0.55f};
             static constexpr float TURN[] = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f};
             bool found = false;
+            // [lead20] user: a member whose position already fits does not move (the healer: it reaches and sees the
+            // fight spot within LEADER_HEALER_TANK_YD; a ranged member: in range of it; melee: anywhere safe)
+            {
+                Position const here = bot->GetPosition();
+                bool const fits = healer ? (HealReaches(tank, here, fight) &&
+                                            here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD)
+                                         : (!ranged || here.GetExactDist(fight) <= LeaderSpellReach(bot));
+                if (fits && !LeaderAggroAt(bot, here))
+                {
+                    lead.spots[member.guid] = here;
+                    continue;
+                }
+                // [lead20] the healer never holds the pull: no fitting spot now - it re-spots after the pull, once the
+                // tank holds the mobs (the fight's heal-reach invariant)
+                if (healer)
+                    continue;
+            }
             for (float shrink : SHRINK)
             {
                 for (float turn : TURN)
@@ -21462,6 +21479,22 @@ namespace TestHarness
                 intensity = Leader::Intensity::Burn;
         }
 
+        // [lead20] the tank holds every fight mob near `to` and the walk from `from` (its victim is the tank, or it is
+        // crowd-controlled)
+        auto const tankHolds = [&](Position const& from, Position const& to)
+        {
+            Position const mid((from.GetPositionX() + to.GetPositionX()) / 2.0f,
+                               (from.GetPositionY() + to.GetPositionY()) / 2.0f, to.GetPositionZ());
+            for (ObjectGuid const guid : killOrder)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, guid);
+                if (!mob || !mob->IsAlive() || mob->GetVictim() == tank || mob->HasBreakableByDamageCrowdControlAura())
+                    continue;
+                if (mob->GetExactDist(to) <= 15.0f || mob->GetExactDist(mid) <= 15.0f)
+                    return false;
+            }
+            return true;
+        };
         Position healerAt = healer ? plannedAt(healer) : Position();
         auto const reaches = [tank](Position const& from, Position const& to) { return HealReaches(tank, from, to); };
         // the healer at `spot` reaches every member (where it will stand) and the tank
@@ -22045,6 +22078,29 @@ namespace TestHarness
                         found = lead.combatSpots.find(guid);
                     }
                 }
+                // [lead20] user: «когда танк захватил уже всех с этого радиуса, хил может зайти» - a walk to the
+                // combat spot only once the tank holds every fight mob near the spot and the walk (else it stays)
+                if (found != lead.combatSpots.end() &&
+                    bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
+                        (melee ? 1.0f : 2.0f))
+                {
+                    if (!tankHolds(bot->GetPosition(), found->second.second))
+                    {
+                        if (!lead.holdWaitMs.count(guid))
+                            lead.holdWaitMs[guid] = now;
+                        found = lead.combatSpots.end();
+                        moved = true;  // it stays where it is meanwhile
+                    }
+                    else if (auto const waited = lead.holdWaitMs.find(guid); waited != lead.holdWaitMs.end())
+                    {
+                        DecisionLog::Instance().Write(run, "leader", "respot_after_tank_hold", guid, bot->GetName(),
+                                                      true,
+                                                      JsonObject().Str("member", bot->GetName())
+                                                          .Real("waitSec", getMSTimeDiff(waited->second, now) /
+                                                                               1000.0f));
+                        lead.holdWaitMs.erase(waited);
+                    }
+                }
                 if (found != lead.combatSpots.end())
                 {
                     Position const& spot = found->second.second;
@@ -22297,7 +22353,8 @@ namespace TestHarness
                 Position fix;
                 bool const fixed =
                     slow([&] { return LeaderHealerRespot(healer, GET_PLAYERBOT_AI(healer), healerKeeps, fix); });
-                if (fixed && checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
+                if (fixed && tankHolds(healer->GetPosition(), fix) &&
+                    checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
                                                      "heal reach"))
                     logEvent(healer, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "heal reach").Real("x", fix.GetPositionX())
