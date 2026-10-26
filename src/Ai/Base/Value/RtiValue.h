@@ -116,6 +116,10 @@ bool IsCrowdControlBackedOff(Unit* unit);
 // A loop over the group and the mob's auras: for actions and target values, never for a trigger.
 bool CrowdControlWouldBreak(PlayerbotAI* botAI, Unit* unit, char const** why = nullptr);
 
+// [rot1b] `unit` is a crowd-control mark its caster can work: within CC_MARK_SAME_FLOOR (8 yd) of the caster's height
+// (not another floor) and in its line of sight. `why` names the failed rule. One LoS query: for actions only.
+bool CrowdControlMarkReachable(Player* caster, Unit* unit, char const** why = nullptr);
+
 // [rot_b31_cc] The hold spell of `option` is not broken by damage (Banish): the area rules above do not apply.
 bool IsUnbreakableCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option);
 

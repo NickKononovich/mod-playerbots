@@ -40,6 +40,7 @@ namespace
 {
     constexpr uint32 AUTO_CC_KEEP_KILLABLE = 2;  // a pack keeps at least this many mobs free for the kill
     constexpr float AUTO_CC_MIN_HEALTH_PCT = 90.0f;
+    constexpr uint32 AUTO_CC_SKIP_LOG_MS = 10 * IN_MILLISECONDS;  // [rot1b] one unreachable-mark line per bot
     constexpr float AUTO_CC_HEALER_BONUS = 200.0f;  // beats any distance difference inside a pack
     constexpr float AUTO_CC_CASTER_BONUS = 100.0f;
     constexpr float AUTO_CC_MELEE_BONUS = 50.0f;     // the hardest-hitting melee mob of the candidates, in full
@@ -658,6 +659,23 @@ bool AutoCcMarkAction::Execute(Event /*event*/)
 
         if (instance && !unit->ToCreature()->isElite())
             continue;
+
+        // [rot1b] not a mob on another floor or out of the caster's sight (CrowdControlMarkReachable)
+        char const* unreachable = nullptr;
+        if (!CrowdControlMarkReachable(bot, unit, &unreachable))
+        {
+            thread_local std::unordered_map<ObjectGuid, uint32> logged;
+            uint32 const now = getMSTime();
+            uint32& last = logged[bot->GetGUID()];
+            if (!last || getMSTimeDiff(last, now) >= AUTO_CC_SKIP_LOG_MS)
+            {
+                last = now ? now : 1;
+                LOG_INFO("playerbots", "[rot1b] [auto cc] {} skips {} {} as a mark: {} (dz {:.1f} yd, {:.1f} yd away)",
+                         bot->GetName(), unit->GetName(), unit->GetEntry(), unreachable ? unreachable : "unreachable",
+                         unit->GetPositionZ() - bot->GetPositionZ(), bot->GetExactDist(unit));
+            }
+            continue;
+        }
 
         CrowdControlOption const* option = FindCrowdControl(botAI, unit, false);
         // [rot_b31_cc] never into the group's own area damage (the tank's and the melee's reach, a ground spell, a

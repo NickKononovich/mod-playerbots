@@ -83,6 +83,8 @@ namespace
     constexpr float FEAR_SAFE_TARGET_RADIUS = 30.0f;
     constexpr float FEAR_SAFE_CASTER_RADIUS = 45.0f;  // FleeingMovementGenerator stops 28-43 yd from the caster
     constexpr float FEAR_SAFE_FLOOR = 10.0f;
+    // [rot1b] a crowd-control mark farther above or below its caster than this stands on another floor
+    constexpr float CC_MARK_SAME_FLOOR = 8.0f;
     constexpr uint32 AUTO_CC_DANGEROUS_PACK_SIZE = 3;
     constexpr uint32 KILL_TARGET_GUARD_LOG_MS = 10 * IN_MILLISECONDS;
 
@@ -573,5 +575,34 @@ std::string const RtiCcValue::Save() { return value; }
 bool RtiCcValue::Load(std::string const text)
 {
     value = text;
+    return true;
+}
+
+// [rot1b] strat-h pull 13 (AUDIT_COHESION_STRAT.md B4): "cast auto cc to (36xx,-347x, 50-52)" with the street at
+// z 133-137, a drop of 82.4 yd; the mark was a mob on another floor and the caster's walk to it was cut by the zone
+// clamp only. The FEAR_SAFE_FLOOR rule (IsFearSafe) applied to the caster: same floor, and in its line of sight.
+bool CrowdControlMarkReachable(Player* caster, Unit* unit, char const** why)
+{
+    if (why)
+        *why = nullptr;
+
+    if (!caster || !unit)
+        return false;
+
+    float const dz = unit->GetPositionZ() - caster->GetPositionZ();
+    if (std::fabs(dz) > CC_MARK_SAME_FLOOR)
+    {
+        if (why)
+            *why = "another floor";
+        return false;
+    }
+
+    if (!caster->IsWithinLOSInMap(unit))
+    {
+        if (why)
+            *why = "no line of sight";
+        return false;
+    }
+
     return true;
 }
