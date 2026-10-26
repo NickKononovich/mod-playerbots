@@ -153,6 +153,15 @@ namespace TestHarness
 
     static bool GroupFullyReady(Party const& party, Player* leader) { return GroupNotReadyWhy(party, leader).empty(); }
 
+    // [lead22] slabs-h 20261026-201857: the leader told a full healer to Rest 52 times («[rest] Rtdruaa stands up:
+    // full (hp 100 %, mana 100 %)») and its readiness waited for that sitter forever. A member at 99 % health and mana
+    // never rests and a full sitter holds nothing (the bot's own stand-up rule: RestDone, full)
+    static bool MemberFull(Player* bot)
+    {
+        return bot && bot->GetHealthPct() >= 99.0f &&
+               (!bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 99.0f);
+    }
+
     namespace
     {
         constexpr uint32 MAX_PATH_CANDIDATES = 8;
@@ -691,7 +700,8 @@ namespace TestHarness
                 bool const hardLine = bot->GetHealthPct() < 45.0f ||
                                       (bot->GetMaxPower(POWER_MANA) && bot->GetPowerPct(POWER_MANA) < 20.0f);
                 // [lead15] LEADER_ONE_REST_RULE: a member that sits is waited for, whatever its line
-                bool const anySitter = Leader::Leads(Leader::LEADER_ONE_REST_RULE) && leaderJudgesRest;
+                bool const anySitter =
+                    Leader::Leads(Leader::LEADER_ONE_REST_RULE) && leaderJudgesRest && !MemberFull(bot);
                 if (RestState::IsDrinking(bot) &&
                     (anySitter || !REST_HOLD_BELOW_LINE || hardLine || RestState::WantsDrink(bot)))
                     state = "drinking";
@@ -19871,7 +19881,7 @@ namespace TestHarness
             {
                 if (party.lead.trailing.count(member.guid))
                     return member.name + " trails the group";
-                if (bot->IsSitState())
+                if (bot->IsSitState() && !MemberFull(bot))
                     return member.name + " sits";
                 continue;
             }
@@ -21145,7 +21155,7 @@ namespace TestHarness
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
             if (!bot || bot == tank || !bot->IsAlive())
                 continue;
-            if (bot->IsSitState())
+            if (bot->IsSitState() && !MemberFull(bot))  // [lead22] a full sitter holds nothing
             {
                 waitFor += (waitFor.empty() ? "" : ", ") + member.name + " sits";
                 continue;
@@ -21455,7 +21465,8 @@ namespace TestHarness
             attacked.push_back(tank);
             for (Player* bot : attacked)
                 for (Unit* attacker : bot->getAttackers())
-                    if (attacker && attacker->IsAlive() && attacker->GetMap() == map && LeaderFightMob(tank, attacker) &&
+                    if (attacker && attacker->IsAlive() && attacker->GetMap() == map &&
+                        LeaderFightMob(tank, attacker) &&
                         seen.insert(attacker->GetGUID()).second)
                         fightingMobs.push_back(attacker);
             if (seen.insert(target->GetGUID()).second)
@@ -21901,8 +21912,8 @@ namespace TestHarness
                 bool needsRest = RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
                                  RestState::WantsDrink(bot, &restWhy) || RestState::WantsFood(bot, &restWhy);
                 // [lead20] Rest holds until full: no Prepare in between (a buff stood the drinker up every 5 s)
-                bool const full = bot->GetHealthPct() >= 99.0f &&
-                                  (!bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 99.0f);
+                bool const full = MemberFull(bot);
+                needsRest &= !full;  // [lead22] never Rest a full member
                 if (needsRest)
                     lead.restingToFull.insert(guid);
                 else if (full || !RestState::CanRest(bot))
