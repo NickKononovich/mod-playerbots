@@ -65,6 +65,7 @@
 #include "StuckWatchdog.h"
 #include "DamageTaken.h"
 #include "DungeonHazard.h"   // [lead16] the leader's hazard view
+#include "LeaderActions.h"   // [lead19] the member guard model (LeaderMoveOrderAction::WalkRefusal)
 #include "RtiValue.h"        // [lead16] the leader's CC assignments
 #include "DungeonTactics.h"  // [lead15] the leader's cleave dodge (InFrontalCleave)
 #include "InstanceScript.h"
@@ -21210,6 +21211,12 @@ namespace TestHarness
                     reject = "the spot or its walk is in the reach of " + mob->GetName();
                 else if (noPath)
                     reject = "no walk to the spot";
+                // [lead19] the stricter model: the member's own guard (its idle-wake rule, a closed door) agrees too
+                if (reject.empty() && again)
+                    if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot))
+                        if (auto* mover = dynamic_cast<LeaderMoveOrderAction*>(
+                                memberAI->GetAiObjectContext()->GetAction("leader move order")))
+                            reject = mover->WalkRefusal(spot);
                 if (!reject.empty())
                 {
                     uint32& last = lead.spotRejectLogMs[member];

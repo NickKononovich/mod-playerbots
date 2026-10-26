@@ -12,6 +12,8 @@
 #include "InterruptValues.h"
 #include "LeaderValues.h"
 #include "LeaderOrders.h"  // [lead15]
+#include "PathGenerator.h"  // [lead19]
+#include "TerrainHazard.h"  // [lead19] closed doors
 #include "Log.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
@@ -596,9 +598,42 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     bool const moved = MoveTo(bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
                               events.spot.GetPositionZ(), false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
+    // [lead19] a refusal names its reason (invalid_spot): what the member's guards saw
+    std::string refusal;
+    if (!moved)
+    {
+        refusal = WalkRefusal(events.spot);
+        if (refusal.empty())
+            refusal = "another guard (ledge, ground effect, duplicate move)";
+    }
     Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
-                        moved ? "walks to the spot: " + events.moveWhy : "the walk refused: " + events.moveWhy);
+                        moved ? "walks to the spot: " + events.moveWhy
+                              : "the walk refused: " + events.moveWhy + " - " + refusal);
     return moved;
+}
+
+bool LeaderMoveOrderAction::SkipsIdleGuard() { return Leader::LedBot(bot); }
+
+std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
+{
+    PathGenerator path(bot);
+    path.CalculatePath(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
+    if (path.GetPathType() & PATHFIND_NOPATH)
+        return "no path";
+    Movement::PointsArray const& points = path.GetPath();
+    if (points.size() >= 2)
+    {
+        std::vector<G3D::Vector3> walk(points.begin(), points.end());
+        if (ClosedDoorNear(bot, bot->GetPositionX(), bot->GetPositionY(), to.GetPositionX(), to.GetPositionY(),
+                           5.0f))
+            if (ClosedDoorHit const hit = PathThroughClosedDoor(bot, walk); hit.Found())
+                return Acore::StringFormat("closed door {} {} at {:.1f} yd", hit.door->GetName(),
+                                           hit.door->GetEntry(), hit.walked);
+        std::string const wakes = IdleWakeOnWalk(points, ObjectGuid::Empty);
+        if (!wakes.empty())
+            return "would wake " + wakes;
+    }
+    return std::string();
 }
 
 bool LeaderAttackOrderAction::Execute(Event /*event*/)

@@ -149,6 +149,12 @@ public:
     LeaderMoveOrderAction(PlayerbotAI* botAI) : MovementAction(botAI, "leader move order") {}
 
     bool Execute(Event event) override;
+    // [lead19] the leader's checkedMove is the one safety check of a led member's leader walk: the member's own idle
+    // path guard and fight-zone clamp do not veto it (a closed door still does: no walk through a wall)
+    bool SkipsIdleGuard() override;
+    // [lead19] what the member-side guards would refuse on the walk to `to` ("" = nothing): an idle mob it would wake
+    // (IdleWakeOnWalk), a closed door on the path, no path. The leader calls it before it issues (the stricter model)
+    std::string WalkRefusal(Position const& to);
 };
 
 // [lead15] Executes the leader's Attack event: attacks the leader's target (the pull's first mob) at once.
