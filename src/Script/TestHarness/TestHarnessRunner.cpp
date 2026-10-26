@@ -6879,6 +6879,42 @@ namespace TestHarness
                      JsonObject().Str("name", target->GetName()).Num("entry", target->GetEntry())
                          .Num("packMobs", uint32(pack.size())));
         }
+        // [b49_voone] No walk-in to a pack an idle boss's own aggro reach covers (BossBroughtBy): the walk is his pull,
+        // and the planner did not price it (refused, or no answer in time). brs-h 20261026-111724-brs-h-5A-10
+        // (build 47): the planner refused the Smolderthorn Mystic pack at (-4,-462) ("refused for now: no pull of
+        // Smolderthorn Mystic from range"), the body pull walked in at 1342-1346 s ("unplanned (harness body pull)"),
+        // War Master Voone 13 yd from it came at 1353 s with his room (Berserkers, Shadow Priests, Headhunters), 3
+        // deaths 1437-1444 s. The pack is skipped; the boss logic pulls him as his fight. Not when the planner's own
+        // verdict was the boss's pull ("(a boss pull: no fallback plan)", [b35_bfd]): that walk is meant to stop at
+        // him.
+        bool const bossPullVerdict = why.find("(a boss pull: no fallback plan)") != std::string::npos;
+        Map* const bossMap = bossPullVerdict ? nullptr : leader->GetMap();
+        if (Map* map = bossMap)
+            for (ObjectGuid const& guid : party.bossCreatures)
+            {
+                Creature* boss = map->GetCreature(guid);
+                if (!boss || !boss->IsAlive() || boss->IsInCombat())
+                    continue;
+                for (Creature* mob : pack)
+                {
+                    if (!BossBroughtBy(leader, boss, mob))
+                        continue;
+                    LOG_INFO("playerbots", "[b49_voone] {}: no body pull of {} ({} mobs): {} ({:.1f} yd from {}) "
+                             "comes with it, the planner did not price it ({})", leader->GetName(),
+                             target->GetName(), pack.size(), boss->GetName(), boss->GetExactDist(mob),
+                             mob->GetName(), why);
+                    LogEvent(party, "blocker_pull_gate",
+                             JsonObject().Str("pull", "body pull").Str("blocker", target->GetName())
+                                 .Num("blockerEntry", target->GetEntry())
+                                 .Str("why", "[b49_voone] brings boss " + boss->GetName() + " (unpriced)")
+                                 .Str("was", why).Bool("hold", false));
+                    TestRunner::ClearWaypoint(party.leader);
+                    party.approach = 0;
+                    SkipTarget(party, target->GetGUID(), CAREFUL_REFUSED_SKIP_MS,
+                               "body pull refused: brings boss " + boss->GetName());
+                    return;
+                }
+            }
         sightStops.erase(party.leader);
         sightHolds.erase(party.leader);
         party.approach = 1;
@@ -13152,6 +13188,38 @@ namespace TestHarness
                         return;
                     }
                 }
+                // [b49_voone] the same rule as RouteBlockerBodyPull: no walk-in to a trash pack an idle boss's own
+                // aggro reach covers (BossBroughtBy) while the planner did not price that pull
+                if (pack && !party.targetIsBoss && !pack->IsDungeonBoss() &&
+                    !(plannerRefused && refusalWhy.find("(a boss pull: no fallback plan)") != std::string::npos))
+                {
+                    std::list<Creature*> walkPack;
+                    PackMobCheck walkCheck{leader, pack};
+                    Acore::CreatureListSearcher<PackMobCheck> walkSearcher(pack, walkPack, walkCheck);
+                    Cell::VisitObjects(pack, walkSearcher, PACK_RADIUS);
+                    if (std::find(walkPack.begin(), walkPack.end(), pack) == walkPack.end())
+                        walkPack.push_back(pack);
+                    for (ObjectGuid const& guid : party.bossCreatures)
+                    {
+                        Creature* boss = leader->GetMap()->GetCreature(guid);
+                        if (!boss || !boss->IsAlive() || boss->IsInCombat())
+                            continue;
+                        auto const brings = [&](Creature* mob) { return BossBroughtBy(leader, boss, mob); };
+                        if (std::none_of(walkPack.begin(), walkPack.end(), brings))
+                            continue;
+                        LOG_INFO("playerbots", "[b49_voone] {}: no harness body pull of {}: it brings {}, the "
+                                 "planner did not price it", leader->GetName(), pack->GetName(), boss->GetName());
+                        LogEvent(party, "blocker_pull_gate",
+                                 JsonObject().Str("pull", "harness body pull").Str("blocker", pack->GetName())
+                                     .Num("blockerEntry", pack->GetEntry())
+                                     .Str("why", "[b49_voone] brings boss " + boss->GetName() + " (unpriced)")
+                                     .Bool("hold", false));
+                        TestRunner::ClearWaypoint(party.leader);
+                        SkipTarget(party, party.target, CAREFUL_REFUSED_SKIP_MS,
+                                   "body pull refused: brings boss " + boss->GetName());
+                        return;
+                    }
+                }
                 // [b32_bm] A creature that is not REACT_AGGRESSIVE (Aeonus and the Black Morass adds: REACT_DEFENSIVE)
                 // never aggroes on a walk-in: the walk only brings the tank beside it, the tank's own attack opens
                 // (tank open idle boss / pull / reach melee). Logged as attack_pull, not body_pull.
@@ -16599,6 +16667,24 @@ namespace TestHarness
         // [b35_up] never out of the instance while Skadi's gauntlet runs: leaving the hall resets it
         if (SkadiGauntletRunning(leader))
             return false;
+        // [b49_hos] never out of the instance while an encounter runs (a boss slot IN_PROGRESS): an event fought by
+        // an NPC goes on without the group. hos-h 20261026-111724-hos-h-5F-20 (build 47): Brann's Tribunal of Ages
+        // went IN_PROGRESS at 1891 s with the group 56-60 yd from the hold spot; at 1904 s Sjonnir was skipped (closed
+        // door), the fallback target was a Dark Rune Warrior 491 yd off and "shortcut_reenter" put all five at the
+        // entrance (1153,806), 535 yd from Brann. The healer came back first (Protectors on it from 1942 s), the dps
+        // ~2020 s, 4 deaths 2024-2048 s. hos-h 093620-5E-22 (build 45) the same: IN_PROGRESS 1985 s, re-entry 2019 s,
+        // back at 2088-2110 s, 3 deaths 2112-2119 s. Both "Tribunal wipes" were this, not the add DPS.
+        if (InstanceScript* script = leader->GetInstanceScript(); script && script->IsEncounterInProgress())
+        {
+            if (!party.shortcutEncounterLogMs ||
+                getMSTimeDiff(party.shortcutEncounterLogMs, now) >= 30 * IN_MILLISECONDS)
+            {
+                party.shortcutEncounterLogMs = now;
+                LOG_INFO("playerbots", "[b49_hos] {}: no shortcut re-entry, an encounter is in progress",
+                         leader->GetName());
+            }
+            return false;
+        }
         party.shortcutCheckMs = now;
 
         auto const canReenter = [](Player* bot)

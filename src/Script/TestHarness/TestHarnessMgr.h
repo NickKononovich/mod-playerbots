@@ -467,6 +467,7 @@ namespace TestHarness
         // [b30_reenter] TickShortcutReenter: the last check, and no new shortcut re-entry before this
         uint32 shortcutCheckMs = 0;
         uint32 shortcutCooldownUntilMs = 0;
+        uint32 shortcutEncounterLogMs = 0;  // [b49_hos] the last "encounter in progress, no re-entry" log
         uint32 shortcutReentries = 0;
         // [b31_far_threshold] the leader's travel pause for a trailing member: since when, and when the last one ended
         uint32 compactPauseSinceMs = 0;
