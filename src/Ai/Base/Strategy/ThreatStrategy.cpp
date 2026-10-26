@@ -567,10 +567,23 @@ namespace
     // bosses (5+ min apart) holding it would lose uses, holding a 2-5 min one loses none. The death knight's cooldowns
     // (Hysteria, Raise Dead, Empower Rune Weapon, Army of the Dead, Summon Gargoyle) take the same rule in their
     // triggers (IsDKBossFight, IsGargoyleFight): their action names are shared with defensive uses.
+    // [rot5] Added by the same rule (3.3.5 cooldowns, the bots' talents): Mirror Image 3 min, Feral Spirit 3 min,
+    // Fire / Earth Elemental Totem 10 min, Elemental Mastery 3 min, Shadowfiend 5 min, Rapid Fire 3 min (Rapid
+    // Killing), Readiness 3 min, Adrenaline Rush 5 min, Killing Spree 2 min, Blade Flurry 2 min, Avenging Wrath 2-3
+    // min, Recklessness 5 min, Death Wish 2-3 min, Metamorphosis 2-3 min, Presence of Mind 2 min, Summon Infernal /
+    // Doomguard 10 / 20 min. Kept on cooldown: Bestial Wrath (84 s with Longevity, BM's template talent), Shadow Dance
+    // (1 min), Bladestorm (90 s), Starfall, Dancing Rune Weapon, Unbreakable Armor; Summon Water Elemental is the frost
+    // template's permanent pet (Glyph of Eternal Water 50045, "no pet" upkeep), not a cooldown. Exceptions in
+    // BurnCooldownException: a healer's Avenging Wrath / Shadowfiend (its heal and mana tools), Shadowfiend for mana,
+    // Mirror Image as the mage's own threat drop with mobs on it.
     bool IsBurnCooldown(std::string const& name)
     {
-        static std::vector<std::string> const names = {"icy veins", "combustion", "arcane power", "force of nature",
-                                                       "berserk", "bloodlust", "heroism"};
+        static std::vector<std::string> const names = {
+            "icy veins", "combustion", "arcane power", "presence of mind", "mirror image", "force of nature",
+            "berserk", "bloodlust", "heroism", "feral spirit", "fire elemental totem", "earth elemental totem",
+            "elemental mastery", "shadowfiend", "rapid fire", "readiness", "adrenaline rush", "killing spree",
+            "blade flurry", "avenging wrath", "recklessness", "death wish", "metamorphosis", "summon infernal",
+            "summon doomguard"};
         return std::find(names.begin(), names.end(), name) != names.end();
     }
 
@@ -713,7 +726,12 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     bool const stop =
         !stale && (_command.attack == Leader::AttackEvent::StopDps || _command.intensity == Leader::Intensity::Stop);
     bool const burn = !stale && _command.intensity == Leader::Intensity::Burn;
-    if (IsBurnCooldown(name) && !burn)
+    // [rot5] the tool uses of a burn cooldown stay the bot's (IsBurnCooldown's comment)
+    bool const burnException =
+        (PlayerbotAI::IsHeal(bot) && (name == "avenging wrath" || name == "shadowfiend")) ||
+        (name == "shadowfiend" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.MediumMana)) ||
+        (name == "mirror image" && AI_VALUE(uint8, "my attacker count") > 0);
+    if (IsBurnCooldown(name) && !burn && !burnException)
     {
         if (stale)
             LeaderCommandState::LogStale(bot, "holds its burn cooldowns");
