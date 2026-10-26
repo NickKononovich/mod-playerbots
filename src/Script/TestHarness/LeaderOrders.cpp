@@ -180,7 +180,10 @@ namespace Leader
                 order.changedMs = now;
                 order.changedAt = tank->GetPosition();
                 slot.open = false;
-                Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued));
+                // [lead11] an abort of a leader-issued order (the walk for range would leave the healer, another
+                // floor) is the executor's report by the order's abort rules (plan 2.2), not a tank decision: b55
+                // counted 9 false two_owners (pull_order vs "tank: order_report Aborted decides true")
+                Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued && !order.leaderIssued));
                 return;
             }
 
@@ -213,6 +216,7 @@ namespace Leader
                 order.cost = cost;
                 order.singleOnly = single;
                 order.origin = leaderIssued ? "leader: " + why : why;  // [lead7]
+                order.leaderIssued = leaderIssued;                    // [lead11]
                 order.why = why;
                 order.openedMs = now;
                 order.changedMs = now;
@@ -224,6 +228,8 @@ namespace Leader
 
             // The open order of this mob. A fresh plan of the same mob refreshes it (the planner's every look while
             // the pull runs); a repeat of the current state is no change.
+            if (leaderIssued)
+                order.leaderIssued = true;  // [lead11] the leader's fresh issue of the same mob
             if (method != PullMethod::Unknown)
                 order.method = method;
             if (mobs)
@@ -239,7 +245,7 @@ namespace Leader
             order.why = why;
             order.changedMs = now;
             order.changedAt = tank->GetPosition();
-            Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued));
+            Queue(slot, ReportOf(order, why, TankDecides(state) && !leaderIssued && !order.leaderIssued));  // [lead11]
         }
 
         void Note(Player* tank, Unit* target, std::string const& what, std::string const& why, bool leaderIssued)

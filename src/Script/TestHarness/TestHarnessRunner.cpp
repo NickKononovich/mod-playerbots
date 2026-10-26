@@ -9789,8 +9789,14 @@ namespace TestHarness
                 for (uint32 const entry : starter.def->entries)
                     keyForOtherDoor &= !blockingDoors.count(entry);
             }
+            // [lead11] the door the leader's plan must open first (TickLeaderPlanner: doorStepEntry)
+            bool const doorStep =
+                party.lead.doorStepEntry && party.lead.doorStepMs &&
+                getMSTimeDiff(party.lead.doorStepMs, now) <= Leader::LEADER_REQUEST_TTL_MS &&
+                std::find(starter.def->entries.begin(), starter.def->entries.end(), party.lead.doorStepEntry) !=
+                    starter.def->entries.end();
             bool const priority = starter.def->priority || (nextBossDoorBlocked && !keyForOtherDoor) ||
-                                  rearmedBehind ||
+                                  rearmedBehind || doorStep ||
                                   (starter.def->priorityItem && leader->HasItemCount(starter.def->priorityItem, 1));
             if (starterIdx < 0 || (priority && !starterPriority) ||
                 (priority == starterPriority && path.length < starterScore))
@@ -10548,6 +10554,13 @@ namespace TestHarness
                 doorWalks.erase(walk);
             else
             {
+                // [lead11] a door that closes again by itself: the whole group at the opener first, no cap
+                if (leader->GetExactDist(door) <= door->GetInteractionDistance() &&
+                    DoorGatherHolds(party, leader, door))
+                {
+                    TestRunner::ClearWaypoint(party.leader);
+                    return;
+                }
                 if (OpenDoorByUse(leader, door))
                 {
                     LogEvent(party, "pull_after_hold",
@@ -20264,6 +20277,7 @@ namespace TestHarness
                     fightAt = decision.kill;
                 else if (!decision.fightFor.IsEmpty() && decision.fightFor == decision.planTarget)
                     fightAt = decision.fight;
+                G3D::Vector3 doorAt;  // [lead11] DOOR_OPEN_BACK before the door on the crossing walk
                 auto const crosses = [&](Position const& from, Position const& to) -> GameObject*
                 {
                     if (from.GetExactDist(to) < 1.0f ||
@@ -20282,6 +20296,9 @@ namespace TestHarness
                             points.assign(path.GetPath().begin(), path.GetPath().end());
                     }
                     ClosedDoorHit const hit = PathThroughClosedDoor(tank, points);
+                    if (hit.Found())
+                        doorAt = PointOnPath(Movement::PointsArray(points.begin(), points.end()),
+                                             std::max(0.0f, hit.walked - DOOR_OPEN_BACK));
                     return hit.Found() ? hit.door : nullptr;
                 };
                 GameObject* door = crosses(here, stand);
@@ -20290,8 +20307,58 @@ namespace TestHarness
                     leg = "the walk back to the fight spot";
                 if (!door && decision.los && (door = crosses(here, decision.losGather)))
                     leg = "the group's walk to the gather spot";
+                // [lead11] user rule: the group has the key and the gate is there - it is opened, no detour. A door
+                // this group can open is no invalid plan but a step of it the leader takes first: a door opened by
+                // use - the leader's walk to it and the use ([pull_after_hold] doorWalks, its auto-closing gather);
+                // a key / lever door - its starter leads the route (Retarget: doorStepEntry), the key pass gathers
+                // the whole group at the opener with no cap and re-opens it for a straggler. Only a door no member
+                // can open stays an invalid plan (and planner_no_option after LEADER_DOOR_INVALID_LOOKS).
                 if (door)
                 {
+                    int32 doorStarter = -1;
+                    for (size_t index = 0; index < party.starters.size() && doorStarter < 0; ++index)
+                    {
+                        StarterTrack const& starter = party.starters[index];
+                        if (!starter.def || starter.uses >= starter.def->maxUses ||
+                            std::find(starter.def->entries.begin(), starter.def->entries.end(), door->GetEntry()) ==
+                                starter.def->entries.end())
+                            continue;
+                        bool hasItem = !starter.def->itemId;
+                        for (Member const& member : party.members)
+                            if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                                !hasItem && bot && bot->IsAlive() && bot->HasItemCount(starter.def->itemId, 1))
+                                hasItem = true;
+                        if (hasItem)
+                            doorStarter = int32(index);
+                    }
+                    bool const byUse = doorStarter < 0 && DoorOpensByUse(door) && lookMob && lookMob->ToCreature();
+                    if (doorStarter >= 0 || byUse)
+                    {
+                        lead.doorInvalidLooks = 0;
+                        if (byUse && !doorWalks.count(party.leader))
+                            doorWalks[party.leader] = {door->GetGUID(), lookMob->GetGUID(), doorAt,
+                                                       now + DOOR_WALK_MS};
+                        if (doorStarter >= 0)
+                        {
+                            if (lead.doorStepEntry != door->GetEntry() || !fresh(lead.doorStepMs))
+                                party.nextRetargetMs = now;  // the starter leads from the next retarget on
+                            lead.doorStepEntry = door->GetEntry();
+                            lead.doorStepMs = now;
+                        }
+                        if (!lead.doorStepLogMs || getMSTimeDiff(lead.doorStepLogMs, now) >= 10 * IN_MILLISECONDS)
+                        {
+                            lead.doorStepLogMs = now;
+                            LogEvent(party, "plan_door_step",
+                                     JsonObject().Str("kind", decision.kind)
+                                         .Str("name", lookMob ? lookMob->GetName() : "?")
+                                         .Str("door", door->GetName()).Num("doorEntry", door->GetEntry())
+                                         .Str("leg", leg).Str("open", byUse ? "by use" : "its starter")
+                                         .Str("starter", doorStarter >= 0
+                                                             ? party.starters[size_t(doorStarter)].def->note
+                                                             : ""));
+                        }
+                        return;
+                    }
                     if (lead.doorInvalidMob != decision.lookTarget)
                     {
                         lead.doorInvalidMob = decision.lookTarget;

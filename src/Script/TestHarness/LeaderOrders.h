@@ -179,6 +179,9 @@ namespace Leader
         float cost = 0.0f;
         bool singleOnly = false;
         std::string origin;  // what opened it: the planner's commit, the pull start, the cast
+        // [lead11] the leader issued it (PullPlanner::Issue): every state the tank reports of it - its steps, its
+        // aborts by the order's own abort conditions - is the execution's report, no decision of the tank's
+        bool leaderIssued = false;
         std::string why;     // the last state change's reason
         uint32 openedMs = 0;
         uint32 changedMs = 0;  // the last state change

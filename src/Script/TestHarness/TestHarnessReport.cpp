@@ -762,7 +762,8 @@ namespace TestHarness
             "regroup", "pull_option", "stall_recovery", "regen_stall_release",
             // [lead3] [lead4] [lead10] the leader's own decisions around its planner (C:/WoW/LEADER_REFACTOR_PLAN.md 9)
             "leader_whole_pack", "leader_boss_pull", "leader_patrol_wait", "leader_patrol_pull",
-            "leader_skip_no_option", "plan_through_door", "door_far_side_priced"};
+            "leader_skip_no_option", "plan_through_door", "door_far_side_priced",
+            "plan_door_step"};  // [lead11]
         static std::unordered_set<std::string> const reporting = {"pull_hold"};
         if (deciding.count(type))
         {

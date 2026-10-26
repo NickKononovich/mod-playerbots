@@ -377,6 +377,10 @@ namespace TestHarness
             // [lead10] a Go decision whose walk crosses a closed door: not issued, counted per pack
             ObjectGuid doorInvalidMob;
             uint32 doorInvalidLooks = 0;
+            // [lead11] the door the leader opens before the plan's walk (its key / lever starter leads the route)
+            uint32 doorStepEntry = 0;
+            uint32 doorStepMs = 0;
+            uint32 doorStepLogMs = 0;
             // [lead3] packs reported planner_no_option this run
             std::set<ObjectGuid> noOption;
         };
