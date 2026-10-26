@@ -19911,7 +19911,20 @@ namespace TestHarness
         bool const plannerPulls = PartyVerdict(party, patrol->GetGUID(), accepted, mobs) && accepted;
         bool known = false;
         bool const window = PullPlanner::PatrolLeavesReach(patrol, leader->GetPosition(), reach, &known);
-        bool const pull = !plannerPulls && (hold.lane || !window);
+        // [lead4b] the pull is chosen only once the patrol is near: within its reach (+ PATROL_HOLD_MARGIN) of a
+        // member. A lane hold is a static test of its whole walk (build 53: ac-h / dme-n / uk-h intercepted patrols
+        // 45-55 yd off in the first minute, every one "refused for now" at that range); far off it is a wait, and the
+        // planner meets it first when it comes ("comes to the group: pulls it first").
+        bool patrolNear = false;
+        for (Member const& member : party.members)
+            if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                bot && bot->IsAlive() && bot->GetMap() == map && bot->GetExactDist(patrol) <= reach)
+                patrolNear = true;
+        // ... or, for a lane the route must cross, once it is within the tank's dungeon pull range (a lane hold no
+        // approach of the patrol ends otherwise)
+        constexpr float LEADER_LANE_PULL_RANGE = 40.0f;  // AggressiveTargetValue's DUNGEON_TANK_PULL_RANGE
+        bool const laneInRange = hold.lane && leader->GetExactDist(patrol) <= LEADER_LANE_PULL_RANGE;
+        bool const pull = !plannerPulls && (patrolNear || laneInRange) && (hold.lane || !window);
         auto const halt = [&](char const* kind)
         {
             if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
@@ -20322,8 +20335,10 @@ namespace TestHarness
 
         // [lead4] the patrol the leader decided to pull, refused by its planner with the group ready and topped up:
         // no option (the route crosses its walk, or it never leaves the group's spot: no wait is valid either)
+        // [lead4b] only a hopeless refusal is no option: "refused for now" (the stand's guarantee still to come, its
+        // verdict wait running) is a hold, re-asked on the next look - build 53 stopped ac-h / dme-n / uk-h on it
         if (decides && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && fresh(lead.interceptMs) &&
-            decision.lookTarget == lead.intercept && decision.toppedUp && lead.ready &&
+            decision.lookTarget == lead.intercept && decision.hopeless && decision.toppedUp && lead.ready &&
             getMSTimeDiff(lead.interceptSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS)
         {
             LeaderNoOption(party, tank, lookMob, packOf(), "the patrol pull refused: " + decision.why, true,
@@ -20335,7 +20350,9 @@ namespace TestHarness
         // refusal of the pack the leader asked for whole (LEADER_REQUEST_ANSWER_MS after the ask: the planner's 1 s
         // plan cache may answer before it). It stops the run when the pack is one the leader must clear; a hopeless
         // side pack is a route decision: the walks go round it, the route target of it is skipped.
-        bool const requestAnswered = requestCovers && decision.toppedUp && lead.ready &&
+        // [lead4b] ... nor a "refused for now" whose guarantee wait still runs (verdictWaitMs): only a final refusal
+        bool const finalRefusal = decision.hopeless || (decision.hasVerdict && !decision.verdictWaitMs);
+        bool const requestAnswered = requestCovers && finalRefusal && decision.toppedUp && lead.ready &&
                                      getMSTimeDiff(lead.wholeSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS;
         if (!decision.hopeless && !requestAnswered)
             return;
