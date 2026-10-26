@@ -104,7 +104,11 @@ namespace Leader
     constexpr uint32 LEADER_READY_FRESH_MS = 3000;
     // [lead7] The leader plans on an ask at most this old; the tank takes an issued decision at most this old.
     constexpr uint32 LEADER_ASK_FRESH_MS = 1000;
-    constexpr uint32 LEADER_ISSUE_FRESH_MS = 1000;
+    // [lead4c] build 54 (every run stalled at 0 bosses): the tank's AI ticks every 1-3 s out of combat (Playerbots.
+    // DynamicReactDelay: 10-30 x ReactDelay), so a decision issued after one tick was always older than 1 s at the
+    // next and was dropped - 66 pull_orders, no pull. A decision lives LEADER_ISSUE_FRESH_MS and is consumed only by
+    // the Execute that runs it (TakeLeaderDecision peeks), so a tick whose multipliers skip the action loses nothing.
+    constexpr uint32 LEADER_ISSUE_FRESH_MS = 5000;
     // [lead7] The same disagreement (or the same issued order) is logged again after this long.
     constexpr uint32 PLAN_DIFF_LOG_MS = 10000;
     constexpr uint32 PULL_ORDER_LOG_MS = 5000;

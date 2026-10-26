@@ -345,6 +345,13 @@ namespace TestHarness
             ObjectGuid waitPatrol;
             uint32 waitSinceMs = 0;
             std::string waitWhy;
+            // [lead4c] one wait per patrol across the forecast's flicker (a gap under LEADER_PATROL_WAIT_GAP_MS), and
+            // the lane wait's own bound (LEADER_LANE_WAIT_MAX_MS: then the patrol is pulled)
+            ObjectGuid lastWaitPatrol;
+            uint32 lastWaitEndMs = 0;
+            ObjectGuid laneWaitPatrol;
+            uint32 laneWaitSinceMs = 0;
+            uint32 laneWaitSeenMs = 0;
             // [lead5] the leader planner's last verdict (CarefulPlanVerdict's data, kept by the leader itself)
             uint32 verdictMs = 0;
             ObjectGuid verdictTarget;

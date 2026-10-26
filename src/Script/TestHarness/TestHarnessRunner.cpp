@@ -19874,12 +19874,19 @@ namespace TestHarness
         auto& lead = party.lead;
         uint32 const now = getMSTime() ? getMSTime() : 1;
         Map* map = leader->GetMap();
+        // [lead4c] build 54 hos-h: 33 "start" lines for two patrols - the forecast flickers (the scan edge, the
+        // linger) and the two patrols took turns; a wait of the same patrol resumed within LEADER_PATROL_WAIT_GAP_MS
+        // is the same wait (no new line), and its "done" is logged once it really ended
+        constexpr uint32 LEADER_PATROL_WAIT_GAP_MS = 10 * IN_MILLISECONDS;
         auto const endWait = [&](char const* why)
         {
             if (!lead.waitPatrol.IsEmpty())
-                LogEvent(party, "leader_patrol_wait",
-                         JsonObject().Str("state", "done").Str("why", why).Str("was", lead.waitWhy)
-                             .Num("sec", getMSTimeDiff(lead.waitSinceMs, now) / IN_MILLISECONDS));
+            {
+                lead.lastWaitPatrol = lead.waitPatrol;
+                lead.lastWaitEndMs = now;
+                LOG_DEBUG("playerbots", "[lead4c] leader_patrol_wait {}: ends ({}) after {} s", party.id, why,
+                          getMSTimeDiff(lead.waitSinceMs, now) / IN_MILLISECONDS);
+            }
             lead.waitPatrol.Clear();
             lead.waitSinceMs = 0;
             lead.waitWhy.clear();
@@ -19924,7 +19931,24 @@ namespace TestHarness
         // approach of the patrol ends otherwise)
         constexpr float LEADER_LANE_PULL_RANGE = 40.0f;  // AggressiveTargetValue's DUNGEON_TANK_PULL_RANGE
         bool const laneInRange = hold.lane && leader->GetExactDist(patrol) <= LEADER_LANE_PULL_RANGE;
-        bool const pull = !plannerPulls && (patrolNear || laneInRange) && (hold.lane || !window);
+        // [lead4c] the lane wait is bounded: a lane the route must cross whose patrol never comes near would hold
+        // the group for good (build 54 hos-h, Dark Rune Warrior / Theurgist 36-40 yd). LEADER_LANE_WAIT_MAX_MS of
+        // waiting for it (gaps under LEADER_PATROL_WAIT_GAP_MS kept) ends in the pull: the leader's planner plans it
+        // where it is, no blind walk.
+        constexpr uint32 LEADER_LANE_WAIT_MAX_MS = 30 * IN_MILLISECONDS;
+        bool laneWaitedOut = false;
+        if (hold.lane && !plannerPulls)
+        {
+            if (lead.laneWaitPatrol != patrol->GetGUID() || !lead.laneWaitSeenMs ||
+                getMSTimeDiff(lead.laneWaitSeenMs, now) > LEADER_PATROL_WAIT_GAP_MS)
+            {
+                lead.laneWaitPatrol = patrol->GetGUID();
+                lead.laneWaitSinceMs = now;
+            }
+            lead.laneWaitSeenMs = now;
+            laneWaitedOut = getMSTimeDiff(lead.laneWaitSinceMs, now) >= LEADER_LANE_WAIT_MAX_MS;
+        }
+        bool const pull = !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) && (hold.lane || !window);
         auto const halt = [&](char const* kind)
         {
             if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
@@ -19961,11 +19985,14 @@ namespace TestHarness
         }
         if (lead.waitPatrol != patrol->GetGUID())
         {
+            bool const resumed = lead.lastWaitPatrol == patrol->GetGUID() && lead.lastWaitEndMs &&
+                                 getMSTimeDiff(lead.lastWaitEndMs, now) <= LEADER_PATROL_WAIT_GAP_MS;
             lead.waitPatrol = patrol->GetGUID();
-            lead.waitSinceMs = now;
+            lead.waitSinceMs = resumed && lead.waitSinceMs ? lead.waitSinceMs : now;
             lead.waitWhy = why;
             party.lastEvent = "patrol wait: " + why;
-            LogEvent(party, "leader_patrol_wait",
+            if (!resumed)
+                LogEvent(party, "leader_patrol_wait",
                      JsonObject().Str("state", "start").Str("patrol", patrol->GetName())
                          .Num("entry", patrol->GetEntry()).Str("why", why).Bool("plannerPulls", plannerPulls)
                          .Bool("window", window).Bool("forecast", known)

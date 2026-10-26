@@ -7135,6 +7135,8 @@ bool AggressiveTargetAction::Execute(Event event)
 {
     // [lead7] the decision below was issued by the leader (TakeLeaderDecision): the reports say the tank executes it
     executingLeaderDecision = _fromLeader;
+    if (_fromLeader)  // [lead4c] the issued decision is taken now that it runs
+        PullPlanner::ConsumeIssued(bot->GetGUID(), _fromLeaderMs);
     _fromLeader = false;
     if (!_approach.IsEmpty())
     {
@@ -12570,7 +12572,8 @@ bool AggressiveTargetAction::TakeLeaderDecision()
         return false;
 
     PullPlanner::Decision decision;
-    if (!PullPlanner::TakeIssued(bot->GetGUID(), Leader::LEADER_ISSUE_FRESH_MS, decision) ||
+    // [lead4c] a peek: the decision is consumed by the Execute that runs it (a skipped tick keeps it)
+    if (!PullPlanner::TakeIssued(bot->GetGUID(), Leader::LEADER_ISSUE_FRESH_MS, decision, false) ||
         decision.verdict != PullPlanner::Verdict::Go)
         return false;
 
@@ -12586,6 +12589,7 @@ bool AggressiveTargetAction::TakeLeaderDecision()
 
     LoadDecision(decision);
     _fromLeader = true;
+    _fromLeaderMs = decision.ms;  // [lead4c]
     return true;
 }
 
@@ -12804,19 +12808,31 @@ namespace PullPlanner
         slot.issued = true;
     }
 
-    bool TakeIssued(ObjectGuid tank, uint32 maxAgeMs, Decision& out)
+    bool TakeIssued(ObjectGuid tank, uint32 maxAgeMs, Decision& out, bool consume)
     {
         std::lock_guard<std::mutex> lock(leaderLock);
         auto const found = leaderSlots.find(tank);
         if (found == leaderSlots.end() || !found->second.issued)
             return false;
 
-        found->second.issued = false;  // taken once
         if (getMSTimeDiff(found->second.decision.ms, getMSTime()) > maxAgeMs)
+        {
+            found->second.issued = false;  // stale: dropped
             return false;
+        }
 
+        if (consume)
+            found->second.issued = false;  // taken once
         out = found->second.decision;
         return true;
+    }
+
+    void ConsumeIssued(ObjectGuid tank, uint32 decisionMs)
+    {
+        std::lock_guard<std::mutex> lock(leaderLock);
+        auto const found = leaderSlots.find(tank);
+        if (found != leaderSlots.end() && found->second.issued && found->second.decision.ms == decisionMs)
+            found->second.issued = false;
     }
 
     std::string DiffKinds(Decision const& own, Decision const& library, bool& whyOnly)
