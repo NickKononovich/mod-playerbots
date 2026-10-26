@@ -797,6 +797,9 @@ namespace TestHarness
         // runner
         void Retarget(Party& party, Player* leader);
         void Steer(Party& party, Player* leader);
+        // [b46_patrol] the group steps back out of a patrol's way (TestHarnessRunner.cpp PATROL_STEP_BACK): true while
+        // the leader walks there or stands there
+        bool PatrolStepBack(Party& party, Player* leader);
         void SkipTarget(Party& party, ObjectGuid guid, uint32 ms, std::string const& reason);
         // route_blocker_body_pull: `blocker`'s pack stands on the way to `behind`: it becomes the target (false when
         // it may not: a boss of it, tried too often, nothing alive).

@@ -10,9 +10,11 @@
 #include <algorithm>
 
 #include "CoSTriggers.h"  // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
+#include "CreatureGroups.h"   // [b46_patrol]
 #include "Group.h"
 #include "GenericSpellActions.h"
 #include "HealAssignmentValues.h"
+#include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
 #include "SpellAuras.h"
@@ -191,6 +193,42 @@ bool AnyNearMember(Player* bot, Check check)
 }  // namespace
 
 bool IsEating(Player* player) { return HasRestAura(player, true, false); }
+
+// [b46_patrol] See the header.
+Creature* PatrolComes(Player* bot, float* gap)
+{
+    PlayerbotAI* botAI = PATROL_REST_GATE ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI || !bot->GetGroup() || !botAI->IsInNonRaidDungeon())
+        return nullptr;
+
+    auto const walksPatrol = [](Creature* mob)
+    {
+        if (mob->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
+            return true;
+        CreatureGroup* formation = mob->GetFormation();
+        Creature* leader = formation ? formation->GetLeader() : nullptr;
+        return leader && leader != mob && leader->IsAlive() && !leader->IsInCombat() &&
+               leader->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE;
+    };
+
+    for (ObjectGuid const guid :
+         botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
+    {
+        Creature* mob = botAI->GetCreature(guid);
+        if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->HasReactState(REACT_AGGRESSIVE) ||
+            !bot->IsHostileTo(mob) || mob->IsDungeonBoss() || !walksPatrol(mob))
+            continue;
+
+        float const distance = bot->GetExactDist(mob);
+        if (distance <= MovementAction::IdleAggroReach(mob, bot, PATROL_REST_MARGIN))
+        {
+            if (gap)
+                *gap = distance;
+            return mob;
+        }
+    }
+    return nullptr;
+}
 
 bool IsDrinking(Player* player) { return HasRestAura(player, false, true); }
 
@@ -419,6 +457,8 @@ bool RestDone(Player* bot)
         return false;
     if (bot->IsInCombat())
         return true;
+    if (PatrolComes(bot))
+        return true;  // [b46_patrol] up before the patrol walks in
 
     // Food and water at once (or a combined item): up only when both are full - or ([rest_stand_at_line]) both are
     // above the bot's own lines while nobody close by sits any more (the group is ready, nobody tops up to 100 %).

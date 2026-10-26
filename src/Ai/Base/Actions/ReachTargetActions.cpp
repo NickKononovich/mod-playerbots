@@ -19,6 +19,7 @@
 #include "PathGenerator.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PullActions.h"  // [b46_ohb] FightHold
 #include "RangedPositionActions.h"
 #include "ServerFacade.h"
 #include "SpellInfo.h"  // [b32_arc]
@@ -213,6 +214,42 @@ namespace
                !mob->HasBreakableByDamageCrowdControlAura();
     }
 
+    constexpr uint32 SHOOTER_SIGHT_BREAK_MS = 8 * IN_MILLISECONDS;   // [b46_ohb] refused this long, standing
+    constexpr uint32 SHOOTER_SIGHT_RETRY_MS = 5 * IN_MILLISECONDS;   // [b46_ohb] after a search found no spot
+    constexpr float SHOOTER_GROUP_SIGHT_RANGE = 36.0f;               // [b46_ohb] a ranged member shoots it from here
+    constexpr float SHOOTER_SIGHT_BREAK_WALK = 30.0f;                // [b46_ohb] the farthest member spot walked to
+    constexpr int SHOOTER_SIGHT_BREAK_PATHS = 4;
+    constexpr float SHOOTER_SIGHT_PATH_END = 2.0f;
+
+    // [b46_ohb] A mob that shoots the bot from where it stands: the bot is its victim, it stands still in the bot's
+    // sight, not fleeing, not held, not evading; and no ranged member or healer of the group sees it within
+    // SHOOTER_GROUP_SIGHT_RANGE (nobody hurts it from where the group stands).
+    bool ShooterOutOfGroupSight(Player* bot, Unit* target)
+    {
+        Creature* mob = target ? target->ToCreature() : nullptr;
+        if (!mob || !mob->IsAlive() || mob->IsDungeonBoss() || mob->GetVictim() != bot || mob->isMoving() ||
+            mob->IsInEvadeMode() || mob->HasUnitState(UNIT_STATE_FLEEING | UNIT_STATE_CONFUSED) ||
+            mob->HasBreakableByDamageCrowdControlAura() || !mob->IsWithinLOSInMap(bot))
+            return false;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            return false;
+
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap() ||
+                (!PlayerbotAI::IsRanged(member) && !PlayerbotAI::IsHeal(member)))
+                continue;
+
+            if (member->GetExactDist(mob) <= SHOOTER_GROUP_SIGHT_RANGE && member->IsWithinLOSInMap(mob))
+                return false;
+        }
+
+        return true;
+    }
+
     constexpr float PHANTOM_PULL_RANGE_SLACK = 3.0f;  // [b32_arc] the cast spot stands this far inside the spell range
     constexpr uint32 PHANTOM_TAUNT_WAIT_MS = 6 * IN_MILLISECONDS;     // [b33_arc] a taunt's time to turn the mob
     constexpr uint32 PHANTOM_TAUNT_FAILED_MS = 60 * IN_MILLISECONDS;  // [b33_arc] then the damage spell, this long
@@ -329,8 +366,125 @@ bool ReachMeleeAction::PullPhantomFromRange(Unit* target)
     return MoveTo(bot->GetMapId(), x, y, z);
 }
 
+// [b46_ohb] See the header. True when it walked.
+bool ReachMeleeAction::BreakShooterSight(Unit* target)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+
+    uint32 const now = getMSTime();
+    float const eye = bot->GetCollisionHeight();
+    Player* healer = nullptr;
+    std::vector<std::pair<float, Player*>> spots;  // the healer's spot first, then the nearest
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap())
+            continue;
+
+        bool const heal = PlayerbotAI::IsHeal(member);
+        if (heal && (!healer || bot->GetExactDist(member) < bot->GetExactDist(healer)))
+            healer = member;
+
+        float const walk = bot->GetExactDist(member);
+        if (walk > SHOOTER_SIGHT_BREAK_WALK ||
+            target->IsWithinLOS(member->GetPositionX(), member->GetPositionY(), member->GetPositionZ() + eye))
+            continue;
+
+        spots.push_back({heal ? walk - 100.0f : walk, member});
+    }
+    std::sort(spots.begin(), spots.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+
+    std::string refused = spots.empty() ? "no member within 30 yd stands out of its sight" : "";
+    int paths = 0;
+    for (auto const& [score, member] : spots)
+    {
+        float const x = member->GetPositionX();
+        float const y = member->GetPositionY();
+        float const z = member->GetPositionZ();
+        if (healer && healer != member && !healer->IsWithinLOS(x, y, z + eye))
+        {
+            refused = member->GetName() + "'s spot: out of the healer's sight";
+            continue;
+        }
+
+        Creature* waker = nullptr;
+        for (ObjectGuid const guid : AI_VALUE(GuidVector, "possible targets no los"))
+        {
+            Creature* mob = botAI->GetCreature(guid);
+            if (mob && mob != target && mob->IsAlive() && !mob->IsInCombat() &&
+                mob->HasReactState(REACT_AGGRESSIVE) && bot->IsHostileTo(mob) &&
+                !MovementAction::IdleAggroBlocker(mob, bot, x, y, z, PEEL_WALK_IDLE_MARGIN, false))
+            {
+                waker = mob;
+                break;
+            }
+        }
+        if (waker)
+        {
+            refused = member->GetName() + "'s spot: in the aggro reach of idle " + waker->GetName();
+            continue;
+        }
+
+        if (paths++ >= SHOOTER_SIGHT_BREAK_PATHS)
+            break;
+
+        PathGenerator path(bot);
+        path.CalculatePath(x, y, z, false);
+        PathType const type = path.GetPathType();
+        if ((type & PATHFIND_NOPATH) || path.GetPath().empty() ||
+            (!(type & PATHFIND_NORMAL) &&
+             (path.GetActualEndPosition() - G3D::Vector3(x, y, z)).length() > SHOOTER_SIGHT_PATH_END))
+        {
+            refused = member->GetName() + "'s spot: no path";
+            continue;
+        }
+
+        // the fight spot moves with the walk (HoldFightSpot would end it at the old spot's edge); back if refused
+        Position oldAnchor;
+        bool const hadAnchor = FightHold::Get(bot, oldAnchor);
+        FightHold::Move(bot, Position(x, y, z, bot->GetOrientation()));
+        float const walk = bot->GetExactDist(x, y, z);
+        if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_COMBAT, true))
+        {
+            _sightBreakLogMs = now ? now : 1;
+            Creature* idle = IdleMobReachingSpot(botAI, bot, target);
+            LOG_INFO("playerbots", "[b46_ohb] shooter_sight_break: {}: {} {} shoots it from {:.1f} yd and no ranged "
+                     "member sees it (the walk to it wakes idle {}): steps {:.1f} yd out of its sight to {}'s spot "
+                     "({:.1f},{:.1f},{:.1f}), the fight spot moves there", bot->GetName(), target->GetName(),
+                     target->GetEntry(), bot->GetExactDist(target), idle ? idle->GetName() : std::string("?"), walk,
+                     member->GetName(), x, y, z);
+            return true;
+        }
+
+        if (hadAnchor)
+            FightHold::Move(bot, oldAnchor);
+        refused = member->GetName() + "'s spot: the walk was refused (path guard)";
+    }
+
+    _sightBreakFailMs = now ? now : 1;
+    if (!_sightBreakLogMs || getMSTimeDiff(_sightBreakLogMs, now) >= TANK_REACH_LOG_MS)
+    {
+        _sightBreakLogMs = now ? now : 1;
+        LOG_INFO("playerbots", "[b46_ohb] shooter_sight_break: {}: {} {} shoots it from {:.1f} yd, no spot out of "
+                 "its sight ({})", bot->GetName(), target->GetName(), target->GetEntry(), bot->GetExactDist(target),
+                 refused.empty() ? "path budget spent" : refused);
+    }
+    return false;
+}
+
 bool ReachMeleeAction::Execute(Event event)
 {
+    // [b46_ohb] a standing shooter nobody else sees (isUseful): the tank steps out of its sight, it comes
+    if (!_sightBreak.IsEmpty())
+    {
+        Unit* target = GetTarget();
+        bool const same = target && target->GetGUID() == _sightBreak;
+        _sightBreak.Clear();
+        return same && BreakShooterSight(target);
+    }
+
     // [b32_arc] a phantom-combat target (isUseful): pulled from range, never walked into the idle pack's reach
     if (!_phantomPull.IsEmpty())
     {
@@ -346,6 +500,7 @@ bool ReachMeleeAction::Execute(Event event)
 bool ReachMeleeAction::isUseful()
 {
     _phantomPull.Clear();  // [b32_arc] set again below only for a phantom-combat target
+    _sightBreak.Clear();   // [b46_ohb] likewise, for a standing shooter nobody else sees
     if (!ReachTargetAction::isUseful())
         return false;
 
@@ -425,6 +580,32 @@ bool ReachMeleeAction::isUseful()
         Unit* victim = target->GetVictim();
         Player* victimPlayer = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
         bool const onGroup = victimPlayer && (victimPlayer == bot || victimPlayer->IsInSameGroupWith(bot));
+
+        // [b46_ohb] ohb-h 20261026-093620-ohb-h-5E-16 (1381-2035 s, stopped as a hung fight): a Durnholde Rifleman
+        // 17820 (SmartAI Shoot with SMARTCAST_COMBAT_MOVE: it stands while it sees its victim) shot the Prot Paladin
+        // from 22 yd, 22.3 yd from an idle Durnholde Veteran; "[tank reach] no walk ... aggro reach of idle
+        // Durnholde Veteran" x433, the priest, warlock and hunter had no line of sight from their spot ("sight-fail
+        // ... runs into the melee zone or past unsafe spots"), so the fight went on for 11 min. A mob on the tank
+        // resets the drop clock below every tick, so nothing ended it. A player steps back round the corner, out of
+        // the shooter's sight: it walks after him, away from the idle pack, and the group kills it there.
+        if (ShooterOutOfGroupSight(bot, target))
+        {
+            if (_shooter != target->GetGUID())
+            {
+                _shooter = target->GetGUID();
+                _shooterSinceMs = now ? now : 1;
+            }
+            else if (getMSTimeDiff(_shooterSinceMs, now) >= SHOOTER_SIGHT_BREAK_MS &&
+                     (!_sightBreakFailMs || getMSTimeDiff(_sightBreakFailMs, now) >= SHOOTER_SIGHT_RETRY_MS))
+            {
+                _shooterSinceMs = now ? now : 1;  // the next try only if it stands again for as long
+                _sightBreak = target->GetGUID();
+                return true;
+            }
+        }
+        else
+            _shooter.Clear();
+
         auto& refusal = TankReachRefusals()[bot->GetGUID()];
         if (refusal.target != target->GetGUID() || onGroup)
         {

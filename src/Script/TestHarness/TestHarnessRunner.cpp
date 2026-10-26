@@ -2388,8 +2388,8 @@ namespace TestHarness
                 {
                     Movement::PointsArray corners;
                     bool complete = false;
-                    if (!LongRoute(owner, here, goal, steep, corners, complete, doorBoxes.empty() ? nullptr : &doorBoxes,
-                                   &discs) ||
+                    if (!LongRoute(owner, here, goal, steep, corners, complete,
+                                   doorBoxes.empty() ? nullptr : &doorBoxes, &discs) ||
                         !complete || corners.size() < 2)
                         continue;
                     float const walk = PolylineLength(corners);
@@ -3925,6 +3925,115 @@ namespace TestHarness
                 return 0.0f;
             return std::min(std::min(PointSegmentDistance2d(a, c, d), PointSegmentDistance2d(b, c, d)),
                             std::min(PointSegmentDistance2d(c, a, b), PointSegmentDistance2d(d, a, b)));
+        }
+
+        // [b46_patrol] PATROL_STEP_BACK: a patrol walks in (PatrolHoldWhy's "comes to the group") while a member rests
+        // or wants to, or while it walks beside an idle pack: the group steps back along the tank's own trail (the way
+        // in, cleared) instead of standing in its way. strat-h 20261026-093620-strat-h-5E-2 (1520-1571 s): after a
+        // 13-kill pull the patrol hold waited for the Patchwork Horror "it comes to the group" (26.1 yd) and the group
+        // sat down to drink; the Horror aggroed on the rogue 21.7 yd from the idle Plague Ghoul of the 16-30 mob
+        // Skeletal Berserker chain, the tank would not walk there ("[tank reach] ... aggro reach of idle Plague
+        // Ghoul"), the Ghoul, then its chain's Skeletal Guardians / Berserkers / Cadavers joined ("[far engage]" at
+        // 43 yd), three died. The spot: the first trail point PATROL_STEP_BACK_MIN or more back, on the same floor,
+        // out of the patrol's reach (aggro reach + PATROL_STEP_BACK_SPREAD) of its position and of every leg of its
+        // walk, and out of every idle non-patrol mob's reach + assistance ("out of its walk"); else the first one where
+        // a patrol that reaches the group still fights clear of those packs ("where it meets the group clear of the
+        // packs", the tank's planner pulls it there). false: no such spot within PATROL_WAIT_TRAIL_MAX.
+        constexpr bool PATROL_STEP_BACK = true;
+        constexpr float PATROL_STEP_BACK_SPREAD = 10.0f;  // the followers' spread round the leader plus a margin
+        constexpr float PATROL_STEP_BACK_MIN = 4.0f;      // a trail point closer than this is no step
+        constexpr float PATROL_STEP_BACK_ARRIVED = 3.0f;
+        constexpr float PATROL_STEP_BACK_GONE = 10.0f;    // the patrol this far past its reach of the spot walked on
+        constexpr uint32 PATROL_STEP_BACK_MAX_MS = 45 * IN_MILLISECONDS;
+        constexpr uint32 PATROL_STEP_BACK_COOLDOWN_MS = 20 * IN_MILLISECONDS;
+        constexpr uint32 PATROL_STEP_BACK_RETRY_MS = 5 * IN_MILLISECONDS;  // after a search that found no spot
+        struct PatrolStepBackState
+        {
+            ObjectGuid patrol;
+            G3D::Vector3 spot;
+            float reach = 0.0f;
+            uint32 sinceMs = 0;
+            uint32 cooldownUntilMs = 0;
+            uint32 noSpotMs = 0;
+            bool arrived = false;
+            std::string how;
+        };
+        std::unordered_map<uint32, PatrolStepBackState> patrolStepBacks;  // per instance (world thread)
+
+        // An idle mob that is no patrol (no walk path of its own or of its formation leader) and not `patrol`'s.
+        bool StaticPackMob(Creature* mob, Creature* patrol)
+        {
+            CreatureGroup const* formation = patrol->GetFormation();
+            return mob != patrol && !(formation && mob->GetFormation() == formation) && !PatrolWalkPath(mob);
+        }
+
+        bool PatrolStepBackSpot(Player* leader, Creature* patrol, float reach, G3D::Vector3& spot, std::string& how)
+        {
+            std::list<Creature*> idle;
+            ShadowMobCheck check{leader};
+            Acore::CreatureListSearcher<ShadowMobCheck> searcher(leader, idle, check);
+            Cell::VisitObjects(leader, searcher, PATROL_WAIT_SCAN);
+            std::vector<Creature*> packs;
+            for (Creature* mob : idle)
+                if (mob->HasReactState(REACT_AGGRESSIVE) && StaticPackMob(mob, patrol))
+                    packs.push_back(mob);
+            auto const packReaches = [&](G3D::Vector3 const& point, float extra)
+            {
+                return std::any_of(packs.begin(), packs.end(),
+                                   [&](Creature* mob)
+                                   {
+                                       return mob->GetExactDist(point.x, point.y, point.z) <=
+                                              AggroReach(mob, leader) + PATROL_WAIT_ASSIST + extra;
+                                   });
+            };
+            WaypointPath const* path = PatrolWalkPath(patrol);
+            auto const walkReaches = [&](G3D::Vector3 const& point)
+            {
+                if (patrol->GetExactDist(point.x, point.y, point.z) <= reach)
+                    return true;
+                if (!path || path->Nodes.empty())
+                    return false;
+                std::vector<WaypointNode> const& nodes = path->Nodes;
+                G3D::Vector2 const flat(point.x, point.y);
+                for (size_t index = 0; index < nodes.size(); ++index)
+                {
+                    WaypointNode const& from = nodes[index];
+                    WaypointNode const& to = nodes[(index + 1) % nodes.size()];
+                    if (point.z < std::min(from.Z, to.Z) - PATROL_WAIT_TRAIL_FLOOR ||
+                        point.z > std::max(from.Z, to.Z) + PATROL_WAIT_TRAIL_FLOOR)
+                        continue;
+                    if (PointSegmentDistance2d(flat, G3D::Vector2(from.X, from.Y), G3D::Vector2(to.X, to.Y)) <= reach)
+                        return true;
+                }
+                return false;
+            };
+
+            std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(leader);
+            G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                float walkedBack = 0.0f;
+                G3D::Vector3 previous = here;
+                for (auto point = trail.rbegin(); point != trail.rend(); ++point)
+                {
+                    walkedBack += (*point - previous).length();
+                    previous = *point;
+                    if (walkedBack > PATROL_WAIT_TRAIL_MAX)
+                        break;
+                    if (walkedBack < PATROL_STEP_BACK_MIN || std::fabs(point->z - here.z) > PATROL_WAIT_TRAIL_FLOOR)
+                        continue;
+                    bool const clear = pass == 0 ? !walkReaches(*point) && !packReaches(*point, 0.0f)
+                                                 : !packReaches(*point, reach);
+                    if (!clear)
+                        continue;
+                    spot = *point;
+                    how = pass == 0 ? Acore::StringFormat("out of its walk, {:.0f} yd back", walkedBack)
+                                    : Acore::StringFormat("where it meets the group clear of the packs, {:.0f} yd "
+                                                          "back", walkedBack);
+                    return true;
+                }
+            }
+            return false;
         }
 
         // The walk from a spot to the boss's spot with the walker's filters (RoutePath from the spot: complete, or
@@ -7139,6 +7248,64 @@ namespace TestHarness
                 }
         }
 
+        // [b46_strat] wing order (HopelessWingMap): the next boss's route held by a hopeless pack for
+        // HOPELESS_WING_HOLD_MS -> deferred while another boss stands; the bosses of the other wing come next (the one
+        // behind a closed key door then promotes its key starter as "next boss behind a closed door").
+        if (nextBoss && nextBoss == nextRouteBoss && nextOrder >= 0 && !nextDoor && nextRoute.reachable && !viaLink &&
+            HopelessWingMap(map->GetId()) && !leader->IsInCombat())
+        {
+            HopelessWingState& wing = hopelessWings[party.seq];
+            if (wing.checkedBoss != nextBoss->GetGUID() || !wing.checkedMs ||
+                getMSTimeDiff(wing.checkedMs, now) >= HOPELESS_WING_CHECK_MS)
+            {
+                wing.checkedBoss = nextBoss->GetGUID();
+                wing.checkedMs = now ? now : 1;
+                wing.checkedHeld = RouteHeldByHopelessPack(leader, nextBoss, nextRoute.points, wing.heldBy);
+            }
+            if (!wing.checkedHeld)
+                wing.heldSinceMs = 0;
+            else if (!wing.heldSinceMs)
+                wing.heldSinceMs = now ? now : 1;
+            else if (getMSTimeDiff(wing.heldSinceMs, now) >= HOPELESS_WING_HOLD_MS)
+            {
+                bool otherStands = false;
+                for (ObjectGuid const& guid : party.bossCreatures)
+                    if (Creature* other = map->GetCreature(guid); other && other != nextBoss && other->IsAlive() &&
+                                                                    !wing.deferred.count(guid))
+                        otherStands = true;
+                if (otherStands)
+                {
+                    if (wing.deferred.empty())
+                        wing.deferredSinceMs = now ? now : 1;
+                    wing.deferred.insert(nextBoss->GetGUID());
+                    LOG_INFO("playerbots", "[b46_strat] {}: {} deferred - its route runs into the hopeless {} for {} "
+                                           "s with no way round: the other wing first",
+                             party.id, nextBoss->GetName(), wing.heldBy,
+                             getMSTimeDiff(wing.heldSinceMs, now) / IN_MILLISECONDS);
+                    LogEvent(party, "strat_wing_order",
+                             JsonObject().Str("action", "deferred: the other wing first")
+                                 .Str("boss", nextBoss->GetName()).Num("order", nextOrder)
+                                 .Str("heldBy", wing.heldBy)
+                                 .Num("heldSec", int64(getMSTimeDiff(wing.heldSinceMs, now) / IN_MILLISECONDS))
+                                 .Num("deferred", int64(wing.deferred.size())));
+                    if (party.target == nextBoss->GetGUID())
+                        party.target.Clear();
+                    // the next one in order is judged at once on the next retarget (heldSinceMs kept)
+                    wing.checkedMs = 0;
+                    nextBoss = nullptr;
+                    nextOrder = -1;
+                    for (auto const& [order, boss] : standing)
+                        if (!party.skipUntil.count(boss->GetGUID()) && !wing.deferred.count(boss->GetGUID()) &&
+                            !(gateOrder >= 0 && order > gateOrder) &&
+                            (!nextBoss || (order >= 0 && (nextOrder < 0 || order < nextOrder))))
+                        {
+                            nextBoss = boss;
+                            nextOrder = order;
+                        }
+                }
+            }
+        }
+
         // After a trash loop: straight for the next boss of the route, the trash in between only as it comes.
         bool const bossRush = nextBoss && party.bossRushUntilMs && int32(party.bossRushUntilMs - now) > 0;
 
@@ -9572,6 +9739,169 @@ namespace TestHarness
                                       .Real("z", object ? object->GetPositionZ() : 0.0f));
     }
 
+    // [b46_patrol] PATROL_STEP_BACK (PatrolStepBackSpot). True: the leader walks to the step-back spot or stands
+    // there (no other walk this tick); called by Steer before the rest hold and by the regen wait (TestHarnessMgr).
+    bool TestHarnessMgr::PatrolStepBack(Party& party, Player* leader)
+    {
+        Map* map = leader->GetMap();
+        if (!PATROL_STEP_BACK || !map || !map->IsNonRaidDungeon() || !leader->IsAlive() || !party.escort.IsEmpty())
+            return false;
+
+        uint32 const now = getMSTime();
+        PatrolStepBackState& state = patrolStepBacks[party.instanceId];
+        auto const holdClocks = [&]()
+        {
+            party.steerSinceMs = now;
+            party.steerAnchor = leader->GetPosition();
+            party.steerNoNearerMs = 0;
+            party.driveSinceMs = now;
+            party.driveAnchor = leader->GetPosition();
+        };
+
+        if (!state.patrol.IsEmpty())
+        {
+            Creature* patrol = map->GetCreature(state.patrol);
+            float const gap = patrol ? patrol->GetExactDist(state.spot.x, state.spot.y, state.spot.z) : 0.0f;
+            char const* end = nullptr;
+            if (!patrol || !patrol->IsAlive())
+                end = "patrol dead";
+            else if (patrol->IsInCombat() || leader->IsInCombat() || party.inCombat)
+                end = "fight";
+            else if (getMSTimeDiff(state.sinceMs, now) > PATROL_STEP_BACK_MAX_MS)
+                end = "timeout";
+            else if (state.arrived && gap > state.reach + PATROL_STEP_BACK_GONE)
+                end = "walked on";
+            if (end)
+            {
+                LOG_INFO("playerbots", "[b46_patrol] patrol_step_back {}: ends ({}) after {} s, patrol {:.1f} yd from "
+                         "the spot", leader->GetName(), end, getMSTimeDiff(state.sinceMs, now) / IN_MILLISECONDS, gap);
+                LogEvent(party, "patrol_step_back",
+                         JsonObject().Str("state", "done").Str("why", end)
+                             .Str("patrol", patrol ? patrol->GetName() : std::string())
+                             .Num("sec", getMSTimeDiff(state.sinceMs, now) / IN_MILLISECONDS).Real("gap", gap));
+                state.patrol.Clear();
+                state.arrived = false;
+                state.cooldownUntilMs = now + PATROL_STEP_BACK_COOLDOWN_MS;
+                return false;
+            }
+            if (leader->GetExactDist(state.spot.x, state.spot.y, state.spot.z) <= PATROL_STEP_BACK_ARRIVED)
+            {
+                state.arrived = true;
+                TestRunner::ClearWaypoint(party.leader);
+            }
+            else
+                SetLeaderWaypoint(party, leader, state.spot.x, state.spot.y, state.spot.z);
+            holdClocks();
+            return true;
+        }
+
+        if (leader->IsInCombat() || party.inCombat ||
+            (state.cooldownUntilMs && int32(now - state.cooldownUntilMs) < 0) ||
+            (state.noSpotMs && getMSTimeDiff(state.noSpotMs, now) < PATROL_STEP_BACK_RETRY_MS))
+            return false;
+
+        // The patrol that walks in (PatrolHoldWhy's second test); one the tank's planner pulls now is its pull.
+        std::list<Creature*> idle;
+        IdleAggroCheck check{leader};
+        Acore::CreatureListSearcher<IdleAggroCheck> searcher(leader, idle, check);
+        Cell::VisitObjects(leader, searcher, PATROL_HOLD_SCAN);
+        Creature* patrol = nullptr;
+        std::string nearName;
+        float nearGap = 0.0f;
+        for (Creature* mob : idle)
+        {
+            if (party.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
+                continue;
+            bool accepted = false;
+            uint32 mobs = 0;
+            if (CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, mobs) && accepted)
+                return false;
+            float const reach = AggroReach(mob, leader) + PATROL_HOLD_MARGIN;
+            for (Member const& member : party.members)
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                if (!bot || !bot->IsAlive() || bot->GetMap() != map)
+                    continue;
+                float const gap = bot->GetExactDist(mob);
+                if (gap <= reach && (!patrol || gap < nearGap))
+                {
+                    patrol = mob;
+                    nearName = member.name;
+                    nearGap = gap;
+                }
+            }
+        }
+        if (!patrol)
+            return false;
+
+        // Why step back: a member sits or wants to (RestState's own lines), or the patrol walks beside an idle pack
+        // (the fight where it meets the group would call that pack in).
+        std::string rester;
+        for (Member const& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot || !bot->IsAlive() || bot->GetMap() != map)
+                continue;
+            if (RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
+                (bot->GetMaxPower(POWER_MANA) && RestState::WantsDrink(bot)) || RestState::WantsFood(bot))
+            {
+                rester = member.name;
+                break;
+            }
+        }
+        Creature* beside = nullptr;
+        for (Creature* mob : idle)
+            if (StaticPackMob(mob, patrol) &&
+                mob->GetExactDist(patrol) <= AggroReach(mob, leader) + PATROL_WAIT_ASSIST)
+            {
+                beside = mob;
+                break;
+            }
+        if (rester.empty() && !beside)
+            return false;
+
+        std::string why;
+        if (!rester.empty())
+            why = rester + " rests";
+        else
+            why = "it walks beside idle " + beside->GetName();
+        float const reach = AggroReach(patrol, leader) + PATROL_STEP_BACK_SPREAD;
+        G3D::Vector3 spot;
+        std::string how;
+        if (!PatrolStepBackSpot(leader, patrol, reach, spot, how))
+        {
+            state.noSpotMs = now ? now : 1;
+            LOG_INFO("playerbots", "[b46_patrol] patrol_step_back {}: patrol {} {:.1f} yd from {} walks in ({}), no "
+                     "clear spot on the way in within {:.0f} yd: stays", leader->GetName(), patrol->GetName(),
+                     nearGap, nearName, why, PATROL_WAIT_TRAIL_MAX);
+            LogEvent(party, "patrol_step_back",
+                     JsonObject().Str("state", "no clear spot").Str("patrol", patrol->GetName())
+                         .Num("entry", patrol->GetEntry()).Str("why", why).Real("gap", nearGap));
+            return false;
+        }
+
+        state.patrol = patrol->GetGUID();
+        state.spot = spot;
+        state.reach = reach;
+        state.sinceMs = now ? now : 1;
+        state.noSpotMs = 0;
+        state.arrived = false;
+        state.how = how;
+        LOG_INFO("playerbots", "[b46_patrol] patrol_step_back {}: patrol {} {} {:.1f} yd from {} walks in ({}): the "
+                 "group steps back {:.1f} yd along its way in to ({:.1f},{:.1f},{:.1f}), {} (reach {:.1f})",
+                 leader->GetName(), patrol->GetName(), patrol->GetEntry(), nearGap, nearName, why,
+                 leader->GetExactDist(spot.x, spot.y, spot.z), spot.x, spot.y, spot.z, how, reach);
+        LogEvent(party, "patrol_step_back",
+                 JsonObject().Str("state", "start").Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
+                     .Real("gap", nearGap).Str("member", nearName).Str("why", why).Str("how", how).Real("reach", reach)
+                     .Real("x", spot.x).Real("y", spot.y).Real("z", spot.z)
+                     .Real("fromX", leader->GetPositionX()).Real("fromY", leader->GetPositionY())
+                     .Real("fromZ", leader->GetPositionZ()));
+        SetLeaderWaypoint(party, leader, spot.x, spot.y, spot.z);
+        holdClocks();
+        return true;
+    }
+
     void TestHarnessMgr::Steer(Party& party, Player* leader)
     {
         // The tank's trail for the guarded follows of its members: the harness walks (MovePoint, its waypoint) are no
@@ -9825,6 +10155,10 @@ namespace TestHarness
                 lockedInSince.erase(party.seq);
             return;
         }
+
+        // [b46_patrol] PATROL_STEP_BACK: out of a patrol's way first; the rest hold then holds at the step-back spot.
+        if (PatrolStepBack(party, leader))
+            return;
 
         // ROUTE_REST_HOLD: no walk while a member sits eating / drinking or is about to; the leader stands.
         {

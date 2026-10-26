@@ -6,13 +6,39 @@
 
 #include "NonCombatActions.h"
 #include "BuyAction.h"  // [b33_dme] CountBagFood
+#include "Creature.h"   // [b46_patrol]
 #include "Event.h"
 #include "HealthTriggers.h"
 #include "Playerbots.h"
 #include "StringFormat.h"
+#include "Timer.h"
+
+#include <unordered_map>
 
 namespace
 {
+// [b46_patrol] No sitting down while an idle patrol walks in (RestState::PatrolComes); logged every 5 s per bot.
+bool PatrolKeepsStanding(Player* bot, char const* what)
+{
+    float gap = 0.0f;
+    Creature* patrol = RestState::PatrolComes(bot, &gap);
+    if (!patrol)
+        return false;
+
+    thread_local std::unordered_map<ObjectGuid, uint32> logged;
+    uint32 const now = getMSTime();
+    uint32& last = logged[bot->GetGUID()];
+    if (!last || getMSTimeDiff(last, now) >= 5 * IN_MILLISECONDS)
+    {
+        last = now ? now : 1;
+        LOG_INFO("playerbots", "[b46_patrol] rest_patrol_gate: {} does not sit down to {}: patrol {} {} walks in "
+                 "({:.1f} yd, mana {:.0f} %, health {:.0f} %)", bot->GetName(), what, patrol->GetName(),
+                 patrol->GetEntry(), gap, bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f,
+                 bot->GetHealthPct());
+    }
+    return true;
+}
+
 constexpr uint32 BG_WS_SPELL_WARSONG_FLAG = 23333;
 constexpr uint32 BG_WS_SPELL_SILVERWING_FLAG = 23335;
 constexpr uint32 BG_EY_NETHERSTORM_FLAG_SPELL = 34976;
@@ -55,6 +81,10 @@ bool DrinkAction::isUseful()
     // Between waves and phases the bot is out of combat but the encounter is still running. Non-mana classes never.
     if (!UseItemAction::isUseful() || AI_VALUE(bool, "encounter in progress") || !bot->GetMaxPower(POWER_MANA) ||
         RestState::IsDrinking(bot))
+        return false;
+
+    // [b46_patrol] not in a patrol's way, the last-resort drink either (the patrol's first hit stands it up)
+    if (PatrolKeepsStanding(bot, "drink"))
         return false;
 
     // Below the low line the old last-resort drink, even with the group fighting close by; above it only by the
@@ -103,6 +133,9 @@ bool EatAction::isUseful()
     if (!UseItemAction::isUseful() || AI_VALUE(bool, "encounter in progress") || RestState::IsEating(bot))
         return false;
 
+    if (PatrolKeepsStanding(bot, "eat"))  // [b46_patrol]
+        return false;
+
     // By the rest lines only ("rest health" decides when): a hurt bot with a healer close by gets healed, for free.
     return !RestState::GroupFighting(bot) && RestState::WantsFood(bot);
 }
@@ -124,8 +157,10 @@ bool EatAction::isPossible()
 bool StandUpAction::Execute(Event /*event*/)
 {
     // Standing up removes the food / drink auras (AURA_INTERRUPT_FLAG_NOT_SEATED), nothing else.
-    LOG_INFO("playerbots", "[rest] {} stands up: {} (hp {:.0f} %, mana {:.0f} %)", bot->GetName(),
-             bot->IsInCombat() ? "a fight started" : "full", bot->GetHealthPct(),
+    Creature* patrol = bot->IsInCombat() ? nullptr : RestState::PatrolComes(bot);  // [b46_patrol]
+    LOG_INFO("playerbots", "[rest] {} stands up: {}{} (hp {:.0f} %, mana {:.0f} %)", bot->GetName(),
+             bot->IsInCombat() ? "a fight started" : patrol ? "[b46_patrol] a patrol walks in: " : "full",
+             patrol ? patrol->GetName() : std::string(), bot->GetHealthPct(),
              bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f);
     bot->SetStandState(UNIT_STAND_STATE_STAND);
     return true;

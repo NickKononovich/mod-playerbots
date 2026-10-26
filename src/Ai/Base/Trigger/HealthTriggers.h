@@ -12,6 +12,7 @@
 #include "Trigger.h"
 #include <stdexcept>
 
+class Creature;  // [b46_patrol]
 class Player;
 class PlayerbotAI;
 
@@ -336,6 +337,16 @@ constexpr bool REST_STAND_AT_LINE = true;
 // [b32_dmw] "Nobody close by sits" counts only sitters still below their own line (the ones the harness waits for);
 // false restores any sitter (two sitters above their lines kept each other seated while the group walked off).
 constexpr bool REST_STAND_BELOW_LINE_COMPANY = true;
+// [b46_patrol] strat-h 20261026-093620-strat-h-5E-2 (1520-1571 s): right after a 13-kill pull the warlock sat down
+// to drink 26 yd from the Patchwork Horror patrol walking in; it aggroed on the rogue beside the next street packs and
+// three died. A player does not sit down in a patrol's way: no drink / food while an idle patrol (waypoint walker or
+// a member of a walking formation) stands within its aggro reach + PATROL_REST_MARGIN of the bot in a 5-man dungeon,
+// and a sitter stands up (RestDone). The test harness steps the group back out of the patrol's walk meanwhile.
+constexpr bool PATROL_REST_GATE = true;
+constexpr float PATROL_REST_MARGIN = 5.0f;
+// The idle patrol close enough to keep the bot standing (gap: its distance); nullptr when none. Bot thread only (it
+// reads the bot's "possible targets no los").
+Creature* PatrolComes(Player* bot, float* gap = nullptr);
 }  // namespace RestState
 
 class RestManaTrigger : public Trigger

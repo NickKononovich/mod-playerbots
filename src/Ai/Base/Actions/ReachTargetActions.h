@@ -77,6 +77,17 @@ private:
     uint32 _phantomLogMs = 0;
     ObjectGuid _phantomTaunted;    // [b33_arc] the phantom target the last taunt landed on, and when
     uint32 _phantomTauntedMs = 0;
+
+    // [b46_ohb] A refused far target that shoots the tank from where it stands (a SmartAI caster / shooter with
+    // SMARTCAST_COMBAT_MOVE holds its range while it sees its victim) and that no ranged member or healer sees: the
+    // tank steps out of its sight to a member's spot (the healer's first) that it does not see, out of every idle
+    // reach; the fight spot moves there. A shooter that loses its victim's sight walks to it, away from the idle pack.
+    bool BreakShooterSight(Unit* target);
+    ObjectGuid _sightBreak;          // set by isUseful for Execute
+    ObjectGuid _shooter;             // the standing shooter refused, and since when
+    uint32 _shooterSinceMs = 0;
+    uint32 _sightBreakFailMs = 0;    // the last search that found no spot (retry after a pause)
+    uint32 _sightBreakLogMs = 0;
 };
 
 // Tank: walk the path to a mob hitting the healer out of reach ("far healer attacker"). Also out of combat: an idle

@@ -4524,6 +4524,11 @@ namespace TestHarness
                         else if (!passing)
                             TestRunner::ClearWaypoint(party.leader);
                     }
+                    else if (!low.empty() && PatrolStepBack(party, leader))
+                    {
+                        // [b46_patrol] a member rests or is about to while a patrol walks in: the group steps back
+                        // out of its way first (the step-back walk holds the leader's waypoint), then rests there
+                    }
                     else if (!low.empty() || !MeetMember(party, players, leader))
                         TestRunner::ClearWaypoint(party.leader);
                     SetPhase(party, low.empty() ? Phase::Waiting : Phase::Drinking);
