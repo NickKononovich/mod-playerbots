@@ -163,6 +163,64 @@ namespace
         if (id == SPELL_WAND_SHOOT || id == SPELL_WEAPON_SHOOT || id == SPELL_THROW)
             bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
     }
+
+    // [rot4] A heal or any friendly spell: never held for threat, never stopped by the leader's Stop (slabs-h: "Rtdruaa
+    // holds nourish ... limit 30 %", "holds regrowth on party: the leader's Stop"; every heal action is Aoe-typed,
+    // CastHealingSpellAction::getThreatType). Classified by the spell itself, for every class: a heal effect (direct,
+    // percent, periodic, absorb), a positive spell that deals no damage, or a cast on a friendly unit.
+    bool IsFriendlySpell(Player* bot, SpellInfo const* info, Unit* target)
+    {
+        if (target && target != bot && bot->IsFriendlyTo(target))
+            return true;
+
+        if (!info)
+            return false;
+
+        bool damage = false;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            switch (effect.Effect)
+            {
+                case SPELL_EFFECT_HEAL:
+                case SPELL_EFFECT_HEAL_PCT:
+                case SPELL_EFFECT_HEAL_MAX_HEALTH:
+                case SPELL_EFFECT_HEAL_MECHANICAL:
+                    return true;
+                case SPELL_EFFECT_SCHOOL_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE:
+                case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                case SPELL_EFFECT_HEALTH_LEECH:
+                    damage = true;
+                    break;
+                default:
+                    break;
+            }
+
+            if (effect.Effect != SPELL_EFFECT_APPLY_AURA && effect.Effect != SPELL_EFFECT_APPLY_AREA_AURA_PARTY &&
+                effect.Effect != SPELL_EFFECT_APPLY_AREA_AURA_RAID &&
+                effect.Effect != SPELL_EFFECT_PERSISTENT_AREA_AURA)
+                continue;
+
+            switch (effect.ApplyAuraName)
+            {
+                case SPELL_AURA_PERIODIC_HEAL:
+                case SPELL_AURA_OBS_MOD_HEALTH:
+                case SPELL_AURA_SCHOOL_ABSORB:
+                    return true;
+                case SPELL_AURA_PERIODIC_DAMAGE:
+                case SPELL_AURA_PERIODIC_LEECH:
+                case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
+                    damage = true;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return !damage && info->IsPositive();
+    }
 }
 
 float ThreatMultiplier::GetValue(Action* action)
@@ -202,6 +260,10 @@ float ThreatMultiplier::GetValue(Action* action)
     {
         uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
         spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        // [rot4] a heal or a friendly spell is never held for threat (healing threat in a 5-man is the tank's job)
+        if (!ccAction && IsFriendlySpell(bot, spellInfo, action->GetTarget()))
+            return 1.0f;
+
         StopperKind const kind = ccAction ? StopperKind::Control : ClassifyStopper(spellInfo);
         if (kind == StopperKind::Stopper)
             return 1.0f;
@@ -680,8 +742,15 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     if (!spellAction)
         return 1.0f;
 
-    bool const aoe = action->getThreatType() == Action::ActionThreatType::Aoe;
+    // [rot4] Stop / StopDps, the AoE rule and the stale-command target rule are for offensive casts only: a heal or
+    // any friendly spell passes (slabs-h: "holds regrowth / nourish / wild growth on party: the leader's Stop")
     Unit* target = action->GetTarget();
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (IsFriendlySpell(bot, info, target))
+        return 1.0f;
+
+    bool const aoe = action->getThreatType() == Action::ActionThreatType::Aoe;
     bool const hostile = target && target != bot && bot->IsHostileTo(target);
     if (!aoe && !hostile)
         return 1.0f;
@@ -712,8 +781,6 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     if (!aoe)
         return 1.0f;
 
-    uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
-    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
     Position center;
     float radius = 0.0f;
     if (!AreaFootprint(bot, spellAction, info, AI_VALUE(Unit*, "current target"), center, radius))
