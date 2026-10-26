@@ -6,7 +6,7 @@
 
 #include "InterruptTriggers.h"
 #include "InterruptValues.h"
-#include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "TargetValue.h"    // [rot2] IsCrowdControlled
 #include "Playerbots.h"
 
@@ -43,3 +43,5 @@ bool LeaderCcTrigger::IsActive()
     Unit* unit = botAI->GetUnit(mob);
     return unit && unit->IsAlive() && unit->GetMap() == bot->GetMap() && !IsCrowdControlled(unit);
 }
+
+bool LeaderPreSaveTrigger::IsActive() { return LeaderCommandState::PreSaveAssigned(bot); }

@@ -6,7 +6,7 @@
 
 #include "DeathKnightPullStrategy.h"
 #include "Creature.h"
-#include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "Log.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -45,7 +45,9 @@ std::string DeathKnightPullStrategy::GetPrePullBuffActionName() const
     // [rot2] a led tank channels it only under the leader's Prepare (the leader times the boss pull), never as a delay
     // of its own at the pull commit
     Leader::MemberEvents command;
-    if (LeaderCommand::CurrentCommand(botAI->GetBot(), command) && command.ready != Leader::ReadyEvent::Prepare)
+    LeaderCommandState::State const state = LeaderCommandState::Read(botAI->GetBot(), command);
+    if (state != LeaderCommandState::State::NotLed &&
+        (state == LeaderCommandState::State::Stale || command.ready != Leader::ReadyEvent::Prepare))
         return "";
 
     Unit* target = GetTarget();

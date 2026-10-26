@@ -10,6 +10,7 @@
 #include "Group.h"
 #include "InterruptStrategy.h"
 #include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot3]
 #include "Map.h"
 #include "Playerbots.h"
 #include "Spell.h"
@@ -358,10 +359,17 @@ namespace InterruptCoordination
             return {};
 
         // [rot2] A bot the dungeon leader leads interrupts only the caster the leader assigns it, with its best ready
-        // interrupt for that cast; it picks no cast of its own (no assignment: none). A leader that stopped (no fresh
-        // command) leaves the group rotation below in charge again.
+        // interrupt for that cast; it picks no cast of its own (no assignment: none). [rot3] No fallback: without a
+        // fresh command a led bot interrupts nothing of its own choice.
         Leader::MemberEvents command;
-        if (LeaderCommand::CurrentCommand(bot, command))
+        LeaderCommandState::State const state = LeaderCommandState::Read(bot, command);
+        if (state == LeaderCommandState::State::Stale)
+        {
+            LeaderCommandState::LogStale(bot, "picks no interrupt of its own");
+            return {};
+        }
+
+        if (state == LeaderCommandState::State::Fresh)
         {
             Unit* caster = command.interrupt.IsEmpty() ? nullptr : botAI->GetUnit(command.interrupt);
             if (!caster || !caster->IsAlive() || caster->GetMap() != bot->GetMap() || !GetInterruptibleCast(caster))
@@ -538,12 +546,11 @@ namespace InterruptCoordination
             return true;
 
         // [rot2] a led bot: only the caster the leader assigned it (its own interrupt picking is off)
-        if (LeaderCommand::Led(bot))
-        {
-            Leader::MemberEvents command;
-            if (LeaderCommand::CurrentCommand(bot, command))
-                return command.interrupt == caster->GetGUID();
-        }
+        // [rot3] no fresh command: none
+        Leader::MemberEvents command;
+        LeaderCommandState::State const state = LeaderCommandState::Read(bot, command);
+        if (state != LeaderCommandState::State::NotLed)
+            return state == LeaderCommandState::State::Fresh && command.interrupt == caster->GetGUID();
 
         // keeps the registry current for this tick
         botAI->GetAiObjectContext()->GetValue<InterruptAssignment>("interrupt assignment")->Get();

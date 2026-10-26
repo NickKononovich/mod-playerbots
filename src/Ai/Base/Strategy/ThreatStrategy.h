@@ -11,6 +11,7 @@
 #include "ObjectGuid.h"
 #include "Strategy.h"
 
+#include <deque>
 #include <string>
 #include <unordered_map>
 
@@ -55,10 +56,21 @@ private:
 // - the autonomous externals on others (Innervate on a healer, Hymns, Power Infusion, Pain Suppression on others,
 //   the Hand / Blessing of Protection spells, Misdirection, Tricks, Bloodlust / Heroism) only by the leader's
 //   assignment ("leader external");
-// - crowd control: with a leader assignment, only on the assigned mob.
+// - crowd control: only on the leader's assigned mob.
+// [rot3] No fallback to the bot's own rules for a led bot: without a fresh command (LeaderCommandState) only the
+// rotation on the current target in the fight, the heals and the emergency personal saves; no own crowd control,
+// external, buff on another, burn cooldown, target change or area spell. Its personal saves (IsPersonalSave) on its
+// own only in an emergency (Emergency) or under the leader's PreSave.
 class LeaderCommandMultiplier : public Multiplier
 {
 public:
+    // [rot3] the bot's own emergency: below EMERGENCY_HEALTH_PCT, or below EMERGENCY_HIT_HEALTH_PCT with
+    // EMERGENCY_DROP_PCT of its health lost within EMERGENCY_WINDOW_MS (a big hit landing now)
+    static constexpr float EMERGENCY_HEALTH_PCT = 30.0f;
+    static constexpr float EMERGENCY_HIT_HEALTH_PCT = 40.0f;
+    static constexpr float EMERGENCY_DROP_PCT = 20.0f;
+    static constexpr uint32 EMERGENCY_WINDOW_MS = 2000;
+
     LeaderCommandMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "leader command") {}
 
     float GetValue(Action* action) override;
@@ -67,13 +79,15 @@ private:
     static constexpr uint32 COMMAND_CACHE_MS = 100;  // one command read per bot this often (a lock)
     static constexpr uint32 LOG_MS = 5000;
 
-    bool Refresh();
+    void Refresh();
+    bool Emergency();
     void Log(Action* action, char const* why);
 
     uint32 _readMs = 0;
     bool _led = false;
     bool _hasCommand = false;
     Leader::MemberEvents _command;
+    std::deque<std::pair<uint32, float>> _health;  // [rot3] (ms, health %) samples
     uint32 _loggedMs = 0;
     std::string _loggedAction;
 };

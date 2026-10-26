@@ -7,7 +7,7 @@
 #include "InterruptActions.h"
 #include "Event.h"
 #include "InterruptValues.h"
-#include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "Log.h"
 #include "RtiValue.h"        // [rot2] FindCrowdControl
 #include "TargetValue.h"     // [rot2] IsCrowdControlled
@@ -208,5 +208,47 @@ bool LeaderCcAction::Execute(Event /*event*/)
     LOG_INFO("playerbots", "[rot2] [leader cc] {} casts {} on {} {}", bot->GetName(), option->spell, unit->GetName(),
              unit->GetEntry());
     AckLeader(bot, "cc", std::string(option->spell) + " on " + unit->GetName());
+    return true;
+}
+
+// [rot3] Best first: the full immunities and the big cuts, then the smaller ones. A tank skips the saves that stop it
+// holding threat (Divine Shield halves its damage, Ice Block stops everything).
+char const* LeaderPreSaveAction::PickSave()
+{
+    static char const* const saves[] = {"divine shield",       "ice block",         "shield wall",
+                                        "survival instincts",  "icebound fortitude", "dispersion",
+                                        "pain suppression",    "divine protection", "cloak of shadows",
+                                        "evasion",             "deterrence",        "last stand",
+                                        "vampiric blood",      "barkskin",          "anti-magic shell",
+                                        "enraged regeneration", "frenzied regeneration"};
+
+    bool const tank = PlayerbotAI::IsTank(bot);
+    for (char const* save : saves)
+    {
+        std::string const name(save);
+        if (tank && (name == "divine shield" || name == "ice block"))
+            continue;
+
+        uint32 const spellId = AI_VALUE2(uint32, "spell id", name);
+        if (!spellId || !bot->HasSpell(spellId) || bot->HasSpellCooldown(spellId))
+            continue;
+
+        if (botAI->CanCastSpell(name, bot))
+            return save;
+    }
+
+    return nullptr;
+}
+
+bool LeaderPreSaveAction::isUseful() { return LeaderCommandState::PreSaveAssigned(bot) && PickSave(); }
+
+bool LeaderPreSaveAction::Execute(Event /*event*/)
+{
+    char const* save = PickSave();
+    if (!save || !botAI->CastSpell(save, bot))
+        return false;
+
+    LOG_INFO("playerbots", "[rot3] [leader pre save] {} casts {} on the leader's PreSave", bot->GetName(), save);
+    AckLeader(bot, "pre save", save);
     return true;
 }

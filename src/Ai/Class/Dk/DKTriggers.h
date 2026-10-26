@@ -352,8 +352,8 @@ inline constexpr float DK_DND_MIN_TICK_S = 6.0f;
 uint8 CountReadyRunes(Player* bot);
 // [b35_uh] In combat with a live current target that is a player or a dungeon / world boss.
 bool IsDKBossFight(PlayerbotAI* botAI);
-// [rot2] The dungeon leader's cooldown rule for a led bot with a fresh command: true, `burn` = the leader's Burn (no
-// Stop). False: not led or no command, the bot's own fight test stands.
+// [rot2] [rot3] The dungeon leader's cooldown rule for a led bot: true, `burn` = a fresh Burn (no
+// Stop; a stale command: false). False: not led, the bot's own fight test stands.
 bool LeaderBurnRule(Player* bot, bool& burn);
 // [b35_uh] Summon Gargoyle cast less than GARGOYLE_DURATION_MS ago (its cooldown started then).
 bool IsGargoyleOut(Player* bot);

@@ -10,6 +10,7 @@
 #include "GenericSpellActions.h"
 #include "Group.h"
 #include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot3]
 #include "Log.h"
 #include "Map.h"
 #include "PartyStrengthValue.h"
@@ -528,16 +529,60 @@ namespace
     }
 }
 
-bool LeaderCommandMultiplier::Refresh()
+namespace
+{
+    // [rot3] The personal saves a led bot uses on its own only in an emergency (LeaderCommandMultiplier::Emergency);
+    // a pre-emptive save ("a big hit is coming") is the leader's PreSave ("leader pre save").
+    bool IsPersonalSave(std::string const& name)
+    {
+        static std::vector<std::string> const names = {
+            "barkskin", "survival instincts", "frenzied regeneration", "ice block", "divine shield",
+            "divine protection", "icebound fortitude", "anti-magic shell", "vampiric blood", "shield wall",
+            "last stand", "enraged regeneration", "evasion", "cloak of shadows", "deterrence", "dispersion",
+            "pain suppression"};
+        return std::find(names.begin(), names.end(), name) != names.end();
+    }
+
+    // [rot3] The bot's own target choice: off for a led bot without a fresh command (no new decision).
+    bool IsOwnTargetChoice(std::string const& name)
+    {
+        static std::vector<std::string> const names = {"dps assist", "dps aoe", "attack anything", "attack rti target",
+                                                       "tank assist"};
+        return std::find(names.begin(), names.end(), name) != names.end();
+    }
+}
+
+void LeaderCommandMultiplier::Refresh()
 {
     uint32 const now = getMSTime();
     if (_readMs && getMSTimeDiff(_readMs, now) < COMMAND_CACHE_MS)
-        return _hasCommand;
+        return;
 
     _readMs = now ? now : 1;
-    _led = LeaderCommand::Led(bot);
-    _hasCommand = _led && LeaderCommand::CurrentCommand(bot, _command);
-    return _hasCommand;
+    LeaderCommandState::State const state = LeaderCommandState::Read(bot, _command);
+    _led = state != LeaderCommandState::State::NotLed;
+    _hasCommand = state == LeaderCommandState::State::Fresh;
+
+    // [rot3] the bot's health over the last EMERGENCY_WINDOW_MS, for the "big hit landing" test
+    while (!_health.empty() && getMSTimeDiff(_health.front().first, _readMs) > EMERGENCY_WINDOW_MS)
+        _health.pop_front();
+    _health.emplace_back(_readMs, bot->GetHealthPct());
+}
+
+bool LeaderCommandMultiplier::Emergency()
+{
+    // [rot3] critical health, or low health with a big hit landing now (EMERGENCY_DROP_PCT of the bot's health lost
+    // within EMERGENCY_WINDOW_MS)
+    float const hp = bot->GetHealthPct();
+    if (hp < EMERGENCY_HEALTH_PCT)
+        return true;
+    if (hp >= EMERGENCY_HIT_HEALTH_PCT)
+        return false;
+
+    float peak = hp;
+    for (auto const& sample : _health)
+        peak = std::max(peak, sample.second);
+    return peak - hp >= EMERGENCY_DROP_PCT;
 }
 
 void LeaderCommandMultiplier::Log(Action* action, char const* why)
@@ -558,13 +603,29 @@ float LeaderCommandMultiplier::GetValue(Action* action)
         return 1.0f;
 
     std::string const& name = action->getName();
-    if (name == "leader external" || name == "leader cc" || name == "leader threat" ||
+    if (name == "leader external" || name == "leader cc" || name == "leader threat" || name == "leader pre save" ||
         name == "interrupt assigned cast")
         return 1.0f;
 
-    // no fresh command (not led, or a leader that stopped): the bot's own rules
-    if (!Refresh())
+    Refresh();
+    // a group without our leader: the bot's own rules
+    if (!_led)
         return 1.0f;
+
+    // [rot3] a led bot: no fallback to its own rules; without a fresh command the safe minimum only
+    bool const stale = !_hasCommand;
+
+    // [rot3] its personal saves on its own only in an emergency (or the leader's PreSave)
+    if (IsPersonalSave(name))
+    {
+        bool const manaDispersion =
+            name == "dispersion" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.LowMana);
+        if (Emergency() || manaDispersion || LeaderCommandState::PreSaveAssigned(bot))
+            return 1.0f;
+
+        Log(action, "a personal save is for an emergency or the leader's PreSave");
+        return 0.0f;
+    }
 
     if (IsAutonomousExternal(name))
     {
@@ -572,24 +633,47 @@ float LeaderCommandMultiplier::GetValue(Action* action)
         return 0.0f;
     }
 
+    // [rot3] crowd control only on the leader's assigned mob ("pre pull cc" runs the leader's published plan)
     bool const ccAction = dynamic_cast<CastCrowdControlSpellAction*>(action) ||
                           (name.size() > 6 && name.compare(name.size() - 6, 6, " on cc") == 0);
-    if (ccAction && !_command.cc.IsEmpty())
+    if (ccAction && name != "pre pull cc")
     {
         Unit* target = action->GetTarget();
-        if (!target || target->GetGUID() != _command.cc)
+        if (stale || _command.cc.IsEmpty() || !target || target->GetGUID() != _command.cc)
         {
+            if (stale)
+                LeaderCommandState::LogStale(bot, "holds its own crowd control");
             Log(action, "crowd control only on the leader's assigned mob");
             return 0.0f;
         }
     }
 
-    bool const stop = _command.attack == Leader::AttackEvent::StopDps || _command.intensity == Leader::Intensity::Stop;
-    bool const burn = _command.intensity == Leader::Intensity::Burn;
+    bool const stop =
+        !stale && (_command.attack == Leader::AttackEvent::StopDps || _command.intensity == Leader::Intensity::Stop);
+    bool const burn = !stale && _command.intensity == Leader::Intensity::Burn;
     if (IsBurnCooldown(name) && !burn)
     {
+        if (stale)
+            LeaderCommandState::LogStale(bot, "holds its burn cooldowns");
         Log(action, stop ? "the leader's Stop" : "a long cooldown waits for the leader's Burn");
         return 0.0f;
+    }
+
+    if (stale && IsOwnTargetChoice(name))
+    {
+        LeaderCommandState::LogStale(bot, "keeps its target");
+        return 0.0f;
+    }
+
+    // [rot3] stale: no buff on another member
+    if (stale && dynamic_cast<CastBuffSpellAction*>(action))
+    {
+        Unit* target = action->GetTarget();
+        if (target && target != bot && !bot->IsHostileTo(target))
+        {
+            LeaderCommandState::LogStale(bot, "holds its buffs on others");
+            return 0.0f;
+        }
     }
 
     CastSpellAction* spellAction = dynamic_cast<CastSpellAction*>(action);
@@ -601,6 +685,17 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     bool const hostile = target && target != bot && bot->IsHostileTo(target);
     if (!aoe && !hostile)
         return 1.0f;
+
+    // [rot3] stale: the rotation on the current target while it is in the fight, no area spell
+    if (stale)
+    {
+        Unit* current = AI_VALUE(Unit*, "current target");
+        if (!aoe && current && target == current && current->IsAlive() && current->IsInCombat())
+            return 1.0f;
+
+        LeaderCommandState::LogStale(bot, "keeps to its current target, no area spell");
+        return 0.0f;
+    }
 
     if (stop)
     {

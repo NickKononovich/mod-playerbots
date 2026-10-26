@@ -9,7 +9,7 @@
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "InstanceScript.h"
-#include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "Log.h"  // [rot1]
 #include "Player.h"
 #include "Playerbots.h"
@@ -57,11 +57,14 @@ namespace
     bool LeaderAllowsBuffs(Player* bot)
     {
         Leader::MemberEvents command;
-        if (!LeaderCommand::CurrentCommand(bot, command))
+        LeaderCommandState::State const state = LeaderCommandState::Read(bot, command);
+        if (state == LeaderCommandState::State::NotLed)
             return true;
 
-        return command.ready == Leader::ReadyEvent::Prepare || command.ready == Leader::ReadyEvent::ReadyCheck ||
-               command.ready == Leader::ReadyEvent::Rest;
+        // [rot3] a stale command: no buffs of its own
+        return state == LeaderCommandState::State::Fresh &&
+               (command.ready == Leader::ReadyEvent::Prepare || command.ready == Leader::ReadyEvent::ReadyCheck ||
+                command.ready == Leader::ReadyEvent::Rest);
     }
 }
 

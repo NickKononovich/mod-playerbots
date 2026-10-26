@@ -20,6 +20,8 @@ void InterruptStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("leader external", { NextAction("leader external", ACTION_EMERGENCY + 1) }));
     triggers.push_back(new TriggerNode("leader threat", { NextAction("leader threat", ACTION_INTERRUPT + 4) }));
     triggers.push_back(new TriggerNode("leader cc", { NextAction("leader cc", ACTION_INTERRUPT + 2.5f) }));
+    // [rot3] the leader's PreSave: the bot's best personal save, above everything but the leader's moves
+    triggers.push_back(new TriggerNode("leader pre save", { NextAction("leader pre save", ACTION_EMERGENCY + 3) }));
 }
 
 bool InterruptStrategy::IsCoordinating(PlayerbotAI* botAI)

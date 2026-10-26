@@ -7,6 +7,7 @@
 #include "DKTriggers.h"
 #include "GenericTriggers.h"
 #include "LeaderCommand.h"  // [rot2]
+#include "LeaderCommandState.h"  // [rot3]
 #include "Map.h"  // [b35_uh] IsGargoyleFight
 #include "Pet.h"  // [b31_deep] GhoulFrenzyTrigger
 #include "Playerbots.h"
@@ -19,11 +20,14 @@
 // [rot2]
 bool LeaderBurnRule(Player* bot, bool& burn)
 {
+    // [rot3] a led bot without a fresh command: no burn cooldown of its own (no fallback to the boss rule)
     Leader::MemberEvents command;
-    if (!LeaderCommand::CurrentCommand(bot, command))
+    LeaderCommandState::State const state = LeaderCommandState::Read(bot, command);
+    if (state == LeaderCommandState::State::NotLed)
         return false;
 
-    burn = command.intensity == Leader::Intensity::Burn && command.attack != Leader::AttackEvent::StopDps;
+    burn = state == LeaderCommandState::State::Fresh && command.intensity == Leader::Intensity::Burn &&
+           command.attack != Leader::AttackEvent::StopDps;
     return true;
 }
 

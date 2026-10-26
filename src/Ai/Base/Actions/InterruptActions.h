@@ -64,4 +64,17 @@ public:
     bool Execute(Event event) override;
 };
 
+// [rot3] The leader's PreSave (a big hit foreseen on this bot): the bot's best personal save it has ready.
+class LeaderPreSaveAction : public Action
+{
+public:
+    LeaderPreSaveAction(PlayerbotAI* botAI) : Action(botAI, "leader pre save") {}
+
+    bool isUseful() override;
+    bool Execute(Event event) override;
+
+private:
+    char const* PickSave();
+};
+
 #endif

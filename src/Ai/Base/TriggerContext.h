@@ -112,6 +112,7 @@ public:
         creators["leader external"] = &TriggerContext::leader_external;  // [rot2]
         creators["leader threat"] = &TriggerContext::leader_threat;      // [rot2]
         creators["leader cc"] = &TriggerContext::leader_cc;              // [rot2]
+        creators["leader pre save"] = &TriggerContext::leader_pre_save;  // [rot3]
 
         creators["light rage available"] = &TriggerContext::LightRageAvailable;
         creators["medium rage available"] = &TriggerContext::MediumRageAvailable;
@@ -564,6 +565,7 @@ private:
     static Trigger* leader_external(PlayerbotAI* botAI) { return new LeaderExternalTrigger(botAI); }  // [rot2]
     static Trigger* leader_threat(PlayerbotAI* botAI) { return new LeaderThreatTrigger(botAI); }      // [rot2]
     static Trigger* leader_cc(PlayerbotAI* botAI) { return new LeaderCcTrigger(botAI); }              // [rot2]
+    static Trigger* leader_pre_save(PlayerbotAI* botAI) { return new LeaderPreSaveTrigger(botAI); }  // [rot3]
     static Trigger* no_pet(PlayerbotAI* botAI) { return new NoPetTrigger(botAI); }
     static Trigger* has_pet(PlayerbotAI* botAI) { return new HasPetTrigger(botAI); }
     static Trigger* pet_attack(PlayerbotAI* botAI) { return new PetAttackTrigger(botAI); }

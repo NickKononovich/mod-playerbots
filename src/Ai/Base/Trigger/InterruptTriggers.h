@@ -48,4 +48,13 @@ public:
     bool IsActive() override;
 };
 
+// [rot3] The leader's PreSave for this bot (LeaderCommandState::PreSaveAssigned).
+class LeaderPreSaveTrigger : public Trigger
+{
+public:
+    LeaderPreSaveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader pre save") {}
+
+    bool IsActive() override;
+};
+
 #endif

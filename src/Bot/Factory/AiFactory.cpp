@@ -661,6 +661,9 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
             nonCombatEngine->addStrategy("raid leader", false);
         if (sPlayerbotAIConfig.RaidConsumables)
             nonCombatEngine->addStrategy("raid consumables", false);
+        // [rot3] the leader's assigned casts and the leader-command multiplier (LeaderCommandMultiplier) out of
+        // combat too (the engine also runs between the mobs of a pull); inert for a bot the leader does not lead
+        nonCombatEngine->addStrategy("interrupt", false);
 
         // Members walk to the group spot of a line-of-sight pull before the tank pulls (LosPull).
         if (sPlayerbotAIConfig.LosPullMinCasters)
