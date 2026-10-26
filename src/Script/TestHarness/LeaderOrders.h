@@ -134,7 +134,14 @@ namespace Leader
     constexpr bool LEADER_NO_OWN_BUFF_TIMING = true;    // out of combat buffs only under Prepare / Ready? / Rest
     // step 2 / 3 of the correction, NOT built yet: the leader does not detect these hazards / tactics itself, so the
     // member's own rules stay until it does (true would leave the members standing in them)
-    constexpr bool LEADER_NO_OWN_AOE_DODGE = false;       // "avoid aoe", "avoid dungeon hazard"
+    // [lead16] the leader dodges every ground hazard itself now (TickLeaderEvents: dynamic objects, traps, trigger
+    // NPCs, area casts, DungeonHazard circles, lava / drop-offs as a spot filter): the members' own dodges are off
+    constexpr bool LEADER_NO_OWN_AOE_DODGE = true;        // "avoid aoe", "avoid dungeon hazard"
+    constexpr bool LEADER_HAZARD_SPOTS = true;            // the leader's hazard MoveTo (off: no leader dodge)
+    // [lead16] combat positions: the leader's StandAt for every member in the fight (ranged / healer at a distance in
+    // sight of the target, melee behind it, out of cleaves and hazards, in heal reach); the members' own range moves
+    // ("reach melee" / "reach spell") yield to a leader spot
+    constexpr bool LEADER_COMBAT_SPOTS = true;
     constexpr bool LEADER_NO_OWN_DUNGEON_MOVES = false;   // the dungeon tactics' own moves
     // [lead15] the healer reaches EVERY member (user 2026-10-26): every spot the leader issues keeps each member
     // within LEADER_HEAL_REACH_YD (40 yd heal range minus a margin) of the healer and in its sight

@@ -64,6 +64,7 @@
 #include "SpellMgr.h"
 #include "StuckWatchdog.h"
 #include "DamageTaken.h"
+#include "DungeonHazard.h"   // [lead16] the leader's hazard view
 #include "DungeonTactics.h"  // [lead15] the leader's cleave dodge (InFrontalCleave)
 #include "InstanceScript.h"
 #include "InstanceSaveMgr.h"
@@ -20329,6 +20330,162 @@ namespace TestHarness
             return false;
         }
 
+        // [lead16] the leader's hazard view: per member, the circles "avoid aoe" would flee (AvoidAoeAction::
+        // CollectZones), the hostile area-spell dynamic objects near it, its DungeonHazard circles (role-specific)
+        constexpr float LEADER_HAZARD_SCAN_YD = 25.0f;
+        constexpr uint32 LEADER_HAZARD_SCAN_MS = 200;   // the slow layer's rescan; membership is checked every tick
+        constexpr float LEADER_HAZARD_EDGE = 2.0f;      // a safe spot stands this far outside every circle
+        constexpr float LEADER_HAZARD_DZ = 5.0f;        // a circle on another floor does not count
+        constexpr float LEADER_TERRAIN_EDGE = 2.0f;     // and this far from lava / slime / a drop-off
+        constexpr float LEADER_RANGED_YD = 25.0f;       // ranged: 22-28 yd from the target
+        constexpr float LEADER_RANGED_MIN_YD = 22.0f;
+        constexpr float LEADER_RANGED_MAX_YD = 28.0f;
+        constexpr float LEADER_HEALER_YD = 20.0f;
+        constexpr uint32 LEADER_SPOT_LOS_MS = 500;      // a combat spot's sight re-check
+
+        void LeaderCollectHazards(Player* bot, std::vector<HazardZone>& out)
+        {
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (!botAI)
+                return;
+            AvoidAoeAction::CollectZones(botAI, out);
+            std::list<WorldObject*> objects;
+            Acore::AllWorldObjectsInRange check(bot, LEADER_HAZARD_SCAN_YD);
+            Acore::WorldObjectListSearcher<Acore::AllWorldObjectsInRange> searcher(bot, objects, check,
+                                                                                    GRID_MAP_TYPE_MASK_DYNAMICOBJECT);
+            Cell::VisitObjects(bot, searcher, LEADER_HAZARD_SCAN_YD);
+            for (WorldObject* object : objects)
+            {
+                DynamicObject* dyn = object ? object->ToDynObject() : nullptr;
+                if (!dyn || !dyn->IsInWorld() || dyn->GetByteValue(DYNAMICOBJECT_BYTES, 0) != DYNAMIC_OBJECT_AREA_SPELL)
+                    continue;
+                Unit* caster = dyn->GetCaster();
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(dyn->GetSpellId());
+                if (!caster || !info || info->IsPositive() || !caster->IsHostileTo(bot) ||
+                    sPlayerbotAIConfig.AoeAvoidSpellWhitelist.count(info->Id))
+                    continue;
+                float const radius = dyn->GetRadius();
+                if (radius > 0.0f && radius <= sPlayerbotAIConfig.MaxAoeAvoidRadius)
+                    out.push_back({dyn->GetPosition(), radius, info->SpellName[LOCALE_enUS]});
+            }
+            for (DungeonHazard::Circle const& circle : DungeonHazard::Collect(bot))
+                if (!circle.chasing)
+                    out.push_back({Position(circle.x, circle.y, bot->GetPositionZ()), circle.radius,
+                                   "dungeon hazard"});
+        }
+
+        // the circle of `zones` that holds (x, y, z) (with `extra` around it), nullptr: none
+        HazardZone const* LeaderZoneAt(std::vector<HazardZone> const& zones, float x, float y, float z, float extra)
+        {
+            for (HazardZone const& zone : zones)
+                if (std::fabs(zone.centre.GetPositionZ() - z) <= LEADER_HAZARD_DZ &&
+                    zone.centre.GetExactDist2d(x, y) < zone.radius + extra)
+                    return &zone;
+            return nullptr;
+        }
+
+        // the spot is fit to stand on in a fight: out of every hazard and cleave cone, off lava / drop-offs
+        bool LeaderSpotSafe(Player* bot, PlayerbotAI* botAI, std::vector<HazardZone> const& zones, float x, float y,
+                            float z)
+        {
+            if (LeaderZoneAt(zones, x, y, z, LEADER_HAZARD_EDGE))
+                return false;
+            if (NearHazard(bot->GetMap(), bot->GetPhaseMask(), x, y, z, LEADER_TERRAIN_EDGE))
+                return false;
+            return !botAI || !DungeonTactics::SpotInFrontalCleave(bot, botAI, x, y, 1.0f, 20.0f * float(M_PI) / 180.0f);
+        }
+
+        // the nearest safe spot around the member that `keeps` (the heal reach), on its floor
+        bool LeaderSafeSpot(Player* bot, PlayerbotAI* botAI, std::vector<HazardZone> const& zones,
+                            std::function<bool(Position const&)> const& keeps, Position& out)
+        {
+            constexpr float STEPS[] = {3.0f, 5.0f, 7.0f, 10.0f, 13.0f, 16.0f};
+            constexpr uint32 DIRECTIONS = 16;
+            Map* map = bot->GetMap();
+            for (float step : STEPS)
+                for (uint32 i = 0; i < DIRECTIONS; ++i)
+                {
+                    float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                    float x = bot->GetPositionX() + std::cos(angle) * step;
+                    float y = bot->GetPositionY() + std::sin(angle) * step;
+                    float z = bot->GetPositionZ();
+                    if (!map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
+                                                              bot->GetPositionZ(), x, y, z) ||
+                        std::fabs(z - bot->GetPositionZ()) > 4.0f || !LeaderSpotSafe(bot, botAI, zones, x, y, z))
+                        continue;
+                    Position const spot(x, y, z);
+                    if (!keeps(spot))
+                        continue;
+                    out = spot;
+                    return true;
+                }
+            return false;
+        }
+
+        // a combat spot still fits: in its window from the target (melee: behind it), safe, in heal reach; `sight`:
+        // also the line of sight to the target (ranged / healer)
+        bool LeaderCombatSpotValid(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot, bool melee,
+                                   std::vector<HazardZone> const& zones,
+                                   std::function<bool(Position const&)> const& keeps, bool sight)
+        {
+            float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
+            if (melee)
+            {
+                float const reach = target->GetCombatReach() + bot->GetCombatReach() + 1.0f;
+                if (gap > reach || target->HasInArc(float(M_PI), &spot))
+                    return false;
+            }
+            else
+            {
+                float const low = PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD - 6.0f : LEADER_RANGED_MIN_YD - 2.0f;
+                if (gap < low || gap > LEADER_RANGED_MAX_YD + 2.0f)
+                    return false;
+            }
+            if (!LeaderSpotSafe(bot, botAI, zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()) ||
+                !keeps(spot))
+                return false;
+            return !sight || melee ||
+                   target->GetMap()->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(),
+                                                     spot.GetPositionZ() + 2.0f, target->GetPositionX(),
+                                                     target->GetPositionY(), target->GetPositionZ() + 2.0f,
+                                                     target->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                     VMAP::ModelIgnoreFlags::Nothing);
+        }
+
+        // a new combat spot: melee behind the target, ranged at LEADER_RANGED_YD / the healer at LEADER_HEALER_YD
+        // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
+        bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
+                              std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
+                              Position& out)
+        {
+            static constexpr float TURNS[] = {0.0f,  0.35f, -0.35f, 0.7f,  -0.7f, 1.05f, -1.05f, 1.4f,
+                                              -1.4f, 1.75f, -1.75f, 2.1f,  -2.1f, 2.45f, -2.45f, 3.14f};
+            float const base = melee ? target->GetOrientation() + float(M_PI) : target->GetAngle(bot);
+            float const distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
+                                   : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
+                                                              : LEADER_RANGED_YD;
+            Map* map = target->GetMap();
+            for (float turn : TURNS)
+            {
+                if (melee && std::fabs(turn) > 1.2f)
+                    break;  // behind it only
+                float const angle = base + turn;
+                float x = target->GetPositionX() + std::cos(angle) * distance;
+                float y = target->GetPositionY() + std::sin(angle) * distance;
+                float z = target->GetPositionZ();
+                if (!map->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                          target->GetPositionZ(), x, y, z) ||
+                    std::fabs(z - target->GetPositionZ()) > 4.0f)
+                    continue;
+                Position const spot(x, y, z);
+                if (!LeaderCombatSpotValid(bot, botAI, target, spot, melee, zones, keeps, true))
+                    continue;
+                out = spot;
+                return true;
+            }
+            return false;
+        }
+
         // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack
         // reaching it, a walk to it.
         bool LeaderSpotOk(Player* tank, Position const& fight, Position& spot, std::vector<ObjectGuid> const& pack)
@@ -20818,6 +20975,22 @@ namespace TestHarness
                             killOrder.end());
         }
 
+        // [lead16] the hazard scan (slow layer, every LEADER_HAZARD_SCAN_MS); membership is checked every tick
+        if (Leader::LEADER_HAZARD_SPOTS &&
+            (!lead.hazardScanMs || getMSTimeDiff(lead.hazardScanMs, now) >= LEADER_HAZARD_SCAN_MS))
+        {
+            lead.hazardScanMs = now;
+            lead.hazardZones.clear();
+            for (Player* bot : seats)
+                slow([&]
+                     {
+                         LeaderCollectHazards(bot, lead.hazardZones[bot->GetGUID()]);
+                         return true;
+                     });
+        }
+        if (!fighting)
+            lead.combatSpots.clear();
+
         uint32 seat = 0;
         for (Player* bot : seats)
         {
@@ -20889,6 +21062,56 @@ namespace TestHarness
                     LogHealReach(party, bot, bot == healer ? tank : healer, "no cleave exit keeps the heal reach",
                                  "none");
             }
+            // [lead16] LEADER_HAZARD_SPOTS: out of every ground hazard the leader sees for this member (to the nearest
+            // safe spot that keeps the heal reach), and held there while the hazard stays next to it
+            if (!moved && Leader::LEADER_HAZARD_SPOTS)
+            {
+                std::vector<HazardZone> const& zones = lead.hazardZones[guid];
+                HazardZone const* in =
+                    zones.empty() ? nullptr
+                                  : LeaderZoneAt(zones, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                                 0.5f);
+                auto const held = lead.hazardSpots.find(guid);
+                bool const keepHeld =
+                    !in && held != lead.hazardSpots.end() && !zones.empty() &&
+                    LeaderZoneAt(zones, held->second.GetPositionX(), held->second.GetPositionY(),
+                                 held->second.GetPositionZ(), LEADER_HAZARD_EDGE + 6.0f) &&
+                    LeaderSpotSafe(bot, botAI, zones, held->second.GetPositionX(), held->second.GetPositionY(),
+                                   held->second.GetPositionZ());
+                if (in || keepHeld)
+                {
+                    hazardSeen = true;
+                    Position spot;
+                    bool const found =
+                        keepHeld ? (spot = held->second, true)
+                                 : slow([&]
+                                        {
+                                            return LeaderSafeSpot(
+                                                bot, botAI, zones,
+                                                bot == healer ? std::function<bool(Position const&)>(healerKeeps)
+                                                              : std::function<bool(Position const&)>(keepsHealer),
+                                                spot);
+                                        });
+                    if (found)
+                    {
+                        lead.hazardSpots[guid] = spot;
+                        std::string const why = std::string("hazard: ") + (in ? in->what : "held out of it");
+                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::MoveTo, spot, 1.0f, why))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", why).Real("x", spot.GetPositionX())
+                                         .Real("y", spot.GetPositionY()).Real("z", spot.GetPositionZ()));
+                        if (bot == healer)
+                            healerAt = spot;
+                        moved = true;
+                    }
+                    else if (in && Leader::LEADER_HEAL_REACH && healer)
+                        LogHealReach(party, bot, bot == healer ? tank : healer,
+                                     "no safe spot out of " + in->what + " keeps the heal reach", "none");
+                }
+                else
+                    lead.hazardSpots.erase(guid);
+            }
+
             // the aggro-loss victim runs next to the tank (between it and the tank, in heal reach)
             auto const loose = looseOn.find(guid);
             if (!moved && loose != looseOn.end())
@@ -20912,6 +21135,49 @@ namespace TestHarness
                     healerAt = spot;
                 moved = true;
             }
+            // [lead16] LEADER_COMBAT_SPOTS: the member's combat spot (StandAt), kept while it fits, a new one when the
+            // target moved off it, it lost sight, a cleave or a hazard covers it or it broke the heal reach
+            if (!moved && combat && Leader::LEADER_COMBAT_SPOTS && target && target->IsAlive())
+            {
+                bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
+                std::vector<HazardZone> const& zones = lead.hazardZones[guid];
+                std::function<bool(Position const&)> const keeps =
+                    bot == healer ? std::function<bool(Position const&)>(healerKeeps)
+                                  : std::function<bool(Position const&)>(keepsHealer);
+                auto found = lead.combatSpots.find(guid);
+                uint32& losMs = lead.combatSpotLosMs[guid];
+                bool const sight = !losMs || getMSTimeDiff(losMs, now) >= LEADER_SPOT_LOS_MS;
+                if (sight)
+                    losMs = now;
+                bool const valid = found != lead.combatSpots.end() && found->second.first == target->GetGUID() &&
+                                   LeaderCombatSpotValid(bot, botAI, target, found->second.second, melee, zones,
+                                                         keeps, sight);
+                if (!valid)
+                {
+                    Position spot;
+                    if (slow([&] { return LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot); }))
+                        lead.combatSpots[guid] = {target->GetGUID(), spot};
+                    else
+                        lead.combatSpots.erase(guid);
+                    found = lead.combatSpots.find(guid);
+                }
+                if (found != lead.combatSpots.end())
+                {
+                    Position const& spot = found->second.second;
+                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, spot, melee ? 1.0f : 2.0f,
+                                                melee ? "combat spot: behind the target" : "combat spot"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
+                                 JsonObject().Str("why", melee ? "combat spot: behind the target" : "combat spot")
+                                     .Str("target", target->GetName())
+                                     .Real("distance", target->GetExactDist(spot))
+                                     .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
+                                     .Real("z", spot.GetPositionZ()));
+                    if (bot == healer)
+                        healerAt = spot;
+                    moved = true;
+                }
+            }
+
             if (!moved && spotsHeld)
                 if (auto const spot = lead.spots.find(guid); spot != lead.spots.end())
                 {

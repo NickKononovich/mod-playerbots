@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_MOVEMENTACTIONS_H
 #define PLAYERBOTS_MOVEMENTACTIONS_H
 
+#include "HazardZone.h"  // [lead16]
 #include "Action.h"
 #include "LastMovementValue.h"
 #include "ObjectGuid.h"
@@ -309,6 +310,11 @@ public:
     // The bot is casting while standing in a ground effect, or inside an enemy area cast that lands before its own
     // cast ends: it stops casting so this action can walk it out (the AI does not tick during a cast).
     static bool ShouldStopCastToDodge(PlayerbotAI* botAI);
+
+    // [lead16] The dungeon leader's hazard view of this bot (LeaderOrders.h LEADER_NO_OWN_AOE_DODGE): the circles the
+    // four cases of Execute would flee, without moving (the same filters: whitelist, max radius, negative spells).
+    // World thread (the leader reads the bot's AI values after the map updates).
+    static void CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& out);
 
 protected:
     bool AvoidAuraWithDynamicObj();

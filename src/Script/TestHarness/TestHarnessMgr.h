@@ -27,6 +27,7 @@ class InstanceScript;
 class Map;
 class Player;
 class Unit;  // [lead3]
+#include "HazardZone.h"  // [lead16]
 namespace PullPlanner
 {
     struct Decision;  // [lead15] ChooseTargetActions.h
@@ -423,6 +424,12 @@ namespace TestHarness
             std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> looseMobs;
             // [lead15] own_decision counts: member -> action -> count (the run report's work list)
             std::map<std::string, std::map<std::string, uint32>> ownDecisions;
+            // [lead16] the hazard view per member, the members held out of a hazard, the combat spots
+            std::map<ObjectGuid, std::vector<HazardZone>> hazardZones;
+            uint32 hazardScanMs = 0;
+            std::map<ObjectGuid, Position> hazardSpots;
+            std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpots;  // member -> {target, spot}
+            std::map<ObjectGuid, uint32> combatSpotLosMs;
             ObjectGuid heldReadyMob;
             uint32 heldReadySinceMs = 0;
             // [lead8] where the group fought and cleared this run (the tank at each fight's end)

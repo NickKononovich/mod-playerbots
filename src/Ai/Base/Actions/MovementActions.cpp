@@ -4918,6 +4918,81 @@ Unit* FindCasterAoe(PlayerbotAI* botAI, Player* bot, GuidVector const& attackers
 }
 }  // namespace
 
+// [lead16] the four cases' circles, without moving (the leader's hazard view)
+void AvoidAoeAction::CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& out)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !bot->IsInWorld())
+        return;
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    auto const whitelisted = [](uint32 spellId)
+    {
+        return sPlayerbotAIConfig.AoeAvoidSpellWhitelist.find(spellId) !=
+               sPlayerbotAIConfig.AoeAvoidSpellWhitelist.end();
+    };
+    float const maxRadius = sPlayerbotAIConfig.MaxAoeAvoidRadius;
+
+    // #1 the area aura the bot stands in
+    if (Aura* aura = AI_VALUE(Aura*, "area debuff");
+        aura && !aura->IsRemoved() && !aura->IsExpired() && aura->GetType() == DYNOBJ_AURA_TYPE &&
+        aura->GetSpellInfo() && !whitelisted(aura->GetSpellInfo()->Id))
+        if (DynamicObject* dynOwner = aura->GetDynobjOwner(); dynOwner && dynOwner->IsInWorld())
+            if (float const radius = dynOwner->GetRadius(); radius > 0.0f && radius <= maxRadius)
+                out.push_back({dynOwner->GetPosition(), radius, aura->GetSpellInfo()->SpellName[LOCALE_enUS]});
+
+    // #2 damage traps
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest trap with damage"))
+    {
+        GameObject* go = botAI->GetGameObject(guid);
+        if (!go || !go->IsInWorld() || go->GetGoType() != GAMEOBJECT_TYPE_TRAP)
+            continue;
+        GameObjectTemplate const* goInfo = go->GetGOInfo();
+        if (!goInfo || goInfo->trap.type != 0 || !goInfo->trap.spellId || whitelisted(goInfo->trap.spellId))
+            continue;
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(goInfo->trap.spellId);
+        if (!spellInfo || spellInfo->IsPositive())
+            continue;
+        float const radius = float(goInfo->trap.diameter) / 2.0f + go->GetCombatReach();
+        if (radius > 0.0f && radius <= maxRadius)
+            out.push_back({go->GetPosition(), radius, spellInfo->SpellName[LOCALE_enUS]});
+    }
+
+    // #3 invisible trigger NPCs with a pulsing damage aura
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "possible triggers"))
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld())
+            continue;
+        Creature* creature = unit->ToCreature();
+        if (!unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && !(creature && creature->IsTrigger()))
+            continue;
+        for (AuraType type : {SPELL_AURA_PERIODIC_TRIGGER_SPELL, SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE})
+            for (AuraEffect* aurEff : unit->GetAuraEffectsByType(type))
+            {
+                SpellInfo const* spellInfo = aurEff ? aurEff->GetSpellInfo() : nullptr;
+                SpellInfo const* trigger =
+                    spellInfo ? sSpellMgr->GetSpellInfo(spellInfo->Effects[aurEff->GetEffIndex()].TriggerSpell)
+                              : nullptr;
+                if (!trigger || whitelisted(trigger->Id))
+                    continue;
+                for (int j = 0; j < MAX_SPELL_EFFECTS; ++j)
+                    if (trigger->Effects[j].Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                    {
+                        float const radius = trigger->Effects[j].CalcRadius();
+                        if (radius > 0.0f && radius <= maxRadius)
+                            out.push_back({unit->GetPosition(), radius, trigger->SpellName[LOCALE_enUS]});
+                        break;
+                    }
+            }
+    }
+
+    // #4 a mob's area cast with a cast bar
+    Position centre;
+    float radius = 0.0f;
+    if (Unit* caster = FindCasterAoe(botAI, bot, AI_VALUE(GuidVector, "attackers"), centre, radius))
+        out.push_back({centre, radius + CASTER_AOE_EXIT_MARGIN, "area cast of " + caster->GetName()});
+}
+
 // Case #4: a mob casting a point-blank / ground area spell with a cast bar (Blast Wave 23039, War Stomp 38750) or
 // channelling one: step just past its edge while it runs; the melee reach actions bring the bot back afterwards.
 bool AvoidAoeAction::AvoidCasterAoe()

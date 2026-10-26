@@ -137,6 +137,11 @@ namespace
             return true;
         if (Leader::LEADER_NO_OWN_AOE_DODGE && in({"avoid aoe", "avoid dungeon hazard"}))
             return true;
+        // [lead16] a leader spot (hazard, combat spot, aggro loss, walk) holds: no own range move off it
+        if (Leader::LEADER_COMBAT_SPOTS && in({"reach melee", "reach spell"}) &&
+            (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
+             events.move == Leader::MoveEvent::Hold))
+            return true;
         if (Leader::LEADER_NO_OWN_CC && name != "pre pull cc" &&
             (dynamic_cast<CastCrowdControlSpellAction*>(action) ||
              (name.size() > 6 && name.compare(name.size() - 6, 6, " on cc") == 0)))
