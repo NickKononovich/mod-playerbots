@@ -9,12 +9,14 @@
 #include "AggressiveTargetValue.h"
 #include "AiObjectContext.h"
 #include "Creature.h"
+#include "GameObject.h"  // [lead1]
 #include "Engine.h"
 #include "GameTime.h"
 #include "GenericSpellActions.h"
 #include "HealthTriggers.h"
 #include "Group.h"
 #include "LastMovementValue.h"
+#include "LeaderOrders.h"  // [lead1]
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -37,6 +39,7 @@
 
 #include <algorithm>
 #include <tuple>  // [b31_simpct]
+#include <unordered_set>  // [lead1]
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -743,6 +746,30 @@ namespace TestHarness
         return members.Build();
     }
 
+    // [lead1] The run events that are a leader decision (decides: it competes with the tank's own decision about the
+    // mob - a pull, a walk, a hold, a skip) or a leader report (pull_hold: the leader yields the tank to its pull).
+    static bool LeaderDecisionEvent(std::string const& type, bool& decides)
+    {
+        static std::unordered_set<std::string> const deciding = {
+            "target", "target_commit", "skip_target", "skip_lifted", "route_blocker_body_pull", "guard_body_pull",
+            "pull_after_hold", "body_pull_planner_request", "body_pull_planner_timeout", "boss_on_the_way_first",
+            "behind_root_pull", "approach_sight", "approach_stop", "guard_approach", "patrol_step_back",
+            "patrol_wait_spot", "patrol_hold", "patrol_handover", "harness_walk_halt", "stall_short_step",
+            "steer_stuck", "pull_hold_stall", "harness_hold", "harness_hold_refused_pack", "guarantee_hold",
+            "blocker_pull_gate", "held_for_now_cap", "rest_hold", "trash_stalemate", "stale_idle_victim_release",
+            "aoe_pull_plan_accepted", "pull_alone_first", "pack_too_big", "route_blocker_walk_through",
+            "route_blocker_required_only", "detour_fallback", "boss_order_hold", "meet_member", "assist_member",
+            "regroup", "pull_option", "stall_recovery", "regen_stall_release"};
+        static std::unordered_set<std::string> const reporting = {"pull_hold"};
+        if (deciding.count(type))
+        {
+            decides = true;
+            return true;
+        }
+        decides = false;
+        return reporting.count(type) != 0;
+    }
+
     void TestHarnessMgr::LogEvent(Party& party, std::string const& type, JsonObject fields)
     {
         uint32 const now = getMSTime();
@@ -756,6 +783,25 @@ namespace TestHarness
 
         if (type == "stall" || type == "stall_recovery" || type == "run_end" || type == "run_start")
             AppendLine(HEARTBEAT_FILE, line.Build());
+
+        // [lead1] The leader's own holds, body pulls, walks, skips and target choices are decision lines too
+        // (C:/WoW/LEADER_REFACTOR_PLAN.md step 1: "the harness logs its own holds and body pulls as decisions"),
+        // about the route target. One hook here instead of one per site.
+        bool decides = false;
+        if (Leader::LEADER_DECISION_LOG && LeaderDecisionEvent(type, decides))
+        {
+            std::string mobName;
+            if (!party.target.IsEmpty())
+                if (Player* leader = ObjectAccessor::FindPlayer(party.leader); leader && leader->IsInWorld())
+                {
+                    if (Creature* creature = leader->GetMap()->GetCreature(party.target))
+                        mobName = creature->GetName();
+                    else if (GameObject* object = leader->GetMap()->GetGameObject(party.target))
+                        mobName = object->GetName();
+                }
+            DecisionLog::Instance().Write(DecisionRun{party.id, party.seq, party.runStartMs}, "leader", type,
+                                          party.target, mobName, decides, fields, now);
+        }
     }
 
     void TestHarnessMgr::LogRunStart(Party& party)

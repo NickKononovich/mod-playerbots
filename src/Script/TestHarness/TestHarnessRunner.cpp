@@ -44,6 +44,7 @@
 #include "MoveSpline.h"
 #include "AttackerCountValues.h"
 #include "MovementActions.h"
+#include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
@@ -413,7 +414,6 @@ namespace TestHarness
         constexpr uint32 DRIVE_AFTER_MS = 6 * IN_MILLISECONDS;
         constexpr float DRIVE_STEP = 8.0f;
         constexpr float DRIVE_SAME_GOAL = 10.0f;
-        constexpr uint32 DRIVE_HOLD_MS = 300;
         // Retarget guards (pass 3). An event chain (a starter of the map used, another one still pending with its
         // conditions met): ordinary trash farther than this from every pending starter object and event spot is no
         // target (Culling wave 10: after Chromie the route chose Risen Zombies 970 yd away in the city).
@@ -858,7 +858,7 @@ namespace TestHarness
         constexpr bool ROUTE_HARNESS_WALK_GUARD = true;
         constexpr uint32 HARNESS_HOLD_LOG_MS = 15 * IN_MILLISECONDS;
         // Pass 3 kill switches (wave 10), false restores the pass 2 behaviour of that piece:
-        // - the harness drive (DriveLeader in Steer / WalkToEventSpot);
+        // - the harness drive (removed in [lead2]: it never ran, LeaderOwnWalkStalled keeps its stall watch);
         // - the event chain radius and the far-target guard in Retarget;
         // - the same-entry twins skipped with an unreachable mob (steer_stuck);
         // - Oculus "complete walks only" restricted to the drake phase (after Drakos), a short retry for a boss that
@@ -867,7 +867,6 @@ namespace TestHarness
         //   pack broke Medivh's shield), and a spot with fightOnlyAttackers takes no idle targets (Azjol-Nerub);
         // - UseItem starters: dismount, step out of the object, a failed cast is no use;
         // - the boss room cleared before its boss (BOSS_ROOM_TRASH_PENALTY).
-        constexpr bool ROUTE_HARNESS_DRIVE = false;  // user rule: bots walk by themselves
         constexpr bool ROUTE_BOSS_ROOM_FIRST = true;
         // - water: a route ending under water next to a target at the surface counts (a swimmer rises), the walker is
         //   not put on a lake floor, and the gap walk swims (Slave Pens wave 9/10: Rokmar "unreachable").
@@ -2056,28 +2055,18 @@ namespace TestHarness
             return true;
         }
 
-        enum class DriveResult : uint8
-        {
-            None,     // the leader's own move goes on (or no step is possible)
-            Started,  // the first harness step for this goal (the caller logs harness_drive)
-            Step,     // the next harness step
-            Stalled   // no harness walk (bots walk by themselves): the leader's own walk stalled, once per goal
-        };
-
-        // The harness drive (Party::driving): once the leader made no progress towards this goal for DRIVE_AFTER_MS,
-        // it is walked along its route leg by the harness - a straight MovePoint to the first route point ahead,
-        // DRIVE_STEP yd at most, over ground the whole way (DirectLineOverGround) - with its AI held for the step so a
-        // strategy action that answers OK without moving cannot cancel it. As a player walks: the steps follow the
-        // navmesh route (steep slopes included, as BuildLeg found it), no teleport, no speed change.
+        // [lead2] The harness drive's walk is gone (C:/WoW/LEADER_REFACTOR_PLAN.md step 2, M3: ROUTE_HARNESS_DRIVE
+        // and HARNESS_MOVES_BOTS were both off, so it never ran; user rule: bots walk by themselves). What stays is
+        // its stall watch (Party::driving): once the leader made no progress towards this goal for DRIVE_AFTER_MS,
+        // true once per goal (the caller logs bot_cannot_move); party.driving stays set for [b32_brs]'s short steps.
         bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked);  // below
 
-        DriveResult DriveLeader(Party& party, Player* leader, PathResult const& leg, G3D::Vector3 const& goal)
+        bool LeaderOwnWalkStalled(Party& party, Player* leader, G3D::Vector3 const& goal)
         {
             if (leader->IsInCombat() || leader->GetVehicle() || leader->IsInFlight() || leader->Unit::IsInWater())
-                return DriveResult::None;
+                return false;
 
             uint32 const now = getMSTime();
-            G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
             G3D::Vector3 const lastGoal(party.driveGoal.GetPositionX(), party.driveGoal.GetPositionY(),
                                         party.driveGoal.GetPositionZ());
             if (!party.driveLastMs || (lastGoal - goal).length() > DRIVE_SAME_GOAL ||
@@ -2095,67 +2084,10 @@ namespace TestHarness
                 party.driveSinceMs = now;
             }
 
-            bool started = false;
-            if (!party.driving)
-            {
-                if (getMSTimeDiff(party.driveSinceMs, now) <= DRIVE_AFTER_MS)
-                    return DriveResult::None;
-                party.driving = true;
-                started = true;
-            }
-
-            // User rule: bots walk by themselves. The stall is the leader's own, logged (bot_cannot_move).
-            if (!ROUTE_HARNESS_DRIVE || !HARNESS_MOVES_BOTS)
-                return started ? DriveResult::Stalled : DriveResult::None;
-
-            // A step under way: let it finish.
-            if (leader->isMoving() &&
-                leader->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-                return DriveResult::Step;
-
-            // The first route point at least 1 yd ahead, DRIVE_STEP yd at most along that segment.
-            G3D::Vector3 dest = here;
-            bool found = false;
-            for (size_t index = 1; index < leg.points.size() && !found; ++index)
-            {
-                G3D::Vector3 const ahead = leg.points[index] - here;
-                float const length = ahead.length();
-                if (length < 1.0f)
-                    continue;
-                dest = here + ahead * (std::min(length, DRIVE_STEP) / length);
-                found = true;
-            }
-            if (!found)
-                return DriveResult::None;
-
-            float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), dest.x, dest.y, dest.z + 3.0f,
-                                                             true, 10.0f);
-            if (ground <= INVALID_HEIGHT)
-                return DriveResult::None;
-            dest.z = ground;
-            if (!DirectLineOverGround(leader, dest.x, dest.y, dest.z))
-                return DriveResult::None;
-
-            TestRunner::ClearWaypoint(party.leader);
-            if (leader->IsSitState())
-                leader->SetStandState(UNIT_STAND_STATE_STAND);
-            ++party.harnessMoves;
-            leader->GetMotionMaster()->Clear();
-            MovementAction::RecordTankTrail(leader);
-            // A harness step never runs through a closed door either (ROUTE_CLOSED_DOORS_ALL).
-            {
-                ObjectGuid doorGuid;
-                float doorWalked = 0.0f;
-                LeaderDoorStop(leader, dest, doorGuid, doorWalked);
-            }
-            leader->GetMotionMaster()->MovePoint(0, dest.x, dest.y, dest.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false,
-                                                 true);
-            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(leader))
-            {
-                float const speed = std::max(1.0f, leader->GetSpeed(MOVE_RUN));
-                botAI->SetNextCheckDelay(uint32((dest - here).length() / speed * IN_MILLISECONDS) + DRIVE_HOLD_MS);
-            }
-            return started ? DriveResult::Started : DriveResult::Step;
+            if (party.driving || getMSTimeDiff(party.driveSinceMs, now) <= DRIVE_AFTER_MS)
+                return false;
+            party.driving = true;
+            return true;
         }
 
         // Summoned creatures (event bosses and their waves: Tuten'kash, Gahz'rilla, Grubbis, Mutanus, Vazruden and
@@ -4174,6 +4106,9 @@ namespace TestHarness
         // link's straight walk or a gate pass) is stopped here. True: stopped; `to` is where it went.
         bool HaltLeaderWalk(Player* leader, G3D::Vector3& to)
         {
+            // [lead2] a ROUTE-phase tool only: while the tank's pull order is open its walk is the order's
+            if (Leader::LEADER_ONE_TANK_MOVER && Leader::Orders::IsOpen(leader->GetGUID()))
+                return false;
             TestRunner::Waypoint walk;
             if (!leader->isMoving() || leader->IsInCombat() || !TestRunner::GetWaypoint(leader->GetGUID(), walk) ||
                 walk.mapId != leader->GetMapId() || walk.jump || walk.straight || walk.gatePass)
@@ -6028,6 +5963,7 @@ namespace TestHarness
             bool logged = false;
             bool stallLogged = false;
             Position anchor;
+            uint32 orderId = 0;  // [lead2] the order its pull_hold line was logged for
         };
         std::unordered_map<ObjectGuid, PullHoldTrack> pullHolds;  // leader -> its current pull hold (world thread)
 
@@ -6039,10 +5975,23 @@ namespace TestHarness
         }
 
         // The leader's waypoint is withheld for its own running pull (GiveWaypoint's ROUTE_NO_WALK_IN_PULL rule).
+        // [lead2] LEADER_ONE_TANK_MOVER (C:/WoW/LEADER_REFACTOR_PLAN.md step 2): the tank's open pull order (Leader::
+        // Orders) is the one owner of its movement, a boss target's too; the leader gets the tank back on the order's
+        // events only (the tank's Aborted, the order's fight over, the tank gone, order_orphan). TankPullRunning's
+        // clocks (GetMaxPullTime, the RecentlyAborted window) and the PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS
+        // release are the A/B's old path. Violet Hold's released prisoners stay the harness's walk in both.
         bool WaypointHeldForPull(Party const& party, Player* bot)
         {
-            return ROUTE_NO_WALK_IN_PULL && bot->GetGUID() == party.leader && !party.targetIsBoss &&
-                   bot->GetMapId() != VIOLET_HOLD_MAP_ID && !PullHoldReleased(bot->GetGUID()) && TankPullRunning(bot);
+            if (bot->GetGUID() != party.leader || bot->GetMapId() == VIOLET_HOLD_MAP_ID)
+                return false;
+            if (Leader::LEADER_ONE_TANK_MOVER)
+            {
+                Leader::PullOrder order;
+                return Leader::Orders::GetOpen(party.leader, order) &&
+                       (Leader::LEADER_ENGAGE_OWNS_MOVEMENT || order.method != Leader::PullMethod::Engage);
+            }
+            return ROUTE_NO_WALK_IN_PULL && !party.targetIsBoss && !PullHoldReleased(bot->GetGUID()) &&
+                   TankPullRunning(bot);
         }
 
         // What holds the tank's pull, for the pull_hold / pull_hold_stall lines.
@@ -6088,13 +6037,47 @@ namespace TestHarness
                 if (!loggedMs || getMSTimeDiff(loggedMs, now) > 10 * IN_MILLISECONDS)
                 {
                     loggedMs = now ? now : 1;
-                    LOG_INFO("playerbots",
-                             "[approach] {}: no harness waypoint ({:.1f},{:.1f},{:.1f}): its pull is running or was "
-                             "just aborted",
-                             bot->GetName(), x, y, z);
+                    if (Leader::LEADER_ONE_TANK_MOVER)  // [lead2]
+                    {
+                        Leader::PullOrder order;
+                        Leader::Orders::GetOpen(party.leader, order);
+                        LOG_INFO("playerbots",
+                                 "[lead2] {}: no harness waypoint ({:.1f},{:.1f},{:.1f}): its pull order {} ({} {}, "
+                                 "{}) owns its movement",
+                                 bot->GetName(), x, y, z, order.id, Leader::MethodName(order.method), order.targetName,
+                                 Leader::StateName(order.state));
+                    }
+                    else
+                        LOG_INFO("playerbots",
+                                 "[approach] {}: no harness waypoint ({:.1f},{:.1f},{:.1f}): its pull is running or "
+                                 "was just aborted",
+                                 bot->GetName(), x, y, z);
                 }
                 return;
             }
+            // [lead1] A leader waypoint for the tank while its pull order is open: two owners of one body, the
+            // conflict step 2 (LEADER_ONE_TANK_MOVER) removes. Counted once per order (C:/WoW/LEADER_REFACTOR_PLAN.md
+            // step 1, "waypoint while planner holds"); Violet Hold's prisoners apart.
+            if (Leader::LEADER_DECISION_LOG && bot->GetGUID() == party.leader)
+                if (Leader::PullOrder order; Leader::Orders::GetOpen(party.leader, order))
+                {
+                    static std::unordered_map<uint32, uint32> notedOrder;  // party seq -> order (world thread)
+                    uint32& noted = notedOrder[party.seq];
+                    if (noted != order.id)
+                    {
+                        noted = order.id;
+                        bool const violetHold = bot->GetMapId() == VIOLET_HOLD_MAP_ID;
+                        DecisionLog::Instance().NoteConflict(
+                            DecisionRun{party.id, party.seq, party.runStartMs},
+                            violetHold ? "waypoint_in_order_vh" : "waypoint_in_order", order.target,
+                            "leader waypoint while order " + std::to_string(order.id) + " is " +
+                                Leader::StateName(order.state),
+                            JsonObject().Num("order", order.id).Str("mob", order.targetName)
+                                .Str("method", Leader::MethodName(order.method)).Bool("bossTarget", party.targetIsBoss)
+                                .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
+                                .Real("z", bot->GetPositionZ()).Real("toX", x).Real("toY", y).Real("toZ", z));
+                    }
+                }
             TestRunner::Waypoint target;
             target.mapId = bot->GetMapId();
             target.x = x;
@@ -12115,9 +12098,38 @@ namespace TestHarness
                 }
             }
         }
+        // [lead2] LEADER_ONE_TANK_MOVER: the tank's open pull order owns its movement - no route stall while it is
+        // open, and no clock hands the tank back (PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS are the A/B's old path):
+        // the order's own events do (DrainOrderReports; a lost report is order_orphan, a bug event).
+        if (Leader::LEADER_ONE_TANK_MOVER)
+        {
+            if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(party, leader))
+            {
+                party.steerSinceMs = now;
+                party.steerAnchor = leader->GetPosition();
+                party.steerNoNearerMs = 0;
+                party.driveSinceMs = now;
+                party.driveAnchor = leader->GetPosition();
+                Leader::PullOrder order;
+                PullHoldTrack& hold = pullHolds[party.leader];
+                if (Leader::Orders::GetOpen(party.leader, order) && hold.orderId != order.id)
+                {
+                    hold.orderId = order.id;
+                    LogEvent(party, "pull_hold", JsonObject().Str("name", object->GetName())
+                                                     .Num("entry", object->GetEntry()).Real("distance", distance)
+                                                     .Str("pull", TankPullState(leader)).Num("order", order.id)
+                                                     .Str("orderState", Leader::StateName(order.state))
+                                                     .Str("orderMethod", Leader::MethodName(order.method))
+                                                     .Str("orderTarget", order.targetName)
+                                                     .Real("x", leader->GetPositionX())
+                                                     .Real("y", leader->GetPositionY())
+                                                     .Real("z", leader->GetPositionZ()));
+                }
+            }
+        }
         // [queue-pull-hold-not-stuck] the harness withholds the waypoint for the tank's own pull (GiveWaypoint): no
         // route stall, up to PULL_HOLD_STALL_MS in place; then pull_hold_stall, the waypoint released.
-        if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(party, leader))
+        else if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(party, leader))
         {
             PullHoldTrack& hold = pullHolds[party.leader];
             if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > STEER_GAP_MS ||
@@ -13451,20 +13463,10 @@ namespace TestHarness
         else
         {
             // The leader's own move makes no progress on a route that goes on: logged as the bot's gap (bots walk by
-            // themselves); HARNESS_MOVES_BOTS with ROUTE_HARNESS_DRIVE: the harness walks it (DriveLeader).
-            DriveResult const drive = DriveLeader(party, leader, leg, goal);
-            if (drive == DriveResult::Stalled)
+            // themselves). [lead2] the dead harness drive walk is gone.
+            if (LeaderOwnWalkStalled(party, leader, goal))
                 LogCannotMove(party, leader, "route", "own walk made no progress for 6 s on a route that goes on",
                               waypoint.x, waypoint.y, waypoint.z);
-            if (drive == DriveResult::Started)
-                LogEvent(party, "harness_drive", JsonObject().Str("name", object->GetName())
-                                                     .Num("entry", object->GetEntry())
-                                                     .Bool("eventStarter", party.targetIsStarter)
-                                                     .Real("distance", distance).Num("pathType", leg.type)
-                                                     .Bool("steep", leg.steep).Real("x", here.x).Real("y", here.y)
-                                                     .Real("z", here.z));
-            if (drive == DriveResult::Started || drive == DriveResult::Step)
-                return;
             // [b32_brs] Bots walk by themselves: once the leader's own walk stalled (party.driving), its waypoint is
             // the leg's next corner, DRIVE_STEP yd at most and over ground the whole way, instead of the point
             // WAYPOINT_STEP along the leg - the near corner the runner's own MoveStraight walks when its path is
@@ -16244,24 +16246,11 @@ namespace TestHarness
         }
 
         // The leader's own move refuses the way (Azjol-Nerub wave 10: the shaft ledge joins the hole's floor only
-        // over steep slopes): logged as the bot's gap; HARNESS_MOVES_BOTS with ROUTE_HARNESS_DRIVE: the harness
-        // walks it there.
-        DriveResult const drive = DriveLeader(party, leader, leg, goal);
-        if (drive == DriveResult::Stalled)
+        // over steep slopes): logged as the bot's gap. [lead2] the dead harness drive walk is gone.
+        if (LeaderOwnWalkStalled(party, leader, goal))
             LogCannotMove(party, leader, "event spot",
                           std::string("own walk made no progress for 6 s towards ") + spot->note, waypoint.x,
                           waypoint.y, waypoint.z);
-        if (drive == DriveResult::Started)
-            LogEvent(party, "harness_drive", JsonObject().Str("name", spot->note).Num("entry", 0)
-                                                 .Bool("eventStarter", false).Real("distance", distance)
-                                                 .Num("pathType", leg.type).Bool("steep", leg.steep)
-                                                 .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
-                                                 .Real("z", leader->GetPositionZ()));
-        if (drive == DriveResult::Started || drive == DriveResult::Step)
-        {
-            party.lastProgressMs = getMSTime();
-            return true;
-        }
 
         SetLeaderWaypoint(party, leader, waypoint.x, waypoint.y, waypoint.z);
         party.lastProgressMs = getMSTime();
@@ -19275,6 +19264,134 @@ namespace TestHarness
                 LogEvent(party, moveEvent.type, fields);
             }
         }
+    }
+
+    // [lead1] C:/WoW/LEADER_REFACTOR_PLAN.md step 1: the tank's order reports become decision lines ("tank:<name>"),
+    // the leader writes the states it observes itself ("leader"): the order's fight is on (Fighting), the fight is
+    // over (Done: no engaged mob), the tank is gone (Aborted); and one pull_start line per pull naming its owner - the
+    // tank's open order, the leader's body pull (party.approach), or "none". [lead2] Step 2: order_orphan.
+    void TestHarnessMgr::DrainOrderReports(Party& party, Player* leader)
+    {
+        if (!leader || party.leader.IsEmpty())
+            return;
+
+        DecisionRun const run{party.id, party.seq, party.runStartMs};
+        std::string const tankWho = "tank:" + leader->GetName();
+        Leader::OrderReport report;
+        while (Leader::Orders::TakeReport(party.leader, report))
+        {
+            JsonObject fields;
+            fields.Num("order", report.orderId).Str("state", Leader::StateName(report.state))
+                .Str("method", Leader::MethodName(report.method)).Str("why", report.why);
+            if (report.mobs)
+                fields.Num("expected", report.mobs).Real("cost", report.cost);
+            fields.Real("x", report.at.GetPositionX()).Real("y", report.at.GetPositionY())
+                .Real("z", report.at.GetPositionZ());
+            DecisionLog::Instance().Write(run, tankWho, report.what, report.target, report.targetName, report.decides,
+                                          fields, report.ms);
+        }
+
+        struct OrderWatch
+        {
+            uint32 pullSeq = 0;
+            uint32 orderId = 0;
+            uint32 changedMs = 0;
+            uint32 idleSinceMs = 0;
+            Position anchor;
+        };
+        static std::unordered_map<uint32, OrderWatch> watches;  // party seq -> watch (world thread)
+        OrderWatch& watch = watches[party.seq];
+
+        Leader::PullOrder order;
+        bool const open = Leader::Orders::GetOpen(party.leader, order);
+        if (party.inCombat && watch.pullSeq != party.pullSeq)
+        {
+            watch.pullSeq = party.pullSeq;
+            JsonObject fields;
+            fields.Num("pull", party.pullSeq).Str("starter", party.pullStarter).Num("order", open ? order.id : 0)
+                .Bool("bodyPull", party.approach != 0);
+            if (open)
+                fields.Str("state", Leader::StateName(order.state)).Str("method", Leader::MethodName(order.method))
+                    .Bool("orderTargetIsRouteTarget", order.target == party.target);
+            DecisionLog::Instance().Write(run, open ? tankWho : (party.approach ? "leader" : "none"), "pull_start",
+                                          open ? order.target : party.target, open ? order.targetName : "", false,
+                                          fields);
+        }
+        if (!open)
+            return;
+
+        uint32 const now = getMSTime();
+        Position const here = leader->GetPosition();
+        auto const closeOrder = [&](Leader::OrderState state, std::string const& why, std::string const& what)
+        {
+            Leader::PullOrder closed;
+            if (!Leader::Orders::Close(party.leader, state, why, here, &closed))
+                return;
+            DecisionLog::Instance().Write(
+                run, "leader", what, closed.target, closed.targetName, false,
+                JsonObject().Num("order", closed.id).Str("state", Leader::StateName(closed.state))
+                    .Str("method", Leader::MethodName(closed.method)).Str("why", why)
+                    .Num("openSec", getMSTimeDiff(closed.openedMs, now) / IN_MILLISECONDS)
+                    .Real("x", here.GetPositionX()).Real("y", here.GetPositionY()).Real("z", here.GetPositionZ()));
+        };
+
+        if (!leader->IsAlive() || !leader->IsInWorld())
+        {
+            closeOrder(Leader::OrderState::Aborted, "the tank is dead or gone", "order_close");
+            return;
+        }
+        if (party.inCombat || leader->IsInCombat())
+        {
+            if (Leader::Orders::Advance(party.leader, Leader::OrderState::Fighting, "the fight is on", here))
+                DecisionLog::Instance().Write(run, "leader", "order_fighting", order.target, order.targetName, false,
+                                              JsonObject().Num("order", order.id)
+                                                  .Str("method", Leader::MethodName(order.method))
+                                                  .Bool("tankInCombat", leader->IsInCombat()));
+            watch.orderId = 0;
+            return;
+        }
+        if (order.state == Leader::OrderState::Fighting)
+        {
+            closeOrder(Leader::OrderState::Done, "no engaged mob: the fight is over", "order_done");
+            return;
+        }
+
+        // [lead2] order_orphan (C:/WoW/LEADER_REFACTOR_PLAN.md step 2 "Risk"): the order open, the tank out of combat
+        // within ORDER_ORPHAN_RANGE of one spot, no state change and no group preparation (a sitter / buff hold the
+        // tank waits for) for ORDER_ORPHAN_MS - a report was lost. A bug event about a broken invariant, not a
+        // handover by clock: logged with the tank's pull state, closed, and the leader plans again.
+        if (watch.orderId != order.id || watch.changedMs != order.changedMs || PullReadiness::GroupPreparing(leader) ||
+            leader->GetExactDist(&watch.anchor) > Leader::ORDER_ORPHAN_RANGE)
+        {
+            watch.orderId = order.id;
+            watch.changedMs = order.changedMs;
+            watch.idleSinceMs = now ? now : 1;
+            watch.anchor = here;
+            return;
+        }
+        uint32 const idleMs = getMSTimeDiff(watch.idleSinceMs, now);
+        if (idleMs < Leader::ORDER_ORPHAN_MS)
+            return;
+
+        std::string const pullState = TankPullState(leader);
+        std::string const why =
+            Acore::StringFormat("order_orphan: {} {} {} s without a state change ({}), tank idle {} s; pull: {}",
+                                Leader::MethodName(order.method), order.targetName,
+                                getMSTimeDiff(order.changedMs, now) / IN_MILLISECONDS, Leader::StateName(order.state),
+                                idleMs / IN_MILLISECONDS, pullState);
+        LOG_INFO("playerbots", "[lead2] {}: {} order {}: {}", party.id, leader->GetName(), order.id, why);
+        LogEvent(party, "order_orphan", JsonObject().Num("order", order.id).Str("name", order.targetName)
+                                            .Num("entry", order.targetEntry)
+                                            .Str("method", Leader::MethodName(order.method))
+                                            .Str("state", Leader::StateName(order.state)).Str("origin", order.origin)
+                                            .Num("openSec", getMSTimeDiff(order.openedMs, now) / IN_MILLISECONDS)
+                                            .Num("idleSec", idleMs / IN_MILLISECONDS).Str("pull", pullState)
+                                            .Real("x", here.GetPositionX()).Real("y", here.GetPositionY())
+                                            .Real("z", here.GetPositionZ()));
+        DecisionLog::Instance().NoteConflict(run, "order_orphan", order.target, why,
+                                             JsonObject().Num("order", order.id));
+        closeOrder(Leader::OrderState::Aborted, why, "order_orphan");
+        watch.orderId = 0;
     }
 
     void TestHarnessMgr::SetMemberWaypoint(Party& party, Member& member, Player* bot, float x, float y, float z)

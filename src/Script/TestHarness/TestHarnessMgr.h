@@ -913,6 +913,9 @@ namespace TestHarness
         void LogCannotMove(Party& party, Player* bot, std::string const& capability, std::string const& reason,
                            float toX, float toY, float toZ);
         void DrainMoveReports(Party& party, std::vector<Player*> const& players);
+        // [lead1] The tank's pull order reports (Leader::Orders) into the decision log, the order states the leader
+        // observes (Fighting, Done), the pull_start owner line; [lead2] order_orphan.
+        void DrainOrderReports(Party& party, Player* leader);
         void SetMemberWaypoint(Party& party, Member& member, Player* bot, float x, float y, float z);
         // The leader's waypoint, cut before a closed door its walk runs through (ROUTE_CLOSED_DOORS_ALL: door_hold).
         // straight: a walked route link's far end (TestRunner::Waypoint::straight).

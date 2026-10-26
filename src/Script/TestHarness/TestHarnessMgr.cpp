@@ -24,6 +24,7 @@
 #include "HealthTriggers.h"
 #include "InstanceSaveMgr.h"
 #include "InstanceScript.h"
+#include "LeaderOrders.h"  // [lead1]
 #include "Log.h"
 #include "Map.h"
 #include "MobRoles.h"
@@ -1817,6 +1818,7 @@ namespace TestHarness
         StatsRegistry::Instance().TrackInstance(party.instanceId, party.seq);
         for (Member const& member : party.members)
             StatsRegistry::Instance().TrackMember(member.guid, party.seq);
+        Leader::Orders::Track(party.leader);  // [lead1] the tank's pull orders are posted from now on
 
         // [hleft-daily-reset] heroics and raids are reset by the server at Instance.ResetTimeHour: every member is put
         // out and the bind dropped (2026-10-25 05:00: all ten WotLK / TBC heroics of the 04:47 batch, uk-h, hol-h,
@@ -3499,6 +3501,7 @@ namespace TestHarness
 
         // Bots walk by themselves: what their own movement could not do (bot_cannot_move), and a walked wing change.
         DrainMoveReports(party, players);
+        DrainOrderReports(party, leader);  // [lead1]
         bool const wingWalking = TickWingWalk(party, players, leader);
         if (IsTerminal(party.phase))
             return;  // Finish() logged the members out
@@ -5022,6 +5025,11 @@ namespace TestHarness
         if (IsTerminal(party.phase))
             return;
 
+        // [lead1] the run's decision counts and conflicts (C:/WoW/LEADER_REFACTOR_PLAN.md step 1: the baseline)
+        if (Leader::LEADER_DECISION_LOG && party.content && party.runStartMs)
+            LogEvent(party, "leader_decisions",
+                     JsonObject().Raw("summary", DecisionLog::Instance().SummaryJson(party.seq)));
+
         std::string result = requestedResult;
         std::string reason = requestedReason;
         JsonArray missing;
@@ -5168,6 +5176,8 @@ namespace TestHarness
             SelfTravel::ClearPortalGoal(member.guid);
         }
         StatsRegistry::Instance().UntrackRun(party.seq);
+        Leader::Orders::Untrack(party.leader);  // [lead1]
+        DecisionLog::Instance().EndRun(party.seq);
 
         if (Player* leader = ObjectAccessor::FindPlayer(party.leader))
             if (Group* group = leader->GetGroup())

@@ -27,6 +27,7 @@
 #include "Group.h"
 #include "HealthTriggers.h"
 #include "LastMovementValue.h"  // [b38_scholo]
+#include "LeaderOrders.h"  // [lead2] the pull's states as order reports (C:/WoW/LEADER_REFACTOR_PLAN.md step 2)
 #include "PathGenerator.h"
 #include "ArcShared.h"  // [b34_arc] Arcatraz::IsCorpseTrap
 #include <algorithm>
@@ -87,6 +88,8 @@ std::unordered_map<uint64, std::unordered_map<uint64, PullAbortTally>> pullAbort
 void NotePullAbort(Player* bot, Unit* target, std::string const& why, bool sightOnly = false)
 {
     CarefulPlanVerdict::NoteAborted(bot, target->GetGUID());
+    // [lead2] every give-up before the cast closes the tank's order at once: the leader owns the tank again
+    Leader::Orders::Report(bot, target, Leader::OrderState::Aborted, Leader::PullMethod::Unknown, "pull abort: " + why);
 
     uint32 const now = getMSTime();
     uint32 count = 0;
@@ -352,6 +355,10 @@ bool ChainPullAction::Execute(Event /*event*/)
         bot->SetSelection(selected);
 
     _lastChainMs = getMSTime();
+    // [lead2] the tank pulls the next pack from inside the fight: its own decision, a line for the leader's log
+    Leader::Orders::Note(bot, next, "chain_pull",
+                         Acore::StringFormat("{} ({} mobs) while {} is at {:.0f} %", spellName, packMobs,
+                                             fighting->GetName(), fighting->GetHealthPct()));
     LOG_INFO("playerbots", "[chain_pull_in_combat] {}: {} on {} ({} mobs, {:.1f} yd) while {} is at {:.0f} %",
              bot->GetName(), spellName, next->GetName(), packMobs, bot->GetExactDist(next), fighting->GetName(),
              fighting->GetHealthPct());
@@ -469,6 +476,9 @@ bool PullStartAction::Execute(Event event)
     }
 
     strategy->OnPullStarted();
+    // [lead2] the pull runs: the tank's order walks (it opens one for a pull no planner commit opened, the dungeon
+    // tactics' own RequestPull)
+    Leader::Orders::Report(bot, target, Leader::OrderState::Walking, Leader::PullMethod::Unknown, "pull start");
     return true;
 }
 
@@ -702,6 +712,10 @@ bool PullAction::Execute(Event event)
               target->GetName(), bot->GetExactDist(target));
 
     PullCheck::NoteSpell(bot, engaged ? std::string() : strategy->GetSpellName());
+    // [lead2] the tag is cast
+    Leader::Orders::Report(bot, target, Leader::OrderState::Tagged,
+                           losPull ? Leader::PullMethod::LosPull : Leader::PullMethod::Unknown,
+                           "tagged: " + strategy->GetCastActionName());
 
     if (losPull)
     {
@@ -804,6 +818,12 @@ bool PullEndAction::Execute(Event /*event*/)
               pullTarget ? pullTarget->GetName() : "none", strategy->HasPullStarted(),
               strategy->GetPullStartTime() ? int64(time(nullptr) - strategy->GetPullStartTime()) : -1);
     LosPull::Cancel(bot);  // only a plan that was never pulled; a pulled one holds until the pack came round
+    // [lead2] The pull's end is a report: the fight is on or the mob comes (Holding, the leader closes the order when
+    // the fight is over), or nothing came (Aborted: the leader owns the tank again).
+    bool const fightOn = bot->IsInCombat() || (pullTarget && pullTarget->IsInCombat());
+    Leader::Orders::Report(bot, pullTarget, fightOn ? Leader::OrderState::Holding : Leader::OrderState::Aborted,
+                           Leader::PullMethod::Unknown,
+                           fightOn ? std::string("pull end: the fight is on") : std::string("pull end: nothing came"));
     strategy->OnPullEnded();
     return true;
 }

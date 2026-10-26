@@ -125,6 +125,56 @@ namespace TestHarness
         std::vector<std::pair<ObjectGuid, uint32>> memberFirstZeroHits;
     };
 
+    // [lead1] Leader::DecisionLog (C:/WoW/LEADER_REFACTOR_PLAN.md 2.7, step 1): one JSONL stream per run,
+    // <runId>.decisions.jsonl next to the run's events. Every line names `who` decided or reported: "leader" (the
+    // harness) or "tank:<name>" (the executor). A line where an executor decides (`decides` true on a tank line) is
+    // what the refactor removes; today the tank's planner still decides, so those lines are the baseline.
+    // Conflicts: two different owners deciding about one mob within Leader::DECISION_CONFLICT_MS ("two_owners"), and
+    // the kinds the harness notes itself (NoteConflict: "waypoint_in_order", ...). Each is a line what="conflict" and
+    // a count in the run's summary (SummaryJson, the run's "leader_decisions" event). World thread only.
+    struct DecisionRun
+    {
+        std::string runId;
+        uint32 runSeq = 0;
+        uint32 runStartMs = 0;
+    };
+
+    class DecisionLog
+    {
+    public:
+        static DecisionLog& Instance();
+
+        // One decision / report line; `ms` is its getMSTime() stamp (0: now). Returns the line's id.
+        uint32 Write(DecisionRun const& run, std::string const& who, std::string const& what, ObjectGuid mob,
+                     std::string const& mobName, bool decides, JsonObject fields, uint32 ms = 0);
+        // A conflict the caller detected (`about`: the decision line ids or a short description).
+        void NoteConflict(DecisionRun const& run, std::string const& kind, ObjectGuid mob, std::string const& about,
+                          JsonObject fields);
+        // The run's counts: lines by `what`, conflicts by kind, decisions by owner.
+        std::string SummaryJson(uint32 runSeq);
+        void EndRun(uint32 runSeq);
+
+    private:
+        struct MobLast
+        {
+            std::string owner;
+            std::string what;
+            uint32 id = 0;
+            uint32 ms = 0;
+        };
+        struct RunState
+        {
+            std::map<std::string, uint32> lines;      // what -> count
+            std::map<std::string, uint32> conflicts;  // kind -> count
+            std::map<std::string, uint32> owners;     // owner -> decisions
+            std::unordered_map<ObjectGuid, MobLast> lastByMob;
+        };
+
+        std::mutex _lock;
+        uint32 _nextId = 0;
+        std::unordered_map<uint32, RunState> _runs;
+    };
+
     // Counters fed by unit / player hooks on the map threads; read by the harness on the world thread.
     class StatsRegistry
     {

@@ -22,6 +22,7 @@
 #include "HealthTriggers.h"
 #include "InstanceScript.h"
 #include "KillOrder.h"
+#include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MobRoles.h"
@@ -6620,6 +6621,20 @@ namespace PullEstimate
 }
 
 // Temporary diagnostics (wave 12): why a tank out of combat does not pull. One line per bot per 10 s.
+// [lead1] The tank's commit of a pull, posted to the leader's order registry (Leader::Orders, a no-op for a tank no
+// harness party leads): a commit that went through opens / refreshes the tank's order, one that did not is a note.
+static bool PostCommit(Player* bot, Unit* target, bool ok, Leader::PullMethod method, std::string const& why,
+                       uint32 mobs, float cost, bool single)
+{
+    if (!target)
+        return ok;
+    if (ok)
+        Leader::Orders::Report(bot, target, Leader::OrderState::Issued, method, why, mobs, cost, single);
+    else
+        Leader::Orders::Note(bot, target, "commit_failed", std::string(Leader::MethodName(method)) + ": " + why);
+    return ok;
+}
+
 static void LogPullHold(Player* bot, char const* reason, Unit* target)
 {
     static std::mutex mutex;
@@ -6940,14 +6955,24 @@ bool AggressiveTargetAction::Execute(Event event)
     {
         Unit* mob = botAI->GetUnit(_approach);
         _approach.Clear();
-        return mob && MoveTo(mob, APPROACH_DISTANCE);
+        bool const walked = mob && MoveTo(mob, APPROACH_DISTANCE);
+        // [lead1] a walk of the tank's own (no pull plan): a decision line, no order
+        if (walked)
+            Leader::Orders::Note(bot, mob, "approach_walk", "no aggressive target: walks toward the nearest mob");
+        return walked;
     }
 
     // A side of the pack that brings fewer mobs: the tank walks there first, and plans again from there.
     if (_planSide && !_planTarget.IsEmpty() && bot->GetExactDist(_sideSpot) > SIDE_PULL_ARRIVED)
     {
         _planFor.Clear();
-        return MoveTo(bot->GetMapId(), _sideSpot.GetPositionX(), _sideSpot.GetPositionY(), _sideSpot.GetPositionZ());
+        bool const walked =
+            MoveTo(bot->GetMapId(), _sideSpot.GetPositionX(), _sideSpot.GetPositionY(), _sideSpot.GetPositionZ());
+        // [lead1] the walk to the side spot is the pull order's walk (the plan goes on from there)
+        if (walked)
+            Leader::Orders::Report(bot, botAI->GetUnit(_planTarget), Leader::OrderState::Walking,
+                                   Leader::PullMethod::Unknown, "side spot walk: " + _sideNote, _planMobs, _planCost);
+        return walked;
     }
 
     if (PlayerbotAI::IsTank(bot))
@@ -6959,12 +6984,23 @@ bool AggressiveTargetAction::Execute(Event event)
     }
 
     if (_planTarget.IsEmpty())
-        return AttackAction::Execute(event);
+    {
+        // [lead1] the tank's own attack of its aggressive target (no careful plan): an engage order
+        Unit* attacked = GetTarget();
+        bool const attackedOk = AttackAction::Execute(event);
+        if (attacked && !attacked->IsInCombat())
+            PostCommit(bot, attacked, attackedOk, Leader::PullMethod::Engage, "attack (no careful plan)", 0, 0.0f,
+                       false);
+        return attackedOk;
+    }
 
     Unit* target = botAI->GetUnit(_planTarget);
     bool pullBack = _planPullBack;  // [b34_arc] no longer const: a corpse trap is walked to
     bool losPull = _planLos;
     bool const single = _planSingle;
+    uint32 const commitMobs = _planMobs;  // [lead1] the plan's count before the log line below resets it
+    float const commitCost = _planCost;
+    std::string const commitReason = _planReason;
     _planFor.Clear();  // the next look plans afresh
     _losTempoFor.Clear();
     if (!target || !target->IsInWorld() || !target->IsAlive())
@@ -7011,7 +7047,8 @@ bool AggressiveTargetAction::Execute(Event event)
         if (!bot->IsWithinLOSInMap(target))
         {
             if (MoveToLOS(target))
-                return true;
+                return PostCommit(bot, target, true, Leader::PullMethod::Engage, "engage: walks for sight",
+                                  commitMobs, commitCost, single);  // [lead1]
 
             bool const walked = ReachCombatTo(target, 0.0f);
             thread_local std::unordered_map<uint64, uint32> engageLosLogMs;
@@ -7024,7 +7061,8 @@ bool AggressiveTargetAction::Execute(Event event)
                          "sight refused: {}", bot->GetName(), target->GetName(), bot->GetExactDist(target),
                          walked ? "walks its path in" : "its path walk refused too");
             }
-            return walked;
+            return PostCommit(bot, target, walked, Leader::PullMethod::Engage, "engage: walks its path in for sight",
+                              commitMobs, commitCost, single);  // [lead1]
         }
 
         // An engage a mover walks into: the tank walks the fight back once it is on ("move fight spot back").
@@ -7032,12 +7070,20 @@ bool AggressiveTargetAction::Execute(Event event)
             FightSpot::Plan(bot, _planFight, _planFightBack, _planFightNote);
 
         _planFightFor.Clear();
-        return Attack(target);
+        return PostCommit(bot, target, Attack(target), Leader::PullMethod::Engage,
+                          "engage" + (commitReason.empty() ? std::string() : " (" + commitReason + ")"), commitMobs,
+                          commitCost, single);  // [lead1]
     }
 
     _lastPullBack = target->GetGUID();
     _lastPullBackMs = getMSTime();
-    return losPull ? StartLosPull(target) : PullBack(target, single);
+    // [lead1] the ranged pull's commit: the tank's order (the pull strategy's states follow from PullActions)
+    Leader::PullMethod const method =
+        losPull ? Leader::PullMethod::LosPull : (single ? Leader::PullMethod::One : Leader::PullMethod::PullBack);
+    std::string const why = std::string(Leader::MethodName(method)) +
+                            (commitReason.empty() ? std::string() : " (" + commitReason + ")");
+    return PostCommit(bot, target, losPull ? StartLosPull(target) : PullBack(target, single), method, why,
+                      commitMobs, commitCost, single);
 }
 
 void AggressiveTargetAction::NotePackBlocked(ObjectGuid mob, uint32 now)

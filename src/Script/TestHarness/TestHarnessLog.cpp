@@ -6,6 +6,8 @@
 
 #include "TestHarnessLog.h"
 
+#include "LeaderOrders.h"  // [lead1] the decision log switches
+
 #include "Creature.h"
 #include "Item.h"
 #include "Log.h"
@@ -175,6 +177,127 @@ namespace TestHarness
         std::ofstream file(TestsDir() + fileName, std::ios::app);
         if (file)
             file << line << '\n';
+    }
+
+    // [lead1] DecisionLog (TestHarnessLog.h, C:/WoW/LEADER_REFACTOR_PLAN.md 2.7)
+    DecisionLog& DecisionLog::Instance()
+    {
+        static DecisionLog instance;
+        return instance;
+    }
+
+    uint32 DecisionLog::Write(DecisionRun const& run, std::string const& who, std::string const& what, ObjectGuid mob,
+                              std::string const& mobName, bool decides, JsonObject fields, uint32 ms)
+    {
+        if (!Leader::LEADER_DECISION_LOG || run.runId.empty())
+            return 0;
+
+        uint32 const stamp = ms ? ms : getMSTime();
+        uint32 const elapsedMs =
+            run.runStartMs && int32(stamp - run.runStartMs) >= 0 ? getMSTimeDiff(run.runStartMs, stamp) : 0;
+        std::string conflict;
+        std::string text;
+        uint32 id = 0;
+        {
+            std::lock_guard<std::mutex> lock(_lock);
+            id = ++_nextId;
+            RunState& state = _runs[run.runSeq];
+            ++state.lines[what];
+            JsonObject line;
+            line.Real("t", double(elapsedMs) / 1000.0).Num("id", id).Str("time", WallClock())
+                .Str("runId", run.runId).Str("who", who).Str("what", what).Bool("decides", decides);
+            if (!mob.IsEmpty())
+                line.Str("mob", mobName).Num("mobEntry", mob.GetEntry()).Num("mobLow", mob.GetCounter());
+            line.Merge(fields);
+            text = line.Build();
+
+            if (decides)
+                ++state.owners[who];
+            if (decides && !mob.IsEmpty())
+            {
+                MobLast& last = state.lastByMob[mob];
+                int32 const gap = last.id ? int32(stamp - last.ms) : 0;
+                uint32 const gapMs = uint32(gap < 0 ? -gap : gap);
+                if (last.id && last.owner != who && gapMs <= Leader::DECISION_CONFLICT_MS)
+                {
+                    ++state.conflicts["two_owners"];
+                    conflict = JsonObject()
+                                   .Real("t", double(elapsedMs) / 1000.0).Num("id", ++_nextId)
+                                   .Str("time", WallClock()).Str("runId", run.runId).Str("who", "leader")
+                                   .Str("what", "conflict").Bool("decides", false).Str("kind", "two_owners")
+                                   .Str("mob", mobName).Num("mobEntry", mob.GetEntry())
+                                   .Num("mobLow", mob.GetCounter()).Num("aId", last.id).Str("aWho", last.owner)
+                                   .Str("aWhat", last.what).Num("bId", id).Str("bWho", who).Str("bWhat", what)
+                                   .Num("gapMs", gapMs)
+                                   .Build();
+                }
+                last.owner = who;
+                last.what = what;
+                last.id = id;
+                last.ms = stamp;
+            }
+        }
+
+        AppendLine(run.runId + ".decisions.jsonl", text);
+        if (!conflict.empty())
+            AppendLine(run.runId + ".decisions.jsonl", conflict);
+        return id;
+    }
+
+    void DecisionLog::NoteConflict(DecisionRun const& run, std::string const& kind, ObjectGuid mob,
+                                   std::string const& about, JsonObject fields)
+    {
+        if (!Leader::LEADER_DECISION_LOG || run.runId.empty())
+            return;
+
+        uint32 const now = getMSTime();
+        uint32 const elapsedMs =
+            run.runStartMs && int32(now - run.runStartMs) >= 0 ? getMSTimeDiff(run.runStartMs, now) : 0;
+        std::string text;
+        {
+            std::lock_guard<std::mutex> lock(_lock);
+            ++_runs[run.runSeq].conflicts[kind];
+            JsonObject line;
+            line.Real("t", double(elapsedMs) / 1000.0).Num("id", ++_nextId).Str("time", WallClock())
+                .Str("runId", run.runId).Str("who", "leader").Str("what", "conflict").Bool("decides", false)
+                .Str("kind", kind).Str("about", about);
+            if (!mob.IsEmpty())
+                line.Num("mobEntry", mob.GetEntry()).Num("mobLow", mob.GetCounter());
+            line.Merge(fields);
+            text = line.Build();
+        }
+        AppendLine(run.runId + ".decisions.jsonl", text);
+    }
+
+    std::string DecisionLog::SummaryJson(uint32 runSeq)
+    {
+        std::lock_guard<std::mutex> lock(_lock);
+        JsonObject lines;
+        JsonObject conflicts;
+        JsonObject owners;
+        uint32 conflictTotal = 0;
+        auto const it = _runs.find(runSeq);
+        if (it != _runs.end())
+        {
+            for (auto const& [what, count] : it->second.lines)
+                lines.Num(what.c_str(), count);
+            for (auto const& [kind, count] : it->second.conflicts)
+            {
+                conflicts.Num(kind.c_str(), count);
+                conflictTotal += count;
+            }
+            for (auto const& [who, count] : it->second.owners)
+                owners.Num(who.c_str(), count);
+        }
+        return JsonObject().Bool("oneTankMover", Leader::LEADER_ONE_TANK_MOVER).Num("conflictTotal", conflictTotal)
+            .Raw("conflicts", conflicts.Build()).Raw("decisionsByOwner", owners.Build()).Raw("lines", lines.Build())
+            .Build();
+    }
+
+    void DecisionLog::EndRun(uint32 runSeq)
+    {
+        std::lock_guard<std::mutex> lock(_lock);
+        _runs.erase(runSeq);
     }
 
     StatsRegistry& StatsRegistry::Instance()
