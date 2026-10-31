@@ -496,6 +496,8 @@ namespace TestHarness
             ObjectGuid bossPullLoggedFor;  // [lead45] leader_boss_pull logged for this boss
             std::string bossWaitWhy;       // [lead45] boss_pull_waits: the readiness gap last logged
             ObjectGuid bossWaitFor;        // [lead46] the boss whose pull waits for the group's readiness
+            std::string plannerRestFor;    // [lead50] the member the planner's held answer waits for (its Rest)
+            ObjectGuid dragFor;            // [lead50] fight_drag logged for this loose mob
             // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
             struct Unreachable
             {

@@ -21968,11 +21968,16 @@ namespace TestHarness
                 bool const has = Leader::Events::Get(tank->GetGUID(), tankEvents) &&
                                  tankEvents.move == Leader::MoveEvent::MoveTo &&
                                  tankEvents.moveWhy == "aggro loss: to the mob";
-                Position const point = has && tankEvents.spot.GetExactDist(mob) <= 2.0f ? tankEvents.spot
-                                                                                          : mob->GetPosition();
-                if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point,
-                                tank->GetCombatReach() + mob->GetCombatReach(), "aggro loss: to the mob"))
+                // [lead50] b99 rfc-h 245.3-246.1 s: ~15 "aggro loss: to the mob" moves in 1 s (a new point every tick).
+                // The point changes only when the mob left it by the walk's own tolerance; logged once per loose mob
+                float const reachTolerance = tank->GetCombatReach() + mob->GetCombatReach();
+                bool const keepPoint = has && tankEvents.spot.GetExactDist(mob) <= reachTolerance;
+                Position const point = keepPoint ? tankEvents.spot : mob->GetPosition();
+                if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, reachTolerance,
+                                "aggro loss: to the mob") &&
+                    lead.dragFor != mob->GetGUID())
                 {
+                    lead.dragFor = mob->GetGUID();
                     logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "aggro loss: to the mob").Str("who", "tank")
                                  .Str("mob", mob->GetName()).Real("distance", tank->GetExactDist(mob)));
@@ -22404,7 +22409,10 @@ namespace TestHarness
         // [lead45] the tank rests too (it is no seat): the boss pull waits for its mana, so the leader tells it to
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
         if (fighting)
+        {
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
+            lead.plannerRestFor.clear();
+        }
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(party.leader))
         {
             std::string tankRestWhy;
@@ -22413,13 +22421,18 @@ namespace TestHarness
                 waitBoss && waitBoss->IsAlive() ? PullReadiness::MemberBossGap(tank, waitBoss) : std::string();
             if (!tankGap.empty())
                 tankRestWhy = "the boss pull waits: " + tankGap;
-            bool const tankRests = (waitBoss && waitBoss->IsAlive()
+            bool const plannerWaits = !lead.plannerRestFor.empty() && tank->GetName() == lead.plannerRestFor &&
+                                      !MemberFull(tank);  // [lead50]
+            if (plannerWaits)
+                tankRestWhy = "the planner waits for it";
+            bool const tankRests = plannerWaits ? (tank->IsSitState() || RestState::CanRest(tank))
+                                                : (waitBoss && waitBoss->IsAlive()
                                         ? !tankGap.empty()
                                         : (RestState::IsDrinking(tank) || RestState::IsEating(tank) ||
                                            RestState::WantsDrink(tank, &tankRestWhy) ||
                                            RestState::WantsFood(tank, &tankRestWhy)) &&
                                               !MemberFull(tank)) &&
-                                   (tank->IsSitState() || RestState::CanRest(tank));
+                                                      (tank->IsSitState() || RestState::CanRest(tank));
             if (tankRests && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
                 logEvent(tank, "Rest", JsonObject().Str("who", "tank")
                                            .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
@@ -22465,6 +22478,12 @@ namespace TestHarness
                     needsRest = !gap.empty();
                     restWhy = gap.empty() ? restWhy : "the boss pull waits: " + gap;
                     lead.restingToFull.erase(guid);
+                }
+                // [lead50] the planner's held answer waits for this member: it rests
+                if (!lead.plannerRestFor.empty() && bot->GetName() == lead.plannerRestFor && !MemberFull(bot))
+                {
+                    needsRest = true;
+                    restWhy = "the planner waits for it";
                 }
                 if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
@@ -23412,7 +23431,10 @@ namespace TestHarness
                     broken = "the patrol first: its own pull";
                     patrol = nullptr;
                 }
-                else if (Leader::LEADER_PATROL_IS_TARGET && fits && lead.patrolDangerLoggedAlong != patrol->GetGUID())
+                // [lead50] b99 rfc-h 109.2 s: a patrol 84.9 yd off was "taken along" (into the PullPack, exempt from
+                // every idle guard) - along only when it can join, within the same twice its reach
+                else if (Leader::LEADER_PATROL_IS_TARGET && fits && patrolGap <= 2.0f * patrolReach &&
+                         lead.patrolDangerLoggedAlong != patrol->GetGUID())
                 {
                     lead.patrolDangerLoggedAlong = patrol->GetGUID();
                     DecisionLog::Instance().Write(run, "leader", "patrol_target", patrol->GetGUID(), patrol->GetName(),
@@ -23422,9 +23444,9 @@ namespace TestHarness
                                                       .Str("reason", "the combined fight fits the budget: " + judged)
                                                       .Real("overload", overload).Real("gap", patrolGap));
                 }
-                if (Leader::LEADER_PATROL_IS_TARGET && !fits)
-                    patrol = nullptr;  // far off: no window, the pull goes on
-                if (fits)
+                if (Leader::LEADER_PATROL_IS_TARGET && (!fits || patrolGap > 2.0f * patrolReach))
+                    patrol = nullptr;  // far off: no window, not along, the pull goes on
+                if (patrol && fits)
                 {
                     for (Creature* walker : walkers)
                         if (std::find(lead.takenWalkers.begin(), lead.takenWalkers.end(), walker->GetGUID()) ==
@@ -23900,6 +23922,30 @@ namespace TestHarness
              (decision.verdict == PullPlanner::Verdict::Held && lead.ready)) &&
             !lead.refusedPicks.count(decision.lookTarget) && !IsBossLook(tank, decision.lookTarget))
             lead.refusedPicks[decision.lookTarget] = decision.why;  // [lead45] never a boss
+        // [lead50] b99 rfc-h 543-608 s: the planner held the boss pick for "Rtpalaa at 76 % mana" and no Rest came
+        // (lead46's boss Rest ran only while the boss-pull gate waited). One readiness path: a held answer that
+        // names a member below a line ("<member> at N % mana / health") is the leader's Rest for that member,
+        // until the answer changes
+        if (decides)
+        {
+            std::string restFor;
+            if (decision.verdict == PullPlanner::Verdict::Held)
+                for (Member const& member : party.members)
+                    if (decision.why.find(member.name + " at ") != std::string::npos &&
+                        (decision.why.find("% mana") != std::string::npos ||
+                         decision.why.find("% health") != std::string::npos))
+                    {
+                        restFor = member.name;
+                        break;
+                    }
+            if (restFor != lead.plannerRestFor)
+            {
+                lead.plannerRestFor = restFor;
+                if (!restFor.empty())
+                    DecisionLog::Instance().Write(run, "leader", "readiness_rest", ObjectGuid(), restFor, true,
+                                                  JsonObject().Str("member", restFor).Str("why", decision.why));
+            }
+        }
         if (decision.verdict == PullPlanner::Verdict::Go || party.inCombat)
             lead.refusedPicks.clear();  // a pull goes / a fight changes the room: everything is asked again
         // [lead30] planner_answer: the planner's answer for the leader's pick (logged when it changes)

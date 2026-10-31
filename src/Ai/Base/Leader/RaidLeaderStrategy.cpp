@@ -420,6 +420,16 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
             return 0.0f;
     }
 
+    // [lead50] b99 rfc-h 583 s: the tank cast "blessing on party by role" while the planner waited for its mana: under
+    // the leader's Rest the led tank buffs nobody (its drink first)
+    if (!bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
+        (dynamic_cast<CastBuffSpellAction*>(action) || action->getName() == "blessing on party by role"))
+    {
+        Leader::MemberEvents restEvents;
+        if (Leader::Events::Get(bot->GetGUID(), restEvents) && restEvents.ready == Leader::ReadyEvent::Rest)
+            return 0.0f;
+    }
+
     // [lead17] LEADER_TANK_OWN_PICKS_OFF: the led tank's own next pack and own hazard step are off in every state
     if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
         (action->getName() == "chain pull" || action->getName() == "move fight off hazard"))
