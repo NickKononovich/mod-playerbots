@@ -8690,6 +8690,29 @@ namespace TestHarness
                 if (creature->GetExactDist(later) < LATER_BOSS_TRASH_RADIUS)
                     deferred.insert(creature->GetGUID());
 
+            // [lead43] one verdict, owned by the leader: a mob the leader refused (its planner's refusal / hold, the
+            // reachability verdict) is no route target either - the route never stops for a mob the leader will not
+            // hand to its planner (b92 rfc-h: 195 s of stop-vs-refusal holds out of combat)
+            if (LeaderDecidesFor(party) && !encounterCreature && !creature->IsInCombat() &&
+                !creature->IsDungeonBoss() && BossOrder(party, creature) < 0)
+            {
+                std::string refusedWhy;
+                if (auto const refused = party.lead.refusedPicks.find(creature->GetGUID());
+                    refused != party.lead.refusedPicks.end())
+                    refusedWhy = refused->second;
+                else if (auto const judged = party.lead.unreachable.find(creature->GetGUID());
+                         judged != party.lead.unreachable.end() &&
+                         leader->GetExactDist(judged->second.tankAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                         creature->GetExactDist(judged->second.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD)
+                    refusedWhy = judged->second.why;
+                if (!refusedWhy.empty())
+                {
+                    party.pathVerdicts[creature->GetGUID()] = {false, "refused by the leader: " + refusedWhy, -1.0f,
+                                                               0.0f};
+                    continue;
+                }
+            }
+
             // Route-only trash: idle trash off the route is left standing (rule 4: a fighting mob always counts; the
             // target the group walks to stays one until it is dead or skipped).
             if (routeRules && !encounterCreature && !creature->IsInCombat() &&
@@ -12836,8 +12859,10 @@ namespace TestHarness
             bool refusalHopeless = false;
             uint32 refusalWaitMs = 0;
             std::string refusalWhy;
+            // [lead43] no guarantee hold for a led party: the leader's refusal moved the route off the mob (Retarget)
             bool const plannerRefused =
-                ROUTE_CAREFUL_GUARANTEE_HOLD && !party.approach && !party.targetIsBoss && !atEventHold &&
+                ROUTE_CAREFUL_GUARANTEE_HOLD && !LeaderDecidesFor(party) && !party.approach && !party.targetIsBoss &&
+                !atEventHold &&
                 !party.content->raid && party.content->size <= 5 &&
                 (PartyRefusal(party, party.target, refusalHopeless, refusalWaitMs,
                                                 refusalWhy) ||
@@ -23633,12 +23658,15 @@ namespace TestHarness
                 };
                 // [lead5] the leader's pick: a patrol it decided to pull, the pack it must clear, else the same
                 // choice the tank's own value makes (AggressiveTargetValue::PickFor) with the leader's route target
-                if (intercept)
+                // [lead43] b92 rfc-h 387-485 s: the patrol pick (held for pre-pull cc, refused) shadowed every other
+                // pick - "every pick here is refused" while the route stood at Trogg 29's stop. A refused / unreachable
+                // patrol or whole-pack pick falls through to the next pick (the route target first)
+                if (intercept && !skipPick(intercept->GetGUID()))
                 {
                     inputs.pick = intercept->GetGUID();
                     pickWhy = "patrol pull: " + lead.interceptWhy;
                 }
-                else if (whole)
+                else if (whole && !skipPick(whole->GetGUID()))
                 {
                     inputs.pick = whole->GetGUID();
                     pickWhy = "whole pack: " + lead.wholeWhy;
@@ -23763,6 +23791,25 @@ namespace TestHarness
                         pickWhy = "the pick is " + verdict;
                     }
                 }
+                // [lead43] one verdict: a route target the leader does not pick is a contradiction - logged with the
+                // store that refuses it (the route then has no planner to stop for)
+                if (inputs.pick.IsEmpty() && !party.target.IsEmpty() && lead.pickConflictFor != party.target)
+                    if (Creature* routeMob = idleAlive(party.target))
+                    {
+                        lead.pickConflictFor = party.target;
+                        auto const unreachable = lead.unreachable.find(party.target);
+                        auto const refused = lead.refusedPicks.find(party.target);
+                        std::string const store =
+                            refused != lead.refusedPicks.end()       ? "refusedPicks: " + refused->second
+                            : unreachable != lead.unreachable.end() ? "unreachable: " + unreachable->second.why
+                            : !onPath(party.target)                 ? std::string("off the path")
+                                                                    : std::string("none (" + pickWhy + ")");
+                        DecisionLog::Instance().Write(run, "leader", "pick_route_conflict", party.target,
+                                                      routeMob->GetName(), true,
+                                                      JsonObject().Str("store", store).Str("pick", pickWhy));
+                    }
+                if (!inputs.pick.IsEmpty())
+                    lead.pickConflictFor.Clear();
                 inputs.pickWhy = pickWhy;
             }
             snap.BindLeader(inputs);

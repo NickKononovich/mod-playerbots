@@ -5835,8 +5835,10 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
 
     // [lead39] b88 rfc-h 22 s: "held for pre-pull cc" on a pull of lone wanderers - a wanderer walks out of any
     // crowd control plan and needs none: no hold for it
+    // [lead43] ... nor does a patrol (b92 rfc-h 387 s: the patrol Shaman "held for pre-pull cc")
     if (Creature const* creature = pullTarget->ToCreature();
-        creature && creature->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+        creature && (creature->GetDefaultMovementType() == RANDOM_MOTION_TYPE ||
+                     creature->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE))
         return false;
 
     bool const measured = GetPullMode(bot, PlanStrength()) == PullMode::Measured;  // [lead7] the look's snapshot
