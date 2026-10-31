@@ -493,6 +493,8 @@ namespace TestHarness
             ObjectGuid pickJudgedFor;  // [lead40] the pick the reachability verdict was taken for
             Position pickJudgedAt;     // [lead41] the tank where it was judged
             ObjectGuid pickConflictFor;  // [lead43] the route target last logged as not picked
+            ObjectGuid bossPullLoggedFor;  // [lead45] leader_boss_pull logged for this boss
+            std::string bossWaitWhy;       // [lead45] boss_pull_waits: the readiness gap last logged
             // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
             struct Unreachable
             {

@@ -20065,11 +20065,12 @@ namespace TestHarness
         if (Leader::Orders::IsOpen(party.leader))  // the tank's pull order runs
             return;
         auto& lead = party.lead;
-        if (lead.bossPull != boss->GetGUID() || !lead.bossPullMs ||
-            getMSTimeDiff(lead.bossPullMs, now) > Leader::LEADER_REQUEST_TTL_MS)
+        // [lead45] logged once per boss (it was every second: "waited 38 ... 42 s")
+        if (lead.bossPullLoggedFor != boss->GetGUID())
             LogEvent(party, "leader_boss_pull",
                      JsonObject().Str("name", boss->GetName()).Num("entry", boss->GetEntry()).Str("why", why)
                          .Real("distance", leader->GetExactDist(boss)));
+        lead.bossPullLoggedFor = boss->GetGUID();
         lead.bossPull = boss->GetGUID();
         lead.bossPullMs = now;
         lead.bossPullWhy = why;
@@ -20978,6 +20979,13 @@ namespace TestHarness
                         return false;
             }
             return true;
+        }
+
+        // [lead45] a boss is always walked to: never a refused pick (its hold is a readiness wait, not a refusal)
+        bool IsBossLook(Player* tank, ObjectGuid guid)
+        {
+            Creature const* creature = tank->GetMap() ? tank->GetMap()->GetCreature(guid) : nullptr;
+            return creature && (creature->IsDungeonBoss() || creature->isWorldBoss());
         }
 
         // [lead42] how many members refused their Attack on `unit` this fight
@@ -22409,6 +22417,20 @@ namespace TestHarness
                 }
             }
 
+        // [lead45] the tank rests too (it is no seat): the boss pull waits for its mana, so the leader tells it to
+        // drink (its own rest line / the boss top-up line, RestState) while no order runs
+        if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(party.leader))
+        {
+            std::string tankRestWhy;
+            bool const tankRests = (RestState::IsDrinking(tank) || RestState::IsEating(tank) ||
+                                    RestState::WantsDrink(tank, &tankRestWhy) ||
+                                    RestState::WantsFood(tank, &tankRestWhy)) &&
+                                   !MemberFull(tank) && (tank->IsSitState() || RestState::CanRest(tank));
+            if (tankRests && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
+                logEvent(tank, "Rest", JsonObject().Str("who", "tank")
+                                           .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
+        }
+
         uint32 seat = 0;
         for (Player* bot : seats)
         {
@@ -23547,8 +23569,23 @@ namespace TestHarness
             lead.bossPull.Clear();
             lead.bossPullMs = 0;
             PullPlanner::Decision bossPull;
-            if (boss && PullPlanner::BossPullDecision(tank, boss, why, bossPull))
+            // [lead45] b94 rfc-h 363-421 s: the boss pull was issued, then the planner held the same boss
+            // ("Rtpalaa at 71 % mana"), the order stood without a target and the tank idled 50 s. The leader checks
+            // the boss readiness (the planner's own BossReadyGap) BEFORE it issues; not ready: no order - the group
+            // rests to its boss top-up line (the Rest commands) and the boss pull comes when it is ready
+            std::string const notReady = boss ? PullReadiness::BossNotReady(tank, boss) : std::string();
+            if (boss && !notReady.empty())
             {
+                if (lead.bossWaitWhy != notReady)
+                {
+                    lead.bossWaitWhy = notReady;
+                    DecisionLog::Instance().Write(run, "leader", "boss_pull_waits", boss->GetGUID(), boss->GetName(),
+                                                  true, JsonObject().Str("why", notReady));
+                }
+            }
+            else if (boss && PullPlanner::BossPullDecision(tank, boss, why, bossPull))
+            {
+                lead.bossWaitWhy.clear();
                 if (lead.bossPullIssued != boss->GetGUID())
                 {
                     lead.bossPullIssued = boss->GetGUID();
@@ -23834,8 +23871,8 @@ namespace TestHarness
         if (decides && Leader::LEADER_NO_FORCING_TIMERS && !decision.lookTarget.IsEmpty() &&
             (decision.verdict == PullPlanner::Verdict::Refused ||
              (decision.verdict == PullPlanner::Verdict::Held && lead.ready)) &&
-            !lead.refusedPicks.count(decision.lookTarget))
-            lead.refusedPicks[decision.lookTarget] = decision.why;
+            !lead.refusedPicks.count(decision.lookTarget) && !IsBossLook(tank, decision.lookTarget))
+            lead.refusedPicks[decision.lookTarget] = decision.why;  // [lead45] never a boss
         if (decision.verdict == PullPlanner::Verdict::Go || party.inCombat)
             lead.refusedPicks.clear();  // a pull goes / a fight changes the room: everything is asked again
         // [lead30] planner_answer: the planner's answer for the leader's pick (logged when it changes)
