@@ -508,6 +508,7 @@ namespace TestHarness
             uint32 manaTickMs = 0;
             std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
             std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
+            std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
             bool tankCannotTake = false;               // [lead54] no taunt / AoE threat ready for the loose mob
             // [lead55] the move command before the current one, per member
             std::map<ObjectGuid, std::pair<Position, std::string>> prevMoves;

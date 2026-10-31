@@ -19746,6 +19746,13 @@ namespace TestHarness
                     if (ack.why.find("to range of the engage") != std::string::npos)
                         party.lead.engageRefused.insert(member.guid);
                 }
+                // [lead56] the tank's pick-up cast went (or was tried): the one-shot threat command ends
+                if (ack.what == "threat")
+                {
+                    Leader::MemberEvents threatEvents;
+                    if (Leader::Events::Get(member.guid, threatEvents) && !threatEvents.threatTarget.IsEmpty())
+                        party.lead.threatDoneFor[threatEvents.threatTarget] = threatEvents.threatSpell;
+                }
                 // [lead42] a refused Attack: the target the member could not attack (the leader picks another)
                 if (ack.why.rfind("the attack refused", 0) == 0 &&
                     ack.why.find("already attacking") == std::string::npos)
@@ -21976,6 +21983,7 @@ namespace TestHarness
                                           JsonObject().Str("how", how)
                                               .Real("seconds", float(getMSTimeDiff(it->second.second, now)) / 1000.0f));
             lead.tauntLogged.erase(it->first);  // [lead54] the episode ended
+            lead.threatDoneFor.erase(it->first);  // [lead56]
             it = lead.looseMobs.erase(it);
         }
         if (looseOn.empty())
@@ -21997,7 +22005,14 @@ namespace TestHarness
                         spell = aoeSpell;
                 how = spell ? "aoe threat" : "attack";
             }
-            bool const threatChanged = Leader::Events::SetThreat(tank->GetGUID(), spell, mob->GetGUID());
+            // [lead56] b105 rfc-h pull 7 wipe: the tank stood in "leader threat" with no target (its rotation never
+            // ran, no threat, every damage dealer without headroom). A pick-up is one cast: issued only with a ready
+            // spell and only until the tank reports it (its ack), never as a standing state; the tank's Attack on the
+            // mob stays - it attacks the mob it took back and runs its rotation
+            auto const done = lead.threatDoneFor.find(mob->GetGUID());
+            bool const castDone = done != lead.threatDoneFor.end() && done->second == spell;
+            bool const threatChanged =
+                spell && !castDone && Leader::Events::SetThreat(tank->GetGUID(), spell, mob->GetGUID());
             bool const attackChanged =
                 Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {});
             // [lead54] issued (logged, the tank woken) once per change of the pick-up: a new loose mob or a new spell
