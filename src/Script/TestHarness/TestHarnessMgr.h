@@ -501,9 +501,10 @@ namespace TestHarness
             // [lead51] the measured mana spend per member in fights
             struct ManaSpend
             {
-                float prev = -1.0f;
+                float prev = -1.0f;  // [lead69] the mana at this fight's start (-1: out of a fight)
                 float spent = 0.0f;
                 float sec = 0.0f;
+                float fightSec = 0.0f;
             };
             std::map<ObjectGuid, ManaSpend> manaSpend;
             uint32 manaTickMs = 0;
@@ -513,6 +514,7 @@ namespace TestHarness
             std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived
             bool healStarted = false;                    // [lead61] the leader's Heal went out in this fight
             uint32 fightStartMs = 0;                     // [lead67] the fight's start (threat_lead marks)
+            std::map<std::string, uint32> dupesBlocked;  // [lead69] command_dupe_blocked per member
             uint32 threatLeadLogged = 0;                 // [lead67] the last threat_lead mark logged
             std::map<ObjectGuid, std::map<std::string, float>> threatMax;  // [lead67] mob -> member -> top threat
             std::map<uint32, std::vector<float>> threatMargins;            // [lead67] mark -> tank / top margins

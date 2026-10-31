@@ -19737,6 +19737,21 @@ namespace TestHarness
                 .Real("z", report.at.GetPositionZ());
             DecisionLog::Instance().Write(run, tankWho, report.what, report.target, report.targetName, report.decides,
                                           fields, report.ms);
+            // [lead69] b114 376-427 s: 13 commit_failed "the tank's walk in for sight refused" with the order left
+            // Issued. The tank's refusal is the walk verdict: the mob is unreachable from here (lead.unreachable,
+            // logged once), the order ends and the commitment with it, the route moves on
+            if (report.what == "commit_failed" && !report.target.IsEmpty() &&
+                !party.lead.unreachable.count(report.target))
+            {
+                Creature* refusedMob = leader->GetMap()->GetCreature(report.target);
+                party.lead.unreachable[report.target] = {leader->GetPosition(),
+                                                         refusedMob ? refusedMob->GetPosition() : leader->GetPosition(),
+                                                         "the tank's walk refused: " + report.why};
+                Leader::Orders::Close(party.leader, Leader::OrderState::Aborted,
+                                      "the tank's walk refused: " + report.why, leader->GetPosition(), nullptr);
+                DecisionLog::Instance().Write(run, "leader", "pick_unreachable", report.target, report.targetName, true,
+                                              JsonObject().Str("why", report.why).Str("pick", "the tank's walk"));
+            }
             // [lead57] one owner per decision: the tank decided a pull (which mob / the method / when) itself - the
             // leader's domain (should be 0)
             if (report.decides)
@@ -22480,6 +22495,21 @@ namespace TestHarness
                                                       .Str("pet", pet->GetName()).Str("to", "follow")
                                                       .Str("why", "only the tank opens a pull"));
                 }
+        // [lead69] command_dupe_blocked: identical commands the arbiter refused (should be 0), logged when they happen
+        {
+            std::vector<Player*> commanded = seats;
+            commanded.push_back(tank);
+            for (Player* member : commanded)
+                if (uint32 const dupes = Leader::Events::TakeDupesBlocked(member->GetGUID()))
+                {
+                    uint32& total = lead.dupesBlocked[member->GetName()];
+                    if (!total)
+                        DecisionLog::Instance().Write(
+                            run, "leader", "command_dupe_blocked", member->GetGUID(), member->GetName(), false,
+                            JsonObject().Str("member", member->GetName()).Num("count", dupes));
+                    total += dupes;
+                }
+        }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
             for (Player* bot : seats)
@@ -22709,17 +22739,24 @@ namespace TestHarness
                     continue;
                 auto& spend = lead.manaSpend[member->GetGUID()];
                 float const pct = member->GetPowerPct(POWER_MANA);
+                // [lead69] the NET use (mana at the fight's start minus at its end, per fight second): b114 asked the
+                // paladin tank for 100 % before Taragaman from its gross spend (it regains much of it in the fight)
                 if (!fighting)
                 {
+                    if (spend.prev >= 0.0f)  // the fight just ended: its net use counts
+                    {
+                        spend.spent += std::max(0.0f, spend.prev - pct);
+                        spend.sec += spend.fightSec;
+                        if (spend.sec > 0.0f)
+                            RestState::NoteManaRate(member->GetGUID(), spend.spent / spend.sec);
+                    }
                     spend.prev = -1.0f;
+                    spend.fightSec = 0.0f;
                     continue;
                 }
-                if (spend.prev >= 0.0f && pct < spend.prev)
-                    spend.spent += spend.prev - pct;
-                spend.prev = pct;
-                spend.sec += dt;
-                if (spend.sec > 0.0f)
-                    RestState::NoteManaRate(member->GetGUID(), spend.spent / spend.sec);
+                if (spend.prev < 0.0f)
+                    spend.prev = pct;  // the fight's start
+                spend.fightSec += dt;
             }
         }
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(party.leader))

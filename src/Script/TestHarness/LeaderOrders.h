@@ -558,6 +558,8 @@ namespace Leader
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why);
         // [lead64] the position arbiter's precedence of a move by its purpose (hazard 5 ... walk-along 0)
         int32 MovePrecedence(std::string const& why);
+        // [lead69] the identical commands the arbiter refused since the last call (command_dupe_blocked)
+        uint32 TakeDupesBlocked(ObjectGuid member);
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder);
         bool SetIntensity(ObjectGuid member, Intensity intensity);

@@ -462,6 +462,11 @@ namespace Leader
                 std::map<std::string, uint32> vetoedEvals;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
+                // [lead69] the command before the current one, and the tick the current one was set (ping-pong guard)
+                std::string prevMoveWhy;
+                Position prevMoveSpot;
+                uint32 moveSetGen = 0;
+                uint32 dupesBlocked = 0;
                 uint32 gen = 1;  // [lead27] the leader's tick generation: a field asserted in it is current
             };
             std::mutex eventLock;
@@ -477,7 +482,10 @@ namespace Leader
             MemberEvents& e = slot.events;
             // [lead64] the position arbiter: a move asserted this tick by a rule of higher precedence holds - a lower
             // one cannot overwrite it in the same tick (b109: "aggro loss: to the tank" then "combat spot" at 32.6 s)
-            if (e.move != MoveEvent::None && e.moveMs == slot.gen && MovePrecedence(e.moveWhy) > MovePrecedence(why))
+            // [lead69] ... nor one it asserted last tick (b114: heal reach <-> combat spot flipped every tick, 204
+            // commands in one second - the lower rule came first in the next tick)
+            if (e.move != MoveEvent::None && e.moveMs + 1 >= slot.gen &&
+                MovePrecedence(e.moveWhy) > MovePrecedence(why))
                 return false;
             // [lead55] user: «пожалей мой CPU» - b100: Rtdruaa 5 073 commands (813 in one second). The same command
             // is no new command: a move changes only when its point leaves the current one's arrival tolerance
@@ -485,8 +493,20 @@ namespace Leader
             float const keep = std::max(std::max(e.tolerance, tolerance), 1.0f);
             bool const changed = e.move != move || e.moveWhy != why || e.spot.GetExactDist(spot) > keep;
             e.move = move;
+            // [lead69] the arbiter emits no command identical to the one before the current within the next tick
+            // (member, purpose, point within tolerance): command_dupe_blocked - should be 0
+            if (changed && why == slot.prevMoveWhy && slot.prevMoveSpot.GetExactDist(spot) <= keep &&
+                slot.moveSetGen + 1 >= slot.gen)
+            {
+                ++slot.dupesBlocked;
+                e.moveMs = slot.gen;
+                return false;
+            }
             if (changed)
             {
+                slot.prevMoveWhy = e.moveWhy;
+                slot.prevMoveSpot = e.spot;
+                slot.moveSetGen = slot.gen;
                 e.spot = spot;
                 e.tolerance = tolerance;
                 e.moveWhy = why;
@@ -648,6 +668,17 @@ namespace Leader
             if (changed)
                 ++e.seq;
             return changed;
+        }
+
+        uint32 TakeDupesBlocked(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end())
+                return 0;
+            uint32 const dupes = found->second.dupesBlocked;
+            found->second.dupesBlocked = 0;
+            return dupes;
         }
 
         int32 MovePrecedence(std::string const& why)
