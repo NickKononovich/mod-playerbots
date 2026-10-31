@@ -8329,7 +8329,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
             // by a hazard, no pull back: engaged where it stands, the tank drags the fight off it (FightNearHazard)
             if (engageHazard && !engageCrossed)
+            {
+                // [lead54] b103 rfc-h pull 8: "the tank drags the fight off it" for a led tank, whose own drag is off
+                // (LEADER_TANK_OWN_PICKS_OFF): no executor - no such plan
+                if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()))
+                    return false;
                 return takeEngage(pullBackWhy + ", the tank drags the fight off it");
+            }
 
             // [lead51] user: «чем больше берёшь одновременно и не умираешь - тем лучше ... динамически» - b99 rfc-h
             // pull 8: "fought in its sight" of the Troggs reaching the dps placement, estimated 2, engaged 12. Engaged

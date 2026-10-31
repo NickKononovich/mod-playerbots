@@ -21959,14 +21959,20 @@ namespace TestHarness
                                           mob ? mob->GetName() : std::string("?"), true,
                                           JsonObject().Str("how", how)
                                               .Real("seconds", float(getMSTimeDiff(it->second.second, now)) / 1000.0f));
+            lead.tauntLogged.erase(it->first);  // [lead54] the episode ended
             it = lead.looseMobs.erase(it);
         }
+        if (looseOn.empty())
+            lead.tankCannotTake = false;
         if (!looseOn.empty())
         {
             // the tank: the first loose mob (its taunt when ready, else its AoE threat, else an attack)
             Unit* mob = looseOn.begin()->second;
-            uint32 spell = LeaderReadySpell(tank, {TANK_TAUNTS[0], TANK_TAUNTS[1], TANK_TAUNTS[2], TANK_TAUNTS[3],
-                                                   TANK_TAUNTS[4]});
+            // [lead54] b103 rfc-h pull 8 (wipe): 10 754 "taunt 31789" (Righteous Defense) commands - it is cast on
+            // the friend, the executor casts the leader's taunt on the mob: it never went off and stayed "ready". The
+            // taunts cast on the mob (Hand of Reckoning, Taunt, Growl, Dark Command); none ready: the AoE threat, else
+            // the attack
+            uint32 spell = LeaderReadySpell(tank, {TANK_TAUNTS[0], TANK_TAUNTS[1], TANK_TAUNTS[2], TANK_TAUNTS[3]});
             char const* how = "taunt";
             if (!spell)
             {
@@ -21978,8 +21984,17 @@ namespace TestHarness
             bool const threatChanged = Leader::Events::SetThreat(tank->GetGUID(), spell, mob->GetGUID());
             bool const attackChanged =
                 Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {});
-            if (threatChanged || attackChanged)
+            // [lead54] issued (logged, the tank woken) once per change of the pick-up: a new loose mob or a new spell
+            // (the taunt came off cooldown / went on it) - not every tick the loose state flickers
+            auto const logged = lead.tauntLogged.find(mob->GetGUID());
+            if ((threatChanged || attackChanged) && (logged == lead.tauntLogged.end() || logged->second != spell))
+            {
+                lead.tauntLogged[mob->GetGUID()] = spell;
                 logEvent(tank, "Taunt", JsonObject().Str("mob", mob->GetName()).Num("spell", spell).Str("how", how));
+            }
+            // [lead54] the tank can take it back now only with a ready taunt / AoE threat: else the damage dealers
+            // with threat headroom kill it (no DontAttack while the healer dies)
+            lead.tankCannotTake = spell == 0;
             // [lead36] b85 rfc-h: the tank stood 7.3 yd off the Trogg on the healer ("0 attackers ... going idle"):
             // the leader's Taunt / Attack includes the walk to melee - a MoveTo to the mob while out of its melee
             // reach (re-issued only when the mob moved off the issued point)
@@ -22013,7 +22028,7 @@ namespace TestHarness
             // it, the tank never reached it): no target, nobody attacked for 90 s. A fight always has an Attack
             // target: with every fight mob loose, the loose mob is the target (the damage dealers kill it)
             Unit* const looseTarget = target && looseMobs.count(target->GetGUID()) ? target : nullptr;
-            if (looseTarget)
+            if (looseTarget && !lead.tankCannotTake)
             {
                 target = nullptr;
                 for (ObjectGuid const guid : killOrder)
@@ -22024,9 +22039,9 @@ namespace TestHarness
                             break;
                         }
             }
-            if (!target)
+            if (!target || lead.tankCannotTake)
             {
-                target = looseTarget ? looseTarget : mob;
+                target = target ? target : looseTarget ? looseTarget : mob;
                 lead.looseIsTarget = true;
             }
             else
