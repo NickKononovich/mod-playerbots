@@ -23148,8 +23148,10 @@ namespace TestHarness
                 if (engaged)
                 {
                     auto const kept = lead.engageRangeSpots.find(guid);
+                    // [lead68] b113: the spot moved with the tank (re-issued every ~0.6 s) - it is computed once per
+                    // order (the leader's plan) and kept until a new order
                     if (kept != lead.engageRangeSpots.end() && kept->second.first == engaged->GetGUID() &&
-                        engaged->GetExactDist(lead.commitPos) <= 2.0f)
+                        lead.engageRangeOrder[guid] == engage.id)
                     {
                         rangeSpot = kept->second.second;
                         rangeValid = true;
@@ -23159,19 +23161,21 @@ namespace TestHarness
                 {
                     float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
                                                                  : LeaderSpellReach(bot) - 4.0f;
-                    float const dx = tank->GetPositionX() - engaged->GetPositionX();
-                    float const dy = tank->GetPositionY() - engaged->GetPositionY();
+                    // [lead68] from the leader's meeting point back toward the member (the group's side), not from
+                    // the walking tank
+                    Position const meet = lead.meetPoint;
+                    float const dx = bot->GetPositionX() - meet.GetPositionX();
+                    float const dy = bot->GetPositionY() - meet.GetPositionY();
                     float const length = std::max(0.1f, std::hypot(dx, dy));
                     LeaderMoveOrderAction* mover = dynamic_cast<LeaderMoveOrderAction*>(
                         botAI->GetAiObjectContext()->GetAction("leader move order"));
                     for (float at = std::min(range, length); at <= length && !rangeValid; at += 3.0f)
                     {
-                        float x = engaged->GetPositionX() + dx / length * at;
-                        float y = engaged->GetPositionY() + dy / length * at;
-                        float z = engaged->GetPositionZ();
-                        if (!map->CheckCollisionAndGetValidCoords(engaged, engaged->GetPositionX(),
-                                                                  engaged->GetPositionY(), engaged->GetPositionZ(), x,
-                                                                  y, z) ||
+                        float x = meet.GetPositionX() + dx / length * at;
+                        float y = meet.GetPositionY() + dy / length * at;
+                        float z = meet.GetPositionZ();
+                        if (!map->CheckCollisionAndGetValidCoords(engaged, meet.GetPositionX(), meet.GetPositionY(),
+                                                                  meet.GetPositionZ(), x, y, z) ||
                             NearHazard(map, bot->GetPhaseMask(), x, y, z, LEADER_TERRAIN_EDGE))
                             continue;
                         Position const spot(x, y, z);
@@ -23187,6 +23191,7 @@ namespace TestHarness
                 else if (rangeValid)
                 {
                     lead.engageRangeSpots[guid] = {engaged->GetGUID(), rangeSpot};
+                    lead.engageRangeOrder[guid] = engage.id;
                     if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
                                     "along with the tank: to range of the engage"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),

@@ -489,6 +489,7 @@ namespace TestHarness
             ObjectGuid patrolTarget;                          // [lead34] a patrol the leader pulls as its own pull
             std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
             std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
+            std::map<ObjectGuid, uint32> engageRangeOrder;  // [lead68] the order the range spot was computed for
             ObjectGuid keptPick;  // [lead39] the leader's pick, kept until dead / fought / refused / out of reach
             ObjectGuid pickJudgedFor;  // [lead40] the pick the reachability verdict was taken for
             Position pickJudgedAt;     // [lead41] the tank where it was judged

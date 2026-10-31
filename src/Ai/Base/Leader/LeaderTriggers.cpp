@@ -226,6 +226,11 @@ bool LeaderAttackOrderTrigger::IsActive()
     Leader::MemberEvents events;
     if (!Leader::Events::Get(bot->GetGUID(), events) || events.attack != Leader::AttackEvent::Attack)
         return false;
+    // [lead68] b113: the shaman's white swings / procs out-threatened the tank in the first seconds - under the
+    // leader's Stop (no threat headroom) the auto attack itself stops too
+    if (events.intensity == Leader::Intensity::Stop &&
+        (bot->GetVictim() || bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL)))
+        return true;
     Unit* target = botAI->GetUnit(events.target);
     // only a mob already in the fight (the leader's pull opened it): the event never opens a pull of its own
     return target && target->IsAlive() && target->IsInCombat() && bot->GetVictim() != target &&

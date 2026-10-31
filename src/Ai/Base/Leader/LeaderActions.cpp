@@ -721,6 +721,17 @@ bool LeaderAttackOrderAction::Execute(Event /*event*/)
     Leader::MemberEvents events;
     if (!Leader::Events::Get(bot->GetGUID(), events) || events.attack != Leader::AttackEvent::Attack)
         return false;
+    // [lead68] the leader's Stop (no threat headroom): no white swing / auto shot either - the attack stops until
+    // the tank leads again
+    if (events.intensity == Leader::Intensity::Stop)
+    {
+        bool const was = bot->GetVictim() || bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+        bot->AttackStop();
+        bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+        if (was)
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "attack", "stops its auto attack: the leader's Stop");
+        return was;
+    }
     Unit* target = botAI->GetUnit(events.target);
     if (!target || !target->IsAlive() || !target->IsInCombat())
         return false;
