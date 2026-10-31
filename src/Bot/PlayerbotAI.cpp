@@ -7667,7 +7667,11 @@ uint32 PlayerbotAI::GetReactDelay()
         Leader::MemberEvents events;
         if (Leader::Events::Get(bot->GetGUID(), events))
         {
-            bool const walking = (events.move == Leader::MoveEvent::MoveTo ||
+            // [lead27] Follow: fast while the tank walks or the member is behind
+            Unit* followed = events.move == Leader::MoveEvent::Follow ? GetUnit(events.followTarget) : nullptr;
+            bool const following = followed && (followed->isMoving() ||
+                                                 bot->GetExactDist(followed) > Leader::LEADER_FOLLOW_KEEP_YD);
+            bool const walking = following || (events.move == Leader::MoveEvent::MoveTo ||
                                   events.move == Leader::MoveEvent::StandAt) &&
                                  (bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) >
                                       events.tolerance ||

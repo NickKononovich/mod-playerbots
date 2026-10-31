@@ -187,6 +187,11 @@ namespace Leader
     // [lead26] the planner's combined plan: a wanderer / lone mob walking into an engage is pulled together with it
     // when the whole fits and clears faster (plan_compare in the reason)
     constexpr bool LEADER_PULL_TOGETHER = true;
+    // [lead27] the healer's sight of the fight spot is the leader's job (its re-spot after the tank holds the mobs):
+    // the planner never moves the fight for it
+    constexpr bool LEADER_HEALER_RESPOTS = true;
+    // [lead27] Follow: the member walks when the tank is farther than this (or out of sight)
+    constexpr float LEADER_FOLLOW_KEEP_YD = 6.0f;
     // [lead26] the engage spot is judged by the dps placement around it (melee behind, ranged at range): an unpulled
     // mob reaching it moves the fight back to a clear spot
     constexpr bool LEADER_PLACEMENT_FIGHT_SPOT = true;
@@ -425,7 +430,8 @@ namespace Leader
         None,
         MoveTo,   // go to `spot` now (a dodge, a reposition): above the member's own moves
         StandAt,  // stand at `spot` (the pull's assigned spot) until told otherwise
-        Hold      // do not move
+        Hold,     // do not move
+        Follow    // [lead27] walk along with `followTarget` at place `followIndex` behind it
     };
     enum class AttackEvent : uint8
     {
@@ -462,6 +468,8 @@ namespace Leader
         uint32 seq = 0;  // bumped on every change of any field
         MoveEvent move = MoveEvent::None;
         Position spot;
+        ObjectGuid followTarget;  // [lead27] Follow
+        uint8 followIndex = 0;
         float tolerance = LEADER_SPOT_TOLERANCE;
         std::string moveWhy;
         uint32 moveMs = 0;
@@ -526,6 +534,13 @@ namespace Leader
         bool SetPreSave(ObjectGuid member, uint32 untilMs, std::string const& why);
         bool SetReady(ObjectGuid member, ReadyEvent ready);
         void Clear(ObjectGuid member);
+        // [lead27] a command stays until the leader issues another: each leader tick asserts what it wants
+        // (BeginTick ... the Set* calls ... EndTick), and EndTick clears every field it did not assert - no TTL
+        void BeginTick(ObjectGuid member);
+        void EndTick(ObjectGuid member);
+        // [lead27] the formation command: walk along with `target` (the tank) at place `index` behind it; the member
+        // keeps it continuously (one command, not a new point every tick)
+        bool SetFollow(ObjectGuid member, ObjectGuid target, uint8 index, std::string const& why);
         // Member side: the member's fresh events (stale fields come back None); false: none at all.
         bool Get(ObjectGuid member, MemberEvents& out);
         void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why);

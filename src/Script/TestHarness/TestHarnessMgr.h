@@ -475,6 +475,7 @@ namespace TestHarness
             uint32 commitTickMs = 0;              // [lead20] rest time does not age a commitment
             std::map<ObjectGuid, uint32> holdWaitMs;  // [lead20] combat re-spot waiting for the tank's hold
             Position meetPoint;                        // [lead25] where the tank meets the pulled mob
+            std::map<std::string, uint32> leaderEventCounts;  // [lead27] leader_event per member
             std::vector<ObjectGuid> extraLogged;       // [lead25] extra_aggro logged per pull
             uint32 lostCheckMs = 0;
             uint32 bossPrepareSinceMs = 0;

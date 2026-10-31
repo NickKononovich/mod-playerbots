@@ -584,8 +584,33 @@ bool BurstEndAction::Execute(Event /*event*/)
 bool LeaderMoveOrderAction::Execute(Event /*event*/)
 {
     Leader::MemberEvents events;
-    if (!Leader::Events::Get(bot->GetGUID(), events) ||
-        (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt))
+    if (!Leader::Events::Get(bot->GetGUID(), events))
+        return false;
+    // [lead27] Follow: the place `followIndex` behind the target (two rows of two), walked with the member's own path
+    // guards (the leader issued no point)
+    if (events.move == Leader::MoveEvent::Follow)
+    {
+        Unit* target = botAI->GetUnit(events.followTarget);
+        if (!target || !target->IsAlive())
+            return false;
+        float const back = 3.0f + 2.5f * float((events.followIndex / 2) % 2);
+        float const side = events.followIndex % 2 ? 1.5f : -1.5f;
+        float const o = target->GetOrientation();
+        float x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
+        float y = target->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;
+        float z = target->GetPositionZ();
+        if (!bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                             target->GetPositionZ(), x, y, z))
+        {
+            x = target->GetPositionX();
+            y = target->GetPositionY();
+            z = target->GetPositionZ();
+        }
+        if (IsDuplicateMove(x, y, z))
+            return true;
+        return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
+    }
+    if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
         return false;
     if (!bot->IsStandState())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
@@ -595,13 +620,23 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
                             "on the spot");
         return true;
     }
+    // [lead27] already walking there: the same move again is no refusal
+    if (IsDuplicateMove(events.spot.GetPositionX(), events.spot.GetPositionY(), events.spot.GetPositionZ()))
+        return true;
     bool const moved = MoveTo(bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
                               events.spot.GetPositionZ(), false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
     // [lead19] a refusal names its reason (invalid_spot): what the member's guards saw
+    // [lead27] the old command's walk stops at once (user: «старая отменяется, слушается только новая»): no spline to
+    // a superseded point goes on
     std::string refusal;
     if (!moved)
     {
+        if (bot->isMoving())
+        {
+            bot->StopMoving();
+            bot->GetMotionMaster()->Clear();
+        }
         refusal = WalkRefusal(events.spot);
         if (refusal.empty())
             refusal = "another guard (ledge, ground effect, duplicate move)";
@@ -612,7 +647,13 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     return moved;
 }
 
-bool LeaderMoveOrderAction::SkipsIdleGuard() { return Leader::LedBot(bot); }
+bool LeaderMoveOrderAction::SkipsIdleGuard()
+{
+    // [lead27] a Follow walk is the member's own path (no point the leader checked): its guards stay
+    Leader::MemberEvents events;
+    return Leader::LedBot(bot) &&
+           !(Leader::Events::Get(bot->GetGUID(), events) && events.move == Leader::MoveEvent::Follow);
+}
 
 std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
 {

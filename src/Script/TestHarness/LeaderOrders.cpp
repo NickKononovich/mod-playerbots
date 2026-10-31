@@ -380,7 +380,8 @@ namespace Leader
         {
             std::lock_guard<std::mutex> lock(readyLock);
             auto const found = verdicts.find(group);
-            if (found == verdicts.end() || getMSTimeDiff(found->second.ms, getMSTime()) > LEADER_READY_FRESH_MS)
+            // [lead27] no age: the verdict holds until the leader publishes another or the run ends (Clear)
+            if (found == verdicts.end())
                 return false;
             ready = found->second.ready;
             if (why)
@@ -428,24 +429,25 @@ namespace Leader
                 std::map<std::string, uint32> vetoedEvals;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
+                uint32 gen = 1;  // [lead27] the leader's tick generation: a field asserted in it is current
             };
             std::mutex eventLock;
             std::unordered_map<ObjectGuid, Slot> eventSlots;
             constexpr size_t MAX_ACKS = 32;
 
-            bool Stale(uint32 ms, uint32 now) { return !ms || getMSTimeDiff(ms, now) > LEADER_EVENT_TTL_MS; }
         }
 
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.move != move || e.spot.GetExactDist(spot) > 1.0f || Stale(e.moveMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.move != move || e.spot.GetExactDist(spot) > 1.0f;
             e.move = move;
             e.spot = spot;
             e.tolerance = tolerance;
             e.moveWhy = why;
-            e.moveMs = NowMs();
+            e.moveMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -455,12 +457,13 @@ namespace Leader
                        std::vector<ObjectGuid> const& killOrder)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.attack != attack || e.target != target || Stale(e.attackMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.attack != attack || e.target != target;
             e.attack = attack;
             e.target = target;
             e.killOrder = killOrder;
-            e.attackMs = NowMs();
+            e.attackMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -469,10 +472,11 @@ namespace Leader
         bool SetIntensity(ObjectGuid member, Intensity intensity)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.intensity != intensity || Stale(e.intensityMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.intensity != intensity;
             e.intensity = intensity;
-            e.intensityMs = NowMs();
+            e.intensityMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -482,7 +486,8 @@ namespace Leader
         bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
             bool const changed =
                 e.aoe != aoe || (aoe == AoeRule::AllowedOnPack && e.aoeCenter.GetExactDist(center) > 3.0f);
             e.aoe = aoe;
@@ -496,10 +501,11 @@ namespace Leader
         bool SetCc(ObjectGuid member, ObjectGuid mob)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.cc != mob || Stale(e.ccMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.cc != mob;
             e.cc = mob;
-            e.ccMs = NowMs();
+            e.ccMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -508,10 +514,11 @@ namespace Leader
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.interrupt != caster || Stale(e.interruptMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.interrupt != caster;
             e.interrupt = caster;
-            e.interruptMs = NowMs();
+            e.interruptMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -520,11 +527,12 @@ namespace Leader
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.threatSpell != spell || e.threatTarget != target || Stale(e.threatMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.threatSpell != spell || e.threatTarget != target;
             e.threatSpell = spell;
             e.threatTarget = target;
-            e.threatMs = NowMs();
+            e.threatMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -533,11 +541,12 @@ namespace Leader
         bool SetPreSave(ObjectGuid member, uint32 untilMs, std::string const& why)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.preSaveUntilMs != untilMs || Stale(e.preSaveMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.preSaveUntilMs != untilMs;
             e.preSaveUntilMs = untilMs;
             e.preSaveWhy = why;
-            e.preSaveMs = NowMs();
+            e.preSaveMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -546,10 +555,11 @@ namespace Leader
         bool SetLoot(ObjectGuid member, bool loot)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.loot != loot || Stale(e.lootMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.loot != loot;
             e.loot = loot;
-            e.lootMs = NowMs();
+            e.lootMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -558,10 +568,11 @@ namespace Leader
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.dontAttack != mob || Stale(e.dontAttackMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.dontAttack != mob;
             e.dontAttack = mob;
-            e.dontAttackMs = NowMs();
+            e.dontAttackMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -570,12 +581,13 @@ namespace Leader
         bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
             bool const changed =
-                e.externalSpell != spell || e.externalTarget != target || Stale(e.externalMs, getMSTime());
+                e.externalSpell != spell || e.externalTarget != target;
             e.externalSpell = spell;
             e.externalTarget = target;
-            e.externalMs = NowMs();
+            e.externalMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -584,10 +596,108 @@ namespace Leader
         bool SetReady(ObjectGuid member, ReadyEvent ready)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            MemberEvents& e = eventSlots[member].events;
-            bool const changed = e.ready != ready || Stale(e.readyMs, getMSTime());
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.ready != ready;
             e.ready = ready;
-            e.readyMs = NowMs();
+            e.readyMs = slot.gen;
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        void BeginTick(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            ++eventSlots[member].gen;
+        }
+
+        void EndTick(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end())
+                return;
+            Slot& slot = found->second;
+            MemberEvents& e = slot.events;
+            uint32 const gen = slot.gen;
+            bool changed = false;
+            auto const drop = [&](uint32 stamp) { return stamp != gen; };
+            if (e.move != MoveEvent::None && drop(e.moveMs))
+            {
+                e.move = MoveEvent::None;
+                changed = true;
+            }
+            if ((e.attack != AttackEvent::None || e.aoe != AoeRule::Unset) && drop(e.attackMs))
+            {
+                e.attack = AttackEvent::None;
+                e.aoe = AoeRule::Unset;
+                changed = true;
+            }
+            if (e.intensity != Intensity::Normal && drop(e.intensityMs))
+            {
+                e.intensity = Intensity::Normal;
+                changed = true;
+            }
+            if (!e.cc.IsEmpty() && drop(e.ccMs))
+            {
+                e.cc.Clear();
+                changed = true;
+            }
+            if (!e.interrupt.IsEmpty() && drop(e.interruptMs))
+            {
+                e.interrupt.Clear();
+                changed = true;
+            }
+            if (!e.threatTarget.IsEmpty() && drop(e.threatMs))
+            {
+                e.threatSpell = 0;
+                e.threatTarget.Clear();
+                changed = true;
+            }
+            if (!e.dontAttack.IsEmpty() && drop(e.dontAttackMs))
+            {
+                e.dontAttack.Clear();
+                changed = true;
+            }
+            if (e.loot && drop(e.lootMs))
+            {
+                e.loot = false;
+                changed = true;
+            }
+            if (e.preSaveUntilMs && drop(e.preSaveMs))
+            {
+                e.preSaveUntilMs = 0;
+                e.preSaveWhy.clear();
+                changed = true;
+            }
+            if (e.externalSpell && drop(e.externalMs))
+            {
+                e.externalSpell = 0;
+                e.externalTarget.Clear();
+                changed = true;
+            }
+            if (e.ready != ReadyEvent::None && drop(e.readyMs))
+            {
+                e.ready = ReadyEvent::None;
+                changed = true;
+            }
+            if (changed)
+                ++e.seq;
+        }
+
+        bool SetFollow(ObjectGuid member, ObjectGuid target, uint8 index, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.move != MoveEvent::Follow || e.followTarget != target || e.followIndex != index;
+            e.move = MoveEvent::Follow;
+            e.followTarget = target;
+            e.followIndex = index;
+            e.tolerance = 2.5f;
+            e.moveWhy = why;
+            e.moveMs = slot.gen;
             if (changed)
                 ++e.seq;
             return changed;
@@ -607,39 +717,13 @@ namespace Leader
                 return false;
             out = found->second.events;
             uint32 const now = getMSTime();
-            if (Stale(out.moveMs, now))
-                out.move = MoveEvent::None;
-            if (Stale(out.attackMs, now))
-                out.attack = AttackEvent::None;
-            if (Stale(out.attackMs, now))
-                out.aoe = AoeRule::Unset;
-            if (Stale(out.intensityMs, now))
-                out.intensity = Intensity::Normal;
-            if (Stale(out.ccMs, now))
-                out.cc.Clear();
-            if (Stale(out.interruptMs, now))
-                out.interrupt.Clear();
-            if (Stale(out.threatMs, now))
-            {
-                out.threatSpell = 0;
-                out.threatTarget.Clear();
-            }
-            if (Stale(out.dontAttackMs, now))
-                out.dontAttack.Clear();
-            if (Stale(out.lootMs, now))
-                out.loot = false;
-            if (Stale(out.preSaveMs, now) || (out.preSaveUntilMs && int32(now - out.preSaveUntilMs) > 0))
+            // [lead27] a command stays current until the leader issues another (EndTick clears what it no longer
+            // asserts): no age, no TTL. The PreSave's hit time is the game's
+            if (out.preSaveUntilMs && int32(now - out.preSaveUntilMs) > 0)
             {
                 out.preSaveUntilMs = 0;
                 out.preSaveWhy.clear();
             }
-            if (Stale(out.externalMs, now))
-            {
-                out.externalSpell = 0;
-                out.externalTarget.Clear();
-            }
-            if (Stale(out.readyMs, now))
-                out.ready = ReadyEvent::None;
             return out.move != MoveEvent::None || out.attack != AttackEvent::None ||
                    out.intensity != Intensity::Normal || out.ready != ReadyEvent::None || !out.cc.IsEmpty() ||
                    !out.interrupt.IsEmpty() || out.externalSpell || !out.threatTarget.IsEmpty() ||

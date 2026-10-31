@@ -10538,6 +10538,16 @@ namespace TestHarness
         // MoveTo of the tank's own (MovementAction::RecordTankTrail samples it every 2 yd).
         MovementAction::RecordTankTrail(leader);
 
+        // [lead27] rfc-h 20261031-122130: the engage order was issued at 69.8 s and the route's approach stop kept
+        // stepping the tank back ("stop_out_of_real_reach", its waypoint) - the tank never took the order, the run
+        // stood. An issued leader order (or its committed pull) wins: no route walk of the tank meanwhile
+        if (LeaderDecidesFor(party) &&
+            (Leader::Orders::IsOpen(party.leader) || (party.lead.commit && party.lead.commitIssued)))
+        {
+            TestRunner::ClearWaypoint(party.leader);
+            return;
+        }
+
         // [ledge_drop_link] plan29 follow-up 5: while the group crosses a route link (the leader over it, the members
         // following), its step down is the route - the ledge guard (JudgeLedgeDrop) lets the drops pass.
         // [link_stale_end] a link chosen and never walked (WalkToLink runs only with no target: dmw-n 20261025-
@@ -21392,7 +21402,16 @@ namespace TestHarness
                 if (again)
                     checked = {spot, now};
             }
+            // [lead27] a new command overrides the old one: command_override (old -> new) when its purpose changes or
+            // the point jumps (the member's executor reads only the current command, its walk is replaced)
+            Leader::MemberEvents before;
+            bool const hadMove = Leader::Events::Get(member, before) && before.move != Leader::MoveEvent::None;
             bool const changed = Leader::Events::SetMove(member, move, spot, tolerance, why);
+            if (changed && hadMove && bot &&
+                (before.moveWhy != why || before.spot.GetExactDist(spot) > 8.0f))
+                DecisionLog::Instance().Write(run, "leader", "command_override", member, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("old", before.moveWhy)
+                                                  .Str("new", why).Real("jump", before.spot.GetExactDist(spot)));
             if (changed && bot && move != Leader::MoveEvent::Hold)
                 DecisionLog::Instance().Write(run, "leader", "leader_spot", member, bot->GetName(), true,
                                               JsonObject().Str("member", bot->GetName()).Str("why", why)
@@ -21420,6 +21439,7 @@ namespace TestHarness
         };
         auto const logEvent = [&](Player* bot, char const* kind, JsonObject fields)
         {
+            ++lead.leaderEventCounts[bot->GetName()];  // [lead27] leader_event per member (run summary)
             fields.Str("member", bot->GetName()).Str("event", kind);
             DecisionLog::Instance().Write(run, "leader", "leader_event", bot->GetGUID(), bot->GetName(), true,
                                           fields);
@@ -21471,6 +21491,24 @@ namespace TestHarness
         }
         // the healer first: the others' moves keep the reach to where the healer will stand
         std::stable_partition(seats.begin(), seats.end(), [healer](Player* bot) { return bot == healer; });
+        // [lead27] this tick asserts every command it wants; what it does not assert ends with the tick (no TTL)
+        for (Player* bot : seats)
+            Leader::Events::BeginTick(bot->GetGUID());
+        Leader::Events::BeginTick(tank->GetGUID());
+        struct TickEnd
+        {
+            std::vector<Player*> const& seats;
+            Player* tank;
+            ~TickEnd()
+            {
+                for (Player* bot : seats)
+                    Leader::Events::EndTick(bot->GetGUID());
+                Leader::Events::EndTick(tank->GetGUID());
+            }
+        } tickEnd{seats, tank};
+        for (Member const& member : party.members)
+            if (Player* dead = ObjectAccessor::FindPlayer(member.guid); dead && !dead->IsAlive())
+                Leader::Events::Clear(member.guid);
 
         Leader::PullOrder order;
         bool const orderOpen = Leader::Orders::GetOpen(party.leader, order);
@@ -22259,48 +22297,38 @@ namespace TestHarness
                 bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                 bool const following = lead.following.count(guid) > 0;
                 float const gap = bot->GetExactDist(tank);
-                if (following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
+                // [lead27] user: «он выдал - и меняет приказ только если что-то поменялось»: one Follow command (the
+                // member keeps its place behind the tank by itself); an engage walk-along to range stays a point
+                Leader::PullOrder engage;
+                Unit* engaged = nullptr;
+                if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
+                    Leader::Orders::GetOpen(party.leader, engage))
+                    engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+                if (engaged)
                 {
-                    Position spot = LeaderFollowSpot(tank, index);
-                    // [lead23] an engage pull: ranged / healer walk along to their range of the target (the tank's
-                    // side), not 7 yd behind the tank - the first hits land when the tank arrives
-                    Leader::PullOrder engage;
-                    if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
-                        Leader::Orders::GetOpen(party.leader, engage))
-                        if (Unit* engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob))
-                        {
-                            float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
-                                                                         : LeaderSpellReach(bot) - 4.0f;
-                            float dx = tank->GetPositionX() - engaged->GetPositionX();
-                            float dy = tank->GetPositionY() - engaged->GetPositionY();
-                            float const length = std::max(0.1f, std::hypot(dx, dy));
-                            float x = engaged->GetPositionX() + dx / length * range;
-                            float y = engaged->GetPositionY() + dy / length * range;
-                            float z = engaged->GetPositionZ();
-                            if (length > range && map->CheckCollisionAndGetValidCoords(engaged, engaged->GetPositionX(),
-                                                                                       engaged->GetPositionY(),
-                                                                                       engaged->GetPositionZ(), x, y,
-                                                                                       z))
-                                spot.Relocate(x, y, z);
-                        }
-                    if (following && !tank->isMoving() &&
-                        bot->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= LEADER_FOLLOW_TOLERANCE &&
-                        gap <= LEADER_FOLLOW_START_YD)
-                        lead.following.erase(guid);  // arrived: no command, idle
-                    else
-                    {
-                        lead.following.insert(guid);
-                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, LEADER_FOLLOW_TOLERANCE,
-                                                    "along with the tank"))
-                        {
-                            if (!following)
-                                logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                         JsonObject().Str("why", "along with the tank").Real("gap", gap));
-                            else
-                                wake(bot);
-                        }
-                        moved = true;
-                    }
+                    float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
+                                                                 : LeaderSpellReach(bot) - 4.0f;
+                    float dx = tank->GetPositionX() - engaged->GetPositionX();
+                    float dy = tank->GetPositionY() - engaged->GetPositionY();
+                    float const length = std::max(0.1f, std::hypot(dx, dy));
+                    float x = engaged->GetPositionX() + dx / length * range;
+                    float y = engaged->GetPositionY() + dy / length * range;
+                    float z = engaged->GetPositionZ();
+                    if (length > range &&
+                        map->CheckCollisionAndGetValidCoords(engaged, engaged->GetPositionX(), engaged->GetPositionY(),
+                                                             engaged->GetPositionZ(), x, y, z) &&
+                        checkedMove(guid, Leader::MoveEvent::MoveTo, Position(x, y, z), LEADER_FOLLOW_TOLERANCE,
+                                    "along with the tank: to range of the engage"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "along with the tank: to range of the engage"));
+                    moved = true;
+                }
+                else if (following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
+                {
+                    lead.following.insert(guid);
+                    if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))
+                        logEvent(bot, "Follow", JsonObject().Str("why", "along with the tank").Real("gap", gap));
+                    moved = true;
                 }
             }
             if (!moved || combat)

@@ -204,8 +204,16 @@ bool LeaderMoveOrderTrigger::IsActive()
     if (!Leader::LEADER_MEMBER_EVENTS || !bot->IsAlive())
         return false;
     Leader::MemberEvents events;
-    if (!Leader::Events::Get(bot->GetGUID(), events) ||
-        (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt))
+    if (!Leader::Events::Get(bot->GetGUID(), events))
+        return false;
+    // [lead27] Follow: walk when the leader's target walks off (farther than LEADER_FOLLOW_KEEP_YD or out of sight)
+    if (events.move == Leader::MoveEvent::Follow)
+    {
+        Unit* target = botAI->GetUnit(events.followTarget);
+        return target && target->IsAlive() &&
+               (bot->GetExactDist(target) > Leader::LEADER_FOLLOW_KEEP_YD || !bot->IsWithinLOSInMap(target));
+    }
+    if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
         return false;
     return bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) > events.tolerance ||
            !bot->IsStandState();

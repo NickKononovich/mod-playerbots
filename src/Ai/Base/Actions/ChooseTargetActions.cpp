@@ -8312,7 +8312,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // The mob's spot out of the healer's sight: the engage is fought where the healer sees it (collectSightFight),
         // and its pack is the one there; with no such spot it is no engage.
         Player* blind = nullptr;
-        bool const engageSeen = estimate.boss || walkInWakes || !(fits || better) ||
+        // [lead27] a led tank's healer sight is the leader's (it re-spots the healer after the tank holds the mobs):
+        // never a reason to move the fight
+        bool const leaderHealerSight = Leader::LEADER_HEALER_RESPOTS && Leader::Orders::IsTracked(bot->GetGUID());
+        bool const engageSeen = leaderHealerSight || estimate.boss || walkInWakes || !(fits || better) ||
                                 HealerSees(bot, candidate->GetPosition(), &blind);
         Position sightFight;
         float sightBack = 0.0f;
@@ -8452,7 +8455,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 togetherEstimate.mobs, togetherSec, togetherOverload, safe ? "fits" : "over the gate", estimate.mobs,
                 aloneEstimate.mobs, separateSec);
             LOG_INFO("playerbots", "[lead26] {}: {} ({})", bot->GetName(), compare, FightIntruderNote(intruder));
-            if (safe && togetherSec < separateSec)
+            // [lead27] user: one lone mob joining is no danger - within the gate it is engaged in place (combined),
+            // whichever is faster; pull back stays for real packs that would overload
+            if (safe)
             {
                 pack = together;
                 estimate = togetherEstimate;
@@ -12690,9 +12695,16 @@ bool AggressiveTargetAction::TakeLeaderDecision()
     // match needed, Execute attacks that mob
     if (decision.planTarget.IsEmpty() && decision.approach.IsEmpty() && decision.attack.IsEmpty())
     {
-        Unit* current = AI_VALUE(Unit*, "aggressive target");
-        if (!current || current->GetGUID() != decision.lookTarget)
-            return false;
+        // [lead27] the leader's look target is the order's mob: no match with the tank's own aggressive target (its
+        // 40 yd range left it empty and the issued engage was never taken)
+        if (Leader::LEADER_ONE_GATHER_OWNER && !decision.lookTarget.IsEmpty())
+            decision.attack = decision.lookTarget;
+        else
+        {
+            Unit* current = AI_VALUE(Unit*, "aggressive target");
+            if (!current || current->GetGUID() != decision.lookTarget)
+                return false;
+        }
     }
 
     LoadDecision(decision);

@@ -255,7 +255,7 @@ namespace
         // out of combat a member told only to walk / stand does just that
         if (!combat && !prepare && !events.loot && events.attack == Leader::AttackEvent::None &&
             (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
-             events.move == Leader::MoveEvent::Hold) &&
+             events.move == Leader::MoveEvent::Hold || events.move == Leader::MoveEvent::Follow) &&
             !in({"stand up", "reach party member to resurrect"}))
             return true;
         return false;
@@ -422,8 +422,9 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
             static constexpr std::string_view ownMoves[] = {
                 "dungeon avoid frontal cleave", "move to ranged position", "follow", "move to los pull spot",
                 "combat formation move", "rear flank", "set behind", "move out of enemy contact", "flee"};
-            bool const leaderMove =
-                events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt;
+            bool const leaderMove = events.move == Leader::MoveEvent::MoveTo ||
+                                    events.move == Leader::MoveEvent::StandAt ||
+                                    events.move == Leader::MoveEvent::Follow;
             if (leaderMove && Leader::LEADER_OWNS_DODGE && name != "leader move order")
                 for (std::string_view own : ownMoves)
                     if (name == own)

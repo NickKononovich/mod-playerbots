@@ -5137,6 +5137,15 @@ namespace TestHarness
             }
             // [lead18] vetoed_eval: a blocker unless 0
             LogEvent(party, "vetoed_evals", JsonObject().Num("total", vetoedTotal).Raw("byMember", vetoedJson.Build()));
+            {
+                // [lead27] leader_event per member per minute (a handful per pull, not per tick)
+                float const minutes = std::max(1.0f / 60.0f, float(getMSTimeDiff(party.runStartMs, getMSTime())) /
+                                                                 float(MINUTE * IN_MILLISECONDS));
+                JsonObject perMinute;
+                for (auto const& [name, count] : party.lead.leaderEventCounts)
+                    perMinute.Real(name.c_str(), float(count) / minutes);
+                LogEvent(party, "leader_events", JsonObject().Raw("perMinute", perMinute.Build()));
+            }
             LogEvent(party, "healer_lost_tank",
                      JsonObject().Real("healer_lost_tank_s", float(party.lead.healerLostTankMs) / 1000.0f));
             LogEvent(party, "blocked_moves",
@@ -5311,6 +5320,8 @@ namespace TestHarness
         Leader::Orders::Untrack(party.leader);  // [lead1]
         PullPlanner::Release(party.leader);     // [lead7] the leader's planner instance for this tank
         Leader::Readiness::Clear(party.groupGuid);  // [lead6] the leader's readiness verdict for its group
+        for (Member const& member : party.members)  // [lead27] no command outlives the run (no TTL ends them)
+            Leader::Events::Clear(member.guid);
         DecisionLog::Instance().EndRun(party.seq);
 
         if (Player* leader = ObjectAccessor::FindPlayer(party.leader))

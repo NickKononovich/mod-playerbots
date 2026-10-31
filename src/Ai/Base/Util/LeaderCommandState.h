@@ -45,11 +45,9 @@ namespace LeaderCommandState
         if (!LeaderCommand::Led(bot))
             return State::NotLed;
 
-        if (!LeaderCommand::CurrentCommand(bot, out))
-            return State::Stale;
-
-        uint32 const now = getMSTime();
-        LastFresh()[bot->GetGUID()] = now ? now : 1;
+        // [lead27] user: no timer - a led bot's command stays current until the leader issues another; no command is
+        // "nothing ordered", never stale (no age, no heartbeat)
+        LeaderCommand::CurrentCommand(bot, out);
         return State::Fresh;
     }
 
@@ -69,12 +67,7 @@ namespace LeaderCommandState
             return;
 
         last = now ? now : 1;
-        auto const fresh = LastFresh().find(bot->GetGUID());
-        if (fresh == LastFresh().end())
-            LOG_INFO("playerbots", "[rot3] [stale command] {} {}: no leader command yet", bot->GetName(), what);
-        else
-            LOG_INFO("playerbots", "[rot3] [stale command] {} {}: the last fresh command {} ms ago", bot->GetName(),
-                     what, getMSTimeDiff(fresh->second, now));
+        LOG_INFO("playerbots", "[rot3] [no command] {} {}: no leader command", bot->GetName(), what);
     }
 
     // [rot3] The leader's pre-emptive personal save (PreSave: "a big boss hit is coming"), fresh commands only
