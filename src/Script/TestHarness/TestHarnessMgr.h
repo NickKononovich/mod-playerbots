@@ -481,6 +481,7 @@ namespace TestHarness
             std::map<ObjectGuid, uint32> noCommandLogMs;      // [lead29] no_command log throttle
             bool patrolJoinLogged = false;                    // [lead30] patrol_joins once per pull
             std::string answerSig;                            // [lead30] the last planner_answer
+            std::vector<ObjectGuid> takenWalkers;             // [lead32] lone walkers taken along (no window)
             std::map<std::string, std::vector<float>> walkDistances;  // [lead29] member -> tank on the walk
             std::vector<ObjectGuid> extraLogged;       // [lead25] extra_aggro logged per pull
             uint32 lostCheckMs = 0;

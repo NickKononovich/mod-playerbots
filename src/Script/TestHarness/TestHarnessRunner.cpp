@@ -20267,6 +20267,7 @@ namespace TestHarness
         constexpr uint32 LEADER_CALM_TICK_MS = 250;                    // the calm cadence (out of combat)
         constexpr uint32 LEADER_AOE_RECHECK_MS = 500;
         constexpr float LEADER_LOOSE_TANK_YD = 2.5f;                   // the victim's spot next to the tank
+        constexpr float LEADER_PATROL_GROUP_YD = 8.0f;                 // [lead32] a patrol's walking group
         constexpr uint32 SPELL_ARMY_OF_THE_DEAD = 42650;
         // the tank's taunts and AoE threat spells (3.3.5a; every rank the leader may assign, highest last)
         constexpr uint32 TANK_TAUNTS[] = {355, 6795, 62124, 56222, 31789};
@@ -22913,6 +22914,32 @@ namespace TestHarness
             // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
             if (patrol && patrol->GetGUID() == lead.commitMob)
                 patrol = nullptr;
+            // [lead32] user: «один лишний моб - не опасность»: the window is only for a patrol whose joining makes the
+            // pull unsafe - a walking group of LEADER_PATROL_WINDOW_MOBS or more (a real pack). A lone walker or a pair
+            // is part of the plan: taken along (the pull's own mobs, PullPack), no window
+            uint32 patrolGroup = 0;
+            if (patrol)
+            {
+                std::list<Creature*> walkers;
+                IdleAggroCheck check{tank};
+                Acore::CreatureListSearcher<IdleAggroCheck> searcher(patrol, walkers, check);
+                Cell::VisitObjects(patrol, searcher, LEADER_PATROL_GROUP_YD);
+                patrolGroup = uint32(walkers.size());
+                if (patrolGroup < Leader::LEADER_PATROL_WINDOW_MOBS)
+                {
+                    for (Creature* walker : walkers)
+                        if (std::find(lead.takenWalkers.begin(), lead.takenWalkers.end(), walker->GetGUID()) ==
+                            lead.takenWalkers.end())
+                            lead.takenWalkers.push_back(walker->GetGUID());
+                    if (Group* group = tank->GetGroup())
+                    {
+                        std::vector<ObjectGuid> mobs = LeaderPullMobs(lead.commit, lead.commitMob);
+                        mobs.insert(mobs.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
+                        Leader::PullPack::Set(group->GetGUID(), mobs);
+                    }
+                    patrol = nullptr;
+                }
+            }
             bool const windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
             if (broken.empty() && windowOpen != lead.patrolWindowOpen)
             {
@@ -22963,6 +22990,7 @@ namespace TestHarness
                 if (Group* group = tank->GetGroup())
                     Leader::PullPack::Clear(group->GetGUID());
                 lead.engageRefused.clear();
+                lead.takenWalkers.clear();
                 return false;
             }
             if (!lead.commitIssued)
@@ -23009,7 +23037,11 @@ namespace TestHarness
                 issue(committed, "committed: " + lead.commitWhy);
                 lead.patrolJoinLogged = false;
                 if (Group* group = tank->GetGroup())  // [lead29] the combined plan's every mob is the pull
-                    Leader::PullPack::Set(group->GetGUID(), LeaderPullMobs(lead.commit, lead.commitMob));
+                {
+                    std::vector<ObjectGuid> mobs = LeaderPullMobs(lead.commit, lead.commitMob);
+                    mobs.insert(mobs.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());  // [lead32]
+                    Leader::PullPack::Set(group->GetGUID(), mobs);
+                }
                 // [lead25] the meeting point of the tank and the pulled mob: an engage meets at the mob, a pull back /
                 // los / range pull at the fight spot the mobs come to
                 lead.meetPoint = committed.kind == "engage" && mob ? mob->GetPosition() : lead.issuedFight;
