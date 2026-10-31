@@ -224,6 +224,10 @@ bool AggressiveTargetAction::Execute(Event event)
     // of phantom combat). Walked to out of combat, it bursts by its own 8 yd rule and the spawns come to the tank.
     if ((pullBack || losPull) && Arcatraz::IsCorpseTrap(target) && !target->IsInCombat())
     {
+        // [lead57] the method is the leader's task: a change of it here is a domain violation (reported)
+        if (executingLeaderDecision)
+            Leader::Orders::Note(bot, target, "domain_violation",
+                                 "the tank changed the leader's method: walked to a corpse trap", true);
         LOG_INFO("playerbots", "[b34_arc] {}: {} {} is a rooted corpse trap: walked to (it bursts at 8 yd) instead of "
                  "the planned {}", bot->GetName(), target->GetName(), target->GetEntry(),
                  losPull ? "los pull" : "pull back");

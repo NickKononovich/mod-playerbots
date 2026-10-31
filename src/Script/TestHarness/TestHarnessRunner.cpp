@@ -19724,6 +19724,14 @@ namespace TestHarness
                 .Real("z", report.at.GetPositionZ());
             DecisionLog::Instance().Write(run, tankWho, report.what, report.target, report.targetName, report.decides,
                                           fields, report.ms);
+            // [lead57] one owner per decision: the tank decided a pull (which mob / the method / when) itself - the
+            // leader's domain (should be 0)
+            if (report.decides)
+                DecisionLog::Instance().Write(run, "leader", "domain_violation", report.target, report.targetName,
+                                              false,
+                                              JsonObject().Str("owner", "leader").Str("by", "tank")
+                                                  .Str("what", report.what).Str("why", report.why),
+                                              report.ms);
         }
 
         // [lead15] the members' acks of the leader's events (executions, decides false)
