@@ -10544,9 +10544,12 @@ namespace TestHarness
         // [lead27] rfc-h 20261031-122130: the engage order was issued at 69.8 s and the route's approach stop kept
         // stepping the tank back ("stop_out_of_real_reach", its waypoint) - the tank never took the order, the run
         // stood. An issued leader order (or its committed pull) wins: no route walk of the tank meanwhile
-        if (LeaderDecidesFor(party) &&
-            (Leader::Orders::IsOpen(party.leader) || (party.lead.commit && party.lead.commitIssued)))
+        // [lead33] ... and for any committed pull (its gate, window and order are the leader's), the route target
+        // being the commitment's mob (one target)
+        if (LeaderDecidesFor(party) && (Leader::Orders::IsOpen(party.leader) || party.lead.commit))
         {
+            if (party.lead.commit && !party.lead.commitMob.IsEmpty())
+                party.target = party.lead.commitMob;
             TestRunner::ClearWaypoint(party.leader);
             return;
         }
@@ -20103,6 +20106,15 @@ namespace TestHarness
         bool accepted = false;
         uint32 mobs = 0;
         bool const plannerPulls = PartyVerdict(party, patrol->GetGUID(), accepted, mobs) && accepted;
+        // [lead33] rfc-h 20261031-151355: the patrol wait held the group on Ragefire Trogg while Trogg WAS the
+        // planner's pull: the leader's plan target / its plan's mobs are no patrol to wait for - the plan pulls them
+        if (Leader::LEADER_NO_FORCING_TIMERS &&
+            (plannerPulls || patrol->GetGUID() == lead.planTarget ||
+             std::find(lead.planMobs.begin(), lead.planMobs.end(), patrol->GetGUID()) != lead.planMobs.end()))
+        {
+            endWait("the leader's plan pulls it");
+            return false;
+        }
         bool known = false;
         bool const window = PullPlanner::PatrolLeavesReach(patrol, leader->GetPosition(), reach, &known);
         // [lead4b] the pull is chosen only once the patrol is near: within its reach (+ PATROL_HOLD_MARGIN) of a
@@ -22326,7 +22338,7 @@ namespace TestHarness
             // member the harness holds ("stay", a regroup) or one that sits is not moved
             // [lead16] LEADER_HOLD_EVENTS: the group is held (a patrol wait, the harness's "stay"): Hold, no walk
             if (!moved && !combat && Leader::LEADER_HOLD_EVENTS && Leader::ExecutorMember(bot) &&
-                ((!lead.waitPatrol.IsEmpty() && !tank->isMoving()) ||
+                (!lead.waitPatrol.IsEmpty() ||  // [lead33] no Hold <-> Follow flip on the step-back walk
                  botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT)))
             {
                 if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the group holds"))
@@ -22914,18 +22926,36 @@ namespace TestHarness
             // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
             if (patrol && patrol->GetGUID() == lead.commitMob)
                 patrol = nullptr;
-            // [lead32] user: «один лишний моб - не опасность»: the window is only for a patrol whose joining makes the
-            // pull unsafe - a walking group of LEADER_PATROL_WINDOW_MOBS or more (a real pack). A lone walker or a pair
-            // is part of the plan: taken along (the pull's own mobs, PullPack), no window
-            uint32 patrolGroup = 0;
+            // [lead33] user: «должна оцениваться опасность пака»: the window is only for a patrol whose joining makes
+            // the pull unsafe by the planner's danger model - the pull's own mobs plus the patrol's whole walking
+            // group, judged as one fight (PullPlanner::JudgePack). Within the budget: taken along (PullPack), no
+            // window
             if (patrol)
             {
                 std::list<Creature*> walkers;
                 IdleAggroCheck check{tank};
                 Acore::CreatureListSearcher<IdleAggroCheck> searcher(patrol, walkers, check);
                 Cell::VisitObjects(patrol, searcher, LEADER_PATROL_GROUP_YD);
-                patrolGroup = uint32(walkers.size());
-                if (patrolGroup < Leader::LEADER_PATROL_WINDOW_MOBS)
+                std::vector<ObjectGuid> combined = LeaderPullMobs(lead.commit, lead.commitMob);
+                combined.insert(combined.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
+                for (Creature* walker : walkers)
+                    combined.push_back(walker->GetGUID());
+                float overload = 0.0f;
+                std::string judged;
+                bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                if (lead.patrolDangerFor != patrol->GetGUID() || lead.patrolDangerFits != fits)
+                {
+                    lead.patrolDangerFor = patrol->GetGUID();
+                    lead.patrolDangerFits = fits;
+                    DecisionLog::Instance().Write(run, "leader", "patrol_danger", patrol->GetGUID(), patrol->GetName(),
+                                                  true,
+                                                  JsonObject().Str("pull", mob ? mob->GetName() : "?")
+                                                      .Num("walkers", int64(walkers.size())).Real("overload", overload)
+                                                      .Str("judged", judged)
+                                                      .Str("decision", fits ? "taken along: no window"
+                                                                            : "over the budget: the window holds"));
+                }
+                if (fits)
                 {
                     for (Creature* walker : walkers)
                         if (std::find(lead.takenWalkers.begin(), lead.takenWalkers.end(), walker->GetGUID()) ==
@@ -23147,7 +23177,34 @@ namespace TestHarness
                 {
                     static std::unordered_map<uint32, TargetReachability> reach;  // party seq (world thread)
                     ObjectGuid const route = party.targetIsStarter ? ObjectGuid::Empty : party.target;
-                    if (Unit* picked = AggressiveTargetValue::PickFor(tankAI, route, reach[party.seq]))
+                    // [lead33] the leader's own pick: the route target unless the planner refused / held it, else the
+                    // nearest idle mob the planner did not refuse (no tank pick)
+                    Unit* leaderPick = nullptr;
+                    if (Leader::LEADER_NO_FORCING_TIMERS)
+                    {
+                        Unit* routeMob = route.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, route);
+                        if (routeMob && routeMob->IsAlive() && !routeMob->IsInCombat() &&
+                            !lead.refusedPicks.count(route))
+                            leaderPick = routeMob;
+                        else
+                        {
+                            std::list<Creature*> idle;
+                            IdleAggroCheck check{tank};
+                            Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idle, check);
+                            Cell::VisitObjects(tank, searcher, 60.0f);
+                            float best = 0.0f;
+                            for (Creature* mob : idle)
+                                if (!lead.refusedPicks.count(mob->GetGUID()) &&
+                                    std::fabs(mob->GetPositionZ() - tank->GetPositionZ()) < 8.0f &&
+                                    (!leaderPick || tank->GetExactDist(mob) < best))
+                                {
+                                    leaderPick = mob;
+                                    best = tank->GetExactDist(mob);
+                                }
+                        }
+                    }
+                    if (Unit* picked = leaderPick ? leaderPick
+                                                  : AggressiveTargetValue::PickFor(tankAI, route, reach[party.seq]))
                     {
                         inputs.pick = picked->GetGUID();
                         pickWhy = picked->GetGUID() == party.target ? "route target" : "nearest pick";
@@ -23186,6 +23243,24 @@ namespace TestHarness
         PullPlanner::Decision decision;
         if (!PullPlanner::Decide(tank, snap, false, decision))
             return;
+        // [lead33] the leader's ONE target: its plan's mob (the route follows it, Steer)
+        if (decides && decision.verdict == PullPlanner::Verdict::Go)
+        {
+            lead.planTarget = !decision.planTarget.IsEmpty() ? decision.planTarget
+                              : !decision.attack.IsEmpty()   ? decision.attack
+                                                             : decision.lookTarget;
+            lead.planMobs = decision.pack;
+            lead.planMobs.insert(lead.planMobs.end(), decision.verdictPack.begin(), decision.verdictPack.end());
+        }
+        // [lead33] the planner's hold or refusal of the leader's pick is a reason, not a wait: the pick is skipped and
+        // the next look asks for the next target at once - unless the hold is the group's justified rest / readiness
+        if (decides && Leader::LEADER_NO_FORCING_TIMERS && !decision.lookTarget.IsEmpty() &&
+            (decision.verdict == PullPlanner::Verdict::Refused ||
+             (decision.verdict == PullPlanner::Verdict::Held && lead.ready)) &&
+            !lead.refusedPicks.count(decision.lookTarget))
+            lead.refusedPicks[decision.lookTarget] = decision.why;
+        if (decision.verdict == PullPlanner::Verdict::Go || party.inCombat)
+            lead.refusedPicks.clear();  // a pull goes / a fight changes the room: everything is asked again
         // [lead30] planner_answer: the planner's answer for the leader's pick (logged when it changes)
         if (decides)
         {

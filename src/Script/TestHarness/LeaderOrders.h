@@ -192,9 +192,7 @@ namespace Leader
     constexpr bool LEADER_HEALER_RESPOTS = true;
     // [lead27] Follow: the member walks when the tank is farther than this (or out of sight)
     constexpr float LEADER_FOLLOW_KEEP_YD = 6.0f;
-    // [lead32] the patrol window holds a committed pull only for a walking group this big (a lone walker or a pair is
-    // taken along: one extra mob is no danger)
-    constexpr uint32 LEADER_PATROL_WINDOW_MOBS = 3;
+
     // [lead26] the engage spot is judged by the dps placement around it (melee behind, ranged at range): an unpulled
     // mob reaching it moves the fight back to a clear spot
     constexpr bool LEADER_PLACEMENT_FIGHT_SPOT = true;

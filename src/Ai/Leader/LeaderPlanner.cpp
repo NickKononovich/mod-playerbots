@@ -11972,6 +11972,27 @@ float AggressiveTargetAction::PlanGroupDps()
     return _snap ? _snap->GroupDps() : AI_VALUE(float, "estimated group dps");
 }
 
+// [lead33] the planner's danger model on a set of mobs: the same estimate (EstimatePack, the measured mode) and
+// overload terms (CarefulOverload) as a plan, against the plan's limit (1.0)
+bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why)
+{
+    PartyStrength const strength = PlanStrength();
+    GroupSupport const support = CountSupport(bot);
+    TankKit const kit = PartyStrengthShared::GetTankKit(bot);
+    float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});
+    EstimateMode mode;
+    mode.measured = true;
+    mode.landedScale = LandedCalibration(bot);
+    PackEstimate const estimate = EstimatePack(mobs, bot, groupDps, mode);
+    OverloadTerms terms;
+    CarefulOverload(bot, estimate, strength, support, kit, true, &terms);
+    overload = terms.Max();
+    bool const fits = !estimate.boss && overload <= 1.0f;
+    why = Acore::StringFormat("{} mobs, cost {:.2f} tank hp, fight {:.0f} s, overload {:.2f} of 1.00{}", estimate.mobs,
+                              estimate.cost, estimate.fightSec, overload, estimate.boss ? ", a boss" : "");
+    return fits;
+}
+
 bool AggressiveTargetAction::LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out)
 {
     _snap = &snap;
@@ -12320,6 +12341,45 @@ namespace PullPlanner
 
         planner->LibraryLook(snap, shadow, out);
         return true;
+    }
+
+    bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why)
+    {
+        PlayerbotAI* ai = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        if (!ai)
+            return false;
+        AggressiveTargetAction* planner = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(plannerLock);
+            PlannerEntry& entry = planners[tank->GetGUID()];
+            if (!entry.planner || entry.ai != ai || entry.tank != tank)
+            {
+                entry.planner = std::make_unique<AggressiveTargetAction>(ai);
+                entry.ai = ai;
+                entry.tank = tank;
+                entry.shadow = false;
+            }
+            planner = entry.planner.get();
+        }
+        std::vector<Unit*> units;
+        for (ObjectGuid const& guid : mobs)
+            if (Unit* unit = ObjectAccessor::GetUnit(*tank, guid);
+                unit && unit->IsAlive() && std::find(units.begin(), units.end(), unit) == units.end())
+                units.push_back(unit);
+        return planner->JudgeMobs(units, overload, why);
+    }
+
+    bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out)
+    {
+        if (!tank || !target)
+            return false;
+        if (LeaderInputs const* inputs = snap.Leader())
+        {
+            LeaderInputs asked = *inputs;
+            asked.pick = target->GetGUID();
+            snap.BindLeader(asked);
+        }
+        return Decide(tank, snap, false, out);
     }
 
     void Release(ObjectGuid tank)

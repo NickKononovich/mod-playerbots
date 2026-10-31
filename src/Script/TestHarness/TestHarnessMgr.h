@@ -482,6 +482,11 @@ namespace TestHarness
             bool patrolJoinLogged = false;                    // [lead30] patrol_joins once per pull
             std::string answerSig;                            // [lead30] the last planner_answer
             std::vector<ObjectGuid> takenWalkers;             // [lead32] lone walkers taken along (no window)
+            ObjectGuid patrolDangerFor;                       // [lead33] patrol_danger logged per patrol / verdict
+            ObjectGuid planTarget;                            // [lead33] the leader's one target (its last plan)
+            std::vector<ObjectGuid> planMobs;
+            bool patrolDangerFits = false;
+            std::map<ObjectGuid, std::string> refusedPicks;  // [lead33] targets the planner refused / held: skipped
             std::map<std::string, std::vector<float>> walkDistances;  // [lead29] member -> tank on the walk
             std::vector<ObjectGuid> extraLogged;       // [lead25] extra_aggro logged per pull
             uint32 lostCheckMs = 0;

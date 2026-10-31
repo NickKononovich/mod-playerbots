@@ -206,6 +206,12 @@ namespace PullPlanner
     bool Decide(Player* tank, Snapshot& snap, bool shadow, Decision& out);
     // The run ended: the tank's planner instance, its asks, issued decisions and diff counts go.
     void Release(ObjectGuid tank);
+    // [lead33] the planner's danger model on a set of mobs (the same estimate and overload gate as a plan): true when
+    // the group takes them in one fight; `why` the cost against the budget
+    bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why);
+    // [lead33] the leader's synchronous question for its own chosen target: a plan, or a refusal / hold with its
+    // reason (Decision::verdict / why)
+    bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out);
 
     // LEADER_PLANNER_IN_LEADER: the tank's engine asked for a decision (any thread); the leader takes the ask (true:
     // one newer than `maxAgeMs` and not taken yet) and issues a Go decision; the tank takes it once while fresh.
@@ -369,6 +375,8 @@ public:
     // [lead7] One look of this planner instance on `snap` (PullPlanner::Decide): the decision, and this instance's
     // state as after the tank executed a Go decision (MirrorExecute). `shadow`: no side effect, no log line.
     bool LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out);
+    // [lead33] the danger judge of a set of mobs (PullPlanner::JudgePack)
+    bool JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why);
 
 private:
     // [lead7] The look itself (the tank's own isUseful before step 7): the readiness gates, the plan, the verdicts.
