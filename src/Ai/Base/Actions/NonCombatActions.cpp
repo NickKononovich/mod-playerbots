@@ -9,6 +9,7 @@
 #include "Creature.h"   // [b46_patrol]
 #include "Event.h"
 #include "HealthTriggers.h"
+#include "LeaderOrders.h"  // [lead47] the Rest ack
 #include "Playerbots.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -63,6 +64,18 @@ bool IsDisallowedShapeshiftForm(Player* bot)
 }
 
 // Drinking needs a real drink from the bags: the free "food" cheat path is gone. Every sit-down logs its reason.
+namespace
+{
+    // [lead47] the member's ack of the leader's Rest: what it started
+    void AckLeaderRest(Player* bot, std::string const& what)
+    {
+        Leader::MemberEvents events;
+        if (Leader::LedBot(bot) && Leader::Events::Get(bot->GetGUID(), events) &&
+            events.ready == Leader::ReadyEvent::Rest)
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "rest", what);
+    }
+}
+
 bool DrinkAction::Execute(Event event)
 {
     std::string why;
@@ -73,6 +86,7 @@ bool DrinkAction::Execute(Event event)
         return false;
 
     LOG_INFO("playerbots", "[rest] {} drinks: {}", bot->GetName(), why);
+    AckLeaderRest(bot, "drinks: " + why);  // [lead47]
     return true;
 }
 
@@ -125,6 +139,7 @@ bool EatAction::Execute(Event event)
         return false;
 
     LOG_INFO("playerbots", "[rest] {} eats: {}", bot->GetName(), why);
+    AckLeaderRest(bot, "eats: " + why);  // [lead47]
     return true;
 }
 

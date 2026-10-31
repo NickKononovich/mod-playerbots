@@ -22453,6 +22453,7 @@ namespace TestHarness
             TestRunner::Waypoint harnessWalk;
             bool const walking = TestRunner::GetWaypoint(guid, harnessWalk);
 
+            bool restCommanded = false;  // [lead47] the Rest command this tick: no move replaces it
             // 1. readiness, out of combat: Rest to whoever needs it (to full), Ready? while the pull waits for the
             // spots, Prepare (buffs, forms, a resurrection) while the group stands
             if (!combat)
@@ -22483,6 +22484,7 @@ namespace TestHarness
                 }
                 if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
+                    restCommanded = true;
                     if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Rest))
                         logEvent(bot, "Rest", JsonObject().Str("why", restWhy.empty() ? "sits: to full" : restWhy));
                 }
@@ -22830,7 +22832,10 @@ namespace TestHarness
                 }
                 // [lead44] the member buffs (its rebuff window): the buff is the command while the tank stands - no
                 // Follow that would replace it, only a walk when the tank walks on or the member is far / out of sight
-                else if ((engaged || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
+                // [lead47] b96: Rtshaab got fresh follow walks every few seconds under the leader's Rest and never
+                // sat - a resting member is not walked along while the tank stands
+                else if (!(restCommanded && !tank->isMoving()) &&
+                         (engaged || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
                           gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank)))
                 {
                     lead.following.insert(guid);

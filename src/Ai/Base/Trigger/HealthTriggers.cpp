@@ -327,12 +327,30 @@ constexpr float TIMED_RUN_BOSS_MANA_PCT = 60.0f;
 bool TimedRunStandsAtLine(Player* bot) { return CoSHelpers::IsGuardianTimerRunning(bot); }
 }  // namespace
 
+// [lead47] the leader's Rest command is on this led bot: it rests now, by the leader's line (no line of its own)
+bool LeaderRests(Player* bot)
+{
+    Leader::MemberEvents events;
+    return Leader::LedBot(bot) && Leader::Events::Get(bot->GetGUID(), events) &&
+           events.ready == Leader::ReadyEvent::Rest;
+}
+
 bool WantsDrink(Player* bot, std::string* why, std::string* skip)
 {
     // A warrior, rogue, DK (or a druid's rage / energy on top of its mana pool) has no mana to drink for.
     uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
     if (!maxMana)
         return false;
+
+    // [lead47] b96 rfc-h 332-372 s: the leader's Rest ("the boss pull waits: mana 78 % < 90 %") never reached the
+    // drink - "rest mana" fires only below the member's own line (70 % before a mini-boss). Under the leader's Rest
+    // the member drinks now; the leader's command ends when its line is reached
+    if (LeaderRests(bot) && bot->GetPowerPct(POWER_MANA) < 100.0f)
+    {
+        if (why)
+            *why = Acore::StringFormat("the leader's Rest (mana {:.0f} %)", bot->GetPowerPct(POWER_MANA));
+        return true;
+    }
 
     float const mana = bot->GetPowerPct(POWER_MANA);
     bool const healer = PlayerbotAI::IsHeal(bot);
@@ -443,6 +461,12 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
 bool WantsFood(Player* bot, std::string* why)
 {
     float const health = bot->GetHealthPct();
+    if (LeaderRests(bot) && health < 100.0f)  // [lead47] the leader's Rest: it eats now
+    {
+        if (why)
+            *why = Acore::StringFormat("the leader's Rest (health {:.0f} %)", health);
+        return true;
+    }
     if (health < REST_HEALTH_PCT)
     {
         // A healer close by with mana heals it up faster, and for free. The bot itself counts when it heals.
