@@ -287,7 +287,9 @@ namespace
         if (!combat && !prepare && !events.loot && events.attack == Leader::AttackEvent::None &&
             (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
              events.move == Leader::MoveEvent::Hold || events.move == Leader::MoveEvent::Follow) &&
-            !in({"stand up", "reach party member to resurrect"}))
+            !in({"stand up", "reach party member to resurrect"}) &&
+            // [lead46] b95: Rtshaab held a Follow and the leader's Rest - its drink was vetoed here, it never sat
+            !(events.ready == Leader::ReadyEvent::Rest && in({"drink", "food"})))
             return true;
         return false;
     }

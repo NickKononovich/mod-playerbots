@@ -5505,6 +5505,22 @@ std::string PullReadiness::BossNotReady(Player* bot, Unit* boss)
     return BossReadyGap(bot, true, IsEncounterBoss(boss));
 }
 
+std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
+{
+    bool const realBoss = IsEncounterBoss(boss);
+    float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
+    float const readyMana = realBoss ? BOSS_READY_MANA : MINI_BOSS_READY_MANA;
+    if (!member || !member->IsAlive())
+        return std::string();
+    if (member->GetHealthPct() < readyHealth)
+        return Acore::StringFormat("health {:.0f} % < {:.0f} % for {}", member->GetHealthPct(), readyHealth,
+                                   boss->GetName());
+    if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < readyMana)
+        return Acore::StringFormat("mana {:.0f} % < {:.0f} % for {}", member->GetPowerPct(POWER_MANA), readyMana,
+                                   boss->GetName());
+    return std::string();
+}
+
 namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execution
 {
     // [drift_caster_corner] scholo-n 20261025-150737-7 pull 12: Adepts and Necromancers cast from range and never

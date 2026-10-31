@@ -495,6 +495,7 @@ namespace TestHarness
             ObjectGuid pickConflictFor;  // [lead43] the route target last logged as not picked
             ObjectGuid bossPullLoggedFor;  // [lead45] leader_boss_pull logged for this boss
             std::string bossWaitWhy;       // [lead45] boss_pull_waits: the readiness gap last logged
+            ObjectGuid bossWaitFor;        // [lead46] the boss whose pull waits for the group's readiness
             // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
             struct Unreachable
             {

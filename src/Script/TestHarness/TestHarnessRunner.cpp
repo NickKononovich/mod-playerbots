@@ -22419,13 +22419,23 @@ namespace TestHarness
 
         // [lead45] the tank rests too (it is no seat): the boss pull waits for its mana, so the leader tells it to
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
+        if (fighting)
+            lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(party.leader))
         {
             std::string tankRestWhy;
-            bool const tankRests = (RestState::IsDrinking(tank) || RestState::IsEating(tank) ||
-                                    RestState::WantsDrink(tank, &tankRestWhy) ||
-                                    RestState::WantsFood(tank, &tankRestWhy)) &&
-                                   !MemberFull(tank) && (tank->IsSitState() || RestState::CanRest(tank));
+            Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+            std::string const tankGap =
+                waitBoss && waitBoss->IsAlive() ? PullReadiness::MemberBossGap(tank, waitBoss) : std::string();
+            if (!tankGap.empty())
+                tankRestWhy = "the boss pull waits: " + tankGap;
+            bool const tankRests = (waitBoss && waitBoss->IsAlive()
+                                        ? !tankGap.empty()
+                                        : (RestState::IsDrinking(tank) || RestState::IsEating(tank) ||
+                                           RestState::WantsDrink(tank, &tankRestWhy) ||
+                                           RestState::WantsFood(tank, &tankRestWhy)) &&
+                                              !MemberFull(tank)) &&
+                                   (tank->IsSitState() || RestState::CanRest(tank));
             if (tankRests && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
                 logEvent(tank, "Rest", JsonObject().Str("who", "tank")
                                            .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
@@ -22458,6 +22468,19 @@ namespace TestHarness
                 else if (full || !RestState::CanRest(bot))
                     lead.restingToFull.erase(guid);
                 needsRest |= lead.restingToFull.count(guid) > 0;
+                // [lead46] b95 rfc-h 348-423 s: the boss pull waited for "Rtshaab at 66 % mana" (BossReadyGap, 90 %
+                // for a real boss) while the Rest rule read Oggleflint as a mini-boss (70 %) and gave Rtshaab no Rest.
+                // While the boss pull waits there is ONE readiness: the member rests exactly while it is below the
+                // boss ready lines (PullReadiness::MemberBossGap) and stands when it reaches them - the pull goes as
+                // the last one is ready
+                if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+                    waitBoss && waitBoss->IsAlive())
+                {
+                    std::string const gap = PullReadiness::MemberBossGap(bot, waitBoss);
+                    needsRest = !gap.empty();
+                    restWhy = gap.empty() ? restWhy : "the boss pull waits: " + gap;
+                    lead.restingToFull.erase(guid);
+                }
                 if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
                     if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Rest))
@@ -23576,6 +23599,7 @@ namespace TestHarness
             std::string const notReady = boss ? PullReadiness::BossNotReady(tank, boss) : std::string();
             if (boss && !notReady.empty())
             {
+                lead.bossWaitFor = boss->GetGUID();  // [lead46] the members' Rest reads this wait
                 if (lead.bossWaitWhy != notReady)
                 {
                     lead.bossWaitWhy = notReady;
@@ -23586,6 +23610,7 @@ namespace TestHarness
             else if (boss && PullPlanner::BossPullDecision(tank, boss, why, bossPull))
             {
                 lead.bossWaitWhy.clear();
+                lead.bossWaitFor.Clear();
                 if (lead.bossPullIssued != boss->GetGUID())
                 {
                     lead.bossPullIssued = boss->GetGUID();

@@ -323,6 +323,9 @@ namespace PullReadiness
     // [boss_pull_ready_gate] What keeps the group from being ready for `boss` (the planner's BossReadyGap: health,
     // mana, sitting, buffing, a missing group buff); empty when ready.
     std::string BossNotReady(Player* bot, Unit* boss);
+    // [lead46] the same readiness for one member: its health / mana below the boss ready lines (BossReadyGap's,
+    // a real boss or a mini-boss by IsEncounterBoss); empty when this member is ready for `boss`
+    std::string MemberBossGap(Player* member, Unit* boss);
 }
 
 class DpsAoeAction : public AttackAction
