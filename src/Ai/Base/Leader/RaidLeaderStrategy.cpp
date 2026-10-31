@@ -228,6 +228,15 @@ namespace
         // [lead36] ... and the mage handed out food in the fight
         if (combat && in({"give food", "give water"}))
             return true;
+        // [lead42] b91 rfc-h 156.7 s: Rtmagaa's Mirror Image without the leader's burn (own_decision, two_owners):
+        // the burn cooldowns run only under the leader's Intensity burn
+        if (combat && events.intensity != Leader::Intensity::Burn &&
+            in({"bloodlust", "heroism", "icy veins", "arcane power", "presence of mind", "avenging wrath", "death wish",
+                "recklessness", "berserk", "army of the dead", "summon gargoyle", "rapid fire", "bestial wrath",
+                "adrenaline rush", "blade flurry", "killing spree", "shadowfiend", "feral spirit", "elemental mastery",
+                "metamorphosis", "mirror image", "starfall", "force of nature", "summon infernal",
+                "dancing rune weapon", "unholy frenzy", "hysteria"}))
+            return true;
         // [lead16] loot only under the leader's Loot
         if (Leader::LEADER_LOOT_EVENTS && !events.loot &&
             in({"loot", "move to loot", "open loot", "add all loot", "add loot", "store loot", "release loot"}))

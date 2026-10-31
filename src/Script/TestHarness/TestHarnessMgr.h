@@ -502,6 +502,9 @@ namespace TestHarness
             std::map<ObjectGuid, Unreachable> unreachable;
             std::string keptPickWhy;
             bool looseIsTarget = false;  // [lead38] every fight mob is loose: the loose one is the Attack target
+            // [lead42] fight targets a member's Attack was refused on (who refused), until the fight ends
+            std::map<ObjectGuid, std::set<ObjectGuid>> attackRefused;
+            std::string fightStateSig;  // [lead42] the fight_attackers line last logged
             ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
             std::vector<ObjectGuid> planMobs;
             bool patrolDangerFits = false;

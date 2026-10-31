@@ -19721,6 +19721,14 @@ namespace TestHarness
                     if (ack.why.find("to range of the engage") != std::string::npos)
                         party.lead.engageRefused.insert(member.guid);
                 }
+                // [lead42] a refused Attack: the target the member could not attack (the leader picks another)
+                if (ack.why.rfind("the attack refused", 0) == 0 &&
+                    ack.why.find("already attacking") == std::string::npos)
+                {
+                    Leader::MemberEvents refusedEvents;
+                    if (Leader::Events::Get(member.guid, refusedEvents) && !refusedEvents.target.IsEmpty())
+                        party.lead.attackRefused[refusedEvents.target].insert(member.guid);
+                }
                 if (ack.why.rfind("the walk refused", 0) == 0)
                 {
                     DecisionLog::Instance().Write(run, "leader", "invalid_spot", member.guid, member.name, false,
@@ -20947,6 +20955,13 @@ namespace TestHarness
             return true;
         }
 
+        // [lead42] how many members refused their Attack on `unit` this fight
+        int64 RefusedCount(std::map<ObjectGuid, std::set<ObjectGuid>> const& refused, Unit const* unit)
+        {
+            auto const found = refused.find(unit->GetGUID());
+            return found == refused.end() ? 0 : int64(found->second.size());
+        }
+
         // [lead40] the leader's reachability verdict of a mob for `walker`: the route walk to it (EvaluatePath) and the
         // skip_target detour metric (DETOUR_RATIO / DETOUR_EXTRA). Empty: reachable on a fair walk; else why not
         std::string LeaderWalkVerdict(Player* walker, Creature* mob)
@@ -21689,6 +21704,11 @@ namespace TestHarness
         }
 
         // the fight's target: the tank's, else whatever attacks a member (healer first) or the tank
+        // [lead42] b91 rfc-h 203-245 s: every member's Attack on one Trogg was refused for 40 s and the leader kept it.
+        // A target the members refused is replaced by another attacker nobody refused (if one fights the group)
+        if (!fighting)
+            lead.attackRefused.clear();
+        auto const refusedTarget = [&](Unit* unit) { return unit && lead.attackRefused.count(unit->GetGUID()) > 0; };
         Unit* target = nullptr;
         if (fighting)
         {
@@ -21697,17 +21717,53 @@ namespace TestHarness
                 target = victim;
             std::vector<Player*> attacked = seats;
             attacked.push_back(tank);
+            if (refusedTarget(target))
+                target = nullptr;
+            Unit* refusedFallback = nullptr;
+            std::string attackersSig;
+            JsonArray attackerList;
             for (Player* bot : attacked)
             {
-                if (target)
-                    break;
                 for (Unit* attacker : bot->getAttackers())
                     if (attacker && attacker->IsAlive() && attacker->IsInWorld() && attacker->GetMap() == map &&
                         bot->IsValidAttackTarget(attacker) && LeaderFightMob(tank, attacker))
                     {
+                        Creature const* creature = attacker->ToCreature();
+                        bool const evades = creature && creature->IsInEvadeMode();
+                        attackersSig += std::to_string(attacker->GetGUID().GetCounter()) + (evades ? "e" : "") +
+                                        (refusedTarget(attacker) ? "r" : "") + ",";
+                        attackerList.Raw(JsonObject().Str("name", attacker->GetName())
+                                             .Num("entry", attacker->GetEntry())
+                                             .Num("low", attacker->GetGUID().GetCounter())
+                                             .Str("on", bot->GetName())
+                                             .Real("tankDistance", tank->GetExactDist(attacker))
+                                             .Real("dz", attacker->GetPositionZ() - tank->GetPositionZ())
+                                             .Bool("evades", evades).Bool("tankSees", tank->IsWithinLOSInMap(attacker))
+                                             .Num("refusedBy", RefusedCount(lead.attackRefused, attacker))
+                                             .Build());
+                        if (target)
+                            continue;
+                        if (refusedTarget(attacker))
+                        {
+                            if (!refusedFallback)
+                                refusedFallback = attacker;
+                            continue;
+                        }
                         target = attacker;
-                        break;
                     }
+            }
+            // every attacker refused: the refused one stays the target (the fight always has one, lead38)
+            if (!target)
+                target = refusedFallback;
+            // [lead42] the attacker list on every change (the next stall is visible)
+            if (attackersSig != lead.fightStateSig)
+            {
+                lead.fightStateSig = attackersSig;
+                DecisionLog::Instance().Write(run, "leader", "fight_attackers",
+                                              target ? target->GetGUID() : ObjectGuid(),
+                                              target ? target->GetName() : std::string("-"), true,
+                                              JsonObject().Raw("attackers", attackerList.Build())
+                                                  .Bool("targetRefused", refusedTarget(target)));
             }
         }
 
@@ -23544,10 +23600,13 @@ namespace TestHarness
                     {
                         party.pathVerdictLogged[guid] = on;
                         Creature const* mob = map->GetCreature(guid);
+                        std::string const why = guid == lead.intercept   ? std::string("the patrol the leader pulls")
+                                                : guid == lead.wholePack ? std::string("the pack the route must clear")
+                                                                         : found->second.why;
                         DecisionLog::Instance().Write(run, "leader", "path_verdict", guid,
                                                       mob ? mob->GetName() : std::string("?"), true,
                                                       JsonObject().Str("verdict", on ? "on_path" : "off_path")
-                                                          .Str("why", found->second.why)
+                                                          .Str("why", why)
                                                           .Real("routeDist", found->second.routeDist)
                                                           .Real("reach", found->second.reach));
                     }
@@ -23684,10 +23743,14 @@ namespace TestHarness
                     lead.pickJudgedFor = inputs.pick;
                     lead.pickJudgedAt = tank->GetPosition();
                     Creature* picked = map->GetCreature(inputs.pick);
-                    std::string const verdict =
-                        picked && !picked->IsDungeonBoss() && !picked->isWorldBoss() && !picked->IsInCombat()
-                            ? LeaderWalkVerdict(tank, picked)
-                            : std::string();
+                    // [lead42] b91 149.6 s: the patrol Shaman coming to the group was refused "detour (177 yd for
+                    // 38 yd)" - a patrol / wanderer walks to the group itself: no detour verdict for it
+                    bool const walksItself = picked && (picked->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE ||
+                                                        picked->GetDefaultMovementType() == RANDOM_MOTION_TYPE);
+                    std::string const verdict = picked && !walksItself && !picked->IsDungeonBoss() &&
+                                                        !picked->isWorldBoss() && !picked->IsInCombat()
+                                                    ? LeaderWalkVerdict(tank, picked)
+                                                    : std::string();
                     if (!verdict.empty())
                     {
                         lead.unreachable[inputs.pick] = {tank->GetPosition(), picked->GetPosition(), verdict};

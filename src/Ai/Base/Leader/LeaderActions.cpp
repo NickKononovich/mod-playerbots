@@ -721,7 +721,15 @@ bool LeaderAttackOrderAction::Execute(Event /*event*/)
     if (!target || !target->IsAlive() || !target->IsInCombat())
         return false;
     bool const attacked = Attack(target);
+    // [lead42] b91 rfc-h 203-245 s: "the attack refused: Ragefire Trogg" from every member, no reason - named now
+    std::string why;
+    if (!attacked)
+        why = !bot->IsWithinLOSInMap(target)                                        ? " (no line of sight)"
+              : target->ToCreature() && target->ToCreature()->IsInEvadeMode()       ? " (it evades)"
+              : !bot->IsValidAttackTarget(target)                                   ? " (no valid attack target)"
+              : bot->GetVictim() == target                                          ? " (already attacking it)"
+                                                                                    : " (the attack itself failed)";
     Leader::Events::Ack(bot->GetGUID(), events.seq, "attack",
-                        (attacked ? "attacks " : "the attack refused: ") + target->GetName());
+                        (attacked ? "attacks " : "the attack refused: ") + target->GetName() + why);
     return attacked;
 }
