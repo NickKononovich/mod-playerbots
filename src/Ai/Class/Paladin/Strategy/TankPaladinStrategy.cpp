@@ -68,10 +68,22 @@ TankPaladinStrategy::TankPaladinStrategy(PlayerbotAI* botAI) : GenericPaladinStr
 
 std::vector<NextAction> TankPaladinStrategy::getDefaultActions()
 {
+    // [lead67] user: «проверь, как эффективно танк набирает агро» - b100: Avenger's Shield 23 times in 45 pulls,
+    // Shield of Righteousness / Hammer of the Righteous / Consecration / Holy Shield ~2/3 of their cooldowns. The 969
+    // threat order on its own cooldowns: Avenger's Shield whenever ready (3 targets, the pull's first threat), Holy
+    // Shield kept up, Consecration under the pack, then Shield of Righteousness, Hammer of the Righteous, Judgement;
+    // the fillers (Hand of Reckoning, Hammer of Wrath, Exorcism) only from their own triggers in free GCDs
+    // wowsims-wotlk default APL "969" (C:/WoW/DEEP_AUDIT_PALADIN.md): Avenger's Shield as the opener and on cooldown,
+    // Shield of Righteousness and Hammer of the Righteous (6 s) alternating, then Hammer of Wrath > Consecration >
+    // Holy Shield > Judgement
     return {
-        NextAction("shield of righteousness", ACTION_DEFAULT + 0.6f),
-        NextAction("hammer of the righteous", ACTION_DEFAULT + 0.5f),
-        NextAction("judgement of wisdom", ACTION_DEFAULT + 0.4f),
+        NextAction("avenger's shield", ACTION_DEFAULT + 0.9f),
+        NextAction("shield of righteousness", ACTION_DEFAULT + 0.8f),
+        NextAction("hammer of the righteous", ACTION_DEFAULT + 0.75f),
+        NextAction("hammer of wrath", ACTION_DEFAULT + 0.7f),
+        NextAction("consecration", ACTION_DEFAULT + 0.65f),
+        NextAction("holy shield", ACTION_DEFAULT + 0.6f),
+        NextAction("judgement of wisdom", ACTION_DEFAULT + 0.5f),
         NextAction("melee", ACTION_DEFAULT)
     };
 }

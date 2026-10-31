@@ -22581,6 +22581,104 @@ namespace TestHarness
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
         if (!fighting)
             lead.healStarted = false;  // [lead61] the next fight's heals start on the leader's word again
+        // [lead67] the tank's threat lead at 2 s and 5 s into each fight: per fight mob the tank's threat over the
+        // top other's (threat_lead) - how well the tank picks the pack up
+        // [lead67] user metric: threat per second per member over the pull (the highest threat it held on each mob,
+        // sampled at 2 s, 5 s and every 5 s after - not every tick), the tank's per mob, and the margin (tank over the
+        // top non-tank) min / median at 2 s, 5 s and the last sample: threat_tps at the fight's end
+        auto const margins = [](std::vector<float> values)
+        {
+            std::sort(values.begin(), values.end());
+            return values.empty() ? std::make_pair(-1.0f, -1.0f)
+                                  : std::make_pair(values.front(), values[values.size() / 2]);
+        };
+        if (!fighting && lead.fightStartMs)
+        {
+            float const sec = std::max(getMSTimeDiff(lead.fightStartMs, now) / 1000.0f, 1.0f);
+            std::map<std::string, float> perMember;
+            JsonArray tankMobs;
+            for (auto const& [mob, byMember] : lead.threatMax)
+                for (auto const& [who, threat] : byMember)
+                {
+                    perMember[who] += threat;
+                    if (who == tank->GetName())
+                        tankMobs.Raw(JsonObject().Num("low", mob.GetCounter()).Real("tps", threat / sec).Build());
+                }
+            JsonObject members;
+            for (auto const& [who, threat] : perMember)
+                members.Real(who.c_str(), threat / sec);
+            JsonObject marginsJson;
+            for (auto const& [mark, values] : lead.threatMargins)
+            {
+                auto const [low, median] = margins(values);
+                std::string const key = mark == 99000 ? std::string("end") : std::to_string(mark / 1000) + "s";
+                marginsJson.Raw(key.c_str(), JsonObject().Real("min", low).Real("median", median).Build());
+            }
+            DecisionLog::Instance().Write(run, "leader", "threat_tps", tank->GetGUID(), tank->GetName(), false,
+                                          JsonObject().Real("fightSec", sec).Raw("tps", members.Build())
+                                              .Raw("tankPerMob", tankMobs.Build()).Raw("margin", marginsJson.Build()));
+            lead.threatMax.clear();
+            lead.threatMargins.clear();
+        }
+        if (!fighting)
+        {
+            lead.fightStartMs = 0;
+            lead.threatLeadLogged = 0;
+        }
+        else
+        {
+            if (!lead.fightStartMs)
+                lead.fightStartMs = now;
+            uint32 const into = getMSTimeDiff(lead.fightStartMs, now);
+            uint32 const nextMark = lead.threatLeadLogged < 2000   ? 2000
+                                    : lead.threatLeadLogged < 5000 ? 5000
+                                                                   : lead.threatLeadLogged + 5000;
+            for (uint32 const mark : {nextMark})
+                if (into >= mark && lead.threatLeadLogged < mark)
+                {
+                    lead.threatLeadLogged = mark;
+                    std::vector<float>& marginValues = lead.threatMargins[mark <= 5000 ? mark : 99000];
+                    if (mark > 5000)
+                        marginValues.clear();  // the last sample stands for the end
+                    JsonArray mobs;
+                    std::set<ObjectGuid> seenMobs;
+                    std::vector<Player*> sides = seats;
+                    sides.push_back(tank);
+                    for (Player* side : sides)
+                        for (Unit* attacker : side->getAttackers())
+                        {
+                            if (!attacker || !attacker->IsAlive() || !seenMobs.insert(attacker->GetGUID()).second)
+                                continue;
+                            float const tankThreat = attacker->GetThreatMgr().GetThreat(tank);
+                            float top = 0.0f;
+                            std::string topName = "-";
+                            auto& held = lead.threatMax[attacker->GetGUID()];
+                            held[tank->GetName()] = std::max(held[tank->GetName()], tankThreat);
+                            for (Player* other : seats)
+                            {
+                                float const threat = attacker->GetThreatMgr().GetThreat(other);
+                                held[other->GetName()] = std::max(held[other->GetName()], threat);
+                                if (threat > top)
+                                {
+                                    top = threat;
+                                    topName = other->GetName();
+                                }
+                            }
+                            if (top > 0.0f)
+                                marginValues.push_back(tankThreat / top);
+                            mobs.Raw(JsonObject().Str("mob", attacker->GetName())
+                                         .Num("low", attacker->GetGUID().GetCounter())
+                                         .Real("tank", tankThreat).Real("top", top).Str("topWho", topName)
+                                         .Real("lead", top > 0.0f ? tankThreat / top : -1.0f)
+                                         .Bool("onTank", attacker->GetVictim() == tank)
+                                         .Build());
+                        }
+                    if (mark <= 5000)
+                        DecisionLog::Instance().Write(run, "leader", "threat_lead", tank->GetGUID(), tank->GetName(),
+                                                      false,
+                                                      JsonObject().Num("sec", mark / 1000).Raw("mobs", mobs.Build()));
+                }
+        }
         // [lead65] the move phase: the fight state and the pull order - a change starts a new phase
         {
             Leader::PullOrder phaseOrder;

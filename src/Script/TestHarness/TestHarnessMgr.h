@@ -511,6 +511,10 @@ namespace TestHarness
             std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
             std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived
             bool healStarted = false;                    // [lead61] the leader's Heal went out in this fight
+            uint32 fightStartMs = 0;                     // [lead67] the fight's start (threat_lead marks)
+            uint32 threatLeadLogged = 0;                 // [lead67] the last threat_lead mark logged
+            std::map<ObjectGuid, std::map<std::string, float>> threatMax;  // [lead67] mob -> member -> top threat
+            std::map<uint32, std::vector<float>> threatMargins;            // [lead67] mark -> tank / top margins
 
             bool tankCannotTake = false;               // [lead54] no taunt / AoE threat ready for the loose mob
             // [lead55] the move command before the current one, per member
