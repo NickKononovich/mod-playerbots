@@ -484,6 +484,10 @@ namespace TestHarness
             std::vector<ObjectGuid> takenWalkers;             // [lead32] lone walkers taken along (no window)
             ObjectGuid patrolDangerFor;                       // [lead33] patrol_danger logged per patrol / verdict
             ObjectGuid planTarget;                            // [lead33] the leader's one target (its last plan)
+            uint32 routeWalkSerial = 0;                       // [lead34] the route waypoint the leader walks
+            ObjectGuid engageWalkFor;                         // [lead34] the engage the leader walks in for sight
+            ObjectGuid patrolTarget;                          // [lead34] a patrol the leader pulls as its own pull
+            ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
             std::vector<ObjectGuid> planMobs;
             bool patrolDangerFits = false;
             std::map<ObjectGuid, std::string> refusedPicks;  // [lead33] targets the planner refused / held: skipped

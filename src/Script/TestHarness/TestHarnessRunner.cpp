@@ -20201,8 +20201,17 @@ namespace TestHarness
             endWait("its pull brought no order");
             return false;
         }
-        bool const pull = !banned && !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) &&
-                          (hold.lane || !window || laneWaitedOut);
+        bool const pull = Leader::LEADER_PATROL_IS_TARGET
+                              ? !plannerPulls  // [lead34] «Если патруль, надо убивать патруль»: no wait, its pull
+                              : !banned && !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) &&
+                                    (hold.lane || !window || laneWaitedOut);
+        if (Leader::LEADER_PATROL_IS_TARGET && pull && lead.patrolTarget != patrol->GetGUID())
+        {
+            lead.patrolTarget = patrol->GetGUID();
+            LogEvent(party, "patrol_target",
+                     JsonObject().Str("patrol", patrol->GetName()).Str("choice", "own pull")
+                         .Str("reason", "it holds the route: " + why).Real("distance", leader->GetExactDist(patrol)));
+        }
         auto const halt = [&](char const* kind)
         {
             if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
@@ -20236,6 +20245,11 @@ namespace TestHarness
             endWait("the patrol is pulled");
             halt("patrol pull");
             return true;
+        }
+        if (Leader::LEADER_PATROL_IS_TARGET)  // [lead34] no patrol wait (the planner pulls it already)
+        {
+            endWait("the leader's plan pulls it");
+            return false;
         }
         if (lead.waitPatrol != patrol->GetGUID())
         {
@@ -21959,6 +21973,49 @@ namespace TestHarness
                         logEvent(looter, "Loot", JsonObject().Str("why", "the fight is over"));
         }
         lead.lastFighting = fighting;
+        // [lead34] the route is data: its waypoint for the tank becomes the leader's MoveTo ("route walk") while no
+        // pull is committed and no fight is on (the special waypoints stay the tank's own walk: a jump, a straight
+        // line, a gate pass)
+        if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader))
+        {
+            TestRunner::Waypoint waypoint;
+            if (TestRunner::GetWaypoint(tank->GetGUID(), waypoint) && waypoint.mapId == tank->GetMapId() &&
+                !waypoint.jump && !waypoint.straight && !waypoint.gatePass)
+            {
+                Position const point(waypoint.x, waypoint.y, waypoint.z);
+                if (Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, 1.5f, "route walk") &&
+                    lead.routeWalkSerial != waypoint.serial)
+                {
+                    lead.routeWalkSerial = waypoint.serial;
+                    logEvent(tank, "RouteWalk", JsonObject().Str("who", "tank").Real("x", point.GetPositionX())
+                                                    .Real("y", point.GetPositionY()).Real("z", point.GetPositionZ()));
+                }
+            }
+        }
+        // [lead34] b83 rfc-h 20261031-152252 (98-180 s): an engage on a Ragefire Trogg 64 yd out of the tank's sight,
+        // the straight walk for sight refused, «walks its path in» walked nothing and the order ended unbegun. The
+        // open engage order out of sight: the leader walks the tank's path in toward the mob until it sees it (then
+        // the tank's executor takes its next step, the attack)
+        if (Leader::LEADER_ROUTE_IS_DATA && !fighting)
+        {
+            Leader::PullOrder order;
+            if (Leader::Orders::GetOpen(party.leader, order) && order.method == Leader::PullMethod::Engage &&
+                order.state == Leader::OrderState::Issued)
+                if (Unit* mob = ObjectAccessor::GetUnit(*tank, order.target))
+                    if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob))
+                    {
+                        Position const point = mob->GetPosition();
+                        if (Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, 3.0f,
+                                                    "engage path in") &&
+                            lead.engageWalkFor != mob->GetGUID())
+                        {
+                            lead.engageWalkFor = mob->GetGUID();
+                            logEvent(tank, "EngagePathIn",
+                                     JsonObject().Str("who", "tank").Str("mob", mob->GetName())
+                                         .Real("distance", tank->GetExactDist(mob)));
+                        }
+                    }
+        }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
             for (Player* bot : seats)
@@ -22926,16 +22983,26 @@ namespace TestHarness
             // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
             if (patrol && patrol->GetGUID() == lead.commitMob)
                 patrol = nullptr;
+            // [lead34] b83 rfc-h: the leader's target (its last plan) is no patrol either
+            if (patrol && (patrol->GetGUID() == lead.planTarget ||
+                           std::find(lead.planMobs.begin(), lead.planMobs.end(), patrol->GetGUID()) !=
+                               lead.planMobs.end()))
+                patrol = nullptr;
             // [lead33] user: «должна оцениваться опасность пака»: the window is only for a patrol whose joining makes
             // the pull unsafe by the planner's danger model - the pull's own mobs plus the patrol's whole walking
             // group, judged as one fight (PullPlanner::JudgePack). Within the budget: taken along (PullPack), no
             // window
             if (patrol)
             {
-                std::list<Creature*> walkers;
+                // [lead34] b83 rfc-h: «walkers 14 / 16» round one Ragefire Trogg - the cell visit's searcher has no
+                // range check (every idle mob of the cells). The walking group is the patrol and its formation's
+                // members (creature_formations), the ones that walk with it
+                std::list<Creature*> walkers{patrol};
                 IdleAggroCheck check{tank};
-                Acore::CreatureListSearcher<IdleAggroCheck> searcher(patrol, walkers, check);
-                Cell::VisitObjects(patrol, searcher, LEADER_PATROL_GROUP_YD);
+                if (CreatureGroup* formation = patrol->GetFormation())
+                    for (auto const& [member, info] : formation->GetMembers())
+                        if (member && member != patrol && member->IsInWorld() && check(member))
+                            walkers.push_back(member);
                 std::vector<ObjectGuid> combined = LeaderPullMobs(lead.commit, lead.commitMob);
                 combined.insert(combined.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
                 for (Creature* walker : walkers)
@@ -22955,6 +23022,34 @@ namespace TestHarness
                                                       .Str("decision", fits ? "taken along: no window"
                                                                             : "over the budget: the window holds"));
                 }
+                // [lead34] LEADER_PATROL_IS_TARGET: the danger chooses along / own pull, never a wait. Only a patrol
+                // that would close the old window (within twice its reach of the pull or the tank) is judged.
+                if (Leader::LEADER_PATROL_IS_TARGET && !fits && patrolGap <= 2.0f * patrolReach &&
+                    !lead.commitIssued && broken.empty())
+                {
+                    lead.patrolTarget = patrol->GetGUID();
+                    DecisionLog::Instance().Write(run, "leader", "patrol_target", patrol->GetGUID(), patrol->GetName(),
+                                                  true,
+                                                  JsonObject().Str("choice", "own pull")
+                                                      .Str("pull", mob ? mob->GetName() : "?")
+                                                      .Str("reason", "the combined fight is over the budget: " +
+                                                                         judged)
+                                                      .Real("overload", overload).Real("gap", patrolGap));
+                    broken = "the patrol first: its own pull";
+                    patrol = nullptr;
+                }
+                else if (Leader::LEADER_PATROL_IS_TARGET && fits && lead.patrolDangerLoggedAlong != patrol->GetGUID())
+                {
+                    lead.patrolDangerLoggedAlong = patrol->GetGUID();
+                    DecisionLog::Instance().Write(run, "leader", "patrol_target", patrol->GetGUID(), patrol->GetName(),
+                                                  true,
+                                                  JsonObject().Str("choice", "along")
+                                                      .Str("pull", mob ? mob->GetName() : "?")
+                                                      .Str("reason", "the combined fight fits the budget: " + judged)
+                                                      .Real("overload", overload).Real("gap", patrolGap));
+                }
+                if (Leader::LEADER_PATROL_IS_TARGET && !fits)
+                    patrol = nullptr;  // far off: no window, the pull goes on
                 if (fits)
                 {
                     for (Creature* walker : walkers)
@@ -23145,6 +23240,18 @@ namespace TestHarness
                     inputs.required.push_back(it->first);
                     ++it;
                 }
+            }
+            // [lead34] the patrol the leader chose as its own pull stays its pick until it is fought or dead
+            if (Leader::LEADER_PATROL_IS_TARGET && !lead.patrolTarget.IsEmpty())
+            {
+                if (Creature* patrolMob = idleAlive(lead.patrolTarget))
+                {
+                    lead.intercept = patrolMob->GetGUID();
+                    lead.interceptMs = now;
+                    lead.interceptWhy = "patrol target: its own pull";
+                }
+                else
+                    lead.patrolTarget.Clear();
             }
             Creature* const intercept = Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && fresh(lead.interceptMs)
                                             ? idleAlive(lead.intercept)

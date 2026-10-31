@@ -259,6 +259,10 @@ bool AggressiveTargetAction::Execute(Event event)
         // the mob (ReachCombatTo: its path end, the sight restore within range).
         if (!bot->IsWithinLOSInMap(target))
         {
+            // [lead34] a led tank: the leader walks its path in (Leader MoveTo "engage path in"), the order is open
+            if (Leader::LEADER_ROUTE_IS_DATA && Leader::LedBot(bot))
+                return PostCommit(bot, target, true, Leader::PullMethod::Engage,
+                                  "engage: the leader walks the path in for sight", commitMobs, commitCost, single);
             if (MoveToLOS(target))
                 return PostCommit(bot, target, true, Leader::PullMethod::Engage, "engage: walks for sight",
                                   commitMobs, commitCost, single);  // [lead1]

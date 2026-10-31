@@ -192,6 +192,12 @@ namespace Leader
     constexpr bool LEADER_HEALER_RESPOTS = true;
     // [lead27] Follow: the member walks when the tank is farther than this (or out of sight)
     constexpr float LEADER_FOLLOW_KEEP_YD = 6.0f;
+    // [lead34] the route is data the leader reads: the led tank walks the route only as the leader's MoveTo
+    constexpr bool LEADER_ROUTE_IS_DATA = true;
+    // [lead34] user: «Если патруль, надо убивать патруль.» - no wait for a patrol to walk away (no patrol window, no
+    // patrol wait, no step back, no lane wait): a patrol near the route or the pull is the leader's target, taken along
+    // with the pull when the combined fight is safe (PullPlanner::JudgePack), else pulled as its own pull first
+    constexpr bool LEADER_PATROL_IS_TARGET = true;
 
     // [lead26] the engage spot is judged by the dps placement around it (melee behind, ranged at range): an unpulled
     // mob reaching it moves the fight back to a clear spot

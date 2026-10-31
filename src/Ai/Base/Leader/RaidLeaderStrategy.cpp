@@ -375,6 +375,18 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
     if (!action || !RaidLeader::IsEnabled())
         return 1.0f;
 
+    // [lead34] user: «лидер должен читать маршрут, а не наоборот» - the route's waypoint is data: the led tank walks
+    // it only as the leader's MoveTo ("route walk"); its own "test runner move" runs only for a waypoint the leader's
+    // walk cannot do (a jump, a straight line over no navmesh, a gate pass)
+    if (Leader::LEADER_ROUTE_IS_DATA && action->getName() == "test runner move" &&
+        Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot))
+    {
+        TestRunner::Waypoint waypoint;
+        if (TestRunner::GetWaypoint(bot->GetGUID(), waypoint) && !waypoint.jump && !waypoint.straight &&
+            !waypoint.gatePass)
+            return 0.0f;
+    }
+
     // [lead17] LEADER_TANK_OWN_PICKS_OFF: the led tank's own next pack and own hazard step are off in every state
     if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
         (action->getName() == "chain pull" || action->getName() == "move fight off hazard"))

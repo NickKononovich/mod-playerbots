@@ -669,9 +669,11 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
 bool LeaderMoveOrderAction::SkipsIdleGuard()
 {
     // [lead27] a Follow walk is the member's own path (no point the leader checked): its guards stay
+    // [lead34] ... and so does the tank's route walk (the route's point, not a leader-checked spot)
     Leader::MemberEvents events;
+    bool const got = Leader::Events::Get(bot->GetGUID(), events);
     return Leader::LedBot(bot) &&
-           !(Leader::Events::Get(bot->GetGUID(), events) && events.move == Leader::MoveEvent::Follow);
+           !(got && (events.move == Leader::MoveEvent::Follow || events.moveWhy == "route walk"));
 }
 
 std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
