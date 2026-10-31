@@ -12461,6 +12461,11 @@ namespace PullPlanner
         std::lock_guard<std::mutex> lock(leaderLock);
         LeaderSlot& slot = leaderSlots[tank];
         slot.decision = decision;
+        // [lead48] b97 rfc-h 98.8-183 s: the committed pull back was re-issued with the decision's old timestamp
+        // (decided at the commit), TakeIssued dropped it as stale at once and the tank never got it - the commitment
+        // stood "issued" with no order for 85 s. An issue is fresh when it is issued
+        uint32 const now = getMSTime();
+        slot.decision.ms = now ? now : 1;
         slot.issued = true;
     }
 
