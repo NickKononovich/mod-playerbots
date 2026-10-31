@@ -21605,6 +21605,22 @@ namespace TestHarness
             Leader::MemberEvents before;
             bool const hadMove = Leader::Events::Get(member, before) && before.move != Leader::MoveEvent::None;
             bool const changed = Leader::Events::SetMove(member, move, spot, tolerance, why);
+            // [lead55] command_repeat: the new command is the one before the current (a ping-pong) - logged once per
+            // member and purpose, counted (should be 0)
+            if (changed && hadMove && bot)
+            {
+                auto const prev = lead.prevMoves.find(member);
+                if (prev != lead.prevMoves.end() && prev->second.second == why &&
+                    prev->second.first.GetExactDist(spot) <= std::max(tolerance, 1.0f))
+                {
+                    uint32& repeats = lead.commandRepeats[bot->GetName() + "|" + why];
+                    if (!repeats++)
+                        DecisionLog::Instance().Write(run, "leader", "command_repeat", member, bot->GetName(), true,
+                                                      JsonObject().Str("member", bot->GetName()).Str("why", why)
+                                                          .Str("was", before.moveWhy));
+                }
+                lead.prevMoves[member] = {before.spot, before.moveWhy};
+            }
             if (changed && hadMove && bot &&
                 (before.moveWhy != why || before.spot.GetExactDist(spot) > 8.0f))
                 DecisionLog::Instance().Write(run, "leader", "command_override", member, bot->GetName(), true,
@@ -22671,6 +22687,13 @@ namespace TestHarness
                                                          tank->GetPositionZ(), x, y, z) &&
                     (bot == healer ? healerKeeps(Position(x, y, z)) : keepsHealer(Position(x, y, z))))
                     spot.Relocate(x, y, z);
+                // [lead55] b100: Rtdruaa 2 304 "aggro loss: to the tank" moves - the run's point is kept while it
+                // still lies by the tank (within LEADER_LOOSE_TANK_YD and the walk's tolerance)
+                Leader::MemberEvents runEvents;
+                if (Leader::Events::Get(guid, runEvents) && runEvents.move == Leader::MoveEvent::MoveTo &&
+                    runEvents.moveWhy == "aggro loss: to the tank" &&
+                    runEvents.spot.GetExactDist(tank->GetPosition()) <= LEADER_LOOSE_TANK_YD + 1.5f)
+                    spot = runEvents.spot;
                 if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank"))
                     logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "aggro loss: to the tank").Str("mob", loose->second->GetName())
@@ -23156,6 +23179,13 @@ namespace TestHarness
             for (Player* other : seats)
                 if (other != healer && outOfReach(plannedAt(other)) && outOfReach(other->GetPosition()))
                     out.push_back(other);
+            // [lead55] the heal-reach spot it walks to is kept while it still keeps the group (no new spot per tick)
+            Leader::MemberEvents healerEvents;
+            bool const keepsOwn = Leader::Events::Get(healer->GetGUID(), healerEvents) &&
+                                  healerEvents.move == Leader::MoveEvent::MoveTo &&
+                                  healerEvents.moveWhy == "heal reach" && healerKeeps(healerEvents.spot);
+            if (keepsOwn)
+                out.clear();
             if (!out.empty())
             {
                 Position fix;

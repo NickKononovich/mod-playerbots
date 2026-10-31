@@ -509,6 +509,9 @@ namespace TestHarness
             std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
             std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
             bool tankCannotTake = false;               // [lead54] no taunt / AoE threat ready for the loose mob
+            // [lead55] the move command before the current one, per member
+            std::map<ObjectGuid, std::pair<Position, std::string>> prevMoves;
+            std::map<std::string, uint32> commandRepeats;                      // [lead55] member|why -> repeats
             ObjectGuid dragFor;            // [lead50] fight_drag logged for this loose mob
             // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
             struct Unreachable

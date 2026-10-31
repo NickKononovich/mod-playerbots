@@ -475,11 +475,18 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
-            bool const changed = e.move != move || e.spot.GetExactDist(spot) > 1.0f;
+            // [lead55] user: «пожалей мой CPU» - b100: Rtdruaa 5 073 commands (813 in one second). The same command
+            // is no new command: a move changes only when its point leaves the current one's arrival tolerance
+            // (the walk's own, at least the old 1 yd) or its purpose changes; an unchanged one keeps its point
+            float const keep = std::max(std::max(e.tolerance, tolerance), 1.0f);
+            bool const changed = e.move != move || e.moveWhy != why || e.spot.GetExactDist(spot) > keep;
             e.move = move;
-            e.spot = spot;
-            e.tolerance = tolerance;
-            e.moveWhy = why;
+            if (changed)
+            {
+                e.spot = spot;
+                e.tolerance = tolerance;
+                e.moveWhy = why;
+            }
             e.moveMs = slot.gen;
             if (changed)
                 ++e.seq;
