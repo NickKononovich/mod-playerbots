@@ -22413,7 +22413,10 @@ namespace TestHarness
                 !waypoint.jump && !waypoint.straight && !waypoint.gatePass)
             {
                 Position const point(waypoint.x, waypoint.y, waypoint.z);
-                if (Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, 1.5f, "route walk") &&
+                // [lead73] b117 271.4 s: the route walk woke a Trogg ("would wake ..., walked anyway") - it goes
+                // through the leader's checks and the tank's own guards run dry (checkedMove); refused, the tank
+                // stays and the mob on the path is the next pull
+                if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, 1.5f, "route walk") &&
                     lead.routeWalkSerial != waypoint.serial)
                 {
                     lead.routeWalkSerial = waypoint.serial;
@@ -24489,7 +24492,10 @@ namespace TestHarness
         if (decides && Leader::LEADER_NO_FORCING_TIMERS && !decision.lookTarget.IsEmpty() &&
             (decision.verdict == PullPlanner::Verdict::Refused ||
              (decision.verdict == PullPlanner::Verdict::Held && lead.ready)) &&
-            !lead.refusedPicks.count(decision.lookTarget) && !IsBossLook(tank, decision.lookTarget))
+            !lead.refusedPicks.count(decision.lookTarget) && !IsBossLook(tank, decision.lookTarget) &&
+            // [lead73] b117 266-271 s: "paladin tank at 26 % mana" put every on-path mob into refusedPicks and the
+            // route walked past them - a member's mana / health is readiness (its Rest), never a refusal of the mob
+            decision.why.find("% mana") == std::string::npos && decision.why.find("% health") == std::string::npos)
             lead.refusedPicks[decision.lookTarget] = decision.why;  // [lead45] never a boss
         // [lead50] b99 rfc-h 543-608 s: the planner held the boss pick for "Rtpalaa at 76 % mana" and no Rest came
         // (lead46's boss Rest ran only while the boss-pull gate waited). One readiness path: a held answer that
@@ -24498,15 +24504,20 @@ namespace TestHarness
         if (decides)
         {
             std::string restFor;
-            if (decision.verdict == PullPlanner::Verdict::Held)
+            bool const lineHold = decision.why.find("% mana") != std::string::npos ||
+                                  decision.why.find("% health") != std::string::npos;
+            if (decision.verdict == PullPlanner::Verdict::Held && lineHold)
+            {
                 for (Member const& member : party.members)
-                    if (decision.why.find(member.name + " at ") != std::string::npos &&
-                        (decision.why.find("% mana") != std::string::npos ||
-                         decision.why.find("% health") != std::string::npos))
+                    if (decision.why.find(member.name + " at ") != std::string::npos)
                     {
                         restFor = member.name;
                         break;
                     }
+                // [lead73] the planner's tank lines name it "tank" ("paladin tank at 26 % mana", "the tank rests")
+                if (restFor.empty() && decision.why.find("tank") != std::string::npos)
+                    restFor = tank->GetName();
+            }
             if (restFor != lead.plannerRestFor)
             {
                 lead.plannerRestFor = restFor;
