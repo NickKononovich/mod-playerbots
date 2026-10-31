@@ -8332,7 +8332,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 return takeEngage(pullBackWhy + ", the tank drags the fight off it");
 
             // [lead51] user: «чем больше берёшь одновременно и не умираешь - тем лучше ... динамически» - b99 rfc-h
-            // pull 8: "fought in its sight" of the Troggs that reach the dps placement, estimated 2, engaged 12. Engaged
+            // pull 8: "fought in its sight" of the Troggs reaching the dps placement, estimated 2, engaged 12. Engaged
             // here, those mobs and their packs come: they are counted and the whole is judged by the cost model -
             // taken deliberately when it fits, else no engage (another method / the next pick)
             if (!engageCrossed && crowd)
