@@ -14,7 +14,6 @@ public:
     DpsPaladinStrategyActionNodeFactory()
     {
         creators["retribution aura"] = &retribution_aura;
-        creators["blessing of might"] = &blessing_of_might;
         creators["repentance"] = &repentance;
         creators["repentance on enemy healer"] = &repentance_on_enemy_healer;
         creators["repentance on snare target"] = &repentance_on_snare_target;
@@ -24,16 +23,6 @@ public:
     }
 
 private:
-    static ActionNode* blessing_of_might([[maybe_unused]] PlayerbotAI* botAI)
-    {
-        return new ActionNode(
-            "blessing of might",
-            /*P*/ {},
-            /*A*/ { NextAction("blessing of kings") },
-            /*C*/ {}
-        );
-    }
-
     static ActionNode* repentance([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode(

@@ -24,6 +24,11 @@ bool SscNoEncounterInProgressTrigger::IsActive()
     return !IsEncounterInProgress(bot, SSC_MAP_ID);
 }
 
+bool SscClassRolesShouldBeAssignedTrigger::IsActive()
+{
+    return IsMechanicTrackerBot(bot, SSC_MAP_ID);
+}
+
 bool SscHunterShouldMisdirectTrigger::IsActiveInEncounter()
 {
     if (bot->getClass() != CLASS_HUNTER)

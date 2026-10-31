@@ -144,6 +144,12 @@ struct NewRpgInfo
     // quest game object a group member used; this bot walks up and uses it too (#2725)
     ObjectGuid pendingQuestObject{};
     uint32 pendingQuestObjectSince{0};
+    // QUEST GIVER
+    ObjectGuid questGiver;  // giver the bot is walking to or talking with
+    uint32 questGiverSince{0};
+    uint32 questGiverLastTry{0};
+    GuidSet ignoredQuestGivers;  // skipped until the next IDLE
+    // END QUEST GIVER
 
     using RpgData = std::variant<
         Idle,

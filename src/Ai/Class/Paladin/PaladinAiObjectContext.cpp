@@ -11,8 +11,8 @@
 #include "NamedObjectContext.h"
 #include "OffhealRetPaladinStrategy.h"
 #include "PaladinActions.h"
+#include "PaladinBlessingAction.h"
 #include "PaladinBuffStrategies.h"
-#include "PaladinGreaterBlessingAction.h"
 #include "PaladinPullStrategy.h"
 #include "PaladinTriggers.h"
 #include "Playerbots.h"
@@ -114,10 +114,8 @@ public:
         creators["judgement"] = &PaladinTriggerFactoryInternal::judgement;
         creators["judgement of wisdom"] = &PaladinTriggerFactoryInternal::judgement_of_wisdom;
         creators["judgement of light"] = &PaladinTriggerFactoryInternal::judgement_of_light;
-        creators["blessing"] = &PaladinTriggerFactoryInternal::blessing;
         creators["seal"] = &PaladinTriggerFactoryInternal::seal;
         creators["art of war"] = &PaladinTriggerFactoryInternal::art_of_war;
-        creators["blessing on party"] = &PaladinTriggerFactoryInternal::blessing_on_party;
         creators["crusader aura"] = &PaladinTriggerFactoryInternal::crusader_aura;
         creators["retribution aura"] = &PaladinTriggerFactoryInternal::retribution_aura;
         creators["devotion aura"] = &PaladinTriggerFactoryInternal::devotion_aura;
@@ -158,14 +156,7 @@ public:
         creators["hand of sacrifice on main tank"] = &PaladinTriggerFactoryInternal::hand_of_sacrifice_on_main_tank;
         creators["aura mastery"] = &PaladinTriggerFactoryInternal::aura_mastery;
 
-        creators["blessing of kings on party"] = &PaladinTriggerFactoryInternal::blessing_of_kings_on_party;
-        creators["blessing of wisdom on party"] = &PaladinTriggerFactoryInternal::blessing_of_wisdom_on_party;
-        creators["blessing of might on party"] = &PaladinTriggerFactoryInternal::blessing_of_might_on_party;
-        creators["blessing of sanctuary on party"] = &PaladinTriggerFactoryInternal::blessing_of_sanctuary_on_party;
-
         creators["avenging wrath"] = &PaladinTriggerFactoryInternal::avenging_wrath;
-        creators["greater blessing needed"] = &PaladinTriggerFactoryInternal::greater_blessing_needed;
-        creators["blessing on party by role"] = &PaladinTriggerFactoryInternal::blessing_on_party_by_role;
         creators["ret divine plea"] = &PaladinTriggerFactoryInternal::ret_divine_plea;
         creators["holy wrath target"] = &PaladinTriggerFactoryInternal::holy_wrath_target;
         creators["holy wrath undead pack"] = &PaladinTriggerFactoryInternal::holy_wrath_undead_pack;  // [b34_pal]
@@ -185,6 +176,7 @@ public:
         creators["infusion of light"] = &PaladinTriggerFactoryInternal::infusion_of_light;
         creators["holy light boss tank"] = &PaladinTriggerFactoryInternal::holy_light_boss_tank;
         creators["holy avenging wrath"] = &PaladinTriggerFactoryInternal::holy_avenging_wrath;
+        creators["blessing needed"] = &PaladinTriggerFactoryInternal::blessing_needed;
     }
 
 private:
@@ -201,10 +193,8 @@ private:
     static Trigger* judgement(PlayerbotAI* botAI) { return new JudgementTrigger(botAI); }
     static Trigger* judgement_of_wisdom(PlayerbotAI* botAI) { return new JudgementOfWisdomTrigger(botAI); }
     static Trigger* judgement_of_light(PlayerbotAI* botAI) { return new JudgementOfLightTrigger(botAI); }
-    static Trigger* blessing(PlayerbotAI* botAI) { return new BlessingTrigger(botAI); }
     static Trigger* seal(PlayerbotAI* botAI) { return new SealTrigger(botAI); }
     static Trigger* art_of_war(PlayerbotAI* botAI) { return new ArtOfWarTrigger(botAI); }
-    static Trigger* blessing_on_party(PlayerbotAI* botAI) { return new BlessingOnPartyTrigger(botAI); }
     static Trigger* crusader_aura(PlayerbotAI* botAI) { return new CrusaderAuraTrigger(botAI); }
     static Trigger* retribution_aura(PlayerbotAI* botAI) { return new RetributionAuraTrigger(botAI); }
     static Trigger* devotion_aura(PlayerbotAI* botAI) { return new DevotionAuraTrigger(botAI); }
@@ -255,23 +245,11 @@ private:
     }
     static Trigger* aura_mastery(PlayerbotAI* botAI) { return new AuraMasteryTrigger(botAI); }
 
-    static Trigger* blessing_of_kings_on_party(PlayerbotAI* botAI) { return new BlessingOfKingsOnPartyTrigger(botAI); }
-    static Trigger* blessing_of_wisdom_on_party(PlayerbotAI* botAI)
-    {
-        return new BlessingOfWisdomOnPartyTrigger(botAI);
-    }
-    static Trigger* blessing_of_might_on_party(PlayerbotAI* botAI) { return new BlessingOfMightOnPartyTrigger(botAI); }
-    static Trigger* blessing_of_sanctuary_on_party(PlayerbotAI* botAI)
-    {
-        return new BlessingOfSanctuaryOnPartyTrigger(botAI);
-    }
-
     static Trigger* avenging_wrath(PlayerbotAI* botAI) { return new AvengingWrathTrigger(botAI); }
-    static Trigger* greater_blessing_needed(PlayerbotAI* botAI)
+    static Trigger* blessing_needed(PlayerbotAI* botAI)
     {
-        return new GreaterBlessingNeededTrigger(botAI);
+        return new BlessingNeededTrigger(botAI);
     }
-    static Trigger* blessing_on_party_by_role(PlayerbotAI* botAI) { return new BlessingOnPartyByRoleTrigger(botAI); }
     static Trigger* ret_divine_plea(PlayerbotAI* botAI) { return new RetDivinePleaTrigger(botAI); }
     static Trigger* holy_wrath_target(PlayerbotAI* botAI) { return new HolyWrathTargetTrigger(botAI); }
     static Trigger* holy_wrath_undead_pack(PlayerbotAI* botAI)  // [b34_pal]
@@ -320,15 +298,7 @@ public:
         creators["seal of command"] = &PaladinAiObjectContextInternal::seal_of_command;
         creators["seal of vengeance"] = &PaladinAiObjectContextInternal::seal_of_vengeance;
         creators["seal of corruption"] = &PaladinAiObjectContextInternal::seal_of_corruption;
-        creators["blessing of might"] = &PaladinAiObjectContextInternal::blessing_of_might;
-        creators["blessing of wisdom"] = &PaladinAiObjectContextInternal::blessing_of_wisdom;
-        creators["blessing of kings"] = &PaladinAiObjectContextInternal::blessing_of_kings;
-        creators["blessing of sanctuary"] = &PaladinAiObjectContextInternal::blessing_of_sanctuary;
         creators["divine storm"] = &PaladinAiObjectContextInternal::divine_storm;
-        creators["blessing of kings on party"] = &PaladinAiObjectContextInternal::blessing_of_kings_on_party;
-        creators["blessing of might on party"] = &PaladinAiObjectContextInternal::blessing_of_might_on_party;
-        creators["blessing of wisdom on party"] = &PaladinAiObjectContextInternal::blessing_of_wisdom_on_party;
-        creators["blessing of sanctuary on party"] = &PaladinAiObjectContextInternal::blessing_of_sanctuary_on_party;
         creators["redemption"] = &PaladinAiObjectContextInternal::redemption;
         creators["crusader strike"] = &PaladinAiObjectContextInternal::crusader_strike;
         creators["crusader aura"] = &PaladinAiObjectContextInternal::crusader_aura;
@@ -428,9 +398,7 @@ public:
         creators["hand of sacrifice on main tank"] = &PaladinAiObjectContextInternal::hand_of_sacrifice_on_main_tank;
         creators["hand of sacrifice on spiking tank"] = &PaladinAiObjectContextInternal::hand_of_sacrifice_spike;
         creators["aura mastery"] = &PaladinAiObjectContextInternal::aura_mastery;
-        creators["cast greater blessing assignment"] =
-            &PaladinAiObjectContextInternal::cast_greater_blessing_assignment;
-        creators["blessing on party by role"] = &PaladinAiObjectContextInternal::blessing_on_party_by_role;
+        creators["cast blessing"] = &PaladinAiObjectContextInternal::cast_blessing;
     }
 
 private:
@@ -445,27 +413,7 @@ private:
     static Action* seal_of_command(PlayerbotAI* botAI) { return new CastSealOfCommandAction(botAI); }
     static Action* seal_of_vengeance(PlayerbotAI* botAI) { return new CastSealOfVengeanceAction(botAI); }
     static Action* seal_of_corruption(PlayerbotAI* botAI) { return new CastSealOfCorruptionAction(botAI); }
-    static Action* blessing_of_sanctuary(PlayerbotAI* botAI) { return new CastBlessingOfSanctuaryAction(botAI); }
-    static Action* blessing_of_might(PlayerbotAI* botAI) { return new CastBlessingOfMightAction(botAI); }
-    static Action* blessing_of_wisdom(PlayerbotAI* botAI) { return new CastBlessingOfWisdomAction(botAI); }
-    static Action* blessing_of_kings(PlayerbotAI* botAI) { return new CastBlessingOfKingsAction(botAI); }
     static Action* divine_storm(PlayerbotAI* botAI) { return new CastDivineStormAction(botAI); }
-    static Action* blessing_of_kings_on_party(PlayerbotAI* botAI)
-    {
-        return new CastBlessingOfKingsOnPartyAction(botAI);
-    }
-    static Action* blessing_of_might_on_party(PlayerbotAI* botAI)
-    {
-        return new CastBlessingOfMightOnPartyAction(botAI);
-    }
-    static Action* blessing_of_wisdom_on_party(PlayerbotAI* botAI)
-    {
-        return new CastBlessingOfWisdomOnPartyAction(botAI);
-    }
-    static Action* blessing_of_sanctuary_on_party(PlayerbotAI* botAI)
-    {
-        return new CastBlessingOfSanctuaryOnPartyAction(botAI);
-    }
     static Action* redemption(PlayerbotAI* botAI) { return new CastRedemptionAction(botAI); }
     static Action* crusader_strike(PlayerbotAI* botAI) { return new CastCrusaderStrikeAction(botAI); }
     static Action* crusader_aura(PlayerbotAI* botAI) { return new CastCrusaderAuraAction(botAI); }
@@ -601,11 +549,7 @@ private:
     static Action* divine_sacrifice(PlayerbotAI* botAI) { return new CastDivineSacrificeAction(botAI); }
     static Action* cancel_divine_sacrifice(PlayerbotAI* botAI) { return new CastCancelDivineSacrificeAction(botAI); }
     static Action* hand_of_freedom_on_party(PlayerbotAI* botAI) { return new CastHandOfFreedomOnPartyAction(botAI); }
-    static Action* cast_greater_blessing_assignment(PlayerbotAI* botAI)
-    {
-        return new CastGreaterBlessingAssignmentAction(botAI);
-    }
-    static Action* blessing_on_party_by_role(PlayerbotAI* botAI) { return new CastBlessingOnPartyByRoleAction(botAI); }
+    static Action* cast_blessing(PlayerbotAI* botAI) { return new CastBlessingAction(botAI); }
 };
 
 class PaladinValueContextInternal : public NamedObjectContext<UntypedValue>
@@ -613,23 +557,10 @@ class PaladinValueContextInternal : public NamedObjectContext<UntypedValue>
 public:
     PaladinValueContextInternal()
     {
-        creators["greater blessing assignments"] = &PaladinValueContextInternal::greater_blessing_assignments;
-        creators["greater blessing pending assignment"] =
-            &PaladinValueContextInternal::greater_blessing_pending_assignment;
         creators["paladin tank in group"] = &PaladinValueContextInternal::paladin_tank_in_group;  // [b31_deep]
     }
 
 private:
-    static UntypedValue* greater_blessing_assignments(PlayerbotAI* botAI)
-    {
-        return ai::gbless::greater_blessing_assignments_value(botAI);
-    }
-
-    static UntypedValue* greater_blessing_pending_assignment(PlayerbotAI* botAI)
-    {
-        return ai::gbless::greater_blessing_pending_assignment_value(botAI);
-    }
-
     static UntypedValue* paladin_tank_in_group(PlayerbotAI* botAI) { return new PaladinTankInGroupValue(botAI); }
 };
 

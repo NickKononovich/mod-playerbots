@@ -50,21 +50,6 @@ INTERRUPT_HEALER_TRIGGER(RepentanceOnHealerTrigger, "repentance on enemy healer"
 SNARE_TRIGGER(RepentanceSnareTrigger, "repentance on snare target");
 INTERRUPT_TRIGGER(RepentanceInterruptTrigger, "repentance");
 
-class BlessingOnPartyTrigger : public BuffOnPartyTrigger
-{
-public:
-    BlessingOnPartyTrigger(PlayerbotAI* botAI)
-        : BuffOnPartyTrigger(botAI, "blessing of kings,blessing of might,blessing of wisdom", 4 * IN_MILLISECONDS) {}
-};
-
-class BlessingTrigger : public BuffTrigger
-{
-public:
-    BlessingTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "blessing of sanctuary", 4 * IN_MILLISECONDS) {}
-
-    bool IsActive() override;
-};
-
 class HammerOfJusticeInterruptSpellTrigger : public InterruptSpellTrigger
 {
 public:
@@ -234,46 +219,6 @@ public:
     bool IsActive() override;
 };
 
-class BlessingOfKingsOnPartyTrigger : public BlessingOnPartyTrigger
-{
-public:
-    BlessingOfKingsOnPartyTrigger(PlayerbotAI* botAI)
-        : BlessingOnPartyTrigger(botAI)
-    {
-        spell = "blessing of kings";
-    }
-};
-
-class BlessingOfWisdomOnPartyTrigger : public BlessingOnPartyTrigger
-{
-public:
-    BlessingOfWisdomOnPartyTrigger(PlayerbotAI* botAI)
-        : BlessingOnPartyTrigger(botAI)
-    {
-        spell = "blessing of might,blessing of wisdom";
-    }
-};
-
-class BlessingOfMightOnPartyTrigger : public BlessingOnPartyTrigger
-{
-public:
-    BlessingOfMightOnPartyTrigger(PlayerbotAI* botAI)
-        : BlessingOnPartyTrigger(botAI)
-    {
-        spell = "blessing of might,blessing of wisdom";
-    }
-};
-
-class BlessingOfSanctuaryOnPartyTrigger : public BlessingOnPartyTrigger
-{
-public:
-    BlessingOfSanctuaryOnPartyTrigger(PlayerbotAI* botAI)
-        : BlessingOnPartyTrigger(botAI)
-    {
-        spell = "blessing of sanctuary";
-    }
-};
-
 class HandOfFreedomOnPartyTrigger : public Trigger
 {
 public:
@@ -290,22 +235,14 @@ public:
     AvengingWrathTrigger(PlayerbotAI* botAI) : BoostTrigger(botAI, "avenging wrath") {}
 };
 
-// [pal-bless-role] Out of combat, a party member lacks a blessing of this paladin that it could give.
-class BlessingOnPartyByRoleTrigger : public Trigger
+class BlessingNeededTrigger : public Trigger
 {
 public:
-    BlessingOnPartyByRoleTrigger(PlayerbotAI* botAI) : Trigger(botAI, "blessing on party by role", 2) {}
+    BlessingNeededTrigger(PlayerbotAI* botAI)
+        : Trigger(botAI, "blessing needed", 4) {}
 
-    bool IsActive() override;
-};
-
-class GreaterBlessingNeededTrigger : public Trigger
-{
-public:
-    GreaterBlessingNeededTrigger(PlayerbotAI* botAI)
-        : Trigger(botAI, "greater blessing needed", 4) {}
-
-    bool IsActive() override;
+    bool IsBuffTrigger() override { return true; }
+    bool IsActive() override { return true; }
 };
 
 // Retribution: Divine Plea on cooldown once mana is below almost full; the seal stays Vengeance/Corruption.

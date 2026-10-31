@@ -6,8 +6,6 @@
 
 #include "PaladinTriggers.h"
 #include "GenericBuffUtils.h"
-#include "PaladinActions.h"
-#include "PaladinGreaterBlessingAction.h"
 #include "PaladinHelper.h"
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
@@ -121,14 +119,6 @@ bool CrusaderAuraTrigger::IsActive()
     return AI_VALUE2(bool, "mounted", "self target") && !botAI->HasAura("crusader aura", target);
 }
 
-bool BlessingTrigger::IsActive()
-{
-    Unit* target = GetTarget();
-    return SpellTrigger::IsActive() &&
-           !botAI->HasAnyAuraOf(target, "blessing of might", "blessing of wisdom",
-                                "blessing of kings", "blessing of sanctuary", nullptr);
-}
-
 bool DivineShieldLowHealthTrigger::IsActive()
 {
     return botAI->HasAura("divine shield", bot) && AI_VALUE2(uint8, "health", "self target") < 80;
@@ -173,37 +163,6 @@ bool HandOfFreedomOnPartyTrigger::IsActive()
 bool NotSensingUndeadTrigger::IsActive()
 {
     return !botAI->HasAura("sense undead", bot);
-}
-
-bool BlessingOnPartyByRoleTrigger::IsActive()
-{
-    return !bot->IsInCombat() && ai::paladin::FindRoleBlessing(botAI).target != nullptr;
-}
-
-bool GreaterBlessingNeededTrigger::IsActive()
-{
-    if (!ai::gbless::IsEligibleGroupForAutoBlessings(bot->GetGroup()))
-        return false;
-
-    if (ai::buff::ShouldDeferGreaterBlessingAssignmentForRecentLogin(bot))
-        return false;
-
-    Group* group = bot->GetGroup();
-    uint32 const groupKey = group ? group->GetLeaderGUID().GetCounter() : 0;
-
-    Value<ai::gbless::CachedPendingBlessingAssignment>* pendingValue =
-        context->GetValue<ai::gbless::CachedPendingBlessingAssignment>("greater blessing pending assignment");
-    if (!pendingValue)
-        return false;
-
-    ai::gbless::CachedPendingBlessingAssignment pendingAssignment = pendingValue->Get();
-    if (pendingAssignment.groupKey != groupKey)
-    {
-        pendingValue->Reset();
-        pendingAssignment = pendingValue->Get();
-    }
-
-    return pendingAssignment.valid && pendingAssignment.groupKey == groupKey;
 }
 
 namespace

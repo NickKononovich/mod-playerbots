@@ -67,10 +67,7 @@ protected:
     bool HasDalaranTeleportQuest(Player* player);
 
     /* QUEST RELATED CHECK */
-    ObjectGuid ChooseNpcOrGameObjectToInteract(bool questgiverOnly = false, float distanceLimit = 0.0f);
-    bool HasQuestToAcceptOrReward(WorldObject* object);
     bool InteractWithNpcOrGameObjectForQuest(ObjectGuid guid);
-    bool CanInteractWithQuestGiver(Object* questGiver);
     bool IsWithinInteractionDist(Object* object);
     uint32 BestRewardIndex(Quest const* quest);
     bool IsQuestWorthDoing(Quest const* quest);
@@ -129,6 +126,11 @@ protected:
     static constexpr uint32 MIN_GROUP_FOR_ELITE = 3;     // members on the map within GROUP_LEVEL_SPREAD levels
     static constexpr int32 GROUP_LEVEL_SPREAD = 3;
     static constexpr uint32 GROUP_CHECK_MS = 10 * IN_MILLISECONDS;
+    /* FOR QUEST GIVER */
+    // Time on one giver, walking and interacting, after which it is skipped until the next IDLE.
+    const uint32 questGiverGiveUpTime = 60 * IN_MILLISECONDS;
+    // A longer pause (combat, eating) starts the timer over.
+    const uint32 questGiverRetryGap = 5 * IN_MILLISECONDS;
 };
 
 #endif

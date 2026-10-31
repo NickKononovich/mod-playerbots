@@ -17,7 +17,6 @@ public:
         creators["seal of corruption"] = &seal_of_corruption;
         creators["seal of vengeance"] = &seal_of_vengeance;
         creators["seal of command"] = &seal_of_command;
-        creators["blessing of might"] = &blessing_of_might;
     }
 
 private:
@@ -57,16 +56,6 @@ private:
             "seal of command",
             /*P*/ {},
             /*A*/ { NextAction("seal of righteousness") },
-            /*C*/ {}
-        );
-    }
-
-    static ActionNode* blessing_of_might([[maybe_unused]] PlayerbotAI* botAI)
-    {
-        return new ActionNode(
-            "blessing of might",
-            /*P*/ {},
-            /*A*/ { NextAction("blessing of kings") },
             /*C*/ {}
         );
     }
@@ -152,7 +141,7 @@ void OffhealRetPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         )
     );
     // [b31_deep] removed: a "blessing of might" trigger no context registers (it never ran); blessings are given out of
-    // combat by "blessing on party by role" (GenericPaladinNonCombatStrategy).
+    // combat by "blessing needed" -> "cast blessing" (GenericPaladinNonCombatStrategy).
     triggers.push_back(
         new TriggerNode(
         "low health",

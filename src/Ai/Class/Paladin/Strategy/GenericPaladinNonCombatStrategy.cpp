@@ -79,12 +79,8 @@ void GenericPaladinNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& tr
     if (specTab == PALADIN_TAB_PROTECTION || specTab == PALADIN_TAB_RETRIBUTION)
         triggers.push_back(new TriggerNode("often", { NextAction("apply stone", ACTION_IDLE + 1.0f) }));
 
-    triggers.push_back(new TriggerNode("greater blessing needed",
-        { NextAction("cast greater blessing assignment", ACTION_NORMAL) }));
-
-    // [pal-bless-role] Every member gets a blessing by role (the greater assignments above are for raids).
-    triggers.push_back(new TriggerNode("blessing on party by role",
-        { NextAction("blessing on party by role", ACTION_NORMAL + 1.5f) }));
+    triggers.push_back(new TriggerNode("blessing needed",
+        { NextAction("cast blessing", ACTION_NORMAL) }));
 
     // K4: Divine Plea between pulls (it halves healing, so out of combat is the cheap window)
     triggers.push_back(new TriggerNode("medium mana", { NextAction("divine plea", ACTION_NORMAL + 1) }));

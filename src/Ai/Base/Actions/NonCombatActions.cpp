@@ -44,15 +44,16 @@ constexpr uint32 BG_WS_SPELL_WARSONG_FLAG = 23333;
 constexpr uint32 BG_WS_SPELL_SILVERWING_FLAG = 23335;
 constexpr uint32 BG_EY_NETHERSTORM_FLAG_SPELL = 34976;
 
-bool IsDisallowedShapeshiftForm(Player* bot)
+bool IsDisallowedFoodState(Player* bot)
 {
+    if (bot->HasUnitState(UNIT_STATE_LOST_CONTROL))
+        return true;
+
     if (bot->getClass() == CLASS_DRUID)
     {
         ShapeshiftForm form = bot->GetShapeshiftForm();
-        return form == FORM_TRAVEL || form == FORM_AQUA ||
-               form == FORM_FLIGHT || form == FORM_FLIGHT_EPIC ||
-               form == FORM_BEAR || form == FORM_DIREBEAR ||
-               form == FORM_CAT;
+        return form == FORM_TRAVEL || form == FORM_AQUA || form == FORM_FLIGHT || form == FORM_FLIGHT_EPIC ||
+               form == FORM_BEAR || form == FORM_DIREBEAR || form == FORM_CAT;
     }
     else if (bot->getClass() == CLASS_PRIEST)
     {
@@ -61,7 +62,7 @@ bool IsDisallowedShapeshiftForm(Player* bot)
 
     return false;
 }
-}
+}  // namespace
 
 // Drinking needs a real drink from the bags: the free "food" cheat path is gone. Every sit-down logs its reason.
 namespace
@@ -78,6 +79,9 @@ namespace
 
 bool DrinkAction::Execute(Event event)
 {
+    if (IsDisallowedFoodState(bot))
+        return false;
+
     std::string why;
     if (!RestState::WantsDrink(bot, &why))
         why = Acore::StringFormat("mana {:.0f} % < low line {} %", bot->GetPowerPct(POWER_MANA),
@@ -110,7 +114,7 @@ bool DrinkAction::isUseful()
 
 bool DrinkAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedShapeshiftForm(bot))
+    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(bot))
         return false;
 
     // [b33_dme] No real drink (spell category 59) in the bags: the "drink" item list falls back to food
@@ -133,6 +137,9 @@ bool DrinkAction::isPossible()
 
 bool EatAction::Execute(Event event)
 {
+    if (IsDisallowedFoodState(bot))
+        return false;
+
     std::string why;
     RestState::WantsFood(bot, &why);
     if (!UseItemAction::Execute(event))
@@ -157,7 +164,7 @@ bool EatAction::isUseful()
 
 bool EatAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedShapeshiftForm(bot))
+    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(bot))
         return false;
 
     if (bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) || bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) ||
