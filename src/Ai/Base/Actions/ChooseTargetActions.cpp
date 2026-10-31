@@ -264,9 +264,20 @@ bool AggressiveTargetAction::Execute(Event event)
         if (!bot->IsWithinLOSInMap(target))
         {
             // [lead34] a led tank: the leader walks its path in (Leader MoveTo "engage path in"), the order is open
-            if (Leader::LEADER_ROUTE_IS_DATA && Leader::LedBot(bot))
+            // [lead58] LEADER_TANK_WALKS_PULL: the tank walks its own path in (the leader judged it reachable before
+            // the order, lead49; its path guards keep it out of other packs' aggro); the order stays open while it
+            // walks - its next look goes on once it stands
+            if (Leader::LEADER_ROUTE_IS_DATA && Leader::LedBot(bot) && !Leader::LEADER_TANK_WALKS_PULL)
                 return PostCommit(bot, target, true, Leader::PullMethod::Engage,
                                   "engage: the leader walks the path in for sight", commitMobs, commitCost, single);
+            if (Leader::LEADER_TANK_WALKS_PULL && Leader::LedBot(bot))
+            {
+                bool const walked = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+                return PostCommit(bot, target, walked, Leader::PullMethod::Engage,
+                                  walked ? "engage: the tank walks its path in for sight"
+                                         : "engage: the tank's walk in for sight refused",
+                                  commitMobs, commitCost, single);
+            }
             if (MoveToLOS(target))
                 return PostCommit(bot, target, true, Leader::PullMethod::Engage, "engage: walks for sight",
                                   commitMobs, commitCost, single);  // [lead1]

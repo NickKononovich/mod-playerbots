@@ -385,6 +385,11 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
     return line;
 }
 
+namespace
+{
+    thread_local bool ignoreLeaderRest = false;  // [lead59] BelowOwnLine reads the bot's own lines
+}
+
 // [lead47] the leader's Rest command is on this led bot: it rests now, by the leader's line (no line of its own)
 bool LeaderRests(Player* bot)
 {
@@ -403,7 +408,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
     // [lead47] b96 rfc-h 332-372 s: the leader's Rest ("the boss pull waits: mana 78 % < 90 %") never reached the
     // drink - "rest mana" fires only below the member's own line (70 % before a mini-boss). Under the leader's Rest
     // the member drinks now; the leader's command ends when its line is reached
-    if (LeaderRests(bot) && bot->GetPowerPct(POWER_MANA) < 100.0f)
+    if (!ignoreLeaderRest && LeaderRests(bot) && bot->GetPowerPct(POWER_MANA) < 100.0f)
     {
         if (why)
             *why = Acore::StringFormat("the leader's Rest (mana {:.0f} %)", bot->GetPowerPct(POWER_MANA));
@@ -527,10 +532,18 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
     return false;
 }
 
+bool BelowOwnLine(Player* bot, std::string* why)
+{
+    ignoreLeaderRest = true;
+    bool const below = WantsDrink(bot, why) || WantsFood(bot, why);
+    ignoreLeaderRest = false;
+    return below;
+}
+
 bool WantsFood(Player* bot, std::string* why)
 {
     float const health = bot->GetHealthPct();
-    if (LeaderRests(bot) && health < 100.0f)  // [lead47] the leader's Rest: it eats now
+    if (!ignoreLeaderRest && LeaderRests(bot) && health < 100.0f)  // [lead47] the leader's Rest: it eats now
     {
         if (why)
             *why = Acore::StringFormat("the leader's Rest (health {:.0f} %)", health);

@@ -335,6 +335,9 @@ bool HealerHasWork(Player* bot);
 // skip: set when the next fight's prediction keeps the bot up although the fixed line would have it drink.
 bool WantsDrink(Player* bot, std::string* why = nullptr, std::string* skip = nullptr);
 bool WantsFood(Player* bot, std::string* why = nullptr);
+// [lead59] the member's own lines (the computed line for its next fight), without the leader's Rest command: what the
+// leader's Rest is judged by (it stops at the line, not at full)
+bool BelowOwnLine(Player* bot, std::string* why = nullptr);
 // Sitting with food / drink that has nothing left to do: full, or a fight started, or (REST_STAND_AT_LINE) above its
 // own line while nobody close by still sits.
 bool RestDone(Player* bot);

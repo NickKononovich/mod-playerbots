@@ -205,6 +205,17 @@ namespace
         }
         if (Leader::LEADER_NO_OWN_FOLLOW && in({"follow"}))
             return true;
+        // [lead61] user: «хил, начинай хилить» is the leader's command - a led healer heals in a fight only under the
+        // leader's Heal (issued once every fight mob is on the tank, or when the tank is about to die); out of a fight
+        // no heal on a full target (no pre-pull HoT)
+        if (dynamic_cast<CastHealingSpellAction*>(action) && Leader::LEADER_HEAL_AFTER_THREAT)
+        {
+            if (combat && PlayerbotAI::IsHeal(self) && events.attack != Leader::AttackEvent::Heal)
+                return true;
+            if (!combat && !gate)
+                if (Unit* healed = action->GetTarget(); healed && healed->GetHealthPct() >= 100.0f)
+                    return true;
+        }
         // [lead18] LEADER_HEALER_HEALS_ONLY: a led healer casts nothing on an enemy
         if (Leader::LEADER_HEALER_HEALS_ONLY && PlayerbotAI::IsHeal(self) &&
             !dynamic_cast<CastHealingSpellAction*>(action) &&

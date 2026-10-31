@@ -8300,6 +8300,56 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             }
         }
 
+        // [lead60] user: «можно пулить несколько мобов - наш гир это позволяет»: a neighbouring idle pack (a mob
+        // within PLACEMENT_RANGED_YD of this one, the ranged placement's own distance) is taken in the same pull when
+        // the whole fits the capacity model (EstimatePack / CarefulOverload / planFits: the proven strength) and
+        // clears faster than one by one (plan_compare)
+        if (Leader::LEADER_COMBINE_PACKS && engageFits && engageSeen && !engageCrossed && !engageHazard && !crowd)
+        {
+            std::vector<Unit*> together = pack;
+            std::string merged;
+            for (ObjectGuid const& guid : possible)
+            {
+                Unit* other = botAI->GetUnit(guid);
+                if (!other || other == candidate ||
+                    std::find(together.begin(), together.end(), other) != together.end() ||
+                    !IsIdleEnemy(bot, other) || IsBossMob(other) ||
+                    other->GetExactDist(candidate) > PLACEMENT_RANGED_YD)
+                    continue;
+                std::vector<Unit*> otherPack;
+                CollectPack(botAI, bot, other, other->GetPosition(), possible, otherPack,
+                            FightHere(other->GetPosition()), measured, false, nullptr);
+                otherPack.push_back(other);
+                std::vector<Unit*> trial = together;
+                for (Unit* mob : otherPack)
+                    if (std::find(trial.begin(), trial.end(), mob) == trial.end())
+                        trial.push_back(mob);
+                PackEstimate const trialEstimate = EstimatePack(trial, bot, groupDps, estimateMode);
+                OverloadTerms trialTerms;
+                CarefulOverload(bot, trialEstimate, strength, support, kit, measured, &trialTerms);
+                PackEstimate const otherEstimate = EstimatePack(otherPack, bot, groupDps, estimateMode);
+                float const combinedSec = FightWindowSec(trialEstimate);
+                float const separateSec = FightWindowSec(estimate) + FightWindowSec(otherEstimate) +
+                                          PULL_TOGETHER_OVERHEAD_SEC;
+                if (!planFits(trialEstimate, trialTerms.Max(comfort)) || combinedSec >= separateSec)
+                    continue;
+                together = trial;
+                estimate = trialEstimate;
+                terms = trialTerms;
+                merged += (merged.empty() ? "" : ", ") + other->GetName();
+                LOG_INFO("playerbots",
+                         "[lead60] pull_combine {}: + {} ({} mobs, overload {:.2f}, {:.0f} s vs {:.0f} s)",
+                         bot->GetName(), other->GetName(), trialEstimate.mobs, trialTerms.Max(comfort), combinedSec,
+                         separateSec);
+            }
+            if (!merged.empty())
+            {
+                pack = together;
+                return takeEngage(Acore::StringFormat("pull_combine: {} mobs with {} (fits, faster together)",
+                                                      estimate.mobs, merged));
+            }
+        }
+
         if (engageFits && engageSeen && !engageCrossed && !engageHazard && !crowd)
             return takeEngage(Acore::StringFormat("{} mobs at its spot, nothing else near", estimate.mobs));
 
@@ -12130,6 +12180,16 @@ void AggressiveTargetAction::FillDecision(bool go, PullPlanner::Decision& out)
         }
         return;
     }
+
+    // [lead58] user: the method is the leader's - an Arcatraz corpse trap never comes back to a pull back / LoS shot
+    // (b34_arc): the leader's method for it is the walk-in (it bursts at 8 yd), the tank no longer changes it
+    if ((_planPullBack || _planLos) && !_planTarget.IsEmpty())
+        if (Unit* trap = botAI->GetUnit(_planTarget); trap && Arcatraz::IsCorpseTrap(trap) && !trap->IsInCombat())
+        {
+            _planPullBack = false;
+            _planLos = false;
+            _planReason += "; a corpse trap: walked to (it bursts at 8 yd)";
+        }
 
     out.verdict = PullPlanner::Verdict::Go;
     out.why = _planReason;

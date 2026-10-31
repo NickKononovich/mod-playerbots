@@ -19474,6 +19474,16 @@ namespace TestHarness
             switch (party.buffStep)
             {
                 case 0:
+                    // [lead59] b106: the run started with members at 50 % health / mana (the last run's state) - the
+                    // run start is test setup: everyone full
+                    if (party.buffReason == "run start")
+                        for (Player* bot : players)
+                            if (bot->IsAlive())
+                            {
+                                bot->SetFullHealth();
+                                if (bot->GetMaxPower(POWER_MANA))
+                                    bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
+                            }
                     for (Player* bot : players)
                         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
                             if (bot->IsAlive() && !bot->IsInCombat() &&
@@ -21247,23 +21257,11 @@ namespace TestHarness
             if (Leader::LEADER_PREPULL_STAY)
             {
                 Position const here = bot->GetPosition();
-                // [lead53] user: the healer's first heals pull the mobs not yet on the tank - at the pull it stands
-                // within the tank's taunt reach (its taunt spell's range) and in its sight, so the tank picks the
-                // adds up at once; else it stands at the tank's first follow place
-                float const tauntReach = LeaderTauntReach(tank);
-                bool const nearTank = tauntReach <= 0.0f ||
-                                      (here.GetExactDist(tank->GetPosition()) <= tauntReach &&
-                                       tank->IsWithinLOS(here.GetPositionX(), here.GetPositionY(),
-                                                         here.GetPositionZ() + 2.0f));
+                // [lead61] user: «хилу не обязательно бегать» - the healer stays when it reaches and sees the fight
+                // spot (lead53's placement by the tank is gone); else the leader re-spots it after the tank holds
                 if (!healer || (HealReaches(tank, here, fight) &&
-                                here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD && nearTank))
+                                here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD))
                     lead.spots[member.guid] = here;
-                else if (healer)
-                {
-                    Position const close = LeaderFollowSpot(tank, 0);
-                    if (HealReaches(tank, close, fight))
-                        lead.spots[member.guid] = close;
-                }
                 continue;
             }
             // [lead20] user: a member whose position already fits does not move (the healer: it reaches and sees the
@@ -22321,7 +22319,7 @@ namespace TestHarness
         // the straight walk for sight refused, «walks its path in» walked nothing and the order ended unbegun. The
         // open engage order out of sight: the leader walks the tank's path in toward the mob until it sees it (then
         // the tank's executor takes its next step, the attack)
-        if (Leader::LEADER_ROUTE_IS_DATA && !fighting)
+        if (Leader::LEADER_ROUTE_IS_DATA && !Leader::LEADER_TANK_WALKS_PULL && !fighting)
         {
             Leader::PullOrder order;
             if (Leader::Orders::GetOpen(party.leader, order) && order.method == Leader::PullMethod::Engage &&
@@ -22390,6 +22388,21 @@ namespace TestHarness
                                                   .Bool("critter", victimMob->IsCritter())
                                                   .Str("to", petTarget ? petTarget->GetName() : "follow"));
             }
+        // [lead61] b106 pull 1 started "unplanned: Rthunaa" 35 ms before the tank: only the tank opens a pull - out
+        // of a fight a member's pet on a mob is called back
+        if (!fighting)
+            for (Player* bot : seats)
+                if (Pet* pet = bot->GetPet(); pet && pet->IsAlive() && pet->GetVictim() && pet->GetCharmInfo())
+                {
+                    pet->AttackStop();
+                    pet->GetMotionMaster()->MoveFollow(bot, PET_FOLLOW_DIST, pet->GetFollowAngle());
+                    pet->GetCharmInfo()->SetCommandState(COMMAND_FOLLOW);
+                    pet->GetCharmInfo()->SetIsCommandAttack(false);
+                    DecisionLog::Instance().Write(run, "leader", "pet_redirect", bot->GetGUID(), bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName())
+                                                      .Str("pet", pet->GetName()).Str("to", "follow")
+                                                      .Str("why", "only the tank opens a pull"));
+                }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
             for (Player* bot : seats)
@@ -22489,6 +22502,8 @@ namespace TestHarness
 
         // [lead45] the tank rests too (it is no seat): the boss pull waits for its mana, so the leader tells it to
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
+        if (!fighting)
+            lead.healStarted = false;  // [lead61] the next fight's heals start on the leader's word again
         if (fighting)
         {
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
@@ -22562,16 +22577,12 @@ namespace TestHarness
             if (!combat)
             {
                 std::string restWhy;
-                bool needsRest = RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
-                                 RestState::WantsDrink(bot, &restWhy) || RestState::WantsFood(bot, &restWhy);
-                // [lead20] Rest holds until full: no Prepare in between (a buff stood the drinker up every 5 s)
+                // [lead59] user: no "sits: to full" - the Rest holds while the member is below its own computed line
+                // for the next fight (RestState::BelowOwnLine, FightManaLine) and stands it up at that line
+                bool needsRest = RestState::BelowOwnLine(bot, &restWhy);
                 bool const full = MemberFull(bot);
                 needsRest &= !full;  // [lead22] never Rest a full member
-                if (needsRest)
-                    lead.restingToFull.insert(guid);
-                else if (full || !RestState::CanRest(bot))
-                    lead.restingToFull.erase(guid);
-                needsRest |= lead.restingToFull.count(guid) > 0;
+                lead.restingToFull.erase(guid);
                 // [lead46] b95 rfc-h 348-423 s: the boss pull waited for "Rtshaab at 66 % mana" (BossReadyGap, 90 %
                 // for a real boss) while the Rest rule read Oggleflint as a mini-boss (70 %) and gave Rtshaab no Rest.
                 // While the boss pull waits there is ONE readiness: the member rests exactly while it is below the
@@ -22698,6 +22709,24 @@ namespace TestHarness
                     lead.hazardSpots.erase(guid);
             }
 
+            // [lead59] b106: Rtdruaa combat spot -> "aggro loss: to the tank" -> combat spot (command_repeat) - two
+            // rules owned its position. The run, once issued, holds until the member arrived (the mob may switch
+            // back meanwhile); the combat spot does not overwrite it
+            if (!moved && combat && lead.runHold.count(guid))
+            {
+                Leader::MemberEvents held;
+                if (Leader::Events::Get(guid, held) && held.move == Leader::MoveEvent::MoveTo &&
+                    held.moveWhy == "aggro loss: to the tank" &&
+                    bot->GetExactDist2d(held.spot.GetPositionX(), held.spot.GetPositionY()) > held.tolerance)
+                {
+                    Leader::Events::SetMove(guid, held.move, held.spot, held.tolerance, held.moveWhy);
+                    moved = true;
+                }
+                else
+                    lead.runHold.erase(guid);
+            }
+            if (!combat)
+                lead.runHold.erase(guid);
             // the aggro-loss victim runs next to the tank (between it and the tank, in heal reach)
             auto const loose = looseOn.find(guid);
             if (!moved && loose != looseOn.end())
@@ -22720,6 +22749,7 @@ namespace TestHarness
                     runEvents.moveWhy == "aggro loss: to the tank" &&
                     runEvents.spot.GetExactDist(tank->GetPosition()) <= LEADER_LOOSE_TANK_YD + 1.5f)
                     spot = runEvents.spot;
+                lead.runHold.insert(guid);  // [lead59]
                 if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank"))
                     logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "aggro loss: to the tank").Str("mob", loose->second->GetName())
@@ -22986,8 +23016,29 @@ namespace TestHarness
             {
                 if (bot == healer || PlayerbotAI::IsHeal(bot))
                 {
-                    if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
-                        logEvent(bot, "Heal", JsonObject().Str("why", "the group fights"));
+                    // [lead61] user: the leader starts the heals - once every fight mob is on the tank (no heal
+                    // threat on a mob still coming), or at once when a member is about to die (the config's critical
+                    // health)
+                    bool allOnTank = true;
+                    bool emergency = tank->GetHealthPct() < float(sPlayerbotAIConfig.CriticalHealth);
+                    for (Player* member : seats)
+                    {
+                        emergency |= member->GetHealthPct() < float(sPlayerbotAIConfig.CriticalHealth);
+                        for (Unit* attacker : member->getAttackers())
+                            if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
+                                allOnTank = false;
+                    }
+                    for (Unit* attacker : tank->getAttackers())
+                        if (attacker && attacker->IsAlive() && attacker->GetVictim() != tank)
+                            allOnTank = false;
+                    if (lead.healStarted || allOnTank || emergency)
+                    {
+                        if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
+                            logEvent(bot, "Heal", JsonObject().Str("why", allOnTank ? "every fight mob is on the tank"
+                                                                         : emergency ? "a member is about to die"
+                                                                                     : "the heals go on"));
+                        lead.healStarted = true;
+                    }
                 }
                 else if (stopDps)
                 {

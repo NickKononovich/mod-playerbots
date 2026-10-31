@@ -198,6 +198,13 @@ namespace Leader
     // где набрать угрозу, когда поменять цель» - the leader gives the tank the pull (and the group the focus); in the
     // fight the tank's own tank logic runs: no leader taunt / threat / attack / walk / hazard command to the tank
     constexpr bool LEADER_TANK_OWNS_FIGHT = true;
+    // [lead58] the pull walk is the tank's: it walks its own path within the leader's task (the pack, the method, the
+    // fight / kill spot; its own path guards keep it out of other packs' aggro) - no leader "engage path in" MoveTo
+    constexpr bool LEADER_TANK_WALKS_PULL = true;
+    // [lead61] a non-emergency heal waits while a mob in the tank's fight is not on the tank (heal threat)
+    constexpr bool LEADER_HEAL_AFTER_THREAT = true;
+    // [lead60] neighbouring packs combined into one pull while the capacity model says the group survives it
+    constexpr bool LEADER_COMBINE_PACKS = true;
     // [lead34] user: «Если патруль, надо убивать патруль.» - no wait for a patrol to walk away (no patrol window, no
     // patrol wait, no step back, no lane wait): a patrol near the route or the pull is the leader's target, taken along
     // with the pull when the combined fight is safe (PullPlanner::JudgePack), else pulled as its own pull first
