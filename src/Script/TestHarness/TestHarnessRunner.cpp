@@ -22194,7 +22194,9 @@ namespace TestHarness
                     bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
                         (melee ? 1.0f : 2.0f))
                 {
-                    if (!tankHolds(bot->GetPosition(), found->second.second))
+                    // [lead25] user: «танк пулит, моб бежит к нему… через секунду все ДД начинают дамажить»: melee
+                    // walk to the meeting at the tag (the pulled mob already comes); ranged / healer wait for the hold
+                    if (!melee && !tankHolds(bot->GetPosition(), found->second.second))
                     {
                         if (!lead.holdWaitMs.count(guid))
                             lead.holdWaitMs[guid] = now;
@@ -22754,7 +22756,28 @@ namespace TestHarness
             }
             std::string broken;
             if (party.inCombat || tank->IsInCombat())
+            {
                 broken = "the fight is on";
+                // [lead25] user: «если лишние мобы сагрятся, то танк неправильно выбирает позицию» - an add outside
+                // the committed pull: extra_aggro with the fight spot and its distance
+                std::vector<ObjectGuid> const planned = LeaderPullMobs(lead.commit, lead.commitMob);
+                for (Member const& member : party.members)
+                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
+                        for (Unit* attacker : bot->getAttackers())
+                            if (attacker && LeaderFightMob(tank, attacker) &&
+                                std::find(planned.begin(), planned.end(), attacker->GetGUID()) == planned.end() &&
+                                std::find(lead.extraLogged.begin(), lead.extraLogged.end(), attacker->GetGUID()) ==
+                                    lead.extraLogged.end())
+                            {
+                                lead.extraLogged.push_back(attacker->GetGUID());
+                                DecisionLog::Instance().Write(
+                                    run, "leader", "extra_aggro", attacker->GetGUID(), attacker->GetName(), true,
+                                    JsonObject().Str("add", attacker->GetName()).Str("on", member.name)
+                                        .Real("fightSpotDistance", attacker->GetExactDist(lead.meetPoint))
+                                        .Real("fightX", lead.meetPoint.GetPositionX())
+                                        .Real("fightY", lead.meetPoint.GetPositionY()));
+                            }
+            }
             else if (!mob || !mob->IsAlive())
                 broken = "the mob is dead";
             else if (mob->IsInCombat())
@@ -22860,6 +22883,16 @@ namespace TestHarness
                 lead.spotsWaiting = false;
                 lead.spotsIssuedMs = now;
                 issue(committed, "committed: " + lead.commitWhy);
+                // [lead25] the meeting point of the tank and the pulled mob: an engage meets at the mob, a pull back /
+                // los / range pull at the fight spot the mobs come to
+                lead.meetPoint = committed.kind == "engage" && mob ? mob->GetPosition() : lead.issuedFight;
+                lead.extraLogged.clear();
+                DecisionLog::Instance().Write(run, "leader", "meeting_point", lead.commitMob,
+                                              mob ? mob->GetName() : std::string(), true,
+                                              JsonObject().Str("kind", committed.kind)
+                                                  .Real("x", lead.meetPoint.GetPositionX())
+                                                  .Real("y", lead.meetPoint.GetPositionY())
+                                                  .Real("z", lead.meetPoint.GetPositionZ()));
                 lead.commitIssued = true;
                 lead.commitIssuedMs = now;
                 return true;

@@ -474,6 +474,8 @@ namespace TestHarness
             std::string spotGateLast;
             uint32 commitTickMs = 0;              // [lead20] rest time does not age a commitment
             std::map<ObjectGuid, uint32> holdWaitMs;  // [lead20] combat re-spot waiting for the tank's hold
+            Position meetPoint;                        // [lead25] where the tank meets the pulled mob
+            std::vector<ObjectGuid> extraLogged;       // [lead25] extra_aggro logged per pull
             uint32 lostCheckMs = 0;
             uint32 bossPrepareSinceMs = 0;
             ObjectGuid heldReadyMob;

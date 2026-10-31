@@ -39,7 +39,7 @@ namespace Leader
     constexpr bool LEADER_DECISION_LOG = true;
     // [speech] the leader says what it thinks: every significant decision becomes one chat line to the GM watching
     // the run (system message, rate-limited per topic), so a user can see where the group waits and why.
-    constexpr bool LEADER_SPEECH = true;
+    constexpr bool LEADER_SPEECH = false;  // [lead25] user: too many chat lines (decisions.jsonl keeps them)
     // [lead2] Step 2: one owner of the tank's movement during a pull, handed over on order events only. false: the
     // old ROUTE_NO_WALK_IN_PULL heuristics (TankPullRunning, PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS) for the A/B.
     constexpr bool LEADER_ONE_TANK_MOVER = true;
