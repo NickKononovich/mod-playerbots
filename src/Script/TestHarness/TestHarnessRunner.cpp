@@ -21760,15 +21760,26 @@ namespace TestHarness
             {
                 Unit* mob = ObjectAccessor::GetUnit(*tank, killOrder[i]);
                 Creature* creature = mob ? mob->ToCreature() : nullptr;
+                // [lead28] by state only (no 15 s break backoff): not in the group's fight, nothing on it that breaks
+                // the hold, and the hold spell's diminishing returns not at immune (the game's DR state)
                 if (!creature || mob == target || lead.ccAssign.count(mob->GetGUID()) || creature->IsDungeonBoss() ||
-                    IsCrowdControlBackedOff(mob) || IsGroupKillTarget(tank, mob))
+                    IsGroupKillTarget(tank, mob))
                     continue;
                 for (Player* bot : seats)
                 {
                     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
                     if (bot == healer || !botAI || controlling.count(bot->GetGUID()) || looseOn.count(bot->GetGUID()) ||
-                        !FindCrowdControl(botAI, mob, false) || !CrowdControlMarkReachable(bot, mob))
+                        !CrowdControlMarkReachable(bot, mob))
                         continue;
+                    CrowdControlOption const* option = FindCrowdControl(botAI, mob, false);
+                    if (!option || CrowdControlWouldBreak(botAI, mob))
+                        continue;
+                    if (SpellInfo const* hold = GetCrowdControlHoldInfo(botAI, *option))
+                    {
+                        DiminishingGroup const group = GetDiminishingReturnsGroupForSpell(hold, false);
+                        if (group != DIMINISHING_NONE && mob->GetDiminishing(group) >= DIMINISHING_LEVEL_IMMUNE)
+                            continue;
+                    }
                     lead.ccAssign[mob->GetGUID()] = bot->GetGUID();
                     controlling.insert(bot->GetGUID());
                     break;
