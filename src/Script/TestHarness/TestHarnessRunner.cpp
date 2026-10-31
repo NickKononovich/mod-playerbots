@@ -21054,6 +21054,19 @@ namespace TestHarness
             return melee + spell;
         }
 
+        // [lead64] where a melee member waits at a pull: short of the meeting point on its own side by
+        // LEADER_LOOSE_TANK_YD (next to the tank), never into the mob before the tank has hit it
+        Position LeaderMeleeWait(Player* bot, Position const& meet)
+        {
+            float const dx = bot->GetPositionX() - meet.GetPositionX();
+            float const dy = bot->GetPositionY() - meet.GetPositionY();
+            float const length = std::hypot(dx, dy);
+            if (length <= LEADER_LOOSE_TANK_YD)
+                return bot->GetPosition();
+            return Position(meet.GetPositionX() + dx / length * LEADER_LOOSE_TANK_YD,
+                            meet.GetPositionY() + dy / length * LEADER_LOOSE_TANK_YD, meet.GetPositionZ());
+        }
+
         // [lead42] how many members refused their Attack on `unit` this fight
         int64 RefusedCount(std::map<ObjectGuid, std::set<ObjectGuid>> const& refused, Unit const* unit)
         {
@@ -21654,8 +21667,10 @@ namespace TestHarness
             if (changed && hadMove && bot)
             {
                 auto const prev = lead.prevMoves.find(member);
+                // [lead64] A -> B -> A after a higher-precedence B ended (a run to the tank done) is no ping-pong
                 if (prev != lead.prevMoves.end() && prev->second.second == why &&
-                    prev->second.first.GetExactDist(spot) <= std::max(tolerance, 1.0f))
+                    prev->second.first.GetExactDist(spot) <= std::max(tolerance, 1.0f) &&
+                    Leader::Events::MovePrecedence(before.moveWhy) <= Leader::Events::MovePrecedence(why))
                 {
                     uint32& repeats = lead.commandRepeats[bot->GetName() + "|" + why];
                     if (!repeats++)
@@ -21670,6 +21685,11 @@ namespace TestHarness
                 DecisionLog::Instance().Write(run, "leader", "command_override", member, bot->GetName(), true,
                                               JsonObject().Str("member", bot->GetName()).Str("old", before.moveWhy)
                                                   .Str("new", why).Real("jump", before.spot.GetExactDist(spot)));
+            if (changed && bot && (!hadMove || before.moveWhy != why))
+                DecisionLog::Instance().Write(run, "leader", "position_owner", member, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("owner", why)
+                                                  .Num("precedence", Leader::Events::MovePrecedence(why))
+                                                  .Str("was", hadMove ? before.moveWhy : std::string("-")));
             if (changed && bot && move != Leader::MoveEvent::Hold)
                 DecisionLog::Instance().Write(run, "leader", "leader_spot", member, bot->GetName(), true,
                                               JsonObject().Str("member", bot->GetName()).Str("why", why)
@@ -22814,7 +22834,9 @@ namespace TestHarness
                     // [lead38] b86: 135 "the fight spot moved" re-spots - a new anchor re-spots a member only when its
                     // held spot no longer fits; a ranged / healer spot is not re-judged while the target runs in and
                     // the tank does not hold it yet (b87 pull 1: spots chased the incoming Earthborer)
-                    else if (!melee && target->isMoving() && target->GetVictim() != tank)
+                    // [lead64] melee too: no spot chases a mob still running to the tank (b109 30.6-31.5 s)
+                    else if (target->isMoving() &&
+                             (target->GetVictim() != tank || !tank->IsWithinMeleeRange(target)))
                         breaks.clear();
                     else
                     {
@@ -22829,10 +22851,18 @@ namespace TestHarness
                         }
                     }
                     // [lead38] no first spot for a ranged / healer while the target runs in: it stays (and casts)
-                    if (breaks == "first spot" && !melee && target->isMoving() && target->GetVictim() != tank)
+                    if (breaks == "first spot" && target->isMoving() &&
+                        (target->GetVictim() != tank || !tank->IsWithinMeleeRange(target)))
                     {
                         breaks.clear();
                         moved = true;
+                        // [lead64] user: «одной командой» - melee go to the meeting point once (the leader's
+                        // predicted meeting of the tank and the mob) and adjust once the mob stands on the tank
+                        if (melee && !bot->IsWithinMeleeRange(target) &&
+                            checkedMove(guid, Leader::MoveEvent::MoveTo, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
+                                        "along with the tank: to the meeting point"))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", "along with the tank: to the meeting point"));
                     }
                     if (!breaks.empty())
                     {
@@ -22956,6 +22986,18 @@ namespace TestHarness
                 if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
                     Leader::Orders::GetOpen(party.leader, engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+                // [lead64] melee at an engage: one command when the tank goes - to the meeting point
+                bool meleeToMeeting = false;
+                if (melee && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
+                    Leader::Orders::GetOpen(party.leader, engage))
+                {
+                    meleeToMeeting = true;
+                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
+                                    "along with the tank: to the meeting point"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "along with the tank: to the meeting point"));
+                    moved = true;
+                }
                 // [lead29] the range spot is validated before it is issued (ground, lava / slime / a drop-off, an
                 // unpulled mob's reach, the member's own walk guards): the nearest valid one between its range and
                 // the tank; none (or the member refused it): the member follows the tank - never "stand" while it
@@ -22999,7 +23041,10 @@ namespace TestHarness
                         rangeValid = true;
                     }
                 }
-                if (rangeValid)
+                if (meleeToMeeting)
+                {
+                }
+                else if (rangeValid)
                 {
                     lead.engageRangeSpots[guid] = {engaged->GetGUID(), rangeSpot};
                     if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,

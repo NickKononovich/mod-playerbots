@@ -475,6 +475,10 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            // [lead64] the position arbiter: a move asserted this tick by a rule of higher precedence holds - a lower
+            // one cannot overwrite it in the same tick (b109: "aggro loss: to the tank" then "combat spot" at 32.6 s)
+            if (e.move != MoveEvent::None && e.moveMs == slot.gen && MovePrecedence(e.moveWhy) > MovePrecedence(why))
+                return false;
             // [lead55] user: «пожалей мой CPU» - b100: Rtdruaa 5 073 commands (813 in one second). The same command
             // is no new command: a move changes only when its point leaves the current one's arrival tolerance
             // (the walk's own, at least the old 1 yd) or its purpose changes; an unchanged one keeps its point
@@ -644,6 +648,23 @@ namespace Leader
             if (changed)
                 ++e.seq;
             return changed;
+        }
+
+        int32 MovePrecedence(std::string const& why)
+        {
+            // hazard / puddle > aggro-loss run > heal reach / sight > combat spot > the pull's spot > walk-along
+            auto const starts = [&why](char const* prefix) { return why.rfind(prefix, 0) == 0; };
+            if (starts("hazard"))
+                return 5;
+            if (starts("aggro loss"))
+                return 4;
+            if (starts("heal reach") || starts("sight"))
+                return 3;
+            if (starts("combat spot"))
+                return 2;
+            if (starts("its spot for the pull") || starts("along with the tank: to range"))
+                return 1;
+            return 0;
         }
 
         void BeginTick(ObjectGuid member)

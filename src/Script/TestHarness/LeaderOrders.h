@@ -554,6 +554,8 @@ namespace Leader
     {
         // Leader side (world thread). Each returns true when the field changed (a new event to log).
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why);
+        // [lead64] the position arbiter's precedence of a move by its purpose (hazard 5 ... walk-along 0)
+        int32 MovePrecedence(std::string const& why);
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder);
         bool SetIntensity(ObjectGuid member, Intensity intensity);

@@ -248,6 +248,14 @@ namespace
                 "metamorphosis", "mirror image", "starfall", "force of nature", "summon infernal",
                 "dancing rune weapon", "unholy frenzy", "hysteria"}))
             return true;
+        // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
+        // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
+        // damage: only under the leader's Attack and not under its Stop (no threat headroom)
+        // [lead64] user: non-damaging totems may go down early (they save GCDs); damaging ones only once the tank has
+        // threat - out of a fight never (Call of the Elements drops Searing / Magma too)
+        if (in({"call of the elements", "searing totem", "magma totem", "fire nova", "fire elemental totem"}) &&
+            (!combat || events.attack != Leader::AttackEvent::Attack || events.intensity == Leader::Intensity::Stop))
+            return true;
         // [lead16] loot only under the leader's Loot
         if (Leader::LEADER_LOOT_EVENTS && !events.loot &&
             in({"loot", "move to loot", "open loot", "add all loot", "add loot", "store loot", "release loot"}))
