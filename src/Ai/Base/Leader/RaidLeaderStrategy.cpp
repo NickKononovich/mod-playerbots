@@ -206,6 +206,23 @@ namespace
             (dynamic_cast<AttackAction*>(action) || dynamic_cast<CastShootAction*>(action) ||
              (dynamic_cast<CastSpellAction*>(action) && EnemyTargetName(action))))
             return true;
+        // [lead36] b85 rfc-h: the enhancement shaman cast "lesser healing wave on party" for long stretches under
+        // the leader's Attack - a damage dealer heals another member only on a leader Heal command (none exists for a
+        // damage dealer yet): its own heal on itself stays (an emergency personal save)
+        if (combat && !PlayerbotAI::IsHeal(self) && events.attack == Leader::AttackEvent::Attack &&
+            dynamic_cast<CastHealingSpellAction*>(action))
+        {
+            if (gate)
+            {
+                if (action->GetTargetName() != "self target")
+                    return true;
+            }
+            else if (Unit* healTarget = action->GetTarget(); healTarget && healTarget != self)
+                return true;
+        }
+        // [lead36] ... and the mage handed out food in the fight
+        if (combat && in({"give food", "give water"}))
+            return true;
         // [lead16] loot only under the leader's Loot
         if (Leader::LEADER_LOOT_EVENTS && !events.loot &&
             in({"loot", "move to loot", "open loot", "add all loot", "add loot", "store loot", "release loot"}))

@@ -234,6 +234,11 @@ namespace Leader
     // [lead18] the healer keeps the tank: a healer spot is within LEADER_HEALER_TANK_YD of the tank's current position
     // and in its sight; the healer counts as having lost the tank beyond LEADER_HEALER_LOST_YD or out of sight
     constexpr float LEADER_HEALER_TANK_YD = 30.0f;
+    // [lead36] b85 rfc-h 103-186 s: 91 "heal reach" and 35 + 35 "out of spell range" re-spots - a spot picked at the
+    // very limit broke on the next tick. A new combat / heal-reach spot is picked this much inside every reach (heal
+    // reach, the healer's tank reach, the spell range); a held one breaks only at the limit itself (hysteresis: a
+    // re-spot follows a real change)
+    constexpr float LEADER_SPOT_ACQUIRE_MARGIN = 4.0f;
     constexpr float LEADER_HEALER_LOST_YD = 36.0f;
     constexpr float LEADER_PRESAVE_HIT_PCT = 35.0f;   // a cast whose damage is this share of the victim's max health
     constexpr float LEADER_PRESAVE_TANK_PCT = 40.0f;  // the tank under a boss below this health

@@ -20347,9 +20347,17 @@ namespace TestHarness
         }
 
         // the healer at `from` heals `to`: in range (LEADER_HEAL_REACH_YD) and in sight
+        // [lead36] LEADER_SPOT_ACQUIRE_MARGIN while a new spot is picked (SpotAcquire), 0 for a held spot's check
+        float g_spotAcquireMargin = 0.0f;
+        struct SpotAcquire
+        {
+            SpotAcquire() { g_spotAcquireMargin = Leader::LEADER_SPOT_ACQUIRE_MARGIN; }
+            ~SpotAcquire() { g_spotAcquireMargin = 0.0f; }
+        };
+
         bool HealReaches(Player* tank, Position const& from, Position const& to)
         {
-            return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD &&
+            return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&
                    tank->GetMap()->isInLineOfSight(from.GetPositionX(), from.GetPositionY(),
                                                    from.GetPositionZ() + 2.0f, to.GetPositionX(), to.GetPositionY(),
                                                    to.GetPositionZ() + 2.0f, tank->GetPhaseMask(),
@@ -20924,7 +20932,7 @@ namespace TestHarness
             float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
             if (melee && gap > target->GetCombatReach() + bot->GetCombatReach() + 1.5f)
                 return "out of melee reach of the target";
-            if (!melee && !PlayerbotAI::IsHeal(bot) && gap > LeaderSpellReach(bot))
+            if (!melee && !PlayerbotAI::IsHeal(bot) && gap > LeaderSpellReach(bot) - g_spotAcquireMargin)
                 return "out of spell range of the target";
             if (LeaderZoneAt(zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), LEADER_HAZARD_EDGE))
                 return "a hazard covers it";
@@ -21677,7 +21685,7 @@ namespace TestHarness
         {
             // [lead18] the tank first: within LEADER_HEALER_TANK_YD of its current position and in sight
             if (!reaches(spot, tank->GetPosition()) ||
-                spot.GetExactDist(tank->GetPosition()) > Leader::LEADER_HEALER_TANK_YD)
+                spot.GetExactDist(tank->GetPosition()) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
                 return false;
             for (Player* other : seats)
                 if (other != healer && !reaches(spot, plannedAt(other)))
@@ -21757,6 +21765,23 @@ namespace TestHarness
                 Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {});
             if (threatChanged || attackChanged)
                 logEvent(tank, "Taunt", JsonObject().Str("mob", mob->GetName()).Num("spell", spell).Str("how", how));
+            // [lead36] b85 rfc-h: the tank stood 7.3 yd off the Trogg on the healer ("0 attackers ... going idle"):
+            // the leader's Taunt / Attack includes the walk to melee - a MoveTo to the mob while out of its melee
+            // reach (re-issued only when the mob moved off the issued point)
+            if (tank->IsAlive() && !tank->IsWithinMeleeRange(mob))
+            {
+                Leader::MemberEvents tankEvents;
+                bool const has = Leader::Events::Get(tank->GetGUID(), tankEvents) &&
+                                 tankEvents.move == Leader::MoveEvent::MoveTo &&
+                                 tankEvents.moveWhy == "aggro loss: to the mob";
+                Position const point = has && tankEvents.spot.GetExactDist(mob) <= 2.0f ? tankEvents.spot
+                                                                                          : mob->GetPosition();
+                if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point,
+                                tank->GetCombatReach() + mob->GetCombatReach(), "aggro loss: to the mob"))
+                    logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
+                             JsonObject().Str("why", "aggro loss: to the mob").Str("who", "tank")
+                                 .Str("mob", mob->GetName()).Real("distance", tank->GetExactDist(mob)));
+            }
             // the others' target is never a loose mob
             if (target && looseMobs.count(target->GetGUID()))
             {
@@ -22301,6 +22326,7 @@ namespace TestHarness
                         bool const got =
                             slow([&]
                                  {
+                                     SpotAcquire const acquire;  // [lead36]
                                      return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(), melee,
                                                                     zones, keeps, spot) ||
                                             LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot);
@@ -22666,7 +22692,11 @@ namespace TestHarness
             {
                 Position fix;
                 bool const fixed =
-                    slow([&] { return LeaderHealerRespot(healer, GET_PLAYERBOT_AI(healer), healerKeeps, fix); });
+                    slow([&]
+                         {
+                             SpotAcquire const acquire;  // [lead36]
+                             return LeaderHealerRespot(healer, GET_PLAYERBOT_AI(healer), healerKeeps, fix);
+                         });
                 if (fixed && tankHolds(healer->GetPosition(), fix) &&
                     checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
                                                      "heal reach"))

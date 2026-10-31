@@ -10,6 +10,7 @@
 #include "Group.h"
 #include "HealthTriggers.h"
 #include "InterruptValues.h"
+#include "LastMovementValue.h"  // [lead36]
 #include "LeaderValues.h"
 #include "LeaderOrders.h"  // [lead15]
 #include "PathGenerator.h"  // [lead19]
@@ -636,6 +637,20 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     // [lead27] already walking there: the same move again is no refusal
     if (IsDuplicateMove(events.spot.GetPositionX(), events.spot.GetPositionY(), events.spot.GetPositionZ()))
         return true;
+    // [lead36] b85 rfc-h: 45+ "member_refusal: combat spot - another guard": the leader's newer spot met the wait for
+    // the last move (IsWaitingForLastMove, the walk to the old spot) - the new command replaces that walk at once
+    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
+    {
+        LastMovement& last = *context->GetValue<LastMovement&>("last movement");
+        last.lastdelayTime = 0.0f;
+        last.msTime = 0;
+    }
+    if (!IsMovingAllowed())
+    {
+        Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
+                            "can not move now (lost control / rooted): " + events.moveWhy);
+        return false;
+    }
     bool const moved = MoveTo(bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
                               events.spot.GetPositionZ(), false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
