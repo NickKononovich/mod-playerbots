@@ -22504,6 +22504,30 @@ namespace TestHarness
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
         if (!fighting)
             lead.healStarted = false;  // [lead61] the next fight's heals start on the leader's word again
+        // [lead62] each member's damage taken in this fight: health drops summed, seconds since its first drop
+        {
+            std::vector<Player*> hurt = seats;
+            hurt.push_back(tank);
+            for (Player* member : hurt)
+            {
+                auto& taken = lead.damageTaken[member->GetGUID()];
+                float const hp = float(member->GetHealth());
+                if (!fighting)
+                {
+                    taken = {};
+                    continue;
+                }
+                if (taken.lastHp > 0.0f && hp < taken.lastHp)
+                {
+                    if (!taken.sinceMs)
+                        taken.sinceMs = now;
+                    taken.hp += taken.lastHp - hp;
+                }
+                if (taken.sinceMs)
+                    taken.sec = getMSTimeDiff(taken.sinceMs, now) / 1000.0f;
+                taken.lastHp = hp;
+            }
+        }
         if (fighting)
         {
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
@@ -23020,13 +23044,47 @@ namespace TestHarness
                     // threat on a mob still coming), or at once when a member is about to die (the config's critical
                     // health)
                     bool allOnTank = true;
-                    bool emergency = tank->GetHealthPct() < float(sPlayerbotAIConfig.CriticalHealth);
-                    for (Player* member : seats)
+                    // [lead62] user: no fixed line - a member is about to die when its time to death (its health over
+                    // the damage it took per second in this fight) is within the healer's time to land a heal (its
+                    // fastest known heal's cast + the global cooldown + the walk into heal reach) plus the next cast
+                    float castSec = 0.0f;
                     {
-                        emergency |= member->GetHealthPct() < float(sPlayerbotAIConfig.CriticalHealth);
-                        for (Unit* attacker : member->getAttackers())
-                            if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
-                                allOnTank = false;
+                        static constexpr uint32 HEALS[] = {2061, 8004, 19750, 8936, 50464, 331, 635, 5185, 2050};
+                        for (uint32 spell : HEALS)
+                            if (bot->HasSpell(spell))
+                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+                                {
+                                    float const sec = info->CalcCastTime(bot) / 1000.0f;
+                                    castSec = castSec > 0.0f ? std::min(castSec, sec) : sec;
+                                }
+                    }
+                    constexpr float GCD_SEC = 1.5f;  // the game's global cooldown
+                    std::string emergencyWhy;
+                    bool emergency = false;
+                    std::vector<Player*> watched = seats;
+                    watched.push_back(tank);
+                    for (Player* member : watched)
+                    {
+                        if (member != tank)
+                            for (Unit* attacker : member->getAttackers())
+                                if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
+                                    allOnTank = false;
+                        auto const taken = lead.damageTaken.find(member->GetGUID());
+                        if (taken == lead.damageTaken.end() || taken->second.sec <= 0.0f || taken->second.hp <= 0.0f)
+                            continue;
+                        float const incoming = taken->second.hp / taken->second.sec;
+                        float const toDeath = float(member->GetHealth()) / std::max(incoming, 1.0f);
+                        float const walk = std::max(0.0f, bot->GetExactDist(member) - Leader::LEADER_HEAL_REACH_YD) /
+                                           std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+                        float const response = castSec + GCD_SEC + walk + castSec;
+                        if (toDeath <= response)
+                        {
+                            emergency = true;
+                            emergencyWhy = Acore::StringFormat(
+                                "{} dies in {:.1f} s ({:.0f} hp / {:.0f} dps), the heal lands in {:.1f} s",
+                                member->GetName(), toDeath, float(member->GetHealth()), incoming, response);
+                            break;
+                        }
                     }
                     for (Unit* attacker : tank->getAttackers())
                         if (attacker && attacker->IsAlive() && attacker->GetVictim() != tank)
@@ -23035,7 +23093,7 @@ namespace TestHarness
                     {
                         if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
                             logEvent(bot, "Heal", JsonObject().Str("why", allOnTank ? "every fight mob is on the tank"
-                                                                         : emergency ? "a member is about to die"
+                                                                         : emergency ? emergencyWhy
                                                                                      : "the heals go on"));
                         lead.healStarted = true;
                     }
