@@ -479,6 +479,8 @@ namespace TestHarness
             std::set<ObjectGuid> engageRefused;               // [lead29] refused the engage range walk: Follow
             std::map<std::string, uint32> memberRefusals;    // [lead29] member_refusal per member (goal 0)
             std::map<ObjectGuid, uint32> noCommandLogMs;      // [lead29] no_command log throttle
+            bool patrolJoinLogged = false;                    // [lead30] patrol_joins once per pull
+            std::string answerSig;                            // [lead30] the last planner_answer
             std::map<std::string, std::vector<float>> walkDistances;  // [lead29] member -> tank on the walk
             std::vector<ObjectGuid> extraLogged;       // [lead25] extra_aggro logged per pull
             uint32 lostCheckMs = 0;

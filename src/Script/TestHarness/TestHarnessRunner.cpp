@@ -2979,7 +2979,10 @@ namespace TestHarness
         bool LeaderVerdictCovers(Party const& party, ObjectGuid mob)
         {
             auto const& lead = party.lead;
-            return lead.verdictMs && getMSTimeDiff(lead.verdictMs, getMSTime()) <= LEADER_VERDICT_TTL_MS &&
+            // [lead30] no age for a led party: the verdict holds until the next look replaces it
+            return lead.verdictMs &&
+                   (Leader::LEADER_NO_FORCING_TIMERS ||
+                    getMSTimeDiff(lead.verdictMs, getMSTime()) <= LEADER_VERDICT_TTL_MS) &&
                    (lead.verdictTarget == mob ||
                     std::find(lead.verdictPack.begin(), lead.verdictPack.end(), mob) != lead.verdictPack.end());
         }
@@ -12813,9 +12816,9 @@ namespace TestHarness
                                                  refusalWaitMs, refusalWhy)));
             // No verdict at all (GetRefusal false: unknown) while the tank sees the target: held up to
             // GUARANTEE_UNKNOWN_HOLD_MS before the careful-refused skip below, the planner may still take it.
-            if (ROUTE_CAREFUL_GUARANTEE_HOLD && !plannerRefused && !party.approach && !party.targetIsBoss &&
-                !atEventHold && !party.content->raid && party.content->size <= 5 && waited > pullWaitMs &&
-                waited < GUARANTEE_UNKNOWN_HOLD_MS && !holdForce)
+            if (ROUTE_CAREFUL_GUARANTEE_HOLD && !ledNoForce && !plannerRefused && !party.approach &&
+                !party.targetIsBoss && !atEventHold && !party.content->raid && party.content->size <= 5 &&
+                waited > pullWaitMs && waited < GUARANTEE_UNKNOWN_HOLD_MS && !holdForce)
                 if (Unit* unit = object->ToUnit();
                     unit && PartyTankView(party, leader, unit).rfind("accepted", 0) == 0)
                 {
@@ -19877,6 +19880,13 @@ namespace TestHarness
                                             .Real("z", here.GetPositionZ()));
         DecisionLog::Instance().NoteConflict(run, "order_orphan", order.target, why,
                                              JsonObject().Num("order", order.id));
+        // [lead30] LEADER_NO_FORCING_TIMERS: no abort because time passed - the order stays, the stall is visible
+        if (Leader::LEADER_NO_FORCING_TIMERS && LeaderDecidesFor(party))
+        {
+            WaitedLong(party, "order_orphan", idleMs, why);
+            watch.idleSinceMs = now ? now : 1;
+            return;
+        }
         closeOrder(Leader::OrderState::Aborted, why, "order_orphan");
         watch.orderId = 0;
     }
@@ -22376,7 +22386,8 @@ namespace TestHarness
                                  JsonObject().Str("why", "along with the tank: to range of the engage"));
                     moved = true;
                 }
-                else if (engaged || following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
+                else if (engaged || following || tank->isMoving() || gap > LEADER_FOLLOW_START_YD ||
+                         !bot->IsWithinLOSInMap(tank))
                 {
                     lead.following.insert(guid);
                     if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))
@@ -22722,9 +22733,12 @@ namespace TestHarness
         constexpr uint32 LEADER_LOOK_PERIOD_MS = 1000;
         constexpr uint32 LEADER_ASKING_MS = 30 * IN_MILLISECONDS;
         bool const asked = PullPlanner::TakeAsk(party.leader, Leader::LEADER_ASK_FRESH_MS);
+        // [lead30] the leader asks its planner by itself (no wait for the tank's ask, no ask window): the route's
+        // target always has an answer - a plan or a refusal with its reason (planner_answer)
         bool const keepReady = !asked && decides && !tank->IsInCombat() &&
                                (!lead.lastLookMs || getMSTimeDiff(lead.lastLookMs, now) >= LEADER_LOOK_PERIOD_MS) &&
-                               PullPlanner::AskedWithin(party.leader, LEADER_ASKING_MS);
+                               (Leader::LEADER_NO_FORCING_TIMERS ||
+                                PullPlanner::AskedWithin(party.leader, LEADER_ASKING_MS));
         if (!asked && !keepReady)
             return;
         lead.lastLookMs = now;
@@ -22909,9 +22923,17 @@ namespace TestHarness
                                                   .Str("patrol", patrol ? patrol->GetName() : "-")
                                                   .Real("gap", patrolGap).Real("reach", patrolReach));
             }
+            // [lead30] a patrol walking into an issued pull no longer releases it (that looped forever): the planner's
+            // walker rules took it along or pulled it first when it planned; the pull goes on, the patrol joins
             if (broken.empty() && lead.commitIssued && patrol &&
-                patrolGap <= patrolReach + Leader::LEADER_PATROL_AREA_MARGIN)
-                broken = "a patrol enters the pull area: " + patrol->GetName();
+                patrolGap <= patrolReach + Leader::LEADER_PATROL_AREA_MARGIN && !lead.patrolJoinLogged)
+            {
+                lead.patrolJoinLogged = true;
+                DecisionLog::Instance().Write(run, "leader", "patrol_joins", patrol->GetGUID(), patrol->GetName(),
+                                              true,
+                                              JsonObject().Str("pull", mob ? mob->GetName() : "?")
+                                                  .Real("gap", patrolGap).Real("reach", patrolReach));
+            }
             Leader::PullOrder order;
             bool const open = broken.empty() && lead.commitIssued && Leader::Orders::GetOpen(party.leader, order);
             if (broken.empty() && lead.commitIssued && !open)
@@ -22985,6 +23007,7 @@ namespace TestHarness
                 lead.spotsWaiting = false;
                 lead.spotsIssuedMs = now;
                 issue(committed, "committed: " + lead.commitWhy);
+                lead.patrolJoinLogged = false;
                 if (Group* group = tank->GetGroup())  // [lead29] the combined plan's every mob is the pull
                     Leader::PullPack::Set(group->GetGUID(), LeaderPullMobs(lead.commit, lead.commitMob));
                 // [lead25] the meeting point of the tank and the pulled mob: an engage meets at the mob, a pull back /
@@ -23004,6 +23027,13 @@ namespace TestHarness
             if (open)
             {
                 lead.commitOrderSeen = true;
+                // [lead30] rfc-h 20261031-125411: "engage: walks for sight" made one sight walk and stood (the order
+                // Issued, nothing re-ran it, order_orphan after 25 s). The order is the tank's to finish: while it is
+                // Issued and the tank stands out of combat, the decision is issued again - its next walk / attack
+                PullPlanner::Decision peek;
+                if (order.state == Leader::OrderState::Issued && !tank->IsInCombat() && !tank->isMoving() &&
+                    !PullPlanner::TakeIssued(party.leader, Leader::LEADER_ISSUE_FRESH_MS, peek, false))
+                    PullPlanner::Issue(party.leader, committed);
                 return true;
             }
             // the issued slot expired before the tank took it (it never opened an order): issued again
@@ -23130,6 +23160,28 @@ namespace TestHarness
         PullPlanner::Decision decision;
         if (!PullPlanner::Decide(tank, snap, false, decision))
             return;
+        // [lead30] planner_answer: the planner's answer for the leader's pick (logged when it changes)
+        if (decides)
+        {
+            Unit* answered =
+                decision.lookTarget.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, decision.lookTarget);
+            std::string const verdictName = decision.verdict == PullPlanner::Verdict::Go        ? "plan"
+                                            : decision.verdict == PullPlanner::Verdict::Held    ? "held"
+                                            : decision.verdict == PullPlanner::Verdict::Refused ? "refused"
+                                                                                                : "none";
+            std::string const sig = verdictName + ":" + std::to_string(decision.lookTarget.GetRawValue()) + ":" +
+                                    decision.kind + ":" + decision.why.substr(0, 60);
+            if (sig != lead.answerSig)
+            {
+                lead.answerSig = sig;
+                DecisionLog::Instance().Write(run, "leader", "planner_answer", decision.lookTarget,
+                                              answered ? answered->GetName() : std::string("-"), true,
+                                              JsonObject().Str("answer", verdictName).Str("kind", decision.kind)
+                                                  .Str("why", decision.why).Str("pick", pickWhy)
+                                                  .Str("routeTarget", party.target.IsEmpty() ? "-" :
+                                                                          party.target.ToString()));
+            }
+        }
 
         // [lead5] the leader's own verdict memory (Steer reads it: PartyRefusal / PartyVerdict) and its aoe plan
         if (decides && decision.hasVerdict)
