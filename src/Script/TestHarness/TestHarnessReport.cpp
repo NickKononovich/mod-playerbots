@@ -1178,6 +1178,13 @@ namespace TestHarness
             }
         }
 
+        // [lead26] the tank's first hit: each dps's first hit after it (afterTankHitSec)
+        uint32 tankHitMs = 0;
+        for (Member const& member : party.members)
+            if (member.spec->role == Role::Tank)
+                for (auto const& [guid, ms] : note.memberFirstHits)
+                    if (guid == member.guid && fresh(ms))
+                        tankHitMs = ms;
         JsonArray engage;
         for (Member const& member : party.members)
         {
@@ -1207,6 +1214,8 @@ namespace TestHarness
             };
             delay("combatSec", combatMs);
             delay("firstHitSec", hitMs);
+            if (hitMs && tankHitMs)
+                line.Real("afterTankHitSec", double(int32(hitMs - tankHitMs)) / IN_MILLISECONDS);
             // [opener_zero_hit] only when such a hit came before the first damage (or with none)
             if (zeroHitMs && (!hitMs || int32(hitMs - zeroHitMs) > 0))
                 delay("firstZeroHitSec", zeroHitMs);

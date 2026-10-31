@@ -184,6 +184,12 @@ namespace Leader
     // [lead24d] before the pull every member stays where it stands (no pull-spot search; the healer only when it
     // cannot reach / see the fight spot, and after the tank holds the mobs)
     constexpr bool LEADER_PREPULL_STAY = true;
+    // [lead26] the planner's combined plan: a wanderer / lone mob walking into an engage is pulled together with it
+    // when the whole fits and clears faster (plan_compare in the reason)
+    constexpr bool LEADER_PULL_TOGETHER = true;
+    // [lead26] the engage spot is judged by the dps placement around it (melee behind, ranged at range): an unpulled
+    // mob reaching it moves the fight back to a clear spot
+    constexpr bool LEADER_PLACEMENT_FIGHT_SPOT = true;
     constexpr uint32 LEADER_COMMIT_MAX_MS = 90000;
     constexpr uint32 LEADER_COMMIT_TAKE_MS = 10000;   // an issued commitment the tank did not take
     constexpr float LEADER_COMMIT_MOVED_YD = 12.0f;

@@ -5186,6 +5186,11 @@ namespace
     }
 
     // A mover that can walk into a fight: the mob, how it moves, and how far from the spot it is now.
+    // [lead26] the pull-together overhead of a separate pull (the walk, the tag, the group's settle) and the
+    // ranged placement range of the fight-spot check
+    constexpr float PULL_TOGETHER_OVERHEAD_SEC = 12.0f;
+    constexpr float PLACEMENT_RANGED_YD = 25.0f;
+
     struct FightIntruder
     {
         Creature* mob = nullptr;
@@ -8380,7 +8385,84 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                  candidate->GetPositionZ(), TERRAIN_HAZARD_FIGHT_RADIUS);
 
         bool const engageHazard = hazard.Found();
-        if (engageFits && engageSeen && !engageCrossed && !engageHazard)
+
+        // [lead26] the fight spot from the dps placement (user: «если лишние мобы сагрятся, то танк неправильно
+        // выбирает позицию»): melee behind the mob (away from the tank), ranged at range on the group's side - an
+        // unpulled mob outside the pack reaching one of them makes the engage spot wrong: pulled back instead
+        Unit* crowd = nullptr;
+        if (Leader::LEADER_PLACEMENT_FIGHT_SPOT && engageFits && engageSeen && !engageHazard && !estimate.boss)
+        {
+            float const ex = bot->GetPositionX() - candidate->GetPositionX();
+            float const ey = bot->GetPositionY() - candidate->GetPositionY();
+            float const elen = std::max(0.1f, std::sqrt(ex * ex + ey * ey));
+            std::vector<Position> places;
+            places.emplace_back(candidate->GetPositionX() - ex / elen * 3.0f,
+                                candidate->GetPositionY() - ey / elen * 3.0f, candidate->GetPositionZ());
+            for (float turn : {0.0f, 0.7f, -0.7f})
+            {
+                float const angle = std::atan2(ey, ex) + turn;
+                places.emplace_back(candidate->GetPositionX() + std::cos(angle) * PLACEMENT_RANGED_YD,
+                                    candidate->GetPositionY() + std::sin(angle) * PLACEMENT_RANGED_YD,
+                                    candidate->GetPositionZ());
+            }
+            for (ObjectGuid const& guid : possible)
+            {
+                Unit* mob = botAI->GetUnit(guid);
+                if (!mob || mob == candidate || std::find(pack.begin(), pack.end(), mob) != pack.end() ||
+                    !IsIdleEnemy(bot, mob))
+                    continue;
+                for (Position const& place : places)
+                    if (ReachesSpot(bot, mob, place))
+                    {
+                        crowd = mob;
+                        break;
+                    }
+                if (crowd)
+                    break;
+            }
+        }
+
+        // [lead26] pull together (user: «они могут трёх этих мобов сразу начать АОЕшить»): a lone mob / wanderer
+        // that would walk into the engage, with its own pack, taken in the same pull when the whole fits the group's
+        // gate and clears faster than one by one (the planner's fight-time model plus a pull's overhead)
+        if (Leader::LEADER_PULL_TOGETHER && engageFits && engageSeen && engageCrossed && !engageHazard && !crowd &&
+            intruder.mob && !intruder.mob->IsInCombat() && !IsBossMob(intruder.mob) &&
+            intruder.motion != MobMotion::Patrol)
+        {
+            std::vector<Unit*> alonePack;
+            CollectPack(botAI, bot, intruder.mob, intruder.mob->GetPosition(), possible, alonePack,
+                        FightHere(intruder.mob->GetPosition()), measured, false, nullptr);
+            std::vector<Unit*> together = pack;
+            for (Unit* mob : alonePack)
+                if (std::find(together.begin(), together.end(), mob) == together.end())
+                    together.push_back(mob);
+            if (std::find(together.begin(), together.end(), intruder.mob) == together.end())
+                together.push_back(intruder.mob);
+            PackEstimate const togetherEstimate = EstimatePack(together, bot, groupDps, estimateMode);
+            PackEstimate const aloneEstimate = EstimatePack(alonePack, bot, groupDps, estimateMode);
+            OverloadTerms togetherTerms;
+            CarefulOverload(bot, togetherEstimate, strength, support, kit, measured, &togetherTerms);
+            float const togetherOverload = togetherTerms.Max(comfort);
+            float const togetherSec = FightWindowSec(togetherEstimate);
+            float const separateSec =
+                FightWindowSec(estimate) + FightWindowSec(aloneEstimate) + PULL_TOGETHER_OVERHEAD_SEC;
+            bool const safe = planFits(togetherEstimate, togetherOverload);
+            std::string const compare = Acore::StringFormat(
+                "plan_compare: combined {} mobs {:.0f} s (overload {:.2f}, {}) vs one by one {} + {} mobs {:.0f} s",
+                togetherEstimate.mobs, togetherSec, togetherOverload, safe ? "fits" : "over the gate", estimate.mobs,
+                aloneEstimate.mobs, separateSec);
+            LOG_INFO("playerbots", "[lead26] {}: {} ({})", bot->GetName(), compare, FightIntruderNote(intruder));
+            if (safe && togetherSec < separateSec)
+            {
+                pack = together;
+                estimate = togetherEstimate;
+                terms = togetherTerms;
+                return takeEngage(Acore::StringFormat("pull together: {} mobs at one meeting point ({}); {}",
+                                                      togetherEstimate.mobs, FightIntruderNote(intruder), compare));
+            }
+        }
+
+        if (engageFits && engageSeen && !engageCrossed && !engageHazard && !crowd)
             return takeEngage(Acore::StringFormat("{} mobs at its spot, nothing else near", estimate.mobs));
 
         std::string const pullBackWhy =
@@ -8393,6 +8475,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                     : Acore::StringFormat("{} mobs {}, over what the group takes ({:.2f})",
                                                           estimate.mobs, fightWhere, overload)))
                 : (engageCrossed ? FightIntruderNote(intruder)
+                   : crowd ? Acore::StringFormat("the dps placement at its spot is in the reach of {} (pulled back to "
+                                                 "a clear spot)", crowd->GetName())
                                  : (engageHazard ? Acore::StringFormat("its spot is {:.0f} yd from {}", hazard.distance,
                                                                        HazardKindName(hazard.kind))
                                                  : Acore::StringFormat("its spot is out of {}'s sight", blindName)));
