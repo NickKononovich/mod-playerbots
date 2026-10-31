@@ -6,6 +6,7 @@
 
 #include "PaladinTriggers.h"
 #include "GenericBuffUtils.h"
+#include "PaladinActions.h"
 #include "PaladinHelper.h"
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
