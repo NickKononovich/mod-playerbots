@@ -20921,7 +20921,7 @@ namespace TestHarness
             return true;
         }
 
-        // [lead39] a walk on the walker's floor: a full path with no step down or up of more than 2.5 yd (no ledge drop)
+        // [lead39] a walk on the walker's floor: a full path, no step down or up over 2.5 yd (no ledge drop)
         bool LeaderWalkStaysOnFloor(Player* bot, Position const& to)
         {
             if (std::fabs(to.GetPositionZ() - bot->GetPositionZ()) > 4.0f)
