@@ -5002,8 +5002,9 @@ namespace TestHarness
                                     // [lead37] the route is data (lead34): what holds is the leader's verdict
                                     bool leaderReady = false;
                                     std::string leaderWhy;
-                                    if (LeaderDecides(party) && leader->GetGroup() &&
-                                        Leader::Readiness::Get(leader->GetGroup()->GetGUID(), leaderReady, &leaderWhy) &&
+                                    Group const* leaderGroup = leader->GetGroup();
+                                    if (LeaderDecides(party) && leaderGroup &&
+                                        Leader::Readiness::Get(leaderGroup->GetGUID(), leaderReady, &leaderWhy) &&
                                         !leaderReady)
                                         add("the leader holds: " + leaderWhy);
                                 }
