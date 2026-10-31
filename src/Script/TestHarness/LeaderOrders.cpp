@@ -532,8 +532,8 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
-            bool const changed =
-                e.aoe != aoe || (aoe == AoeRule::AllowedOnPack && e.aoeCenter.GetExactDist(center) > 3.0f);
+            // [lead67] a new AoE command only when its rule changes; the centre follows the target (no re-issue)
+            bool const changed = e.aoe != aoe;
             e.aoe = aoe;
             e.aoeCenter = center;
             e.aoeRadius = radius;

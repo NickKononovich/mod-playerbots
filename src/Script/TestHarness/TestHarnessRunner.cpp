@@ -19480,6 +19480,9 @@ namespace TestHarness
                         for (Player* bot : players)
                             if (bot->IsAlive())
                             {
+                                // [lead67] PerfMon b112: "new rpg do quest" ran in the led dungeon bots - off for the run
+                                if (PlayerbotAI* runAI = GET_PLAYERBOT_AI(bot))
+                                    runAI->ChangeStrategy("-new rpg,-rpg,-quest,-grind,-travel", BOT_STATE_NON_COMBAT);
                                 bot->SetFullHealth();
                                 if (bot->GetMaxPower(POWER_MANA))
                                     bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
@@ -22815,8 +22818,12 @@ namespace TestHarness
             if (!combat)
                 lead.runHold.erase(guid);
             // the aggro-loss victim runs next to the tank (between it and the tank, in heal reach)
+            // [lead67] only a victim beyond the tank's pick-up reach (its taunt's range, in sight) runs: one standing in
+            // it is picked up where it stands (b112: the shaman behind the target flipped run <-> combat spot)
             auto const loose = looseOn.find(guid);
-            if (!moved && loose != looseOn.end())
+            float const pickUp = LeaderTauntReach(tank);
+            bool const inPickUp = pickUp > 0.0f && bot->GetExactDist(tank) <= pickUp && tank->IsWithinLOSInMap(bot);
+            if (!moved && loose != looseOn.end() && !inPickUp)
             {
                 float const dx = bot->GetPositionX() - tank->GetPositionX();
                 float const dy = bot->GetPositionY() - tank->GetPositionY();
@@ -23221,9 +23228,23 @@ namespace TestHarness
                     // on - its threat below the tank's on THAT mob (ThreatManager, no number of ours): the leader's
                     // focus mob first, else the next of the kill order; AoE only while every fight mob in its reach
                     // leaves it headroom
-                    auto const headroom = [&](Unit* mob)
+                    auto const headroomOn = [&](Unit* mob)
                     {
                         return mob->GetThreatMgr().GetThreat(bot) < mob->GetThreatMgr().GetThreat(tank);
+                    };
+                    // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
+                    // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
+                    // can reach around it (the AoE radius)
+                    auto const headroom = [&](Unit* mob)
+                    {
+                        if (!headroomOn(mob))
+                            return false;
+                        for (ObjectGuid const& other : killOrder)
+                            if (Unit* close = ObjectAccessor::GetUnit(*tank, other);
+                                close && close != mob && close->IsAlive() &&
+                                mob->GetExactDist(close) <= LEADER_AOE_RADIUS && !headroomOn(close))
+                                return false;
+                        return true;
                     };
                     Unit* mine = headroom(target) ? target : nullptr;
                     for (ObjectGuid const& next : killOrder)
