@@ -21023,6 +21023,37 @@ namespace TestHarness
             return creature && (creature->IsDungeonBoss() || creature->isWorldBoss());
         }
 
+        // [lead63] user: «берите физ. атаку / маг. атаку того, кто бьёт» - an attacker's expected damage per second on
+        // `victim`, from the server's numbers: its melee damage range (the unit's final min / max damage) over its
+        // attack time, after the victim's armor (Unit::CalcArmorReducedDamage at the attacker's level), times the
+        // swings that land (1 - the victim's dodge, parry and miss chance), minus the blocked share (block chance x
+        // shield block value); plus the spell it is casting now (its school damage effects over its cast time, at
+        // least the global cooldown). `spell`: that spell part
+        float AttackerDps(Unit* attacker, Unit* victim, float& spell)
+        {
+            spell = 0.0f;
+            float const minDamage = attacker->GetFloatValue(UNIT_FIELD_MINDAMAGE);
+            float const maxDamage = attacker->GetFloatValue(UNIT_FIELD_MAXDAMAGE);
+            float const swingSec = std::max(attacker->GetAttackTime(BASE_ATTACK) / 1000.0f, 0.1f);
+            uint32 const raw = uint32(std::max(0.0f, (minDamage + maxDamage) / 2.0f));
+            float const afterArmor =
+                float(Unit::CalcArmorReducedDamage(attacker, victim, raw, nullptr, attacker->GetLevel(), BASE_ATTACK));
+            float const avoid = std::clamp((victim->GetUnitDodgeChance() + victim->GetUnitParryChance() +
+                                            victim->GetUnitMissChance(BASE_ATTACK)) / 100.0f, 0.0f, 1.0f);
+            float const blocked = victim->GetUnitBlockChance() / 100.0f * float(victim->GetShieldBlockValue());
+            float const melee = std::max(0.0f, afterArmor * (1.0f - avoid) - blocked) / swingSec;
+            if (Spell const* casting = attacker->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                if (SpellInfo const* info = casting->GetSpellInfo())
+                {
+                    float damage = 0.0f;
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                            damage += float(effect.CalcValue(attacker));
+                    spell = damage / std::max(info->CalcCastTime(attacker) / 1000.0f, 1.5f);
+                }
+            return melee + spell;
+        }
+
         // [lead42] how many members refused their Attack on `unit` this fight
         int64 RefusedCount(std::map<ObjectGuid, std::set<ObjectGuid>> const& refused, Unit const* unit)
         {
@@ -22504,30 +22535,7 @@ namespace TestHarness
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
         if (!fighting)
             lead.healStarted = false;  // [lead61] the next fight's heals start on the leader's word again
-        // [lead62] each member's damage taken in this fight: health drops summed, seconds since its first drop
-        {
-            std::vector<Player*> hurt = seats;
-            hurt.push_back(tank);
-            for (Player* member : hurt)
-            {
-                auto& taken = lead.damageTaken[member->GetGUID()];
-                float const hp = float(member->GetHealth());
-                if (!fighting)
-                {
-                    taken = {};
-                    continue;
-                }
-                if (taken.lastHp > 0.0f && hp < taken.lastHp)
-                {
-                    if (!taken.sinceMs)
-                        taken.sinceMs = now;
-                    taken.hp += taken.lastHp - hp;
-                }
-                if (taken.sinceMs)
-                    taken.sec = getMSTimeDiff(taken.sinceMs, now) / 1000.0f;
-                taken.lastHp = hp;
-            }
-        }
+
         if (fighting)
         {
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
@@ -23069,20 +23077,39 @@ namespace TestHarness
                             for (Unit* attacker : member->getAttackers())
                                 if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
                                     allOnTank = false;
-                        auto const taken = lead.damageTaken.find(member->GetGUID());
-                        if (taken == lead.damageTaken.end() || taken->second.sec <= 0.0f || taken->second.hp <= 0.0f)
+                        // [lead63] predictive: the dps its attackers deal it now (AttackerDps), a new attacker counts
+                        // before its first hit; time to death = health + absorbs over that sum
+                        float incoming = 0.0f;
+                        std::vector<std::pair<float, std::string>> byAttacker;
+                        for (Unit* attacker : member->getAttackers())
+                            if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
+                            {
+                                float spellPart = 0.0f;
+                                float const dps = AttackerDps(attacker, member, spellPart);
+                                incoming += dps;
+                                byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f}{}", attacker->GetName(),
+                                                                                  dps, spellPart > 0.0f ? " (cast)" : ""));
+                            }
+                        if (incoming <= 0.0f)
                             continue;
-                        float const incoming = taken->second.hp / taken->second.sec;
-                        float const toDeath = float(member->GetHealth()) / std::max(incoming, 1.0f);
+                        float const absorbs = float(member->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
+                        float const toDeath = (float(member->GetHealth()) + absorbs) / incoming;
                         float const walk = std::max(0.0f, bot->GetExactDist(member) - Leader::LEADER_HEAL_REACH_YD) /
                                            std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
                         float const response = castSec + GCD_SEC + walk + castSec;
                         if (toDeath <= response)
                         {
                             emergency = true;
+                            std::sort(byAttacker.begin(), byAttacker.end(),
+                                      [](auto const& a, auto const& b) { return a.first > b.first; });
+                            std::string top;
+                            for (size_t i = 0; i < byAttacker.size() && i < 3; ++i)
+                                top += (i ? ", " : "") + byAttacker[i].second;
                             emergencyWhy = Acore::StringFormat(
-                                "{} dies in {:.1f} s ({:.0f} hp / {:.0f} dps), the heal lands in {:.1f} s",
-                                member->GetName(), toDeath, float(member->GetHealth()), incoming, response);
+                                "{} dies in {:.1f} s ({:.0f} hp + {:.0f} absorb / {:.0f} dps: {}), the heal lands in "
+                                "{:.1f} s",
+                                member->GetName(), toDeath, float(member->GetHealth()), absorbs, incoming, top,
+                                response);
                             break;
                         }
                     }
