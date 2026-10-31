@@ -20395,6 +20395,7 @@ namespace TestHarness
         constexpr uint32 LEADER_WAKE_LOG_MS = 60 * IN_MILLISECONDS;
         constexpr uint32 LEADER_TANK_STILL_MS = 3 * IN_MILLISECONDS;   // the tank stands this long: Prepare
         constexpr uint32 LEADER_CALM_TICK_MS = 250;                    // the calm cadence (out of combat)
+        constexpr uint32 LEADER_FIGHT_TICK_MS = 300;                   // [lead72] the user's 0.3 s in a fight
         constexpr uint32 LEADER_AOE_RECHECK_MS = 500;
         constexpr float LEADER_LOOSE_TANK_YD = 2.5f;                   // the victim's spot next to the tank
         constexpr float LEADER_PATROL_GROUP_YD = 8.0f;                 // [lead32] a patrol's walking group
@@ -21577,7 +21578,10 @@ namespace TestHarness
                     anyCombat = true;
         bool const prePull = lead.spotsWaiting || !lead.spots.empty();
         uint32 const state = lead.hazardActive ? 3 : anyCombat ? 2 : prePull ? 1 : 0;
-        if (!state && lead.eventTickMs && getMSTimeDiff(lead.eventTickMs, now) < LEADER_CALM_TICK_MS)
+        // [lead72] user: 0.3 s is fast enough - the fight / pre-pull / hazard pass runs at most every
+        // LEADER_FIGHT_TICK_MS, not on every world update (b116: ~100 healer events in 0.2 s)
+        uint32 const period = state ? LEADER_FIGHT_TICK_MS : LEADER_CALM_TICK_MS;
+        if (lead.eventTickMs && getMSTimeDiff(lead.eventTickMs, now) < period)
             return;
         lead.eventTickMs = now;
         auto const tickStart = std::chrono::steady_clock::now();
@@ -23599,8 +23603,15 @@ namespace TestHarness
             bool const keepsOwn = Leader::Events::Get(healer->GetGUID(), healerEvents) &&
                                   healerEvents.move == Leader::MoveEvent::MoveTo &&
                                   healerEvents.moveWhy == "heal reach" && healerKeeps(healerEvents.spot);
+            // [lead72] b116: the kept heal-reach spot was not re-asserted (the tick ended it), the combat spot took the
+            // healer back the next tick ("was -") and the heal reach respotted again - the held spot is asserted
+            // every tick while it still keeps the group (its end condition), so a lower rule cannot take it
             if (keepsOwn)
+            {
                 out.clear();
+                Leader::Events::SetMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, healerEvents.spot,
+                                        healerEvents.tolerance, "heal reach");
+            }
             if (!out.empty())
             {
                 Position fix;
