@@ -48,6 +48,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "Pet.h"  // [lead38] the pet redirect
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -21717,14 +21718,18 @@ namespace TestHarness
             if (!reaches(spot, tank->GetPosition()) ||
                 spot.GetExactDist(tank->GetPosition()) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
                 return false;
+            // [lead38] a held spot (no acquire margin) keeps a member it reaches where it stands or where it goes:
+            // b87 rfc-h 23.6-24.0 s, 6 "heal reach" re-spots in 0.4 s while the counterparts' planned spots moved
             for (Player* other : seats)
-                if (other != healer && !reaches(spot, plannedAt(other)))
+                if (other != healer && !reaches(spot, plannedAt(other)) &&
+                    !(g_spotAcquireMargin == 0.0f && reaches(spot, other->GetPosition())))
                     return false;
             return true;
         };
         auto const keepsHealer = [&](Position const& spot)
         {
-            return !Leader::LEADER_HEAL_REACH || !healer || reaches(healerAt, spot);
+            return !Leader::LEADER_HEAL_REACH || !healer || reaches(healerAt, spot) ||
+                   (g_spotAcquireMargin == 0.0f && reaches(healer->GetPosition(), spot));
         };
 
         // [lead15] the aggro-loss rule (user: «если кто-то кого-то сагрил - подбегай к танку, пусть танк АОЕ делает и
@@ -21813,7 +21818,11 @@ namespace TestHarness
                                  .Str("mob", mob->GetName()).Real("distance", tank->GetExactDist(mob)));
             }
             // the others' target is never a loose mob
-            if (target && looseMobs.count(target->GetGUID()))
+            // [lead38] b87 rfc-h 507-600 s: the one Earthborer of the fight was loose on the healer (12.5 yd below
+            // it, the tank never reached it): no target, nobody attacked for 90 s. A fight always has an Attack
+            // target: with every fight mob loose, the loose mob is the target (the damage dealers kill it)
+            Unit* const looseTarget = target && looseMobs.count(target->GetGUID()) ? target : nullptr;
+            if (looseTarget)
             {
                 target = nullptr;
                 for (ObjectGuid const guid : killOrder)
@@ -21824,9 +21833,18 @@ namespace TestHarness
                             break;
                         }
             }
-            killOrder.erase(std::remove_if(killOrder.begin(), killOrder.end(),
-                                           [&looseMobs](ObjectGuid guid) { return looseMobs.count(guid) > 0; }),
-                            killOrder.end());
+            if (!target)
+            {
+                target = looseTarget ? looseTarget : mob;
+                lead.looseIsTarget = true;
+            }
+            else
+            {
+                lead.looseIsTarget = false;
+                killOrder.erase(std::remove_if(killOrder.begin(), killOrder.end(),
+                                               [&looseMobs](ObjectGuid guid) { return looseMobs.count(guid) > 0; }),
+                                killOrder.end());
+            }
         }
 
         // [lead16] LEADER_CC_ASSIGN: the fight's crowd control - which mob, which member. A mob a member already
@@ -22071,6 +22089,54 @@ namespace TestHarness
                         }
                     }
         }
+        // [lead38] b87 rfc-h pull 1 (16-22 s): the hunter's pet on a Crab ("kill command -> Crab"). A member's pet
+        // fights the leader's target only: a pet on a critter or on a mob outside the group's fight is sent to the
+        // member's Attack target (the client's pet Attack button), else called back (Follow)
+        if (fighting)
+            for (Player* bot : seats)
+            {
+                Pet* pet = bot->GetPet();
+                Unit* petVictim = pet && pet->IsAlive() ? pet->GetVictim() : nullptr;
+                Creature* victimMob = petVictim ? petVictim->ToCreature() : nullptr;
+                if (!victimMob || !pet->GetCharmInfo())
+                    continue;
+                bool const wrong = victimMob->IsCritter() || !LeaderFightMob(tank, victimMob) ||
+                                   (!victimMob->IsInCombat() && victimMob->GetVictim() != pet);
+                if (!wrong)
+                    continue;
+                Leader::MemberEvents petEvents;
+                Unit* petTarget = Leader::Events::Get(bot->GetGUID(), petEvents) &&
+                                          petEvents.attack == Leader::AttackEvent::Attack
+                                      ? ObjectAccessor::GetUnit(*bot, petEvents.target)
+                                      : nullptr;
+                CharmInfo* charmInfo = pet->GetCharmInfo();
+                pet->AttackStop();
+                pet->InterruptNonMeleeSpells(false);
+                if (petTarget && petTarget->IsAlive() && petTarget->IsInCombat())
+                {
+                    pet->ClearUnitState(UNIT_STATE_FOLLOW);
+                    charmInfo->SetIsCommandAttack(true);
+                    charmInfo->SetIsAtStay(false);
+                    charmInfo->SetIsFollowing(false);
+                    charmInfo->SetIsCommandFollow(false);
+                    charmInfo->SetIsReturning(false);
+                    pet->AI()->AttackStart(petTarget);
+                }
+                else
+                {
+                    pet->GetMotionMaster()->MoveFollow(bot, PET_FOLLOW_DIST, pet->GetFollowAngle());
+                    charmInfo->SetCommandState(COMMAND_FOLLOW);
+                    charmInfo->SetIsCommandAttack(false);
+                    charmInfo->SetIsReturning(true);
+                    charmInfo->SetIsCommandFollow(true);
+                }
+                DecisionLog::Instance().Write(run, "leader", "pet_redirect", victimMob->GetGUID(), victimMob->GetName(),
+                                              true,
+                                              JsonObject().Str("member", bot->GetName()).Str("pet", pet->GetName())
+                                                  .Str("was", victimMob->GetName())
+                                                  .Bool("critter", victimMob->IsCritter())
+                                                  .Str("to", petTarget ? petTarget->GetName() : "follow"));
+            }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
             for (Player* bot : seats)
@@ -22345,11 +22411,29 @@ namespace TestHarness
                     std::string breaks;
                     if (found == lead.combatSpots.end())
                         breaks = "first spot";
-                    else if (lead.combatSpotAnchor[guid] != lead.fightAnchorSerial)
-                        breaks = "the fight spot moved";
+                    // [lead38] b86: 135 "the fight spot moved" re-spots - a new anchor re-spots a member only when its
+                    // held spot no longer fits; a ranged / healer spot is not re-judged while the target runs in and
+                    // the tank does not hold it yet (b87 pull 1: spots chased the incoming Earthborer)
+                    else if (!melee && target->isMoving() && target->GetVictim() != tank)
+                        breaks.clear();
                     else
+                    {
                         breaks = LeaderCombatSpotBreaks(bot, botAI, target, found->second.second, melee, zones,
                                                         keeps, sight);
+                        if (lead.combatSpotAnchor[guid] != lead.fightAnchorSerial)
+                        {
+                            if (breaks.empty())
+                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                            else
+                                breaks = "the fight spot moved: " + breaks;
+                        }
+                    }
+                    // [lead38] no first spot for a ranged / healer while the target runs in: it stays (and casts)
+                    if (breaks == "first spot" && !melee && target->isMoving() && target->GetVictim() != tank)
+                    {
+                        breaks.clear();
+                        moved = true;
+                    }
                     if (!breaks.empty())
                     {
                         Position spot;
@@ -22372,7 +22456,7 @@ namespace TestHarness
                             lead.combatSpots[guid] = {target->GetGUID(), spot};
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         }
-                        else if (found != lead.combatSpots.end() && breaks == "the fight spot moved")
+                        else if (found != lead.combatSpots.end() && breaks.rfind("the fight spot moved", 0) == 0)
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;  // keep it, nothing better
                         else
                             lead.combatSpots.erase(guid);
@@ -22478,7 +22562,18 @@ namespace TestHarness
                 // walks off
                 Position rangeSpot;
                 bool rangeValid = false;
-                if (engaged && !lead.engageRefused.count(guid))
+                // [lead38] the range spot is kept for the pull while the mob stays put (one command, no re-issue)
+                if (engaged)
+                {
+                    auto const kept = lead.engageRangeSpots.find(guid);
+                    if (kept != lead.engageRangeSpots.end() && kept->second.first == engaged->GetGUID() &&
+                        engaged->GetExactDist(lead.commitPos) <= 2.0f)
+                    {
+                        rangeSpot = kept->second.second;
+                        rangeValid = true;
+                    }
+                }
+                if (engaged && !rangeValid && !lead.engageRefused.count(guid))
                 {
                     float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
                                                                  : LeaderSpellReach(bot) - 4.0f;
@@ -22506,6 +22601,7 @@ namespace TestHarness
                 }
                 if (rangeValid)
                 {
+                    lead.engageRangeSpots[guid] = {engaged->GetGUID(), rangeSpot};
                     if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
                                     "along with the tank: to range of the engage"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
@@ -22583,7 +22679,7 @@ namespace TestHarness
                     logEvent(bot, "Intensity",
                              JsonObject().Str("intensity", victim ? "stop" : "burn")
                                  .Str("why", victim ? "aggro loss: the tank takes the mob back" : "a dungeon boss"));
-                if (!victim && !looseOn.empty() && bot != healer &&
+                if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
                                                     .Str("why", "loose on a member until the tank has it"));
@@ -22712,11 +22808,15 @@ namespace TestHarness
             (!lead.healReachMs || getMSTimeDiff(lead.healReachMs, now) >= 0))
         {
             lead.healReachMs = now;
+            // [lead38] b87 rfc-h 511-596 s: 19 + 19 "out of the healer's reach" with the members 0.0 yd from the
+            // healer - the healer's planned spot was judged, not where it stands: out only when neither reaches
             std::vector<Player*> out;
-            if (!reaches(healerAt, tank->GetPosition()))
+            auto const outOfReach = [&](Position const& at)
+            { return !reaches(healerAt, at) && !reaches(healer->GetPosition(), at); };
+            if (outOfReach(tank->GetPosition()))
                 out.push_back(tank);
             for (Player* other : seats)
-                if (other != healer && !reaches(healerAt, plannedAt(other)))
+                if (other != healer && outOfReach(plannedAt(other)) && outOfReach(other->GetPosition()))
                     out.push_back(other);
             if (!out.empty())
             {
