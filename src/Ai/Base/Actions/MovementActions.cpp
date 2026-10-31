@@ -757,7 +757,7 @@ namespace
         uint32 losBudget = GUARD_MAX_LOS;
         for (ObjectGuid const& guid : possible)
         {
-            if (guid == exempt || guid == exemptToo)
+            if (guid == exempt || guid == exemptToo || Leader::PullPack::Contains(bot, guid))  // [lead29] the pull
                 continue;
 
             Creature* mob = botAI->GetCreature(guid);
@@ -1026,7 +1026,7 @@ namespace
         std::vector<ShorterKeep> keeps;
         for (ObjectGuid const& guid : possible)
         {
-            if (guid == exempt || guid == exemptToo)
+            if (guid == exempt || guid == exemptToo || Leader::PullPack::Contains(bot, guid))  // [lead29] the pull
                 continue;
 
             Creature* mob = botAI->GetCreature(guid);

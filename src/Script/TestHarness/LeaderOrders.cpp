@@ -16,6 +16,7 @@
 #include "Timer.h"
 #include "Unit.h"
 
+#include <algorithm>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -387,6 +388,38 @@ namespace Leader
             if (why)
                 *why = found->second.why;
             return true;
+        }
+    }
+
+    namespace PullPack
+    {
+        namespace
+        {
+            std::mutex packLock;
+            std::unordered_map<ObjectGuid, std::vector<ObjectGuid>> packs;
+        }
+
+        void Set(ObjectGuid group, std::vector<ObjectGuid> const& mobs)
+        {
+            std::lock_guard<std::mutex> lock(packLock);
+            packs[group] = mobs;
+        }
+
+        void Clear(ObjectGuid group)
+        {
+            std::lock_guard<std::mutex> lock(packLock);
+            packs.erase(group);
+        }
+
+        bool Contains(Player* bot, ObjectGuid mob)
+        {
+            Group* group = bot ? bot->GetGroup() : nullptr;
+            if (!group || mob.IsEmpty())
+                return false;
+            std::lock_guard<std::mutex> lock(packLock);
+            auto const found = packs.find(group->GetGUID());
+            return found != packs.end() &&
+                   std::find(found->second.begin(), found->second.end(), mob) != found->second.end();
         }
     }
 

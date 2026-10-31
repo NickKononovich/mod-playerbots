@@ -5145,6 +5145,28 @@ namespace TestHarness
                 for (auto const& [name, count] : party.lead.leaderEventCounts)
                     perMinute.Real(name.c_str(), float(count) / minutes);
                 LogEvent(party, "leader_events", JsonObject().Raw("perMinute", perMinute.Build()));
+                // [lead29] member -> tank distance on the walk (out of combat, the tank walking)
+                JsonObject walk;
+                for (auto& [name, samples] : party.lead.walkDistances)
+                {
+                    if (samples.empty())
+                        continue;
+                    std::vector<float> sorted = samples;
+                    std::sort(sorted.begin(), sorted.end());
+                    walk.Raw(name.c_str(), JsonObject().Real("max", sorted.back())
+                                               .Real("median", sorted[sorted.size() / 2])
+                                               .Num("samples", int64(sorted.size())).Build());
+                }
+                LogEvent(party, "walk_distance", walk);
+                JsonObject refusals;
+                uint32 refusalTotal = 0;
+                for (auto const& [name, count] : party.lead.memberRefusals)
+                {
+                    refusals.Num(name.c_str(), count);
+                    refusalTotal += count;
+                }
+                LogEvent(party, "member_refusals",
+                         JsonObject().Num("total", refusalTotal).Raw("byMember", refusals.Build()));
             }
             LogEvent(party, "healer_lost_tank",
                      JsonObject().Real("healer_lost_tank_s", float(party.lead.healerLostTankMs) / 1000.0f));

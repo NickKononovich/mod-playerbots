@@ -195,6 +195,9 @@ namespace
             }
             if (r <= Leader::SAFE_ZONE_EXEMPT_BEHIND)
                 continue;
+            // [lead29] a mob of the committed pull (pull together) is no hole: it is coming
+            if (Leader::PullPack::Contains(tank, guid))
+                continue;
 
             Leader::ZoneHole hole;
             hole.mob = guid;

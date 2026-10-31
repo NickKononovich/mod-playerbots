@@ -19680,10 +19680,23 @@ namespace TestHarness
                                                   .Num("seq", ack.seq),
                                               ack.ms);
                 // [lead18] a refused leader walk: the leader issued an invalid move
+                // [lead29] member_refusal: the member's guard and the leader's model disagree (a blocker, goal 0)
+                if (ack.why.rfind("member_refusal", 0) == 0)
+                {
+                    DecisionLog::Instance().CountConflict(run, "member_refusal");
+                    ++party.lead.memberRefusals[member.name];
+                    if (ack.why.find("to range of the engage") != std::string::npos)
+                        party.lead.engageRefused.insert(member.guid);
+                }
                 if (ack.why.rfind("the walk refused", 0) == 0)
+                {
                     DecisionLog::Instance().Write(run, "leader", "invalid_spot", member.guid, member.name, false,
                                                   JsonObject().Str("member", member.name).Str("why", ack.why),
                                                   ack.ms);
+                    // [lead29] a refused range walk is not repeated: the member follows the tank instead
+                    if (ack.why.find("to range of the engage") != std::string::npos)
+                        party.lead.engageRefused.insert(member.guid);
+                }
             }
             // [lead18] vetoed_eval: a vetoed strategy evaluated by the member (a blocker, goal 0)
             std::string vetoed;
@@ -21923,6 +21936,14 @@ namespace TestHarness
                         logEvent(looter, "Loot", JsonObject().Str("why", "the fight is over"));
         }
         lead.lastFighting = fighting;
+        // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
+        if (!fighting && tank->isMoving())
+            for (Player* bot : seats)
+            {
+                std::vector<float>& samples = lead.walkDistances[bot->GetName()];
+                if (samples.size() < 4000)
+                    samples.push_back(bot->GetExactDist(tank));
+            }
         // [lead21] slabs-h 20261026-195203: the tank executing a leader PullOrder out of combat had no fresh command -
         // rot3's stale mode ("keeps to its current target, no area spell") vetoed its pull: 17 orders "nothing came".
         // While an order runs, its target is the tank's fresh Attack, an area pull allowed on that pack
@@ -22315,32 +22336,71 @@ namespace TestHarness
                 if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
                     Leader::Orders::GetOpen(party.leader, engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
-                if (engaged)
+                // [lead29] the range spot is validated before it is issued (ground, lava / slime / a drop-off, an
+                // unpulled mob's reach, the member's own walk guards): the nearest valid one between its range and
+                // the tank; none (or the member refused it): the member follows the tank - never "stand" while it
+                // walks off
+                Position rangeSpot;
+                bool rangeValid = false;
+                if (engaged && !lead.engageRefused.count(guid))
                 {
                     float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
                                                                  : LeaderSpellReach(bot) - 4.0f;
-                    float dx = tank->GetPositionX() - engaged->GetPositionX();
-                    float dy = tank->GetPositionY() - engaged->GetPositionY();
+                    float const dx = tank->GetPositionX() - engaged->GetPositionX();
+                    float const dy = tank->GetPositionY() - engaged->GetPositionY();
                     float const length = std::max(0.1f, std::hypot(dx, dy));
-                    float x = engaged->GetPositionX() + dx / length * range;
-                    float y = engaged->GetPositionY() + dy / length * range;
-                    float z = engaged->GetPositionZ();
-                    if (length > range &&
-                        map->CheckCollisionAndGetValidCoords(engaged, engaged->GetPositionX(), engaged->GetPositionY(),
-                                                             engaged->GetPositionZ(), x, y, z) &&
-                        checkedMove(guid, Leader::MoveEvent::MoveTo, Position(x, y, z), LEADER_FOLLOW_TOLERANCE,
+                    LeaderMoveOrderAction* mover = dynamic_cast<LeaderMoveOrderAction*>(
+                        botAI->GetAiObjectContext()->GetAction("leader move order"));
+                    for (float at = std::min(range, length); at <= length && !rangeValid; at += 3.0f)
+                    {
+                        float x = engaged->GetPositionX() + dx / length * at;
+                        float y = engaged->GetPositionY() + dy / length * at;
+                        float z = engaged->GetPositionZ();
+                        if (!map->CheckCollisionAndGetValidCoords(engaged, engaged->GetPositionX(),
+                                                                  engaged->GetPositionY(), engaged->GetPositionZ(), x,
+                                                                  y, z) ||
+                            NearHazard(map, bot->GetPhaseMask(), x, y, z, LEADER_TERRAIN_EDGE))
+                            continue;
+                        Position const spot(x, y, z);
+                        if (LeaderAggroAt(bot, spot) || (mover && !mover->WalkRefusal(spot).empty()))
+                            continue;
+                        rangeSpot = spot;
+                        rangeValid = true;
+                    }
+                }
+                if (rangeValid)
+                {
+                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
                                     "along with the tank: to range of the engage"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                  JsonObject().Str("why", "along with the tank: to range of the engage"));
                     moved = true;
                 }
-                else if (following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
+                else if (engaged || following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
                 {
                     lead.following.insert(guid);
                     if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))
                         logEvent(bot, "Follow", JsonObject().Str("why", "along with the tank").Real("gap", gap));
                     moved = true;
                 }
+            }
+            // [lead29] a led member always has a command: the group walks and this member got none - no_command (a
+            // leader bug), the fallback is Follow
+            if (!moved && !combat && tank->isMoving() && Leader::ExecutorMember(bot) && !bot->IsSitState() &&
+                !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
+            {
+                uint32& last = lead.noCommandLogMs[guid];
+                if (!last || getMSTimeDiff(last, now) >= 5 * IN_MILLISECONDS)
+                {
+                    last = now;
+                    DecisionLog::Instance().Write(run, "leader", "no_command", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName())
+                                                      .Str("why", "the group walks and no command fit: Follow")
+                                                      .Real("gap", bot->GetExactDist(tank)));
+                }
+                if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))
+                    logEvent(bot, "Follow", JsonObject().Str("why", "fallback: no other command fit"));
+                moved = true;
             }
             if (!moved || combat)
                 lead.following.erase(guid);
@@ -22878,6 +22938,9 @@ namespace TestHarness
                 lead.commitIssued = false;
                 lead.commitOrderSeen = false;
                 lead.patrolWindowOpen = true;
+                if (Group* group = tank->GetGroup())
+                    Leader::PullPack::Clear(group->GetGUID());
+                lead.engageRefused.clear();
                 return false;
             }
             if (!lead.commitIssued)
@@ -22922,6 +22985,8 @@ namespace TestHarness
                 lead.spotsWaiting = false;
                 lead.spotsIssuedMs = now;
                 issue(committed, "committed: " + lead.commitWhy);
+                if (Group* group = tank->GetGroup())  // [lead29] the combined plan's every mob is the pull
+                    Leader::PullPack::Set(group->GetGUID(), LeaderPullMobs(lead.commit, lead.commitMob));
                 // [lead25] the meeting point of the tank and the pulled mob: an engage meets at the mob, a pull back /
                 // los / range pull at the fight spot the mobs come to
                 lead.meetPoint = committed.kind == "engage" && mob ? mob->GetPosition() : lead.issuedFight;

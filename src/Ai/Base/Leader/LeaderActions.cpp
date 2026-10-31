@@ -608,7 +608,20 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         }
         if (IsDuplicateMove(x, y, z))
             return true;
-        return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
+        if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
+            return true;
+        // [lead29] user: «как команда лидера может быть отклонена? Это вообще ошибка.» - the member executes: the plain
+        // path walk; the refusal is a blocker (member_refusal)
+        // honest play: never through a closed door (that walk stays refused, reported)
+        std::string const refusal = WalkRefusal(Position(x, y, z));
+        bool const door = refusal.rfind("closed door", 0) == 0;
+        Leader::Events::Ack(bot->GetGUID(), events.seq, "follow",
+                            "member_refusal: the member's guard refused the follow walk (" +
+                                (refusal.empty() ? std::string("ledge / ground effect") : refusal) +
+                                (door ? "), stays" : "), walked anyway"));
+        if (!door)
+            bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
+        return true;
     }
     if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
         return false;
@@ -639,12 +652,18 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         }
         refusal = WalkRefusal(events.spot);
         if (refusal.empty())
-            refusal = "another guard (ledge, ground effect, duplicate move)";
+            refusal = "another guard (ledge, ground effect)";
+        // [lead29] a member never refuses a leader command: the leader validated the spot, the member walks the plain
+        // path to it; the refusal is a blocker (member_refusal) - the leader's model and the member's disagree
+        // honest play: never through a closed door (that one stays refused - the leader's check missed it)
+        if (refusal.rfind("closed door", 0) != 0)
+            bot->GetMotionMaster()->MovePoint(0, events.spot.GetPositionX(), events.spot.GetPositionY(),
+                                              events.spot.GetPositionZ(), FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
     }
     Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
                         moved ? "walks to the spot: " + events.moveWhy
-                              : "the walk refused: " + events.moveWhy + " - " + refusal);
-    return moved;
+                              : "member_refusal: " + events.moveWhy + " - " + refusal + ", walked anyway");
+    return true;
 }
 
 bool LeaderMoveOrderAction::SkipsIdleGuard()

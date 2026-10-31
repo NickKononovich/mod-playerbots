@@ -415,6 +415,16 @@ namespace Leader
 
     // [lead15] The member's group is led by the dungeon leader (a fresh readiness verdict for it).
     bool LedGroup(Player* member);
+
+    // [lead29] the committed pull's expected mobs per group (pull together: every mob of the combined plan). The
+    // idle-mob guards of the group's bots (members' walks, the tank's reach, the leader's spot guard) do not count
+    // them as blockers: they are the pull. Set at the issue, cleared at the commitment's release.
+    namespace PullPack
+    {
+        void Set(ObjectGuid group, std::vector<ObjectGuid> const& mobs);
+        void Clear(ObjectGuid group);
+        bool Contains(Player* bot, ObjectGuid mob);
+    }
     // [lead15] LEADER_MEMBER_EXECUTOR: a member of a led group inside a dungeon, not the tank (the tank executes its
     // PullOrder and walks the route itself): it executes the leader's commands only.
     bool ExecutorMember(Player* member);

@@ -19,6 +19,7 @@
 #include "Map.h"
 #include "PathGenerator.h"
 #include "PlayerbotAIConfig.h"
+#include "LeaderOrders.h"  // [lead29] the planned pull's mobs
 #include "Playerbots.h"
 #include "PullActions.h"  // [b46_ohb] FightHold
 #include "RangedPositionActions.h"
@@ -155,7 +156,8 @@ Creature* IdleMobReachingSpot(PlayerbotAI* botAI, Player* bot, Unit* target)
          botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
     {
         Creature* mob = botAI->GetCreature(guid);
-        if (mob && mob != target && mob->IsAlive() && !mob->IsInCombat() && mob->HasReactState(REACT_AGGRESSIVE) &&
+        if (mob && mob != target && !Leader::PullPack::Contains(bot, guid) &&  // [lead29] the planned pull's own mobs
+            mob->IsAlive() && !mob->IsInCombat() && mob->HasReactState(REACT_AGGRESSIVE) &&
             bot->IsHostileTo(mob) &&
             !MovementAction::IdleAggroBlocker(mob, bot, target->GetPositionX(), target->GetPositionY(),
                                               target->GetPositionZ(), PEEL_WALK_IDLE_MARGIN, false))

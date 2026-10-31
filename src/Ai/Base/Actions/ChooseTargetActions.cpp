@@ -8414,6 +8414,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 if (!mob || mob == candidate || std::find(pack.begin(), pack.end(), mob) != pack.end() ||
                     !IsIdleEnemy(bot, mob))
                     continue;
+                // [lead29] a walker (patrol / wanderer) is the walker rules' (taken along or pulled first)
+                if (Creature* walker = mob->ToCreature(); walker && (walker->isMoving() ||
+                                                                     walker->GetDefaultMovementType() !=
+                                                                         IDLE_MOTION_TYPE))
+                    continue;
                 for (Position const& place : places)
                     if (ReachesSpot(bot, mob, place))
                     {
@@ -11351,7 +11356,32 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             float const eta = float(first) * PATROL_SAMPLE_SEC;
             float const distance = bot->GetExactDist(member);
             int32 const wait = PatrolWait(flags, window, maxWait);
-            if (wait > 0 && mayHoldFor(patrol.walker, patrol.reach))
+            // [lead29] user: no wait on a time forecast for a led party - the walker is decided at once: taken along
+            // when the whole still fits (pull together), else pulled first, else held as no fit (below)
+            bool const ledNoWait = Leader::LEADER_NO_FORCING_TIMERS && Leader::Orders::IsTracked(bot->GetGUID());
+            if (ledNoWait && !counted && !lastResort && !chosenPack.empty())
+            {
+                std::vector<Unit*> together = chosenPack;
+                for (Unit* mob : patrol.members)
+                    if (!inPlan(mob))
+                        together.push_back(mob);
+                PackEstimate const togetherEstimate = EstimatePack(together, bot, groupDps, estimateMode, _planLos);
+                OverloadTerms togetherTerms;
+                CarefulOverload(bot, togetherEstimate, strength, support, kit, measured, &togetherTerms);
+                if (togetherEstimate.boss || (withinCap(togetherEstimate) && togetherTerms.Max() <= limit))
+                {
+                    chosenPack = together;
+                    chosen = togetherEstimate;
+                    changed = true;
+                    LogPatrol(bot, Acore::StringFormat(
+                                       "[lead29] [pull patrol] {}: walker {} ({:.1f} yd) joins the fight at {}: taken "
+                                       "along, {} mobs, cost {:.2f} (no wait)",
+                                       bot->GetName(), member->GetName(), distance, planned->GetName(), chosen.mobs,
+                                       chosen.cost));
+                    continue;
+                }
+            }
+            if (wait > 0 && !ledNoWait && mayHoldFor(patrol.walker, patrol.reach))
             {
                 LogPatrol(bot, Acore::StringFormat(
                                    "[pull hold] {}: patrol {} approaches ({:.1f} yd, eta {:.0f} s): walks into the "
