@@ -651,7 +651,23 @@ bool AggressiveTargetAction::TakeLeaderDecision()
     // [lead4c] a peek: the decision is consumed by the Execute that runs it (a skipped tick keeps it)
     if (!PullPlanner::TakeIssued(bot->GetGUID(), Leader::LEADER_ISSUE_FRESH_MS, decision, false) ||
         decision.verdict != PullPlanner::Verdict::Go)
-        return false;
+    {
+        // [lead31b] the order it runs is still open and not begun (Issued): the executor goes on with it - its next
+        // step (a sight walk done: the approach, the tag) - with no new issue
+        Leader::PullOrder order;
+        if (!_hasActive || !Leader::Orders::GetOpen(bot->GetGUID(), order) ||
+            order.state != Leader::OrderState::Issued || bot->isMoving())
+            return false;
+        ObjectGuid const activeMob = !_activeDecision.planTarget.IsEmpty() ? _activeDecision.planTarget
+                                     : !_activeDecision.attack.IsEmpty()   ? _activeDecision.attack
+                                                                           : _activeDecision.lookTarget;
+        if (order.target != activeMob)
+            return false;
+        LoadDecision(_activeDecision);
+        _fromLeader = true;
+        _fromLeaderMs = 0;  // not the slot's: nothing to consume
+        return true;
+    }
 
     // An attack without a careful plan (AttackAction::Execute) attacks the aggressive target: only the leader's one.
     // [lead3] [lead5] a leader-issued attack (a boss pull, the leader's own pick) names its mob: no aggressive target
@@ -673,5 +689,7 @@ bool AggressiveTargetAction::TakeLeaderDecision()
     LoadDecision(decision);
     _fromLeader = true;
     _fromLeaderMs = decision.ms;  // [lead4c]
+    _activeDecision = decision;  // [lead31b] carried on while its order stays open
+    _hasActive = true;
     return true;
 }

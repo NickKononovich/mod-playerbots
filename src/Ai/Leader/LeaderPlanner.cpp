@@ -11005,8 +11005,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 overlapNoWindow = (known && !window) || binding.mover->GetGUID() == overlapInputs->intercept;
             }
             bool const forecastDecides = overlapInputs && (overlapWindow || overlapNoWindow);
+            // [lead31b] a led tank's planner holds no overlap wait: decided at once (the crossing patrol first when
+            // it fits, else the pack planned merged)
+            bool const ledNow = Leader::LEADER_NO_FORCING_TIMERS && Leader::Orders::IsTracked(bot->GetGUID());
             bool const cycledOut =
-                !staysPut && (forecastDecides ? overlapNoWindow : _overlapCycles > OVERLAP_MAX_CYCLES);
+                !staysPut && (ledNow || (forecastDecides ? overlapNoWindow : _overlapCycles > OVERLAP_MAX_CYCLES));
             std::string decision;
             if (staysPut)
                 decision = "does not walk off, counted in the pack (plans it merged)";

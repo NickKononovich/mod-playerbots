@@ -23027,13 +23027,7 @@ namespace TestHarness
             if (open)
             {
                 lead.commitOrderSeen = true;
-                // [lead30] rfc-h 20261031-125411: "engage: walks for sight" made one sight walk and stood (the order
-                // Issued, nothing re-ran it, order_orphan after 25 s). The order is the tank's to finish: while it is
-                // Issued and the tank stands out of combat, the decision is issued again - its next walk / attack
-                PullPlanner::Decision peek;
-                if (order.state == Leader::OrderState::Issued && !tank->IsInCombat() && !tank->isMoving() &&
-                    !PullPlanner::TakeIssued(party.leader, Leader::LEADER_ISSUE_FRESH_MS, peek, false))
-                    PullPlanner::Issue(party.leader, committed);
+                // [lead31b] the tank's executor carries the open order through its steps itself (no re-issue)
                 return true;
             }
             // the issued slot expired before the tank took it (it never opened an order): issued again

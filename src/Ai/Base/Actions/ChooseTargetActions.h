@@ -389,6 +389,10 @@ private:
     bool _shadow = false;      // a diff-mode look: no verdict, no crowd control registration, no aoe plan note
     bool _fromLeader = false;  // the decision Execute runs was issued by the leader (the tank only executes)
     uint32 _fromLeaderMs = 0;  // [lead4c] its stamp (PullPlanner::ConsumeIssued)
+    // [lead31b] the leader's decision this tank executes now: while its order stays open (Issued) out of combat, the
+    // executor carries it on (the sight walk, the approach, the tag) by itself - nobody issues it again
+    PullPlanner::Decision _activeDecision;
+    bool _hasActive = false;
     // [lead5] CarefulPlanVerdict::Set for this look (not by a shadow look), recorded for the leader's own memory
     // (Decision::verdict*): the leader's Steer reads its planner's verdicts there, not from the registry.
     void PublishVerdict(ObjectGuid target, bool accepted, uint32 mobs, GuidVector const& pack,
