@@ -159,8 +159,6 @@ bool GroupPreparing(Player* bot, std::string* why)
 }
 }  // namespace PullReadiness
 
-
-
 namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execution
 {
     // Resources the group needs for the next pull grow with how dangerous that pull is, so the group rests
@@ -6766,7 +6764,6 @@ void LogPullBlocked(Player* bot, std::string const& reason, Unit* target)
              target ? target->GetName() : std::string("no target"), target ? bot->GetDistance(target) : 0.0f);
 }
 
-
 bool AggressiveTargetAction::DecideLook()
 {
     _lookVerdict = PullPlanner::Verdict::None;  // [lead7] what this look's return means (FillDecision)
@@ -7108,7 +7105,6 @@ bool AggressiveTargetAction::DecideLook()
 
     return true;
 }
-
 
 void AggressiveTargetAction::NotePackBlocked(ObjectGuid mob, uint32 now)
 {
@@ -11601,7 +11597,6 @@ bool AggressiveTargetAction::PullBackSpot(Unit* candidate, Position& spot, bool 
     return false;
 }
 
-
 // [los_pull_plan_loop] A line-of-sight pull planned again and again on one mob that never comes is no pull: brs-h
 // w24 (20261025-115805-brs-h-5A-32, 303-527 s) registered 83 plans on the Spellbinder / Warlock packs in 220 s
 // ("tank spot 6.0 yd from the cast spot"), not one was cast, the harness withheld the route for the running pull. After
@@ -11928,17 +11923,7 @@ namespace PullCastSpot
     }
 }
 
-
-
-
-
-
 bool AttackAnythingAction::isPossible() { return GetTarget() && AttackAction::isPossible(); }
-
-
-
-
-
 
 // [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7: the careful pull planner as the leader's library (PullPlanner in
 // ChooseTargetActions.h). The look (DecideLook) is the tank's own isUseful before step 7, unchanged in its gates,
@@ -12110,7 +12095,6 @@ void AggressiveTargetAction::FillDecision(bool go, PullPlanner::Decision& out)
     }
 }
 
-
 // Execute's resets of the planner's own state, on a library instance that does not execute (the tank does).
 void AggressiveTargetAction::MirrorExecute()
 {
@@ -12167,7 +12151,6 @@ void AggressiveTargetAction::MirrorExecute()
         _planFightFor.Clear();
     }
 }
-
 
 namespace PullPlanner
 {
