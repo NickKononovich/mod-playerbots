@@ -20921,6 +20921,34 @@ namespace TestHarness
             return true;
         }
 
+        // [lead39] a walk on the walker's floor: a full path with no step down or up of more than 2.5 yd (no ledge drop)
+        bool LeaderWalkStaysOnFloor(Player* bot, Position const& to)
+        {
+            if (std::fabs(to.GetPositionZ() - bot->GetPositionZ()) > 4.0f)
+                return false;
+            PathGenerator path(bot);
+            path.CalculatePath(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
+            if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT))
+                return false;
+            Movement::PointsArray const& points = path.GetPath();
+            for (size_t i = 1; i < points.size(); ++i)
+                if (std::fabs(points[i].z - points[i - 1].z) > 2.5f)
+                    return false;
+            return true;
+        }
+
+        // [lead39] fight_drag: the tank's fight moved by the leader (from, to, the distance, off the meeting point)
+        void LogFightDrag(DecisionRun const& run, Player* tank, Position const& to, Position const& meet,
+                          char const* why)
+        {
+            DecisionLog::Instance().Write(run, "leader", "fight_drag", tank->GetGUID(), tank->GetName(), true,
+                                          JsonObject().Str("why", why).Real("fromX", tank->GetPositionX())
+                                              .Real("fromY", tank->GetPositionY()).Real("toX", to.GetPositionX())
+                                              .Real("toY", to.GetPositionY())
+                                              .Real("distance", tank->GetExactDist(to))
+                                              .Real("offMeetingPoint", meet.GetExactDist(to)));
+        }
+
         // [lead18] the member's spell reach to its target (a hunter 35 yd, a caster 30 yd)
         float LeaderSpellReach(Player* bot) { return bot->getClass() == CLASS_HUNTER ? 35.0f : 30.0f; }
 
@@ -21803,7 +21831,10 @@ namespace TestHarness
             // [lead36] b85 rfc-h: the tank stood 7.3 yd off the Trogg on the healer ("0 attackers ... going idle"):
             // the leader's Taunt / Attack includes the walk to melee - a MoveTo to the mob while out of its melee
             // reach (re-issued only when the mob moved off the issued point)
-            if (tank->IsAlive() && !tank->IsWithinMeleeRange(mob))
+            // [lead39] b88 rfc-h pull 6 (112-183 s): the walk to the loose Trogg dropped the tank 6.9 yd off a
+            // ledge ("[ledge drop] ... shortcut_drop leader move order") into the unpulled Troggs below (12 came for 2
+            // planned). The walk only on the tank's own floor along a path with no drop; else the taunt / AoE alone
+            if (tank->IsAlive() && !tank->IsWithinMeleeRange(mob) && LeaderWalkStaysOnFloor(tank, mob->GetPosition()))
             {
                 Leader::MemberEvents tankEvents;
                 bool const has = Leader::Events::Get(tank->GetGUID(), tankEvents) &&
@@ -21813,9 +21844,12 @@ namespace TestHarness
                                                                                           : mob->GetPosition();
                 if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point,
                                 tank->GetCombatReach() + mob->GetCombatReach(), "aggro loss: to the mob"))
+                {
                     logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "aggro loss: to the mob").Str("who", "tank")
                                  .Str("mob", mob->GetName()).Real("distance", tank->GetExactDist(mob)));
+                    LogFightDrag(run, tank, point, lead.meetPoint, "aggro loss: to the mob");
+                }
             }
             // the others' target is never a loose mob
             // [lead38] b87 rfc-h 507-600 s: the one Earthborer of the fight was loose on the healer (12.5 yd below
@@ -22045,6 +22079,10 @@ namespace TestHarness
                     if (Leader::Events::SetLoot(lead.looter, true))
                         logEvent(looter, "Loot", JsonObject().Str("why", "the fight is over"));
         }
+        // [lead39] b88 rfc-h pull 6: extra_aggro read "fightSpotDistance 103.8" against the meeting point of an
+        // earlier pull - an unplanned fight meets where the tank stands when it starts
+        if (fighting && !lead.lastFighting && !(lead.commit && lead.commitIssued))
+            lead.meetPoint = tank->GetPosition();
         lead.lastFighting = fighting;
         // [lead34] the route is data: its waypoint for the tank becomes the leader's MoveTo ("route walk") while no
         // pull is committed and no fight is on (the special waypoints stay the tank's own walk: a jump, a straight
@@ -22795,10 +22833,13 @@ namespace TestHarness
                 if (slow([&] { return LeaderSafeSpot(tank, GET_PLAYERBOT_AI(tank), zones, keepsHealer, spot); }) &&
                     checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.0f,
                                             std::string("hazard: ") + in->what))
+                {
                     logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", std::string("hazard: ") + in->what).Str("who", "tank")
                                  .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
                                  .Real("z", spot.GetPositionZ()));
+                    LogFightDrag(run, tank, spot, lead.meetPoint, "hazard");
+                }
             }
         }
 
@@ -23440,8 +23481,19 @@ namespace TestHarness
                     inputs.pick = whole->GetGUID();
                     pickWhy = "whole pack: " + lead.wholeWhy;
                 }
+                // [lead39] b88 rfc-h 0-24 s: the pick flipped every second between two Earthborers and a Molten
+                // Elemental - the room's edge was recomputed from wandering mobs. The leader keeps its pick (a
+                // commitment of the pick) until it is dead, in a fight, out of reach or refused by the planner
+                else if (Creature* kept = lead.keptPick.IsEmpty() ? nullptr : idleAlive(lead.keptPick);
+                         kept && !lead.refusedPicks.count(kept->GetGUID()) && tank->GetExactDist(kept) <= 90.0f &&
+                         std::fabs(kept->GetPositionZ() - tank->GetPositionZ()) < 15.0f)
+                {
+                    inputs.pick = kept->GetGUID();
+                    pickWhy = "kept pick: " + lead.keptPickWhy;
+                }
                 else
                 {
+                    lead.keptPick.Clear();
                     static std::unordered_map<uint32, TargetReachability> reach;  // party seq (world thread)
                     ObjectGuid const route = party.targetIsStarter ? ObjectGuid::Empty : party.target;
                     // [lead33] the leader's own pick: the route target unless the planner refused / held it, else the
@@ -23501,6 +23553,11 @@ namespace TestHarness
                     }
                     else
                         pickWhy = party.target.IsEmpty() ? "no route target" : "the route target out of the pick";
+                    if (!inputs.pick.IsEmpty())
+                    {
+                        lead.keptPick = inputs.pick;
+                        lead.keptPickWhy = pickWhy;
+                    }
                 }
                 inputs.pickWhy = pickWhy;
             }

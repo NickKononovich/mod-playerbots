@@ -5833,6 +5833,12 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
     if (!group || !map || !map->IsNonRaidDungeon() || bot->InBattleground() || IsGroupFighting(bot))
         return false;
 
+    // [lead39] b88 rfc-h 22 s: "held for pre-pull cc" on a pull of lone wanderers - a wanderer walks out of any
+    // crowd control plan and needs none: no hold for it
+    if (Creature const* creature = pullTarget->ToCreature();
+        creature && creature->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+        return false;
+
     bool const measured = GetPullMode(bot, PlanStrength()) == PullMode::Measured;  // [lead7] the look's snapshot
     GuidVector const possible = PlanPossible(measured);
     uint32 const now = getMSTime();
@@ -6869,8 +6875,13 @@ bool AggressiveTargetAction::DecideLook()
                 if (hold.first != target->GetGUID() || !hold.second)
                     hold = {target->GetGUID(), now ? now : 1};
                 held = getMSTimeDiff(hold.second, now) < SELF_REST_HOLD_MS;
+                // [lead39] b88 rfc-h 21.7 s "the tank rests (health 98 %, mana 100 %)": it ate its Well Fed food
+                // (the harness's buff food, a 10 s eat) - named as what it is
+                bool const buffFood = RestState::IsEating(bot) && !RestState::WantsFood(bot) &&
+                                      !RestState::WantsDrink(bot);
                 if (held)
-                    why = Acore::StringFormat("the tank rests (health {:.0f} %, mana {:.0f} %)", bot->GetHealthPct(),
+                    why = Acore::StringFormat("the tank {} (health {:.0f} %, mana {:.0f} %)",
+                                              buffFood ? "eats its buff food" : "rests", bot->GetHealthPct(),
                                               bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f);
             }
             else if (!held)

@@ -489,6 +489,8 @@ namespace TestHarness
             ObjectGuid patrolTarget;                          // [lead34] a patrol the leader pulls as its own pull
             std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
             std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
+            ObjectGuid keptPick;  // [lead39] the leader's pick, kept until dead / fought / refused / out of reach
+            std::string keptPickWhy;
             bool looseIsTarget = false;  // [lead38] every fight mob is loose: the loose one is the Attack target
             ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
             std::vector<ObjectGuid> planMobs;
