@@ -22694,8 +22694,10 @@ namespace TestHarness
                 if (resting && lead.commitTickMs)
                     lead.commitSinceMs += getMSTimeDiff(lead.commitTickMs, now);
                 // [lead23] the leader's own hold (rest, a closed window, the spot gate) runs no take clock
+                // [lead24] rfc-h 20261031-115146: the tank could not take the issued engage while the leader's own
+                // readiness held the pull (the shaman drank): the leader's wait, not the tank's
                 if (lead.commitIssued && !lead.commitOrderSeen && lead.commitTickMs &&
-                    (resting || !lead.patrolWindowOpen || lead.spotsWaiting))
+                    (resting || !lead.patrolWindowOpen || lead.spotsWaiting || !lead.ready))
                     lead.commitIssuedMs += getMSTimeDiff(lead.commitTickMs, now);
                 lead.commitTickMs = now;
             }
@@ -22718,14 +22720,7 @@ namespace TestHarness
             // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
             if (patrol && patrol->GetGUID() == lead.commitMob)
                 patrol = nullptr;
-            bool windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
-            // [lead24] a closed window holds at most LEADER_PATROL_WAIT_CAP_MS, then the plan proceeds
-            if (windowOpen || lead.commitIssued)
-                lead.windowClosedSinceMs = 0;
-            else if (!lead.windowClosedSinceMs)
-                lead.windowClosedSinceMs = now;
-            else if (getMSTimeDiff(lead.windowClosedSinceMs, now) >= Leader::LEADER_PATROL_WAIT_CAP_MS)
-                windowOpen = true;
+            bool const windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
             if (broken.empty() && windowOpen != lead.patrolWindowOpen)
             {
                 lead.patrolWindowOpen = windowOpen;
