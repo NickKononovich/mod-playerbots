@@ -22413,6 +22413,31 @@ namespace TestHarness
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
             lead.plannerRestFor.clear();
         }
+        // [lead51] the members' measured mana spend in fights (% of max mana per second of fight): the model's rate
+        {
+            float const dt = fighting && lead.manaTickMs ? getMSTimeDiff(lead.manaTickMs, now) / 1000.0f : 0.0f;
+            lead.manaTickMs = fighting ? now : 0;
+            std::vector<Player*> spenders = seats;
+            spenders.push_back(tank);
+            for (Player* member : spenders)
+            {
+                if (!member->GetMaxPower(POWER_MANA))
+                    continue;
+                auto& spend = lead.manaSpend[member->GetGUID()];
+                float const pct = member->GetPowerPct(POWER_MANA);
+                if (!fighting)
+                {
+                    spend.prev = -1.0f;
+                    continue;
+                }
+                if (spend.prev >= 0.0f && pct < spend.prev)
+                    spend.spent += spend.prev - pct;
+                spend.prev = pct;
+                spend.sec += dt;
+                if (spend.sec > 0.0f)
+                    RestState::NoteManaRate(member->GetGUID(), spend.spent / spend.sec);
+            }
+        }
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(party.leader))
         {
             std::string tankRestWhy;

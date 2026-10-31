@@ -4612,11 +4612,21 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // BOSS_READY_MANA, nobody eating or drinking, no group buff missing (`askBuffs`). Empty: ready; else what is
     // missing.
     // `realBoss` false ([rest_topup_real_boss]): a mini-boss, held to MINI_BOSS_READY_HEALTH / MINI_BOSS_READY_MANA.
-    std::string BossReadyGap(Player* bot, bool askBuffs, bool realBoss = true)
+    // [lead51] the seconds a boss fight lasts: his health over the group's damage (the "estimated group dps" value)
+    float BossFightSec(Player* bot, Unit* boss)
+    {
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        float const groupDps =
+            botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
+        return boss ? float(boss->GetHealth()) / std::max(groupDps, 1.0f) : 0.0f;
+    }
+
+    std::string BossReadyGap(Player* bot, bool askBuffs, bool realBoss = true, Unit* boss = nullptr)
     {
         float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
         float const readyMana = realBoss ? BOSS_READY_MANA : MINI_BOSS_READY_MANA;
-        auto const gap = [readyHealth, readyMana](Player* member) -> std::string
+        float const bossSec = BossFightSec(bot, boss);  // [lead51]
+        auto const gap = [readyHealth, readyMana, boss, bossSec](Player* member) -> std::string
         {
             if (!member->IsAlive())
                 return member->GetName() + " dead";
@@ -4624,8 +4634,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (member->GetHealthPct() < readyHealth)
                 return Acore::StringFormat("{} at {:.0f} % health", member->GetName(), member->GetHealthPct());
 
-            if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < readyMana)
-                return Acore::StringFormat("{} at {:.0f} % mana", member->GetName(), member->GetPowerPct(POWER_MANA));
+            // [lead51] the mana THIS boss fight takes from this member (FightManaLine), not a fixed line
+            float const manaLine = boss ? RestState::FightManaLine(member, bossSec, 0.0f) : readyMana;
+            if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < manaLine)
+                return Acore::StringFormat("{} at {:.0f} % mana (needs {:.0f} %)", member->GetName(),
+                                           member->GetPowerPct(POWER_MANA), manaLine);
 
             if (member->IsSitState())
                 return member->GetName() + " sits";
@@ -5502,21 +5515,23 @@ bool HealerSeesSpot(Player* bot, Position const& spot) { return HealerSees(bot, 
 
 std::string PullReadiness::BossNotReady(Player* bot, Unit* boss)
 {
-    return BossReadyGap(bot, true, IsEncounterBoss(boss));
+    return BossReadyGap(bot, true, IsEncounterBoss(boss), boss);
 }
 
 std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
 {
     bool const realBoss = IsEncounterBoss(boss);
     float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
-    float const readyMana = realBoss ? BOSS_READY_MANA : MINI_BOSS_READY_MANA;
+    // [lead51] the mana THIS boss fight takes from this member
     if (!member || !member->IsAlive())
         return std::string();
+    std::string terms;
+    float const readyMana = RestState::FightManaLine(member, BossFightSec(member, boss), 0.0f, &terms);
     if (member->GetHealthPct() < readyHealth)
         return Acore::StringFormat("health {:.0f} % < {:.0f} % for {}", member->GetHealthPct(), readyHealth,
                                    boss->GetName());
     if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < readyMana)
-        return Acore::StringFormat("mana {:.0f} % < {:.0f} % for {}", member->GetPowerPct(POWER_MANA), readyMana,
+        return Acore::StringFormat("mana {:.0f} % < {} for {}", member->GetPowerPct(POWER_MANA), terms,
                                    boss->GetName());
     return std::string();
 }
@@ -6909,7 +6924,7 @@ bool AggressiveTargetAction::DecideLook()
             {
                 // the missing buff the tank has waited for long enough (WaitForBuffs' clock) holds no boss either
                 bool const askBuffs = !_buffWaitMs || getMSTimeDiff(_buffWaitMs, now) < BOSS_BUFF_WAIT_MS;
-                why = BossReadyGap(bot, askBuffs, IsEncounterBoss(target));
+                why = BossReadyGap(bot, askBuffs, IsEncounterBoss(target), target);
                 held = !why.empty();
             }
 
@@ -8205,6 +8220,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // выбирает позицию»): melee behind the mob (away from the tank), ranged at range on the group's side - an
         // unpulled mob outside the pack reaching one of them makes the engage spot wrong: pulled back instead
         Unit* crowd = nullptr;
+        std::vector<Unit*> crowds;  // [lead51] every unpulled mob that reaches the placement
         if (Leader::LEADER_PLACEMENT_FIGHT_SPOT && engageFits && engageSeen && !engageHazard && !estimate.boss)
         {
             float const ex = bot->GetPositionX() - candidate->GetPositionX();
@@ -8234,11 +8250,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 for (Position const& place : places)
                     if (ReachesSpot(bot, mob, place))
                     {
-                        crowd = mob;
+                        if (!crowd)
+                            crowd = mob;
+                        crowds.push_back(mob);
                         break;
                     }
-                if (crowd)
-                    break;
             }
         }
 
@@ -8315,6 +8331,32 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (engageHazard && !engageCrossed)
                 return takeEngage(pullBackWhy + ", the tank drags the fight off it");
 
+            // [lead51] user: «чем больше берёшь одновременно и не умираешь - тем лучше ... динамически» - b99 rfc-h
+            // pull 8: "fought in its sight" of the Troggs that reach the dps placement, estimated 2, engaged 12. Engaged
+            // here, those mobs and their packs come: they are counted and the whole is judged by the cost model -
+            // taken deliberately when it fits, else no engage (another method / the next pick)
+            if (!engageCrossed && crowd)
+            {
+                std::vector<Unit*> together = pack;
+                for (Unit* seen : crowds)
+                {
+                    std::vector<Unit*> seenPack;
+                    CollectPack(botAI, bot, seen, seen->GetPosition(), possible, seenPack,
+                                FightHere(seen->GetPosition()), measured, false, nullptr);
+                    seenPack.push_back(seen);
+                    for (Unit* mob : seenPack)
+                        if (std::find(together.begin(), together.end(), mob) == together.end())
+                            together.push_back(mob);
+                }
+                PackEstimate const togetherEstimate = EstimatePack(together, bot, groupDps, estimateMode);
+                OverloadTerms togetherTerms;
+                CarefulOverload(bot, togetherEstimate, strength, support, kit, measured, &togetherTerms);
+                if (!planFits(togetherEstimate, togetherTerms.Max(comfort)))
+                    return false;
+                pack = together;
+                estimate = togetherEstimate;
+                terms = togetherTerms;
+            }
             if (!engageCrossed)
             {
                 takeEngage(pullBackWhy +
@@ -11363,7 +11405,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             bool const askBuffs = !_buffWaitMs || getMSTimeDiff(_buffWaitMs, now) < BOSS_BUFF_WAIT_MS;
             std::string const readyGap = waitSec > 0.0f && held < BOSS_WINDOW_MAX_HOLD_MS
                                              ? std::string()
-                                             : BossReadyGap(bot, askBuffs, IsEncounterBoss(drawn));
+                                             : BossReadyGap(bot, askBuffs, IsEncounterBoss(drawn), drawn);
             bool hold = true;
             if (waitSec > 0.0f && held < BOSS_WINDOW_MAX_HOLD_MS)
             {
@@ -11414,7 +11456,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // the healer dead to Blade Dance 31 s in. A boss is pulled with the group as ready as for a boss
         // (BossReadyGap: health, mana, nobody sitting, nobody still buffing, no group buff missing).
         bool const askBuffs = !_buffWaitMs || getMSTimeDiff(_buffWaitMs, now) < BOSS_BUFF_WAIT_MS;
-        std::string const readyGap = BossReadyGap(bot, askBuffs, IsEncounterBoss(plannedMob));
+        std::string const readyGap = BossReadyGap(bot, askBuffs, IsEncounterBoss(plannedMob), plannedMob);
         if (!readyGap.empty())
         {
             LogPatrol(bot, Acore::StringFormat("[pull boss] {}: {} himself, the group is not ready for him ({})",

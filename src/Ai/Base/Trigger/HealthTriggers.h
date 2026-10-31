@@ -312,6 +312,13 @@ struct NextFight
 constexpr float REFUSED_TOPUP_HEALER_PCT = 82.0f;
 // The bot's group tank's next fight; false when nothing is known (no group, no tank, no fresh plan).
 bool PredictNextFight(Player* bot, NextFight& fight);
+// [lead51] user: «нет хард-константы 90 %» - the mana a member needs for a fight is computed: its spend rate (measured
+// in this run's fights, NoteManaRate; else its role's burn rate above) x the fight's seconds (a healer: at least its
+// share of the tank health the fight costs), plus the reserve, minus the mana its own ready cooldowns return
+// (Evocation, Divine Plea). One line for the boss gate, the boss rest and the trash rest; why: the terms
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr);
+// [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
+void NoteManaRate(ObjectGuid member, float pctPerSec);
 
 // The bot sits with a food / drink aura (spell specific, breaks on standing up), not a passive regen buff.
 bool IsEating(Player* player);

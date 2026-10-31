@@ -8,6 +8,8 @@
 #include "AggressiveTargetValue.h"
 
 #include <algorithm>
+#include <mutex>
+#include <unordered_map>
 
 #include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
 #include "ANTriggers.h"   // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
@@ -327,6 +329,62 @@ constexpr float TIMED_RUN_BOSS_MANA_PCT = 60.0f;
 bool TimedRunStandsAtLine(Player* bot) { return CoSHelpers::IsGuardianTimerRunning(bot); }
 }  // namespace
 
+namespace
+{
+    std::mutex manaRateLock;
+    std::unordered_map<uint64, float> measuredManaRate;  // [lead51] % of max mana per second of fight
+
+    float RoleManaRate(Player* bot)
+    {
+        if (PlayerbotAI::IsHeal(bot))
+            return HEALER_BURN_PCT_PER_SEC;
+        if (PlayerbotAI::IsCaster(bot))
+            return CASTER_BURN_PCT_PER_SEC;
+        if (bot->getClass() == CLASS_HUNTER)
+            return HUNTER_BURN_PCT_PER_SEC;
+        if (PlayerbotAI::IsTank(bot))
+            return TANK_BURN_PCT_PER_SEC;
+        return MELEE_BURN_PCT_PER_SEC;
+    }
+}
+
+void NoteManaRate(ObjectGuid member, float pctPerSec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    measuredManaRate[member.GetRawValue()] = pctPerSec;
+}
+
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
+{
+    float rate = RoleManaRate(bot);
+    bool measured = false;
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        if (auto const found = measuredManaRate.find(bot->GetGUID().GetRawValue()); found != measuredManaRate.end())
+        {
+            rate = found->second;
+            measured = true;
+        }
+    }
+    float need = rate * fightSec;
+    if (PlayerbotAI::IsHeal(bot))
+        need = std::max(need, HEALER_PCT_PER_TANK_HEALTH * cost);
+    float const reserve = PlayerbotAI::IsHeal(bot) ? HEALER_PREDICT_RESERVE_PCT : PREDICT_RESERVE_PCT;
+    // the mana its own ready cooldowns return in the fight (spell effects: Evocation 60 %, Divine Plea 25 %)
+    constexpr uint32 SPELL_EVOCATION = 12051;
+    constexpr uint32 SPELL_DIVINE_PLEA = 54428;
+    float returned = 0.0f;
+    if (bot->HasSpell(SPELL_EVOCATION) && !bot->HasSpellCooldown(SPELL_EVOCATION))
+        returned += 60.0f;
+    if (bot->HasSpell(SPELL_DIVINE_PLEA) && !bot->HasSpellCooldown(SPELL_DIVINE_PLEA))
+        returned += 25.0f;
+    float const line = std::clamp(need + reserve - returned, float(sPlayerbotAIConfig.LowMana), 100.0f);
+    if (why)
+        *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve - {:.0f} cooldowns", line,
+                                   rate, measured ? "measured" : "role", fightSec, reserve, returned);
+    return line;
+}
+
 // [lead47] the leader's Rest command is on this led bot: it rests now, by the leader's line (no line of its own)
 bool LeaderRests(Player* bot)
 {
@@ -366,12 +424,22 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
         float fightSec = 0.0f;
         // [rest_topup_real_boss] the full top-up before a real boss only; a mini-boss is a trash fight with a floor
         bool const realBoss = fight.boss && fight.realBoss;
+        // [lead51] a led group: the line is computed for the next fight (boss or trash alike, FightManaLine) - no
+        // fixed boss top-up, no mini-boss floor, no trash cap
+        if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot))
+        {
+            fightSec = fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+            std::string terms;
+            line = FightManaLine(bot, fightSec, fight.cost, &terms);
+            fightNote = Acore::StringFormat("need {} for the next fight ({}{} mobs)", terms,
+                                            fight.boss ? "a boss, " : "", fight.mobs);
+        }
+        else
+        {
         float const need = realBoss ? -1.0f : PredictedManaNeed(bot, fight, fightSec);
         if (realBoss)
         {
-            // [lead15] LEADER_ONE_REST_RULE: the boss line is the leader's (= its boss ready gate)
-            line = Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) ? Leader::LEADER_BOSS_REST_PCT
-                                                                         : BOSS_TOPUP_PCT;
+            line = BOSS_TOPUP_PCT;
             fightNote = Acore::StringFormat("top-up {:.0f} % before a boss ({} mobs)", line, fight.mobs);
         }
         else if (need >= 0.0f)
@@ -387,6 +455,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
             line = MINI_BOSS_TOPUP_PCT;
             fightNote = Acore::StringFormat("[rest_topup_real_boss] {:.0f} % before a mini-boss ({} mobs, no full "
                                             "top-up)", line, fight.mobs);
+        }
         }
 
         if (healer && fight.topUp && line < REFUSED_TOPUP_HEALER_PCT)
