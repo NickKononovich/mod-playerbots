@@ -22011,9 +22011,10 @@ namespace TestHarness
             // mob stays - it attacks the mob it took back and runs its rotation
             auto const done = lead.threatDoneFor.find(mob->GetGUID());
             bool const castDone = done != lead.threatDoneFor.end() && done->second == spell;
-            bool const threatChanged =
-                spell && !castDone && Leader::Events::SetThreat(tank->GetGUID(), spell, mob->GetGUID());
+            bool const threatChanged = !Leader::LEADER_TANK_OWNS_FIGHT && spell && !castDone &&
+                                       Leader::Events::SetThreat(tank->GetGUID(), spell, mob->GetGUID());
             bool const attackChanged =
+                !Leader::LEADER_TANK_OWNS_FIGHT &&
                 Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {});
             // [lead54] issued (logged, the tank woken) once per change of the pick-up: a new loose mob or a new spell
             // (the taunt came off cooldown / went on it) - not every tick the loose state flickers
@@ -22032,7 +22033,8 @@ namespace TestHarness
             // [lead39] b88 rfc-h pull 6 (112-183 s): the walk to the loose Trogg dropped the tank 6.9 yd off a
             // ledge ("[ledge drop] ... shortcut_drop leader move order") into the unpulled Troggs below (12 came for 2
             // planned). The walk only on the tank's own floor along a path with no drop; else the taunt / AoE alone
-            if (tank->IsAlive() && !tank->IsWithinMeleeRange(mob) && LeaderWalkStaysOnFloor(tank, mob->GetPosition()))
+            if (!Leader::LEADER_TANK_OWNS_FIGHT && tank->IsAlive() && !tank->IsWithinMeleeRange(mob) &&
+                LeaderWalkStaysOnFloor(tank, mob->GetPosition()))
             {
                 Leader::MemberEvents tankEvents;
                 bool const has = Leader::Events::Get(tank->GetGUID(), tankEvents) &&
@@ -22250,7 +22252,8 @@ namespace TestHarness
                 stopDps = true;
         }
         // [lead16] LEADER_TANK_EXECUTES: the tank's target (no aggro loss: its own victim, else the kill order's head)
-        if (fighting && Leader::LEADER_TANK_EXECUTES && looseOn.empty() && Leader::LEADER_ATTACK_EVENTS)
+        if (fighting && Leader::LEADER_TANK_EXECUTES && !Leader::LEADER_TANK_OWNS_FIGHT && looseOn.empty() &&
+            Leader::LEADER_ATTACK_EVENTS)
         {
             Unit* tankTarget = tank->GetVictim();
             if (!tankTarget || !tankTarget->IsAlive() || !tankTarget->IsInCombat() ||
@@ -23156,7 +23159,8 @@ namespace TestHarness
         }
 
         // [lead17] the tank out of a hazard (its own "move fight off hazard" is off): a short step, in heal reach
-        if (Leader::LEADER_HAZARD_SPOTS && tank->IsAlive())
+        // [lead56] in a fight the tank's own (LEADER_TANK_OWNS_FIGHT)
+        if (Leader::LEADER_HAZARD_SPOTS && tank->IsAlive() && !(Leader::LEADER_TANK_OWNS_FIGHT && tank->IsInCombat()))
         {
             std::vector<HazardZone> const& zones = lead.hazardZones[tank->GetGUID()];
             if (HazardZone const* in = zones.empty() ? nullptr

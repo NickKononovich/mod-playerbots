@@ -432,11 +432,14 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
 
     // [lead17] LEADER_TANK_OWN_PICKS_OFF: the led tank's own next pack and own hazard step are off in every state
     if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
-        (action->getName() == "chain pull" || action->getName() == "move fight off hazard"))
+        (action->getName() == "chain pull" ||
+         // [lead56] in a fight the tank keeps contact itself (LEADER_TANK_OWNS_FIGHT)
+         (action->getName() == "move fight off hazard" && !(Leader::LEADER_TANK_OWNS_FIGHT && bot->IsInCombat()))))
         return 0.0f;
 
     // [lead16] LEADER_TANK_EXECUTES: in a fight the tank's target is the leader's Attack
-    if (Leader::LEADER_TANK_EXECUTES && bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) &&
+    if (Leader::LEADER_TANK_EXECUTES && !Leader::LEADER_TANK_OWNS_FIGHT && bot->IsInCombat() &&
+        Leader::Orders::IsTracked(bot->GetGUID()) &&
         Leader::LedBot(bot))
     {
         Leader::MemberEvents events;

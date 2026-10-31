@@ -686,6 +686,11 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     // a group without our leader: the bot's own rules
     if (!_led)
         return 1.0f;
+    // [lead56] user: in the fight the tank decides itself (taunt, AoE, threat, target switches): the led tank's own
+    // fight rules, no command gate and no stale mode
+    if (Leader::LEADER_TANK_OWNS_FIGHT && bot->IsInCombat() && PlayerbotAI::IsTank(bot) &&
+        Leader::Orders::IsTracked(bot->GetGUID()))
+        return 1.0f;
 
     // [rot3] a led bot: no fallback to its own rules; without a fresh command the safe minimum only
     bool const stale = !_hasCommand;

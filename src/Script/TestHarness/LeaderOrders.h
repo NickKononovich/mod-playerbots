@@ -194,6 +194,10 @@ namespace Leader
     constexpr float LEADER_FOLLOW_KEEP_YD = 6.0f;
     // [lead34] the route is data the leader reads: the led tank walks the route only as the leader's MoveTo
     constexpr bool LEADER_ROUTE_IS_DATA = true;
+    // [lead56] user: «когда бой начался, танк уже САМ следит, кого затаунтить, где AoE, где теряет контакт с мобом,
+    // где набрать угрозу, когда поменять цель» - the leader gives the tank the pull (and the group the focus); in the
+    // fight the tank's own tank logic runs: no leader taunt / threat / attack / walk / hazard command to the tank
+    constexpr bool LEADER_TANK_OWNS_FIGHT = true;
     // [lead34] user: «Если патруль, надо убивать патруль.» - no wait for a patrol to walk away (no patrol window, no
     // patrol wait, no step back, no lane wait): a patrol near the route or the pull is the leader's target, taken along
     // with the pull when the combined fight is safe (PullPlanner::JudgePack), else pulled as its own pull first
