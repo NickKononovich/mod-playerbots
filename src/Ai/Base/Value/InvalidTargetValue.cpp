@@ -8,6 +8,7 @@
 #include "AttackersValue.h"
 #include "Group.h"
 #include "KillOrder.h"
+#include "LeaderOrders.h"  // [lead23]
 #include "Playerbots.h"
 #include "PvpValues.h"
 #include "Unit.h"
@@ -23,6 +24,16 @@ bool InvalidTargetValue::Calculate()
     // [b44_st] a charmed member of the group / team is dropped as a target, whoever chose it (AttackersValue)
     if (AttackersValue::IsCharmedAlly(target, bot))
         return true;
+
+    // [lead23] a led member keeps the leader's Attack target (dead, evading, immune or friendly: dropped above)
+    if (target && qualifier == "current target" && Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack &&
+            events.target == target->GetGUID())
+            return !bot->IsValidAttackTarget(target) || target->IsImmunedToDamage(SPELL_SCHOOL_MASK_ALL) ||
+                   (target->ToCreature() && target->ToCreature()->IsInEvadeMode());
+    }
 
     Unit* enemy = AI_VALUE(Unit*, "enemy player target");
     if (target && enemy && target == enemy && target->IsAlive())

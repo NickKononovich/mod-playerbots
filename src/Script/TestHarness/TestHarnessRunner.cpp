@@ -20689,7 +20689,8 @@ namespace TestHarness
                     creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) ||
                     !(creature->isMoving() || creature->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE) ||
                     creature->GetGUID() == d.planTarget || creature->GetGUID() == d.attack ||
-                    creature->GetGUID() == d.lookTarget ||
+                    creature->GetGUID() == d.lookTarget || creature->GetGUID() == d.verdictTarget ||
+                    std::find(d.verdictPack.begin(), d.verdictPack.end(), creature->GetGUID()) != d.verdictPack.end() ||
                     std::find(d.pack.begin(), d.pack.end(), creature->GetGUID()) != d.pack.end())
                     continue;
                 float const closest = std::min(creature->GetExactDist(spot), creature->GetExactDist(tank));
@@ -22183,11 +22184,33 @@ namespace TestHarness
             if (!moved && !combat && Leader::LEADER_NO_OWN_FOLLOW && Leader::ExecutorMember(bot) &&
                 !bot->IsSitState() && !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
             {
+                bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                 bool const following = lead.following.count(guid) > 0;
                 float const gap = bot->GetExactDist(tank);
                 if (following || gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank))
                 {
-                    Position const spot = LeaderFollowSpot(tank, index);
+                    Position spot = LeaderFollowSpot(tank, index);
+                    // [lead23] an engage pull: ranged / healer walk along to their range of the target (the tank's
+                    // side), not 7 yd behind the tank - the first hits land when the tank arrives
+                    Leader::PullOrder engage;
+                    if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
+                        Leader::Orders::GetOpen(party.leader, engage))
+                        if (Unit* engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob))
+                        {
+                            float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
+                                                                         : LeaderSpellReach(bot) - 4.0f;
+                            float dx = tank->GetPositionX() - engaged->GetPositionX();
+                            float dy = tank->GetPositionY() - engaged->GetPositionY();
+                            float const length = std::max(0.1f, std::hypot(dx, dy));
+                            float x = engaged->GetPositionX() + dx / length * range;
+                            float y = engaged->GetPositionY() + dy / length * range;
+                            float z = engaged->GetPositionZ();
+                            if (length > range && map->CheckCollisionAndGetValidCoords(engaged, engaged->GetPositionX(),
+                                                                                       engaged->GetPositionY(),
+                                                                                       engaged->GetPositionZ(), x, y,
+                                                                                       z))
+                                spot.Relocate(x, y, z);
+                        }
                     if (following && !tank->isMoving() &&
                         bot->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= LEADER_FOLLOW_TOLERANCE &&
                         gap <= LEADER_FOLLOW_START_YD)
@@ -22640,6 +22663,10 @@ namespace TestHarness
                         resting = true;
                 if (resting && lead.commitTickMs)
                     lead.commitSinceMs += getMSTimeDiff(lead.commitTickMs, now);
+                // [lead23] the leader's own hold (rest, a closed window, the spot gate) runs no take clock
+                if (lead.commitIssued && !lead.commitOrderSeen && lead.commitTickMs &&
+                    (resting || !lead.patrolWindowOpen || lead.spotsWaiting))
+                    lead.commitIssuedMs += getMSTimeDiff(lead.commitTickMs, now);
                 lead.commitTickMs = now;
             }
             std::string broken;
@@ -22658,6 +22685,9 @@ namespace TestHarness
             Creature* patrol = broken.empty()
                                    ? LeaderPatrolNear(tank, lead.commitSpot, committed, patrolGap, patrolReach)
                                    : nullptr;
+            // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
+            if (patrol && patrol->GetGUID() == lead.commitMob)
+                patrol = nullptr;
             bool const windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
             if (broken.empty() && windowOpen != lead.patrolWindowOpen)
             {
@@ -24007,6 +24037,30 @@ namespace TestHarness
     void TestHarnessMgr::TickRouteViz()
     {
         uint32 const now = getMSTime();
+        // [speech] what the leader says goes to the GM inside the run's instance (system messages), twice a second
+        if (Leader::LEADER_SPEECH)
+        {
+            static uint32 speechScanMs = 0;
+            if (!speechScanMs || getMSTimeDiff(speechScanMs, now) >= 500)
+            {
+                speechScanMs = now ? now : 1;
+                for (auto const& candidate : _parties)
+                {
+                    Party const& party = *candidate;
+                    if (!party.content || IsTerminalPhase(party.phase) || !party.instanceId)
+                        continue;
+                    std::vector<std::string> const lines = DecisionLog::Instance().DrainSpeech(party.seq);
+                    if (lines.empty())
+                        continue;
+                    Player* speechLeader = ObjectAccessor::FindPlayer(party.leader);
+                    Map* speechMap = speechLeader && speechLeader->IsInWorld() ? speechLeader->GetMap() : nullptr;
+                    if (!speechMap || speechMap->GetInstanceId() != party.instanceId || !GameMasterInside(speechMap))
+                        continue;
+                    for (std::string const& line : lines)
+                        TellRouteGMs(speechMap, line, nullptr);
+                }
+            }
+        }
         // ROUTE_VIZ_AUTO: a GM inside a run's instance gets its markers without a command, until it leaves.
         static uint32 autoScanMs = 0;
         if (ROUTE_VIZ_AUTO && (!autoScanMs || getMSTimeDiff(autoScanMs, now) >= ROUTE_VIZ_AUTO_SCAN_MS))

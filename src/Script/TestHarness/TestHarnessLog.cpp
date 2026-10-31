@@ -210,6 +210,7 @@ namespace TestHarness
                 line.Str("mob", mobName).Num("mobEntry", mob.GetEntry()).Num("mobLow", mob.GetCounter());
             line.Merge(fields);
             text = line.Build();
+            Say(state, elapsedMs, stamp, who, what, mobName, decides, text);
 
             if (decides)
                 ++state.owners[who];
@@ -248,6 +249,358 @@ namespace TestHarness
         if (!conflict.empty())
             AppendLine(run.runId + ".decisions.jsonl", conflict);
         return id;
+    }
+
+    namespace
+    {
+        // [speech] the value of a string / number field in one JSON line ("" when absent)
+        std::string JField(std::string const& json, char const* key)
+        {
+            std::string const pattern = std::string("\"") + key + "\":";
+            size_t at = json.find(pattern);
+            if (at == std::string::npos)
+                return {};
+            at += pattern.size();
+            if (at < json.size() && json[at] == '"')
+            {
+                std::string out;
+                for (size_t i = at + 1; i < json.size() && json[i] != '"'; ++i)
+                {
+                    if (json[i] == '\\' && i + 1 < json.size())
+                        ++i;
+                    out += json[i];
+                }
+                return out;
+            }
+            size_t const end = json.find_first_of(",}", at);
+            return json.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        }
+
+        std::string Cut(std::string text, size_t max)
+        {
+            if (text.size() > max)
+                text = text.substr(0, max - 3) + "...";
+            return text;
+        }
+    }
+
+    // [speech] one decision line -> at most one sentence, or nothing (noise / duplicates inside the topic's gap)
+    void DecisionLog::Say(RunState& state, uint32 elapsedMs, uint32 stamp, std::string const& who,
+                          std::string const& what, std::string const& mobName, bool /*decides*/,
+                          std::string const& json)
+    {
+        if (!Leader::LEADER_SPEECH)
+            return;
+        // members only acknowledge; target picking and spot bookkeeping are noise
+        std::string const why = JField(json, "why");
+        std::string const member = JField(json, "member");
+        std::string const stateText = JField(json, "state");
+        std::string const mob = mobName.empty() ? JField(json, "mob") : mobName;
+        if (what == "member_ack" || what == "order_report" || what == "pull_estimate_vs_actual")
+            return;
+        // a member decides on its own: that is exactly what the user wants to see, flagged
+        if (who.rfind("member", 0) == 0)
+        {
+            if (what != "own_decision")
+                return;
+            std::string const action = JField(json, "action");
+            std::string const kind = JField(json, "kind");
+            std::string const topicOwn = what + who + action;
+            uint32& lastOwn = state.speechAt[topicOwn];
+            if (lastOwn && getMSTimeDiff(lastOwn, stamp) < 15000)
+                return;
+            lastOwn = stamp ? stamp : 1;
+            uint32 const totalOwn = elapsedMs / 1000;
+            char clockOwn[16];
+            std::snprintf(clockOwn, sizeof(clockOwn), "%u:%02u", totalOwn / 60, totalOwn % 60);
+            state.speech.push_back(std::string("|cffff6666[Own decision ") + clockOwn + "]|r " + who + ": " + action +
+                                   " (" + kind + ") - " + JField(json, "why"));
+            while (state.speech.size() > 60)
+                state.speech.pop_front();
+            return;
+        }
+        if (what == "target" || what == "skip_target" || what == "skip_lifted" || what == "target_commit")
+        {
+            // the leader's target choice: one short line per target, so the user sees what it aims at
+            std::string const name = JField(json, "name");
+            if (what != "target" || name.empty())
+                return;
+            std::string text2 = "Next target: " + name + " (score " + JField(json, "score") + ", " +
+                                (JField(json, "boss") == "true" ? std::string("boss") : std::string("trash")) + ")";
+            uint32& lastT = state.speechAt["target" + name];
+            if (lastT && getMSTimeDiff(lastT, stamp) < 15000)
+                return;
+            lastT = stamp ? stamp : 1;
+            uint32 const totalT = elapsedMs / 1000;
+            char clockT[16];
+            std::snprintf(clockT, sizeof(clockT), "%u:%02u", totalT / 60, totalT % 60);
+            state.speech.push_back(std::string("|cff66ccff[Leader ") + clockT + "]|r " + text2);
+            while (state.speech.size() > 60)
+                state.speech.pop_front();
+            return;
+        }
+        if (what == "leader_spot" || what == "approach_stop" || what == "approach_sight" || what == "pull_hold")
+        {
+            std::string const note = what == "leader_spot" ? member + " gets a spot (" + why + ", ground " + JField(json, "ground") + ")"
+                                                           : what + " " + mobName + ": " + why;
+            std::string const topicN = what + member + mobName;
+            uint32& lastN = state.speechAt[topicN];
+            if (lastN && getMSTimeDiff(lastN, stamp) < 12000)
+                return;
+            lastN = stamp ? stamp : 1;
+            uint32 const totalN = elapsedMs / 1000;
+            char clockN[16];
+            std::snprintf(clockN, sizeof(clockN), "%u:%02u", totalN / 60, totalN % 60);
+            state.speech.push_back(std::string("|cff66ccff[Leader ") + clockN + "]|r " + Cut(note, 220));
+            while (state.speech.size() > 60)
+                state.speech.pop_front();
+            return;
+        }
+
+        std::string text;
+        std::string topic = what;
+        uint32 gapMs = 8000;
+
+        if (what == "leader_event")
+        {
+            std::string const event = JField(json, "event");
+            if (event == "Rest")
+            {
+                text = member + " rests (" + why + ")";
+                topic += member;
+                gapMs = 20000;
+            }
+            else if (event == "Intensity")
+            {
+                text = "Intensity " + JField(json, "intensity") + " for " + member + " (" + why + ")";
+                topic += member + JField(json, "intensity");
+                gapMs = 10000;
+            }
+            else if (event == "External")
+            {
+                text = member + " casts an external: " + why;
+                topic += member + why;
+                gapMs = 10000;
+            }
+            else if (event == "MoveTo" && why.find("aggro loss") != std::string::npos)
+            {
+                text = member + " runs to the tank (" + why + ")";
+                topic += member;
+                gapMs = 6000;
+            }
+            else if (event == "MoveTo")
+            {
+                bool const hazard = why.find("hazard") != std::string::npos || why.find("cleave") != std::string::npos ||
+                                    why.find("aoe") != std::string::npos || why.find("fire") != std::string::npos;
+                text = member + (hazard ? " leaves danger: " : " moves: ") + why;
+                topic += member + why;
+                gapMs = hazard ? 4000 : 10000;
+            }
+            else if (event == "StandAt")
+            {
+                text = member + " stands at (" + JField(json, "x") + ", " + JField(json, "y") + "): " + why;
+                topic += member + why;
+                gapMs = 12000;
+            }
+            else if (event == "Attack")
+            {
+                text = member + " attacks " + mob + (JField(json, "aoe").empty() ? std::string() : " (aoe " + JField(json, "aoe") + ")");
+                topic += member + mob;
+                gapMs = 8000;
+            }
+            else if (event == "Heal")
+            {
+                text = member + " heals the group";
+                topic += member;
+                gapMs = 30000;
+            }
+            else if (event == "DontAttack")
+            {
+                text = member + " must not attack " + mob;
+                topic += member + mob;
+                gapMs = 8000;
+            }
+            else if (event == "Hold")
+            {
+                text = member + " holds: " + why;
+                topic += member + why;
+                gapMs = 15000;
+            }
+            else if (event == "Ready?")
+            {
+                text = "Waiting for everyone to be ready: " + why;
+                topic += why;
+                gapMs = 15000;
+            }
+            else if (event == "Prepare")
+            {
+                text = member + " prepares (" + why + ")";
+                topic += member;
+                gapMs = 20000;
+            }
+            else if (event == "Loot")
+            {
+                text = member + " loots";
+                topic += member;
+                gapMs = 10000;
+            }
+            else
+            {
+                text = event + " for " + member + ": " + why;
+                topic += event + member;
+                gapMs = 10000;
+            }
+        }
+        else if (what == "pull_order")
+        {
+            text = "Pull " + mob + " by " + JField(json, "method") + ", expecting " + JField(json, "expected") +
+                   " mobs. " + JField(json, "reason");
+            gapMs = 2000;
+        }
+        else if (what == "pull_commit")
+        {
+            text = "Committed to the pull of " + mob;
+            gapMs = 2000;
+        }
+        else if (what == "commit_released")
+        {
+            text = "Plan for " + mob + " released: " + why;
+            gapMs = 2000;
+        }
+        else if (what == "patrol_window")
+        {
+            text = "Patrol " + JField(json, "patrol") + ": window " + stateText + " (gap " + JField(json, "gap") +
+                   " yd, reach " + JField(json, "reach") + ")";
+            topic += stateText;
+        }
+        else if (what == "leader_patrol_wait")
+        {
+            text = "Waiting for patrol " + JField(json, "patrol") + ": " + why;
+            gapMs = 15000;
+        }
+        else if (what == "patrol_step_back")
+        {
+            text = "Patrol " + JField(json, "patrol") + ": " + stateText + " (" + why + ")";
+            gapMs = 15000;
+        }
+        else if (what == "harness_hold")
+        {
+            text = "Not moving: " + why + " - " + stateText;
+            topic += stateText.substr(0, 24);
+            gapMs = 12000;
+        }
+        else if (what == "guarantee_hold")
+        {
+            text = "Not pulling " + mob + ": " + why;
+            gapMs = 12000;
+        }
+        else if (what == "leader_aggro_loss")
+        {
+            text = JField(json, "victim") + " has " + mob + " (" + JField(json, "tankDistance") +
+                   " yd from the tank)";
+            topic += JField(json, "victim");
+            gapMs = 6000;
+        }
+        else if (what == "leader_aggro_recovered")
+        {
+            text = mob + " is back on the tank after " + JField(json, "sec") + " s";
+            gapMs = 3000;
+        }
+        else if (what == "spot_rejected_aggro")
+        {
+            text = "Spot for " + member + " rejected: inside the reach of " + JField(json, "mob") + " (" +
+                   JField(json, "distance") + " yd, reach " + JField(json, "aggroRange") + ")";
+            topic += member;
+            gapMs = 20000;
+        }
+        else if (what == "invalid_spot")
+        {
+            text = member + " refused the walk: " + why;
+            topic += member;
+            gapMs = 20000;
+        }
+        else if (what == "leader_unstuck")
+        {
+            text = "Stuck for " + JField(json, "sec") + " s: " + stateText;
+            gapMs = 15000;
+        }
+        else if (what == "spot_gate_stuck")
+        {
+            text = "Spot gate stuck: " + why;
+            gapMs = 15000;
+        }
+        else if (what == "order_orphan")
+        {
+            text = "Order orphaned: " + JField(json, "about");
+            gapMs = 15000;
+        }
+        else if (what == "plan_door_step")
+        {
+            text = "Door on the way to " + mob + ": " + JField(json, "door");
+            gapMs = 10000;
+        }
+        else if (what == "room_order")
+        {
+            text = "Room order for " + mob;
+            gapMs = 20000;
+        }
+        else if (what == "heal_reach")
+        {
+            text = "Healer cannot cover " + member + ": " + why;
+            topic += member;
+            gapMs = 15000;
+        }
+        else if (what == "member_stuck")
+        {
+            text = member + " is stuck, no longer waited for";
+            topic += member;
+            gapMs = 20000;
+        }
+        else if (what == "leader_presave")
+        {
+            text = "Pre-save for " + member + ": " + why;
+            gapMs = 10000;
+        }
+        else if (what == "conflict")
+        {
+            text = "CONFLICT " + JField(json, "kind") + ": " + JField(json, "aWho") + " vs " + JField(json, "bWho");
+            topic += JField(json, "kind");
+            gapMs = 10000;
+        }
+        else if (what.rfind("leader_", 0) == 0 || what == "pull_after_hold" || what == "route_blocker_body_pull" ||
+                 what == "stall_short_step")
+        {
+            text = what + (why.empty() ? std::string() : ": " + why) +
+                   (mob.empty() ? std::string() : " [" + mob + "]");
+            gapMs = 15000;
+        }
+        else
+            return;
+
+        uint32& last = state.speechAt[topic];
+        if (last && getMSTimeDiff(last, stamp) < gapMs)
+            return;
+        last = stamp ? stamp : 1;
+
+        uint32 const total = elapsedMs / 1000;
+        char clock[16];
+        std::snprintf(clock, sizeof(clock), "%u:%02u", total / 60, total % 60);
+        state.speech.push_back(std::string("|cff66ccff[Leader ") + clock + "]|r " + Cut(text, 230));
+        while (state.speech.size() > 60)
+            state.speech.pop_front();
+    }
+
+    std::vector<std::string> DecisionLog::DrainSpeech(uint32 runSeq)
+    {
+        std::vector<std::string> out;
+        std::lock_guard<std::mutex> lock(_lock);
+        auto const found = _runs.find(runSeq);
+        if (found == _runs.end())
+            return out;
+        for (std::string const& line : found->second.speech)
+            out.push_back(line);
+        found->second.speech.clear();
+        return out;
     }
 
     void DecisionLog::NoteConflict(DecisionRun const& run, std::string const& kind, ObjectGuid mob,

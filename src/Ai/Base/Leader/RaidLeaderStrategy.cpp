@@ -187,7 +187,13 @@ namespace
                     return false;
                 if (prepareCmd && in({"reach party member to resurrect"}))
                     return false;
-                if (!in({"follow"}))
+                // [lead23] the rotation's reach toward the leader's Attack target (no leader spot holds it)
+                if (events.attack == Leader::AttackEvent::Attack && in({"reach melee", "reach spell", "set behind"}) &&
+                    events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt &&
+                    events.move != Leader::MoveEvent::Hold)
+                    return false;
+                // [lead23] blocked_move only for a move the member actually wanted (not the gate's presence check)
+                if (!gate && !in({"follow"}))
                     NoteBlocked(self, name, "blocked_move");
                 return true;
             }
@@ -324,7 +330,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
     if (dynamic_cast<MovementAction*>(action))
     {
         // the rotation's own range on the commanded target is its "how"
-        bool const rotationRange = combat && fights && in({"reach melee", "reach spell"});
+        bool const rotationRange = combat && fights && in({"reach melee", "reach spell", "set behind"});
         bool const resurrect = prepare && in({"reach party member to resurrect"});
         bool const plannedCc = !events.cc.IsEmpty() && in({"pre pull cc"});
         bool const looting = events.loot && in({"move to loot", "loot", "open loot"});

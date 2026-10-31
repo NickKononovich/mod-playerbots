@@ -11,6 +11,7 @@
 #include "ObjectGuid.h"
 
 #include <atomic>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <string>
@@ -155,6 +156,8 @@ namespace TestHarness
         // The run's counts: lines by `what`, conflicts by kind, decisions by owner.
         std::string SummaryJson(uint32 runSeq);
         void EndRun(uint32 runSeq);
+        // [speech] the lines the leader said since the last call (oldest first); the caller sends them to the GM
+        std::vector<std::string> DrainSpeech(uint32 runSeq);
 
     private:
         struct MobLast
@@ -171,7 +174,11 @@ namespace TestHarness
             std::map<std::string, uint32> owners;     // owner -> decisions
             std::map<std::string, uint32> nonLeader;  // [lead17] "<who kind>|<what>" -> decisions not by the leader
             std::unordered_map<ObjectGuid, MobLast> lastByMob;
+            std::deque<std::string> speech;                    // [speech] lines waiting for the GM
+            std::unordered_map<std::string, uint32> speechAt;  // [speech] topic -> last said (getMSTime)
         };
+        void Say(RunState& state, uint32 elapsedMs, uint32 stamp, std::string const& who,
+                 std::string const& what, std::string const& mobName, bool decides, std::string const& json);
 
         std::mutex _lock;
         uint32 _nextId = 0;
