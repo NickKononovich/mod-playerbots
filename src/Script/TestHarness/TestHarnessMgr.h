@@ -487,6 +487,7 @@ namespace TestHarness
             uint32 routeWalkSerial = 0;                       // [lead34] the route waypoint the leader walks
             ObjectGuid engageWalkFor;                         // [lead34] the engage the leader walks in for sight
             ObjectGuid patrolTarget;                          // [lead34] a patrol the leader pulls as its own pull
+            std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
             ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
             std::vector<ObjectGuid> planMobs;
             bool patrolDangerFits = false;

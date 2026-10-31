@@ -21544,6 +21544,36 @@ namespace TestHarness
                 healer = bot;
             anySitting |= bot->IsSitState();
             rebuff |= botAI->forceRebuff.IsPending();
+            // [lead37] the boss prep per member: its rebuff window, what the leader commands it, what it does
+            {
+                std::string prep;
+                if (botAI->forceRebuff.IsPending())
+                {
+                    Leader::MemberEvents prepEvents;
+                    Leader::Events::Get(bot->GetGUID(), prepEvents);
+                    Spell const* casting = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                    std::string const cast = casting && casting->GetSpellInfo()
+                                                 ? "casting " + std::string(casting->GetSpellInfo()->SpellName[0])
+                                                 : std::string("no cast");
+                    prep = Acore::StringFormat("rebuff window open; ready {} move {}; {}{}", int32(prepEvents.ready),
+                                               int32(prepEvents.move), cast,
+                                               botAI->forceRebuff.IsOnGlobalCooldown() ? ", on the global cooldown"
+                                                                                       : "");
+                }
+                std::string& logged = lead.bossPrepLogged[bot->GetGUID()];
+                if (prep != logged)
+                {
+                    if (!prep.empty() || !logged.empty())
+                        DecisionLog::Instance().Write(
+                            run, "leader", "boss_prep", bot->GetGUID(), bot->GetName(), false,
+                            JsonObject().Str("member", bot->GetName())
+                                .Str("state", prep.empty() ? "rebuff window closed" : prep)
+                                .Real("openSec", prep.empty() ? 0.0f
+                                                              : getMSTimeDiff(botAI->forceRebuff.BeganMs(), now) /
+                                                                    1000.0f));
+                    logged = prep;
+                }
+            }
             fighting |= bot->IsInCombat();
             seats.push_back(bot);
         }

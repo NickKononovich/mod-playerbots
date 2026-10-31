@@ -4999,6 +4999,13 @@ namespace TestHarness
                                                                      leader->GetExactDist(stopBy))
                                                : std::string("the target's stop"),
                                         notReady.empty() ? std::string() : "; group not ready: " + notReady));
+                                    // [lead37] the route is data (lead34): what holds is the leader's verdict
+                                    bool leaderReady = false;
+                                    std::string leaderWhy;
+                                    if (LeaderDecides(party) && leader->GetGroup() &&
+                                        Leader::Readiness::Get(leader->GetGroup()->GetGUID(), leaderReady, &leaderWhy) &&
+                                        !leaderReady)
+                                        add("the leader holds: " + leaderWhy);
                                 }
                                 else
                                     add("not arrived");  // [b43_harn] arrivedMs 0: no stop reached yet

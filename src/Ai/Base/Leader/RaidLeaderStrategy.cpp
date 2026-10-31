@@ -156,6 +156,11 @@ namespace
         };
         if (in({"leader external", "leader threat", "leader cc"}))
             return false;
+        // [lead37] b86 rfc-h 20261031-155828 (478-546 s): the hunter's rebuff window never closed - its "ready reply"
+        // (the window's end, ForceRebuffStrategy) was vetoed by the walk-only rule below while it had only a Follow,
+        // and the leader's readiness held the Oggleflint pull on "Rthunaa buffing". Closing the window is no decision
+        if (in({"ready reply", "finish ready check"}))
+            return false;
         // [lead20] Rest is eat / drink only: a buff stands the drinker up
         bool const prepareCmd = events.ready == Leader::ReadyEvent::Prepare ||
                                 events.ready == Leader::ReadyEvent::ReadyCheck;

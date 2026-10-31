@@ -27,6 +27,7 @@ public:
     void End() { pending = false; }
     bool IsPending() const;
     bool ShouldReplyToReadyCheck() const { return replyToReadyCheck; }
+    uint32 BeganMs() const { return beginMs; }  // [lead37] the boss-prep log
 
     void NoteBuffWork();
     void NoteBuffProposed();
