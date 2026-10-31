@@ -22783,8 +22783,10 @@ namespace TestHarness
                                  JsonObject().Str("why", "along with the tank: to range of the engage"));
                     moved = true;
                 }
-                else if (engaged || following || tank->isMoving() || gap > LEADER_FOLLOW_START_YD ||
-                         !bot->IsWithinLOSInMap(tank))
+                // [lead44] the member buffs (its rebuff window): the buff is the command while the tank stands - no
+                // Follow that would replace it, only a walk when the tank walks on or the member is far / out of sight
+                else if ((engaged || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
+                          gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank)))
                 {
                     lead.following.insert(guid);
                     if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))

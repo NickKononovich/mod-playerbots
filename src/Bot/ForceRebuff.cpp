@@ -12,7 +12,8 @@
 #include "Timer.h"
 #include <algorithm>
 
-static constexpr uint32 REBUFF_WINDOW_TIMEOUT_MS = 2 * MINUTE * IN_MILLISECONDS;
+// [lead44] user rule (no forcing timers): the window has no time limit - it closes when its buffs are done ("ready
+// reply", ReadyReplyAction, once a cycle runs no buff)
 
 void ForceRebuffState::Begin(bool reply)
 {
@@ -29,7 +30,7 @@ bool ForceRebuffState::IsOnGlobalCooldown() const
 
 bool ForceRebuffState::IsPending() const
 {
-    return pending && getMSTimeDiff(beginMs, getMSTime()) < REBUFF_WINDOW_TIMEOUT_MS;
+    return pending;
 }
 
 void ForceRebuffState::NoteBuffWork()

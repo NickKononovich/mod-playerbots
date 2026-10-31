@@ -607,8 +607,11 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             y = target->GetPositionY();
             z = target->GetPositionZ();
         }
+        // [lead44] b93 rfc-h 313-362 s: Rtshaab's Follow fired "leader move order -> 0.0 yd" every tick at 94 and its
+        // "ready reply" never ran - the leader waited 50 s for its rebuff. A walk already under way (or done) is no
+        // live work: not executed, the member's other actions run
         if (IsDuplicateMove(x, y, z))
-            return true;
+            return false;
         if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
             return true;
         // [lead40] b89 rfc-h 57.8 s: Rtshaab "member_refusal: the member's guard refused the follow walk (ledge /
@@ -634,8 +637,9 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         return true;
     }
     // [lead27] already walking there: the same move again is no refusal
+    // [lead44] ... and no execution either: the member's other actions run meanwhile (no starvation)
     if (IsDuplicateMove(events.spot.GetPositionX(), events.spot.GetPositionY(), events.spot.GetPositionZ()))
-        return true;
+        return false;
     // [lead36] b85 rfc-h: 45+ "member_refusal: combat spot - another guard": the leader's newer spot met the wait for
     // the last move (IsWaitingForLastMove, the walk to the old spot) - the new command replaces that walk at once
     if (IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
