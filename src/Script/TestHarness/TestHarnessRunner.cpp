@@ -22241,24 +22241,8 @@ namespace TestHarness
             if (Leader::Orders::GetOpen(party.leader, order) && order.method == Leader::PullMethod::Engage &&
                 order.state == Leader::OrderState::Issued)
                 if (Unit* mob = ObjectAccessor::GetUnit(*tank, order.target))
-                    if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob) &&
-                        lead.engageWalkFor != mob->GetGUID() && mob->ToCreature() &&
-                        !LeaderWalkVerdict(tank, mob->ToCreature()).empty())
-                    {
-                        // [lead40] the walk in the tank cannot make (no path / a detour): no move is issued at all
-                        // (b89: the same unreachable spline re-walked every ~5 s for 55 s); the order ends, the pick
-                        // is refused, the leader picks the next mob
-                        std::string const verdict = LeaderWalkVerdict(tank, mob->ToCreature());
-                        lead.unreachable[mob->GetGUID()] = {tank->GetPosition(), mob->GetPosition(), verdict};
-                        if (lead.keptPick == mob->GetGUID())
-                            lead.keptPick.Clear();
-                        Leader::Orders::Close(party.leader, Leader::OrderState::Aborted,
-                                              "the leader: the walk in is " + verdict, tank->GetPosition(), nullptr);
-                        DecisionLog::Instance().Write(run, "leader", "pick_unreachable", mob->GetGUID(),
-                                                      mob->GetName(), true,
-                                                      JsonObject().Str("why", verdict).Str("pick", "engage walk in"));
-                    }
-                    else if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob))
+                    // [lead49] the walk is judged once before the order goes out (runCommit), not again here
+                    if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob))
                     {
                         Position const point = mob->GetPosition();
                         if (Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, 3.0f,
@@ -23478,17 +23462,36 @@ namespace TestHarness
             }
             Leader::PullOrder order;
             bool const open = broken.empty() && lead.commitIssued && Leader::Orders::GetOpen(party.leader, order);
+            // [lead49] user: no expiry and no re-issue of an order. The issued order waits in the tank's slot until
+            // the tank takes it (the leader's own waits clear) or the leader replaces / cancels it on a change of
+            // facts; taken without an order opened is such a fact
             if (broken.empty() && lead.commitIssued && !open)
             {
+                PullPlanner::Decision waiting;
                 if (lead.commitOrderSeen)
                     broken = "the order ended";
-                else if (getMSTimeDiff(lead.commitIssuedMs, now) > Leader::LEADER_COMMIT_TAKE_MS)
+                else if (!PullPlanner::TakeIssued(party.leader, 0, waiting, false))
+                    broken = "the tank took the order and opened none";
+            }
+            // [lead49] one reachability verdict, before the order goes out, from where the tank walks from now: the
+            // pick's verdict while the tank still stands where it was judged, else judged once here (b97: the pick
+            // passed at 94.8 s, the walk-in judged "detour (184 yd for 42 yd)" after the order went out)
+            if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && !IsBossLook(tank, mob->GetGUID()) &&
+                mob->ToCreature()->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE &&
+                mob->ToCreature()->GetDefaultMovementType() != RANDOM_MOTION_TYPE &&
+                !(lead.pickJudgedFor == mob->GetGUID() &&
+                  tank->GetExactDist(lead.pickJudgedAt) <= Leader::LEADER_COMMIT_MOVED_YD))
+            {
+                lead.pickJudgedFor = mob->GetGUID();
+                lead.pickJudgedAt = tank->GetPosition();
+                std::string const verdict = LeaderWalkVerdict(tank, mob->ToCreature());
+                if (!verdict.empty())
                 {
-                    if (Leader::LEADER_NO_FORCING_TIMERS)  // [lead24]
-                        WaitedLong(party, "commit_not_taken", getMSTimeDiff(lead.commitIssuedMs, now),
-                                   mob ? mob->GetName() : std::string("?"));
-                    else
-                        broken = "the tank did not take it";
+                    lead.unreachable[mob->GetGUID()] = {tank->GetPosition(), mob->GetPosition(), verdict};
+                    DecisionLog::Instance().Write(run, "leader", "pick_unreachable", mob->GetGUID(), mob->GetName(),
+                                                  true,
+                                                  JsonObject().Str("why", verdict).Str("pick", "before the order"));
+                    broken = "the walk to it is " + verdict;
                 }
             }
             if (!broken.empty())
@@ -23502,6 +23505,7 @@ namespace TestHarness
                 lead.commitIssued = false;
                 lead.commitOrderSeen = false;
                 lead.patrolWindowOpen = true;
+                PullPlanner::CancelIssued(party.leader);  // [lead49] the replaced order leaves the slot
                 if (Group* group = tank->GetGroup())
                     Leader::PullPack::Clear(group->GetGUID());
                 lead.engageRefused.clear();
@@ -23577,14 +23581,7 @@ namespace TestHarness
                 // [lead31b] the tank's executor carries the open order through its steps itself (no re-issue)
                 return true;
             }
-            // the issued slot expired before the tank took it (it never opened an order): issued again
-            PullPlanner::Decision peek;
-            if (getMSTimeDiff(lead.commitIssuedMs, now) > Leader::LEADER_ISSUE_FRESH_MS &&
-                !PullPlanner::TakeIssued(party.leader, Leader::LEADER_ISSUE_FRESH_MS, peek, false))
-            {
-                PullPlanner::Issue(party.leader, committed);
-            }
-            return true;
+            return true;  // [lead49] the issued order waits in the slot (no re-issue)
         };
         if (decides && Leader::LEADER_COMMIT_PULL && runCommit())
             return;

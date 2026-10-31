@@ -225,6 +225,8 @@ namespace PullPlanner
     // issued decision of that stamp once it is executed
     bool TakeIssued(ObjectGuid tank, uint32 maxAgeMs, Decision& out, bool consume = true);
     void ConsumeIssued(ObjectGuid tank, uint32 decisionMs);
+    // [lead49] the leader replaces / cancels its issued order (a change of facts): the slot is empty
+    void CancelIssued(ObjectGuid tank);
 
     // LEADER_PLANNER_DIFF: the tank's own decision against the planner instance's shadow look at the same instant.
     // `kinds` empty: they agree. Counted always; queued as a line when the disagreement is new (another signature)

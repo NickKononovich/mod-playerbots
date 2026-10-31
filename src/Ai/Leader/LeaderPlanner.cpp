@@ -12469,23 +12469,26 @@ namespace PullPlanner
         slot.issued = true;
     }
 
-    bool TakeIssued(ObjectGuid tank, uint32 maxAgeMs, Decision& out, bool consume)
+    // [lead49] user: no elapsed-time rule changes a decision - an issued order has no age limit: it stays until the
+    // tank takes it or the leader replaces / cancels it (CancelIssued); `maxAgeMs` is no longer read
+    bool TakeIssued(ObjectGuid tank, uint32 /*maxAgeMs*/, Decision& out, bool consume)
     {
         std::lock_guard<std::mutex> lock(leaderLock);
         auto const found = leaderSlots.find(tank);
         if (found == leaderSlots.end() || !found->second.issued)
             return false;
 
-        if (getMSTimeDiff(found->second.decision.ms, getMSTime()) > maxAgeMs)
-        {
-            found->second.issued = false;  // stale: dropped
-            return false;
-        }
-
         if (consume)
             found->second.issued = false;  // taken once
         out = found->second.decision;
         return true;
+    }
+
+    void CancelIssued(ObjectGuid tank)
+    {
+        std::lock_guard<std::mutex> lock(leaderLock);
+        if (auto const found = leaderSlots.find(tank); found != leaderSlots.end())
+            found->second.issued = false;
     }
 
     void ConsumeIssued(ObjectGuid tank, uint32 decisionMs)
