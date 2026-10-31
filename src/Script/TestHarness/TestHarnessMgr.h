@@ -571,6 +571,17 @@ namespace TestHarness
         uint32 pingPongHoldUntilMs = 0;
         uint32 pingPongCooldownUntilMs = 0;
         std::map<ObjectGuid, uint32> skipUntil;
+        // [lead41] the leader's on-the-path verdict per idle candidate (the route rules of Retarget: blocks route,
+        // patrol crosses route, required, boss area, joins the boss ...; off the path: its route distance and reach)
+        struct PathVerdict
+        {
+            bool on = false;
+            std::string why;
+            float routeDist = -1.0f;
+            float reach = 0.0f;
+        };
+        std::map<ObjectGuid, PathVerdict> pathVerdicts;
+        std::map<ObjectGuid, bool> pathVerdictLogged;  // the verdict last logged per mob (path_verdict)
         std::map<ObjectGuid, std::string> skipReason;  // why skipUntil holds it (the run's missing-boss report)
         // Where the leader stood when a target was skipped as unreachable: "unreachable" holds from there only. Once
         // the leader is elsewhere (dropped into Azjol-Nerub's lower kingdom, crossed a bridge, took an elevator) the

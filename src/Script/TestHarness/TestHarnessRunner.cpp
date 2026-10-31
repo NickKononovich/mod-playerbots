@@ -8347,6 +8347,7 @@ namespace TestHarness
         // The off-route mobs, kept for the case nothing is left on the route (the boss not targetable yet: an event
         // the harness does not model may need the rest) - then the old full clear.
         std::vector<std::pair<float, Creature*>> offRouteHostiles;
+        party.pathVerdicts.clear();  // [lead41] this retarget's verdicts
         // [sv-bog-overlord-alone] The idle mobs pulled alone and first (PULL_ALONE_FIRST): what stands within their
         // reach waits until they are dead.
         std::vector<Creature*> pullAloneMobs;
@@ -8695,16 +8696,41 @@ namespace TestHarness
                 creature->GetGUID() != party.target && BossOrder(party, creature) < 0 && !routeNeeds(creature))
             {
                 offRouteHostiles.emplace_back(leader->GetExactDist(creature), creature);
+                RouteWhy const& off = routeWhy[creature->GetGUID()];
+                party.pathVerdicts[creature->GetGUID()] = {false, "off the route", off.check.routeDist, off.reach};
                 continue;
             }
 
             hostiles.emplace_back(leader->GetExactDist(creature), creature);
+            {
+                // [lead41] on the path: the route rule that keeps it (or why the route rules do not apply to it)
+                auto const kept = routeWhy.find(creature->GetGUID());
+                std::string const why =
+                    kept != routeWhy.end() && kept->second.rule ? std::string(kept->second.rule)
+                    : creature->GetGUID() == party.target       ? std::string("the route's target")
+                    : creature->IsInCombat()                    ? std::string("in the fight")
+                    : BossOrder(party, creature) >= 0           ? std::string("a boss of the route")
+                    : encounterCreature                         ? std::string("the encounter")
+                                                                : std::string("no route rules here");
+                party.pathVerdicts[creature->GetGUID()] = {
+                    true, why, kept != routeWhy.end() ? kept->second.check.routeDist : -1.0f,
+                    kept != routeWhy.end() ? kept->second.reach : 0.0f};
+            }
         }
         // Nothing on the route and no boss to walk to (not targetable yet, held back): the old full clear. Not while
         // the next boss lies over a link: with nothing chosen the group walks to it (WalkToLink), as before.
         bool const routeFallback = hostiles.empty() && !viaLink && !viaStarterLink;
         if (routeFallback)
+        {
             hostiles.swap(offRouteHostiles);
+            // [lead41] nothing on the route and no boss to walk to: the route's own full-clear fallback is the path
+            for (auto const& [distance, creature] : hostiles)
+            {
+                auto& verdict = party.pathVerdicts[creature->GetGUID()];
+                verdict.on = true;
+                verdict.why = "the route's full-clear fallback (nothing on the route)";
+            }
+        }
         // [b34_arc] (for mech-n 20261026-014521-mech-n-5D-17, 1194-1315 s) The fallback took the nearest-scored idle
         // trash wherever it stood: a Mechanar Wrecker on the lower level (227.9,-52.1,0.1, dz -25) while the group
         // stood upstairs and Pathaleon (139.5,149.3,25.7) lay on its own floor; the walk ended at a 22 yd ledge
@@ -23504,8 +23530,33 @@ namespace TestHarness
                 // skipped no refusal). An unreachable verdict stays until its facts change - the tank or the mob moved
                 // off where it was judged (LEADER_COMMIT_MOVED_YD, the commitment's own "moved" measure) - and every
                 // pick source skips it
+                // [lead41] user: «не пулить лишнее, если они не находятся на пути. Это должен лидер решать» - the
+                // leader's on-the-path verdict (Retarget's route rules); off the path is never a pick
+                auto const onPath = [&](ObjectGuid guid)
+                {
+                    auto const found = party.pathVerdicts.find(guid);
+                    // the route's target, the patrol the leader pulls and the pack it must clear are the path's
+                    bool const on = guid == party.target || guid == lead.intercept || guid == lead.wholePack ||
+                                    (found != party.pathVerdicts.end() && found->second.on);
+                    auto const logged = party.pathVerdictLogged.find(guid);
+                    if (found != party.pathVerdicts.end() &&
+                        (logged == party.pathVerdictLogged.end() || logged->second != on))
+                    {
+                        party.pathVerdictLogged[guid] = on;
+                        Creature const* mob = map->GetCreature(guid);
+                        DecisionLog::Instance().Write(run, "leader", "path_verdict", guid,
+                                                      mob ? mob->GetName() : std::string("?"), true,
+                                                      JsonObject().Str("verdict", on ? "on_path" : "off_path")
+                                                          .Str("why", found->second.why)
+                                                          .Real("routeDist", found->second.routeDist)
+                                                          .Real("reach", found->second.reach));
+                    }
+                    return on;
+                };
                 auto const skipPick = [&](ObjectGuid guid)
                 {
+                    if (!onPath(guid))
+                        return true;
                     if (lead.refusedPicks.count(guid))
                         return true;
                     auto const found = lead.unreachable.find(guid);
@@ -23574,8 +23625,11 @@ namespace TestHarness
                                 }
                         }
                     }
-                    if (Unit* picked = leaderPick ? leaderPick
-                                                  : AggressiveTargetValue::PickFor(tankAI, route, reach[party.seq]))
+                    Unit* ownPick =
+                        leaderPick ? nullptr : AggressiveTargetValue::PickFor(tankAI, route, reach[party.seq]);
+                    if (ownPick && skipPick(ownPick->GetGUID()))  // [lead41] off the path: no pick
+                        ownPick = nullptr;
+                    if (Unit* picked = leaderPick ? leaderPick : ownPick)
                     {
                         inputs.pick = picked->GetGUID();
                         pickWhy = picked->GetGUID() == party.target ? "route target" : "nearest pick";
