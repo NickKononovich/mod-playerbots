@@ -20921,6 +20921,19 @@ namespace TestHarness
             return true;
         }
 
+        // [lead40] the leader's reachability verdict of a mob for `walker`: the route walk to it (EvaluatePath) and the
+        // skip_target detour metric (DETOUR_RATIO / DETOUR_EXTRA). Empty: reachable on a fair walk; else why not
+        std::string LeaderWalkVerdict(Player* walker, Creature* mob)
+        {
+            PathResult const path = EvaluatePath(walker, mob);
+            float const straight = walker->GetExactDist(mob);
+            if (!path.reachable)
+                return Acore::StringFormat("unreachable (no walk for {:.0f} yd)", straight);
+            if (path.length > std::max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA))
+                return Acore::StringFormat("detour ({:.0f} yd for {:.0f} yd)", path.length, straight);
+            return std::string();
+        }
+
         // [lead39] a walk on the walker's floor: a full path, no step down or up over 2.5 yd (no ledge drop)
         bool LeaderWalkStaysOnFloor(Player* bot, Position const& to)
         {
@@ -22113,7 +22126,24 @@ namespace TestHarness
             if (Leader::Orders::GetOpen(party.leader, order) && order.method == Leader::PullMethod::Engage &&
                 order.state == Leader::OrderState::Issued)
                 if (Unit* mob = ObjectAccessor::GetUnit(*tank, order.target))
-                    if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob))
+                    if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob) &&
+                        lead.engageWalkFor != mob->GetGUID() && mob->ToCreature() &&
+                        !LeaderWalkVerdict(tank, mob->ToCreature()).empty())
+                    {
+                        // [lead40] the walk in the tank cannot make (no path / a detour): no move is issued at all
+                        // (b89: the same unreachable spline re-walked every ~5 s for 55 s); the order ends, the pick
+                        // is refused, the leader picks the next mob
+                        std::string const verdict = LeaderWalkVerdict(tank, mob->ToCreature());
+                        lead.refusedPicks[mob->GetGUID()] = verdict;
+                        if (lead.keptPick == mob->GetGUID())
+                            lead.keptPick.Clear();
+                        Leader::Orders::Close(party.leader, Leader::OrderState::Aborted,
+                                              "the leader: the walk in is " + verdict, tank->GetPosition(), nullptr);
+                        DecisionLog::Instance().Write(run, "leader", "pick_unreachable", mob->GetGUID(),
+                                                      mob->GetName(), true,
+                                                      JsonObject().Str("why", verdict).Str("pick", "engage walk in"));
+                    }
+                    else if (mob->IsAlive() && !mob->IsInCombat() && !tank->IsWithinLOSInMap(mob))
                     {
                         Position const point = mob->GetPosition();
                         if (Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, point, 3.0f,
@@ -23557,6 +23587,30 @@ namespace TestHarness
                     {
                         lead.keptPick = inputs.pick;
                         lead.keptPickWhy = pickWhy;
+                    }
+                }
+                // [lead40] b89 rfc-h 54-123 s: the kept pick Earthborer was "skip: detour (511 yd for 84 yd)" by the
+                // leader's own skip_target, yet planned, committed and walked at (the tank stood 55 s). A new pick is
+                // judged by the same detour metric before the planner sees it: a detour / unreachable mob is refused
+                // (refusedPicks, the kept pick released) - never planned nor committed. A boss is always walked to.
+                if (!inputs.pick.IsEmpty() && inputs.pick != lead.pickJudgedFor)
+                {
+                    lead.pickJudgedFor = inputs.pick;
+                    Creature* picked = map->GetCreature(inputs.pick);
+                    std::string const verdict =
+                        picked && !picked->IsDungeonBoss() && !picked->isWorldBoss() && !picked->IsInCombat()
+                            ? LeaderWalkVerdict(tank, picked)
+                            : std::string();
+                    if (!verdict.empty())
+                    {
+                        lead.refusedPicks[inputs.pick] = verdict;
+                        DecisionLog::Instance().Write(run, "leader", "pick_unreachable", inputs.pick, picked->GetName(),
+                                                      true,
+                                                      JsonObject().Str("why", verdict).Str("pick", pickWhy));
+                        if (lead.keptPick == inputs.pick)
+                            lead.keptPick.Clear();
+                        inputs.pick.Clear();
+                        pickWhy = "the pick is " + verdict;
                     }
                 }
                 inputs.pickWhy = pickWhy;

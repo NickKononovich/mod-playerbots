@@ -611,17 +611,16 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             return true;
         if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
             return true;
-        // [lead29] user: «как команда лидера может быть отклонена? Это вообще ошибка.» - the member executes: the plain
-        // path walk; the refusal is a blocker (member_refusal)
-        // honest play: never through a closed door (that walk stays refused, reported)
+        // [lead40] b89 rfc-h 57.8 s: Rtshaab "member_refusal: the member's guard refused the follow walk (ledge /
+        // ground effect)". Members never refuse (the leader checks before it issues): the follow place is walked on
+        // the plain navmesh path, no refusal. Honest play: never through a closed door (that one stays, reported).
         std::string const refusal = WalkRefusal(Position(x, y, z));
-        bool const door = refusal.rfind("closed door", 0) == 0;
-        Leader::Events::Ack(bot->GetGUID(), events.seq, "follow",
-                            "member_refusal: the member's guard refused the follow walk (" +
-                                (refusal.empty() ? std::string("ledge / ground effect") : refusal) +
-                                (door ? "), stays" : "), walked anyway"));
-        if (!door)
-            bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
+        if (refusal.rfind("closed door", 0) == 0)
+        {
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "follow", "member_refusal: " + refusal + ", stays");
+            return true;
+        }
+        bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
         return true;
     }
     if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
