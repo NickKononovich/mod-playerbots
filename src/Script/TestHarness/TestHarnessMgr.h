@@ -506,6 +506,7 @@ namespace TestHarness
             };
             std::map<ObjectGuid, ManaSpend> manaSpend;
             uint32 manaTickMs = 0;
+            std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
             ObjectGuid dragFor;            // [lead50] fight_drag logged for this loose mob
             // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
             struct Unreachable

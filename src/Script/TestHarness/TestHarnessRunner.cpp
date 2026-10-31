@@ -20450,17 +20450,19 @@ namespace TestHarness
                                               target->GetExactDist(unit));
                     return Leader::AoeRule::Forbidden;
                 }
-                // [lead52] b100 rfc-h: 11 aggro losses, most on pack mobs - the damage dealers' AoE hit mobs the tank
-                // did not hold yet. AoE only while every fight mob in its reach is on the tank
-                if (unit->GetVictim() != tank)
-                {
-                    why = Acore::StringFormat("{} is not on the tank yet, {:.0f} yd from the target", unit->GetName(),
-                                              target->GetExactDist(unit));
-                    return Leader::AoeRule::Forbidden;
-                }
             }
             why = "the pack only";
             return Leader::AoeRule::AllowedOnPack;
+        }
+
+        // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
+        float LeaderTauntReach(Player* tank)
+        {
+            for (uint32 spell : TANK_TAUNTS)
+                if (tank->HasSpell(spell))
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+                        return info->GetMaxRange(false);
+            return 0.0f;
         }
 
         // the member's walk-along spot behind the tank (two rows of two), on reachable ground
@@ -21230,9 +21232,23 @@ namespace TestHarness
             if (Leader::LEADER_PREPULL_STAY)
             {
                 Position const here = bot->GetPosition();
+                // [lead53] user: the healer's first heals pull the mobs not yet on the tank - at the pull it stands
+                // within the tank's taunt reach (its taunt spell's range) and in its sight, so the tank picks the
+                // adds up at once; else it stands at the tank's first follow place
+                float const tauntReach = LeaderTauntReach(tank);
+                bool const nearTank = tauntReach <= 0.0f ||
+                                      (here.GetExactDist(tank->GetPosition()) <= tauntReach &&
+                                       tank->IsWithinLOS(here.GetPositionX(), here.GetPositionY(),
+                                                         here.GetPositionZ() + 2.0f));
                 if (!healer || (HealReaches(tank, here, fight) &&
-                                here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD))
+                                here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD && nearTank))
                     lead.spots[member.guid] = here;
+                else if (healer)
+                {
+                    Position const close = LeaderFollowSpot(tank, 0);
+                    if (HealReaches(tank, close, fight))
+                        lead.spots[member.guid] = close;
+                }
                 continue;
             }
             // [lead20] user: a member whose position already fits does not move (the healer: it reaches and sees the
@@ -22921,17 +22937,50 @@ namespace TestHarness
                 }
                 else
                 {
+                    // [lead53] user: «0 aggro off the tank»: each damage dealer attacks a mob it has threat headroom
+                    // on - its threat below the tank's on THAT mob (ThreatManager, no number of ours): the leader's
+                    // focus mob first, else the next of the kill order; AoE only while every fight mob in its reach
+                    // leaves it headroom
+                    auto const headroom = [&](Unit* mob)
+                    {
+                        return mob->GetThreatMgr().GetThreat(bot) < mob->GetThreatMgr().GetThreat(tank);
+                    };
+                    Unit* mine = headroom(target) ? target : nullptr;
+                    for (ObjectGuid const& next : killOrder)
+                    {
+                        if (mine)
+                            break;
+                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
+                            mob && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
+                            mine = mob;
+                    }
+                    Unit* const attackOn = mine ? mine : target;
+                    Leader::AoeRule memberAoe = aoe;
+                    std::string memberAoeWhy = aoeWhy;
+                    if (memberAoe != Leader::AoeRule::Forbidden)
+                        for (ObjectGuid const& other : killOrder)
+                            if (Unit* mob = ObjectAccessor::GetUnit(*tank, other);
+                                mob && mob->IsAlive() && attackOn->GetExactDist(mob) <= LEADER_AOE_RADIUS &&
+                                !headroom(mob))
+                            {
+                                memberAoe = Leader::AoeRule::Forbidden;
+                                memberAoeWhy = "no threat headroom on " + mob->GetName();
+                                break;
+                            }
+                    lead.noHeadroom[guid] = !mine;  // no mob with headroom: it waits (Intensity Stop below)
                     bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
-                                                                   target->GetGUID(), killOrder);
-                    bool const aoeChanged = Leader::Events::SetAoe(guid, aoe, target->GetPosition(),
+                                                                   attackOn->GetGUID(), killOrder);
+                    bool const aoeChanged = Leader::Events::SetAoe(guid, memberAoe, attackOn->GetPosition(),
                                                                    LEADER_AOE_RADIUS);
                     if (changed || aoeChanged)
-                        logEvent(bot, "Attack", JsonObject().Str("target", target->GetName())
-                                                    .Num("targetEntry", target->GetEntry())
+                        logEvent(bot, "Attack", JsonObject().Str("target", attackOn->GetName())
+                                                    .Num("targetEntry", attackOn->GetEntry())
                                                     .Num("killOrder", int64(killOrder.size()))
-                                                    .Str("aoe", aoe == Leader::AoeRule::Forbidden ? "forbidden"
-                                                                                                  : "allowed-on-pack")
-                                                    .Str("aoeWhy", aoeWhy));
+                                                    .Str("aoe", memberAoe == Leader::AoeRule::Forbidden
+                                                                    ? "forbidden"
+                                                                    : "allowed-on-pack")
+                                                    .Str("aoeWhy", memberAoeWhy)
+                                                    .Bool("headroom", mine != nullptr));
                 }
                 // the aggro-loss victim stops its damage until the tank has the mob back; the others leave the
                 // loose mob alone
@@ -22940,17 +22989,15 @@ namespace TestHarness
                 // [lead52] the tank's threat lead before the damage: a damage dealer whose threat on its target
                 // reaches the tank's stops until the tank leads again (the tank's lead is the game's own measure, no
                 // number of ours); the start of a pull too - nobody out-threats a tank that has not hit yet
+                // [lead53] only when no fight mob leaves it headroom (it was every member at the tank's threat)
                 bool const overThreat = !victim && bot != healer && !PlayerbotAI::IsHeal(bot) && target &&
-                                        target->IsAlive() && target->GetVictim() != bot &&
-                                        target->GetThreatMgr().GetThreat(bot) > 0.0f &&
-                                        target->GetThreatMgr().GetThreat(bot) >=
-                                            target->GetThreatMgr().GetThreat(tank);
+                                        lead.noHeadroom[guid];
                 Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : intensity;
                 if (Leader::Events::SetIntensity(guid, mine) && mine != Leader::Intensity::Normal)
                     logEvent(bot, "Intensity",
                              JsonObject().Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
                                  .Str("why", victim       ? "aggro loss: the tank takes the mob back"
-                                             : overThreat ? "threat: reaches the tank's on " + target->GetName()
+                                             : overThreat ? std::string("threat: no mob with headroom")
                                                           : "a dungeon boss"));
                 if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))

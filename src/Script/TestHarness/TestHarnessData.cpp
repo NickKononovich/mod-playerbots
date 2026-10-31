@@ -95,6 +95,10 @@ namespace TestHarness
             {"5H", 5, false, "rotation",
              {{"bear-druid", 1, MT}, {"disc-priest", 1, 0}, {"cat-druid", 1, 0}, {"fire-mage", 1, 0},
               {"mm-hunter", 1, 0}}},
+            // [lead53] 5A with a protection warrior tank (the user's threat tests)
+            {"5W", 5, false, "5A with a prot warrior",
+             {{"prot-warrior", 1, MT}, {"resto-druid", 1, 0}, {"frost-mage", 1, 0}, {"mm-hunter", 1, 0},
+              {"enh-shaman", 1, 0}}},
             // 5A with Horde races (Blood Elf paladin, Tauren druid, Undead mage, Orc hunter and shaman).
             {"5AH", 5, false, "optimal, Horde",
              {{"prot-paladin", 1, MT}, {"resto-druid", 1, 0}, {"frost-mage", 1, 0}, {"mm-hunter", 1, 0},
