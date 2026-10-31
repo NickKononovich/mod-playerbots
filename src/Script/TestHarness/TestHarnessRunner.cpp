@@ -20450,6 +20450,14 @@ namespace TestHarness
                                               target->GetExactDist(unit));
                     return Leader::AoeRule::Forbidden;
                 }
+                // [lead52] b100 rfc-h: 11 aggro losses, most on pack mobs - the damage dealers' AoE hit mobs the tank
+                // did not hold yet. AoE only while every fight mob in its reach is on the tank
+                if (unit->GetVictim() != tank)
+                {
+                    why = Acore::StringFormat("{} is not on the tank yet, {:.0f} yd from the target", unit->GetName(),
+                                              target->GetExactDist(unit));
+                    return Leader::AoeRule::Forbidden;
+                }
             }
             why = "the pack only";
             return Leader::AoeRule::AllowedOnPack;
@@ -22929,11 +22937,21 @@ namespace TestHarness
                 // loose mob alone
                 // [lead18] a healer is never stopped: Stop is no offensive cast, its heals go on
                 bool const victim = loose != looseOn.end() && bot != healer && !PlayerbotAI::IsHeal(bot);
-                Leader::Intensity const mine = victim ? Leader::Intensity::Stop : intensity;
+                // [lead52] the tank's threat lead before the damage: a damage dealer whose threat on its target
+                // reaches the tank's stops until the tank leads again (the tank's lead is the game's own measure, no
+                // number of ours); the start of a pull too - nobody out-threats a tank that has not hit yet
+                bool const overThreat = !victim && bot != healer && !PlayerbotAI::IsHeal(bot) && target &&
+                                        target->IsAlive() && target->GetVictim() != bot &&
+                                        target->GetThreatMgr().GetThreat(bot) > 0.0f &&
+                                        target->GetThreatMgr().GetThreat(bot) >=
+                                            target->GetThreatMgr().GetThreat(tank);
+                Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : intensity;
                 if (Leader::Events::SetIntensity(guid, mine) && mine != Leader::Intensity::Normal)
                     logEvent(bot, "Intensity",
-                             JsonObject().Str("intensity", victim ? "stop" : "burn")
-                                 .Str("why", victim ? "aggro loss: the tank takes the mob back" : "a dungeon boss"));
+                             JsonObject().Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
+                                 .Str("why", victim       ? "aggro loss: the tank takes the mob back"
+                                             : overThreat ? "threat: reaches the tank's on " + target->GetName()
+                                                          : "a dungeon boss"));
                 if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
