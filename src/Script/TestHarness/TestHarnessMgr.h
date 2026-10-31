@@ -515,6 +515,9 @@ namespace TestHarness
             bool tankCannotTake = false;               // [lead54] no taunt / AoE threat ready for the loose mob
             // [lead55] the move command before the current one, per member
             std::map<ObjectGuid, std::pair<Position, std::string>> prevMoves;
+            std::map<ObjectGuid, uint32> prevMovePhase;  // [lead65] the phase the command before was issued in
+            uint32 movePhase = 0;                        // [lead65] fight start / end, a new order: a new phase
+            std::string movePhaseKey;
             std::map<std::string, uint32> commandRepeats;                      // [lead55] member|why -> repeats
             ObjectGuid dragFor;            // [lead50] fight_drag logged for this loose mob
             // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged

@@ -21668,7 +21668,9 @@ namespace TestHarness
             {
                 auto const prev = lead.prevMoves.find(member);
                 // [lead64] A -> B -> A after a higher-precedence B ended (a run to the tank done) is no ping-pong
+                // [lead65] ... and only within one phase (b110: engage -> follow -> a NEW pull's engage was flagged)
                 if (prev != lead.prevMoves.end() && prev->second.second == why &&
+                    lead.prevMovePhase[member] == lead.movePhase &&
                     prev->second.first.GetExactDist(spot) <= std::max(tolerance, 1.0f) &&
                     Leader::Events::MovePrecedence(before.moveWhy) <= Leader::Events::MovePrecedence(why))
                 {
@@ -21679,6 +21681,7 @@ namespace TestHarness
                                                           .Str("was", before.moveWhy));
                 }
                 lead.prevMoves[member] = {before.spot, before.moveWhy};
+                lead.prevMovePhase[member] = lead.movePhase;
             }
             if (changed && hadMove && bot &&
                 (before.moveWhy != why || before.spot.GetExactDist(spot) > 8.0f))
@@ -22555,6 +22558,18 @@ namespace TestHarness
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
         if (!fighting)
             lead.healStarted = false;  // [lead61] the next fight's heals start on the leader's word again
+        // [lead65] the move phase: the fight state and the pull order - a change starts a new phase
+        {
+            Leader::PullOrder phaseOrder;
+            uint32 const orderId = Leader::Orders::GetOpen(party.leader, phaseOrder) ? phaseOrder.id : 0;
+            std::string const key = std::string(fighting ? "fight:" : "out:") + std::to_string(orderId) + ":" +
+                                    std::to_string(lead.commitMob.GetCounter());
+            if (key != lead.movePhaseKey)
+            {
+                lead.movePhaseKey = key;
+                ++lead.movePhase;
+            }
+        }
 
         if (fighting)
         {
