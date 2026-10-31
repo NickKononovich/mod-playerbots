@@ -491,6 +491,15 @@ namespace TestHarness
             std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
             ObjectGuid keptPick;  // [lead39] the leader's pick, kept until dead / fought / refused / out of reach
             ObjectGuid pickJudgedFor;  // [lead40] the pick the reachability verdict was taken for
+            Position pickJudgedAt;     // [lead41] the tank where it was judged
+            // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
+            struct Unreachable
+            {
+                Position tankAt;
+                Position mobAt;
+                std::string why;
+            };
+            std::map<ObjectGuid, Unreachable> unreachable;
             std::string keptPickWhy;
             bool looseIsTarget = false;  // [lead38] every fight mob is loose: the loose one is the Attack target
             ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once

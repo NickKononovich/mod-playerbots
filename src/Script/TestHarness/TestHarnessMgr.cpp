@@ -5043,8 +5043,11 @@ namespace TestHarness
                                     getMSTimeDiff(party.noWalkSinceMs, now) >= LEADER_NO_WALK_BREAK_MS)
                                 {
                                     auto& lead = party.lead;
-                                    ObjectGuid const patrol = !lead.waitPatrol.IsEmpty() ? lead.waitPatrol
-                                                                                         : lead.intercept;
+                                    // [lead41] patrols are killed, never waited out (LEADER_PATROL_IS_TARGET): the
+                                    // patrol pick (intercept) is no hold, only a wait would be one
+                                    bool const waitOnly =
+                                        !lead.waitPatrol.IsEmpty() || Leader::LEADER_PATROL_IS_TARGET;
+                                    ObjectGuid const patrol = waitOnly ? lead.waitPatrol : lead.intercept;
                                     std::string broke = "nothing to break: reported";
                                     // [lead24] LEADER_NO_FORCING_TIMERS: no ban because time passed (waited_long)
                                     if (!patrol.IsEmpty() && Leader::LEADER_NO_FORCING_TIMERS)

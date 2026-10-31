@@ -22134,7 +22134,7 @@ namespace TestHarness
                         // (b89: the same unreachable spline re-walked every ~5 s for 55 s); the order ends, the pick
                         // is refused, the leader picks the next mob
                         std::string const verdict = LeaderWalkVerdict(tank, mob->ToCreature());
-                        lead.refusedPicks[mob->GetGUID()] = verdict;
+                        lead.unreachable[mob->GetGUID()] = {tank->GetPosition(), mob->GetPosition(), verdict};
                         if (lead.keptPick == mob->GetGUID())
                             lead.keptPick.Clear();
                         Leader::Orders::Close(party.leader, Leader::OrderState::Aborted,
@@ -23499,6 +23499,28 @@ namespace TestHarness
                 inputs.intercept = intercept->GetGUID();
             if (Leader::Leads(Leader::LEADER_ONE_PICKER))
             {
+                // [lead41] b90 rfc-h 507-606 s: ~50 cycles of commit -> engage walk-in -> "detour (311 yd for 68
+                // yd)" -> released -> the same mob picked again (refusedPicks is cleared on every Go, the edge pick
+                // skipped no refusal). An unreachable verdict stays until its facts change - the tank or the mob moved
+                // off where it was judged (LEADER_COMMIT_MOVED_YD, the commitment's own "moved" measure) - and every
+                // pick source skips it
+                auto const skipPick = [&](ObjectGuid guid)
+                {
+                    if (lead.refusedPicks.count(guid))
+                        return true;
+                    auto const found = lead.unreachable.find(guid);
+                    if (found == lead.unreachable.end())
+                        return false;
+                    Creature const* mob = map->GetCreature(guid);
+                    if (!mob || !mob->IsAlive() ||
+                        tank->GetExactDist(found->second.tankAt) > Leader::LEADER_COMMIT_MOVED_YD ||
+                        mob->GetExactDist(found->second.mobAt) > Leader::LEADER_COMMIT_MOVED_YD)
+                    {
+                        lead.unreachable.erase(found);
+                        return false;
+                    }
+                    return true;
+                };
                 // [lead5] the leader's pick: a patrol it decided to pull, the pack it must clear, else the same
                 // choice the tank's own value makes (AggressiveTargetValue::PickFor) with the leader's route target
                 if (intercept)
@@ -23515,7 +23537,7 @@ namespace TestHarness
                 // Elemental - the room's edge was recomputed from wandering mobs. The leader keeps its pick (a
                 // commitment of the pick) until it is dead, in a fight, out of reach or refused by the planner
                 else if (Creature* kept = lead.keptPick.IsEmpty() ? nullptr : idleAlive(lead.keptPick);
-                         kept && !lead.refusedPicks.count(kept->GetGUID()) && tank->GetExactDist(kept) <= 90.0f &&
+                         kept && !skipPick(kept->GetGUID()) && tank->GetExactDist(kept) <= 90.0f &&
                          std::fabs(kept->GetPositionZ() - tank->GetPositionZ()) < 15.0f)
                 {
                     inputs.pick = kept->GetGUID();
@@ -23533,7 +23555,7 @@ namespace TestHarness
                     {
                         Unit* routeMob = route.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, route);
                         if (routeMob && routeMob->IsAlive() && !routeMob->IsInCombat() &&
-                            !lead.refusedPicks.count(route))
+                            !skipPick(route))
                             leaderPick = routeMob;
                         else
                         {
@@ -23543,7 +23565,7 @@ namespace TestHarness
                             Cell::VisitObjects(tank, searcher, 60.0f);
                             float best = 0.0f;
                             for (Creature* mob : idle)
-                                if (!lead.refusedPicks.count(mob->GetGUID()) &&
+                                if (!skipPick(mob->GetGUID()) &&
                                     std::fabs(mob->GetPositionZ() - tank->GetPositionZ()) < 8.0f &&
                                     (!leaderPick || tank->GetExactDist(mob) < best))
                                 {
@@ -23574,7 +23596,7 @@ namespace TestHarness
                                                                   .Str("why", edge ? edgeWhy
                                                                                    : "the pick is on the edge"));
                             }
-                            if (edge)
+                            if (edge && !skipPick(edge->GetGUID()))  // [lead41] never a refused / unreachable edge
                             {
                                 inputs.pick = edge->GetGUID();
                                 pickWhy = "edge first: " + edgeWhy;
@@ -23593,9 +23615,20 @@ namespace TestHarness
                 // leader's own skip_target, yet planned, committed and walked at (the tank stood 55 s). A new pick is
                 // judged by the same detour metric before the planner sees it: a detour / unreachable mob is refused
                 // (refusedPicks, the kept pick released) - never planned nor committed. A boss is always walked to.
-                if (!inputs.pick.IsEmpty() && inputs.pick != lead.pickJudgedFor)
+                if (!inputs.pick.IsEmpty() && skipPick(inputs.pick))
+                {
+                    if (lead.keptPick == inputs.pick)
+                        lead.keptPick.Clear();
+                    inputs.pick.Clear();
+                    pickWhy = "every pick here is refused or unreachable: the route walk goes on";
+                }
+                // [lead41] judged again once the tank moved off where it was judged (the verdict's facts changed)
+                if (!inputs.pick.IsEmpty() &&
+                    (inputs.pick != lead.pickJudgedFor ||
+                     tank->GetExactDist(lead.pickJudgedAt) > Leader::LEADER_COMMIT_MOVED_YD))
                 {
                     lead.pickJudgedFor = inputs.pick;
+                    lead.pickJudgedAt = tank->GetPosition();
                     Creature* picked = map->GetCreature(inputs.pick);
                     std::string const verdict =
                         picked && !picked->IsDungeonBoss() && !picked->isWorldBoss() && !picked->IsInCombat()
@@ -23603,7 +23636,7 @@ namespace TestHarness
                             : std::string();
                     if (!verdict.empty())
                     {
-                        lead.refusedPicks[inputs.pick] = verdict;
+                        lead.unreachable[inputs.pick] = {tank->GetPosition(), picked->GetPosition(), verdict};
                         DecisionLog::Instance().Write(run, "leader", "pick_unreachable", inputs.pick, picked->GetName(),
                                                       true,
                                                       JsonObject().Str("why", verdict).Str("pick", pickWhy));
