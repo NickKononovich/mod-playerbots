@@ -181,6 +181,9 @@ namespace Leader
     // each former forcing timer only logs waited_long (who waits, for what, how long);
     // C:/WoW/LEADER_OWNERS_INVENTORY.md «Forcing timers removed». The harness's 4-minute no-progress run stop stays (the test's failure detector).
     constexpr bool LEADER_NO_FORCING_TIMERS = true;
+    // [lead24d] before the pull every member stays where it stands (no pull-spot search; the healer only when it
+    // cannot reach / see the fight spot, and after the tank holds the mobs)
+    constexpr bool LEADER_PREPULL_STAY = true;
     constexpr uint32 LEADER_COMMIT_MAX_MS = 90000;
     constexpr uint32 LEADER_COMMIT_TAKE_MS = 10000;   // an issued commitment the tank did not take
     constexpr float LEADER_COMMIT_MOVED_YD = 12.0f;

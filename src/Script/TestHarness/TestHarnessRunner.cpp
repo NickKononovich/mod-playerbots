@@ -21030,6 +21030,19 @@ namespace TestHarness
             static constexpr float SHRINK[] = {1.0f, 0.75f, 0.55f};
             static constexpr float TURN[] = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f};
             bool found = false;
+            // [lead24d] user: «они уже стояли на безопасной точке… танк забегает в зону агро или подзывает моба»: before
+            // the pull nobody gets a spot search - every member stays where it stands (cleared ground) and is ready;
+            // melee never get a "behind the target" spot pre-pull (rfc-h-5A-1: 60 of 73 rejections were the melee
+            // shaman's). The healer stays when it reaches and sees the fight spot, else it re-spots after the tank
+            // holds the mobs ([lead20])
+            if (Leader::LEADER_PREPULL_STAY)
+            {
+                Position const here = bot->GetPosition();
+                if (!healer || (HealReaches(tank, here, fight) &&
+                                here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD))
+                    lead.spots[member.guid] = here;
+                continue;
+            }
             // [lead20] user: a member whose position already fits does not move (the healer: it reaches and sees the
             // fight spot within LEADER_HEALER_TANK_YD; a ranged member: in range of it; melee: anywhere safe)
             {
@@ -21927,8 +21940,12 @@ namespace TestHarness
             for (Player* bot : seats)
             {
                 ObjectGuid const guid = bot->GetGUID();
+                // [lead24d] a member whose leader walk was just rejected (it would wake a mob) stays: not trailing
+                auto const rejected = lead.spotRejectLogMs.find(guid);
+                bool const walkRejected = rejected != lead.spotRejectLogMs.end() && rejected->second &&
+                                          getMSTimeDiff(rejected->second, now) < 5 * IN_MILLISECONDS;
                 bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
-                                    lead.combatSpots.count(guid);
+                                    lead.combatSpots.count(guid) || walkRejected;
                 float const gap = bot->GetExactDist(tank);
                 bool const was = lead.trailing.count(guid) > 0;
                 bool const trails = !fighting && !placed &&
