@@ -20329,6 +20329,25 @@ namespace TestHarness
         // the group's walked ground (cleared, LEADER_PREFER_CLEARED). World thread only.
         std::vector<Creature*> const* g_leaderIdle = nullptr;
         std::vector<Position> const* g_leaderCleared = nullptr;
+        std::vector<ObjectGuid> const* g_leaderExempt = nullptr;  // [lead24] the committed pull's mobs
+
+        // [lead24] the committed pull's own mobs (target, pack, expected pack)
+        std::vector<ObjectGuid> LeaderPullMobs(std::shared_ptr<PullPlanner::Decision> const& commit, ObjectGuid mob)
+        {
+            std::vector<ObjectGuid> out;
+            if (!mob.IsEmpty())
+                out.push_back(mob);
+            if (commit)
+            {
+                for (ObjectGuid const guid : {commit->planTarget, commit->attack, commit->lookTarget,
+                                              commit->verdictTarget})
+                    if (!guid.IsEmpty())
+                        out.push_back(guid);
+                out.insert(out.end(), commit->pack.begin(), commit->pack.end());
+                out.insert(out.end(), commit->verdictPack.begin(), commit->verdictPack.end());
+            }
+            return out;
+        }
 
         bool LeaderOnCleared(Position const& spot)
         {
@@ -20350,6 +20369,10 @@ namespace TestHarness
             for (Creature* mob : *g_leaderIdle)
             {
                 if (!mob->IsInWorld() || !mob->IsAlive() || mob->IsInCombat())
+                    continue;
+                // [lead24] the mob being pulled now and its pack: no reason to keep away from them
+                if (g_leaderExempt && std::find(g_leaderExempt->begin(), g_leaderExempt->end(), mob->GetGUID()) !=
+                                          g_leaderExempt->end())
                     continue;
                 if (IdleMobReachesSpot(bot, mob, spot))
                     return mob;
@@ -20687,7 +20710,7 @@ namespace TestHarness
                 if (!creature || !creature->IsAlive() || creature->IsInCombat() ||
                     !tank->IsValidAttackTarget(creature) ||
                     creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) ||
-                    !(creature->isMoving() || creature->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE) ||
+                    creature->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE ||  // [lead24] a wanderer is a target
                     creature->GetGUID() == d.planTarget || creature->GetGUID() == d.attack ||
                     creature->GetGUID() == d.lookTarget || creature->GetGUID() == d.verdictTarget ||
                     std::find(d.verdictPack.begin(), d.verdictPack.end(), creature->GetGUID()) != d.verdictPack.end() ||
@@ -20715,7 +20738,7 @@ namespace TestHarness
             Cell::VisitObjects(picked, searcher, 40.0f);
             std::vector<Creature*> mobs;
             for (Creature* mob : idle)
-                if (!mob->isMoving() && mob->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE &&
+                if (mob->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE &&  // [lead24] wanderers are room mobs
                     std::fabs(mob->GetPositionZ() - picked->GetPositionZ()) < 6.0f && tank->GetExactDist(mob) < 80.0f)
                     mobs.push_back(mob);
             if (mobs.size() < 4)
@@ -20971,6 +20994,9 @@ namespace TestHarness
         std::vector<Creature*> const idleVector(idleNear.begin(), idleNear.end());
         g_leaderIdle = &idleVector;
         g_leaderCleared = &lead.clearedGround;
+        std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+        pullMobs.insert(pullMobs.end(), pack.begin(), pack.end());
+        g_leaderExempt = &pullMobs;
         uint32 index = 0;
         for (Member const& member : party.members)
         {
@@ -21014,7 +21040,7 @@ namespace TestHarness
                                   fight.GetPositionY() + std::sin(angle) * distance * shrink, fight.GetPositionZ());
                     // [lead18] a member stands out of every unpulled mob's reach, the pulled pack's too, and walks
                     // there without passing one
-                    if (!LeaderSpotOk(tank, fight, spot, {}) || !LeaderMemberWalks(bot, spot, idleNear, {}))
+                    if (!LeaderSpotOk(tank, fight, spot, pullMobs) || !LeaderMemberWalks(bot, spot, idleNear, pullMobs))
                     {
                         if (Creature* mob = LeaderAggroAt(bot, spot))
                             DecisionLog::Instance().Write(
@@ -21141,6 +21167,7 @@ namespace TestHarness
         }
         g_leaderIdle = nullptr;
         g_leaderCleared = nullptr;
+        g_leaderExempt = nullptr;
         return !lead.spots.empty();
     }
 
@@ -21272,12 +21299,15 @@ namespace TestHarness
                 idleMobs.push_back(mob);
         g_leaderIdle = &idleMobs;
         g_leaderCleared = &lead.clearedGround;
+        std::vector<ObjectGuid> const pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+        g_leaderExempt = &pullMobs;
         struct GuardReset
         {
             ~GuardReset()
             {
                 g_leaderIdle = nullptr;
                 g_leaderCleared = nullptr;
+                g_leaderExempt = nullptr;
             }
         } guardReset;
         // [lead18] every MoveTo / StandAt the leader issues: the spot and the walk out of every unpulled mob's reach;
@@ -22688,7 +22718,14 @@ namespace TestHarness
             // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
             if (patrol && patrol->GetGUID() == lead.commitMob)
                 patrol = nullptr;
-            bool const windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
+            bool windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
+            // [lead24] a closed window holds at most LEADER_PATROL_WAIT_CAP_MS, then the plan proceeds
+            if (windowOpen || lead.commitIssued)
+                lead.windowClosedSinceMs = 0;
+            else if (!lead.windowClosedSinceMs)
+                lead.windowClosedSinceMs = now;
+            else if (getMSTimeDiff(lead.windowClosedSinceMs, now) >= Leader::LEADER_PATROL_WAIT_CAP_MS)
+                windowOpen = true;
             if (broken.empty() && windowOpen != lead.patrolWindowOpen)
             {
                 lead.patrolWindowOpen = windowOpen;

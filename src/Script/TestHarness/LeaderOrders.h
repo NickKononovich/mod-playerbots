@@ -202,7 +202,9 @@ namespace Leader
     // covers the walk's sampling now
     constexpr float LEADER_SPOT_AGGRO_MARGIN = 2.0f;
     // [lead20] a spot gate with no progress this long: spot_gate_stuck, everyone where they stand counts placed
-    constexpr uint32 LEADER_SPOT_GATE_STUCK_MS = 20000;
+    constexpr uint32 LEADER_SPOT_GATE_STUCK_MS = 10000;  // [lead24] 20 -> 10 s
+    // [lead24] a closed patrol window holds a committed pull at most this long
+    constexpr uint32 LEADER_PATROL_WAIT_CAP_MS = 10000;
     // [lead18] user «всегда безопасно стоять там, где мы уже были»: the group's walked ground is preferred for every
     // spot (cleared first, new ground only when no cleared spot fits)
     constexpr bool LEADER_PREFER_CLEARED = true;

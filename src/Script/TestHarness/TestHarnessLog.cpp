@@ -469,6 +469,10 @@ namespace TestHarness
         }
         else if (what == "patrol_window")
         {
+            // [lead24] no line for a window without a patrol
+            std::string const patrolName = JField(json, "patrol");
+            if (patrolName.empty() || patrolName == "-")
+                return;
             text = "Patrol " + JField(json, "patrol") + ": window " + stateText + " (gap " + JField(json, "gap") +
                    " yd, reach " + JField(json, "reach") + ")";
             topic += stateText;
