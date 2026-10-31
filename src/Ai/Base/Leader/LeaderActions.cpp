@@ -694,6 +694,17 @@ bool LeaderMoveOrderAction::SkipsIdleGuard()
            !(got && (events.move == Leader::MoveEvent::Follow || events.moveWhy == "route walk"));
 }
 
+bool LeaderMoveOrderAction::DryMoveTo(Position const& to)
+{
+    if (bot->GetExactDist2d(to.GetPositionX(), to.GetPositionY()) <= 1.0f)
+        return true;
+    MovementAction::s_dryRun = true;
+    bool const goes = MoveTo(bot->GetMapId(), to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false, false,
+                             false, false, MovementPriority::MOVEMENT_COMBAT, true);
+    MovementAction::s_dryRun = false;
+    return goes;
+}
+
 std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
 {
     PathGenerator path(bot);

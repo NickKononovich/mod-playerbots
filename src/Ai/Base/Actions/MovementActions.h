@@ -38,6 +38,10 @@ class MovementAction : public Action
 public:
     MovementAction(PlayerbotAI* botAI, std::string const name);
 
+    // [lead70] a dry run of the walk guards: MoveTo judges as always but issues no motion (true: it would walk),
+    // touches no movement memory and RefuseChase drops no target - the leader asks the tank's own walk-in with it
+    static thread_local bool s_dryRun;
+
     // The core's proximity aggro (Creature::CanStartAttack) of an idle `mob` on `who` standing at (x, y, z), in its
     // order: the Z gate (a mob that cannot fly never wakes on a walker more than CREATURE_Z_ATTACK_RANGE plus its
     // combat distance above or below it, sizes taken off), the 3D range GetAggroRange(who) + combat distance (+

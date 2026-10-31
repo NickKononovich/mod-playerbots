@@ -318,6 +318,16 @@ bool AggressiveTargetAction::Execute(Event event)
                       commitMobs, commitCost, single);
 }
 
+bool AggressiveTargetAction::DryWalkIn(Unit* target)
+{
+    if (!target || bot->IsWithinLOSInMap(target))
+        return true;
+    MovementAction::s_dryRun = true;
+    bool const walks = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+    MovementAction::s_dryRun = false;
+    return walks;
+}
+
 // The pull sequence of the "pull" and "pull back" strategies, as the "pull" command starts it: the ranged pull,
 // then back to this spot, where the mob fights away from the rest of the room. `single`: the pull spell must hit the
 // mob alone.

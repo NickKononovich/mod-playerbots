@@ -373,6 +373,10 @@ class AggressiveTargetAction : public AttackAction
 public:
     AggressiveTargetAction(PlayerbotAI* botAI) : AttackAction(botAI, "aggressive target") {}
 
+    // [lead70] the tank's own walk-in for an engage out of sight, run dry (MovementAction::s_dryRun): would its walk
+    // guards (path, ledge drop, closed door, idle packs on the path, fight zone) let it walk in from where it stands?
+    bool DryWalkIn(Unit* target);
+
     std::string const GetTargetName() override { return "aggressive target"; }
     bool Execute(Event event) override;
     bool isUseful() override;

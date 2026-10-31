@@ -21654,7 +21654,14 @@ namespace TestHarness
                     if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot))
                         if (auto* mover = dynamic_cast<LeaderMoveOrderAction*>(
                                 memberAI->GetAiObjectContext()->GetAction("leader move order")))
+                        {
                             reject = mover->WalkRefusal(spot);
+                            // [lead71] b115 220.8 s: Rtshaab refused the leader's meeting-point move ("a straight
+                            // move over open air") - one verdict: the member's own MoveTo guards, run dry from where
+                            // it stands, before the move is issued
+                            if (reject.empty() && !mover->DryMoveTo(spot))
+                                reject = "the member's own move guards refuse it";
+                        }
                 if (!reject.empty())
                 {
                     uint32& last = lead.spotRejectLogMs[member];
@@ -21670,6 +21677,10 @@ namespace TestHarness
                                                           .Real("aggroRange", mob ? mob->GetAggroRange(bot) : -1.0f)
                                                           .Real("margin", Leader::LEADER_SPOT_AGGRO_MARGIN));
                     }
+                    // [lead71] the arbiter's next candidate: the member stays where it is (never a move it refuses)
+                    if (move != Leader::MoveEvent::StandAt || spot.GetExactDist(bot->GetPosition()) > 1.0f)
+                        Leader::Events::SetMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
+                                                why + ": stays (" + reject + ")");
                     return false;
                 }
                 if (again)
@@ -24045,7 +24056,15 @@ namespace TestHarness
             {
                 lead.pickJudgedFor = mob->GetGUID();
                 lead.pickJudgedAt = tank->GetPosition();
-                std::string const verdict = LeaderWalkVerdict(tank, mob->ToCreature());
+                std::string verdict = LeaderWalkVerdict(tank, mob->ToCreature());
+                // [lead70] one verdict: the tank's own walk-in guards, run dry from where it stands (the same code
+                // that refuses "the tank's walk in for sight" after the order)
+                if (verdict.empty() && committed.kind == "engage")
+                    if (PlayerbotAI* walkerAI = GET_PLAYERBOT_AI(tank))
+                        if (auto* walker = dynamic_cast<AggressiveTargetAction*>(
+                                walkerAI->GetAiObjectContext()->GetAction("aggressive target"));
+                            walker && !walker->DryWalkIn(mob))
+                            verdict = "the tank's walk guards refuse the walk in";
                 if (!verdict.empty())
                 {
                     lead.unreachable[mob->GetGUID()] = {tank->GetPosition(), mob->GetPosition(), verdict};

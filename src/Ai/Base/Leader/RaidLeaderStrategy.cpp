@@ -253,6 +253,14 @@ namespace
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
         // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
         // damage: only under the leader's Attack and not under its Stop (no threat headroom)
+        // [lead71] b115: Rtmagaa took 5 Troggs off the tank - its area spells (Frost Nova, Cone of Cold, Blizzard,
+        // Arcane Explosion, Flamestrike, Dragon's Breath, Blast Wave) hit mobs it has no threat headroom on: only under
+        // the leader's Attack with AoE allowed and not under its Stop
+        if (combat && in({"frost nova", "cone of cold", "blizzard", "arcane explosion", "flamestrike",
+                          "dragon's breath", "blast wave"}) &&
+            (events.attack != Leader::AttackEvent::Attack || events.intensity == Leader::Intensity::Stop ||
+             events.aoe == Leader::AoeRule::Forbidden))
+            return true;
         // [lead64] user: non-damaging totems may go down early (they save GCDs); damaging ones only once the tank has
         // threat - out of a fight never (Call of the Elements drops Searing / Magma too)
         if (in({"call of the elements", "searing totem", "magma totem", "fire nova", "fire elemental totem"}) &&

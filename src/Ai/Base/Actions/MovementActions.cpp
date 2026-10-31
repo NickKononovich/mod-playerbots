@@ -1557,10 +1557,14 @@ namespace
     }
 }
 
+thread_local bool MovementAction::s_dryRun = false;
+
 bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle*/, bool /*react*/, bool normal_only,
                             bool exact_waypoint, MovementPriority priority, bool lessDelay, bool backwards)
 {
-    UpdateMovementState();
+    bool const dry = s_dryRun;  // [lead70]
+    if (!dry)
+        UpdateMovementState();
     if (!IsMovingAllowed())
     {
         return false;
@@ -1571,11 +1575,11 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     // duplicate check and the guards below see the floor the caller meant. Cheap: one compare within 5 yd.
     if (mapId == bot->GetMapId())
         SnapGridFallbackZ(bot, x, y, z, getName().c_str());
-    if (IsDuplicateMove(x, y, z))
+    if (!dry && IsDuplicateMove(x, y, z))
     {
         return false;
     }
-    if (IsWaitingForLastMove(priority))
+    if (!dry && IsWaitingForLastMove(priority))
     {
         return false;
     }
@@ -1599,13 +1603,14 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         if (MoveConflict::LaneApplies(bot, getName()) &&
             MoveConflict::VetoesOffWaypoint(bot, getName(), x, y, z, AI_VALUE(bool, "encounter in progress")))
             return false;
-        MoveConflict::NoteOrder(bot, getName(), x, y, z);
+        if (!dry)
+            MoveConflict::NoteOrder(bot, getName(), x, y, z);
     }
 
     // A dungeon tank leaves its trail for the members that follow it; a member walks no path that wakes an idle mob.
     if (Map* map = bot->GetMap(); map && map->IsDungeon() && mapId == bot->GetMapId() && bot->GetGroup())
     {
-        if (PlayerbotAI::IsTank(bot))
+        if (PlayerbotAI::IsTank(bot) && !dry)
             RecordTrail(bot);
 
         // The walk is judged as it is walked: an exact waypoint on the ground still goes by the navmesh (DoMovePoint
@@ -1715,11 +1720,11 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         if (drop == WaterDrop::Hold)
             return false;
         if (drop == WaterDrop::Jump)
-            return JumpTo(mapId, jump.x, jump.y, jump.z, priority);
+            return dry || JumpTo(mapId, jump.x, jump.y, jump.z, priority);
     }
 
     if (!backwards && SwimsTo(bot, x, y, z))
-        return SwimStraight(mapId, x, y, z, priority, lessDelay);
+        return dry || SwimStraight(mapId, x, y, z, priority, lessDelay);
 
     bool generatePath = !bot->IsFlying() && !bot->isSwimming();
     // A swimmer heading for a spot out of the water (a shore, a ledge, the surface) follows the navmesh too: a
@@ -1747,6 +1752,8 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         float distance = vehicleBase->GetExactDist(x, y, z);  // use vehicle distance, not bot
         if (distance > 0.01f)
         {
+            if (dry)
+                return true;
             DoMovePoint(vehicleBase, x, y, z, generatePath, backwards);
             float speed = backwards ? vehicleBase->GetSpeed(MOVE_RUN_BACK) : vehicleBase->GetSpeed(MOVE_RUN);
             float delay = IN_MILLISECONDS * (distance / speed);
@@ -1765,6 +1772,8 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         float distance = bot->GetExactDist(x, y, z);
         if (distance > 0.01f)
         {
+            if (dry)
+                return true;
             if (bot->IsSitState())
                 bot->SetStandState(UNIT_STAND_STATE_STAND);
 
@@ -1792,6 +1801,8 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         float distance = bot->GetExactDist(x, y, modifiedZ);
         if (distance > 0.01f)
         {
+            if (dry)
+                return true;
             if (bot->IsSitState())
                 bot->SetStandState(UNIT_STAND_STATE_STAND);
 
@@ -2914,7 +2925,7 @@ bool MovementAction::Follow(Unit* target, float distance, float angle)
 
 void MovementAction::RefuseChase(Unit* target, std::string const& why)
 {
-    if (!target)
+    if (!target || s_dryRun)  // [lead70] a dry run drops no target
         return;
 
     // [hleft-door-chase] / [hleft-chase-drop] the bot drops the target it may not chase (a player target, a group
