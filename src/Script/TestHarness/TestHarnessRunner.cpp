@@ -21699,6 +21699,26 @@ namespace TestHarness
                                                   .Str("ground", LeaderOnCleared(spot) ? "cleared" : "new"));
             return changed;
         };
+        // [lead66] b111: the leader rejected its own meeting-point move (in a Trogg's reach) and left the melee member
+        // with no command - its own reach melee then walked it. The move, else it stays where it is (StandAt here),
+        // else Hold; the alternative is logged
+        auto const moveOrStay = [&](Player* bot, Position const& spot, float tolerance, std::string const& why)
+        {
+            ObjectGuid const member = bot->GetGUID();
+            bool const changed = checkedMove(member, Leader::MoveEvent::MoveTo, spot, tolerance, why);
+            Leader::MemberEvents now;
+            if (Leader::Events::Get(member, now) && now.moveWhy == why)
+                return changed;
+            std::string const stay = why + ": stays (the spot is in an unpulled mob's reach)";
+            bool const stays = checkedMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay);
+            if (!(Leader::Events::Get(member, now) && now.moveWhy == stay))
+                Leader::Events::SetMove(member, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, stay);
+            if (stays)
+                DecisionLog::Instance().Write(run, "leader", "position_owner", member, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("owner", stay)
+                                                  .Str("was", why));
+            return stays;
+        };
         // a slow-layer call, timed
         auto const slow = [&](auto&& call)
         {
@@ -22874,8 +22894,8 @@ namespace TestHarness
                         // [lead64] user: «одной командой» - melee go to the meeting point once (the leader's
                         // predicted meeting of the tank and the mob) and adjust once the mob stands on the tank
                         if (melee && !bot->IsWithinMeleeRange(target) &&
-                            checkedMove(guid, Leader::MoveEvent::MoveTo, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
-                                        "along with the tank: to the meeting point"))
+                            moveOrStay(bot, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
+                                       "along with the tank: to the meeting point"))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                      JsonObject().Str("why", "along with the tank: to the meeting point"));
                     }
@@ -23007,8 +23027,8 @@ namespace TestHarness
                     Leader::Orders::GetOpen(party.leader, engage))
                 {
                     meleeToMeeting = true;
-                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
-                                    "along with the tank: to the meeting point"))
+                    if (moveOrStay(bot, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
+                                   "along with the tank: to the meeting point"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                  JsonObject().Str("why", "along with the tank: to the meeting point"));
                     moved = true;

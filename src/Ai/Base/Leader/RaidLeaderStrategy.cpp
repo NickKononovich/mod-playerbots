@@ -193,9 +193,11 @@ namespace
                 if (prepareCmd && in({"reach party member to resurrect"}))
                     return false;
                 // [lead23] the rotation's reach toward the leader's Attack target (no leader spot holds it)
-                if (events.attack == Leader::AttackEvent::Attack && in({"reach melee", "reach spell", "set behind"}) &&
-                    events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt &&
-                    events.move != Leader::MoveEvent::Hold)
+                // [lead66] b111 rfc-h 132.6 s: Rtshaab's own "reach melee" walked it 35 yd to a Trogg (own_decision,
+                // two_owners). The leader's arbiter owns every move of a led member: no own reach / set behind
+                if (!Leader::LEADER_ARBITER_OWNS_MOVES && events.attack == Leader::AttackEvent::Attack &&
+                    in({"reach melee", "reach spell", "set behind"}) && events.move != Leader::MoveEvent::MoveTo &&
+                    events.move != Leader::MoveEvent::StandAt && events.move != Leader::MoveEvent::Hold)
                     return false;
                 // [lead23] blocked_move only for a move the member actually wanted (not the gate's presence check)
                 if (!gate && !in({"follow"}))

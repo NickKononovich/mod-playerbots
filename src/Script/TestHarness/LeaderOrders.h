@@ -205,6 +205,8 @@ namespace Leader
     constexpr bool LEADER_HEAL_AFTER_THREAT = true;
     // [lead60] neighbouring packs combined into one pull while the capacity model says the group survives it
     constexpr bool LEADER_COMBINE_PACKS = true;
+    // [lead66] the leader's position arbiter owns every move of a led member: no own reach melee / reach spell
+    constexpr bool LEADER_ARBITER_OWNS_MOVES = true;
     // [lead34] user: «Если патруль, надо убивать патруль.» - no wait for a patrol to walk away (no patrol window, no
     // patrol wait, no step back, no lane wait): a patrol near the route or the pull is the leader's target, taken along
     // with the pull when the combined fight is safe (PullPlanner::JudgePack), else pulled as its own pull first
