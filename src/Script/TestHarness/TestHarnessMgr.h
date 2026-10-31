@@ -1126,6 +1126,8 @@ namespace TestHarness
         std::string LeaderSpotsWait(Party& party, Player* tank);
         void LogHealReach(Party& party, Player* member, Player* healer, std::string const& why,
                           std::string const& fix);
+        // [lead24] a former forcing timer's diagnostic: `kind` waited `ms` (once per kind per 30 s)
+        void WaitedLong(Party& party, std::string const& kind, uint32 ms, std::string const& why);
         // [lead5] the leader planner's own verdict memory, aoe plan and required marks, the tank's view with the
         // leader's route target: free helpers in TestHarnessRunner.cpp (PartyRefusal, PartyVerdict, PartyAoePlanned,
         // PartyMarkRequired, PartyTankView).

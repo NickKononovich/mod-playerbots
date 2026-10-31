@@ -177,6 +177,10 @@ namespace Leader
     // until the order ends or the plan is truly broken (the mob dead / moved away / in a fight, a patrol entering the
     // pull area, too old) - no re-plan meanwhile, no patrol wait by forecast
     constexpr bool LEADER_COMMIT_PULL = true;
+    // [lead24] user «удали все таймеры, которые форсят»: for a led party no decision is taken because time passed;
+    // each former forcing timer only logs waited_long (who waits, for what, how long);
+    // C:/WoW/LEADER_OWNERS_INVENTORY.md «Forcing timers removed». The harness's 4-minute no-progress run stop stays (the test's failure detector).
+    constexpr bool LEADER_NO_FORCING_TIMERS = true;
     constexpr uint32 LEADER_COMMIT_MAX_MS = 90000;
     constexpr uint32 LEADER_COMMIT_TAKE_MS = 10000;   // an issued commitment the tank did not take
     constexpr float LEADER_COMMIT_MOVED_YD = 12.0f;

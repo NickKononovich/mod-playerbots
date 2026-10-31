@@ -12629,7 +12629,10 @@ namespace TestHarness
             uint32 const pullWaitMs = atEventHold ? BODY_PULL_WAIT_MS : PULL_WAIT_MS;
             // [pull_after_hold] the group stands ready at this target PULL_AFTER_HOLD_MS: the hold ends (below)
             bool holdForce = false;
-            if (PULL_AFTER_HOLD && !party.approach && !atEventHold && !party.content->raid && !party.targetIsStarter)
+            // [lead24] LEADER_NO_FORCING_TIMERS: no ready-hold release for a led party (pull_after_hold off)
+            bool const ledNoForce = Leader::LEADER_NO_FORCING_TIMERS && LeaderDecidesFor(party);
+            if (PULL_AFTER_HOLD && !ledNoForce && !party.approach && !atEventHold && !party.content->raid &&
+                !party.targetIsStarter)
             {
                 bool const groupReady =
                     GroupFullyReady(party, leader) && !party.needBuff && !PrePullCc::IsHolding(leader);
@@ -12983,9 +12986,13 @@ namespace TestHarness
             bool const pullReady = leaderPulls && Leader::Leads(Leader::LEADER_ONE_READINESS)
                                        ? party.lead.ready
                                        : GroupFullyReady(party, leader);
+            // [lead24] LEADER_NO_FORCING_TIMERS: a led party's stop resolves on evaluations only (a boss pull now, a
+            // hopeless refusal); the stop's wait / the route blocker's prep time only log waited_long
+            bool const timedOut = waited > pullWaitMs || (routeBlocker && waited > ROUTE_BLOCKER_PREP_MS) || holdForce;
+            if (ledNoForce && timedOut && !bossPullNow && !(plannerRefused && refusalHopeless))
+                WaitedLong(party, "stop_wait", waited, object->GetName() + (plannerRefused ? ": " + refusalWhy : ""));
             if (!party.approach &&
-                (waited > pullWaitMs || bossPullNow || (plannerRefused && refusalHopeless) ||
-                 (routeBlocker && waited > ROUTE_BLOCKER_PREP_MS) || holdForce) &&
+                ((!ledNoForce && timedOut) || bossPullNow || (plannerRefused && refusalHopeless)) &&
                 pullReady)
             {
                 // [b33_mech2] BossAreaBodyPullHold: no body pull of a boss while killable trash of his area stands
@@ -20099,6 +20106,11 @@ namespace TestHarness
             }
             lead.laneWaitSeenMs = now;
             laneWaitedOut = getMSTimeDiff(lead.laneWaitSinceMs, now) >= LEADER_LANE_WAIT_MAX_MS;
+            if (laneWaitedOut && Leader::LEADER_NO_FORCING_TIMERS)
+            {
+                WaitedLong(party, "patrol_lane_wait", getMSTimeDiff(lead.laneWaitSinceMs, now), patrol->GetName());
+                laneWaitedOut = false;  // [lead24] no pull because time passed
+            }
         }
         // [lead12] a patrol the planner cannot pull (interceptBanned): no intercept; its lane is crossed while it is
         // farther than twice its reach from the leader (the walk timed against its loop), else the group waits
@@ -20121,9 +20133,13 @@ namespace TestHarness
         // [lead14] an intercept that brought no order for LEADER_INTERCEPT_MAX_MS (the planner holds it, cannot reach
         // it, or plans another mob): the patrol is banned, the group walks on
         constexpr uint32 LEADER_INTERCEPT_MAX_MS = 20 * IN_MILLISECONDS;
-        if (lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
+        if (Leader::LEADER_NO_FORCING_TIMERS && lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
             getMSTimeDiff(lead.interceptSinceMs, now) >= LEADER_INTERCEPT_MAX_MS &&
             !Leader::Orders::IsOpen(party.leader))
+            WaitedLong(party, "patrol_intercept", getMSTimeDiff(lead.interceptSinceMs, now), patrol->GetName());
+        else if (lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
+                 getMSTimeDiff(lead.interceptSinceMs, now) >= LEADER_INTERCEPT_MAX_MS &&
+                 !Leader::Orders::IsOpen(party.leader))
         {
             constexpr uint32 LEADER_INTERCEPT_BAN_MS = 5 * MINUTE * IN_MILLISECONDS;
             lead.interceptBanned[patrol->GetGUID()] = now + LEADER_INTERCEPT_BAN_MS;
@@ -21197,6 +21213,10 @@ namespace TestHarness
             auto& best = lead.spotBest[member.guid];
             if (!best.second || gap < best.first - 0.5f)
                 best = {gap, now};
+            else if (Leader::LEADER_NO_FORCING_TIMERS &&
+                     getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS)
+                WaitedLong(party, "member_to_spot:" + member.name, getMSTimeDiff(best.second, now),
+                           Acore::StringFormat("{:.0f} yd from its spot", gap));
             else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS &&
                      lead.spotReassigns[member.guid] < Leader::LEADER_SPOT_REASSIGNS)
             {
@@ -21229,6 +21249,9 @@ namespace TestHarness
             lead.spotGateProgressMs = now;
             lead.spotGateLast = waitFor;
         }
+        else if (Leader::LEADER_NO_FORCING_TIMERS &&
+                 getMSTimeDiff(lead.spotGateProgressMs, now) >= Leader::LEADER_SPOT_GATE_STUCK_MS)
+            WaitedLong(party, "spot_gate", getMSTimeDiff(lead.spotGateProgressMs, now), waitFor);
         else if (getMSTimeDiff(lead.spotGateProgressMs, now) >= Leader::LEADER_SPOT_GATE_STUCK_MS)
         {
             LogEvent(party, "spot_gate_stuck", JsonObject().Str("waitFor", waitFor)
@@ -22506,6 +22529,17 @@ namespace TestHarness
         }
     }
 
+    void TestHarnessMgr::WaitedLong(Party& party, std::string const& kind, uint32 ms, std::string const& why)
+    {
+        static std::unordered_map<std::string, uint32> logged;  // world thread
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        uint32& last = logged[std::to_string(party.seq) + "|" + kind];
+        if (last && getMSTimeDiff(last, now) < 30 * IN_MILLISECONDS)
+            return;
+        last = now;
+        LogEvent(party, "waited_long", JsonObject().Str("kind", kind).Num("sec", ms / IN_MILLISECONDS).Str("why", why));
+    }
+
     // [lead15] a heal_reach violation as a decision record (per member at most every LEADER_HEAL_REACH_LOG_MS)
     void TestHarnessMgr::LogHealReach(Party& party, Player* member, Player* healer, std::string const& why,
                                       std::string const& fix)
@@ -22711,7 +22745,13 @@ namespace TestHarness
             else if (!lead.commitMoving && mob->GetExactDist(lead.commitPos) > Leader::LEADER_COMMIT_MOVED_YD)
                 broken = "the mob moved away";
             else if (getMSTimeDiff(lead.commitSinceMs, now) > Leader::LEADER_COMMIT_MAX_MS)
-                broken = "committed too long";
+            {
+                if (Leader::LEADER_NO_FORCING_TIMERS)  // [lead24]
+                    WaitedLong(party, "commit_age", getMSTimeDiff(lead.commitSinceMs, now),
+                               mob ? mob->GetName() : std::string("?"));
+                else
+                    broken = "committed too long";
+            }
             float patrolGap = 0.0f;
             float patrolReach = 0.0f;
             Creature* patrol = broken.empty()
@@ -22740,7 +22780,13 @@ namespace TestHarness
                 if (lead.commitOrderSeen)
                     broken = "the order ended";
                 else if (getMSTimeDiff(lead.commitIssuedMs, now) > Leader::LEADER_COMMIT_TAKE_MS)
-                    broken = "the tank did not take it";
+                {
+                    if (Leader::LEADER_NO_FORCING_TIMERS)  // [lead24]
+                        WaitedLong(party, "commit_not_taken", getMSTimeDiff(lead.commitIssuedMs, now),
+                                   mob ? mob->GetName() : std::string("?"));
+                    else
+                        broken = "the tank did not take it";
+                }
             }
             if (!broken.empty())
             {
@@ -23209,6 +23255,10 @@ namespace TestHarness
                 lead.heldReadyMob = lead.ready && !declaredWait ? decision.lookTarget : ObjectGuid::Empty;
                 lead.heldReadySinceMs = now;
             }
+            else if (Leader::LEADER_NO_FORCING_TIMERS &&
+                     getMSTimeDiff(lead.heldReadySinceMs, now) >= Leader::LEADER_HELD_READY_MAX_MS)
+                WaitedLong(party, "held_ready", getMSTimeDiff(lead.heldReadySinceMs, now),
+                           (lookMob ? lookMob->GetName() : std::string("?")) + ": " + decision.why);
             else if (getMSTimeDiff(lead.heldReadySinceMs, now) >= Leader::LEADER_HELD_READY_MAX_MS)
             {
                 std::string why;

@@ -5038,7 +5038,10 @@ namespace TestHarness
                                     ObjectGuid const patrol = !lead.waitPatrol.IsEmpty() ? lead.waitPatrol
                                                                                          : lead.intercept;
                                     std::string broke = "nothing to break: reported";
-                                    if (!patrol.IsEmpty())
+                                    // [lead24] LEADER_NO_FORCING_TIMERS: no ban because time passed (waited_long)
+                                    if (!patrol.IsEmpty() && Leader::LEADER_NO_FORCING_TIMERS)
+                                        broke = "waited_long: no break (the patrol hold stays)";
+                                    else if (!patrol.IsEmpty())
                                     {
                                         lead.interceptBanned[patrol] = now + 5 * MINUTE * IN_MILLISECONDS;
                                         lead.intercept.Clear();
