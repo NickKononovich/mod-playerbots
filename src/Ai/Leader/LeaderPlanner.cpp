@@ -5613,16 +5613,50 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // (LosPull: its spot and hold), the casters walk round into melee. Once per fight, through FightSpot::Due.
     namespace CasterCorner
     {
-        constexpr uint32 MIN_CASTERS = 2;      // casters / shooters standing off the tank
         constexpr float OFF_TANK = 12.0f;      // yd from the tank: one that stays out there casts from range
         constexpr uint32 FIGHT_MIN_MS = 4000;  // the fight is this old (the casters had time to come)
         constexpr float MAX_WALK = 25.0f;      // the corner is at most this far from the tank
     }
 
+    // [lead202] The tank's tool that takes `mob` from where the tank stands, ready and castable on it now: Death Grip
+    // brings it in; the ranged threat spells (Avenger's Shield, Heroic Throw, Faerie Fire (Feral), the taunts) hold
+    // it at range. nullptr: none - the mob stays out of the tank's threat reach.
+    char const* TankRangedTool(PlayerbotAI* tankAI, Player* tank, Unit* mob)
+    {
+        static char const* const PALADIN[] = {"avenger's shield", "hand of reckoning"};
+        static char const* const WARRIOR[] = {"heroic throw", "taunt"};
+        static char const* const DRUID[] = {"faerie fire (feral)", "growl"};
+        static char const* const DEATH_KNIGHT[] = {"death grip", "dark command"};
+        std::vector<char const*> tools;
+        switch (tank->getClass())
+        {
+            case CLASS_PALADIN:
+                tools.assign(std::begin(PALADIN), std::end(PALADIN));
+                break;
+            case CLASS_WARRIOR:
+                tools.assign(std::begin(WARRIOR), std::end(WARRIOR));
+                break;
+            case CLASS_DRUID:
+                tools.assign(std::begin(DRUID), std::end(DRUID));
+                break;
+            case CLASS_DEATH_KNIGHT:
+                tools.assign(std::begin(DEATH_KNIGHT), std::end(DEATH_KNIGHT));
+                break;
+            default:
+                break;
+        }
+        for (char const* tool : tools)
+            if (tankAI->CanCastSpell(tool, mob))
+                return tool;
+        return nullptr;
+    }
+
     // [drift_caster_corner] The casters and shooters of the fight on that stand off the tank and cast at it from
-    // there (in its sight, not walking): at least CasterCorner::MIN_CASTERS, no boss among the attackers. True with
-    // the tank's corner `spot` and the group's `gather` spot behind it (FindLosPullSpot, at most MAX_WALK away),
-    // and the casters in `casters`.
+    // there (in its sight, not walking), no boss among the attackers. [lead202] b181 rfc-h: lone Searing Blade
+    // Warlocks / Cultists and Ragefire Shamans at range took mobs off bear / warrior tanks (the corner wanted two):
+    // every one the tank has no ranged tool for now (TankRangedTool) counts, even one. True with the tank's corner
+    // `spot` and the group's `gather` spot behind it (FindLosPullSpot, at most MAX_WALK away), and the casters in
+    // `casters`.
     bool FindCasterCorner(PlayerbotAI* botAI, Player* tank, Position& spot, Position& gather,
                           std::vector<Unit*>& casters)
     {
@@ -5642,10 +5676,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 mob->IsRooted() || tank->GetExactDist(mob) <= CasterCorner::OFF_TANK || !mob->IsWithinLOSInMap(tank))
                 continue;
 
+            if (TankRangedTool(botAI, tank, mob))
+                continue;  // the tank takes it from where it stands (a grip brings it in)
+
             casters.push_back(mob);
         }
 
-        if (casters.size() < CasterCorner::MIN_CASTERS)
+        if (casters.empty())
             return false;
 
         std::vector<Unit*> others;
