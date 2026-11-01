@@ -119,7 +119,11 @@ void BotPath::ShortenPathUntilDist(G3D::Vector3 const& target, float dist)
             return;
         }
     }
-    points[i] += (points[i - 1] - points[i]).direction() * (dist - (points[i] - target).length());
+    // [lead161] a zero-length last segment (two equal route points) has no direction: G3D's direction() of it is
+    // NaN, the shortened end became (nan, ...) - the end stays where it is then
+    G3D::Vector3 const back = points[i - 1] - points[i];
+    if (back.squaredLength() > 1e-6f)
+        points[i] += back.direction() * (dist - (points[i] - target).length());
     points.resize(i + 1);
 }
 

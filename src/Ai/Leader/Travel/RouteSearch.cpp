@@ -442,6 +442,9 @@ namespace Leader
         // [height_gap] cross-check now
         for (G3D::Vector3 const& point : surface)
         {
+            // [lead161] no repeated point (a zero-length segment has no direction for the walk's shortening)
+            if (!result.points.empty() && (result.points.back() - point).squaredLength() <= 1e-4f)
+                continue;
             G3D::Vector3 ground = point;
             walker->UpdateAllowedPositionZ(ground.x, ground.y, ground.z);
             Travel::NoteHeightGap(walker, ground, point.z, "route sample ground");  // [lead144]
