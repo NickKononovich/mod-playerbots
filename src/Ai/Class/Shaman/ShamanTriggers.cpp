@@ -907,9 +907,6 @@ bool PartyHealerLowManaTrigger::IsActive()
     if (combatStartMana - ownMana >= FALLING_MANA_PCT)
         return true;  // spent a third of the bar in this one fight
 
-    if (getMSTimeDiff(combatStartMs, now) >= LONG_FIGHT_MS)
-        return true;
-
     return AI_VALUE(Unit*, "boss target") != nullptr;
 }
 
