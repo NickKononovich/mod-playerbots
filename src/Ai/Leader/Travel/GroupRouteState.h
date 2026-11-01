@@ -406,6 +406,9 @@ namespace Leader
         // [phantom_mob_hunt] the live, reachable mob of a phantom combat the group was sent to, and how often
         ObjectGuid phantomHunt;
         std::set<ObjectGuid> phantomHunted;  // the mobs hunted in this phantom episode (once each)
+        // [b33_sh2] target set, traveling, no walk point and the leader standing since; the last "no walk" log
+        uint32 noWalkSinceMs = 0;
+        uint32 noWalkLogMs = 0;
         // buffing
         bool needBuff = true;
         uint8 buffStep = 0;

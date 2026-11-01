@@ -317,8 +317,6 @@ namespace TestHarness
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
         ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
         // [lead107 stage 5] the phantom-combat facts, the buffing pass and the waits are the leader's (GroupRouteState)
-        uint32 noWalkSinceMs = 0;     // [b33_sh2] target set, traveling, no waypoint and the leader standing since
-        uint32 noWalkLogMs = 0;       // [b33_sh2] the last harness_hold "no walk" event
 
         // heartbeat / stall
         uint32 lastHeartbeatMs = 0;
