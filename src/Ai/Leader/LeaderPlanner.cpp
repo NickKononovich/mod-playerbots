@@ -11738,6 +11738,36 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             }
         }
 
+        // [lead220] b184 rfc-h 5H 862.9-869 s: the engage on the patrol Searing Blade Enforcer was judged where it
+        // walked then; the tank met it 8 yd from Taragaman, who came 7 s after the last trash fight, no boss
+        // readiness (the hunter at 29 % mana). A walker's fight is where the tank meets it: its forecast walk until
+        // the tank's walk in is over is judged as the fight spot
+        if (Creature* walker = plannedMob->ToCreature(); !drawn && walker && !_planLos && !_planPullBack)
+        {
+            std::vector<G3D::Vector3> track;
+            float sampleSec = 0.0f;
+            if (PatrolForecast(walker, track, sampleSec) && sampleSec > 0.0f)
+            {
+                size_t const steps = std::min(track.size(), size_t((PATROL_PULL_LEAD_SEC + walkIn) / sampleSec) + 1);
+                for (size_t step = 0; step < steps && !drawn; ++step)
+                {
+                    Position const meet(track[step].x, track[step].y, track[step].z);
+                    for (ObjectGuid const& guid : bossWatch)
+                    {
+                        Unit* bossUnit = botAI->GetUnit(guid);
+                        float meetWait = 0.0f;
+                        if (bossUnit && bossUnit->IsAlive() && IsBossMob(bossUnit) &&
+                            BossDrawnIn(bot, bossUnit, meet, fightSec, chosenPack, meetWait))
+                        {
+                            drawn = bossUnit;
+                            drawnWhy = "its walk takes the fight to him";
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if (drawn)
         {
             if (_bossHoldFor != drawn->GetGUID() || getMSTimeDiff(_bossHoldSeenMs, now) > BOSS_HOLD_GAP_MS)
