@@ -207,18 +207,16 @@ using namespace Leader::Fight;
         // planner pulls it, its death ends it
         if (budget.handedUntilMs)
             return true;
-        if (budget.lastMs && getMSTimeDiff(budget.lastMs, now) <= PATROL_WAIT_TICK_CAP_MS)
-            budget.spentMs += getMSTimeDiff(budget.lastMs, now);
-        budget.lastMs = now ? now : 1;
+        // [lead130] user: no elapsed-time rule decides (PATROL_WAIT_BUDGET_MS 60 s / PATROL_WAIT_BUDGET_STARTS 4 were
+        // the old clock and cap). A patrol that comes to the group or walks beside its stop is the fact that waiting
+        // does not remove it (it walks the same way again): it goes to the tank's planner at once (lead41: patrols
+        // are killed, never waited out)
         if (start && budget.starts < 255)
             ++budget.starts;
-        if (budget.spentMs < PATROL_WAIT_BUDGET_MS && budget.starts <= PATROL_WAIT_BUDGET_STARTS)
-            return false;
         budget.handedUntilMs = now ? now : 1;  // handed since
         patrolHandOvers[instanceId] = patrol;
-        LOG_INFO("playerbots", "[b47_patrol] patrol_wait_budget: instance {}: {} s of waits, {} starts for "
-                 "patrol {}: handed to the tank's planner", instanceId, budget.spentMs / IN_MILLISECONDS,
-                 budget.starts, patrol.ToString());
+        LOG_INFO("playerbots", "[b47_patrol] patrol_wait_budget: instance {}: patrol {} on the group's way: handed "
+                 "to the tank's planner", instanceId, patrol.ToString());
         return true;
     }
 

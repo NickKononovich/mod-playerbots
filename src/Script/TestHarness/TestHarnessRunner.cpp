@@ -212,7 +212,6 @@ namespace TestHarness
         using Leader::Travel::GUARD_APPROACH_ARRIVE;  // [lead107] RouteSteer.h
         using Leader::Travel::GUARD_APPROACH_SLACK;  // [lead107] RouteSteer.h
         using Leader::Travel::GUARD_REFUSALS_BEFORE_BODY_PULL;  // [lead107] RouteSteer.h
-        using Leader::Travel::RITUAL_CHANNEL_HOLD_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::STARTER_DOOR_CHECK_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::STARTER_DOOR_REARM_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::EVENT_GATHER_ARRIVE;  // [lead107] RouteEvents.h
@@ -295,7 +294,6 @@ namespace TestHarness
         constexpr uint32 GHOST_POS_MS = 30 * IN_MILLISECONDS;  // "ghost_pos" while members are outside
         constexpr size_t GHOST_POS_TRAIL = 300;
         using Leader::Travel::STEER_PROGRESS_RANGE;  // [lead107] RouteEvents.h
-        using Leader::Travel::STEER_STUCK_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_REST_NOT_STUCK;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_TWIN_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_GAP_MS;  // [lead107] RouteEvents.h
@@ -349,7 +347,6 @@ namespace TestHarness
         constexpr uint32 SHORTCUT_REENTER_COOLDOWN_MS = 3 * MINUTE * IN_MILLISECONDS;
         constexpr float SHORTCUT_REENTER_MEMBER_FAR = 100.0f;  // a member this far from the leader re-enters alone
         using Leader::Travel::ENDLESS_SUMMON_KILLS;  // [lead107] RouteTargets.h
-        using Leader::Travel::DRIVE_AFTER_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::DRIVE_STEP;  // [lead107] RouteSteer.h
         using Leader::Travel::DRIVE_SAME_GOAL;  // [lead107] RouteEvents.h
         using Leader::Travel::EVENT_CHAIN_TRASH_RADIUS;  // [lead107] RouteTargets.h
@@ -1104,9 +1101,6 @@ namespace TestHarness
 
         using Leader::Travel::PatrolWalkPath;  // [lead107] RoutePatrol.h
 
-        using Leader::Travel::PATROL_WAIT_BUDGET_MS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_WAIT_BUDGET_STARTS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_WAIT_TICK_CAP_MS;  // [lead107] RoutePatrol.h
         using Leader::Travel::PatrolWaitBudget;  // [lead107] RoutePatrol.h
         using Leader::Travel::patrolWaitBudgets;  // [lead107] RoutePatrol.h
         using Leader::Travel::patrolHandOvers;  // [lead107] RoutePatrol.h

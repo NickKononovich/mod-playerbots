@@ -65,16 +65,20 @@ namespace Leader::Travel
 
     constexpr float KEY_DOOR_CAST_RANGE = 3.0f;  // a key door cast without line of sight: from here, in front of it
 
-    // Harness drive (Party::driving, pass 3): no progress towards the same goal this long with a waypoint set, and
+    // Harness drive (Party::driving, pass 3): no progress towards the same goal (the leader stands on its walk point, LeaderWalkStands), and
     // the harness walks the leader itself in short straight steps along its route (each step lies on the route's
     // polyline, so on the navmesh corridor), the bot AI held for the step. Wave 10: Utgarde Pinnacle (a 97-polygon
     // ledge joined to the hall only over NAV_GROUND_STEEP, "test runner move - FAILED" for 4 minutes),
     // Azjol-Nerub (the shaft ledge above the hole, same), Ahn'kahet ("use nerubian device - OK" every tick
     // before Nadox), Culling ("cos dispel crate - OK" every tick) - the leader stood, steer_stuck skipped
     // target after target.
-    constexpr uint32 DRIVE_AFTER_MS = 6 * IN_MILLISECONDS;
 
     constexpr float DRIVE_SAME_GOAL = 10.0f;
+
+    // [lead130] the leader's walk does not move it: it was given a walk point and stands (no move, no cast) with the
+    // same walk point at the same spot as at the last look (a hold clears the walk point: no stand);
+    // `seenAt` / `seenSerial` are the caller's last look
+    bool LeaderWalkStands(LeaderGroup& group, Player* leader, Position& seenAt, uint32& seenSerial);
 
     // A gossip starter found on a scripted walk at the click (ROUTE_STARTER_NOT_WALKING): tried again after this.
     constexpr uint32 STARTER_WALKING_RETRY_MS = 3 * IN_MILLISECONDS;

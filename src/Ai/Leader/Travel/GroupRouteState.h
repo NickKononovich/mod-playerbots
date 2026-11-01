@@ -159,6 +159,11 @@ namespace Leader
         uint32 driveSinceMs = 0;
         uint32 driveLastMs = 0;
         bool driving = false;
+        // [lead130] the last look of the steer / drive stand facts (LeaderWalkStands)
+        Position steerStandAt;
+        uint32 steerStandSerial = 0;
+        Position driveStandAt;
+        uint32 driveStandSerial = 0;
         uint32 nextRetargetMs = 0;  // [lead129] a retarget asked for at this time (0: none); RetargetDue
         uint32 retargetKills = 0;     // the kills (deadEntries) and the last pull end at the last retarget
         uint32 retargetPullEndMs = 0;

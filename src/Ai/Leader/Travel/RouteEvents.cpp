@@ -451,6 +451,23 @@ namespace Leader::Travel
         bot->SetFallInformation(0, bot->GetPositionZ());
     }
 
+    bool LeaderWalkStands(LeaderGroup& group, Player* leader, Position& seenAt, uint32& seenSerial)
+    {
+        LeaderGroup::WalkPoint walk;
+        uint32 const serial = group.GetWaypoint(group.LeaderGuid(), walk) ? walk.serial + 1 : 0;  // 0: no walk point
+        if (leader->isMoving() || leader->IsNonMeleeSpellCast(false))
+        {
+            seenSerial = 0;
+            seenAt = Position();
+            return false;
+        }
+        bool const same = serial && seenSerial == serial && seenAt.GetExactDist(leader->GetPosition()) <= 0.5f &&
+                          (seenAt.GetPositionX() != 0.0f || seenAt.GetPositionY() != 0.0f);
+        seenSerial = serial;
+        seenAt = leader->GetPosition();
+        return same;
+    }
+
     bool LeaderOwnWalkStalled(LeaderGroup& group, Player* leader, G3D::Vector3 const& goal)
     {
         GroupRouteState& routeState = group.Route();
@@ -475,7 +492,10 @@ namespace Leader::Travel
             routeState.driveSinceMs = now;
         }
 
-        if (routeState.driving || getMSTimeDiff(routeState.driveSinceMs, now) <= DRIVE_AFTER_MS)
+        // [lead130] user: no elapsed-time rule decides (DRIVE_AFTER_MS 6 s without progress was the old clock): the
+        // leader's own walk stalled when it stands on the same walk point at the same spot as at the last look
+        if (routeState.driving || routeState.driveSinceMs == now ||
+            !LeaderWalkStands(group, leader, routeState.driveStandAt, routeState.driveStandSerial))
             return false;
         routeState.driving = true;
         return true;

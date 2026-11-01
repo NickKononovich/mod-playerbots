@@ -115,7 +115,6 @@ namespace Leader::Travel
 
     // [ulda-ritual-hold] a summoning ritual (GAMEOBJECT_TYPE_SUMMONING_RITUAL) casts its spell 5 s after the
     // click (GameObject::Use m_cooldownTime) and only while the user still channels the anim spell.
-    constexpr uint32 RITUAL_CHANNEL_HOLD_MS = 6500;
 
 
     // [unseen-blocker-pull] an unseen neighbour pack this small that holds an approach becomes the target
@@ -163,7 +162,6 @@ namespace Leader::Travel
 
     constexpr uint32 STOP_KEEP_GAP_MS = 15 * IN_MILLISECONDS;
 
-    constexpr uint32 STEER_STUCK_MS = 20 * IN_MILLISECONDS;
 
     // [steer_rest_not_stuck] The leader seated with food / drink (RestState: the aura by its spell specific) out of
     // combat is no lack of progress: st-n build 23 (103125 / 103436 -2 / -3) - all 7 "route end" skips of the

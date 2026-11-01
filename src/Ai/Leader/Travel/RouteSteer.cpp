@@ -2284,11 +2284,15 @@ namespace Leader::Travel
         {
             RouteTarget::Clear(group.LeaderGuid());  // no route target to plan (or a fight on)
             // [ulda-ritual-hold] no event-spot / link / escort walk while the ritual channel runs
-            if (auto const hold = ritualHoldUntilMs.find(group.InstanceId());
-                hold != ritualHoldUntilMs.end() && int32(hold->second - getMSTime()) > 0 && !leader->IsInCombat())
+            if (auto const hold = ritualHoldUntilMs.find(group.InstanceId()); hold != ritualHoldUntilMs.end())
             {
-                group.ClearWaypoint(group.LeaderGuid());
-                return;
+                if (leader->GetCurrentSpell(CURRENT_CHANNELED_SPELL) && !leader->IsInCombat())
+                {
+                    group.ClearWaypoint(group.LeaderGuid());
+                    return;
+                }
+                ritualHoldUntilMs.erase(hold);  // the channel ended: the route goes on
+                routeState.nextRetargetMs = getMSTime();
             }
             bool const idle = routeState.noTargets && !leader->IsInCombat() && !group.InCombat();
             // A scripted intro keeps its boss immune (ROUTE_INTRO_WAIT, RunningIntroBoss: Svala's Arthas talk, 72 s
@@ -3743,7 +3747,13 @@ namespace Leader::Travel
         }
         if (!arrived && routeState.steerReachWaived && distance <= PULL_RANGE)
             arrived = true;
-        if (!arrived && (getMSTimeDiff(routeState.steerSinceMs, now) > STEER_STUCK_MS || swingStuck))
+        // [lead130] user: no elapsed-time rule decides (STEER_STUCK_MS 20 s without 3 yd of progress was the old
+        // clock). Stuck is the fact that the walk does not move the leader: no excuse this tick (rest, a member
+        // preparing, the pull's hold, 3 yd of progress - each restarts the steer anchor) and the leader, given a
+        // walk point, stands with that same walk point at the same spot as at the last look (LeaderWalkStands)
+        bool const walkStands = routeState.steerSinceMs != now &&
+                                LeaderWalkStands(group, leader, routeState.steerStandAt, routeState.steerStandSerial);
+        if (!arrived && (walkStands || swingStuck))
         {
             // A released Violet Hold prisoner is the objective, never "route end" (vh-h wave 9: Zuramat skipped at
             // 7 yd): the bots' own "vh engage" walks to him from here.
@@ -3795,7 +3805,7 @@ namespace Leader::Travel
                 MagistersTerrace::SelinRoom::EntryHolds(leader))
             {
                 SelinEntryHold& hold = selinEntryHolds[group.InstanceId()];
-                if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > STEER_STUCK_MS + 10 * IN_MILLISECONDS)
+                if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > 30 * IN_MILLISECONDS)
                     hold.sinceMs = now ? now : 1;
                 hold.seenMs = now ? now : 1;
                 if (getMSTimeDiff(hold.sinceMs, now) < SELIN_ENTRY_HOLD_MAX_MS)
@@ -3946,18 +3956,18 @@ namespace Leader::Travel
                 StarterTrack& starter = routeState.starters[routeState.starterIdx];
                 // Used up meanwhile (MarkStartersDoneByGroup): nothing to click any more.
                 bool const used = starter.uses < starter.def->maxUses && UseStarter(group, leader, starter, object);
+                // [lead130] the target is used: no target is the retarget's fact (RetargetDue) - no 3 s ask
                 routeState.target.Clear();
-                routeState.nextRetargetMs = now + 3 * IN_MILLISECONDS;
-                // [ulda-ritual-hold] a summoning ritual casts its spell 5 s after the click, only while the user still
-                // channels (GameObject::Update CheckRitualList): no new target, no walk until then.
+                // [ulda-ritual-hold] a summoning ritual casts its spell after the click only while the user still
+                // channels (GameObject::Update CheckRitualList): no new walk while the leader channels it.
+                // [lead130] the hold is that fact (its channel), not RITUAL_CHANNEL_HOLD_MS 6.5 s
                 if (GameObject const* ritual = object->ToGameObject();
                     used && ritual && ritual->GetGoType() == GAMEOBJECT_TYPE_SUMMONING_RITUAL)
                 {
-                    ritualHoldUntilMs[group.InstanceId()] = now + RITUAL_CHANNEL_HOLD_MS;
-                    routeState.nextRetargetMs = now + RITUAL_CHANNEL_HOLD_MS;
+                    ritualHoldUntilMs[group.InstanceId()] = now ? now : 1;  // the ritual used (since)
                     group.LogEvent("ritual_hold", JsonObject().Str("note", starter.def->note)
                                                        .Num("entry", ritual->GetEntry())
-                                                       .Num("holdMs", RITUAL_CHANNEL_HOLD_MS));
+                                                       .Str("until", "the leader's channel ends"));
                 }
                 return;
             }

@@ -107,11 +107,8 @@ namespace Leader::Travel
     // "patrol Scarlet Evoker ... it comes to the group" ~17 s, then patrol_step_back "it walks beside idle Scarlet
     // Defender, out of its walk, 30 yd back" ~6-18 s, "walked on", and again, 16 times; the Evoker was never
     // pulled.
-    constexpr uint32 PATROL_WAIT_BUDGET_MS = 60 * IN_MILLISECONDS;
 
-    constexpr uint8 PATROL_WAIT_BUDGET_STARTS = 4;   // about two hold + step-back cycles
 
-    constexpr uint32 PATROL_WAIT_TICK_CAP_MS = 3 * IN_MILLISECONDS;  // a longer gap is no wait of this patrol
 
 
     struct PatrolWaitBudget
