@@ -2721,16 +2721,29 @@ namespace Leader::Dungeon
                     // "combat spot: behind the target" moves, 63 re-spots "out of melee reach". A melee member out of
                     // melee reach of its pick takes the kill order's mob nearest to it that it has headroom on (its
                     // walk is the shortest); in reach, it keeps it
+                    // [lead142] b164 20261101-125734 871-940 s: the shaman's Attack target was a Searing Blade
+                    // Cultist / Warlock standing back 19-60 yd (casters the tank had not brought), it had no combat
+                    // spot there and stood ("drop target") while the tank fought mobs in its melee. A caster standing
+                    // back is the tank's to bring (LoS pull / taunt): a melee member takes a kill-order mob on the
+                    // tank in the tank's melee first (the tank stands at it: a spot it can reach), the nearest of them
                     if (splashes && !PlayerbotAI::IsHeal(bot) && mine && !bot->IsWithinMeleeRange(mine))
                     {
+                        auto const atTank = [&](Unit* mob)
+                        { return mob->GetVictim() == tank && tank->IsWithinMeleeRange(mob); };
+                        bool bestAtTank = atTank(mine);
                         float best = bot->GetExactDist(mine);
                         for (ObjectGuid const& next : killOrder)
                             if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
-                                mob && mob->IsAlive() && mob->IsInCombat() && headroom(mob) &&
-                                bot->GetExactDist(mob) < best)
+                                mob && mob != mine && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
                             {
-                                best = bot->GetExactDist(mob);
-                                mine = mob;
+                                bool const at = atTank(mob);
+                                float const distance = bot->GetExactDist(mob);
+                                if ((at && !bestAtTank) || (at == bestAtTank && distance < best))
+                                {
+                                    bestAtTank = at;
+                                    best = distance;
+                                    mine = mob;
+                                }
                             }
                     }
                     Unit* const attackOn = mine ? mine : target;
