@@ -14,6 +14,7 @@
 #include "ServerFacade.h"
 #include "TargetValue.h"
 #include "Timer.h"  // [rot1]
+#include "LeaderOrders.h"  // [rot38] Leader::ExecutorMember
 
 constexpr uint32 SPELL_ECLIPSE_SOLAR = 48517;
 constexpr uint32 SPELL_ECLIPSE_LUNAR = 48518;
@@ -115,6 +116,17 @@ namespace
 }
 
 bool DruidLunarProcReady(AiObjectContext* context, Player* bot) { return LunarProcReady(context, bot); }
+
+// [rot38] b179 rfc-h 5C (run 20261101-182149): the balance druid's own "medium mana" Innervate went out 10 times as
+// "own_decision external: an external without a leader assignment". In a led group Innervate is the leader's
+// external ("leader external"); a led healer keeps its own mana Innervate (the 5A resto druid's mana tool).
+bool CastInnervateAction::isUseful()
+{
+    if (Leader::ExecutorMember(bot) && !PlayerbotAI::IsHeal(bot))
+        return false;
+
+    return CastSpellAction::isUseful();
+}
 
 bool DruidHasEclipseTalent(Player* bot) { return HasEclipseTalent(bot); }
 

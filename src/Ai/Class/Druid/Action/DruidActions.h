@@ -398,6 +398,7 @@ public:
     CastInnervateAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "innervate") {}
 
     std::string const GetTargetName() override { return "self target"; }
+    bool isUseful() override;  // [rot38] a led non-healer: the leader owns Innervate (its "leader external")
 };
 
 class CastInnervateOnHealerAction : public CastSpellAction
