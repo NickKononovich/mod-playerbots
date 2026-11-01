@@ -5,6 +5,7 @@
  */
 
 #include "LeaderActions.h"
+#include <cmath>
 #include "BotPath.h"  // [lead109]
 
 #include "Event.h"
@@ -601,13 +602,19 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         float x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
         float y = target->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;
         float z = target->GetPositionZ();
-        if (!bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
-                                                             target->GetPositionZ(), x, y, z))
+        // [lead161] a non-finite place (an orientation or a collision answer that is no number) is no place: the
+        // target's own position, and none when that is not finite either
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+            !bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                             target->GetPositionZ(), x, y, z) ||
+            !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
         {
             x = target->GetPositionX();
             y = target->GetPositionY();
             z = target->GetPositionZ();
         }
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+            return false;
         // [lead44] b93 rfc-h 313-362 s: Rtshaab's Follow fired "leader move order -> 0.0 yd" every tick at 94 and its
         // "ready reply" never ran - the leader waited 50 s for its rebuff. A walk already under way (or done) is no
         // live work: not executed, the member's other actions run
@@ -654,6 +661,9 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         return true;
     }
     if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
+        return false;
+    if (!std::isfinite(events.spot.GetPositionX()) || !std::isfinite(events.spot.GetPositionY()) ||
+        !std::isfinite(events.spot.GetPositionZ()))  // [lead161]
         return false;
     if (!bot->IsStandState())
         bot->SetStandState(UNIT_STAND_STATE_STAND);

@@ -11,6 +11,7 @@
 #include "LeaderOrders.h"
 
 #include "Group.h"
+#include "Log.h"
 #include "Map.h"
 #include "MoveSpline.h"
 #include "Player.h"
@@ -18,6 +19,7 @@
 #include "Unit.h"
 
 #include <algorithm>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -525,6 +527,14 @@ namespace Leader
 
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why)
         {
+            // [lead161] the leader never issues a spot that is no number
+            if (!std::isfinite(spot.GetPositionX()) || !std::isfinite(spot.GetPositionY()) ||
+                !std::isfinite(spot.GetPositionZ()))
+            {
+                LOG_ERROR("playerbots", "[lead161] non_finite_spot: {} for {}: ({},{},{}) not issued", why,
+                          member.ToString(), spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
+                return false;
+            }
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;

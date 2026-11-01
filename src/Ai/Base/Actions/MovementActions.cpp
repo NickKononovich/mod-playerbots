@@ -1569,6 +1569,14 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         s_moveRefusal = guard;
         return false;
     };
+    // [lead161] b178 17:19:41 the worldserver died right after "leader move order to (nan,0.0,22.5)" (Rtdekab, rfc-h
+    // 5D): a non-finite destination never reaches the movement generator
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+    {
+        LOG_ERROR("playerbots", "[lead161] non_finite_move: {}: {} to ({},{},{}) refused", bot->GetName(), getName(), x,
+                  y, z);
+        return refuse("a non-finite destination");
+    }
     if (!dry)
         UpdateMovementState();
     if (!IsMovingAllowed())

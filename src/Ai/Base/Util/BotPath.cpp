@@ -6,6 +6,8 @@
 
 #include "BotPath.h"
 
+#include <cmath>
+
 #include "GridDefines.h"
 #include "LeaderOrders.h"
 #include "Map.h"
@@ -126,6 +128,10 @@ bool WalkBotPoints(Player* bot, Movement::PointsArray points)
     MotionMaster* mm = bot ? bot->GetMotionMaster() : nullptr;
     if (!mm || points.size() < 2)
         return false;
+    // [lead161] no spline through a non-finite point
+    for (G3D::Vector3 const& point : points)
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+            return false;
     points[0] = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     Leader::Travel::NoteHeightGap(bot, points[0], points[0].z, "walker position");  // [lead144]
     mm->Clear();
