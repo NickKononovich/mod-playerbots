@@ -3280,15 +3280,16 @@ namespace Leader::Dungeon
                             return std::make_pair(bot, spell);
                 return std::make_pair(static_cast<Player*>(nullptr), uint32(0));
             };
-            bool const opening = group.PullStartMs() && getMSTimeDiff(group.PullStartMs(), now) <= LEADER_OPENING_MS;
             float const healerMana = healer && healer->GetMaxPower(POWER_MANA) ? healer->GetPowerPct(POWER_MANA)
                                                                               : 100.0f;
             uint32 hurt = 0;
             for (Player* bot : everyone)
                 hurt += bot->GetHealthPct() < 50.0f ? 1 : 0;
-            if (opening)
-                if (auto const [bot, spell] = withSpell({SPELL_MISDIRECTION, SPELL_TRICKS_OF_THE_TRADE}, tank); bot)
-                    tell(bot, spell, tank, "the pull's threat onto the tank");
+            // [lead197] b181 5E: Tricks of the Trade held 223 times "waiting for the leader's assignment" - the
+            // leader told it only in the pull's opening window. Misdirection / Tricks put the caster's threat on the
+            // tank (headroom for everyone): on the tank whenever one is ready in the fight
+            if (auto const [bot, spell] = withSpell({SPELL_MISDIRECTION, SPELL_TRICKS_OF_THE_TRADE}, tank); bot)
+                tell(bot, spell, tank, "the threat onto the tank");
             if (tank->GetHealthPct() < LEADER_SAVE_HP_PCT)
                 if (auto const [bot, spell] = withSpell({SPELL_PAIN_SUPPRESSION, SPELL_HAND_OF_SACRIFICE}, tank); bot)
                     tell(bot, spell, tank, "the tank is low");
