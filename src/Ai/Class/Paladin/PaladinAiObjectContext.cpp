@@ -275,10 +275,10 @@ private:
     {
         return new PaladinSpellReadyTrigger(botAI, "judgement of wisdom");
     }
-    // a mana floor: Consecration is the dearest of the five
+    // [rot12] no mana floor (wowsims casts it on cooldown; Divine Plea and Spiritual Attunement carry the mana)
     static Trigger* consecration_ready(PlayerbotAI* botAI)
     {
-        return new PaladinSpellReadyTrigger(botAI, "consecration", 30);
+        return new PaladinSpellReadyTrigger(botAI, "consecration");
     }
     static Trigger* avengers_shield_boss_filler(PlayerbotAI* botAI)
     {
