@@ -613,6 +613,12 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // live work: not executed, the member's other actions run
         if (IsDuplicateMove(x, y, z))
             return false;
+        // [lead154] b173 281-366 s: Rtshaab stood at its follow place, the tank still; the walk there was refused and
+        // re-issued as a MovePoint every tick (executed, nothing moved) - the rebuff window never closed. Standing at
+        // its place (the follow's own tolerance) is no work
+        if (!target->isMoving() &&
+            bot->GetExactDist2d(x, y) <= std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE))
+            return false;
         if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
             return true;
         // [lead40] b89 rfc-h 57.8 s: Rtshaab "member_refusal: the member's guard refused the follow walk (ledge /

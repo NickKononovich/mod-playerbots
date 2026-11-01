@@ -5,6 +5,7 @@
  */
 
 #include "Engine.h"
+#include "ReadyCheckAction.h"  // [lead154] the rebuff window's close
 #include "Action.h"
 #include "EstimatedLifetimeValue.h"
 #include "Event.h"
@@ -351,6 +352,23 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 
     if (!actionExecuted)
         LogAction("no actions executed");
+
+    // [lead154] b173 20261101-154539 281-366 s: "Rtshaab buffing" 85 s - its Follow ran every tick at 94 and the
+    // "ready reply" (6) that closes the rebuff window was never reached. The window's own fact: a full tick in which
+    // no buff trigger fired and nothing is cast closes it here, whatever action ran
+    if (!minimal)
+    {
+        ForceRebuffState& rebuff = botAI->forceRebuff;
+        Player* self = botAI->GetBot();
+        if (rebuff.IsPending() && !rebuff.IsBuffProposedThisCycle() && !rebuff.IsBuffPendingThisCycle() &&
+            !rebuff.IsOnGlobalCooldown() && self && !self->IsInCombat() &&
+            !self->GetCurrentSpell(CURRENT_GENERIC_SPELL) && !self->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+        {
+            if (rebuff.ShouldReplyToReadyCheck())
+                ReadyCheckAction::AnswerReadyCheck(botAI);
+            rebuff.End();
+        }
+    }
 
     queue.RemoveExpired();
 
