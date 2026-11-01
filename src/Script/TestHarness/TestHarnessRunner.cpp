@@ -54,6 +54,7 @@
 #include "RouteEvents.h"  // [lead107] the leader's event route steps
 #include "RouteTargets.h"  // [lead107] the leader's route target choice
 #include "RouteSteer.h"    // [lead107] the leader's route walk
+#include "RouteMeet.h"     // [lead107] the leader's meet
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderEvents.h"       // [lead107] the leader's event tick
@@ -244,7 +245,7 @@ namespace TestHarness
         using Leader::Travel::ROUTE_BLOCKER_THROUGH_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::NEIGHBOUR_HOLD_MAX;  // [lead107] RouteSteer.h
         using Leader::Travel::NEIGHBOUR_PASS_PACK_MAX;  // [lead107] RouteSteer.h
-        constexpr size_t MEET_PASS_PACK_MAX = 2;  // the walk back goes on into at most this many idle mobs
+        using Leader::Travel::MEET_PASS_PACK_MAX;  // [lead107] RouteMeet.h
         using Leader::Travel::BEHIND_SHADOW_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::BEHIND_CONE_COS;  // [lead107] RouteSteer.h
         constexpr uint32 OUTSIDE_GIVE_UP_STUCKS = 3;  // alive outside: 3 x GHOST_STUCK_MS without progress
@@ -321,19 +322,8 @@ namespace TestHarness
         // AssistMember: a member with attackers this far from the leader, or on another floor.
         constexpr float ASSIST_RANGE = 25.0f;
         constexpr float ASSIST_FLOOR_DZ = 5.0f;
-        // MeetMember: a living member this far behind the leader out of combat (the far-wait threshold is 50 yd).
-        constexpr float MEET_RANGE = 45.0f;
-        // [meet_hysteresis] STN92_EFFICIENCY 2026-10-25 (lagging hunter, "[regroup] ping-pong meet <-> route",
-        // meet_stuck x2, "gives way ... far 276 s"): a meet started past MEET_RANGE ended the moment the member was
-        // back inside it - at the edge, so the route's next step put it past the far line again and the leader walked
-        // back again. The member being met stays met until it is within MEET_END_RANGE (one gather: the leader walks
-        // toward it, its own follow toward the leader); TickParty's far wait uses the same line
-        // (REGROUP_MEET_END_RANGE, TestHarnessMgr.cpp).
-        // [meet_end_follow_trail] 30 yd (was 20): a following bot trails a walking leader 13-31 yd on ramps, so 20 yd
-        // flipped the far wait on every step (wc-h wave 23: "hold meet" 15 flips in 109 s, 19 in 159 s, 22 in 292 s).
-        // [b31_far_threshold] 15 yd (was 30): the meet ends with the member close, the group goes on together; the far
-        // wait counts it far down to the same line (FAR_RESUME_RANGE, TestHarnessMgr.cpp)
-        constexpr float MEET_END_RANGE = 15.0f;
+        using Leader::Travel::MEET_RANGE;  // [lead107] RouteMeet.h
+        using Leader::Travel::MEET_END_RANGE;  // [lead107] RouteMeet.h
         // MemberStranded: the navmesh check per far member at most this often; stranded after this long within the
         // still range (Pit of Saron wave 7: Rtshaba on a 7-polygon island 42 yd up the Garfrost wall; Gundrak: the
         // moat floor under Gal'darah's bridge).
@@ -477,7 +467,7 @@ namespace TestHarness
         // logged at most this often; a walked wing change is over once every member stands this close (2D) to the
         // next entrance (SelfTravel's goal range), and fails after WING_WALK_MAX_MS.
         constexpr uint32 CANNOT_MOVE_LOG_MS = 30 * IN_MILLISECONDS;
-        constexpr float WING_ARRIVE_RANGE = 40.0f;
+        using Leader::Travel::WING_ARRIVE_RANGE;  // [lead107] RouteMeet.h
         constexpr uint32 WING_WALK_MAX_MS = 15 * MINUTE * IN_MILLISECONDS;
         // A member inside, near one spot this long during a wing walk: no walk out, left out of the walk.
         constexpr uint32 WING_MEMBER_STILL_MS = 2 * MINUTE * IN_MILLISECONDS;
@@ -1640,139 +1630,37 @@ namespace TestHarness
 
     namespace
     {
-        // Regroup after a revive (ROUTE_REGROUP, 2026-10-24, *.bak_routebackbone). RFC 18:34-18:35: the tank died,
-        // came back in through the portal and stood at the entrance; MeetMember walked it back towards the group
-        // 83-85 yd deeper, the four others followed it (follow) into a cave wall, wait_timeout after 60 s, a new
-        // target. User rule: the group stands. The returning side (who stands at the entrance, REGROUP_ENTRANCE_RANGE)
-        // runs to the group when the way is free - no idle hostile whose route reach (RouteReach) covers the walk
-        // where it sees it (BlocksRoute), and no killed mob with its spawn point that close respawning before the walk
-        // is over (its length at run speed plus REGROUP_RESPAWN_MARGIN_SEC: "close to the respawn the group comes
-        // anyway") - and the group holds there ("stay"); else the group walks out through the exit and in through
-        // the entrance (the portal goal, its own "instance portal", as a wing change: TickWingWalk watches) and is
-        // at the entrance with them. The decision is the returning side's signal, taken once when the situation
-        // starts and again when its walk makes no progress for REGROUP_STUCK_MS (meet_stuck).
-        constexpr bool ROUTE_REGROUP = true;
-        constexpr float REGROUP_GROUP_RADIUS = 30.0f;
-        constexpr uint32 REGROUP_STUCK_MS = 10 * IN_MILLISECONDS;
-        constexpr float REGROUP_PROGRESS = 3.0f;
-        constexpr float REGROUP_RESPAWN_MARGIN_SEC = 30.0f;
-        constexpr uint32 REGROUP_MAX_REPLANS = 3;  // then the group comes to the entrance
-        constexpr uint32 REGROUP_COOLDOWN_MS = 3 * MINUTE * IN_MILLISECONDS;  // after giving up: the old meeting walk
-        // The exit decision needs a complete walk to the entrance for every member of the group (regroup_exit_refused).
-        constexpr bool REGROUP_EXIT_NEEDS_WALK = true;
-        // Gruul 2026-10-24, false restores the old side test (anybody within WING_ARRIVE_RANGE of the entrance): the
-        // returning side is a member that came back in through the portal (Member::backInMs) at most this long ago.
-        constexpr bool REGROUP_BACK_IN_ONLY = true;
-        constexpr uint32 REGROUP_BACK_IN_MS = 3 * MINUTE * IN_MILLISECONDS;
-        // A killed mob respawning later than this (Map::SaveCreatureRespawnTime: a respawn past the instance reset
-        // is stored as now + YEAR, raid trash "in 31535988 s") does not respawn during the run.
-        constexpr float REGROUP_RESPAWN_NEVER_SEC = float(DAY);
+        using Leader::Travel::ROUTE_REGROUP;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_GROUP_RADIUS;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_STUCK_MS;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_PROGRESS;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_RESPAWN_MARGIN_SEC;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_MAX_REPLANS;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_COOLDOWN_MS;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_EXIT_NEEDS_WALK;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_BACK_IN_ONLY;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_BACK_IN_MS;  // [lead107] RouteMeet.h
+        using Leader::Travel::REGROUP_RESPAWN_NEVER_SEC;  // [lead107] RouteMeet.h
 
-        enum class RegroupMode : uint8
-        {
-            None,
-            Run,   // the way is free: the group holds, the returning side runs to it
-            Exit,  // the group walks out and in through the entrance
-        };
+        using Leader::Travel::RegroupMode;  // [lead107] RouteMeet.h
 
-        struct RegroupState
-        {
-            RegroupMode mode = RegroupMode::None;
-            std::vector<ObjectGuid> held;  // members put on "stay"
-            ObjectGuid runner;             // whose walk is watched (Run)
-            ObjectGuid anchor;             // the group member it walks to
-            float bestDistance = 0.0f;
-            uint32 progressMs = 0;
-            uint32 replans = 0;
-        };
-        std::unordered_map<uint32, RegroupState> regroups;  // per instance, world thread only
-        std::unordered_map<uint32, uint32> regroupCooldownUntilMs;  // per instance, world thread only
+        using Leader::Travel::RegroupState;  // [lead107] RouteMeet.h
+        using Leader::Travel::regroups;  // [lead107] RouteMeet.h
+        using Leader::Travel::regroupCooldownUntilMs;  // [lead107] RouteMeet.h
 
-        // MeetMember's own walk (the leader back to a straggler): its progress, for meet_stuck.
-        struct MeetProgress
-        {
-            ObjectGuid member;
-            float bestDistance = 0.0f;
-            uint32 progressMs = 0;
-        };
-        std::unordered_map<uint32, MeetProgress> meetProgress;  // per instance, world thread only
+        using Leader::Travel::MeetProgress;  // [lead107] RouteMeet.h
+        using Leader::Travel::meetProgress;  // [lead107] RouteMeet.h
 
-        // A straggler episode of MeetMember (not a regroup). The member's own follow comes first: the follow guard's
-        // deadlock breaker lets a vetoed follower go after 5 s with the tank out of combat and over 30 yd away
-        // (MovementActions), so the leader stands MEET_GRACE_MS before it walks back, and again after each
-        // meet_stuck; after MEET_MAX_STUCK of them it walks back no more ("give way": the breaker and the far wait's
-        // timeout decide). SFK 5B-5 20:29-20:38: walk back / route on for 8 minutes, 30 meet_stuck, run stalled.
-        constexpr uint32 MEET_GRACE_MS = 12 * IN_MILLISECONDS;
-        constexpr uint32 MEET_MAX_STUCK = 2;
-        constexpr uint32 MEET_EPISODE_GAP_MS = 90 * IN_MILLISECONDS;  // not seen this long: a new episode
+        using Leader::Travel::MEET_GRACE_MS;  // [lead107] RouteMeet.h
+        using Leader::Travel::MEET_MAX_STUCK;  // [lead107] RouteMeet.h
+        using Leader::Travel::MEET_EPISODE_GAP_MS;  // [lead107] RouteMeet.h
 
-        struct StragglerEpisode
-        {
-            ObjectGuid member;
-            uint32 sinceMs = 0;
-            uint32 lastSeenMs = 0;
-            uint32 holdSinceMs = 0;     // the leader stands (grace) since; 0: it walks back
-            float bestDistance = 0.0f;  // while it stands: the member closing in by itself restarts the grace
-            uint32 stuck = 0;
-            bool gaveWay = false;
-        };
-        std::unordered_map<uint32, StragglerEpisode> stragglers;  // per instance, world thread only
+        using Leader::Travel::StragglerEpisode;  // [lead107] RouteMeet.h
+        using Leader::Travel::stragglers;  // [lead107] RouteMeet.h
 
-        // What lies on the walk: idle hostiles that would aggro on it, and the soonest respawn (s, -1: none) of a
-        // killed hostile whose spawn point is within its route reach of the walk.
-        struct RegroupPathCheck
-        {
-            uint32 aliveMobs = 0;
-            std::string firstMob;
-            float nextRespawnSec = -1.0f;
-            std::string nextRespawnMob;
-        };
+        using Leader::Travel::RegroupPathCheck;  // [lead107] RouteMeet.h
 
-        RegroupPathCheck CheckRegroupPath(Player* runner, Movement::PointsArray const& points)
-        {
-            RegroupPathCheck result;
-            if (points.size() < 2)
-                return result;
-            RouteBackbone const path{points};
-            time_t const nowSec = GameTime::GetGameTime().count();
-            for (auto const& [spawnId, creature] : runner->GetMap()->GetCreatureBySpawnIdStore())
-            {
-                if (!creature || !creature->IsInWorld() || creature->IsCritter() || creature->IsCivilian() ||
-                    creature->IsTotem() || creature->GetCreatureTemplate()->type == CREATURE_TYPE_TOTEM || creature->IsTrigger() || !creature->IsHostileTo(runner))
-                    continue;
-                float const reach = RouteReach(creature, runner);
-                if (creature->IsAlive())
-                {
-                    RouteCheck check;
-                    if (!creature->IsInCombat() && IdleAggroCheck{runner}(creature) &&
-                        BlocksRoute(runner, creature, reach, path, check))
-                    {
-                        if (!result.aliveMobs++)
-                            result.firstMob = creature->GetName();
-                    }
-                    continue;
-                }
-                float x = 0.0f;
-                float y = 0.0f;
-                float z = 0.0f;
-                creature->GetRespawnPosition(x, y, z);
-                G3D::Vector3 const spawn(x, y, z);
-                bool spawnClose = false;
-                for (size_t index = 1; index < points.size() && !spawnClose; ++index)
-                    spawnClose = (ClosestOnSegment(spawn, points[index - 1], points[index]) - spawn).length() < reach;
-                if (!spawnClose)
-                    continue;
-                float const in = float(creature->GetRespawnTimeEx() - nowSec);
-                if (in > REGROUP_RESPAWN_NEVER_SEC)
-                    continue;
-                if (result.nextRespawnSec < 0.0f || in < result.nextRespawnSec)
-                {
-                    result.nextRespawnSec = in;
-                    result.nextRespawnMob = creature->GetName();
-                }
-            }
-            return result;
-        }
+        using Leader::Travel::CheckRegroupPath;  // [lead107] RouteMeet.h
     }
 
     void TestHarnessMgr::SkipTarget(Party& party, ObjectGuid guid, uint32 ms, std::string const& reason)
@@ -3594,487 +3482,9 @@ namespace TestHarness
 
     bool TestHarnessMgr::MeetMember(Party& party, std::vector<Player*> const& players, Player* leader)
     {
-        uint32 const now = getMSTime();
-        // [hleft-bm-tank-fetch] the group holds at Medivh while the tank fetches a keeper: nobody to meet.
-        {
-            bool fetch = leader && leader->GetMapId() == BLACK_MORASS_MAP;
-            for (Player* bot : players)
-                if (fetch && bot != leader && bot->IsAlive())
-                    fetch = BlackMorassHoldsAtMedivh(bot);
-            if (fetch)
-                return false;
-        }
-        // The end of a regroup: the members on "stay" follow again.
-        auto const releaseRegroup = [&](char const* why)
-        {
-            auto const found = regroups.find(party.instanceId);
-            if (found == regroups.end())
-                return;
-            for (ObjectGuid const guid : found->second.held)
-                if (Player* bot = ObjectAccessor::FindPlayer(guid))
-                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                        botAI->ChangeStrategy("-stay,+follow", BOT_STATE_NON_COMBAT);
-            LogEvent(party, "regroup_end", JsonObject().Str("why", why).Num("held", int64(found->second.held.size()))
-                                               .Num("replans", found->second.replans));
-            regroups.erase(found);
-        };
-
-        // Steamvault wave 9 (peel agent): the healer, resurrected and walking back alone, followed the leader
-        // straight through the idle packs' aggro radius and died 7 times in the Bog Overlord loop. A group waits for
-        // it - here the leader (the others follow it) walks back to meet it; the member keeps following the leader,
-        // so the two close in and nobody waits for the other.
-        if (!leader || !leader->IsAlive() || leader->IsInCombat() || party.wiped || party.linkIdx >= 0 ||
-            !party.escort.IsEmpty())
-        {
-            party.meeting.Clear();
-            meetProgress.erase(party.instanceId);
-            // A dead leader: the group keeps standing where it waits.
-            if (leader && leader->IsAlive())
-                releaseRegroup(leader->IsInCombat() ? "combat" : "no meeting");
-            return false;
-        }
-
-        Player* member = nullptr;
-        float best = 0.0f;
-        for (Player* bot : players)
-        {
-            if (bot == leader || !bot->IsAlive() || bot->IsInCombat() || bot->GetMap() != leader->GetMap() ||
-                bot->IsBeingTeleported() || MemberStranded(party, bot, leader))
-                continue;
-            float const distance = leader->GetExactDist(bot);
-            // [meet_hysteresis] the member being met stays met down to MEET_END_RANGE
-            float const meetFrom = party.meeting == bot->GetGUID() ? MEET_END_RANGE : MEET_RANGE;
-            if (distance > meetFrom && (!member || distance > best))
-            {
-                member = bot;
-                best = distance;
-            }
-        }
-        if (!member)
-        {
-            party.meeting.Clear();
-            meetProgress.erase(party.instanceId);
-            stragglers.erase(party.instanceId);
-            releaseRegroup("together");
-            return false;
-        }
-
-        // Regroup: one side at the entrance (a member back in through the portal), the other farther than
-        // MEET_RANGE from all of it.
-        std::vector<Player*> atEntrance;
-        std::vector<Player*> group;
-        Position const* entrance =
-            party.entranceIdx < party.entrances.size() ? &party.entrances[party.entranceIdx] : nullptr;
-        // A walk out and in (a wing change, a regroup's exit) is under way: nobody walks to meet anybody.
-        if (party.wingWalk)
-        {
-            TestRunner::ClearWaypoint(party.leader);
-            return true;
-        }
-        // A regroup whose returning side runs already keeps its sides until the two are together (the runner leaves
-        // the entrance on its walk).
-        auto const running = regroups.find(party.instanceId);
-        Player* const runningMember = running != regroups.end() && running->second.mode == RegroupMode::Run
-                                          ? ObjectAccessor::FindPlayer(running->second.runner)
-                                          : nullptr;
-        Player* const runningAnchor =
-            runningMember ? ObjectAccessor::FindPlayer(running->second.anchor) : nullptr;
-        if (runningMember && runningAnchor && runningMember->IsAlive() && runningAnchor->IsAlive() &&
-            runningMember->GetMap() == leader->GetMap() && runningAnchor->GetMap() == leader->GetMap() &&
-            runningMember->GetExactDist(runningAnchor) > MEET_RANGE)
-        {
-            atEntrance.push_back(runningMember);
-            for (Player* bot : players)
-                if (bot != runningMember && bot->IsAlive() && bot->GetMap() == leader->GetMap() &&
-                    (bot == runningAnchor || bot->GetExactDist(runningMember) > MEET_RANGE))
-                    group.push_back(bot);
-        }
-        else if (ROUTE_REGROUP && !HARNESS_MOVES_BOTS && entrance &&
-                 (!regroupCooldownUntilMs.count(party.instanceId) ||
-                  int32(now - regroupCooldownUntilMs[party.instanceId]) >= 0))
-        {
-            std::vector<Player*> standing;
-            for (Player* bot : players)
-                if (bot->IsAlive() && !bot->IsInCombat() && bot->GetMap() == leader->GetMap() &&
-                    !bot->IsBeingTeleported() && !MemberStranded(party, bot, leader))
-                    standing.push_back(bot);
-            // The returning side is a member back in through the portal (REGROUP_BACK_IN_MS), not whoever stands near
-            // it: Gruul 25A 2026-10-24, the first pack fights 45-70 yd from the entrance, two mages casting from
-            // 30 yd off it were "at the entrance", the off-tank and a warlock 45 yd ahead "the group" - an exit for two
-            // with nobody dead or outside, and 22 members put on "stay" for the second regroup.
-            auto const backIn = [&party, now](Player* bot)
-            {
-                for (Member const& candidate : party.members)
-                    if (candidate.guid == bot->GetGUID())
-                        return candidate.backInMs && getMSTimeDiff(candidate.backInMs, now) <= REGROUP_BACK_IN_MS;
-                return false;
-            };
-            for (Player* bot : standing)
-                if (bot->GetExactDist2d(entrance) <= WING_ARRIVE_RANGE && (!REGROUP_BACK_IN_ONLY || backIn(bot)))
-                    atEntrance.push_back(bot);
-            for (Player* bot : standing)
-            {
-                if (std::find(atEntrance.begin(), atEntrance.end(), bot) != atEntrance.end())
-                    continue;
-                bool away = true;
-                for (Player* back : atEntrance)
-                    away &= back->GetExactDist(bot) > MEET_RANGE;
-                if (away)
-                    group.push_back(bot);
-            }
-        }
-        if (atEntrance.empty() || group.empty())
-            releaseRegroup("no regroup");
-        else
-        {
-            RegroupState& state = regroups[party.instanceId];
-            bool const leaderAtEntrance =
-                std::find(atEntrance.begin(), atEntrance.end(), leader) != atEntrance.end();
-            Player* const runner = leaderAtEntrance ? leader : atEntrance.front();
-            // The group's anchor: the member with the most of the group around it.
-            Player* anchor = nullptr;
-            size_t anchorNear = 0;
-            for (Player* bot : group)
-            {
-                size_t around = 0;
-                for (Player* other : group)
-                    around += bot->GetExactDist(other) <= REGROUP_GROUP_RADIUS ? 1 : 0;
-                if (!anchor || around > anchorNear)
-                {
-                    anchor = bot;
-                    anchorNear = around;
-                }
-            }
-
-            // The walk of the returning side makes no progress: decided again (meet_stuck).
-            if (state.mode == RegroupMode::Run)
-            {
-                Player* watched = ObjectAccessor::FindPlayer(state.runner);
-                Player* target = ObjectAccessor::FindPlayer(state.anchor);
-                if (!watched || !target || watched->GetMap() != leader->GetMap() ||
-                    target->GetMap() != leader->GetMap())
-                    state.mode = RegroupMode::None;
-                else
-                {
-                    float const distance = watched->GetExactDist(target);
-                    if (distance + REGROUP_PROGRESS < state.bestDistance)
-                    {
-                        state.bestDistance = distance;
-                        state.progressMs = now;
-                    }
-                    else if (getMSTimeDiff(state.progressMs, now) > REGROUP_STUCK_MS)
-                    {
-                        ++state.replans;
-                        LOG_INFO("playerbots", "[regroup] {}: meet_stuck: {} {:.1f} yd from {} for {} s, replan {}",
-                                 party.id, watched->GetName(), distance, target->GetName(),
-                                 REGROUP_STUCK_MS / IN_MILLISECONDS, state.replans);
-                        LogEvent(party, "meet_stuck",
-                                 JsonObject().Str("name", watched->GetName()).Str("to", target->GetName())
-                                     .Real("distance", distance).Num("replan", state.replans)
-                                     .Real("x", watched->GetPositionX()).Real("y", watched->GetPositionY())
-                                     .Real("z", watched->GetPositionZ()));
-                        longRouteCache.erase(watched->GetGUID());
-                        state.mode = RegroupMode::None;
-                    }
-                }
-            }
-
-            // The walk out and in is over (TickWingWalk) and the sides are still apart: decided anew, at most
-            // REGROUP_MAX_REPLANS times with the stuck walks, then the meeting walk as before.
-            if (state.mode == RegroupMode::Exit)
-            {
-                state.mode = RegroupMode::None;
-                ++state.replans;
-            }
-            if (state.replans > REGROUP_MAX_REPLANS)
-            {
-                regroupCooldownUntilMs[party.instanceId] = now + REGROUP_COOLDOWN_MS;
-                releaseRegroup("gave up");
-            }
-            else
-            {
-                if (state.mode == RegroupMode::None)
-                {
-                    // The signal: may the returning side run, or does the group come to the entrance?
-                    G3D::Vector3 const goal(anchor->GetPositionX(), anchor->GetPositionY(), anchor->GetPositionZ());
-                    PathResult const route = RoutePath(runner, goal.x, goal.y, goal.z);
-                    RegroupPathCheck const check = CheckRegroupPath(runner, route.points);
-                    float const speed = std::max(1.0f, runner->GetSpeed(MOVE_RUN));
-                    float const runSec = route.length / speed + REGROUP_RESPAWN_MARGIN_SEC;
-                    bool const respawnSoon = check.nextRespawnSec >= 0.0f && check.nextRespawnSec <= runSec;
-                    bool const clear = route.reachable && !check.aliveMobs && !respawnSoon &&
-                                       state.replans < REGROUP_MAX_REPLANS;
-                    std::string const respawn =
-                        check.nextRespawnSec < 0.0f
-                            ? std::string("none")
-                            : std::to_string(int32(check.nextRespawnSec)) + " s (" + check.nextRespawnMob + ")";
-                    char const* const why = !route.reachable                        ? ", no walk"
-                                            : state.replans >= REGROUP_MAX_REPLANS ? ", walk stuck"
-                                                                                   : "";
-                    std::string const decision =
-                        clear ? Acore::StringFormat("regroup: {} can run (path clear, next respawn in {})",
-                                                    runner->GetName(), respawn)
-                              : Acore::StringFormat("regroup: group comes to the entrance ({} mobs alive{}{} / "
-                                                    "respawn in {}{})",
-                                                    check.aliveMobs, check.aliveMobs ? ", first " : "",
-                                                    check.firstMob, respawn, why);
-                    LOG_INFO("playerbots",
-                             "[regroup] {}: {} (walk {:.0f} yd, {:.0f} s with margin; {} at the entrance, {} in the "
-                             "group)",
-                             party.id, decision, route.length, runSec, atEntrance.size(), group.size());
-                    JsonArray backNames;
-                    for (Player* bot : atEntrance)
-                        backNames.Str(bot->GetName());
-                    JsonArray groupNames;
-                    for (Player* bot : group)
-                        groupNames.Str(bot->GetName());
-                    LogEvent(party, "regroup",
-                             JsonObject().Str("decision", clear ? "run" : "exit").Str("signal", decision)
-                                 .Str("runner", runner->GetName()).Str("anchor", anchor->GetName())
-                                 .Raw("atEntrance", backNames.Build()).Raw("group", groupNames.Build())
-                                 .Bool("reachable", route.reachable).Real("pathLength", route.length)
-                                 .Real("runSec", runSec).Num("aliveMobs", check.aliveMobs)
-                                 .Str("firstMob", check.firstMob).Real("nextRespawnSec", check.nextRespawnSec)
-                                 .Str("nextRespawnMob", check.nextRespawnMob)
-                                 .Num("replans", state.replans));
-                    party.lastEvent = decision;
-                    state.runner = runner->GetGUID();
-                    state.anchor = anchor->GetGUID();
-                    state.bestDistance = runner->GetExactDist(anchor);
-                    state.progressMs = now;
-                    // REGROUP_EXIT_NEEDS_WALK: the exit only for a group that can walk to the entrance. Wave 21 mech-h:
-                    // the group stood on the Mechanar's upper level (joined to the entrance only by the lift link), the
-                    // exit gave all four the portal goal, none had a walk ("no walk out for 2 minutes: left out of the
-                    // wing walk"), the wing walk held the route 412 s. Refused, the regroup ends and the route (its
-                    // route links, the stranded-member rule) brings the sides together.
-                    std::string noWalkOut;
-                    if (!clear && REGROUP_EXIT_NEEDS_WALK)
-                        for (Player* bot : group)
-                            if (!RoutePath(bot, entrance->GetPositionX(), entrance->GetPositionY(),
-                                           entrance->GetPositionZ())
-                                     .complete)
-                                noWalkOut += (noWalkOut.empty() ? "" : ",") + bot->GetName();
-                    if (clear)
-                        state.mode = RegroupMode::Run;
-                    else if (!noWalkOut.empty())
-                    {
-                        LOG_INFO("playerbots",
-                                 "[regroup] {}: regroup_exit_refused: no walk to the entrance for {} - no exit, the "
-                                 "route goes on",
-                                 party.id, noWalkOut);
-                        LogEvent(party, "regroup_exit_refused",
-                                 JsonObject().Str("noWalkOut", noWalkOut).Str("runner", runner->GetName())
-                                     .Str("anchor", anchor->GetName()).Num("replans", state.replans));
-                        regroupCooldownUntilMs[party.instanceId] = now + REGROUP_COOLDOWN_MS;
-                        releaseRegroup("exit refused: no walk to the entrance");
-                        return false;
-                    }
-                    else
-                    {
-                        // Out through the exit and in through the entrance the returning side stands at, each on its
-                        // own ("instance portal" with the exact goal, as a wing change; TickWingWalk ends it there).
-                        state.mode = RegroupMode::Exit;
-                        for (Player* bot : group)
-                            for (Member& candidate : party.members)
-                                if (candidate.guid == bot->GetGUID())
-                                {
-                                    SelfTravel::PortalGoal goal;
-                                    goal.mapId = party.content->mapId;
-                                    goal.x = entrance->GetPositionX();
-                                    goal.y = entrance->GetPositionY();
-                                    goal.z = entrance->GetPositionZ();
-                                    goal.exact = true;
-                                    SelfTravel::SetPortalGoal(candidate.guid, goal);
-                                    candidate.hasPortalGoal = true;
-                                }
-                        party.wingWalk = true;
-                        party.wingWalkSinceMs = now;
-                    }
-                }
-
-                if (state.mode == RegroupMode::Exit)
-                {
-                    TestRunner::ClearWaypoint(party.leader);
-                    return true;
-                }
-
-                // Run: the group holds where it stands (drinking is above "stay"), the returning side walks to it -
-                // the leader by its waypoint, the others at the entrance by following the leader.
-                for (Player* bot : group)
-                {
-                    if (bot == leader)
-                        continue;
-                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-                    if (!botAI)
-                        continue;
-                    if (botAI->HasStrategy("follow", BOT_STATE_NON_COMBAT) ||
-                        !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
-                        botAI->ChangeStrategy("-follow,+stay", BOT_STATE_NON_COMBAT);
-                    if (std::find(state.held.begin(), state.held.end(), bot->GetGUID()) == state.held.end())
-                        state.held.push_back(bot->GetGUID());
-                }
-                if (!leaderAtEntrance)
-                {
-                    TestRunner::ClearWaypoint(party.leader);
-                    return true;
-                }
-                member = anchor;
-                best = leader->GetExactDist(anchor);
-            }
-        }
-
-        bool const regrouping = regroups.find(party.instanceId) != regroups.end();
-        StragglerEpisode* episode = nullptr;
-        if (!regrouping)
-        {
-            episode = &stragglers[party.instanceId];
-            if (episode->member != member->GetGUID() || getMSTimeDiff(episode->lastSeenMs, now) > MEET_EPISODE_GAP_MS)
-            {
-                *episode = StragglerEpisode();
-                episode->member = member->GetGUID();
-                episode->sinceMs = now;
-                episode->holdSinceMs = now;
-                episode->bestDistance = best;
-            }
-            episode->lastSeenMs = now;
-            // The far-member wait counts it far until it is within MEET_RANGE (TickParty), not 50 yd: no flip-flop.
-            party.meeting = member->GetGUID();
-            if (episode->gaveWay)
-            {
-                // [meet_end_follow_trail] gave way: the far wait uses its 50 yd line again, not the meet's
-                party.meeting.Clear();
-                party.lastEvent = "meet: gave way to the follow of " + member->GetName();
-                return false;
-            }
-            if (episode->holdSinceMs)
-            {
-                if (best + REGROUP_PROGRESS < episode->bestDistance)
-                {
-                    episode->bestDistance = best;
-                    episode->holdSinceMs = now;
-                }
-                if (getMSTimeDiff(episode->holdSinceMs, now) < MEET_GRACE_MS)
-                {
-                    TestRunner::ClearWaypoint(party.leader);
-                    party.lastEvent = "meet hold: " + member->GetName() + " follows first";
-                    return true;
-                }
-            }
-        }
-
-        PathResult leg;
-        G3D::Vector3 const goal(member->GetPositionX(), member->GetPositionY(), member->GetPositionZ());
-        SteerLeg(leader, goal, leg);
-        if (leg.type & PATHFIND_NOPATH)
-            return false;
-        G3D::Vector3 const waypoint =
-            FloorWaypoint(leader, leg, RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
-
-        if (episode && episode->holdSinceMs)
-        {
-            // The grace is over and the member did not come: the leader walks back to it.
-            episode->holdSinceMs = 0;
-            meetProgress[party.instanceId] = {member->GetGUID(), best, now};
-            LogEvent(party, "meet_member", JsonObject().Str("name", member->GetName()).Real("distance", best)
-                                               .Num("farSec", getMSTimeDiff(episode->sinceMs, now) / IN_MILLISECONDS)
-                                               .Num("stuck", episode->stuck)
-                                               .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
-                                               .Real("z", leader->GetPositionZ()));
-        }
-        else if (regrouping && party.meeting != member->GetGUID())
-        {
-            party.meeting = member->GetGUID();
-            meetProgress[party.instanceId] = {member->GetGUID(), best, now};
-            LogEvent(party, "meet_member", JsonObject().Str("name", member->GetName()).Real("distance", best)
-                                               .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
-                                               .Real("z", leader->GetPositionZ()));
-        }
-        else if (episode)
-        {
-            // The leader's walk back to the member makes no progress: its route is searched anew (meet_stuck) after
-            // another grace for the member's own follow; MEET_MAX_STUCK times, then the leader gives way.
-            MeetProgress& progress = meetProgress[party.instanceId];
-            if (progress.member != member->GetGUID())
-                progress = {member->GetGUID(), best, now};
-            else if (best + REGROUP_PROGRESS < progress.bestDistance)
-            {
-                progress.bestDistance = best;
-                progress.progressMs = now;
-            }
-            else if (getMSTimeDiff(progress.progressMs, now) > REGROUP_STUCK_MS)
-            {
-                ++episode->stuck;
-                episode->gaveWay = episode->stuck >= MEET_MAX_STUCK;
-                LogEvent(party, "meet_stuck", JsonObject().Str("name", leader->GetName()).Str("to", member->GetName())
-                                                  .Real("distance", best).Num("stuck", episode->stuck)
-                                                  .Str("next", episode->gaveWay ? "give way" : "hold, then walk back")
-                                                  .Real("x", leader->GetPositionX())
-                                                  .Real("y", leader->GetPositionY())
-                                                  .Real("z", leader->GetPositionZ()));
-                longRouteCache.erase(leader->GetGUID());
-                progress.progressMs = now;
-                progress.bestDistance = best;
-                TestRunner::ClearWaypoint(party.leader);
-                if (episode->gaveWay)
-                {
-                    LOG_INFO("playerbots",
-                             "[regroup] {}: {} gives way to {} ({:.1f} yd, far {} s, {} meet_stuck): no more walks "
-                             "back, its own follow comes (the guard's deadlock breaker), the far wait times out",
-                             party.id, leader->GetName(), member->GetName(), best,
-                             getMSTimeDiff(episode->sinceMs, now) / IN_MILLISECONDS, episode->stuck);
-                    LogEvent(party, "meet_give_way",
-                             JsonObject().Str("name", member->GetName()).Real("distance", best)
-                                 .Num("farSec", getMSTimeDiff(episode->sinceMs, now) / IN_MILLISECONDS)
-                                 .Num("stuck", episode->stuck));
-                    return false;
-                }
-                episode->holdSinceMs = now;
-                episode->bestDistance = best;
-                return true;
-            }
-        }
-
-        // ROUTE_HARNESS_WALK_GUARD: the walk back never wakes an idle pack (lbrs-n wave 7 01:40:38: the route up to
-        // Rlhunas ran through the refused Firebrand pack, 24 mobs, wipe). At the edge the leader holds; that is no
-        // progress, so meet_stuck and then the give-way end it.
-        G3D::Vector3 walkTo = waypoint;
-        Creature* blocker = nullptr;
-        bool held = false;
-        // Only a pack the tank's planner refused holds the walk back; with no verdict (or an accepted one) the walk
-        // goes on and the tank fights what it meets (strat-h wave 11: the meet stopped at a lone Mangled Cadaver,
-        // "none, 0 mobs", for 100 s until the give-way, the members 60 yd behind it never came).
-        bool refusedBlocker = false;
-        if (ROUTE_HARNESS_WALK_GUARD &&
-            HarnessWalkStop(leader, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, nullptr, walkTo,
-                            blocker, held, &party))
-        {
-            bool accepted = true;
-            uint32 mobs = 0;
-            std::list<Creature*> pack;
-            PackMobCheck packCheck{leader, blocker};
-            Acore::CreatureListSearcher<PackMobCheck> packSearcher(blocker, pack, packCheck);
-            Cell::VisitObjects(blocker, packSearcher, PACK_RADIUS);
-            // Refused now, refused or skipped before (the verdict ages out in seconds), or a real pack: held.
-            refusedBlocker = (PartyVerdict(party, blocker->GetGUID(), accepted, mobs) &&
-                              !accepted) ||
-                             party.carefulRefused.count(blocker->GetGUID()) ||
-                             party.skipUntil.count(blocker->GetGUID()) ||
-                             pack.size() > MEET_PASS_PACK_MAX;
-            if (!refusedBlocker)
-            {
-                walkTo = waypoint;
-                held = false;
-            }
-            else
-                LogHarnessHold(party, leader, blocker, "meet", walkTo.x, walkTo.y, walkTo.z);
-            if (held)
-            {
-                TestRunner::ClearWaypoint(party.leader);
-                return true;
-            }
-        }
-        SetLeaderWaypoint(party, leader, walkTo.x, walkTo.y, walkTo.z);
-        return true;
+        // [lead107] the leader's (RouteMeet.h)
+        PartyLeaderGroup group(*this, party);
+        return Leader::Travel::MeetMember(group, players, leader);
     }
 
     void TestHarnessMgr::LogHarnessHold(Party& party, Player* leader, Creature* blocker, char const* walk, float x,
@@ -5849,7 +5259,7 @@ namespace TestHarness
         out.reserve(_party.members.size());
         for (Member const& member : _party.members)
             out.push_back({member.guid, member.name, member.apartIgnoreUntilMs,
-                           member.spec && UsesMana(member.spec->role, member.cls)});
+                           member.spec && UsesMana(member.spec->role, member.cls), member.backInMs});
         return out;
     }
 

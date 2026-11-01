@@ -45,6 +45,7 @@ namespace Leader
             std::string name;
             uint32 apartIgnoreUntilMs = 0;  // the group's apart rule ignores it until then (a member brought back)
             bool usesMana = false;          // its role and class use mana (the rest's mana line counts)
+            uint32 backInMs = 0;            // when it came back in through the portal (0: never during this run)
         };
 
         // a member's walk point (the route walk's waypoint registry the group's owner keeps)
@@ -186,14 +187,14 @@ namespace Leader
         virtual void ShortcutReenter(std::vector<Player*> const& movers, size_t entrance, char const* why, float walk,
                                      float entranceWalk, std::string const& goal) = 0;
         // the group stands fully ready for a pull the route makes (its one readiness verdict when the leader leads);
-        // an instance script event runs (a boss IN_PROGRESS without its encounter); the leader walks back to a
-        // member left behind (false: no meet); the run levels (a normal dungeon below the top level); a regroup after
-        // a revive runs
+        // an instance script event runs (a boss IN_PROGRESS without its encounter); the run levels (a normal dungeon
+        // below the top level); a regroup after a revive runs
         virtual bool GroupFullyReady(Player* leader) const = 0;
         virtual bool ScriptEventRunning() const = 0;
-        virtual bool MeetMember(std::vector<Player*> const& players, Player* leader) = 0;
         virtual bool Levelling() const = 0;
         virtual bool Regrouping() const = 0;
+        // the member has no walk to the leader either way (stranded: no wait for it, no meet)
+        virtual bool MemberStranded(Player* bot, Player* leader) = 0;
         // the run ends with `result` ("failed", "partial") for `reason`
         virtual void FinishRun(std::string const& result, std::string const& reason) = 0;
         // a member's own movement could not do it (bot_cannot_move)

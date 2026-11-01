@@ -359,6 +359,10 @@ namespace Leader
         // [held_for_now_cap] the target the planner answers "held for now" for, and since when (0: none)
         ObjectGuid heldForNowTarget;
         uint32 heldForNowSinceMs = 0;
+        // [lead107] moved with the meet stage: the group wiped (until the revive), the member the leader walks back
+        // to (MeetMember), logged once per episode
+        bool wiped = false;
+        ObjectGuid meeting;
     };
 }
 

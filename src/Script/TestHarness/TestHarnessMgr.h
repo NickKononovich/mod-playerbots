@@ -32,6 +32,12 @@ class Unit;  // [lead3]
 #include "HazardZone.h"  // [lead16]
 #include "DungeonLeaderState.h"  // [lead107]
 #include "LeaderGroup.h"         // [lead107] the leader's group view (PartyLeaderGroup)
+
+namespace Leader::Travel
+{
+    bool BlackMorassHoldsAtMedivh(Player* member);  // [lead107] RouteMeet.h
+}
+
 namespace PullPlanner
 {
     struct Decision;  // [lead15] ChooseTargetActions.h
@@ -79,7 +85,7 @@ namespace TestHarness
     // [hleft-bm-tank-fetch] Black Morass while the event runs (rift >= 1, shield > 0): `member` holds at Medivh (within
     // BM_MEDIVH_HOLD_RANGE) while the tank fetches the rift keepers alone (tbc-bm strategy) - no far wait, no regroup
     // and no meet for him.
-    bool BlackMorassHoldsAtMedivh(Player* member);
+    using Leader::Travel::BlackMorassHoldsAtMedivh;  // [lead107] RouteMeet.h
     bool IsTerminalPhase(Phase phase);
 
     struct Member
@@ -292,7 +298,6 @@ namespace TestHarness
         uint32 kills = 0;
         uint32 windowKills = 0;
         uint32 wipes = 0;
-        bool wiped = false;
         uint32 wipeMs = 0;
         // [b30_st_spirit] deaths of the run (not re-entries) within DEATH_BURST_WINDOW_MS, and when they first reached
         // DEATH_BURST_COUNT: no recovery within DEATH_BURST_RECOVER_MS after that counts as a wipe
@@ -335,7 +340,6 @@ namespace TestHarness
         // 2026-10-25 skipped a living Imp / Fel Lash / Whip Lasher as "respawning trash" after four refusals.
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
         ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
-        ObjectGuid meeting;    // the member the leader walks back to (MeetMember), logged once per episode
         // Combat with nothing happening: no damage done or taken and no healing by anybody of the party since
         // phantomCombatSinceMs (an unreachable mob on a ledge keeps everybody flagged, Ragefire Chasm 18 minutes).
         uint64 combatActivity = 0;
@@ -851,12 +855,9 @@ namespace TestHarness
         bool BossesOpen() const override;
         bool GroupFullyReady(Player* leader) const override;
         bool ScriptEventRunning() const override;
-        bool MeetMember(std::vector<Player*> const& players, Player* leader) override
-        {
-            return _mgr.MeetMember(_party, players, leader);
-        }
         bool Levelling() const override;
         bool Regrouping() const override;
+        bool MemberStranded(Player* bot, Player* leader) override { return _mgr.MemberStranded(_party, bot, leader); }
         void FinishRun(std::string const& result, std::string const& reason) override
         {
             _mgr.Finish(_party, result, reason);

@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "RouteSteer.h"
+#include "RouteMeet.h"
 
 #include "LeaderReports.h"
 #include "LeaderEvents.h"
@@ -2065,7 +2066,7 @@ namespace Leader::Travel
                 if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
                     if (bot->IsInWorld())
                         players.push_back(bot);
-            if (group.MeetMember(players, leader))
+            if (MeetMember(group, players, leader))
                 return;
         }
 

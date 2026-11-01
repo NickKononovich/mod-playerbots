@@ -2234,23 +2234,6 @@ namespace TestHarness
         return FriendlyBossReason(party, map->GetCreature(boss.creature));
     }
 
-    bool BlackMorassHoldsAtMedivh(Player* member)
-    {
-        // the_black_morass.h: DATA_SHIELD_PERCENT 13, DATA_RIFT_NUMBER 14; Medivh 15608 stands at (-2025.3, 7119.6).
-        constexpr uint32 BM_MAP_ID = 269;
-        constexpr uint32 BM_DATA_SHIELD_PERCENT = 13;
-        constexpr uint32 BM_DATA_RIFT_NUMBER = 14;
-        constexpr float BM_MEDIVH_X = -2025.3f;
-        constexpr float BM_MEDIVH_Y = 7119.6f;
-        constexpr float BM_MEDIVH_Z = 22.75f;
-        constexpr float BM_MEDIVH_HOLD_RANGE = 30.0f;
-        if (!member || !member->IsAlive() || member->GetMapId() != BM_MAP_ID)
-            return false;
-        InstanceScript const* script = member->GetInstanceScript();
-        return script && script->GetData(BM_DATA_RIFT_NUMBER) >= 1 && script->GetData(BM_DATA_SHIELD_PERCENT) > 0 &&
-               member->GetExactDist(BM_MEDIVH_X, BM_MEDIVH_Y, BM_MEDIVH_Z) <= BM_MEDIVH_HOLD_RANGE;
-    }
-
     // [w24c-hor-escape] Halls of Reflection (668) escape from The Lich King (36954 boss / 37226 event): the four ice
     // walls stand at the instance's NPC_ICE_WALL_TARGET 37014..37017 guids, GO_ICE_WALL 201385 is the wall itself
     // (npc_hor_lich_king::WallCompleted opens it). A wall seen shut and then open or gone counts as broken.
