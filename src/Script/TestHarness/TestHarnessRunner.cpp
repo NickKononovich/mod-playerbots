@@ -49,6 +49,7 @@
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
 #include "RouteSearch.h"  // [lead99] the leader's route search
+#include "RouteLegs.h"    // [lead107] the leader's route legs
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderEvents.h"       // [lead107] the leader's event tick
@@ -246,13 +247,11 @@ namespace TestHarness
         // [b32_pos] the trigger of a progress step that holds (EventSpotDef::progressTrigger) re-fires this often,
         // uncapped: its fire is what checks the kill condition (Pit of Saron 5579 / 5580).
         constexpr uint32 TRIGGER_STEP_REFIRE_MS = 10 * IN_MILLISECONDS;
-        // [brd_ring_*] Blackrock Depths' Ring of Law (blackrock_depths.h / .cpp at_ring_of_law,
-        // instance_blackrock_depths.cpp).
-        constexpr uint32 BRD_MAP_ID = 230;
-        constexpr uint32 BRD_TYPE_RING_OF_LAW = 1;
+        using Leader::Travel::BRD_MAP_ID;  // [lead107] RouteLegs.h
+        using Leader::Travel::BRD_TYPE_RING_OF_LAW;  // [lead107] RouteLegs.h
         constexpr uint32 BRD_DATA_TIME_RING_FAIL = 41;  // DATA_COREN 34, then ANUBSHIAH .. OKTHOR 35-40, then this
         constexpr uint32 BRD_RING_TRIGGER = 1526;
-        constexpr uint32 BRD_GO_ARENA_EXIT_GATE = 161524;  // GO_ARENA3 "ArenaGate03", opened at the Ring's DONE
+        using Leader::Travel::BRD_GO_ARENA_EXIT_GATE;  // [lead107] RouteLegs.h
         constexpr int64 BRD_RING_LOCKOUT_SEC = 2 * 60 + 5;  // at_ring_of_law: 2 * 60 s after the FAIL, + 5 s margin
         constexpr uint8 BRD_RING_MAX_FAILS = 3;
         constexpr uint32 EVENT_HOLD_LOG_MS = 30 * IN_MILLISECONDS;
@@ -391,11 +390,9 @@ namespace TestHarness
         // A target on another navmesh part next to the route's end (a ramp without polygons): walked over straight.
         constexpr float GAP_CROSS_MAX_DISTANCE = 45.0f;
         constexpr uint32 GAP_CROSS_TRIES = 3;
-        // RoutePath: a partial route ending this close to the target (and this little below / above it) counts.
-        constexpr float GAP_REACHABLE_LEFT = 22.0f;
-        constexpr float GAP_REACHABLE_DZ = 12.0f;
-        // ... or it ends in water and the target stands at most this high above that water's surface (swims up).
-        constexpr float GAP_SWIM_ABOVE = 5.0f;
+        using Leader::Travel::GAP_REACHABLE_LEFT;  // [lead107] RouteLegs.h
+        using Leader::Travel::GAP_REACHABLE_DZ;  // [lead107] RouteLegs.h
+        using Leader::Travel::GAP_SWIM_ABOVE;  // [lead107] RouteLegs.h
         // AssistMember: a member with attackers this far from the leader, or on another floor.
         constexpr float ASSIST_RANGE = 25.0f;
         constexpr float ASSIST_FLOOR_DZ = 5.0f;
@@ -833,33 +830,9 @@ namespace TestHarness
         constexpr uint32 WING_MEMBER_STILL_MS = 2 * MINUTE * IN_MILLISECONDS;
         constexpr float WING_MEMBER_STILL_RANGE = 25.0f;
 
-        struct PathResult
-        {
-            bool reachable = false;
-            float length = 0.0f;
-            Movement::PointsArray points;  // what the leader walks now (PathGenerator path or long route corners)
-            uint32 type = PATHFIND_BLANK;  // PathGenerator path type
-            bool straightPath = false;     // the corner path was needed (smooth path over its point limit)
-            bool steep = false;            // the steep slopes were needed (NAV_GROUND_STEEP)
-            bool longRoute = false;        // only the long search (LongRoute) found it
-            bool complete = false;         // the route reaches the target's polygon (not only "ends nearer")
-            G3D::Vector3 end;              // where the route ends
-            // [incomplete_route_deadend] the long search ran from the water surface above a lake floor (RoutePath),
-            // and SteerLeg's leg does not reach the goal's polygon (PathGenerator INCOMPLETE or a partial long route).
-            bool fromSurface = false;
-            bool partial = false;
-        };
+        using Leader::Travel::PathResult;  // [lead107] RouteLegs.h
 
-        // Detour limits make a long walkable route look unreachable. Wave 7 boss_unreachable: Krystallus, Capacitus,
-        // Dalliah, Soccothrates, Jandice and Anub'arak all had pathType 10 (SHORTCUT | NOPATH, 2 points). That is
-        // BuildPointPath giving up: FindSmoothPath walks the corridor in 4 yd steps and fails at MAX_POINT_PATH_LENGTH
-        // points ("most likely a loop"), although the polygon corridor exists (HoS: Krystallus 99 yd away, ~400 yd
-        // round the hall). Longer still, findPath runs out of its 1024 search nodes (MMapMgr::CreateNavMeshQuery) or
-        // its MAX_PATH_LENGTH corridor polygons and returns a partial path to the node nearest the target as the crow
-        // flies - in a maze a dead end behind a wall (Razorfen Kraul: Roogug 45 yd away, ~760 yd to walk; Wailing
-        // Caverns: Anacondra ~460 yd over 113-160 polygons). Such a route is searched again with an own query
-        // (LongRoute): the same navmesh and filter flags, a larger node pool and corridor, corner points.
-        constexpr float ROUTE_PROGRESS = 2.0f;
+        using Leader::Travel::ROUTE_PROGRESS;  // [lead107] RouteLegs.h
         using Leader::Travel::LONG_ROUTE_NODES;  // [lead99] RouteSearch.h
         // Both directions out of nodes: once more with Detour's largest pool, one shared query bound anew per call
         // (dtNavMeshQuery::init keeps a pool that is big enough). Old Hillsbrad 2026-10-25: every Durnholde barrel from
@@ -870,13 +843,10 @@ namespace TestHarness
         using Leader::Travel::LONG_ROUTE_MAX_POLYS;  // [lead99] RouteSearch.h
         using Leader::Travel::LONG_ROUTE_MAX_CORNERS;  // [lead99] RouteSearch.h
 
-        constexpr uint32 POINT_PATH_FAILED = PATHFIND_SHORTCUT | PATHFIND_NOPATH;
+        using Leader::Travel::POINT_PATH_FAILED;  // [lead107] RouteLegs.h
 
-        // Kill switches for the route pass 1 pieces (wave 9 freezes): false restores the wave 8 behaviour of that
-        // piece - the corner path when the smooth path ran out of points, and the long search (LongRoute) with
-        // SteerLeg walking its corners.
-        constexpr bool ROUTE_CORNER_PATH = true;
-        constexpr bool ROUTE_LONG_SEARCH = true;
+        using Leader::Travel::ROUTE_CORNER_PATH;  // [lead107] RouteLegs.h
+        using Leader::Travel::ROUTE_LONG_SEARCH;  // [lead107] RouteLegs.h
         // Route backbone pass (2026-10-24, *.bak_routebackbone), false restores the behaviour before it of that piece:
         // - LongRoute searches back from the goal when its forward search ran out of nodes;
         // - an incomplete route leg (it ends ROUTE_BACKBONE_END_LEFT or more from its goal) is no backbone leg: no
@@ -915,9 +885,7 @@ namespace TestHarness
         // - UseItem starters: dismount, step out of the object, a failed cast is no use;
         // - the boss room cleared before its boss (BOSS_ROOM_TRASH_PENALTY).
         constexpr bool ROUTE_BOSS_ROOM_FIRST = true;
-        // - water: a route ending under water next to a target at the surface counts (a swimmer rises), the walker is
-        //   not put on a lake floor, and the gap walk swims (Slave Pens wave 9/10: Rokmar "unreachable").
-        constexpr bool ROUTE_SWIM_UP = true;
+        using Leader::Travel::ROUTE_SWIM_UP;  // [lead107] RouteLegs.h
         // [hleft-hor-reentry-hold] halls_of_reflection.h: DATA_MARWYN 1, CenterPos; areatrigger_teleport 5636.
         constexpr uint32 HOR_FALRIC_ENTRY = 38112;
         constexpr uint32 HOR_MARWYN_ENTRY = 38113;
@@ -1020,93 +988,21 @@ namespace TestHarness
         // Line-of-sight tests per mob on the route stretch inside its reach (SeesFromPoint, the aggro test).
         constexpr uint32 ROUTE_ONLY_LOS_TRIES = 12;
 
-        // One path with one filter: the smooth path, the corner path when the smooth one ran out of points.
-        uint32 BuildFilteredLeg(Player* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool fromOwner,
-                                bool steep, Movement::PointsArray& points, G3D::Vector3& end, bool& straightPath)
-        {
-            for (bool const straight : {false, true})
-            {
-                PathGenerator path(owner);
-                path.SetUseStraightPath(straight);
-                if (steep)
-                {
-                    // A real player walks the 50-60 degree slopes (PathGenerator::CreateFilter keeps them off the
-                    // headless filter only); lava and slime stay excluded.
-                    path.SetIncludeFlags(uint16(path.GetIncludeFlags() | NAV_GROUND_STEEP));
-                    path.SetExcludeFlags(uint16(path.GetExcludeFlags() & ~NAV_GROUND_STEEP));
-                }
-                bool const built = fromOwner ? path.CalculatePath(dest.x, dest.y, dest.z, false)
-                                             : path.CalculatePath(start.x, start.y, start.z, dest.x, dest.y, dest.z,
-                                                                  false);
-                uint32 const type = path.GetPathType();
-                if (!straight && built && type == POINT_PATH_FAILED && ROUTE_CORNER_PATH)
-                    continue;  // the polygon corridor was found, only the 4 yd point walk ran out: corners instead
-                straightPath = straight;
-                points = path.GetPath();
-                end = path.GetActualEndPosition();
-                return built ? type : uint32(PATHFIND_NOPATH);
-            }
-            return PATHFIND_NOPATH;
-        }
+        using Leader::Travel::BuildFilteredLeg;  // [lead107] RouteLegs.h
 
-        // One PathGenerator path: the bot filter first; when it does not get there, the same with the steep slopes a
-        // player walks (Steamvault wave 6: Kalithresh's hall joins the rest only over NAV_GROUND_STEEP polygons, so
-        // Steamrigger was "unreachable" from it: tools/navmesh_probe.py 545 -91.5 -440.4 3.6 -330.1 -121.5 -8 --both).
-        uint32 BuildLeg(Player* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool fromOwner,
-                        Movement::PointsArray& points, G3D::Vector3& end, bool& straightPath, bool* steepUsed = nullptr)
-        {
-            if (steepUsed)
-                *steepUsed = false;
-            uint32 const type = BuildFilteredLeg(owner, start, dest, fromOwner, false, points, end, straightPath);
-            if (!(type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
-                return type;
-
-            Movement::PointsArray steepPoints;
-            G3D::Vector3 steepEnd;
-            bool steepStraight = false;
-            uint32 const steepType =
-                BuildFilteredLeg(owner, start, dest, fromOwner, true, steepPoints, steepEnd, steepStraight);
-            bool const better = !(steepType & PATHFIND_NOPATH) &&
-                                ((type & PATHFIND_NOPATH) || !(steepType & PATHFIND_INCOMPLETE) ||
-                                 (dest - steepEnd).length() + ROUTE_PROGRESS < (dest - end).length());
-            if (!better)
-                return type;
-            points = steepPoints;
-            end = steepEnd;
-            straightPath = steepStraight;
-            if (steepUsed)
-                *steepUsed = true;
-            return steepType;
-        }
+        using Leader::Travel::BuildLeg;  // [lead107] RouteLegs.h
 
         // [lead99] the route search lives in the leader's Travel area (Ai/Leader/Travel/RouteSearch): the harness
         // calls it
         using Leader::Travel::LongRoute;
         using Leader::Travel::NavMeshQueryFree;
 
-        // The liquid surface at a point that lies in or under water, INVALID_HEIGHT anywhere else.
-        float WaterSurfaceAt(Player* walker, G3D::Vector3 const& point)
-        {
-            LiquidData const liquid = walker->GetMap()->GetLiquidData(walker->GetPhaseMask(), point.x, point.y,
-                                                                      point.z, walker->GetCollisionHeight(), {});
-            if (!(liquid.Status & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER)) || liquid.Level <= INVALID_HEIGHT)
-                return INVALID_HEIGHT;
-            return liquid.Level;
-        }
+        using Leader::Travel::WaterSurfaceAt;  // [lead107] RouteLegs.h
 
-        float PolylineLength(Movement::PointsArray const& points)
-        {
-            float length = 0.0f;
-            for (size_t index = 1; index < points.size(); ++index)
-                length += (points[index] - points[index - 1]).length();
-            return length;
-        }
+        using Leader::Travel::PolylineLength;  // [lead107] RouteLegs.h
 
-        // [incomplete_route_deadend] (user, 2026-10-25: "if the path is incomplete, why walk it?") Kill switches, false
-        // restores the behaviour before: the long search once more from the water surface above a walker on a lake
-        // floor (RoutePath), and Steer's refusal of a partial leg whose end is no progress (JudgeIncompleteEnd).
-        constexpr bool ROUTE_SURFACE_START = true;
-        constexpr float SURFACE_START_MIN_DEPTH = 2.0f;
+        using Leader::Travel::ROUTE_SURFACE_START;  // [lead107] RouteLegs.h
+        using Leader::Travel::SURFACE_START_MIN_DEPTH;  // [lead107] RouteLegs.h
         constexpr bool ROUTE_REFUSE_DEAD_END = true;
         // A partial leg is judged only while the target is farther than GAP_CROSS_MAX_DISTANCE: nearer, the gap cross,
         // the own move and the "pull from here" of steer_stuck keep their say.
@@ -1172,318 +1068,35 @@ namespace TestHarness
         DeadEndVerdict JudgeIncompleteEnd(Player* walker, G3D::Vector3 const& end, G3D::Vector3 const& goal,
                                           uint32 pathType, ObjectGuid target);
 
-        // startAt: the route from that point instead of the owner's position (the far end of a RouteLinkDef).
-        PathResult RoutePath(Player* from, float x, float y, float z, G3D::Vector3 const* startAt = nullptr)
-        {
-            PathResult result;
-            G3D::Vector3 const dest(x, y, z);
-            G3D::Vector3 start(from->GetPositionX(), from->GetPositionY(), from->GetPositionZ());
-            if (startAt)
-                start = *startAt;
-            float const straight = (dest - start).length();
+        using Leader::Travel::RoutePath;  // [lead107] RouteLegs.h
 
-            Movement::PointsArray points;
-            G3D::Vector3 end;
-            result.type = BuildLeg(from, start, dest, !startAt, points, end, result.straightPath, &result.steep);
-            if ((result.type & (PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH)) && !(result.type & PATHFIND_NOPATH))
-            {
-                // No navmesh here (map without mmaps, a tile not loaded) or flying / swimming: straight on.
-                result.reachable = true;
-                result.complete = true;
-                result.points = points;
-                result.length = straight;
-                result.end = dest;
-                return result;
-            }
-            bool const pathOk = !(result.type & PATHFIND_NOPATH);
-            if (pathOk)
-            {
-                result.points = points;
-                result.length = PolylineLength(points);
-                result.end = end;
-                if (!(result.type & PATHFIND_INCOMPLETE))
-                {
-                    result.reachable = true;
-                    result.complete = true;
-                    return result;
-                }
-            }
+        using Leader::Travel::EvaluatePath;  // [lead107] RouteLegs.h
 
-            // Partial or none: the long search, bot filter first, then with the steep slopes.
-            for (bool const steep : {false, true})
-            {
-                if (!ROUTE_LONG_SEARCH)
-                    break;
-                Movement::PointsArray corners;
-                bool complete = false;
-                if (!LongRoute(from, start, dest, steep, corners, complete))
-                    continue;
-                G3D::Vector3 const cornerEnd = corners.back();
-                bool const nearer =
-                    !pathOk || (dest - cornerEnd).length() + ROUTE_PROGRESS < (dest - result.end).length();
-                if (!complete && !nearer)
-                    continue;
-                result.points = corners;
-                result.length = PolylineLength(corners);
-                result.end = cornerEnd;
-                result.steep = steep;
-                result.longRoute = true;
-                result.straightPath = true;
-                if (complete)
-                {
-                    result.reachable = true;
-                    result.complete = true;
-                    return result;
-                }
-            }
+        using Leader::Travel::PASSAGE_DOOR_MARGIN;  // [lead107] RouteLegs.h
 
-            // [incomplete_route_deadend] A walker on a lake floor: the floor polygons can be a navmesh part of their
-            // own, joined to the rest only through the water-surface polygons above. Maraudon heroic 2026-10-25
-            // (20261025-163739-mara-h-5A-17): after Rotgrip, from the Earth Song Falls lake floor (23,-210,-205.6) the
-            // floor part (786 polygons, tools/navmesh_probe.py 349 23 -209.8 -205.6 21 42.2 -125.7) ended under the
-            // waterfall 124 yd short and 79 yd below Princess Theradras; the group swam there (low_breath 39 %) and
-            // stood "own path refused". From the surface (z -198) the same search is complete (the ~1970 yd way back
-            // up the south shore and the upper ledges, the one the group took once it had surfaced). The long search
-            // once more from the surface above the walker; the walker rises first.
-            if (ROUTE_SURFACE_START && ROUTE_LONG_SEARCH)
-            {
-                float const startSurface = WaterSurfaceAt(from, start);
-                if (startSurface > INVALID_HEIGHT && startSurface > start.z + SURFACE_START_MIN_DEPTH)
-                {
-                    G3D::Vector3 const up(start.x, start.y, startSurface - 0.5f);
-                    for (bool const steep : {false, true})
-                    {
-                        Movement::PointsArray corners;
-                        bool complete = false;
-                        if (!LongRoute(from, up, dest, steep, corners, complete) || !complete || corners.empty())
-                            continue;
-                        result.points.clear();
-                        result.points.push_back(start);
-                        result.points.insert(result.points.end(), corners.begin(), corners.end());
-                        result.length = PolylineLength(result.points);
-                        result.end = corners.back();
-                        result.steep = steep;
-                        result.longRoute = true;
-                        result.straightPath = true;
-                        result.fromSurface = true;
-                        result.reachable = true;
-                        result.complete = true;
-                        return result;
-                    }
-                }
-            }
+        using Leader::Travel::DoorFreeRoute;  // [lead107] RouteLegs.h
 
-            if (!pathOk && !result.longRoute)
-                return result;
+        using Leader::Travel::CachedLongRoute;  // [lead107] RouteLegs.h
+        using Leader::Travel::LONG_ROUTE_REUSE_MS;  // [lead107] RouteLegs.h
+        using Leader::Travel::ROUTE_PASSAGE_DOOR_DETOUR_LEG;  // [lead107] RouteLegs.h
+        using Leader::Travel::LONG_ROUTE_SAME_GOAL;  // [lead107] RouteLegs.h
+        using Leader::Travel::longRouteCache;  // [lead107] RouteLegs.h
 
-            // Still partial: a route that ends nearer to the target than the leader stands counts as the way there (the
-            // next retarget walks on from closer). Several instance navmeshes are cut into parts the bots still walk
-            // between (ramps and ledges without polygons: Ahn'kahet's entrance, Nadox's, Taldaram's, Jedoga's and
-            // Volazj's halls are five parts 20-98 yd apart; Utgarde Pinnacle 451769 polygons in pieces), so a stricter
-            // rule would strand them. Areas closed until an event (Gundrak: Gal'darah's wing before the bridge) are
-            // kept out by AreaGateDef instead.
-            float const left = (dest - result.end).length();
-            // Or it ends next to the target, a ramp or stairs away (a gap without polygons the leader walks over,
-            // Steer: gap_cross / the target as the waypoint / steer_stuck). Deadmines wave 8: from the ship's middle
-            // deck (a 144-polygon part) VanCleef was 21.7 yd away, the route ended 16.9 yd from him - "unreachable".
-            bool const besideGap = left <= GAP_REACHABLE_LEFT && std::fabs(dest.z - result.end.z) <= GAP_REACHABLE_DZ;
-            // Or it ends in water below the target (the navmesh's water polygons follow the lake floor): a swimmer
-            // rises to it. Slave Pens wave 9/10: the route to Rokmar the Crackler ended on the lake floor at z -14.2,
-            // 14.9 yd from him at the surface (dz 16.4) - "unreachable", the run stalled at 1/3 (wave 8: done).
-            float const surface = ROUTE_SWIM_UP ? WaterSurfaceAt(from, result.end) : INVALID_HEIGHT;
-            bool const swimUp = surface > INVALID_HEIGHT && left <= GAP_REACHABLE_LEFT && dest.z >= result.end.z &&
-                                dest.z <= surface + GAP_SWIM_ABOVE;
-            result.reachable = left + 5.0f < straight || besideGap || swimUp;
-            result.length += left;
-            return result;
-        }
+        using Leader::Travel::TrimRoute;  // [lead107] RouteLegs.h
 
-        PathResult EvaluatePath(Player* from, WorldObject* to)
-        {
-            return RoutePath(from, to->GetPositionX(), to->GetPositionY(), to->GetPositionZ());
-        }
+        using Leader::Travel::ClosedDoors;  // [lead107] RouteLegs.h
+        using Leader::Travel::RouteThroughClosedDoor;  // [lead107] RouteLegs.h
+        using Leader::Travel::PassageDoorBoss;  // [lead107] RouteLegs.h
 
-        // [hleft-passage-door-route] The walk to dest that keeps out of `doors` (their collision bounds widened by
-        // PASSAGE_DOOR_MARGIN): the long search with DoorAvoidFilter, bot filter first, then the steep slopes. Only a
-        // complete corridor counts (reachable false: there is no way round, the door is the way).
-        constexpr float PASSAGE_DOOR_MARGIN = 1.0f;
+        using Leader::Travel::PASSAGE_LEG_REUSE_MS;  // [lead107] RouteLegs.h
+        using Leader::Travel::PassageLegMemo;  // [lead107] RouteLegs.h
+        using Leader::Travel::passageLegMemos;  // [lead107] RouteLegs.h
 
-        PathResult DoorFreeRoute(Player* from, G3D::Vector3 const& dest, std::vector<GameObject*> const& doors)
-        {
-            PathResult result;
-            if (!ROUTE_LONG_SEARCH || doors.empty())
-                return result;
-            std::vector<G3D::AABox> boxes;
-            for (GameObject* door : doors)
-                if (door && door->m_model)
-                {
-                    G3D::AABox const& bounds = door->m_model->GetBounds();
-                    G3D::Vector3 const margin(PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN);
-                    boxes.emplace_back(bounds.low() - margin, bounds.high() + margin);
-                }
-            if (boxes.empty())
-                return result;
-            G3D::Vector3 const start(from->GetPositionX(), from->GetPositionY(), from->GetPositionZ());
-            for (bool const steep : {false, true})
-            {
-                Movement::PointsArray corners;
-                bool complete = false;
-                if (!LongRoute(from, start, dest, steep, corners, complete, &boxes) || !complete || corners.size() < 2)
-                    continue;
-                result.points = corners;
-                result.length = PolylineLength(corners);
-                result.end = corners.back();
-                result.steep = steep;
-                result.longRoute = true;
-                result.straightPath = true;
-                result.reachable = true;
-                result.complete = true;
-                result.type = PATHFIND_NORMAL;
-                return result;
-            }
-            return result;
-        }
+        using Leader::Travel::PassageDetourLeg;  // [lead107] RouteLegs.h
 
-        // Long routes per walker, reused for LONG_ROUTE_REUSE_MS while the goal stays put (Steer runs every tick, a
-        // long search can take milliseconds).
-        struct CachedLongRoute
-        {
-            G3D::Vector3 goal;
-            PathResult route;
-            uint32 builtMs = 0;
-        };
-        constexpr uint32 LONG_ROUTE_REUSE_MS = 5 * IN_MILLISECONDS;
-        constexpr bool ROUTE_PASSAGE_DOOR_DETOUR_LEG = true;  // [hleft-passage-door-route] SteerLeg's way round
-        constexpr float LONG_ROUTE_SAME_GOAL = 3.0f;
-        std::unordered_map<ObjectGuid, CachedLongRoute> longRouteCache;  // world thread only
+        using Leader::Travel::HopelessDetourLeg;  // [lead107] RouteLegs.h
 
-        // The route's points from where the walker stands now: from the segment nearest to it on.
-        Movement::PointsArray TrimRoute(Movement::PointsArray const& points, G3D::Vector3 const& here)
-        {
-            if (points.size() < 2)
-                return points;
-            size_t best = 0;
-            float bestDist = -1.0f;
-            for (size_t index = 0; index + 1 < points.size(); ++index)
-            {
-                G3D::Vector3 const segment = points[index + 1] - points[index];
-                float const lengthSq = segment.squaredLength();
-                float t = lengthSq > 0.0f ? (here - points[index]).dot(segment) / lengthSq : 0.0f;
-                t = std::clamp(t, 0.0f, 1.0f);
-                float const dist = (points[index] + segment * t - here).length();
-                if (bestDist < 0.0f || dist < bestDist)
-                {
-                    bestDist = dist;
-                    best = index;
-                }
-            }
-            Movement::PointsArray trimmed;
-            trimmed.push_back(here);
-            trimmed.insert(trimmed.end(), points.begin() + std::ptrdiff_t(best + 1), points.end());
-            return trimmed;
-        }
-
-        // The first leg of a route for steering: the PathGenerator path when it gets there, else the long route's
-        // corners (a partial PathGenerator path leads into the dead end nearest the target).
-        std::vector<GameObject*> ClosedDoors(Map* map, Player* leader);
-        GameObject* RouteThroughClosedDoor(Movement::PointsArray const& points, std::vector<GameObject*> const& doors,
-                                           uint32 phaseMask);
-        int32 PassageDoorBoss(InstanceScript const* script, GameObject* door);
-
-        // [hleft-passage-door-route] A leg through a closed door that opens on a boss's death (PassageDoorBoss) is
-        // replaced by the way round it (DoorFreeRoute), when there is one. Per walker, reused PASSAGE_LEG_REUSE_MS
-        // while the goal stays put (ClosedDoors walks the map's game objects).
-        constexpr uint32 PASSAGE_LEG_REUSE_MS = 3 * IN_MILLISECONDS;
-        struct PassageLegMemo
-        {
-            G3D::Vector3 goal;
-            uint32 ms = 0;
-            bool round = false;
-            PathResult route;
-        };
-        std::unordered_map<ObjectGuid, PassageLegMemo> passageLegMemos;  // world thread only
-
-        bool PassageDetourLeg(Player* owner, G3D::Vector3 const& here, G3D::Vector3 const& goal, PathResult& leg)
-        {
-            Map* map = owner->GetMap();
-            InstanceMap* instance = map ? map->ToInstanceMap() : nullptr;
-            InstanceScript const* script = instance ? instance->GetInstanceScript() : nullptr;
-            if (!script)
-                return false;
-            uint32 const now = getMSTime();
-            PassageLegMemo& memo = passageLegMemos[owner->GetGUID()];
-            if (!memo.ms || getMSTimeDiff(memo.ms, now) > PASSAGE_LEG_REUSE_MS ||
-                (memo.goal - goal).length() > LONG_ROUTE_SAME_GOAL)
-            {
-                memo.goal = goal;
-                memo.ms = now ? now : 1;
-                memo.round = false;
-                std::vector<GameObject*> const closed = ClosedDoors(map, owner);
-                std::vector<GameObject*> passage;
-                for (GameObject* door : closed)
-                    if (PassageDoorBoss(script, door) >= 0)
-                        passage.push_back(door);
-                if (!passage.empty() && RouteThroughClosedDoor(leg.points, passage, owner->GetPhaseMask()))
-                {
-                    memo.route = DoorFreeRoute(owner, goal, closed);
-                    memo.round = memo.route.reachable;
-                }
-            }
-            if (!memo.round || memo.route.points.size() < 2)
-                return false;
-            leg.points = TrimRoute(memo.route.points, here);
-            leg.end = memo.route.end;
-            leg.steep = memo.route.steep;
-            leg.straightPath = true;
-            leg.type = uint32(PATHFIND_NORMAL);
-            return true;
-        }
-
-        bool HopelessDetourLeg(Player* owner, G3D::Vector3 const& here, G3D::Vector3 const& goal, PathResult& leg);
-
-        uint32 SteerLeg(Player* owner, G3D::Vector3 const& goal, PathResult& leg)
-        {
-            G3D::Vector3 const here(owner->GetPositionX(), owner->GetPositionY(), owner->GetPositionZ());
-            leg.type = BuildLeg(owner, here, goal, true, leg.points, leg.end, leg.straightPath, &leg.steep);
-            leg.partial = (leg.type & PATHFIND_INCOMPLETE) != 0;  // [incomplete_route_deadend]
-            leg.fromSurface = false;
-            // [b32_brs] the way round a pack the planner refused as hopeless, when there is one
-            if (!(leg.type & PATHFIND_NOPATH) && leg.points.size() >= 2 && HopelessDetourLeg(owner, here, goal, leg))
-            {
-                leg.partial = false;
-                return leg.type;
-            }
-            if (ROUTE_PASSAGE_DOOR_DETOUR_LEG && !(leg.type & PATHFIND_NOPATH) && leg.points.size() >= 2 &&
-                PassageDetourLeg(owner, here, goal, leg))
-            {
-                leg.partial = false;  // [incomplete_route_deadend] DoorFreeRoute is complete only
-                return leg.type;
-            }
-            if (!(leg.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) || !ROUTE_LONG_SEARCH)
-                return leg.type;
-
-            uint32 const now = getMSTime();
-            CachedLongRoute& cached = longRouteCache[owner->GetGUID()];
-            if (!cached.builtMs || getMSTimeDiff(cached.builtMs, now) > LONG_ROUTE_REUSE_MS ||
-                (cached.goal - goal).length() > LONG_ROUTE_SAME_GOAL)
-            {
-                cached.goal = goal;
-                cached.route = RoutePath(owner, goal.x, goal.y, goal.z);
-                cached.builtMs = now;
-            }
-            PathResult const& route = cached.route;
-            if (route.longRoute && route.points.size() >= 2)
-            {
-                leg.points = TrimRoute(route.points, here);
-                leg.end = route.end;
-                leg.steep = route.steep;
-                leg.straightPath = true;
-                leg.type = route.reachable ? uint32(PATHFIND_NORMAL) : uint32(PATHFIND_INCOMPLETE);
-                leg.partial = !route.complete;           // [incomplete_route_deadend] a reachable partial too
-                leg.fromSurface = route.fromSurface;
-            }
-            return leg.type;
-        }
+        using Leader::Travel::SteerLeg;  // [lead107] RouteLegs.h
 
         // [incomplete_route_deadend] Is walking to the end of a partial leg progress towards goal? The why of a no
         // (Steer then skips the target as "route end", rechecked once the leader stands elsewhere), empty for a yes or
@@ -1608,88 +1221,15 @@ namespace TestHarness
             return true;
         }
 
-        // The leader's next waypoint on a route: step yd along its first leg. A corner path has points far apart
-        // (one per corner); the line between two corners is on the navmesh, so the waypoint is taken on it.
-        G3D::Vector3 RouteWaypoint(PathResult const& route, G3D::Vector3 const& fallback, float step)
-        {
-            G3D::Vector3 waypoint = fallback;
-            float walked = 0.0f;
-            for (size_t index = 1; index < route.points.size(); ++index)
-            {
-                G3D::Vector3 const segment = route.points[index] - route.points[index - 1];
-                float const length = segment.length();
-                if (walked + length >= step && length > 0.0f)
-                    return route.points[index - 1] + segment * ((step - walked) / length);
-                walked += length;
-                waypoint = route.points[index];
-            }
-            return waypoint;
-        }
+        using Leader::Travel::RouteWaypoint;  // [lead107] RouteLegs.h
 
-        // RouteWaypoint on a corner path interpolates the height between two corners; on stairs and slopes that
-        // point floats or sinks and the walker's own MoveTo refuses it. The floor under it instead - but not a lake
-        // floor under water (ROUTE_SWIM_UP): there the swimmer stays between the floor and the surface.
-        constexpr float FLOOR_WAYPOINT_MAX_DZ = 10.0f;
-        // No floor within FLOOR_WAYPOINT_MAX_DZ below it (a stair above, Sunken Temple normal 2026-10-25: the waypoint
-        // at -370.3,53.7 lay at z -137.2 between two corners of the stair whose polygons are at z -129, the floor
-        // search from above it found only the pit floor 13 yd below, the leader's own path refused it 3 minutes):
-        // the navmesh polygon nearest to it (Detour findNearestPoly, this far up or down) gives the height.
-        constexpr float FLOOR_SNAP_HALF_HEIGHT = 12.0f;
-        constexpr float FLOOR_SNAP_HALF_WIDTH = 2.0f;
+        using Leader::Travel::FLOOR_WAYPOINT_MAX_DZ;  // [lead107] RouteLegs.h
+        using Leader::Travel::FLOOR_SNAP_HALF_HEIGHT;  // [lead107] RouteLegs.h
+        using Leader::Travel::FLOOR_SNAP_HALF_WIDTH;  // [lead107] RouteLegs.h
 
-        bool NavmeshFloor(Player* walker, G3D::Vector3 const& point, float& floorZ)
-        {
-            dtNavMesh const* navMesh = walker->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
-            if (!navMesh)
-                return false;
-            // One small query per navmesh (findNearestPoly needs no node pool), world thread only like LongRoute's.
-            static std::unordered_map<dtNavMesh const*, std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree>> snaps;
-            auto& query = snaps[navMesh];
-            if (!query)
-            {
-                query.reset(dtAllocNavMeshQuery());
-                if (!query || dtStatusFailed(query->init(navMesh, 64)))
-                {
-                    query.reset();
-                    return false;
-                }
-            }
-            dtQueryFilter filter;
-            filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
-            filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
-            float const center[3] = {point.y, point.z, point.x};
-            float const extents[3] = {FLOOR_SNAP_HALF_WIDTH, FLOOR_SNAP_HALF_HEIGHT, FLOOR_SNAP_HALF_WIDTH};
-            float nearest[3];
-            dtPolyRef ref = 0;
-            if (dtStatusFailed(query->findNearestPoly(center, extents, &filter, &ref, nearest)) || !ref)
-                return false;
-            floorZ = nearest[1];
-            return true;
-        }
+        using Leader::Travel::NavmeshFloor;  // [lead107] RouteLegs.h
 
-        G3D::Vector3 FloorWaypoint(Player* walker, PathResult const& leg, G3D::Vector3 waypoint)
-        {
-            if (!leg.straightPath)
-                return waypoint;
-            float const floor = walker->GetMap()->GetHeight(walker->GetPhaseMask(), waypoint.x, waypoint.y,
-                                                            waypoint.z + 3.0f, true, 10.0f);
-            // Without a vmap floor within the search GetHeight answers the ADT ground at any depth (Utgarde Pinnacle
-            // wave 11: a waypoint on the ledge became the terrain 30 yd below it): only a floor near the route counts.
-            if (floor <= INVALID_HEIGHT || std::fabs(floor - waypoint.z) > FLOOR_WAYPOINT_MAX_DZ)
-            {
-                float snapped = 0.0f;
-                if (NavmeshFloor(walker, waypoint, snapped))
-                    waypoint.z = snapped;
-                return waypoint;
-            }
-            float const surface =
-                ROUTE_SWIM_UP ? WaterSurfaceAt(walker, G3D::Vector3(waypoint.x, waypoint.y, floor)) : INVALID_HEIGHT;
-            if (surface > INVALID_HEIGHT && surface > floor + 1.0f)
-                waypoint.z = std::clamp(waypoint.z, floor, surface);
-            else
-                waypoint.z = floor;
-            return waypoint;
-        }
+        using Leader::Travel::FloorWaypoint;  // [lead107] RouteLegs.h
 
         std::set<uint32> const& FlaskSpells()
         {
@@ -1924,11 +1464,7 @@ namespace TestHarness
             return true;
         }
 
-        // [lead2] The harness drive's walk is gone (C:/WoW/LEADER_REFACTOR_PLAN.md step 2, M3: ROUTE_HARNESS_DRIVE
-        // and HARNESS_MOVES_BOTS were both off, so it never ran; user rule: bots walk by themselves). What stays is
-        // its stall watch (Party::driving): once the leader made no progress towards this goal for DRIVE_AFTER_MS,
-        // true once per goal (the caller logs bot_cannot_move); party.driving stays set for [b32_brs]'s short steps.
-        bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked);  // below
+        using Leader::Travel::LeaderDoorStop;  // [lead107] RouteLegs.h
 
         bool LeaderOwnWalkStalled(Party& party, Player* leader, G3D::Vector3 const& goal)
         {
@@ -2003,10 +1539,7 @@ namespace TestHarness
             return result;
         }
 
-        // Approach rules (peel agent, wave 6): the leader stops outside the aggro radius of the pack's NEAREST
-        // mob (Stratholme: walked to 14 yd of a refused 7-mob pack and pulled 14-17), and only on the target's
-        // floor (Dire Maul West: stopped in the spiral stairwell 3.5 yd under the Highborne room, no LOS for 25 min).
-        constexpr float PACK_RADIUS = 12.0f;
+        using Leader::Travel::PACK_RADIUS;  // [lead107] RouteLegs.h
         constexpr float AGGRO_EDGE_MARGIN = 8.0f;  // one harness tick of walking (7 yd/s) stays outside aggro
         constexpr float SAME_FLOOR_DZ = 3.0f;
 
@@ -2021,79 +1554,20 @@ namespace TestHarness
             }
         };
 
-        struct PackMobCheck
-        {
-            Player* leader;
-            Creature* target;
-            bool operator()(Creature* creature) const
-            {
-                return creature->IsAlive() && !creature->IsInCombat() && !creature->IsCritter() &&
-                       !creature->IsCivilian() && creature->GetExactDist(target) <= PACK_RADIUS &&
-                       creature->IsHostileTo(leader);
-            }
-        };
+        using Leader::Travel::PackMobCheck;  // [lead107] RouteLegs.h
 
-        // [b32_brs] A pack the tank's planner refused as hopeless ("no safe pull": its smallest pull is over the
-        // guarantee's ceiling; CarefulPlanVerdict: "no pull will come, route around it") is walked round when the
-        // navmesh has a way round it: the leg avoids every polygon within each idle mob's aggro reach plus
-        // HOPELESS_AVOID_MARGIN, for HOPELESS_AVOID_MS, a complete corridor only (else the leg stays as it was).
-        // lbrs-n 20261025-221216-lbrs-n-5D-10 (2288-2513 s): the Firebrand Grunt pack (-29..-43,-411..-427; "brings
-        // 13 mobs over the cap 9 at cost 14.45, over the guarantee's ceiling 9.00") stood on the shortest way from
-        // Voone's floor to Smolderweb's ramp (navmesh_probe: via -71.5,-414 / -96,-423); every walk stopped at it, the
-        // hall behind it went "behind skipped", the boss approach held ("refused by the chain count") until the
-        // 4-minute stall, 3/9. The south way round (-2,-450 / 15,-480 / -23,-501 / -61,-475 / -67,-491 / -103,-497)
-        // keeps 45+ yd from it; the packs on it are planned on their own.
-        constexpr uint32 HOPELESS_AVOID_MS = 5 * MINUTE * IN_MILLISECONDS;
-        constexpr float HOPELESS_AVOID_MARGIN = 4.0f;
-        constexpr float HOPELESS_AVOID_DZ = 10.0f;
-        constexpr float HOPELESS_DETOUR_MAX_RATIO = 4.0f;  // a way round at most this x the leg's own walk + 60 yd
-        struct HopelessMob
-        {
-            ObjectGuid guid;
-            uint32 sinceMs = 0;
-        };
-        std::unordered_map<ObjectGuid, std::vector<HopelessMob>> hopelessPacks;  // leader -> mobs, world thread
-        struct HopelessLegMemo
-        {
-            G3D::Vector3 goal;
-            uint32 ms = 0;
-            size_t mobs = 0;
-            bool round = false;
-            PathResult route;
-        };
-        std::unordered_map<ObjectGuid, HopelessLegMemo> hopelessLegMemos;  // world thread only
+        using Leader::Travel::HOPELESS_AVOID_MS;  // [lead107] RouteLegs.h
+        using Leader::Travel::HOPELESS_AVOID_MARGIN;  // [lead107] RouteLegs.h
+        using Leader::Travel::HOPELESS_AVOID_DZ;  // [lead107] RouteLegs.h
+        using Leader::Travel::HOPELESS_DETOUR_MAX_RATIO;  // [lead107] RouteLegs.h
+        using Leader::Travel::HopelessMob;  // [lead107] RouteLegs.h
+        using Leader::Travel::hopelessPacks;  // [lead107] RouteLegs.h
+        using Leader::Travel::HopelessLegMemo;  // [lead107] RouteLegs.h
+        using Leader::Travel::hopelessLegMemos;  // [lead107] RouteLegs.h
 
-        void NoteHopelessPack(Player* leader, Creature* mob)
-        {
-            if (!leader || !mob || mob->IsDungeonBoss())
-                return;
-            uint32 const now = getMSTime();
-            std::list<Creature*> pack;
-            PackMobCheck check{leader, mob};
-            Acore::CreatureListSearcher<PackMobCheck> searcher(mob, pack, check);
-            Cell::VisitObjects(mob, searcher, PACK_RADIUS);
-            if (std::find(pack.begin(), pack.end(), mob) == pack.end())
-                pack.push_back(mob);
-            std::vector<HopelessMob>& list = hopelessPacks[leader->GetGUID()];
-            for (Creature* member : pack)
-            {
-                if (member->IsDungeonBoss())
-                    continue;
-                auto const found = std::find_if(list.begin(), list.end(), [member](HopelessMob const& known)
-                                                { return known.guid == member->GetGUID(); });
-                if (found != list.end())
-                    found->sinceMs = now ? now : 1;
-                else
-                    list.push_back({member->GetGUID(), now ? now : 1});
-            }
-        }
+        using Leader::Travel::NoteHopelessPack;  // [lead107] RouteLegs.h
 
-        bool InDisc(G3D::Vector3 const& point, G3D::Vector4 const& disc)
-        {
-            return (point.x - disc.x) * (point.x - disc.x) + (point.y - disc.y) * (point.y - disc.y) <=
-                       disc.w * disc.w &&
-                   std::fabs(point.z - disc.z) <= HOPELESS_AVOID_DZ;
-        }
+        using Leader::Travel::InDisc;  // [lead107] RouteLegs.h
 
         // [b32_smpull] `mob` is a mob of Commander Mograine's call while he stands idle with his chapel
         // (ClassicShared.h): the boss's linked trash, cleared before him.
@@ -2106,130 +1580,6 @@ namespace TestHarness
             return mograine && mob->GetExactDist(mograine) <= ScarletMonastery::MOGRAINE_CALL_RADIUS;
         }
 
-        bool HopelessDetourLeg(Player* owner, G3D::Vector3 const& here, G3D::Vector3 const& goal, PathResult& leg)
-        {
-            if (!ROUTE_LONG_SEARCH || owner->IsInCombat())
-                return false;
-            // [b32_smpull] An idle Mograine with his chapel is walked round at his keep-away ring (the trash first,
-            // LinkedChapelTrash; a walk past him engages him and his whole chapel): keep_away_detour.
-            std::vector<G3D::Vector4> discs;
-            bool keepAway = false;
-            if (Unit* mograine = ScarletMonastery::IdleMograineWithChapel(owner))
-            {
-                discs.emplace_back(mograine->GetPositionX(), mograine->GetPositionY(), mograine->GetPositionZ(),
-                                   ScarletMonastery::MOGRAINE_KEEP_AWAY + HOPELESS_AVOID_MARGIN);
-                keepAway = true;
-            }
-            auto const listed = hopelessPacks.find(owner->GetGUID());
-            if ((listed == hopelessPacks.end() || listed->second.empty()) && discs.empty())
-                return false;
-            uint32 const now = getMSTime();
-            Map* map = owner->GetMap();
-            std::vector<HopelessMob> noList;
-            std::vector<HopelessMob>& list = listed != hopelessPacks.end() ? listed->second : noList;
-            for (auto it = list.begin(); it != list.end();)
-            {
-                Creature* mob = map ? map->GetCreature(it->guid) : nullptr;
-                if (!mob || !mob->IsAlive() || getMSTimeDiff(it->sinceMs, now) > HOPELESS_AVOID_MS)
-                {
-                    it = list.erase(it);
-                    continue;
-                }
-                if (!mob->IsInCombat())
-                    discs.emplace_back(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ(),
-                                       mob->GetAggroRange(owner) + HOPELESS_AVOID_MARGIN);
-                ++it;
-            }
-            if (discs.empty())
-                return false;
-            // the walk goes to that pack, or starts inside its reach: nothing to go round
-            for (G3D::Vector4 const& disc : discs)
-                if (InDisc(goal, disc) || InDisc(here, disc))
-                    return false;
-            // only a leg that enters one of them
-            bool enters = false;
-            for (size_t index = 1; index < leg.points.size() && !enters; ++index)
-            {
-                G3D::Vector3 const& from = leg.points[index - 1];
-                G3D::Vector3 const segment = leg.points[index] - from;
-                float const lengthSq = segment.x * segment.x + segment.y * segment.y;
-                for (G3D::Vector4 const& disc : discs)
-                {
-                    float t = lengthSq > 0.0f
-                                  ? ((disc.x - from.x) * segment.x + (disc.y - from.y) * segment.y) / lengthSq
-                                  : 0.0f;
-                    t = std::clamp(t, 0.0f, 1.0f);
-                    if (InDisc(from + segment * t, disc))
-                    {
-                        enters = true;
-                        break;
-                    }
-                }
-            }
-            if (!enters)
-                return false;
-            HopelessLegMemo& memo = hopelessLegMemos[owner->GetGUID()];
-            if (!memo.ms || getMSTimeDiff(memo.ms, now) > LONG_ROUTE_REUSE_MS ||
-                (memo.goal - goal).length() > LONG_ROUTE_SAME_GOAL || memo.mobs != discs.size())
-            {
-                memo.goal = goal;
-                memo.ms = now ? now : 1;
-                memo.mobs = discs.size();
-                memo.round = false;
-                memo.route = PathResult();
-                float const legWalk = PolylineLength(leg.points);
-                // [b46_strat] the way round keeps out of closed doors too (as DoorFreeRoute does): strat-n
-                // 20261026-093620-strat-n-5A-3 1382-1788 s, the round of the hopeless Market Row chain ran south
-                // through the shut King's Square Gates while PassageDetourLeg sent the leader north round the gates
-                // into that chain - the leader turned back and forth at (3710,-3465) for 6 minutes.
-                std::vector<G3D::AABox> doorBoxes;
-                for (GameObject* door : ClosedDoors(map, owner))
-                    if (door && door->m_model)
-                    {
-                        G3D::AABox const& bounds = door->m_model->GetBounds();
-                        G3D::Vector3 const margin(PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN, PASSAGE_DOOR_MARGIN);
-                        doorBoxes.emplace_back(bounds.low() - margin, bounds.high() + margin);
-                    }
-                for (bool const steep : {false, true})
-                {
-                    Movement::PointsArray corners;
-                    bool complete = false;
-                    if (!LongRoute(owner, here, goal, steep, corners, complete,
-                                   doorBoxes.empty() ? nullptr : &doorBoxes, &discs) ||
-                        !complete || corners.size() < 2)
-                        continue;
-                    float const walk = PolylineLength(corners);
-                    if (walk > legWalk * HOPELESS_DETOUR_MAX_RATIO + 60.0f)
-                        break;
-                    memo.route.points = corners;
-                    memo.route.length = walk;
-                    memo.route.end = corners.back();
-                    memo.route.steep = steep;
-                    memo.route.longRoute = true;
-                    memo.route.straightPath = true;
-                    memo.route.reachable = true;
-                    memo.route.complete = true;
-                    memo.route.type = PATHFIND_NORMAL;
-                    memo.round = true;
-                    // [b32_smpull] the planner calls a pack hopeless only after its split search failed
-                    // (ChooseTargetActions SPLIT_FAILS_HOPELESS): this detour is the last resort
-                    LOG_INFO("playerbots", "[b32_brs] {}: {}: {:.0f} yd round {} refused mob(s){} instead of {:.0f} "
-                             "yd through them, to ({:.1f},{:.1f},{:.1f})", owner->GetName(),
-                             keepAway && discs.size() == 1 ? "keep_away_detour" : "hopeless_detour", walk,
-                             discs.size(), keepAway ? " (Mograine's keep-away ring)" : "", legWalk, goal.x, goal.y,
-                             goal.z);
-                    break;
-                }
-            }
-            if (!memo.round || memo.route.points.size() < 2)
-                return false;
-            leg.points = TrimRoute(memo.route.points, here);
-            leg.end = memo.route.end;
-            leg.steep = memo.route.steep;
-            leg.straightPath = true;
-            leg.type = uint32(PATHFIND_NORMAL);
-            return true;
-        }
 
         // [b46_strat] Wing order: in a dungeon whose wings stand on their own (Stratholme: the living side Timmy ..
         // Balnazzar, the undead side behind the Gauntlet Gates Baroness .. Baron), a next boss whose route runs into a
@@ -4979,132 +4329,25 @@ namespace TestHarness
             return false;
         }
 
-        // Closed doors (2026-10-24, *.bak_approach2), false restores the old pick: idle trash whose route runs through
-        // a closed door (GAMEOBJECT_TYPE_DOOR in GO_STATE_READY with its collision on) is no target until the door
-        // is open - the navmesh is static and runs through every door, a player does not. Shadowfang Keep: the
-        // courtyard (Moonwalkers, Servitors, Worgs at z 79.8, y 2150-2204) lies behind the Courtyard Door (GO 18895
-        // at -242.6,2159.1,90.6), which instance_shadowfang_keep opens with TYPE_COURTYARD (the prisoner event after
-        // Rethilgore); the route took them before it. No AreaGateDef for it: a gate opens on deaths (afterDead), this
-        // door on an event. Bosses are not filtered (the boss order and its unreachable hold stay as they are).
-        constexpr bool ROUTE_CLOSED_DOORS = true;
-        constexpr float DOOR_RAY_HEIGHT = 1.0f;  // the route's segment tested at the height of a walking body
-        constexpr float DOOR_SEGMENT_MARGIN = 2.0f;
+        using Leader::Travel::ROUTE_CLOSED_DOORS;  // [lead107] RouteLegs.h
+        using Leader::Travel::DOOR_RAY_HEIGHT;  // [lead107] RouteLegs.h
+        using Leader::Travel::DOOR_SEGMENT_MARGIN;  // [lead107] RouteLegs.h
         constexpr uint32 CLOSED_DOOR_SKIP_MS = 60 * IN_MILLISECONDS;
 
-        std::vector<GameObject*> ClosedDoors(Map* map, Player* leader)
-        {
-            std::vector<GameObject*> doors;
-            if (!ROUTE_CLOSED_DOORS)
-                return doors;
-            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
-                if (go && go->IsInWorld() && go->isSpawned() && go->GetGoType() == GAMEOBJECT_TYPE_DOOR &&
-                    go->GetGoState() == GO_STATE_READY && go->m_model && go->m_model->isEnabled() &&
-                    go->InSamePhase(leader))
-                    doors.push_back(go);
-            return doors;
-        }
 
-        // [hleft-passage-door-route] A closed door the instance opens once a boss slot is DONE (its DoorData row is
-        // DOOR_TYPE_PASSAGE) while that slot is not done yet: a boss's exit or his cell (Sethekk Halls 183398 behind
-        // Talon King Ikiss, Blood Furnace 181819 Broggok's cell, which the lever event opens). The boss slot, -1: none.
-        constexpr bool ROUTE_PASSAGE_DOOR_DETOUR = true;
+        using Leader::Travel::ROUTE_PASSAGE_DOOR_DETOUR;  // [lead107] RouteLegs.h
 
-        // [w24c-shut-door-detour] A door an encounter leaves shut for good once it is DONE: no way on, the walk goes
-        // round it like round a passage door. UBRS (229): the stadium's wave portcullis 175185 (GO_GYTH_COMBAT_DOOR /
-        // GO_DR_PORTCULLIS, boss_gyth / boss_rend_blackhand keep it as the wave door, no DoorData row) stays shut
-        // after Rend 10 is DONE, the way on is the exit 175186 (DOOR_TYPE_PASSAGE on Rend). ubrs-n 20261025-115805
-        // 1581-1791 s: The Beast "next boss behind a closed door (... 175185)", Drakkisath and all trash "route
-        // through a closed door" while 175186 stood open - the navmesh path ignores doors and ran through 175185.
-        struct ShutForGoodDoorDef
-        {
-            uint32 mapId;
-            uint32 doorEntry;
-            uint32 doneSlot;  // the boss slot whose DONE leaves the door shut for good
-        };
-        constexpr std::array<ShutForGoodDoorDef, 1> SHUT_FOR_GOOD_DOORS = {{
-            {229, 175185, 10},  // UBRS stadium wave portcullis after Warchief Rend Blackhand (DATA 10)
-        }};
+        using Leader::Travel::ShutForGoodDoorDef;  // [lead107] RouteLegs.h
+        using Leader::Travel::SHUT_FOR_GOOD_DOORS;  // [lead107] RouteLegs.h
 
         // [b31_ubrs_door] Party::seq -> since when the leader's walk out of a closed area (AreaGateDef exit) holds at a
         // door that stays shut for good (world thread only).
         std::unordered_map<uint32, uint32> lockedInSince;
         constexpr uint32 LOCKED_IN_FAIL_MS = 2 * MINUTE * IN_MILLISECONDS;
 
-        int32 ShutForGoodDoorSlot(InstanceScript const* script, GameObject* door)
-        {
-            constexpr uint32 SHUT_FOR_GOOD_LOG_MS = 30 * IN_MILLISECONDS;
-            static uint32 loggedMs = 0;  // world thread only
-            for (ShutForGoodDoorDef const& def : SHUT_FOR_GOOD_DOORS)
-                if (door->GetMapId() == def.mapId && door->GetEntry() == def.doorEntry &&
-                    script->IsBossDone(def.doneSlot))
-                {
-                    uint32 const now = getMSTime();
-                    if (!loggedMs || getMSTimeDiff(loggedMs, now) > SHUT_FOR_GOOD_LOG_MS)
-                    {
-                        loggedMs = now ? now : 1;
-                        LOG_INFO("playerbots", "[w24c-shut-door-detour] map {}: {} {} stays shut after boss slot {} "
-                                               "(DONE): the route goes round it",
-                                 def.mapId, door->GetName(), door->GetEntry(), def.doneSlot);
-                    }
-                    return int32(def.doneSlot);
-                }
-            return -1;
-        }
+        using Leader::Travel::ShutForGoodDoorSlot;  // [lead107] RouteLegs.h
 
-        int32 PassageDoorBoss(InstanceScript const* script, GameObject* door)
-        {
-            if (!ROUTE_PASSAGE_DOOR_DETOUR || !script || !door)
-                return -1;
-            for (uint32 id = 0; id < script->GetEncounterCount(); ++id)
-                if (BossInfo const* info = script->GetBossInfo(id);
-                    info && info->state != DONE && info->door[DOOR_TYPE_PASSAGE].count(door))
-                    return int32(id);
-            // [brd_ring_gate_round] a gate an event's DONE opens (no DoorData row): until then the way round it.
-            // Blackrock Depths' ArenaGate03 161524 (GO_ARENA3, the Ring of Law's north exit; npc_grimstone opens it
-            // at the end, the entry ArenaGate04 161523 stands open): a walk to the arena from the north ran into it
-            // (2026-10-25 brd-h 3657-3759 s door_hold at 588.3,-144.4 until the stop) - the way in is the west
-            // corridor and ArenaGate04.
-            if (door->GetMapId() == BRD_MAP_ID && door->GetEntry() == BRD_GO_ARENA_EXIT_GATE &&
-                script->GetData(BRD_TYPE_RING_OF_LAW) != DONE)
-                return int32(BRD_TYPE_RING_OF_LAW);
-            // [w24c-shut-door-detour] the way round, too (the callers only ask whether there is a slot).
-            return ShutForGoodDoorSlot(script, door);
-        }
 
-        // The first closed door the route's polyline passes through (a ray along each segment, DOOR_RAY_HEIGHT above
-        // it, against the door's own collision model), nullptr: none.
-        GameObject* RouteThroughClosedDoor(Movement::PointsArray const& points, std::vector<GameObject*> const& doors,
-                                           uint32 phaseMask)
-        {
-            for (GameObject* door : doors)
-            {
-                // [b41_gnomer] a route that stays in front of a tunnel plug (Gnomeregan's Cave Ins) only clips its
-                // edge (TerrainHazard DoorEdgeClipOnly, the same rule as the bots' own walk guard).
-                if (points.size() >= 2 && DoorEdgeClipOnly(door, points.front(), points.back()))
-                    continue;
-                G3D::AABox const& bounds = door->m_model->GetBounds();
-                for (size_t index = 1; index < points.size(); ++index)
-                {
-                    G3D::Vector3 const from = points[index - 1] + G3D::Vector3(0.0f, 0.0f, DOOR_RAY_HEIGHT);
-                    G3D::Vector3 const to = points[index] + G3D::Vector3(0.0f, 0.0f, DOOR_RAY_HEIGHT);
-                    G3D::Vector3 const low = from.min(to) - G3D::Vector3(DOOR_SEGMENT_MARGIN, DOOR_SEGMENT_MARGIN,
-                                                                         DOOR_SEGMENT_MARGIN);
-                    G3D::Vector3 const high = from.max(to) + G3D::Vector3(DOOR_SEGMENT_MARGIN, DOOR_SEGMENT_MARGIN,
-                                                                          DOOR_SEGMENT_MARGIN);
-                    if (high.x < bounds.low().x || low.x > bounds.high().x || high.y < bounds.low().y ||
-                        low.y > bounds.high().y || high.z < bounds.low().z || low.z > bounds.high().z)
-                        continue;
-                    G3D::Vector3 const segment = to - from;
-                    float distance = segment.length();
-                    if (distance <= 0.0f)
-                        continue;
-                    G3D::Ray const ray(from, segment / distance);
-                    if (door->m_model->intersectRay(ray, distance, true, phaseMask, VMAP::ModelIgnoreFlags::Nothing))
-                        return door;
-                }
-            }
-            return nullptr;
-        }
 
         // [hleft-passage-door-route] The walk to `target` goes round `door` (a closed door that opens on a boss's
         // death, PassageDoorBoss) without running through any of `shut`: memoised per target for
@@ -5152,30 +4395,15 @@ namespace TestHarness
             return memo.round;
         }
 
-        // Closed doors everywhere (2026-10-24, *.bak_doorgate), false restores ROUTE_CLOSED_DOORS alone (idle trash
-        // only, the leader's waypoints unchecked). User, Utgarde Keep heroic: the group walked through the forge
-        // room's walls of flame, a wall even a GM cannot pass (DoorEventDef). With it:
-        // - every leader waypoint (SetLeaderWaypoint) is cut ~2 yd before the first closed door its path runs through
-        //   ("[closed door] leader ...", door_hold), and Retarget drops a target that door does not open for;
-        // - a route target behind a closed door is no target - bosses (the next boss: as unreachable, the order hold),
-        //   fighting mobs and event starters too - unless the door opens for it (DoorOpensFor: the target is the door
-        //   itself, a key used on it, or the key creature of a DoorEventDef);
-        // - a DoorEventDef key creature whose afterData has not started is no target (it evades: Forge Master n).
-        constexpr bool ROUTE_CLOSED_DOORS_ALL = true;
-        constexpr float DOOR_HOLD_BACK = 2.0f;      // a leader waypoint a closed door cuts ends this far before it
-        constexpr float DOOR_HOLD_MIN_WALK = 1.0f;  // a cut that walks less than this: the leader stays
+        using Leader::Travel::ROUTE_CLOSED_DOORS_ALL;  // [lead107] RouteLegs.h
+        using Leader::Travel::DOOR_HOLD_BACK;  // [lead107] RouteLegs.h
+        using Leader::Travel::DOOR_HOLD_MIN_WALK;  // [lead107] RouteLegs.h
         constexpr uint32 DOOR_HOLD_LOG_MS = 5 * IN_MILLISECONDS;
         constexpr uint32 DOOR_HOLD_FRESH_MS = 3 * IN_MILLISECONDS;  // Retarget reacts to a door_hold this recent
-        constexpr uint32 DOOR_HOLD_MEMO_MS = IN_MILLISECONDS;
-        constexpr float DOOR_HOLD_MEMO_DISTANCE = 1.0f;
+        using Leader::Travel::DOOR_HOLD_MEMO_MS;  // [lead107] RouteLegs.h
+        using Leader::Travel::DOOR_HOLD_MEMO_DISTANCE;  // [lead107] RouteLegs.h
 
-        DoorEventDef const* DoorEventOf(GameObject const* door)
-        {
-            for (DoorEventDef const* def : DoorEvents(door->GetMapId()))
-                if (def->doorEntry == door->GetEntry())
-                    return def;
-            return nullptr;
-        }
+        using Leader::Travel::DoorEventOf;  // [lead107] RouteLegs.h
 
         bool IsDoorKey(DoorEventDef const& def, Creature const* creature)
         {
@@ -5388,83 +4616,9 @@ namespace TestHarness
 
         using Leader::Travel::PointOnPath;  // [lead107] RouteSearch.h
 
-        // The leader's waypoint cut before the first closed door its walk runs through (the navmesh is static and
-        // runs through every door, and the leader's own walk falls back to a straight MoveStraight where its path is
-        // refused). Per leader: the last answer, reused for DOOR_HOLD_MEMO_MS while the waypoint stays put.
-        struct DoorStopMemo
-        {
-            G3D::Vector3 asked;
-            G3D::Vector3 held;
-            ObjectGuid door;
-            float walked = 0.0f;
-            uint32 ms = 0;
-        };
-        std::unordered_map<ObjectGuid, DoorStopMemo> doorStopMemos;  // world thread only
+        using Leader::Travel::DoorStopMemo;  // [lead107] RouteLegs.h
+        using Leader::Travel::doorStopMemos;  // [lead107] RouteLegs.h
 
-        // true: the waypoint ran through a closed door, `point` is now the hold before it (the leader's own spot when
-        // the door is closer than DOOR_HOLD_BACK + DOOR_HOLD_MIN_WALK); door / walked say which and how far on.
-        bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked)
-        {
-            if (!ROUTE_CLOSED_DOORS_ALL)
-                return false;
-            Map* map = leader->GetMap();
-            if (!map || !map->IsDungeon() || leader->GetVehicle() || leader->GetTransport() || leader->IsFlying())
-                return false;
-
-            uint32 const now = getMSTime();
-            DoorStopMemo& memo = doorStopMemos[leader->GetGUID()];
-            if (memo.ms && getMSTimeDiff(memo.ms, now) < DOOR_HOLD_MEMO_MS &&
-                (memo.asked - point).length() < DOOR_HOLD_MEMO_DISTANCE)
-            {
-                if (memo.door.IsEmpty())
-                    return false;
-                point = memo.held;
-                door = memo.door;
-                walked = memo.walked;
-                return true;
-            }
-            memo.asked = point;
-            memo.ms = now ? now : 1;
-            memo.door.Clear();
-
-            // The cheap gate (TerrainHazard: the map's door list, bounds only): no closed door near the line.
-            if (!ClosedDoorNear(leader, leader->GetPositionX(), leader->GetPositionY(), point.x, point.y,
-                                CLOSED_DOOR_SEARCH))
-                return false;
-
-            G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
-            Movement::PointsArray points;
-            {
-                PathGenerator path(leader);
-                path.CalculatePath(point.x, point.y, point.z, false);
-                if (!(path.GetPathType() & PATHFIND_NOPATH))
-                    points = path.GetPath();
-            }
-            if (points.size() < 2)
-                points = {here, point};  // the own walk's straight fallback
-            ClosedDoorHit const hit = PathThroughClosedDoor(leader, points);
-            if (!hit.Found())
-                return false;
-
-            // A door that opens by use (DoorOpensFor): the leader clicks it once it stands in reach, out of combat
-            // ("[door] <leader>: opens <name> <entry>"), and the waypoint goes on; until then the hold is closer, in
-            // reach. The followers' own walks stop before it (MovementAction::GuardClosedDoor) until it is open.
-            bool const openable = !DoorEventOf(hit.door) && DoorOpensByUse(hit.door);
-            if (openable && OpenDoorByUse(leader, hit.door))
-            {
-                memo.ms = 0;  // judged again next time: the walk may run through another door further on
-                return false;
-            }
-
-            float const stop = hit.walked - (openable ? DOOR_OPEN_BACK : DOOR_HOLD_BACK);
-            memo.held = stop >= DOOR_HOLD_MIN_WALK ? PointOnPath(points, stop) : here;
-            memo.door = hit.door->GetGUID();
-            memo.walked = hit.walked;
-            point = memo.held;
-            door = memo.door;
-            walked = memo.walked;
-            return true;
-        }
 
         // The tank picks its next pull itself (AggressiveTargetValue: the nearest hostile in sight within 40 yd). A
         // mob of a closed part is no pull for it either: such mobs near the tank are marked as careful-pull skips
