@@ -1630,7 +1630,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         thread_local std::unordered_map<uint64, PatrolRoute> cache;
         uint32 const now = getMSTime();
-        uint64 const key = creature->GetGUID().GetRawValue();
+        // [lead185] by instance too: the instances of one map share their creatures' GUIDs (8 parallel runs)
+        uint64 const key =
+            creature->GetGUID().GetRawValue() ^ (uint64(creature->GetInstanceId()) * 0x9E3779B97F4A7C15ULL);
         auto found = cache.find(key);
         if (found == cache.end() || getMSTimeDiff(found->second.ms, now) >= PATROL_ROUTE_CACHE_MS)
         {
@@ -1781,7 +1783,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         thread_local std::unordered_map<uint64, Track> cache;
         uint32 const now = getMSTime();
-        uint64 const key = walker->GetGUID().GetRawValue();
+        uint64 const key =  // [lead185] by instance too
+            walker->GetGUID().GetRawValue() ^ (uint64(walker->GetInstanceId()) * 0x9E3779B97F4A7C15ULL);
         auto found = cache.find(key);
         if (found == cache.end())
         {
@@ -4432,7 +4435,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (!pet)
             return false;
 
-        uint64 const key = pet->GetGUID().GetRawValue();
+        uint64 const key =  // [lead185] by instance too (a guardian's GUID is the map's)
+            pet->GetGUID().GetRawValue() ^ (uint64(pet->GetInstanceId()) * 0x9E3779B97F4A7C15ULL);
         uint32 const now = getMSTime();
         std::lock_guard<std::mutex> guard(petFightLock);
         if (!attacked)
