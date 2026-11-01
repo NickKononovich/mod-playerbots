@@ -1468,6 +1468,25 @@ namespace TestHarness
                 line.Bool("losTank", bot->IsWithinLOSInMap(tank)).Real("dTank", bot->GetExactDist(tank));
             else if (bot == tank && sameMap(bot, healer))
                 line.Bool("losHealer", bot->IsWithinLOSInMap(healer)).Real("dHealer", bot->GetExactDist(healer));
+            // [lead110] the member's pet in the fight (b143 rfc-h Taragaman: the hunter's Bat dealt 27 white DPS
+            // against the sim's 234 with no word why): its victim, the distance and melee range to it, its react
+            // state, the command attack, casting / moving, whether its swing is ready, and its side of the victim
+            if (Guardian* pet = bot->GetGuardianPet(); pet && pet->IsInWorld() && sameMap(bot, pet))
+            {
+                Unit* victim = pet->GetVictim();
+                JsonObject petLine;
+                petLine.Str("n", pet->GetName()).Bool("a", pet->IsAlive()).Real("x", pet->GetPositionX())
+                    .Real("y", pet->GetPositionY()).Num("react", int64(pet->GetReactState()))
+                    .Bool("cmdAttack", pet->GetCharmInfo() && pet->GetCharmInfo()->IsCommandAttack())
+                    .Bool("casting", pet->HasUnitState(UNIT_STATE_CASTING)).Bool("moving", pet->isMoving())
+                    .Bool("swingReady", pet->isAttackReady())
+                    .Bool("meleeAttacking", pet->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                    .Num("v", victim && victim->IsCreature() ? victim->GetEntry() : 0);
+                if (victim && sameMap(pet, victim))
+                    petLine.Real("dV", pet->GetExactDist(victim)).Bool("inMelee", pet->IsWithinMeleeRange(victim))
+                        .Bool("behind", !victim->HasInArc(static_cast<float>(M_PI), pet));
+                line.Raw("pet", petLine.Build());
+            }
             WatchIntent(bot);
             std::string const intent = IntentJsonFor(bot->GetGUID());
             if (!intent.empty())
