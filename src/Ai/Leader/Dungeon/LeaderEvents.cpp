@@ -200,13 +200,19 @@ namespace Leader::Dungeon
         g_leaderExempt = &pullMobs;
         // [lead115] the pull walks: the engage order open (not fighting yet) and the tank without threat on its mob
         bool pullWalk = false;
+        uint32 pullWalkOrder = 0;
         {
             Leader::PullOrder walkOrder;
             if (lead.commit && lead.commitIssued && Leader::Orders::GetOpen(group.LeaderGuid(), walkOrder) &&
                 walkOrder.method == Leader::PullMethod::Engage && walkOrder.state != Leader::OrderState::Fighting)
                 if (Unit* walkMob = ObjectAccessor::GetUnit(*tank, lead.commitMob); walkMob && walkMob->IsAlive())
+                {
                     pullWalk = !walkMob->IsInCombat() || walkMob->GetThreatMgr().GetThreat(tank) <= 0.0f;
+                    pullWalkOrder = walkOrder.id;
+                }
         }
+        if (!pullWalk)
+            lead.pullWalkSpots.clear();  // [lead117] the pull walk's decisions end with it
         struct GuardReset
         {
             ~GuardReset()
@@ -1815,6 +1821,20 @@ namespace Leader::Dungeon
         if (!fighting && healer)
         {
             ObjectGuid topUp = lead.topUpFor;
+            // [lead116] a hurt member with the healer above its own mana line is topped up by the healer (one
+            // command per change), not fed: the most hurt one
+            if (topUp.IsEmpty() && !RestState::WantsDrink(healer) && !healer->IsSitState())
+            {
+                std::vector<Player*> all = seats;
+                all.push_back(tank);
+                float lowest = 100.0f;
+                for (Player* member : all)
+                    if (member->IsAlive() && member->GetHealthPct() < lowest)
+                    {
+                        lowest = member->GetHealthPct();
+                        topUp = member->GetGUID();
+                    }
+            }
             if (topUp.IsEmpty())
                 if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor))
                 {
@@ -2233,6 +2253,33 @@ namespace Leader::Dungeon
             // has the mob
             if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState())
             {
+                // [lead117] b151 rfc-h 72.9-74.1 s: the shaman at a mob's reach edge flipped "out of its reach"
+                // MoveTo <-> Hold every 0.5 s - one decision per order and per fact: the spot decided for this order
+                // stands while its mob stays where it was judged (LEADER_COMMIT_MOVED_YD); a new order or the mob
+                // moved off decides again
+                auto memo = lead.pullWalkSpots.find(guid);
+                if (memo != lead.pullWalkSpots.end())
+                {
+                    Creature* judged = memo->second.mob.IsEmpty() ? nullptr : map->GetCreature(memo->second.mob);
+                    if (memo->second.orderId != pullWalkOrder ||
+                        (judged && judged->GetExactDist(memo->second.mobAt) > Leader::LEADER_COMMIT_MOVED_YD))
+                    {
+                        lead.pullWalkSpots.erase(memo);
+                        memo = lead.pullWalkSpots.end();
+                    }
+                }
+                if (memo != lead.pullWalkSpots.end())
+                {
+                    if (memo->second.hold)
+                        checkedMove(guid, Leader::MoveEvent::Hold, memo->second.spot, 0.0f, "the pull walks");
+                    else
+                        checkedMove(guid, Leader::MoveEvent::MoveTo, memo->second.spot, LEADER_FOLLOW_TOLERANCE,
+                                    "the pull walks");
+                    moved = true;
+                }
+            }
+            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState())
+            {
                 Position holdAt = bot->GetPosition();
                 Unit* reaching = nullptr;
                 for (ObjectGuid const& mobGuid : pullMobs)
@@ -2246,18 +2293,26 @@ namespace Leader::Dungeon
                     float const dx = bot->GetPositionX() - reaching->GetPositionX();
                     float const dy = bot->GetPositionY() - reaching->GetPositionY();
                     float const length = std::max(0.1f, std::hypot(dx, dy));
-                    float const away = reaching->ToCreature()
-                                           ? reaching->ToCreature()->GetAggroRange(bot) +
-                                                 reaching->ToCreature()->m_CombatDistance + LEADER_FOLLOW_START_YD
-                                           : LEADER_FOLLOW_START_YD;
+                    // [lead117] out of the reach as the mob's facts make it: its aggro range for this member and
+                    // its combat distance, plus its wander radius (a wanderer), plus the follow spread
+                    Creature* reachingMob = reaching->ToCreature();
+                    float const away =
+                        reachingMob ? reachingMob->GetAggroRange(bot) + reachingMob->m_CombatDistance +
+                                          (reachingMob->GetDefaultMovementType() == RANDOM_MOTION_TYPE
+                                               ? reachingMob->GetWanderDistance()
+                                               : 0.0f) +
+                                          LEADER_FOLLOW_START_YD
+                                    : LEADER_FOLLOW_START_YD;
                     float x = reaching->GetPositionX() + dx / length * away;
                     float y = reaching->GetPositionY() + dy / length * away;
                     float z = bot->GetPositionZ();
                     if (map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
                                                              bot->GetPositionZ(), x, y, z) &&
                         checkedMove(guid, Leader::MoveEvent::MoveTo, Position(x, y, z), LEADER_FOLLOW_TOLERANCE,
-                                    "the pull walks: out of its reach"))
+                                    "the pull walks"))
                     {
+                        lead.pullWalkSpots[guid] = {pullWalkOrder, reaching->GetGUID(), reaching->GetPosition(),
+                                                    Position(x, y, z), false};
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                  JsonObject().Str("why", "the pull walks: out of its reach")
                                      .Str("mob", reaching->GetName()));
@@ -2268,6 +2323,7 @@ namespace Leader::Dungeon
                 {
                     if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the pull walks"))
                         logEvent(bot, "Hold", JsonObject().Str("why", "the pull walks: the tank takes the mob first"));
+                    lead.pullWalkSpots[guid] = {pullWalkOrder, ObjectGuid::Empty, Position(), bot->GetPosition(), true};
                     moved = true;
                 }
             }

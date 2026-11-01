@@ -617,20 +617,27 @@ bool BelowOwnLine(Player* bot, std::string* why)
     return below;
 }
 
+float HealthLine(Player* bot)
+{
+    NextFight fight;
+    if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) && PlayerbotAI::IsTank(bot) &&
+        PredictNextFight(bot, fight) && fight.cost > 0.0f)
+        return std::min(100.0f, fight.cost * 100.0f);
+    return REST_HEALTH_PCT;
+}
+
 bool WantsFood(Player* bot, std::string* why)
 {
     float const health = bot->GetHealthPct();
-    if (!ignoreLeaderRest && LeaderRests(bot) && health < 100.0f)  // [lead47] the leader's Rest: it eats now
+    // [lead116] b151 rfc-h 16-56 s: the tank ate at 95 % (its next pull cost 0.5 tank hp), stood up, ate again - a
+    // led group rests health to its computed line, never to full above it, and not with a healer free to heal it
+    bool const ledLine = Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot);
+    float const line = HealthLine(bot);
+    // A healer close by with mana heals it up faster, and for free. The bot itself counts when it heals.
+    Player* healer = nullptr;
+    float healerMana = 0.0f;
+    auto const healerFree = [&]()
     {
-        if (why)
-            *why = Acore::StringFormat("the leader's Rest (health {:.0f} %)", health);
-        return true;
-    }
-    if (health < REST_HEALTH_PCT)
-    {
-        // A healer close by with mana heals it up faster, and for free. The bot itself counts when it heals.
-        Player* healer = nullptr;
-        float healerMana = 0.0f;
         auto const consider = [&](Player* member)
         {
             if (!PlayerbotAI::IsHeal(member) || !member->GetMaxPower(POWER_MANA))
@@ -649,16 +656,27 @@ bool WantsFood(Player* bot, std::string* why)
                           consider(member);
                           return false;
                       });
-        if (healer && healerMana >= HEALER_BUSY_MANA_PCT)
+        return healer && healerMana >= HEALER_BUSY_MANA_PCT;
+    };
+    if (!ignoreLeaderRest && LeaderRests(bot) && health < (ledLine ? line : 100.0f) &&
+        !(ledLine && healerFree()))  // [lead47] the leader's Rest: it eats now
+    {
+        if (why)
+            *why = Acore::StringFormat("the leader's Rest (health {:.0f} %)", health);
+        return true;
+    }
+    if (health < line)
+    {
+        if (healerFree())
             return false;
         if (why)
-            *why = healer ? Acore::StringFormat("hp {:.0f} % < {:.0f} %, healer mana {:.0f} %", health,
-                                                REST_HEALTH_PCT, healerMana)
-                          : Acore::StringFormat("hp {:.0f} % < {:.0f} %, no healer close by", health, REST_HEALTH_PCT);
+            *why = healer ? Acore::StringFormat("hp {:.0f} % < {:.0f} %, healer mana {:.0f} %", health, line,
+                                                healerMana)
+                          : Acore::StringFormat("hp {:.0f} % < {:.0f} %, no healer close by", health, line);
         return true;
     }
 
-    if (REST_JOIN_COMPANY && health < COMPANY_PCT && GroupResting(bot))
+    if (REST_JOIN_COMPANY && !ledLine && health < COMPANY_PCT && GroupResting(bot))
     {
         if (why)
             *why = Acore::StringFormat("joins the group's rest, hp {:.0f} % < {:.0f} %", health, COMPANY_PCT);
@@ -684,7 +702,10 @@ bool RestDone(Player* bot)
 
     // Food and water at once (or a combined item): up only when both are full - or ([rest_stand_at_line]) both are
     // above the bot's own lines while nobody close by sits any more (the group is ready, nobody tops up to 100 %).
-    bool const healthDone = !eating || bot->GetHealthPct() >= 100.0f;
+    // [lead116] a led group's sitter is done with its health at its computed line (no eat to full above it)
+    bool const healthDone = !eating || bot->GetHealthPct() >= 100.0f ||
+                            (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) &&
+                             bot->GetHealthPct() >= HealthLine(bot));
     bool const manaDone = !drinking || !bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 100.0f;
     if (healthDone && manaDone)
         return true;

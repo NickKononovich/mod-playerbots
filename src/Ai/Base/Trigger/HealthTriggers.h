@@ -342,6 +342,9 @@ bool HealerHasWork(Player* bot);
 // skip: set when the next fight's prediction keeps the bot up although the fixed line would have it drink.
 bool WantsDrink(Player* bot, std::string* why = nullptr, std::string* skip = nullptr);
 bool WantsFood(Player* bot, std::string* why = nullptr);
+// [lead116] the health a bot rests to: a led group's tank needs its next fight's cost in tank healths (the planner's
+// estimate, NextFight::cost), every other bot (or no known fight) the fixed REST_HEALTH_PCT
+float HealthLine(Player* bot);
 // [lead59] the member's own lines (the computed line for its next fight), without the leader's Rest command: what the
 // leader's Rest is judged by (it stops at the line, not at full)
 bool BelowOwnLine(Player* bot, std::string* why = nullptr);
