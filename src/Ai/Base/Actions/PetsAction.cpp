@@ -19,6 +19,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "InstanceGuid.h"  // [rot44]
+#include "LeaderOrders.h"  // [lead186] the owner's leader Attack
 #include "Map.h"
 #include "MotionMaster.h"
 #include "MovementActions.h"
@@ -957,6 +958,29 @@ bool PetMayEngage(PlayerbotAI* botAI, Creature* pet, Unit* target, PetControlSta
     {
         why = "already on it";
         return true;
+    }
+
+    // [lead186] b180: frost / unholy ghouls barely attacked (Claw 39 vs the sim's 450 dps) - they waited for the
+    // tank's lead to cover the owner's next cast (OPEN_SHARE) or the longest wait. A led owner's pet takes the
+    // leader's threat rule of its owner: under the owner's leader Attack, on a mob where the holder's threat is above
+    // the pet's own (the game's threat table, as the leader's headroom)
+    if (Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (!Leader::Events::Get(bot->GetGUID(), events) || events.attack != Leader::AttackEvent::Attack)
+        {
+            why = "its owner has no leader Attack";
+            return false;
+        }
+        float const holderThreat = ThreatLead::HolderThreat(bot, target);
+        if (holderThreat > petThreat)
+        {
+            why = Acore::StringFormat("the owner's headroom rule: the holder's threat {:.0f} over the pet's {:.0f}",
+                                      holderThreat, petThreat);
+            return true;
+        }
+        why = "the holder has no threat on it yet";
+        return false;
     }
 
     float const holder = ThreatLead::HolderThreat(bot, target);
