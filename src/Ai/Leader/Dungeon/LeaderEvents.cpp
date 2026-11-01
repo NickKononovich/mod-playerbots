@@ -126,6 +126,13 @@ namespace Leader::Dungeon
         {
             return mob && victim && !mob->isMoving() && !mob->IsWithinMeleeRange(victim);
         }
+
+        // [lead218] a ranged member casts on `target` from where it stands: its reach and minimum range
+        // (LeaderCastsFrom: a hunter's dead zone) and the game's own line of sight from it (the one its spells use)
+        bool MemberCastsHere(Player* bot, Unit* target)
+        {
+            return LeaderCastsFrom(bot, target, bot->GetPosition()) && bot->IsWithinLOSInMap(target);
+        }
     }
 
     void TickLeaderEvents(LeaderGroup& group, Player* tank)
@@ -2376,6 +2383,21 @@ namespace Leader::Dungeon
                 std::function<bool(Position const&)> const keepsBase =
                     bot == healer ? std::function<bool(Position const&)>(healerKeeps)
                                   : std::function<bool(Position const&)>(keepsHealer);
+                // [lead218] b184 rfc-h 5H 892-944 s: the MM hunter stood on its spot 30 yd from Taragaman, every shot
+                // "no line of sight" for 53 s, the spot judged fine. Standing on its spot, the game's own answer
+                // (MemberCastsHere) is the fact: the spot breaks and is the one it leaves
+                bool blindOnSpot = false;
+                if (auto const held = lead.combatSpots.find(guid);
+                    !melee && bot != healer && !PlayerbotAI::IsHeal(bot) && held != lead.combatSpots.end() &&
+                    held->second.first == target->GetGUID() &&
+                    getMSTimeDiff(lead.combatSpotLosMs[guid], now) >= LEADER_SPOT_LOS_MS &&
+                    bot->GetExactDist2d(held->second.second.GetPositionX(), held->second.second.GetPositionY()) <=
+                        2.0f &&
+                    !MemberCastsHere(bot, target))
+                {
+                    blindOnSpot = true;
+                    lead.combatSpotLeft[guid] = held->second;
+                }
                 // [lead137] never back to the spot it just left for this target
                 auto const left = lead.combatSpotLeft.find(guid);
                 std::function<bool(Position const&)> const keeps = [&](Position const& at)
@@ -2450,6 +2472,8 @@ namespace Leader::Dungeon
                                                         keeps, sight, &killOrder);  // [lead210]
                         if (breaks == "heal reach")
                             breaks.clear();
+                        if (breaks.empty() && blindOnSpot)  // [lead218]
+                            breaks = "it cannot cast on its target from its spot";
                         lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         // [lead190] b180 rfc-h 5G 103.2-105.0 s: the ret paladin's spot "behind" a Ragefire Shaman
                         // that walked off broke "out of melee reach" every tick, each new StandAt stopped its walk to
@@ -2521,9 +2545,9 @@ namespace Leader::Dungeon
                             // round the boss) and nothing moved them - 0 damage for 90 s. A damage dealer that does
                             // not reach its target from where it stands goes to the tank's own spot: the tank stands
                             // there in the fight, the same facts hold for it there
-                            bool const reaches = melee ? bot->IsWithinMeleeRange(target)
-                                                       : bot->GetExactDist(target) <= LeaderShootReach(bot) &&
-                                                             LeaderSeesFrom(bot, target, bot->GetPosition());
+                            // [lead218] b184 rfc-h 5F Oggleflint: the SV hunter 3 yd from the boss "reached" it (no
+                            // dead zone in this test) and stood in Auto Shot's dead zone all fight, no fallback spot
+                            bool const reaches = melee ? bot->IsWithinMeleeRange(target) : MemberCastsHere(bot, target);
                             if (bot != healer && !PlayerbotAI::IsHeal(bot) && bot != tank && tank->IsAlive() &&
                                 !reaches)
                             {
@@ -3107,25 +3131,37 @@ namespace Leader::Dungeon
                         // [lead210] and out of every fight mob's melee reach (the game's 110 % aggro rule there)
                         auto const shootsFrom = [&](Position const& at)
                         { return LeaderCastsFrom(bot, judgedOn, at, &killOrder); };
-                        bool const castsNow = LeaderCastsFrom(bot, attackOn, bot->GetPosition(), &killOrder);
+                        // [lead218] where it stands: the game's own sight too (MemberCastsHere); its kept spot under
+                        // its feet shoots only if it does
+                        bool const castsNow = LeaderCastsFrom(bot, attackOn, bot->GetPosition(), &killOrder) &&
+                                              bot->IsWithinLOSInMap(attackOn);
                         auto const kept = lead.combatSpots.find(guid);
-                        bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second);
+                        bool const onKept = kept != lead.combatSpots.end() &&
+                                            bot->GetExactDist2d(kept->second.second.GetPositionX(),
+                                                                kept->second.second.GetPositionY()) <= 2.0f;
+                        bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second) &&
+                                                (!onKept || castsNow || runningIn);
                         // [lead174] b179 rfc-h 5A: 122 re-spots "out of its reach / sight of the tank its Attack target
                         // runs to" - judged against the tank while the tank itself still walks (a pull back, the walk
                         // to its fight spot), every step of it was a new spot. Where the fight is held is a fact once
                         // the tank stands: the spot kept for this target holds while the tank walks
                         bool const tankSettling = runningIn && tank->isMoving() && kept != lead.combatSpots.end() &&
                                                   kept->second.first == attackOn->GetGUID();
-                        if (!tankSettling && !castsNow && !shootsFrom(bot->GetPosition()) && !spotShoots)
+                        bool const shootsHere = shootsFrom(bot->GetPosition()) && (runningIn || castsNow);
+                        if (!tankSettling && !castsNow && !shootsHere && !spotShoots)
                         {
                             std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                             // [lead137] never back to the spot it just left for this target
                             auto const left = lead.combatSpotLeft.find(guid);
+                            // [lead218] nor where it stands when the game says it cannot cast from there
+                            Position const here = bot->GetPosition();
+                            bool const blindHere = !runningIn && !MemberCastsHere(bot, attackOn);
                             std::function<bool(Position const&)> const keeps = [&](Position const& at)
                             {
-                                return keepsHealer(at) && !(left != lead.combatSpotLeft.end() &&
-                                                            left->second.first == attackOn->GetGUID() &&
-                                                            left->second.second.GetExactDist(at) <= 2.0f);
+                                return keepsHealer(at) && !(blindHere && here.GetExactDist(at) <= 2.0f) &&
+                                       !(left != lead.combatSpotLeft.end() &&
+                                         left->second.first == attackOn->GetGUID() &&
+                                         left->second.second.GetExactDist(at) <= 2.0f);
                             };
                             Position spot;
                             bool const got = slow(
