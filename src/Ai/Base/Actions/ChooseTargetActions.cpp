@@ -606,6 +606,25 @@ bool DropTargetAction::Execute(Event /*event*/)
         return false;
     }
 
+    // [rot3] A led executor whose leader already names its next live target takes it and stays in the combat
+    // engine: no NON_COMBAT -> COMBAT bounce (two ticks per kill); the rotation casts on it in this tick.
+    if (Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack &&
+            events.intensity != Leader::Intensity::Stop)
+        {
+            Unit* next = botAI->GetUnit(events.target);
+            if (next && next != target && next->IsAlive() && next->IsInCombat() && bot->IsValidAttackTarget(next))
+            {
+                context->GetValue<Unit*>("current target")->Set(next);
+                bot->SetSelection(next->GetGUID());
+                bot->SetTarget(next->GetGUID());
+                return false;
+            }
+        }
+    }
+
     bot->SetTarget(ObjectGuid::Empty);
     bot->SetSelection(ObjectGuid());
     botAI->ChangeEngine(BOT_STATE_NON_COMBAT);
