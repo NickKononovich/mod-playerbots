@@ -10,12 +10,14 @@
 // [lead31a] The pull planner's pieces the tank's execution (Ai/Base/Actions/ChooseTargetActions.cpp) uses. The
 // planner itself is the leader's (Ai/Leader/LeaderPlanner.cpp; its internals in namespace PullPlanning).
 
+#include "G3D/Vector3.h"
 #include "LeaderOrders.h"
 #include "Position.h"
 
 #include <string>
 #include <vector>
 
+class Creature;
 class Player;
 class Unit;
 
@@ -34,6 +36,12 @@ namespace PullPlanning
     // [lead199] the tank's engage openers on an idle mob, best first: the ones that land damage (threat) before a
     // taunt (no threat on a mob that fights nobody); `gapClosers`: Charge / Feral Charge may land the tank at the mob
     std::vector<char const*> TankEngageOpeners(Player* tank, bool gapClosers);
+    // [lead204] the planner's pack rule: `mob` comes with a pull of `target` (one formation, or spawn points within
+    // the social radius, each one's wander radius on top)
+    bool SpawnsWith(Creature* mob, Unit* target);
+    // [lead205] where the patrol `mob` walks from now (its walker's forecast, PatrolTrack), one sample every
+    // `sampleSec`; false: no forecast (no patrol, or it does not walk its path now)
+    bool PatrolForecast(Creature* mob, std::vector<G3D::Vector3>& track, float& sampleSec);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry

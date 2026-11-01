@@ -459,3 +459,165 @@ namespace Leader
                      G3D::Vector3(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()));
     }
 }
+
+namespace Leader::Travel
+{
+    namespace
+    {
+        // the walk over `order` (+inf when a leg has none)
+        double TourCost(std::vector<size_t> const& order, std::vector<std::vector<float>> const& cost)
+        {
+            double total = 0.0;
+            for (size_t i = 1; i < order.size(); ++i)
+                total += cost[order[i - 1]][order[i]];
+            return total;
+        }
+
+        // 2-opt (a reversed stretch) and or-opt (a stretch of 1-3 stops moved, either way round) until neither finds
+        // a shorter walk; the start (and with `fixedEnd` the end) stay where they are
+        void ImproveTour(std::vector<size_t>& order, std::vector<std::vector<float>> const& cost, bool fixedEnd)
+        {
+            if (order.size() < 3)
+                return;
+            size_t const last = fixedEnd ? order.size() - 2 : order.size() - 1;  // the last stop that may move
+            if (last < 1)
+                return;
+
+            double best = TourCost(order, cost);
+            for (bool better = true; better;)
+            {
+                better = false;
+                for (size_t i = 1; i < last; ++i)
+                {
+                    for (size_t j = i + 1; j <= last; ++j)
+                    {
+                        std::reverse(order.begin() + i, order.begin() + j + 1);
+                        double const changed = TourCost(order, cost);
+                        if (changed + 1e-3 < best)
+                        {
+                            best = changed;
+                            better = true;
+                        }
+                        else
+                            std::reverse(order.begin() + i, order.begin() + j + 1);
+                    }
+                }
+
+                for (size_t span = 1; span <= 3; ++span)
+                {
+                    for (size_t i = 1; i + span - 1 <= last; ++i)
+                    {
+                        std::vector<size_t> const stretch(order.begin() + i, order.begin() + i + span);
+                        std::vector<size_t> rest(order.begin(), order.begin() + i);
+                        rest.insert(rest.end(), order.begin() + i + span, order.end());
+                        size_t const restLast = last - span;  // the last movable stop once the stretch is out
+                        std::vector<size_t> found;
+                        for (size_t at = 1; at <= restLast + 1; ++at)
+                        {
+                            for (bool const reversed : {false, true})
+                            {
+                                std::vector<size_t> candidate(rest.begin(), rest.begin() + at);
+                                if (reversed)
+                                    candidate.insert(candidate.end(), stretch.rbegin(), stretch.rend());
+                                else
+                                    candidate.insert(candidate.end(), stretch.begin(), stretch.end());
+                                candidate.insert(candidate.end(), rest.begin() + at, rest.end());
+                                double const changed = TourCost(candidate, cost);
+                                if (changed + 1e-3 < best)
+                                {
+                                    best = changed;
+                                    found = std::move(candidate);
+                                }
+                            }
+                        }
+
+                        if (!found.empty())
+                        {
+                            order = std::move(found);
+                            better = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<size_t> ShortestTour(std::vector<std::vector<float>> const& walks, bool fixedEnd, float& length)
+    {
+        size_t const count = walks.size();
+        length = 0.0f;
+        if (count < 2)
+            return std::vector<size_t>(count, 0);
+
+        // a leg without a walk costs more than all the walks there are together (no inf arithmetic in the sums)
+        double finite = 0.0;
+        for (auto const& row : walks)
+            for (float walk : row)
+                if (std::isfinite(walk))
+                    finite += walk;
+        float const none = float((finite + 1.0) * double(count));
+        std::vector<std::vector<float>> cost(walks);
+        for (auto& row : cost)
+            for (float& walk : row)
+                if (!std::isfinite(walk))
+                    walk = none;
+
+        size_t const end = count - 1;
+        std::vector<size_t> free;
+        for (size_t stop = 1; stop < count; ++stop)
+            if (!fixedEnd || stop != end)
+                free.push_back(stop);
+
+        // nearest neighbour: the next stop is the nearest one left
+        std::vector<size_t> nearest{0};
+        std::vector<bool> taken(count, false);
+        for (size_t step = 0; step < free.size(); ++step)
+        {
+            size_t next = count;
+            for (size_t stop : free)
+                if (!taken[stop] && (next == count || cost[nearest.back()][stop] < cost[nearest.back()][next]))
+                    next = stop;
+            taken[next] = true;
+            nearest.push_back(next);
+        }
+        if (fixedEnd)
+            nearest.push_back(end);
+
+        // cheapest insertion into start -> end, the stop farthest from both first
+        std::vector<size_t> inserted{0};
+        if (fixedEnd)
+            inserted.push_back(end);
+        auto const nearestEnd = [&](size_t stop)
+        { return fixedEnd ? std::min(cost[0][stop], cost[stop][end]) : cost[0][stop]; };
+        std::vector<size_t> byFar(free);
+        std::sort(byFar.begin(), byFar.end(),
+                  [&](size_t left, size_t right) { return nearestEnd(left) > nearestEnd(right); });
+        for (size_t stop : byFar)
+        {
+            size_t const limit = fixedEnd ? inserted.size() - 1 : inserted.size();  // never after the end
+            bool placed = false;
+            double bestAdd = 0.0;
+            size_t bestAt = limit;
+            for (size_t at = 1; at <= limit; ++at)
+            {
+                size_t const before = inserted[at - 1];
+                double add = cost[before][stop];
+                if (at < inserted.size())
+                    add += double(cost[stop][inserted[at]]) - double(cost[before][inserted[at]]);
+                if (!placed || add < bestAdd)
+                {
+                    placed = true;
+                    bestAdd = add;
+                    bestAt = at;
+                }
+            }
+            inserted.insert(inserted.begin() + bestAt, stop);
+        }
+
+        ImproveTour(nearest, cost, fixedEnd);
+        ImproveTour(inserted, cost, fixedEnd);
+        std::vector<size_t> const& best = TourCost(inserted, cost) < TourCost(nearest, cost) ? inserted : nearest;
+        length = float(TourCost(best, walks));  // +inf when even the best walk has a leg without one
+        return best;
+    }
+}

@@ -207,6 +207,33 @@ namespace Leader
             };
         std::map<ObjectGuid, PathVerdict> pathVerdicts;
         std::map<ObjectGuid, bool> pathVerdictLogged;  // the verdict last logged per mob (path_verdict)
+        // [lead204] the leader's planned visiting order of the on-path packs to the next boss (route_plan): planned
+        // once, followed by the route's pick, planned again only when a fact of it changes
+        struct PlannedStop
+        {
+            ObjectGuid anchor;             // the pack's mob the walk is measured to (a patrol: the patrol)
+            std::vector<ObjectGuid> mobs;  // the pack's mobs (SpawnsWith: one pack at spawn)
+            Position spot;                 // where it is met: the anchor's spawn point (a patrol: its forecast meet)
+            bool patrol = false;           // [lead205] a walker, met where its walk comes nearest to the plan
+            ObjectGuid meetsAt;            // [lead205] the stop whose fight its walk comes to (no walk of its own)
+        };
+        std::vector<PlannedStop> routePlan;       // in order, the next stop first
+        std::vector<PlannedStop> routePlanMeets;  // [lead205] the walkers that come to a stop's fight themselves
+        // [lead204] a stop the route refused from where the leader stood (a detour from here): planned again
+        // without it, back once the leader stands elsewhere (LEADER_COMMIT_MOVED_YD)
+        std::map<ObjectGuid, Position> planRefusedFrom;
+        ObjectGuid routePlanBoss;  // the boss the plan ends at (empty: none known)
+        float routePlanLength = 0.0f;
+        std::string routePlanWhy;  // why it was (re)planned last
+        // [lead204] the walks between plan spots, measured once per pair of anchors (the anchors' spots then)
+        struct PlanWalk
+        {
+            float length = -1.0f;  // < 0: no walk
+            Position from;
+            Position to;
+        };
+        std::map<std::pair<ObjectGuid, ObjectGuid>, PlanWalk> planWalks;
+        std::set<ObjectGuid> planPatrolNowLogged;      // [lead205] the patrols logged as taken where they meet the walk
         std::map<ObjectGuid, std::string> skipReason;  // why skipUntil holds it (the run's missing-boss report)
         // Where the leader stood when a target was skipped as unreachable: "unreachable" holds from there only. Once
         // the leader is elsewhere (dropped into Azjol-Nerub's lower kingdom, crossed a bridge, took an elevator) the

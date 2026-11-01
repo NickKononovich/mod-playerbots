@@ -1396,6 +1396,7 @@ namespace Leader::Dungeon
                     // [lead33] the leader's own pick: the route target unless the planner refused / held it, else the
                     // nearest idle mob the planner did not refuse (no tank pick)
                     Unit* leaderPick = nullptr;
+                    bool plannedPick = false;  // [lead204]
                     if (Leader::LEADER_NO_FORCING_TIMERS)
                     {
                         Unit* routeMob = route.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, route);
@@ -1408,15 +1409,32 @@ namespace Leader::Dungeon
                             IdleAggroCheck check{tank};
                             Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idle, check);
                             Cell::VisitObjects(tank, searcher, 60.0f);
+                            // [lead204] the leader's planned order first (its earliest stop), the nearest after it
+                            auto const planRank = [&group](ObjectGuid guid)
+                            {
+                                auto const& plan = group.Route().routePlan;
+                                for (size_t i = 0; i < plan.size(); ++i)
+                                    if (std::find(plan[i].mobs.begin(), plan[i].mobs.end(), guid) != plan[i].mobs.end())
+                                        return i;
+                                return plan.size();
+                            };
                             float best = 0.0f;
+                            size_t bestRank = 0;
                             for (Creature* mob : idle)
-                                if (!skipPick(mob->GetGUID()) &&
-                                    std::fabs(mob->GetPositionZ() - tank->GetPositionZ()) < 8.0f &&
-                                    (!leaderPick || tank->GetExactDist(mob) < best))
+                            {
+                                if (skipPick(mob->GetGUID()) ||
+                                    std::fabs(mob->GetPositionZ() - tank->GetPositionZ()) >= 8.0f)
+                                    continue;
+                                size_t const rank = planRank(mob->GetGUID());
+                                if (!leaderPick || rank < bestRank ||
+                                    (rank == bestRank && tank->GetExactDist(mob) < best))
                                 {
                                     leaderPick = mob;
                                     best = tank->GetExactDist(mob);
+                                    bestRank = rank;
                                 }
+                            }
+                            plannedPick = leaderPick && bestRank < group.Route().routePlan.size();
                         }
                     }
                     Unit* ownPick =
@@ -1426,7 +1444,9 @@ namespace Leader::Dungeon
                     if (Unit* picked = leaderPick ? leaderPick : ownPick)
                     {
                         inputs.pick = picked->GetGUID();
-                        pickWhy = picked->GetGUID() == group.RouteTarget() ? "route target" : "nearest pick";
+                        pickWhy = picked->GetGUID() == group.RouteTarget() ? "route target"
+                                  : plannedPick                            ? "planned order"
+                                                                           : "nearest pick";
                         // [lead18] LEADER_EDGE_FIRST: a room of linked packs is pulled from its edge inward
                         if (Leader::LEADER_EDGE_FIRST)
                         {

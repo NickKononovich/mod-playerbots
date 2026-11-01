@@ -1801,6 +1801,19 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return &found->second.samples;
     }
 
+    bool PatrolForecast(Creature* mob, std::vector<G3D::Vector3>& track, float& sampleSec)
+    {
+        Creature* walker = nullptr;
+        WaypointPath const* path = mob ? PatrolPath(mob, &walker) : nullptr;
+        std::vector<G3D::Vector3> const* forecast = path ? PatrolTrack(walker, path) : nullptr;
+        if (!forecast || forecast->empty())
+            return false;
+
+        track = *forecast;
+        sampleSec = PATROL_SAMPLE_SEC;
+        return true;
+    }
+
     // For each of the first `samples` samples of the track: the patrol is within `reach` of one of `points`, on its
     // floor, and sees it there (checked once per stretch in reach, at its closest sample, PATROL_LOS_CHECKS at most:
     // a stretch past them counts as seen).

@@ -51,6 +51,13 @@ namespace Leader::Travel
     // snap, or a walker's own position) lies farther than the tile's walkable climb from the navmesh's detail height
     // there: the sample z, the z before the snap, the navmesh z, the grid z, the vmap floor from both, the liquid
     void NoteHeightGap(Unit* walker, G3D::Vector3 const& point, float beforeSnap, char const* what);
+
+    // [lead204] The shortest open walk over the stops of `cost` (cost[a][b]: the walk from stop a to stop b, +inf
+    // when there is none): stop 0 is the start, with `fixedEnd` the last stop is the end (the next boss), else the
+    // walk ends at whichever stop comes last. Nearest neighbour and cheapest insertion, each improved by 2-opt and
+    // or-opt (segments of 1-3 stops), the shorter kept - the order tools/ideal_route.py computes. The order of the
+    // stops (0 first) and its `length`.
+    std::vector<size_t> ShortestTour(std::vector<std::vector<float>> const& cost, bool fixedEnd, float& length);
 }
 
 #endif
