@@ -21096,13 +21096,16 @@ namespace TestHarness
 
         // [lead40] the leader's reachability verdict of a mob for `walker`: the route walk to it (EvaluatePath) and the
         // skip_target detour metric (DETOUR_RATIO / DETOUR_EXTRA). Empty: reachable on a fair walk; else why not
-        std::string LeaderWalkVerdict(Player* walker, Creature* mob)
+        // [lead79] `onRoute`: the mob lies on the route's path (Retarget's route rules): the route IS that walk, so
+        // only "no walk at all" refuses it - a winding route is no detour (b122: "detour (534 yd for 102 yd)" on the
+        // way to Taragaman, which b100 walked fine)
+        std::string LeaderWalkVerdict(Player* walker, Creature* mob, bool onRoute = false)
         {
             PathResult const path = EvaluatePath(walker, mob);
             float const straight = walker->GetExactDist(mob);
             if (!path.reachable)
                 return Acore::StringFormat("unreachable (no walk for {:.0f} yd)", straight);
-            if (path.length > std::max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA))
+            if (!onRoute && path.length > std::max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA))
                 return Acore::StringFormat("detour ({:.0f} yd for {:.0f} yd)", path.length, straight);
             return std::string();
         }
@@ -22987,9 +22990,10 @@ namespace TestHarness
                 }
                 {
                     // [lead76] the Rest's line vs the member's mana, logged at the Rest's start and end
+                    // [lead79] logged at the Rest's start and end only (the line's text changes with the mana)
                     std::string const state = needsRest ? "rest: " + restWhy : std::string();
                     std::string& logged = lead.restLogged[guid];
-                    if (state != logged && (needsRest || !logged.empty()))
+                    if (needsRest != !logged.empty())
                     {
                         DecisionLog::Instance().Write(
                             run, "leader", "rest_line", guid, bot->GetName(), false,
@@ -24225,7 +24229,10 @@ namespace TestHarness
             {
                 lead.pickJudgedFor = mob->GetGUID();
                 lead.pickJudgedAt = tank->GetPosition();
-                std::string verdict = LeaderWalkVerdict(tank, mob->ToCreature());
+                auto const routeVerdict = party.pathVerdicts.find(mob->GetGUID());
+                bool const onRoute = mob->GetGUID() == party.target ||
+                                     (routeVerdict != party.pathVerdicts.end() && routeVerdict->second.on);
+                std::string verdict = LeaderWalkVerdict(tank, mob->ToCreature(), onRoute);
                 // [lead70] one verdict: the tank's own walk-in guards, run dry from where it stands (the same code
                 // that refuses "the tank's walk in for sight" after the order)
                 if (verdict.empty() && committed.kind == "engage")
@@ -24609,7 +24616,7 @@ namespace TestHarness
                                                         picked->GetDefaultMovementType() == RANDOM_MOTION_TYPE);
                     std::string const verdict = picked && !walksItself && !picked->IsDungeonBoss() &&
                                                         !picked->isWorldBoss() && !picked->IsInCombat()
-                                                    ? LeaderWalkVerdict(tank, picked)
+                                                    ? LeaderWalkVerdict(tank, picked, onPath(inputs.pick))
                                                     : std::string();
                     if (!verdict.empty())
                     {
