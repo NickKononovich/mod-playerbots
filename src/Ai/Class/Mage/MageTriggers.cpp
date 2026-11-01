@@ -282,11 +282,7 @@ bool ColdSnapTrigger::IsActive()
         !bot->HasSpell(SPELL_ICY_VEINS) || !bot->HasSpellCooldown(SPELL_ICY_VEINS) || bot->HasAura(SPELL_ICY_VEINS))
         return false;
 
-    // the 8 min cooldown is kept for bosses (or an ordered / lust burst), never spent on trash
-    Unit* target = AI_VALUE(Unit*, "current target");
-    if (!(target && target->ToPlayer()) && !ai::raidutil::IsBossUnit(target) && !ai::raidutil::IsBurstWindow(botAI))
-        return false;
-
+    // [rot26] wowsims mage__frost: Cold Snap whenever Icy Veins is on cooldown (no boss-only rule)
     return BoostTrigger::IsActive();
 }
 

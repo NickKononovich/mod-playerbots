@@ -286,9 +286,11 @@ bool PremeditationTrigger::IsActive()
 
 bool ShadowDanceTrigger::IsActive()
 {
-    // The dance is spent on Ambushes (60 energy, 40 with Slaughter from the Shadows): start it with energy pooled
-    constexpr uint32 SHADOW_DANCE_MIN_ENERGY = 70;
-    return bot->GetPower(POWER_ENERGY) >= SHADOW_DANCE_MIN_ENERGY && BoostTrigger::IsActive();
+    // [rot26] wowsims shadow_dance.go: the dance at combo points <= 2 and energy >= 60 (was 70, any combo points)
+    constexpr uint32 SHADOW_DANCE_MIN_ENERGY = 60;
+    constexpr uint8 SHADOW_DANCE_MAX_COMBO_POINTS = 2;
+    return bot->GetPower(POWER_ENERGY) >= SHADOW_DANCE_MIN_ENERGY &&
+           AI_VALUE2(uint8, "combo", "current target") <= SHADOW_DANCE_MAX_COMBO_POINTS && BoostTrigger::IsActive();
 }
 
 // [melee_audit_b30] Slice and Dice fired at any combo point and outranked every finisher (HIGH+5): it was

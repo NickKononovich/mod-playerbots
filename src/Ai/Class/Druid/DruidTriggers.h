@@ -223,6 +223,11 @@ public:
             uint32 const tigersFury = AI_VALUE2(uint32, "spell id", "tiger's fury");
             if (tigersFury && bot->GetSpellCooldownDelay(tigersFury) < BERSERK_TF_MIN_COOLDOWN_MS)
                 return false;
+
+            // [rot26] wowsims feral berserkNow: with the own Rip up and no Clearcasting
+            Unit* target = AI_VALUE(Unit*, "current target");
+            if (botAI->HasAura("clearcasting", bot) || !target || !botAI->GetAura("rip", target, true))
+                return false;
         }
 
         return BoostTrigger::IsActive();

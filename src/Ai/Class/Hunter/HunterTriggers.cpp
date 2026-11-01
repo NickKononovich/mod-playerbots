@@ -337,7 +337,10 @@ bool RapidFireTrigger::IsActive()
     if (ai::raidutil::ShouldHoldBurstForLust(botAI))
         return false;
 
-    if (ai::raidutil::IsInstanceMap(bot) || ai::raidutil::IsBossUnit(target))
+    // [rot26] wowsims hunter APLs: Rapid Fire on cooldown, trash included (it was boss-only in instances)
+    if (ai::raidutil::IsInstanceMap(bot))
+        return true;
+    if (ai::raidutil::IsBossUnit(target))
         return ai::raidutil::IsBossEngaged(botAI, target);
 
     // outdoors / solo: the old "losing this fight" heuristic of BoostTrigger
