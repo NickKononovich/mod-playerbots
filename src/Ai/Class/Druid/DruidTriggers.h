@@ -175,8 +175,8 @@ public:
         if (botAI->HasAura("prowl", bot) || botAI->HasAura("berserk", bot))
             return false;
 
-        // [rot25] wowsims feral ffNow: no Clearcasting, energy under CAT_FF_MAX_ENERGY, and not while a due Rip (5 points,
-        // no own Rip on the target) has its energy
+        // [rot25] wowsims feral ffNow: no Clearcasting, energy under CAT_FF_MAX_ENERGY, and not while a due Rip
+        // (5 points, no own Rip on the target) has its energy
         uint8 const energy = AI_VALUE2(uint8, "energy", "self target");
         if (botAI->HasAura("clearcasting", bot) || energy >= CAT_FF_MAX_ENERGY)
             return false;
