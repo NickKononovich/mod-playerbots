@@ -2757,9 +2757,17 @@ namespace Leader::Dungeon
                     // on - its threat below the tank's on THAT mob (ThreatManager, no number of ours): the leader's
                     // focus mob first, else the next of the kill order; AoE only while every fight mob in its reach
                     // leaves it headroom
+                    // [lead163] b178 rfc-h 5D (20261101-171156): the unholy DK pulled aggro 13 times, tps 2126 at
+                    // 970 dps, and died - headroom read the threat it had, not the threat its next cast adds (Icy
+                    // Touch, Death and Decay, Blood Boil). Headroom: its threat plus its own threat rate on this mob
+                    // over one global cooldown (the game's 1.5 s) stays below the tank's
+                    constexpr float HEADROOM_GCD_SEC = 1.5f;
+                    float const fightSec =
+                        lead.fightStartMs ? std::max(getMSTimeDiff(lead.fightStartMs, now) / 1000.0f, 1.0f) : 1.0f;
                     auto const headroomOn = [&](Unit* mob)
                     {
-                        return mob->GetThreatMgr().GetThreat(bot) < mob->GetThreatMgr().GetThreat(tank);
+                        float const mine = mob->GetThreatMgr().GetThreat(bot);
+                        return mine + mine / fightSec * HEADROOM_GCD_SEC < mob->GetThreatMgr().GetThreat(tank);
                     };
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
