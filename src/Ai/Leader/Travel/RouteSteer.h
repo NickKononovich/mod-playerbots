@@ -87,7 +87,6 @@ namespace Leader::Travel
     // over it (ChooseTargetActions.cpp careful_guarantee_trim), plus GUARANTEE_EXECUTE_MS for the pull.
 
 
-    constexpr uint32 PATROL_WAIT_HOLD_MS = 30 * IN_MILLISECONDS;  // [patrol_wait_spot] the stand there at most
 
     // [held_for_now_cap] a "held for now" with the group fully ready this long is a refusal (under the 120 s idle
     // stall watchdog)

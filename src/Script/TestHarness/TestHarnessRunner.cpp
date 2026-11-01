@@ -198,7 +198,6 @@ namespace TestHarness
         using Leader::Dungeon::CAREFUL_REFUSED_SKIP_MS;  // [lead107] LeaderPlan.h (3 min)
         using Leader::Travel::ROUTE_ADOPT_GROUP_ESCORT;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_CAREFUL_GUARANTEE_HOLD;  // [lead107] RouteSteer.h
-        using Leader::Travel::PATROL_WAIT_HOLD_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_LIFT_REFUSED_SKIP;  // [lead107] RouteTargets.h
         using Leader::Travel::LIFT_REFUSALS_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::SAME_ENTRANCE_RANGE;  // [lead107] RouteTargets.h
@@ -1093,9 +1092,6 @@ namespace TestHarness
         using Leader::Travel::ROUTE_PATROL_HOLD;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_HOLD_SCAN;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_HOLD_MARGIN;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_HOLD_MAX_MS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_HOLD_COOLDOWN_MS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_HOLD_LINGER_MS;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_LANE_HOLD;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_LANE_DEEPER;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_LANE_SAMPLE;  // [lead107] RoutePatrol.h
@@ -1125,9 +1121,6 @@ namespace TestHarness
         using Leader::Travel::PATROL_STEP_BACK_MIN;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_STEP_BACK_ARRIVED;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_STEP_BACK_GONE;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_STEP_BACK_MAX_MS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_STEP_BACK_COOLDOWN_MS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_STEP_BACK_RETRY_MS;  // [lead107] RoutePatrol.h
         using Leader::Travel::PatrolStepBackState;  // [lead107] RoutePatrol.h
         using Leader::Travel::patrolStepBacks;  // [lead107] RoutePatrol.h
 

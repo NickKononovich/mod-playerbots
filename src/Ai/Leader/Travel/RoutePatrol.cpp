@@ -471,7 +471,8 @@ using namespace Leader::Fight;
         uint32 const now = getMSTime();
         PatrolHold& hold = patrolHolds[group.InstanceId()];
         // [b48_scholo] the cooldown keeps the planner / "comes" holds off only; the lane hold has the wait budget
-        bool const cooling = !leaderOwns && hold.cooldownUntilMs && int32(now - hold.cooldownUntilMs) < 0;
+        // [lead133] no cooldown by time (PATROL_HOLD_COOLDOWN_MS 20 s was the old clock): a hold starts on its facts
+        bool const cooling = false;
         auto const release = [&hold]()
         {
             hold.sinceMs = 0;
@@ -558,8 +559,8 @@ using namespace Leader::Fight;
         }
         // [b48_scholo] PATROL_HOLD_LINGER_MS: the patrol walked out of the hold's reach (its turn): the hold lasts
         bool lingering = false;
-        if (why.empty() && !cooling && hold.sinceMs && !hold.lane && !hold.patrol.IsEmpty() &&
-            getMSTimeDiff(hold.lastMatchMs, now) <= PATROL_HOLD_LINGER_MS)
+        // [lead133] the linger lasts while the patrol is still near (the checks below), not PATROL_HOLD_LINGER_MS 6 s
+        if (why.empty() && !cooling && hold.sinceMs && !hold.lane && !hold.patrol.IsEmpty())
         {
             Creature* last = leader->GetMap()->GetCreature(hold.patrol);
             if (last && last->IsAlive() && !last->IsInCombat() &&
@@ -573,9 +574,8 @@ using namespace Leader::Fight;
                 {
                     hold.lingerLogged = true;
                     LOG_INFO("playerbots", "[b48_scholo] patrol_hold_linger {}: patrol {} walked out of the "
-                             "hold's reach ({:.1f} yd from the leader): the hold lasts up to {} s more ({})",
-                             leader->GetName(), last->GetName(), leader->GetExactDist(last),
-                             PATROL_HOLD_LINGER_MS / IN_MILLISECONDS, hold.why);
+                             "hold's reach ({:.1f} yd from the leader): the hold lasts while it is near ({})",
+                             leader->GetName(), last->GetName(), leader->GetExactDist(last), hold.why);
                 }
             }
         }
@@ -585,14 +585,9 @@ using namespace Leader::Fight;
         // [lead4] not for the leader: its patrol decision is a wait with a forecast window or a pull, no budget
         if (!leaderOwns && comesMob && ChargePatrolWait(group.InstanceId(), comesMob->GetGUID(), now, !hold.sinceMs))
             return release();
+        // [lead133] the hold lasts while its reason holds (PATROL_HOLD_MAX_MS 30 s was the old clock)
         if (!hold.sinceMs)
             hold.sinceMs = now ? now : 1;
-        else if (!leaderOwns && !laneHold && getMSTimeDiff(hold.sinceMs, now) > PATROL_HOLD_MAX_MS)
-        {
-            hold.cooldownUntilMs = now + PATROL_HOLD_COOLDOWN_MS;
-            hold.timedOut = true;
-            return release();
-        }
         if (!lingering)
         {
             // [b48_scholo]
@@ -685,7 +680,7 @@ using namespace Leader::Fight;
                     group.LogEvent("patrol_step_back", JsonObject().Str("state", "done").Str("why", owned));
                     state.patrol.Clear();
                     state.arrived = false;
-                    state.cooldownUntilMs = now + PATROL_STEP_BACK_COOLDOWN_MS;
+                    state.cooldownUntilMs = now ? now : 1;  // ended
                 }
                 return false;
             }
@@ -707,7 +702,7 @@ using namespace Leader::Fight;
                 {
                     state.patrol.Clear();
                     state.arrived = false;
-                    state.cooldownUntilMs = now + PATROL_STEP_BACK_COOLDOWN_MS;
+                    state.cooldownUntilMs = now ? now : 1;  // ended
                 }
                 LOG_INFO("playerbots", "[b47_patrol] patrol_handover {}: patrol {} {} ({:.1f} yd) waited for long "
                          "enough: the route target, the tank's planner pulls it", leader->GetName(), patrol->GetName(),
@@ -745,8 +740,6 @@ using namespace Leader::Fight;
                 end = "patrol dead";
             else if (patrol->IsInCombat() || leader->IsInCombat() || group.InCombat())
                 end = "fight";
-            else if (getMSTimeDiff(state.sinceMs, now) > PATROL_STEP_BACK_MAX_MS)
-                end = "timeout";
             else if (state.arrived && gap > state.reach + PATROL_STEP_BACK_GONE)
                 end = "walked on";
             else if (!LeaderOwnsPatrols(group) && ChargePatrolWait(group.InstanceId(), state.patrol, now, false))
@@ -767,7 +760,7 @@ using namespace Leader::Fight;
                              .Num("sec", getMSTimeDiff(state.sinceMs, now) / IN_MILLISECONDS).Real("gap", gap));
                 state.patrol.Clear();
                 state.arrived = false;
-                state.cooldownUntilMs = now + PATROL_STEP_BACK_COOLDOWN_MS;
+                state.cooldownUntilMs = now ? now : 1;  // ended
                 return false;
             }
             // [b48_patrol] hop by hop along the trail (PatrolStepBackSpot), never a free walk to the spot
@@ -788,9 +781,9 @@ using namespace Leader::Fight;
             return true;
         }
 
-        if (leader->IsInCombat() || group.InCombat() ||
-            (state.cooldownUntilMs && int32(now - state.cooldownUntilMs) < 0) ||
-            (state.noSpotMs && getMSTimeDiff(state.noSpotMs, now) < PATROL_STEP_BACK_RETRY_MS))
+        // [lead133] no cooldown and no retry clock (PATROL_STEP_BACK_COOLDOWN_MS 20 s / PATROL_STEP_BACK_RETRY_MS 5 s):
+        // a step back starts on its facts; a patrol handed over is the route's target (below)
+        if (leader->IsInCombat() || group.InCombat())
             return false;
         // [b48_patrol] a patrol handed to the tank's planner is the route target now (ohb-h-5C-16: the Tracking Hound's
         // handover at 652 s, then a step back from the Sentry at 653 s walked the other way): no step back meanwhile

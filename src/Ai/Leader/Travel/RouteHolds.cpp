@@ -415,7 +415,7 @@ namespace Leader::Travel
                 }
                 else
                     add("not arrived");  // [b43_harn] arrivedMs 0: no stop reached yet
-                if (route.patrolWaitUntilMs && int32(route.patrolWaitUntilMs - now) > 0)
+                if (PatrolWaitOn(group))
                     add("patrol wait");
                 if (leader->IsInCombat())
                     add(Acore::StringFormat("leader flagged in combat, {} attackers",

@@ -2197,8 +2197,7 @@ namespace Leader::Travel
         // pulls one; the leader stands, the planner meets it where the group is. A running patrol wait spot walk
         // ([patrol_wait_spot]) is the planner's own patrol answer and keeps its waypoint.
         if (!LeaderOwnsPatrols(group) &&  // [lead4] the leader's patrol decision ran above (LeaderPatrolTick)
-            !(routeState.patrolWaitUntilMs && routeState.patrolWaitTarget == routeState.target &&
-              int32(routeState.patrolWaitUntilMs - getMSTime()) > 0))
+            !PatrolWaitOn(group))
         {
             std::string const patrolWhy = PatrolHoldWhy(group, leader);
             PatrolHold& hold = patrolHolds[group.InstanceId()];
@@ -2496,8 +2495,7 @@ namespace Leader::Travel
 
         // [patrol_wait_spot] standing at the patrol wait spot: the tank's own planner pulls once the patrol is alone or
         // past; the walk back to the target waits until then (PATROL_WAIT_HOLD_MS at most).
-        if (routeState.patrolWaitUntilMs && routeState.patrolWaitTarget == routeState.target &&
-            int32(routeState.patrolWaitUntilMs - now) > 0 && !leader->IsInCombat())
+        if (PatrolWaitOn(group) && !leader->IsInCombat())
             return;
         // The route of this tick, and where it enters the aggro reach of an idle mob around the target (ApproachStop):
         // the waypoint stops there, and standing there is the arrival.
@@ -2911,9 +2909,7 @@ namespace Leader::Travel
                             PartyRefusal(group, blocker->GetGUID(), holdHopeless,
                                                            holdWaitMs, holdWhy) &&
                             holdWhy.rfind("held for now", 0) == 0;
-                        bool const patrolWait = routeState.patrolWaitMs &&
-                                                routeState.patrolWaitTarget == routeState.target &&
-                                                getMSTimeDiff(routeState.patrolWaitMs, now) <= PATROL_WAIT_HOLD_MS;
+                        bool const patrolWait = PatrolWaitOn(group);
                         plannerHoldsHere = !leader->IsInCombat() && (targetHeld || blockerHeld || patrolWait) &&
                                            !bossInvolved;
                         // a sight point taken before the hold is left: back to the edge stop
@@ -4076,8 +4072,7 @@ namespace Leader::Travel
                 // happens where the group stands).
                 if (!LeaderOwnsPatrols(group) &&  // [lead4] the leader's patrol decision owns the wait's spot
                     refusalWhy.find("patrol wait") != std::string::npos &&
-                    (routeState.patrolWaitTarget != routeState.target || !routeState.patrolWaitMs ||
-                     getMSTimeDiff(routeState.patrolWaitMs, now) > PATROL_WAIT_HOLD_MS))
+                    (routeState.patrolWaitTarget != routeState.target || !routeState.patrolWaitMs))
                 {
                     routeState.patrolWaitMs = now ? now : 1;
                     routeState.patrolWaitWhy = refusalWhy;
@@ -4086,7 +4081,7 @@ namespace Leader::Travel
                     Creature* nearMob = nullptr;
                     if (PatrolWaitSpot(leader, spot, nearMob))
                     {
-                        routeState.patrolWaitUntilMs = now + PATROL_WAIT_HOLD_MS;
+                        routeState.patrolWaitUntilMs = now ? now : 1;  // on: while PatrolWaitOn
                         group.SetLeaderWaypoint(leader, spot.x, spot.y, spot.z);
                         group.LogEvent("patrol_wait_spot",
                                  JsonObject().Str("why", refusalWhy).Str("idleMob", nearMob->GetName())

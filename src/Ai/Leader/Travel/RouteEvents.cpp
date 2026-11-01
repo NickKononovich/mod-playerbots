@@ -501,6 +501,18 @@ namespace Leader::Travel
         return true;
     }
 
+    bool PatrolWaitOn(LeaderGroup& group)
+    {
+        GroupRouteState& routeState = group.Route();
+        if (!routeState.patrolWaitUntilMs || routeState.patrolWaitTarget != routeState.target)
+            return false;
+        bool hopeless = false;
+        uint32 waitMs = 0;
+        std::string why;
+        return PartyRefusal(group, routeState.target, hopeless, waitMs, why) &&
+               why.find("patrol wait") != std::string::npos;
+    }
+
     bool PartyRefusal(LeaderGroup& group, ObjectGuid mob, bool& hopeless, uint32& waitMs, std::string& why)
     {
         if (!LeaderPicksFor(group))

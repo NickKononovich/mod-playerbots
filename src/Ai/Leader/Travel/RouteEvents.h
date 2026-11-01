@@ -313,6 +313,9 @@ namespace Leader::Travel
     bool LeaderOwnWalkStalled(LeaderGroup& group, Player* leader, G3D::Vector3 const& goal);
 
     bool PartyRefusal(LeaderGroup& group, ObjectGuid mob, bool& hopeless, uint32& waitMs, std::string& why);
+    // [lead133] the group stands at its patrol wait spot while the planner still holds the target for the patrol
+    // ("patrol wait"), not for PATROL_WAIT_HOLD_MS
+    bool PatrolWaitOn(LeaderGroup& group);
 
     // [b32_pos] A progress step (EventSpotDef::progressData) that was reached (eventSpotState 1, not 2 "no path")
     // and whose instance progress is still below progressMin: the group stays and its trigger re-fires.

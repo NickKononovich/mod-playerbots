@@ -145,9 +145,7 @@ namespace Leader::Travel
 
     constexpr float PATROL_HOLD_MARGIN = 12.0f;  // the walk of a harness tick plus the patrol's own walk
 
-    constexpr uint32 PATROL_HOLD_MAX_MS = 30 * IN_MILLISECONDS;
 
-    constexpr uint32 PATROL_HOLD_COOLDOWN_MS = 20 * IN_MILLISECONDS;
 
     // [b48_scholo] scholo-h 20261026-111724-scholo-h-5C-4 (378-398 s, wipe 443-453 s): the hold "patrol Necrofiend
     // 37.1 yd from ... (reach 38.0): it comes to the group" ended at 391 s ("done", no timeout) because the
@@ -164,7 +162,6 @@ namespace Leader::Travel
     //   stands now, holds too, whatever the patrol's position. Not subject to the cooldown or PATROL_HOLD_MAX_MS:
     //   the PATROL_WAIT_BUDGET hands the patrol to the tank's planner after 60 s.
     // - HaltLeaderWalk: a hold stops the leader's walk to the harness waypoint under way.
-    constexpr uint32 PATROL_HOLD_LINGER_MS = 6 * IN_MILLISECONDS;
 
     constexpr bool PATROL_LANE_HOLD = true;
 
@@ -230,11 +227,8 @@ namespace Leader::Travel
 
     constexpr float PATROL_STEP_BACK_GONE = 10.0f;    // the patrol this far past its reach of the spot walked on
 
-    constexpr uint32 PATROL_STEP_BACK_MAX_MS = 45 * IN_MILLISECONDS;
 
-    constexpr uint32 PATROL_STEP_BACK_COOLDOWN_MS = 20 * IN_MILLISECONDS;
 
-    constexpr uint32 PATROL_STEP_BACK_RETRY_MS = 5 * IN_MILLISECONDS;  // after a search that found no spot
 
     struct PatrolStepBackState
     {
