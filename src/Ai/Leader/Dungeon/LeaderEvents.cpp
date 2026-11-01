@@ -2352,8 +2352,17 @@ namespace Leader::Dungeon
                     lead.combatSpots.erase(guid);
                     moved = true;
                 }
+                // [lead190] the chase of a walked-off target holds until the member is in its melee reach again
+                else if (auto const chase = lead.meleeChase.find(guid);
+                         melee && chase != lead.meleeChase.end() && chase->second == target->GetGUID() &&
+                         !bot->IsWithinMeleeRange(target))
+                {
+                    Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2), "chase: behind the target");
+                    moved = true;
+                }
                 else if (Leader::LEADER_ANCHORED_SPOTS)
                 {
+                    lead.meleeChase.erase(guid);
                     // [lead18] anchored: kept for the whole fight while it fits; a target change alone never moves
                     // anyone; a new spot is the nearest that fits (from where the member stands), else a fresh one
                     std::string breaks;
@@ -2377,6 +2386,24 @@ namespace Leader::Dungeon
                         if (breaks == "heal reach")
                             breaks.clear();
                         lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                        // [lead190] b180 rfc-h 5G 103.2-105.0 s: the ret paladin's spot "behind" a Ragefire Shaman
+                        // that walked off broke "out of melee reach" every tick, each new StandAt stopped its walk to
+                        // the last one (member_ack "stops its walk") - it never moved, out of its Consecration and
+                        // its target. A melee member's held spot for this target that the target walked away from is
+                        // the chase: one Follow behind that mob (lead156), the spot again once it stands
+                        if (melee && found->second.first == target->GetGUID() &&
+                            breaks.rfind("out of melee reach", 0) == 0)
+                        {
+                            if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
+                                                          "chase: behind the target"))
+                                logEvent(bot, "Follow", JsonObject().Str("why", "chase: behind the target")
+                                                            .Str("target", target->GetName()));
+                            lead.combatSpots.erase(guid);
+                            lead.meleeChase[guid] = target->GetGUID();
+                            found = lead.combatSpots.end();
+                            breaks.clear();
+                            moved = true;
+                        }
                     }
                     // [lead38] no first spot for a ranged / healer while the target runs in: it stays (and casts)
                     if (breaks == "first spot" && target->isMoving() &&
