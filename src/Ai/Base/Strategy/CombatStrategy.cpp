@@ -85,8 +85,10 @@ TankFaceStrategy::TankFaceStrategy(PlayerbotAI* botAI) : Strategy(botAI) {}
 
 std::vector<NextAction> TankFaceStrategy::getDefaultActions()
 {
+    // [lead159] b176: "tank face (N) ran first" pre-empted the rotation 10x - the pack's turn waits for a tick the
+    // rotation leaves free (its GCD), below the rotation bands (ACTION_HIGH)
     return {
-        NextAction("tank face", ACTION_MOVE)
+        NextAction("tank face", ACTION_NORMAL + 9.0f)
     };
 }
 

@@ -619,6 +619,16 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         if (!target->isMoving() &&
             bot->GetExactDist2d(x, y) <= std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE))
             return false;
+        // [lead159] b176 20261101-163239: "leader move order" executed in 20 % of the shaman's fight samples and
+        // pre-empted Stormstrike 60x, Earth Shock 54x, Lava Lash 40x - the chase (lead156) re-walked every tick. A walk
+        // already heading for the place (within the follow's tolerance), or a chased mob already in melee reach, is no
+        // work: the core movement carries it, the rotation runs
+        float const tolerance = std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE);
+        LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
+        if (bot->isMoving() && std::hypot(last.lastMoveToX - x, last.lastMoveToY - y) <= tolerance)
+            return false;
+        if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target))
+            return false;
         if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
             return true;
         // [lead40] b89 rfc-h 57.8 s: Rtshaab "member_refusal: the member's guard refused the follow walk (ledge /
@@ -651,7 +661,8 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     {
         Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
                             "on the spot");
-        return true;
+        // [lead159] standing on the spot is no work: the tick is the rotation's (it was executed every tick)
+        return false;
     }
     // [lead27] already walking there: the same move again is no refusal
     // [lead44] ... and no execution either: the member's other actions run meanwhile (no starvation)

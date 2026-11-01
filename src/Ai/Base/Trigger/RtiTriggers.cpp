@@ -5,6 +5,7 @@
  */
 
 #include "RtiTriggers.h"
+#include "LeaderOrders.h"  // [lead159] LedBot
 #include "AttackersValue.h"  // [b44_st]
 #include "KillOrder.h"
 #include "Playerbots.h"
@@ -81,6 +82,11 @@ bool RtiCcTrigger::IsActive()
 bool NeedTankKillMarksTrigger::IsActive()
 {
     if (!KillOrder::IsTrashFight(bot) || !PlayerbotAI::IsMainTank(bot) || RaidMarkOwnership::IsOwned(bot))
+        return false;
+    // [lead159] b176 20261101-163239: "tank kill marks" executed in 10 % of the tank's fight samples and pre-empted
+    // Shield of Righteousness 18x, Holy Shield 7x. A led tank's kill order is the leader's (its Attack events): no
+    // own raid marks taking the tank's tick
+    if (Leader::LedBot(bot))
         return false;
 
     TankKillMarks const& marks = context->GetValue<TankKillMarks>("tank kill marks")->RefGet();
