@@ -469,6 +469,7 @@ namespace Leader::Travel
         if (why.empty())
             return false;
         route.nextRetargetMs = 0;
+        route.starterUsedSinceRetarget = false;
         route.retargetKills = kills;
         route.retargetPullEndMs = group.LastPullEndMs();
         return true;

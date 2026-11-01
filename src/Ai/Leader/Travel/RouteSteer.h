@@ -92,7 +92,6 @@ namespace Leader::Travel
     // before a boss counts as "not pulled" (Oculus heroic 2026-10-25: Drakos, who never aggroes by sight, was
     // skipped after 10 s while the tank was held).
 
-    constexpr uint32 WING_DONE_NO_TARGET_MS = 3 * IN_MILLISECONDS;
 
     // [st-guard-approach] the approach point counts as reached within this; on the guard's floor (SAME_FLOOR_DZ)
     // and no farther from it than the point + slack, the point is skipped.
@@ -252,7 +251,6 @@ namespace Leader::Travel
 
     constexpr float WAYPOINT_REACHED_SWIM = 3.0f;
 
-    constexpr uint32 SWIM_BACK_MAX_MS = 2 * MINUTE * IN_MILLISECONDS;
 
     constexpr bool ROUTE_TWIN_SKIP = true;
 
@@ -748,7 +746,6 @@ namespace Leader::Travel
 
     // [b33_mech2] A boss's body pull waits for his killable area trash (BossAreaBodyPullHold) at most this long in
     // all, from its first hold; then it goes, logged "body pull: given up" (no deadlock on trash nothing pulls).
-    constexpr uint32 BOSS_AREA_BODY_PULL_HOLD_MS = 4 * MINUTE * IN_MILLISECONDS;
 
     extern std::map<std::pair<uint32, ObjectGuid>, uint32> bossAreaBodyPullHoldMs;  // {party seq, boss} -> first hold
 
@@ -759,7 +756,6 @@ namespace Leader::Travel
     // door that stays shut for good (world thread only).
     extern std::unordered_map<uint32, uint32> lockedInSince;
 
-    constexpr uint32 LOCKED_IN_FAIL_MS = 2 * MINUTE * IN_MILLISECONDS;
 
     // [dmw-guard-body-pull] A living guard of a guarded door that is still closed (PendingDoorGuards).
     bool IsPendingDoorGuard(Map* map, Creature const* creature);

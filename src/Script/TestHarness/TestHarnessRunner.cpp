@@ -202,7 +202,6 @@ namespace TestHarness
         using Leader::Travel::LIFT_REFUSALS_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::SAME_ENTRANCE_RANGE;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_WING_DONE_CHANGE;  // [lead107] RouteTargets.h
-        using Leader::Travel::WING_DONE_NO_TARGET_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::GUARD_APPROACH_ARRIVE;  // [lead107] RouteSteer.h
         using Leader::Travel::GUARD_APPROACH_SLACK;  // [lead107] RouteSteer.h
         using Leader::Travel::GUARD_REFUSALS_BEFORE_BODY_PULL;  // [lead107] RouteSteer.h
@@ -514,7 +513,6 @@ namespace TestHarness
         using Leader::Travel::SWIM_TRAIL_MAX;  // [lead107] RouteSteer.h
         using Leader::Travel::SWIM_CLIMB_DZ;  // [lead107] RouteSteer.h
         using Leader::Travel::WAYPOINT_REACHED_SWIM;  // [lead107] RouteSteer.h
-        using Leader::Travel::SWIM_BACK_MAX_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_STARTER_REARM;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_GATHER_MEMBERS;  // [lead107] RouteEvents.h
         // - FlyToPortal descends beside the portal (FLY_SIDE_DISTANCE out on its axis), not onto it.
@@ -1186,7 +1184,6 @@ namespace TestHarness
         using Leader::Travel::bossAreaUnskips;  // [lead107] RouteTargets.h
         using Leader::Travel::bossAreaHoldLogMs;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_AREA_SCAN_RANGE;  // [lead107] RouteTargets.h
-        using Leader::Travel::BOSS_AREA_BODY_PULL_HOLD_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::bossAreaBodyPullHoldMs;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ROUTE_BOSS_FOOTPRINT;  // [lead107] RouteTargets.h
@@ -1231,7 +1228,6 @@ namespace TestHarness
         using Leader::Travel::SHUT_FOR_GOOD_DOORS;  // [lead107] RouteLegs.h
 
         using Leader::Travel::lockedInSince;  // [lead107] RouteSteer.h
-        using Leader::Travel::LOCKED_IN_FAIL_MS;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ShutForGoodDoorSlot;  // [lead107] RouteLegs.h
 

@@ -1808,6 +1808,7 @@ namespace Leader::Travel
         else if (starter.def->kind == StarterKind::QuestTurnIn)
             kind = "quest";
         routeState.lastStarterUseMs = getMSTime();
+        routeState.starterUsedSinceRetarget = true;  // [lead135] the route is built again first
         starter.lastUseMs = routeState.lastStarterUseMs ? routeState.lastStarterUseMs : 1;
         group.LogEvent("event_start", JsonObject().Str("note", starter.def->note).Str("kind", kind)
                                            .Num("entry", object->GetEntry()).Num("uses", starter.uses)

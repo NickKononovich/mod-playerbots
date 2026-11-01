@@ -1890,15 +1890,23 @@ namespace Leader::Travel
         // [link_stale_end] a link chosen and never walked (WalkToLink runs only with no target: dmw-n 20261025-
         // 163739-4 kept "walking to it, 1527 s, 0 crossed" for Immol'thar long after his kill from the ledge) ends
         // after LINK_STALE_MS.
-        constexpr uint32 LINK_DROP_ALLOW_MS = 5 * IN_MILLISECONDS;
-        constexpr uint32 LINK_STALE_MS = 10 * MINUTE * IN_MILLISECONDS;
+        // [lead135] the ledge-drop permit is renewed on every look while the crossing runs (its 5 s is the window
+        // between two looks, no decision); a link is stale when what it was chosen for is dead, gone or no longer
+        // the route's target (LINK_STALE_MS 10 min was the old clock)
+        constexpr uint32 LINK_DROP_PERMIT_MS = 5 * IN_MILLISECONDS;
         if (routeState.linkIdx >= 0)
         {
             if (routeState.linkLeaderCrossed)
                 for (LeaderGroup::MemberInfo const& member : group.Members())
-                    AllowLedgeDrop(member.guid, LINK_DROP_ALLOW_MS);
-            else if (routeState.linkSinceMs && getMSTimeDiff(routeState.linkSinceMs, getMSTime()) > LINK_STALE_MS)
-                EndLink(group, "stale (never walked)");
+                    AllowLedgeDrop(member.guid, LINK_DROP_PERMIT_MS);
+            else if (!routeState.linkFor.IsEmpty())
+            {
+                WorldObject* linkGoal = ObjectAccessor::GetWorldObject(*leader, routeState.linkFor);
+                Unit const* linkUnit = linkGoal ? linkGoal->ToUnit() : nullptr;
+                if (!linkGoal || (linkUnit && !linkUnit->IsAlive()) ||
+                    (!routeState.target.IsEmpty() && routeState.target != routeState.linkFor))
+                    EndLink(group, "stale (its target gone or changed)");
+            }
         }
 
         // [pull_estimate_vs_actual] each planned pull, once over: the planner's estimate against what engaged
@@ -2032,7 +2040,8 @@ namespace Leader::Travel
                     routeState.swimTrail.push_back(leader->GetPosition());
                 }
             }
-            if (routeState.swimBack && getMSTimeDiff(routeState.swimBackSinceMs, nowMs) > SWIM_BACK_MAX_MS)
+            // [lead135] given up when the trail back is used up (SWIM_BACK_MAX_MS 2 min was the old clock)
+            if (routeState.swimBack && routeState.swimTrail.size() < 2)
             {
                 group.LogEvent("swim_back",
                          JsonObject().Str("action", "given up").Num("trail", uint32(routeState.swimTrail.size())));
@@ -2128,7 +2137,8 @@ namespace Leader::Travel
                                                      .Real("y", leader->GetPositionY())
                                                      .Real("z", leader->GetPositionZ()));
                 }
-                else if (getMSTimeDiff(since, lockNow) >= LOCKED_IN_FAIL_MS)
+                // [lead135] locked in is the fact: the run ends with it (no LOCKED_IN_FAIL_MS wait)
+                if (since)
                 {
                     lockedInSince.erase(group.Run().runSeq);
                     group.FinishRun("failed",
@@ -2345,9 +2355,10 @@ namespace Leader::Travel
                                   group.ContentBossEntries().empty() && routeState.entrances.size() > 1 &&
                                   routeState.entranceIdx < routeState.entrances.size() &&
                                   !WingBossesLeft(group, leader->GetMap(), leader, doneWingNext);
-            if (routeState.noTargets && !leader->IsInCombat() && !group.InCombat() &&
-                getMSTimeDiff(routeState.noTargetsSinceMs, getMSTime()) >
-                    (wingDone ? WING_DONE_NO_TARGET_MS : 30 * IN_MILLISECONDS))
+            // [lead135] nothing to fight out of a fight is the fact (WING_DONE_NO_TARGET_MS 3 s / 30 s were the old
+            // clocks); an event that sends more (escort, script event, drakes) returned above
+            (void)wingDone;
+            if (routeState.noTargets && !leader->IsInCombat() && !group.InCombat())
             {
                 // Entrances on the same spot (Halls of Reflection: from Icecrown and from Pit of Saron) are one.
                 size_t next = routeState.entranceIdx + 1;
@@ -2378,10 +2389,8 @@ namespace Leader::Travel
                 // [queue-door-skip-lift] not right after a starter was used (a key on a gate: strat-n
                 // 20261025-115805-strat-n-5A-6, Gauntlet Gate keyed at 962 s, wing change at 999 s): what it opened
                 // is the way on, the route is built again first.
-                constexpr uint32 WING_CHANGE_AFTER_STARTER_MS = 60 * IN_MILLISECONDS;
-                bool const starterJustUsed = routeState.lastStarterUseMs &&
-                                             getMSTimeDiff(routeState.lastStarterUseMs, getMSTime()) <
-                                                 WING_CHANGE_AFTER_STARTER_MS;
+                // [lead135] the fact: no retarget since the starter's use (WING_CHANGE_AFTER_STARTER_MS 60 s)
+                bool const starterJustUsed = routeState.starterUsedSinceRetarget;
                 if (starterJustUsed && !sameCaves && next < routeState.entrances.size())
                 {
                     // waits: the "no targets" clock goes on, the change comes once the window is over
@@ -2548,10 +2557,6 @@ namespace Leader::Travel
                 bool const selinRoomMob =
                     entry == 24688 || entry == 24689 || entry == 24690 || entry == 24723;  // Wretched x3, Selin
                 PlayerbotAI* leaderAI = selinRoomMob ? GET_PLAYERBOT_AI(leader) : nullptr;
-                // At most SELIN_ROOM_OWNS_MAX_MS in a row (a room tactic that never pulls is the harness's again).
-                // The room tactic's spot search runs in 800-ray slices and waits for the group's regen (build 29:
-                // 137 s from the first look to the pull): 4 minutes.
-                constexpr uint32 SELIN_ROOM_OWNS_MAX_MS = 240 * IN_MILLISECONDS;
                 struct RoomOwns
                 {
                     uint32 sinceMs = 0;
@@ -2565,17 +2570,20 @@ namespace Leader::Travel
                                          (entry == 24723 && MagistersTerrace::SelinRoom::EntryHolds(leader)));
                 if (owns)
                 {
+                    // [lead135] the room tactic owns its pull while it is active (SELIN_ROOM_OWNS_MAX_MS 240 s was the
+                    // old cap)
                     RoomOwns& held = roomOwns[group.Run().runSeq];
-                    if (!held.sinceMs || getMSTimeDiff(held.seenMs, now) > 15 * IN_MILLISECONDS)
+                    if (!held.sinceMs)
                         held.sinceMs = now ? now : 1;
                     held.seenMs = now ? now : 1;
-                    owns = getMSTimeDiff(held.sinceMs, now) < SELIN_ROOM_OWNS_MAX_MS;
                     // [b35_mgt] ... and only while the group fought less than SELIN_ROOM_OWNS_IDLE_MS ago: a room
                     // tactic that holds its pull that long (20261026-024524-mgt-h-5E-15, 337-498 s: "holds the pull
                     // at the rally (Rtrogab: not at the rally)", the rogue parked by its walk guard 10 yd short) gives
                     // the pull back to the harness. The fight's start resets the idle clock (CheckIdle).
-                    constexpr uint32 SELIN_ROOM_OWNS_IDLE_MS = 90 * IN_MILLISECONDS;
-                    if (owns && routeState.idleMs + routeState.eventWaitMs >= SELIN_ROOM_OWNS_IDLE_MS)
+                    // [lead135] the fact that it no longer leads the pull: the room tactic owns no pull (OwnsPull),
+                    // not SELIN_ROOM_OWNS_IDLE_MS 90 s idle
+                    if (owns && MagistersTerrace::SelinRoom::Get(leaderAI).active &&
+                        !MagistersTerrace::SelinRoom::OwnsPull(leaderAI))
                     {
                         owns = false;
                         static std::unordered_map<uint32, uint32> releaseLogMs;  // party seq (world thread)
@@ -2585,9 +2593,8 @@ namespace Leader::Travel
                             logged = now ? now : 1;
                             group.LogEvent("boss_area_clear",
                                      JsonObject().Str("boss", "Selin Fireheart").Str("mob", roomMob->GetName())
-                                         .Num("entry", entry).Str("action", "room tactic idle: the harness pulls")
-                                         .Num("idleSec",
-                                              (routeState.idleMs + routeState.eventWaitMs) / IN_MILLISECONDS));
+                                         .Num("entry", entry)
+                                         .Str("action", "the room tactic owns no pull: the leader pulls"));
                         }
                     }
                 }
@@ -3736,8 +3743,7 @@ namespace Leader::Travel
             // the steer stands still by design. mgt-n 2026-10-25 (20261025-115805-mgt-n-5A-15, 627 s): she was
             // skipped for 300 s while the members swayed at x 206-218, everything else lay behind passage gate
             // 187979, 215 s idle.
-            // At most SELIN_ENTRY_HOLD_MAX_MS in a row (a member that never walks in is the stall watchdog's).
-            constexpr uint32 SELIN_ENTRY_HOLD_MAX_MS = 180 * IN_MILLISECONDS;
+            // [lead135] while the entry walk holds (its fact), no cap (SELIN_ENTRY_HOLD_MAX_MS 180 s was the old one)
             struct SelinEntryHold
             {
                 uint32 sinceMs = 0;
@@ -3751,10 +3757,9 @@ namespace Leader::Travel
                 MagistersTerrace::SelinRoom::EntryHolds(leader))
             {
                 SelinEntryHold& hold = selinEntryHolds[group.InstanceId()];
-                if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > 30 * IN_MILLISECONDS)
+                if (!hold.sinceMs)
                     hold.sinceMs = now ? now : 1;
                 hold.seenMs = now ? now : 1;
-                if (getMSTimeDiff(hold.sinceMs, now) < SELIN_ENTRY_HOLD_MAX_MS)
                 {
                     routeState.steerSinceMs = now;
                     group.ClearWaypoint(group.LeaderGuid());
@@ -4225,8 +4230,10 @@ namespace Leader::Travel
                             uint32& firstHoldMs = bossAreaBodyPullHoldMs[holdKey];
                             if (!firstHoldMs)
                                 firstHoldMs = now ? now : 1;
-                            uint32 const heldMs = getMSTimeDiff(firstHoldMs, now);
-                            if (heldMs < BOSS_AREA_BODY_PULL_HOLD_MS)
+                            // [lead135] held while killable trash of his area stands (BOSS_AREA_BODY_PULL_HOLD_MS 4 min
+                            // was the old clock); the trash is the target
+                            uint32 const heldMs = getMSTimeDiff(firstHoldMs, now);  // for the log
+                            {
                             {
                                 group.LogEvent("boss_area_clear",
                                          JsonObject().Str("boss", areaBoss->GetName())
@@ -4252,11 +4259,6 @@ namespace Leader::Travel
                                 group.ClearWaypoint(group.LeaderGuid());
                                 return;
                             }
-                            group.LogEvent("boss_area_clear",
-                                     JsonObject().Str("boss", areaBoss->GetName())
-                                         .Num("bossEntry", areaBoss->GetEntry()).Str("action", "body pull: given up")
-                                         .Str("mob", areaMob->GetName()).Num("entry", areaMob->GetEntry())
-                                         .Num("remaining", areaLeft).Num("heldSec", heldMs / IN_MILLISECONDS));
                         }
                     }
                 // What the tank (the leader) sees of the target and of the mob that stopped the walk: the refusal

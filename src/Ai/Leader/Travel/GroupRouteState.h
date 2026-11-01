@@ -169,6 +169,7 @@ namespace Leader
         uint32 nextRetargetMs = 0;  // [lead129] a retarget asked for at this time (0: none); RetargetDue
         uint32 retargetKills = 0;     // the kills (deadEntries) and the last pull end at the last retarget
         uint32 retargetPullEndMs = 0;
+        bool starterUsedSinceRetarget = false;  // [lead135] a starter used and the route not chosen again since
         uint32 waypointSerial = 0;
         // ROUTE_CLOSED_DOORS_ALL: the leader's last waypoint ran through this closed door and was cut short before it
         // (door_hold, SetLeaderWaypoint); Retarget then drops a target that door does not open for (DoorOpensFor).
