@@ -112,10 +112,11 @@ namespace Leader
         uint32 tankStillSinceMs = 0;
         uint32 healReachMs = 0;
         std::map<ObjectGuid, uint32> healReachLogMs;  // heal_reach records per member
-        // [lead120] the heal-reach decision's facts: the members out of reach it was decided for and the tank's fight
-        // anchor (fightAnchorSerial) it was judged against
-        std::set<ObjectGuid> healReachOut;
+        // [lead120] [lead121] the heal-reach decision's facts: the tank's fight anchor (fightAnchorSerial) and the
+        // members' assigned spots (none: no MoveTo / StandAt) it was judged against; the spot the healer was sent from
+        std::map<ObjectGuid, std::optional<Position>> healReachSpots;
         uint32 healReachAnchor = 0;
+        std::optional<Position> healReachFrom;
         std::map<ObjectGuid, ObjectGuid> kickers;     // casting mob -> its assigned interrupter
         // [lead15] the cadence: ticks per state (calm / pre-pull / combat / hazard) and the layers' cost
         uint32 cadenceTicks[4] = {};
