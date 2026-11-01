@@ -25,6 +25,8 @@ namespace Leader::Dungeon
     // an aura of the bot whose spell name contains `text`; the Well Fed aura
     bool HasAuraNamed(Player* bot, char const* text);
     bool HasWellFed(Player* bot);
+    // [lead136] an aura named like `text` that lasts `needMs` more (or has no end)
+    bool HasAuraLasting(Player* bot, char const* text, int32 needMs);
 
     // one step of the buffing pass while the group needs its buffs (LeaderGroup::NeedBuff)
     void TickBuffing(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);

@@ -2113,8 +2113,21 @@ namespace Leader::Dungeon
             }
             // [lead16] LEADER_COMBAT_SPOTS: the member's combat spot (StandAt), kept while it fits, a new one when the
             // target moved off it, it lost sight, a cleave or a hazard covers it or it broke the heal reach
+            // [lead136] a melee member's combat spot is judged against the mob it attacks (its Attack target), not
+            // the tank's target: a switch of the tank's target is no reason to move; its own target moving out of
+            // reach is
+            Unit* spotTarget = target;
+            if (target && !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot))
+            {
+                Leader::MemberEvents own;
+                if (Leader::Events::Get(guid, own) && own.attack == Leader::AttackEvent::Attack)
+                    if (Unit* ownTarget = ObjectAccessor::GetUnit(*tank, own.target);
+                        ownTarget && ownTarget->IsAlive() && ownTarget->IsInCombat())
+                        spotTarget = ownTarget;
+            }
             if (!moved && combat && Leader::LEADER_COMBAT_SPOTS && target && target->IsAlive())
             {
+                Unit* const target = spotTarget;  // the block below judges the spot against it
                 bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                 std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                 std::function<bool(Position const&)> const keeps =
@@ -2678,6 +2691,22 @@ namespace Leader::Dungeon
                         if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
                             mob && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
                             mine = mob;
+                    }
+                    // [lead136] b162 20261101-121409: the shaman moved 377 s, 48 % of its fight time not acting - 121
+                    // "combat spot: behind the target" moves, 63 re-spots "out of melee reach". A melee member out of
+                    // melee reach of its pick takes the kill order's mob nearest to it that it has headroom on (its
+                    // walk is the shortest); in reach, it keeps it
+                    if (splashes && !PlayerbotAI::IsHeal(bot) && mine && !bot->IsWithinMeleeRange(mine))
+                    {
+                        float best = bot->GetExactDist(mine);
+                        for (ObjectGuid const& next : killOrder)
+                            if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
+                                mob && mob->IsAlive() && mob->IsInCombat() && headroom(mob) &&
+                                bot->GetExactDist(mob) < best)
+                            {
+                                best = bot->GetExactDist(mob);
+                                mine = mob;
+                            }
                     }
                     Unit* const attackOn = mine ? mine : target;
                     Leader::AoeRule memberAoe = aoe;

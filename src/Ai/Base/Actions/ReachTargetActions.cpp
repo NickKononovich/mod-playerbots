@@ -1562,6 +1562,11 @@ bool MovementAction::MoveToSight(Unit* target, float range, std::string const& r
 
     // The spot of the way round the corner (the first that sees the target, and its neighbours), and how far it is
     // walked: the walk ends there unless the arc below finds a much shorter one.
+    // [lead136] b162 20261101-121409: 22 of 42 pulls "planned (body)" - the tank's walk to its opener's range
+    // ended in the idle mob's own aggro reach, the mob came before the opener. A tank's sight spot for an idle mob
+    // lies outside that mob's aggro reach (Creature::GetAggroRange + 1 yd); none: no sight walk (the engage walks in)
+    Creature const* idleTarget = PlayerbotAI::IsTank(bot) && !target->IsInCombat() ? target->ToCreature() : nullptr;
+    float const idleReach = idleTarget ? idleTarget->GetAggroRange(bot) + 1.0f : 0.0f;
     bool pathFound = false;
     bool pathGiveUp = false;  // the way round the corner gets into the melee zone or only past unsafe spots
     G3D::Vector3 pathSpot;
@@ -1581,7 +1586,8 @@ bool MovementAction::MoveToSight(Unit* target, float range, std::string const& r
         {
             ++checks;
             G3D::Vector3 const spot = from + (to - from) * (walked / length);
-            if (target->GetExactDist(spot.x, spot.y, spot.z) <= range && target->IsWithinLOS(spot.x, spot.y, spot.z))
+            if (target->GetExactDist(spot.x, spot.y, spot.z) <= range && target->IsWithinLOS(spot.x, spot.y, spot.z) &&
+                (!idleTarget || target->GetExactDist(spot.x, spot.y, spot.z) > idleReach))
             {
                 // The choices: a step past the corner, so a small turn of the tank does not hide it again, the first
                 // spot that sees it, and for a ranged / healer bot a second step on. A ranged / healer bot takes the

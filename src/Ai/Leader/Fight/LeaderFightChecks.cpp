@@ -778,12 +778,8 @@ namespace Leader::Fight
             return "a cleave covers it";
         if (!keeps(spot))
             return "heal reach";
-        if (sight && !melee && !PlayerbotAI::IsHeal(bot) &&
-            !target->GetMap()->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(),
-                                               spot.GetPositionZ() + 2.0f, target->GetPositionX(),
-                                               target->GetPositionY(), target->GetPositionZ() + 2.0f,
-                                               target->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
-                                               VMAP::ModelIgnoreFlags::Nothing))
+        // [lead136] the same sight as LeaderCombatSpotValid (lead127: the game's own), else a spot it chose broke
+        if (sight && !melee && !PlayerbotAI::IsHeal(bot) && !LeaderSeesFrom(bot, target, spot))
             return "no line of sight to the target";
         return std::string();
     }

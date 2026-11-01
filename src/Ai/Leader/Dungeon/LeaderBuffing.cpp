@@ -128,6 +128,21 @@ namespace Leader::Dungeon
 
     bool HasWellFed(Player* bot) { return HasAuraNamed(bot, "Well Fed"); }
 
+    bool HasAuraLasting(Player* bot, char const* text, int32 needMs)
+    {
+        for (auto const& [spellId, aurApp] : bot->GetAppliedAuras())
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || !info->SpellName[LOCALE_enUS] || !strstr(info->SpellName[LOCALE_enUS], text))
+                continue;
+            Aura const* aura = aurApp ? aurApp->GetBase() : nullptr;
+            int32 const left = aura ? aura->GetDuration() : -1;
+            if (left < 0 || left >= needMs)  // -1: no end
+                return true;
+        }
+        return false;
+    }
+
     namespace
     {
         // Buffing before a pull (TickBuffing): every step ends on its own facts (user: no elapsed-time rule decides;
@@ -209,6 +224,12 @@ namespace Leader::Dungeon
         std::string MissingGivableBuffs(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
         {
             std::vector<LeaderGroup::MemberInfo> const members = group.Members();
+            // [lead136] a buff counts as present when it lasts the next fight: its remaining time against the
+            // planner's estimate of that fight's length (CarefulPlanVerdict::GetNextFight); no estimate: present
+            CarefulPlanVerdict::Fight nextFight;
+            int32 const needMs = CarefulPlanVerdict::GetNextFight(leader->GetGUID(), nextFight)
+                                     ? int32(nextFight.fightSec * IN_MILLISECONDS)
+                                     : 0;
             std::string missing;
             for (GroupBuffDef const& def : groupBuffs)
             {
@@ -233,7 +254,7 @@ namespace Leader::Dungeon
                         continue;
                     bool has = false;
                     for (char const* aura : def.auras)
-                        has = has || HasAuraNamed(bot, aura);
+                        has = has || HasAuraLasting(bot, aura, needMs);
                     if (!has)
                         missing += (missing.empty() ? "" : ", ") + bot->GetName() + " " + def.label;
                 }
@@ -353,10 +374,17 @@ namespace Leader::Dungeon
                     std::string const workers = BuffWorkers(players, leader);
                     std::string const missing = MissingGivableBuffs(group, players, leader);
                     waitingFor(workers.empty() ? missing : workers);
+                    // [lead136] b162 20261101-121409 (271 s: 12 s "every buff the group can give is present",
+                    // waited for "Rtdruaa rebuff window open"; 73 s over the run): every buff present (lasting the
+                    // next fight) ends the step at once - an open rebuff window with nothing missing to cast is no
+                    // work; with a buff missing the step waits for the casters' passes
                     std::string why;
-                    if (workers.empty())
-                        why = missing.empty() ? "every buff the group can give is present"
-                                              : "every caster's buff pass ended, missing: " + missing;
+                    if (missing.empty())
+                        why = "every buff the group can give is present";
+                    else if (workers.empty())
+                        why = "every caster's buff pass ended, missing: " + missing;
+                    if (missing.empty())
+                        wait.waitedFor.clear();
                     if (why.empty())
                         break;
                     stepDone(2, why);
