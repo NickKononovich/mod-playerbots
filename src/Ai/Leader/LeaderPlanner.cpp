@@ -11994,28 +11994,25 @@ bool AggressiveTargetAction::PullBackSpot(Unit* candidate, Position& spot, bool 
     if (rangeOut)
         *rangeOut = range;
 
+    // [lead223b] b185 rfc-h 5B 608.9 s: the cast spot was the straight line's point at the spell's range,
+    // (-209.6,123.7,-24.9) - in the air 13 yd over Ragefire's magma, no ground path to it; the tank's walk there was a
+    // drop into the lava. A spot out of range is a point of the tank's own walk to the mob (below), never the line's
     float const distance = bot->GetExactDist(candidate);
     if (distance <= range)
     {
         spot.Relocate(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-    }
-    else
-    {
-        float const share = range / distance;
-        spot.Relocate(candidate->GetPositionX() + (bot->GetPositionX() - candidate->GetPositionX()) * share,
-                      candidate->GetPositionY() + (bot->GetPositionY() - candidate->GetPositionY()) * share,
-                      candidate->GetPositionZ() + (bot->GetPositionZ() - candidate->GetPositionZ()) * share);
-    }
 
-    // RFC 2026-10-24 18:28: the tank walked round a corner alone for Shoot range, out of the healer's sight, and
-    // died under 7 mobs. A cast spot the healer does not see is no ranged pull: the cast spot moves on along the
-    // approach (below) to one in range that sees the mob and the healer sees (RFC 2026-10-24 20:04: no such spot at
-    // the spell's range, the tank walked in on a mob round the corner and the fight drew the pack beside it).
-    if (candidate->IsWithinLOS(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + CAREFUL_EYE_HEIGHT) &&
-        HealerSees(bot, spot))
-    {
-        _castSpots[candidate->GetGUID()] = {spot, getMSTime()};
-        return true;
+        // RFC 2026-10-24 18:28: the tank walked round a corner alone for Shoot range, out of the healer's sight, and
+        // died under 7 mobs. A cast spot the healer does not see is no ranged pull: the cast spot moves on along the
+        // approach (below) to one in range that sees the mob and the healer sees (RFC 2026-10-24 20:04: no such spot
+        // at the spell's range, the tank walked in on a mob round the corner and the fight drew the pack beside it).
+        if (candidate->IsWithinLOS(spot.GetPositionX(), spot.GetPositionY(),
+                                   spot.GetPositionZ() + CAREFUL_EYE_HEIGHT) &&
+            HealerSees(bot, spot))
+        {
+            _castSpots[candidate->GetGUID()] = {spot, getMSTime()};
+            return true;
+        }
     }
 
     // The pull is cast in sight (IsWithinPullRange): the tank walks its path in until it sees the mob, and the cast
