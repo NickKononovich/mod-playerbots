@@ -102,8 +102,9 @@ bool CastSilencingShotOnCooldownAction::isUseful()
     if (!CastSpellAction::isUseful())
         return false;
 
+    // [rot32] wowsims hunter__mm: Silencing Shot on cooldown - on every target it cannot silence (was bosses only)
     Unit* target = GetTarget();
-    if (!ai::raidutil::IsBossUnit(target))
+    if (!target)
         return false;
 
     uint32 const spellId = AI_VALUE2(uint32, "spell id", "silencing shot");
@@ -111,7 +112,7 @@ bool CastSilencingShotOnCooldownAction::isUseful()
     if (!spellInfo || target->IsImmunedToSpell(spellInfo))
         return false;
 
-    // Still able to silence this boss: keep it for its casts (the "silencing shot" trigger).
+    // Still able to silence this target: keep it for its casts (the "silencing shot" trigger).
     return !InterruptCoordination::CanStopCast(target, spellInfo);
 }
 

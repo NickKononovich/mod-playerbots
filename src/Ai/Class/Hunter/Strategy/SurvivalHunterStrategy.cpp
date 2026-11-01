@@ -111,7 +111,7 @@ void SurvivalHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "black arrow",
             {
-                NextAction("black arrow", 16.5f)
+                NextAction("black arrow", 15.5f)  // [rot32] wowsims hunter__sv: Serpent Sting before Black Arrow
             }
         )
     );
@@ -121,7 +121,7 @@ void SurvivalHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "no stings",
             {
-                NextAction("serpent sting", 15.5f)
+                NextAction("serpent sting", 16.5f)
             }
         )
     );

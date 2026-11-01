@@ -73,7 +73,9 @@ void GenericHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("concussive shot on snare target", { NextAction("concussive shot", 20.0f) }));
     triggers.push_back(new TriggerNode("medium threat", { NextAction("feign death", 35.0f) }));
     triggers.push_back(new TriggerNode("high threat", { NextAction("feign death", 35.0f) }));
-    triggers.push_back(new TriggerNode("hunters pet medium health", { NextAction("mend pet", 22.0f) }));
+    // [rot32] a medium-health pet's Mend Pet under Kill Command / Kill Shot / the stings (wowsims never casts it); a
+    // low-health pet keeps 21
+    triggers.push_back(new TriggerNode("hunters pet medium health", {NextAction("mend pet", 16.0f)}));
     triggers.push_back(new TriggerNode("hunters pet low health", { NextAction("mend pet", 21.0f) }));
     // [b31_deep] the "pet" strategy (Call/Revive Pet) is non-combat only: a pet dismissed in combat stayed away
     triggers.push_back(new TriggerNode("hunters pet dismissed", { NextAction("call pet", 23.0f) }));
