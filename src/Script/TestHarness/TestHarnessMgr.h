@@ -465,6 +465,7 @@ namespace TestHarness
             std::map<ObjectGuid, std::pair<Position, uint32>> spotChecked;
             std::map<ObjectGuid, uint32> spotRejectLogMs;
             std::map<ObjectGuid, std::string> spotRejectLogged;  // [lead81] the last logged rejection (walk|reason)
+            ObjectGuid routeFirstFor;  // [lead82] the engage the route walk leads to first (route_first logged)
             std::map<std::string, uint32> vetoedEvals;  // "<member>|<what>" -> count (vetoed_eval)
             // [lead18] the issued pull's whole plan for the red view (latched at the issue)
             Position issuedFrom;

@@ -22532,6 +22532,23 @@ namespace TestHarness
         // line, a gate pass)
         if (fighting)
             lead.groupBlockedBy.clear();
+        // [lead82] b125 rfc-h 517.3-616 s: Rtmagaa's "to range of the engage" was blocked ("no walk to the spot"), the
+        // engage ended at 520.2 and the block stayed - the Taragaman pull waited "a member cannot follow" 70 s. A block
+        // holds only while the member's current command is still that walk's stay
+        for (auto it = lead.groupBlockedBy.begin(); it != lead.groupBlockedBy.end();)
+        {
+            Leader::MemberEvents blocked;
+            bool const holds = Leader::Events::Get(it->first, blocked) && blocked.move == Leader::MoveEvent::StandAt &&
+                               blocked.moveWhy.rfind("along with the tank", 0) == 0 &&
+                               blocked.moveWhy.find(": stays (") != std::string::npos;
+            if (holds)
+                ++it;
+            else
+            {
+                lead.spotRejectLogged.erase(it->first);
+                it = lead.groupBlockedBy.erase(it);
+            }
+        }
         // [lead77] the tank walks on only where the group follows: no route walk while a member is blocked
         if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader) &&
             lead.groupBlockedBy.empty())
@@ -24363,6 +24380,7 @@ namespace TestHarness
                 lead.commitIssued = false;
                 lead.commitOrderSeen = false;
                 lead.patrolWindowOpen = true;
+                lead.groupBlockedBy.clear();  // [lead82] the pull's walk-alongs end with it
                 PullPlanner::CancelIssued(party.leader);  // [lead49] the replaced order leaves the slot
                 if (Group* group = tank->GetGroup())
                     Leader::PullPack::Clear(group->GetGUID());
@@ -24787,7 +24805,15 @@ namespace TestHarness
             std::string restFor;
             bool const lineHold = decision.why.find("% mana") != std::string::npos ||
                                   decision.why.find("% health") != std::string::npos;
-            if (decision.verdict == PullPlanner::Verdict::Held && lineHold)
+            // [lead82] b125 rfc-h 526.8-543.4 s: the answer flipped "Rthunaa at 56 % mana (needs 68 %)" <-> "the
+            // leader: Rthunaa sits" and the Rest with it - Rthunaa stood up and sat down again 6 times on the way to
+            // its line. The hold on the member's own rest is the same wait: its Rest goes on
+            bool const restHold = !lead.plannerRestFor.empty() &&
+                                  (decision.why.find(lead.plannerRestFor + " sits") != std::string::npos ||
+                                   decision.why.find(lead.plannerRestFor + " rests") != std::string::npos);
+            if (decision.verdict == PullPlanner::Verdict::Held && restHold)
+                restFor = lead.plannerRestFor;
+            else if (decision.verdict == PullPlanner::Verdict::Held && lineHold)
             {
                 for (Member const& member : party.members)
                     if (decision.why.find(member.name + " at ") != std::string::npos)
@@ -25024,8 +25050,32 @@ namespace TestHarness
                                            : !decision.attack.IsEmpty()   ? decision.attack
                                                                           : decision.lookTarget;
                 Unit* mob = mobGuid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, mobGuid);
+                // [lead82] b125 rfc-h 510.9-519.6 s: an engage on an Earthborer on the ledge 8 yd above the tank, out
+                // of its sight - only the route's long navmesh way leads up; the walk-in was refused and the mob
+                // marked unreachable. The route is data: while the tank walks the route (its "route walk" command,
+                // accepted by the leader's checks) toward a mob it does not see yet, no engage is committed - the group
+                // walks the route; the engage comes once the tank sees the mob or the route walk ends
+                Leader::MemberEvents tankWalk;
+                if (mob && decision.kind == "engage" && !IsBossLook(tank, mobGuid) &&
+                    !tank->IsWithinLOSInMap(mob) && Leader::Events::Get(tank->GetGUID(), tankWalk) &&
+                    tankWalk.move == Leader::MoveEvent::MoveTo && tankWalk.moveWhy == "route walk" &&
+                    tank->GetExactDist2d(tankWalk.spot.GetPositionX(), tankWalk.spot.GetPositionY()) >
+                        tankWalk.tolerance)
+                {
+                    if (lead.routeFirstFor != mobGuid)
+                    {
+                        lead.routeFirstFor = mobGuid;
+                        DecisionLog::Instance().Write(run, "leader", "route_first", mobGuid, mob->GetName(), true,
+                                                      JsonObject().Str("why", "out of the tank's sight: the route "
+                                                                              "walk leads there first")
+                                                          .Real("distance", tank->GetExactDist(mob))
+                                                          .Real("walkTo", tank->GetExactDist(tankWalk.spot)));
+                    }
+                    return;
+                }
                 if (mob)
                 {
+                    lead.routeFirstFor.Clear();
                     lead.commit = std::make_shared<PullPlanner::Decision>(decision);
                     lead.commitMob = mobGuid;
                     lead.commitPos = mob->GetPosition();
