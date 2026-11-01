@@ -2304,13 +2304,7 @@ namespace Leader::Dungeon
                     moved = true;
                 }
             }
-            // [lead121] b155 spread: the pull-walk hold where the member stood left the group 50-120 yd behind the
-            // tank (walking p90 53-82 yd, b143 21-30), it trailed into every fight and the healer started 80 yd off
-            // (rfc-h 20261101-103820 610.9 s). The member waits at the spot nearest the meeting point out of every
-            // pull mob's and idle mob's reach (rings round the meeting point from the pull mob's reach out, the
-            // member's side first), the healer in heal reach and sight of the meeting point; nothing nearer than
-            // where it stands: the hold below
-            // out of every pull mob's and idle mob's reach at `at`
+            // out of every pull mob's and idle mob's reach at `at` (each mob's aggro range for this member's level)
             auto const pullWalkClear = [&](Position const& at)
             {
                 for (ObjectGuid const& mobGuid : pullMobs)
@@ -2319,181 +2313,83 @@ namespace Leader::Dungeon
                         return false;
                 return !LeaderAggroAt(bot, at);
             };
+            // [lead126] user: one rule for the pull walk (it replaces lead115's step-back, lead121's rings round the
+            // meeting point and lead122's trail fallback). The members follow the tank along its own walked path
+            // (its trail) at their follow spread; once the tank's path enters the reach of a pull mob or an idle mob,
+            // each stops at the last trail point before that entry, out of every such reach. The healer's stop is in
+            // heal reach and sight of where the tank fights (the meeting point), a ranged member's in its own reach
+            // of it (LeaderShootReach): else the nearest trail point back along the trail that is both. One decision
+            // per order, kept until a fact changes (the memo above); the hold ends with the fight (lead118)
             if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState() &&
                 !lead.commitMob.IsEmpty())
             {
-                Position const meet = lead.meetPoint;
-                Creature* const pullMob = map->GetCreature(lead.commitMob);
-                float start = LEADER_FOLLOW_START_YD;
-                if (pullMob)
-                    start += pullMob->GetAggroRange(bot) + pullMob->m_CombatDistance +
-                             (pullMob->GetDefaultMovementType() == RANDOM_MOTION_TYPE ? pullMob->GetWanderDistance()
-                                                                                      : 0.0f);
-                auto const fits = [&](Position const& at)
-                { return pullWalkClear(at) && (bot != healer || reaches(at, meet)); };
-                float const standsAt = bot->GetExactDist(meet);
-                for (float ring = start; ring < standsAt - LEADER_FOLLOW_TOLERANCE && !moved;
-                     ring += LEADER_LOOSE_TANK_YD)
+                std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(tank);
+                // the newest trail point out of every reach, after the tank's path entered one (-1: the tank's walk is
+                // still clear - the member follows, below)
+                int32 stop = -1;
+                bool entered = false;
+                for (int32 i = int32(trail.size()) - 1; i >= 0 && stop < 0; --i)
                 {
-                    Position best;
-                    float bestGap = -1.0f;
-                    for (uint32 i = 0; i < 12; ++i)
-                    {
-                        float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
-                        float x = meet.GetPositionX() + std::cos(angle) * ring;
-                        float y = meet.GetPositionY() + std::sin(angle) * ring;
-                        float z = meet.GetPositionZ();
-                        if (!map->CheckCollisionAndGetValidCoords(bot, meet.GetPositionX(), meet.GetPositionY(),
-                                                                  meet.GetPositionZ(), x, y, z))
-                            continue;
-                        Position const at(x, y, z);
-                        float const gap = bot->GetExactDist(at);
-                        if ((bestGap < 0.0f || gap < bestGap) && fits(at))
-                        {
-                            best = at;
-                            bestGap = gap;
-                        }
-                    }
-                    if (bestGap < 0.0f ||
-                        !checkedMove(guid, Leader::MoveEvent::MoveTo, best, LEADER_FOLLOW_TOLERANCE, "the pull walks"))
-                        continue;
-                    lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
-                                                pullMob ? pullMob->GetPosition() : meet, best, false};
-                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                             JsonObject().Str("why", "the pull walks: next to the meeting point, out of its reach")
-                                 .Str("mob", pullMob ? pullMob->GetName() : "-"));
-                    moved = true;
+                    if (!pullWalkClear(Position(trail[i].x, trail[i].y, trail[i].z)))
+                        entered = true;
+                    else if (entered)
+                        stop = i;
                 }
-            }
-            // [lead122] b156 rfc-h 20261101-105614 83.1 s: the ring search found no walk for the hunter ("its walk
-            // is in the reach of Ragefire Trogg"), it held where it stood 86 yd from the fight and did nothing all
-            // fight. No member is left beyond its role's reach of the meeting point (the heal reach for a healer, the
-            // ranged reach for the rest) or out of its sight: the point of the tank's own walk (its trail) nearest
-            // the member within that reach and out of every mob's reach; it stays only where it already is in reach
-            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState() &&
-                !lead.commitMob.IsEmpty())
-            {
-                Position const meet = lead.meetPoint;
-                // [lead124] the member's own attack reach, not a fixed number
-                float const roleReach = bot == healer || PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEAL_REACH_YD
-                                                                                  : LeaderShootReach(bot);
-                auto const inReach = [&](Position const& at)
+                if (entered && stop < 0)
+                    stop = -2;  // the whole trail is in a reach: the member holds where it stands
+                if (stop != -1)
                 {
-                    return at.GetExactDist(meet) <= roleReach &&
-                           map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
-                                                meet.GetPositionX(), meet.GetPositionY(), meet.GetPositionZ() + 2.0f,
-                                                bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
-                                                VMAP::ModelIgnoreFlags::Nothing);
-                };
-                if (!inReach(bot->GetPosition()))
-                {
-                    std::vector<Position> trail;
-                    for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
-                        if (Position const at(point.x, point.y, point.z); inReach(at) && pullWalkClear(at))
-                            trail.push_back(at);
-                    std::sort(trail.begin(), trail.end(), [bot](Position const& a, Position const& b)
-                              { return bot->GetExactDist(a) < bot->GetExactDist(b); });
-                    std::vector<Position> refused;
-                    for (Position const& at : trail)
+                    Position const meet = lead.meetPoint;
+                    bool const healerRole = bot == healer || PlayerbotAI::IsHeal(bot);
+                    bool const rangedRole = !healerRole && PlayerbotAI::IsRanged(bot);
+                    float const roleReach = healerRole ? Leader::LEADER_HEAL_REACH_YD
+                                            : rangedRole ? LeaderShootReach(bot)
+                                                         : 0.0f;
+                    auto const reachesFight = [&](Position const& at)
                     {
-                        // a refused walk refuses its neighbours on the trail too (the same way there)
-                        if (std::any_of(refused.begin(), refused.end(), [&at](Position const& was)
-                                        { return was.GetExactDist(at) <= LEADER_FOLLOW_START_YD; }))
-                            continue;
-                        if (!checkedMove(guid, Leader::MoveEvent::MoveTo, at, LEADER_FOLLOW_TOLERANCE,
-                                         "the pull walks"))
-                        {
-                            refused.push_back(at);
-                            continue;
-                        }
-                        Creature* const pullMob = map->GetCreature(lead.commitMob);
-                        lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
-                                                    pullMob ? pullMob->GetPosition() : meet, at, false};
-                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                 JsonObject().Str("why", "the pull walks: on the tank's walk, in reach of the fight")
-                                     .Str("mob", pullMob ? pullMob->GetName() : "-"));
-                        moved = true;
-                        break;
-                    }
-                }
-            }
-            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState())
-            {
-                Position holdAt = bot->GetPosition();
-                Unit* reaching = nullptr;
-                for (ObjectGuid const& mobGuid : pullMobs)
-                    if (Creature* pullMob = map->GetCreature(mobGuid);
-                        pullMob && pullMob->IsAlive() && IdleMobReachesSpot(bot, pullMob, holdAt))
-                        reaching = pullMob;
-                if (!reaching)
-                    reaching = LeaderAggroAt(bot, holdAt);
-                if (reaching)
-                {
-                    float const dx = bot->GetPositionX() - reaching->GetPositionX();
-                    float const dy = bot->GetPositionY() - reaching->GetPositionY();
-                    float const length = std::max(0.1f, std::hypot(dx, dy));
-                    // [lead117] out of the reach as the mob's facts make it: its aggro range for this member and
-                    // its combat distance, plus its wander radius (a wanderer), plus the follow spread
-                    Creature* reachingMob = reaching->ToCreature();
-                    float const away =
-                        reachingMob ? reachingMob->GetAggroRange(bot) + reachingMob->m_CombatDistance +
-                                          (reachingMob->GetDefaultMovementType() == RANDOM_MOTION_TYPE
-                                               ? reachingMob->GetWanderDistance()
-                                               : 0.0f) +
-                                          LEADER_FOLLOW_START_YD
-                                    : LEADER_FOLLOW_START_YD;
-                    float x = reaching->GetPositionX() + dx / length * away;
-                    float y = reaching->GetPositionY() + dy / length * away;
-                    float z = bot->GetPositionZ();
-                    bool found = map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
-                                                                      bot->GetPositionZ(), x, y, z);
-                    // [lead118] b152: the straight step back put members far behind and they trailed the group 44 s
-                    // - the nearest spot around the member out of every pull mob's and idle mob's reach (rings of
-                    // LEADER_LOOSE_TANK_YD), the straight step back the last
-                    auto const outOfReach = [&](Position const& at)
-                    {
-                        for (ObjectGuid const& mobGuid : pullMobs)
-                            if (Creature* pullMob = map->GetCreature(mobGuid);
-                                pullMob && pullMob->IsAlive() && IdleMobReachesSpot(bot, pullMob, at))
-                                return false;
-                        return !LeaderAggroAt(bot, at);
+                        if (roleReach <= 0.0f)
+                            return true;
+                        return at.GetExactDist(meet) <= roleReach &&
+                               map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
+                                                    meet.GetPositionX(), meet.GetPositionY(),
+                                                    meet.GetPositionZ() + 2.0f, bot->GetPhaseMask(),
+                                                    LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
                     };
-                    bool nearFound = false;
-                    for (float ring = LEADER_LOOSE_TANK_YD; ring < away && !nearFound; ring += LEADER_LOOSE_TANK_YD)
-                        for (uint32 i = 0; i < 12 && !nearFound; ++i)
-                        {
-                            float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
-                            float rx = bot->GetPositionX() + std::cos(angle) * ring;
-                            float ry = bot->GetPositionY() + std::sin(angle) * ring;
-                            float rz = bot->GetPositionZ();
-                            if (map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
-                                                                     bot->GetPositionZ(), rx, ry, rz) &&
-                                outOfReach(Position(rx, ry, rz)))
+                    int32 at = stop;
+                    if (at >= 0 && !reachesFight(Position(trail[at].x, trail[at].y, trail[at].z)))
+                        for (int32 i = at - 1; i >= 0; --i)
+                            if (Position const back(trail[i].x, trail[i].y, trail[i].z);
+                                pullWalkClear(back) && reachesFight(back))
                             {
-                                x = rx;
-                                y = ry;
-                                z = rz;
-                                nearFound = found = true;
+                                at = i;
+                                break;
                             }
-                        }
-                    if (found &&
-                        checkedMove(guid, Leader::MoveEvent::MoveTo, Position(x, y, z), LEADER_FOLLOW_TOLERANCE,
-                                    "the pull walks"))
+                    Creature* const pullMob = map->GetCreature(lead.commitMob);
+                    if (at >= 0)
                     {
-                        lead.pullWalkSpots[guid] = {pullWalkOrder, reaching->GetGUID(), reaching->GetPosition(),
-                                                    Position(x, y, z), false};
-                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                 JsonObject().Str("why", "the pull walks: out of its reach")
-                                     .Str("mob", reaching->GetName()));
+                        Position const spot(trail[at].x, trail[at].y, trail[at].z);
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, LEADER_FOLLOW_TOLERANCE,
+                                        "the pull walks"))
+                        {
+                            lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
+                                                        pullMob ? pullMob->GetPosition() : meet, spot, false};
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", "the pull walks: on the tank's walk, before the reach")
+                                         .Str("mob", pullMob ? pullMob->GetName() : "-")
+                                         .Bool("inFightReach", reachesFight(spot)));
+                            moved = true;
+                        }
+                    }
+                    if (!moved)
+                    {
+                        // no stop point to walk to (the whole trail in a reach, or the walk refused): it stays
+                        if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the pull walks"))
+                            logEvent(bot, "Hold",
+                                     JsonObject().Str("why", "the pull walks: the tank takes the mob first"));
+                        lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
+                                                    pullMob ? pullMob->GetPosition() : meet, bot->GetPosition(), true};
                         moved = true;
                     }
-                }
-                if (!moved)
-                {
-                    if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the pull walks"))
-                        logEvent(bot, "Hold", JsonObject().Str("why", "the pull walks: the tank takes the mob first"));
-                    lead.pullWalkSpots[guid] = {pullWalkOrder, ObjectGuid::Empty, Position(), bot->GetPosition(), true};
-                    moved = true;
                 }
             }
             if (!moved && !combat && Leader::LEADER_NO_OWN_FOLLOW && Leader::ExecutorMember(bot) &&
