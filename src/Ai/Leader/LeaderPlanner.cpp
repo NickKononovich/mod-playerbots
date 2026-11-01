@@ -4621,11 +4621,21 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return boss ? float(boss->GetHealth()) / std::max(groupDps, 1.0f) : 0.0f;
     }
 
+    // [lead78] ONE fight length for the next pull, the same for the boss gate, the planner's hold and the members'
+    // rest (RestState::PredictNextFight's published fight carries it): the boss's own fight when the pull brings
+    // him, else the trash fight
+    float NextPullSec(Player* bot, Unit* boss)
+    {
+        RestState::NextFight next;
+        float const published = RestState::PredictNextFight(bot, next) ? next.fightSec : 0.0f;
+        return std::max(published, BossFightSec(bot, boss));
+    }
+
     std::string BossReadyGap(Player* bot, bool askBuffs, bool realBoss = true, Unit* boss = nullptr)
     {
         float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
         float const readyMana = realBoss ? BOSS_READY_MANA : MINI_BOSS_READY_MANA;
-        float const bossSec = BossFightSec(bot, boss);  // [lead51]
+        float const bossSec = NextPullSec(bot, boss);  // [lead51] [lead78] the one next-pull length
         auto const gap = [readyHealth, readyMana, boss, bossSec](Player* member) -> std::string
         {
             if (!member->IsAlive())
@@ -5526,7 +5536,7 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
     if (!member || !member->IsAlive())
         return std::string();
     std::string terms;
-    float const readyMana = RestState::FightManaLine(member, BossFightSec(member, boss), 0.0f, &terms);
+    float const readyMana = RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, &terms);
     if (member->GetHealthPct() < readyHealth)
         return Acore::StringFormat("health {:.0f} % < {:.0f} % for {}", member->GetHealthPct(), readyHealth,
                                    boss->GetName());
@@ -6979,6 +6989,12 @@ bool AggressiveTargetAction::DecideLook()
                 fight.fightSec = _planVerdictSec;
                 fight.boss = _planVerdictBoss;
                 fight.realBoss = _planVerdictBoss && PackHasEncounterBoss(botAI, _planVerdictPack);
+                // [lead78] a pull that brings a boss: the published fight is his fight's length (the members'
+                // rest asks what the boss gate asks)
+                if (_planVerdictBoss)
+                    for (ObjectGuid const& guid : _planVerdictPack)
+                        if (Unit* packBoss = botAI->GetUnit(guid); packBoss && IsBossMob(packBoss))
+                            fight.fightSec = std::max(fight.fightSec, BossFightSec(bot, packBoss));
                 fight.guaranteeWaitMs = _planVerdictGuaranteeWaitMs;
                 PublishVerdict(planned ? _planTarget : target->GetGUID(), _planVerdict == PlanVerdictState::Accepted,
                                _planVerdictMobs, _planVerdictPack, fight, _planVerdictHopeless, _planVerdictWhy);
@@ -7009,6 +7025,8 @@ bool AggressiveTargetAction::DecideLook()
                 {
                     fight.boss = true;
                     fight.realBoss = IsEncounterBoss(botAI->GetUnit(_bossHoldFor));  // [rest_topup_real_boss]
+                    // [lead78] ... and the boss's fight length
+                    fight.fightSec = std::max(fight.fightSec, BossFightSec(bot, botAI->GetUnit(_bossHoldFor)));
                 }
                 std::string const why = "held for now: " + (_planNotReadyWhy.empty()
                                                                  ? std::string("the group rests or gathers")
