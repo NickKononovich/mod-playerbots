@@ -333,7 +333,7 @@ bool RaidLeader::GateVetoes(PlayerbotAI* botAI, Leader::MemberEvents const& even
     if (handlers.empty())
         return false;
     Player* bot = botAI->GetBot();
-    bool const combat = bot->IsInCombat();
+    bool const combat = bot->IsInCombat() || events.attack == Leader::AttackEvent::Heal;  // [lead170]
     for (NextAction handler : handlers)  // getName is not const
     {
         Action* action = botAI->GetAiObjectContext()->GetAction(handler.getName());
@@ -507,7 +507,12 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
     {
         Leader::MemberEvents events;
         Leader::Events::Get(bot->GetGUID(), events);  // none: every field None
-        if (OwnDecisionOff(bot, action, action->getName(), events, bot->IsInCombat()))
+        // [lead170] b179 rfc-h 5C: the disc priest stood idle 207 s of fights, half of it with no combat flag of its
+        // own (the tank held every mob, nobody needed a heal yet): "power word: shield / prayer of mending on main
+        // tank" were vetoed as buffs on another member without Prepare. Under the leader's Heal the group's fight is
+        // its fight
+        bool const fight = bot->IsInCombat() || events.attack == Leader::AttackEvent::Heal;
+        if (OwnDecisionOff(bot, action, action->getName(), events, fight))
         {
             // [lead18] a vetoed action reached the multiplier: its trigger / chain was evaluated (vetoed_eval)
             if (Leader::LEADER_EXECUTOR_TRIGGER_GATE)
