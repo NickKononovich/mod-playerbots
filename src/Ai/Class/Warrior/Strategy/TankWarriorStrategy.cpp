@@ -223,14 +223,8 @@ void TankWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "bloodrage",
-            {
-                NextAction("bloodrage", ACTION_HIGH + 2)
-            }
-        )
-    );
+    // [rot20] wowsims protection_warrior__default: Bloodrage whenever rage < 70 (was < 20)
+    triggers.push_back(new TriggerNode("tank bloodrage", {NextAction("bloodrage", ACTION_HIGH + 2)}));
     triggers.push_back(
         new TriggerNode(
             "sunder armor",
@@ -269,12 +263,12 @@ void TankWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "medium rage available",
             {
-                NextAction("devastate", ACTION_HIGH + 1),
-                // [b31_deep] Heroic Strike from 40 rage (wowsims prot: 30), was 60; off the global cooldown
-                NextAction("heroic strike", ACTION_HIGH)
+                NextAction("devastate", ACTION_HIGH + 1)
             }
         )
     );
+    // [rot20] Heroic Strike from 30 rage (wowsims protection_warrior__default); off the global cooldown
+    triggers.push_back(new TriggerNode("prot heroic strike rage", {NextAction("heroic strike", ACTION_HIGH)}));
     triggers.push_back(
         new TriggerNode(
             "shield block",
@@ -288,14 +282,6 @@ void TankWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             "revenge",
             {
                 NextAction("revenge", ACTION_HIGH + 4)  // [b31_wr] on every proc, below Shield Slam
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "disarm",
-            {
-                NextAction("disarm", ACTION_HIGH + 1)
             }
         )
     );

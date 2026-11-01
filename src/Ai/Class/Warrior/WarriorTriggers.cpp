@@ -126,6 +126,13 @@ bool BloodrageBuffTrigger::IsActive()
            AI_VALUE2(uint8, "rage", "self target") < 20;
 }
 
+// [rot20]
+bool BloodrageTankTrigger::IsActive()
+{
+    return AI_VALUE2(uint8, "health", "self target") >= sPlayerbotAIConfig.MediumHealth &&
+           AI_VALUE2(uint8, "rage", "self target") < TANK_BLOODRAGE_BELOW_RAGE;
+}
+
 bool BloodrageLowRageTrigger::IsActive()
 {
     return bot->IsInCombat() && AI_VALUE2(uint8, "rage", "self target") < LOW_RAGE &&

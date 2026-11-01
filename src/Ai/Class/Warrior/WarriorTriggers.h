@@ -45,7 +45,6 @@ public:
         : BuffTrigger(botAI, "commanding shout", 1, false, false, WARRIOR_SHOUT_REFRESH_MS) {}  // [b31_deep]
     bool IsActive() override;
 };
-DEBUFF_TRIGGER(DisarmDebuffTrigger, "disarm");
 DEBUFF_TRIGGER(SunderArmorDebuffTrigger, "sunder armor");
 // [b31_deep] the "mortal strike" debuff trigger is gone: "mortal strike ready" (rage gated) replaces it
 // DEBUFF_ENEMY_TRIGGER(RendDebuffOnAttackerTrigger, "rend");
@@ -60,6 +59,17 @@ CAN_CAST_TRIGGER(RevengeAvailableTrigger, "revenge");
 CAN_CAST_TRIGGER(OverpowerAvailableTrigger, "overpower");
 BUFF_TRIGGER(RampageAvailableTrigger, "rampage");
 BUFF_TRIGGER_A(BloodrageBuffTrigger, "bloodrage");
+// [rot20] the tank's Bloodrage: wowsims protection_warrior__default uses it whenever rage < 70
+class BloodrageTankTrigger : public BloodrageBuffTrigger
+{
+public:
+    static constexpr uint8 TANK_BLOODRAGE_BELOW_RAGE = 70;
+
+    BloodrageTankTrigger(PlayerbotAI* botAI) : BloodrageBuffTrigger(botAI) {}
+
+    std::string const getName() override { return "tank bloodrage"; }
+    bool IsActive() override;
+};
 CAN_CAST_TRIGGER(VictoryRushTrigger, "victory rush");
 HAS_AURA_TRIGGER(SwordAndBoardTrigger, "sword and board");
 SNARE_TRIGGER(ConcussionBlowTrigger, "concussion blow");

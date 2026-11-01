@@ -67,7 +67,8 @@ public:
         creators["tank aoe pack"] = &WarriorTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
         creators["tank aoe crowd"] = &WarriorTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
         creators["shield bash"] = &WarriorTriggerFactoryInternal::shield_bash;
-        creators["disarm"] = &WarriorTriggerFactoryInternal::disarm;
+        creators["tank bloodrage"] = &WarriorTriggerFactoryInternal::tank_bloodrage;                    // [rot20]
+        creators["prot heroic strike rage"] = &WarriorTriggerFactoryInternal::prot_heroic_strike_rage;  // [rot20]
         creators["concussion blow"] = &WarriorTriggerFactoryInternal::concussion_blow;
         creators["sword and board"] = &WarriorTriggerFactoryInternal::SwordAndBoard;
         creators["shield bash on enemy healer"] = &WarriorTriggerFactoryInternal::shield_bash_on_enemy_healer;
@@ -158,7 +159,12 @@ private:
     static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 8.0f); }  // [b32_tank_aoe]
     static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
     static Trigger* shield_bash(PlayerbotAI* botAI) { return new ShieldBashInterruptSpellTrigger(botAI); }
-    static Trigger* disarm(PlayerbotAI* botAI) { return new DisarmDebuffTrigger(botAI); }
+    static Trigger* tank_bloodrage(PlayerbotAI* botAI) { return new BloodrageTankTrigger(botAI); }
+    // wowsims protection_warrior__default: Heroic Strike at 30+ rage
+    static Trigger* prot_heroic_strike_rage(PlayerbotAI* botAI)
+    {
+        return new WarriorRageAvailableTrigger(botAI, "prot heroic strike rage", 30);
+    }
     static Trigger* concussion_blow(PlayerbotAI* botAI) { return new ConcussionBlowTrigger(botAI); }
     static Trigger* SwordAndBoard(PlayerbotAI* botAI) { return new SwordAndBoardTrigger(botAI); }
     static Trigger* shield_bash_on_enemy_healer(PlayerbotAI* botAI)
