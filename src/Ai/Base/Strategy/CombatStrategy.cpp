@@ -85,10 +85,10 @@ TankFaceStrategy::TankFaceStrategy(PlayerbotAI* botAI) : Strategy(botAI) {}
 
 std::vector<NextAction> TankFaceStrategy::getDefaultActions()
 {
-    // [lead159] b176: "tank face (N) ran first" pre-empted the rotation 10x - the pack's turn waits for a tick the
-    // rotation leaves free (its GCD), below the rotation bands (ACTION_HIGH)
+    // [rot2] the pack's turn takes only a tick the rotation leaves free: below every tank rotation step (bear and
+    // blood DK rotations sit at 5.2-17.8), above the plain auto attack
     return {
-        NextAction("tank face", ACTION_NORMAL + 9.0f)
+        NextAction("tank face", ACTION_DEFAULT + 0.05f)
     };
 }
 
