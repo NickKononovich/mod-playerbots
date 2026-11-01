@@ -387,7 +387,6 @@ public:
     bool IsActive() override;
 };
 
-// [b31_deep] Protection: Seal of Wisdom only below TANK_SEAL_OF_WISDOM_MANA_PCT mana.
 // [lead87] b130 rfc-h: the tank's net spend 2.1-2.25 %/s (b129 0.94) - Hammer of Wrath on every dying trash mob at
 // ACTION_CRITICAL_HEAL (5 in 4 pulls), Divine Plea only below "high mana". Hammer of Wrath on a mob under 20 % only
 // while its cost leaves the tank at its own computed line (RestState::OwnManaLine) - else it would drink for it
@@ -399,22 +398,11 @@ public:
     bool IsActive() override;
 };
 
-// [lead87] Divine Plea in a fight whenever its whole return fits under full mana (none of it wasted), or the tank is
-// below its own computed line
+// [lead87] Divine Plea whenever mana is not full; [rot48] in a fight with Guarded by the Light whenever it is down
 class TankDivinePleaTrigger : public Trigger
 {
 public:
     TankDivinePleaTrigger(PlayerbotAI* botAI) : Trigger(botAI, "tank divine plea") {}
-
-    bool IsActive() override;
-};
-
-class TankSealOfWisdomTrigger : public Trigger
-{
-public:
-    static constexpr uint8 TANK_SEAL_OF_WISDOM_MANA_PCT = 10;
-
-    TankSealOfWisdomTrigger(PlayerbotAI* botAI) : Trigger(botAI, "tank seal of wisdom") {}
 
     bool IsActive() override;
 };

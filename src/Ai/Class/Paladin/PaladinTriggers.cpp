@@ -327,19 +327,18 @@ bool TankHammerOfWrathTrigger::IsActive()
 bool TankDivinePleaTrigger::IsActive()
 {
     constexpr uint32 SPELL_DIVINE_PLEA = 54428;
-    // [lead105] b140 rfc-h: Divine Plea 8 times in 1355 s (60 s cooldown, ~20 possible), the tank rested 100 s -
-    // wowsims prot APL: on cooldown whenever mana is not full, in and out of a fight (a tank's halved healing done
-    // costs nothing)
+    constexpr uint32 SPELL_GUARDED_BY_THE_LIGHT_R1 = 53583;
+    constexpr uint32 SPELL_GUARDED_BY_THE_LIGHT_R2 = 53585;
+    // [lead105] b140 rfc-h: Divine Plea 8 times in 1355 s (60 s cooldown, ~20 possible), the tank rested 100 s
     if (!PlayerbotAI::IsTank(bot) || !bot->HasSpell(SPELL_DIVINE_PLEA) || bot->HasSpellCooldown(SPELL_DIVINE_PLEA) ||
         !bot->GetMaxPower(POWER_MANA) || botAI->HasAura("divine plea", bot))
         return false;
+    // [rot48] Guarded by the Light refreshes Divine Plea on every melee hit (spell 63521): cast in a fight it lasts the
+    // whole fight, whatever the mana (wowsims prot APL: cast before the pull at full mana, never again)
+    if (bot->IsInCombat() &&
+        (bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R1) || bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R2)))
+        return true;
     return bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA);
-}
-
-bool TankSealOfWisdomTrigger::IsActive()
-{
-    return AI_VALUE2(bool, "has mana", "self target") &&
-           AI_VALUE2(uint8, "mana", "self target") < TANK_SEAL_OF_WISDOM_MANA_PCT;
 }
 
 namespace

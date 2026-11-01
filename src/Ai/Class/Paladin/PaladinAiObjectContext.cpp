@@ -172,7 +172,6 @@ public:
         creators["avenger's shield boss filler"] = &PaladinTriggerFactoryInternal::avengers_shield_boss_filler;
         // [b31_deep]
         creators["paladin tank judges wisdom"] = &PaladinTriggerFactoryInternal::paladin_tank_judges_wisdom;
-        creators["tank seal of wisdom"] = &PaladinTriggerFactoryInternal::tank_seal_of_wisdom;
         creators["tank hammer of wrath"] = &PaladinTriggerFactoryInternal::tank_hammer_of_wrath;  // [lead87]
         creators["tank divine plea"] = &PaladinTriggerFactoryInternal::tank_divine_plea;
         creators["infusion of light"] = &PaladinTriggerFactoryInternal::infusion_of_light;
@@ -286,7 +285,6 @@ private:
     }
     // [b31_deep]
     static Trigger* paladin_tank_judges_wisdom(PlayerbotAI* botAI) { return new PaladinTankJudgesWisdomTrigger(botAI); }
-    static Trigger* tank_seal_of_wisdom(PlayerbotAI* botAI) { return new TankSealOfWisdomTrigger(botAI); }
     static Trigger* tank_hammer_of_wrath(PlayerbotAI* botAI) { return new TankHammerOfWrathTrigger(botAI); }
     static Trigger* tank_divine_plea(PlayerbotAI* botAI) { return new TankDivinePleaTrigger(botAI); }
     static Trigger* infusion_of_light(PlayerbotAI* botAI) { return new InfusionOfLightTrigger(botAI); }

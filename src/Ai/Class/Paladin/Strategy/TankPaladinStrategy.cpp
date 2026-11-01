@@ -153,25 +153,20 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
     // [b31_deep] Seal of Vengeance / Corruption the whole fight (Holy Vengeance is ~13 % of the damage and its threat);
-    // mana comes from Divine Plea, Judgement of Wisdom and Sanctuary. Seal of Wisdom only below 10 % mana ("low
-    // mana", 15 %, swapped the seal 0.1/min); SealTrigger puts Vengeance back above 70 %.
-    triggers.push_back(
-        new TriggerNode(
-            "tank seal of wisdom",
-            {
-                NextAction("seal of wisdom", ACTION_HIGH + 9)
-            }
-        )
-    );
-    // A paladin tank lives on mana: taunts, Consecration and Holy Shield all cost it. Divine Plea goes on cooldown
-    // once mana dips (its halved healing does not matter to a tank that leaves healing to the healer), and the
-    // target keeps Judgement of Wisdom, whose procs feed the whole melee group.
-    // [lead87] Divine Plea whenever its return fits (TankDivinePleaTrigger), not only below "high mana"
+    // mana comes from Divine Plea, Judgement of Wisdom and Sanctuary. [rot48] no Seal of Wisdom below 10 % mana any
+    // more (wowsims never swaps the seal; the swap dropped the Vengeance stacks and kept Wisdom up to 70 % mana).
+    // A paladin tank lives on mana: taunts, Consecration and Holy Shield all cost it. Divine Plea's halved healing
+    // does not matter to a tank that leaves healing to the healer, and the target keeps Judgement of Wisdom, whose
+    // procs feed the whole melee group.
+    // [rot48] b184 5E-19: Divine Plea 12 times in 43 pulls, the tank rested 230 s and fell under 10 % on a boss - at
+    // ACTION_HIGH + 1 under the 969 band it got a GCD only when all five of the band were cooling down. wowsims casts
+    // it before anything else (prepull) and Guarded by the Light keeps it up the whole fight: above the band now,
+    // under the area-threat Avenger's Shield (ACTION_HIGH + 6) and the taunts (ACTION_HIGH + 7)
     triggers.push_back(
         new TriggerNode(
             "tank divine plea",
             {
-                NextAction("divine plea", ACTION_HIGH + 1)
+                NextAction("divine plea", ACTION_HIGH + 5.95f)
             }
         )
     );
@@ -323,9 +318,9 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("holy shield", {NextAction("holy shield", ACTION_HIGH + 5.72f)}));
     // [b31_pal] 969: the 6 s Shield of Righteousness / Hammer of the Righteous and the 9 s Judgement / Consecration on
     // their cooldowns, Avenger's Shield as the filler on a boss, all in one band under Holy Shield's upkeep (above)
-    // and the taunts (ACTION_HIGH + 7), above Avenging Wrath, Divine Plea and the Judgement debuff upkeep. The peel,
-    // area threat, movement and emergencies stay above the band. At 60-74 the unknown Shield of Righteousness (and an
-    // untalented Hammer) keep their trigger off; the defaults at 5.x stay as the floor.
+    // and the taunts (ACTION_HIGH + 7), above Avenging Wrath and the Judgement debuff upkeep. The peel, area threat,
+    // movement, emergencies and (rot48) a missing Divine Plea stay above the band. At 60-74 the unknown Shield of
+    // Righteousness (and an untalented Hammer) keep their trigger off; the defaults at 5.x stay as the floor.
     triggers.push_back(new TriggerNode("shield of righteousness ready",
         { NextAction("shield of righteousness", ACTION_HIGH + 5.9f) }));
     triggers.push_back(new TriggerNode("hammer of the righteous ready",
