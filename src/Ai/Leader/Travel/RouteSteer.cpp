@@ -1632,7 +1632,7 @@ namespace Leader::Travel
 
         // [b33_aoepull] the planner's issued aoe_pull_plan is the pull: the tank takes the chain to its stack spot,
         // the leader is not walked in while the plan stands (lead134: not AOE_PULL_WALK_MS 30 s)
-        if (PartyAoePlanned(group, target->GetGUID(), nullptr))  // [lead5]
+        if (uint32 aoeSinceMs = 0; PartyAoePlanned(group, target->GetGUID(), &aoeSinceMs))  // [lead5]
         {
             group.ClearWaypoint(group.LeaderGuid());
             uint32 const nowMs = getMSTime();
@@ -4233,7 +4233,6 @@ namespace Leader::Travel
                             // [lead135] held while killable trash of his area stands (BOSS_AREA_BODY_PULL_HOLD_MS 4 min
                             // was the old clock); the trash is the target
                             uint32 const heldMs = getMSTimeDiff(firstHoldMs, now);  // for the log
-                            {
                             {
                                 group.LogEvent("boss_area_clear",
                                          JsonObject().Str("boss", areaBoss->GetName())
