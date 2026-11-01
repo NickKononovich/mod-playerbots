@@ -7667,8 +7667,17 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (!healer->IsAlive() || !PlayerbotAI::IsHeal(healer) || healer->getPowerType() != POWER_MANA)
                 continue;
             std::string terms;
+            // [lead182] b180 rfc-h 5E: "Rtpriac at 58 % mana (needs 60 % (no next fight known))" - this gate runs
+            // before the look publishes its fight, so OwnManaLine fell back to the fixed rest line. As the tank's
+            // line above: no published fight, the pack this look is about (its mobs, the fight seconds from them)
+            RestState::NextFight next;
+            if (!bossPull && !RestState::PredictNextFight(healer, next))
+                next.mobs = std::max<uint32>(1, uint32(_planLookPack.size()));
+            float const nextSec = next.fightSec > 0.0f
+                                      ? next.fightSec
+                                      : RestState::FIGHT_BASE_SEC + RestState::FIGHT_SEC_PER_MOB * float(next.mobs);
             float const line = bossPull ? RestState::FightManaLine(healer, NextPullSec(healer, target), 0.0f, &terms)
-                                        : RestState::OwnManaLine(healer, &terms);
+                                        : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
             if (healer->GetPowerPct(POWER_MANA) < line)
             {
                 _planNotReadyWhy = Acore::StringFormat("{} at {:.0f} % mana (needs {})", healer->GetName(),
