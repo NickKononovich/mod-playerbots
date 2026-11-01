@@ -250,21 +250,43 @@ namespace Leader::Dungeon
             if (bot && move != Leader::MoveEvent::Hold && Leader::LEADER_SPOT_AGGRO_GUARD)
             {
                 auto& checked = lead.spotChecked[member];
-                bool const again = checked.first.GetExactDist(spot) > 1.0f || !checked.second ||
-                                   getMSTimeDiff(checked.second, now) > 2 * IN_MILLISECONDS;
+                // [lead143] b166 20261101-134022 73.7-76.5 s: Rtshaab's "aggro loss: to the tank" refused by its own
+                // guards ("no route"), the refusal not kept - the next tick's spot within 1 yd of the last accepted
+                // one skipped the member check and issued the move again (command_repeat). A refusal stands until
+                // a fact changes: the spot, the member or the blocking mob moved
+                bool const sameSpot = checked.ms && checked.spot.GetExactDist(spot) <= 1.0f;
+                bool again = !sameSpot || getMSTimeDiff(checked.ms, now) > 2 * IN_MILLISECONDS;
+                if (sameSpot && !checked.reject.empty())
+                {
+                    Creature* blocker = checked.mob.IsEmpty() ? nullptr : bot->GetMap()->GetCreature(checked.mob);
+                    again = bot->GetExactDist(checked.from) > 1.0f ||
+                            (!checked.mob.IsEmpty() &&
+                             (!blocker || !blocker->IsAlive() || blocker->GetExactDist(checked.mobAt) > 1.0f));
+                }
                 std::string reject;
                 Creature* mob = LeaderAggroAt(bot, spot);
                 bool noPath = false;
                 if (!mob && again)
                     mob = LeaderAggroOnWalk(bot, spot, noPath);
-                if (mob)
-                    reject = "the spot or its walk is in the reach of " + mob->GetName();
-                else if (noPath)
-                    reject = "no walk to the spot";
-                // [lead93] no spot in the instance's exit areatrigger (it ports the member out)
-                else if (uint32 const exit = InInstanceExit(bot->GetMapId(), spot.GetPositionX(), spot.GetPositionY(),
-                                                            spot.GetPositionZ(), bot->GetCombatReach()))
-                    reject = Acore::StringFormat("the spot is in the instance's exit (areatrigger {})", exit);
+                bool const kept = !mob && !again && !checked.reject.empty();
+                if (kept)
+                {
+                    reject = checked.reject;
+                    noPath = checked.noPath;
+                    mob = checked.mob.IsEmpty() ? nullptr : bot->GetMap()->GetCreature(checked.mob);
+                }
+                if (!kept)
+                {
+                    if (mob)
+                        reject = "the spot or its walk is in the reach of " + mob->GetName();
+                    else if (noPath)
+                        reject = "no walk to the spot";
+                    // [lead93] no spot in the instance's exit areatrigger (it ports the member out)
+                    else if (uint32 const exit = InInstanceExit(bot->GetMapId(), spot.GetPositionX(),
+                                                                spot.GetPositionY(), spot.GetPositionZ(),
+                                                                bot->GetCombatReach()))
+                        reject = Acore::StringFormat("the spot is in the instance's exit (areatrigger {})", exit);
+                }
                 // [lead19] the stricter model: the member's own guard (its idle-wake rule, a closed door) agrees too
                 if (reject.empty() && again)
                     if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot))
@@ -278,6 +300,9 @@ namespace Leader::Dungeon
                             if (reject.empty() && !mover->DryMoveTo(spot))
                                 reject = "the member's own move guards refuse it: " + LastMoveRefusal();  // [lead112]
                         }
+                if (again)  // [lead143] the verdict and the facts it was judged on
+                    checked = {spot, bot->GetPosition(), now, reject, noPath, mob ? mob->GetGUID() : ObjectGuid::Empty,
+                               mob ? mob->GetPosition() : Position()};
                 if (!reject.empty())
                 {
                     // [lead81] b124: group_blocked / spot_rejected_aggro every tick (the reason's running numbers, a
@@ -383,8 +408,6 @@ namespace Leader::Dungeon
                                                 why + ": stays (" + reason + ")");
                     return false;
                 }
-                if (again)
-                    checked = {spot, now};
             }
             // [lead27] a new command overrides the old one: command_override (old -> new) when its purpose changes or
             // the point jumps (the member's executor reads only the current command, its walk is replaced)

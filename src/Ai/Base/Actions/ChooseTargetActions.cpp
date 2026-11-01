@@ -299,8 +299,13 @@ bool AggressiveTargetAction::Execute(Event event)
                 if (!Leader::Route(bot, target->GetPosition()).found)
                     return PostCommit(bot, target, false, Leader::PullMethod::Engage,
                                       "engage: no route to the order mob", commitMobs, commitCost, single);
-                bool const walked = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+                // [lead143] b166 64.0 s: "the route walk refused by IsWaitingForLastMove" turned the pick unreachable
+                // while the tank's walk was on - a walk already under way is the route walk
+                bool walked = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
                 std::string const refusal = LastMoveRefusal().empty() ? "its chase guard" : LastMoveRefusal();
+                if (!walked && bot->isMoving() &&
+                    (refusal.rfind("IsWaitingForLastMove", 0) == 0 || refusal.rfind("IsDuplicateMove", 0) == 0))
+                    walked = true;
                 return PostCommit(bot, target, walked, Leader::PullMethod::Engage,
                                   walked ? "engage: the tank walks its route in"
                                          : "engage: the route walk refused by " + refusal,

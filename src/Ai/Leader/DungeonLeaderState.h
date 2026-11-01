@@ -178,7 +178,19 @@ namespace Leader
         std::map<ObjectGuid, Position> clearedLast;
         std::vector<ObjectGuid> idleGuids;
         uint32 idleScanMs = 0;
-        std::map<ObjectGuid, std::pair<Position, uint32>> spotChecked;
+        // [lead143] the last verdict per member: a refusal is kept until a fact changes (the spot, the member, the
+        // blocking mob moved), an accepted spot is re-judged on its cadence
+        struct SpotVerdict
+        {
+            Position spot;
+            Position from;
+            uint32 ms = 0;
+            std::string reject;
+            bool noPath = false;
+            ObjectGuid mob;
+            Position mobAt;
+        };
+        std::map<ObjectGuid, SpotVerdict> spotChecked;
         std::map<ObjectGuid, uint32> spotRejectLogMs;
         std::map<ObjectGuid, std::string> spotRejectLogged;  // [lead81] the last logged rejection (walk|reason)
         ObjectGuid routeFirstFor;  // [lead82] the engage the route walk leads to first (route_first logged)
