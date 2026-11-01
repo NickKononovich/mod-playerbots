@@ -31,10 +31,15 @@ public:
 MELEE_ACTION_U(CastBattleShoutTauntAction, "battle shout", CastSpellAction::isUseful());  // useful to rebuff
 // DEBUFF_ACTION_R(CastDemoralizingShoutAction, "demoralizing shout", 8.0f);                 // low range debuff
 
+// [rot43] The attack-power reduction slot of the target is already held by another source (Demoralizing Roar, Curse of
+// Weakness, Vindication, a hunter pet's Demoralizing Screech): Demoralizing Shout would not land.
+bool WarriorDemoSlotCovered(PlayerbotAI* botAI, Unit* target);
+
 class CastDemoralizingShoutAction : public CastMeleeDebuffSpellAction
 {
 public:
     CastDemoralizingShoutAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "demoralizing shout") {}
+    bool isUseful() override;  // [rot43] not over a covered slot
 };
 
 class CastDemoralizingShoutWithoutLifeTimeCheckAction : public CastMeleeDebuffSpellAction
@@ -48,7 +53,8 @@ public:
     // In a group the AoE debuff is the tank's job; a dps warrior would only spend GCDs on it.
     bool isUseful() override
     {
-        return (!bot->GetGroup() || PlayerbotAI::IsTank(bot)) && CastMeleeDebuffSpellAction::isUseful();
+        return (!bot->GetGroup() || PlayerbotAI::IsTank(bot)) && CastMeleeDebuffSpellAction::isUseful() &&
+               !WarriorDemoSlotCovered(botAI, GetTarget());  // [rot43]
     }
 };
 

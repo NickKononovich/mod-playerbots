@@ -231,10 +231,7 @@ bool DemoralizingShoutDebuffTrigger::IsActive()
     if (!DebuffTrigger::IsActive())
         return false;
 
-    Unit* target = GetTarget();
-    return !botAI->HasAura("demoralizing roar", target, false, false) &&
-           !botAI->HasAura("curse of weakness", target, false, false) &&
-           !botAI->HasAura("vindication", target, false, false);
+    return !WarriorDemoSlotCovered(botAI, GetTarget());  // [rot43] Demoralizing Screech too
 }
 
 // [b31_deep]

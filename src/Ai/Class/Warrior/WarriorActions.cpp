@@ -59,6 +59,22 @@ constexpr uint32 STANCE_DANCE_WINDOW_MS = 2 * IN_MILLISECONDS;   // a dance gets
 constexpr uint32 STANCE_DANCE_RETRY_MS = 10 * IN_MILLISECONDS;   // and is not begun again for this long
 }
 
+// [rot43] b180 5F (Rtwarac): 13 Demoralizing Shouts in one boss fight (10.8/min) against Oggleflint / Taragaman - the
+// SV hunter's pet held the slot with Demoralizing Screech 55487, the shout never landed and its trigger fired again
+// every GCD (Devastate 1.0/min against the sim's 18.1).
+bool WarriorDemoSlotCovered(PlayerbotAI* botAI, Unit* target)
+{
+    return target && (botAI->HasAura("demoralizing roar", target, false, false) ||
+                      botAI->HasAura("curse of weakness", target, false, false) ||
+                      botAI->HasAura("vindication", target, false, false) ||
+                      botAI->HasAura("demoralizing screech", target, false, false));
+}
+
+bool CastDemoralizingShoutAction::isUseful()
+{
+    return CastMeleeDebuffSpellAction::isUseful() && !WarriorDemoSlotCovered(botAI, GetTarget());
+}
+
 bool WarriorLeavesRageForStrike(PlayerbotAI* botAI, Player* bot, char const* spell)
 {
     return LeavesRageForStrike(botAI, bot, spell);
@@ -128,7 +144,7 @@ bool CastWarriorGapCloserAction::isUseful()
 bool CastDemoralizingShoutTankAoeAction::isUseful()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
-    if (target && botAI->HasAura("demoralizing shout", target))
+    if (target && (botAI->HasAura("demoralizing shout", target) || WarriorDemoSlotCovered(botAI, target)))
         return false;
 
     if (AI_VALUE2(uint8, "rage", "self target") < DEMORALIZING_SHOUT_SPARE_RAGE)
