@@ -736,6 +736,14 @@ std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
     return std::string();
 }
 
+Unit* LeaderMoveOrderAction::WalkWakes(Position const& to, ObjectGuid exempt)
+{
+    Leader::RouteResult const route = Leader::Route(bot, to);
+    if (!route.found)
+        return nullptr;
+    return IdleWokenOnWalk(Movement::PointsArray(route.points.begin(), route.points.end()), exempt);
+}
+
 bool LeaderHealTargetAction::Execute(Event /*event*/)
 {
     Leader::MemberEvents events;

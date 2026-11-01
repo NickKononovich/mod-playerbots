@@ -102,6 +102,8 @@ protected:
     // target) is not judged. Empty when nothing wakes, else "<mob> (<distance> yd of reach <reach>, <walked> yd
     // along)". Judged in every group walk, also where the guard is off (a world group): a spot is chosen, not vetoed.
     std::string IdleWakeOnWalk(Movement::PointsArray const& points, ObjectGuid exempt);
+    // [lead101] the same judgement, the woken mob itself (null: nothing wakes)
+    Unit* IdleWokenOnWalk(Movement::PointsArray const& points, ObjectGuid exempt);
     bool JumpTo(uint32 mapId, float x, float y, float z, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
     bool MoveNear(uint32 mapId, float x, float y, float z, float distance = sPlayerbotAIConfig.ContactDistance,
                   MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);

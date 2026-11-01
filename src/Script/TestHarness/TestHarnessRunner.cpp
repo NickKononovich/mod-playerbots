@@ -19772,6 +19772,17 @@ namespace TestHarness
         if (order.state == Leader::OrderState::Fighting)
         {
             closeOrder(Leader::OrderState::Done, "no engaged mob: the fight is over", "order_done");
+            // [lead101] the order's own mob alive and in no fight (another pack came instead): it stays the leader's
+            // pick, the next pull goes for it from where the group stands now (released by the kept pick's facts)
+            if (Creature* own = leader->GetMap()->GetCreature(order.target);
+                own && own->IsAlive() && !own->IsInCombat())
+            {
+                party.lead.keptPick = order.target;
+                party.lead.keptPickWhy = "its order ended with it out of the fight";
+                DecisionLog::Instance().Write(run, "leader", "order_mob_kept", order.target, order.targetName, true,
+                                              JsonObject().Num("order", order.id)
+                                                  .Real("distance", leader->GetExactDist(own)));
+            }
             return;
         }
 
@@ -24482,6 +24493,34 @@ namespace TestHarness
                     broken = "the walk to it is " + verdict;
                 }
             }
+            // [lead101] b139 rfc-h 264.7-301.5 s: the engage on the patrol Ragefire Shaman low 38 (a mover: no walk
+            // verdict above) walked the tank in through another pack's reach - Troggs 28 / 36 / 34 and Shamans 39 / 40
+            // came, the patrol never joined and walked on, and the leader walked back ~105 yd for it later. A
+            // patrol's walk-in is judged too: the tank's walk to where it walks now (the leader's route search)
+            // against every idle pack's reach (the patrol and its own formation not judged); one it wakes is the
+            // pull first
+            // [lead103] b140 rfc-h 475.9-508.1 s: the boss engage on Taragaman walked the tank in past the Earthborer
+            // pack (unplanned start, 8 mobs) - one check for EVERY engage (a still mob, a patrol, a boss): its walk-in
+            // judged against every idle pack's reach, the plan's own mobs and the target's formation not judged
+            std::vector<ObjectGuid> const planMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+            if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && committed.kind == "engage")
+                if (PlayerbotAI* walkerAI = GET_PLAYERBOT_AI(tank))
+                    if (auto* mover = dynamic_cast<LeaderMoveOrderAction*>(
+                            walkerAI->GetAiObjectContext()->GetAction("leader move order")))
+                        if (Unit* woken = mover->WalkWakes(mob->GetPosition(), mob->GetGUID());
+                            woken && woken->ToCreature() &&
+                            std::find(planMobs.begin(), planMobs.end(), woken->GetGUID()) == planMobs.end() &&
+                            !(mob->ToCreature()->GetFormation() &&
+                              woken->ToCreature()->GetFormation() == mob->ToCreature()->GetFormation()))
+                        {
+                            lead.walkWakesFirst = woken->GetGUID();
+                            DecisionLog::Instance().Write(run, "leader", "walk_in_wakes", mob->GetGUID(),
+                                                          mob->GetName(), true,
+                                                          JsonObject().Str("wakes", woken->GetName())
+                                                              .Num("wakesLow", woken->GetGUID().GetCounter())
+                                                              .Real("distance", tank->GetExactDist(woken)));
+                            broken = "the walk in to it wakes " + woken->GetName() + ": it is the pull first";
+                        }
             if (!broken.empty())
             {
                 DecisionLog::Instance().Write(run, "leader", "commit_released", lead.commitMob,
@@ -24742,10 +24781,19 @@ namespace TestHarness
                     if (!blockingMob.IsEmpty())
                         if (Creature* mob = idleAlive(blockingMob); mob && !IsBossLook(tank, mob->GetGUID()))
                             blocker = mob;
+                // [lead101] the pack the walk to a patrol wakes is the pull first (released when it is dead or fights)
+                Creature* wakesFirst = lead.walkWakesFirst.IsEmpty() ? nullptr : idleAlive(lead.walkWakesFirst);
+                if (!wakesFirst)
+                    lead.walkWakesFirst.Clear();
                 if (blocker)
                 {
                     inputs.pick = blocker->GetGUID();
                     pickWhy = "it blocks the group's walk";
+                }
+                else if (wakesFirst && !skipPick(wakesFirst->GetGUID()))
+                {
+                    inputs.pick = wakesFirst->GetGUID();
+                    pickWhy = "the walk in to the next pull wakes it: the pull first";
                 }
                 else if (intercept && !skipPick(intercept->GetGUID()))
                 {

@@ -7,6 +7,9 @@
 #include "LeaderKnowledge.h"
 
 #include "SharedDefines.h"
+#include "SmartScriptMgr.h"  // [lead102] flee for assist
+#include <mutex>
+#include <unordered_map>
 
 #include <algorithm>
 #include <cstring>
@@ -1321,3 +1324,21 @@ namespace Leader::Knowledge
         return result;
     }
 }  // namespace Leader::Knowledge
+
+namespace Leader::Knowledge
+{
+    float FleeForAssistHealthPct(uint32 creatureEntry)
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint32, float> known;
+        std::lock_guard<std::mutex> guard(lock);
+        auto [itr, fresh] = known.try_emplace(creatureEntry, 0.0f);
+        if (fresh)
+            for (SmartScriptHolder const& holder :
+                 sSmartScriptMgr->GetScript(int32(creatureEntry), SMART_SCRIPT_TYPE_CREATURE))
+                if (holder.GetEventType() == SMART_EVENT_HEALTH_PCT &&
+                    holder.GetActionType() == SMART_ACTION_FLEE_FOR_ASSIST)
+                    itr->second = std::max(itr->second, float(holder.event.minMaxRepeat.max));
+        return itr->second;
+    }
+}

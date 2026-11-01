@@ -3494,6 +3494,20 @@ bool MovementAction::IsPathGuarded()
            !SkipsIdleGuard();
 }
 
+Unit* MovementAction::IdleWokenOnWalk(Movement::PointsArray const& points, ObjectGuid exempt)
+{
+    if (points.size() < 2 || !bot->IsInWorld())
+        return nullptr;
+    Player* tank = PlayerbotAI::IsTank(bot) ? bot : FindGroupTank(bot);
+    std::vector<G3D::Vector3> const trail = tank ? GetTrail(tank) : std::vector<G3D::Vector3>();
+    std::vector<IdleReach> const reaches =
+        CollectIdleReaches(botAI, bot, AI_VALUE(GuidVector, "possible targets no los"), tank, trail, exempt,
+                           bot->GetTarget(), &points.back());
+    if (reaches.empty())
+        return nullptr;
+    return FirstWake(points, reaches, bot).mob;
+}
+
 std::string MovementAction::IdleWakeOnWalk(Movement::PointsArray const& points, ObjectGuid exempt)
 {
     if (points.size() < 2 || !bot->IsInWorld())

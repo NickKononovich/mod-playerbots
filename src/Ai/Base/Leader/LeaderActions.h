@@ -155,6 +155,8 @@ public:
     // [lead19] what the member-side guards would refuse on the walk to `to` ("" = nothing): an idle mob it would wake
     // (IdleWakeOnWalk), a closed door on the path, no path. The leader calls it before it issues (the stricter model)
     std::string WalkRefusal(Position const& to);
+    // [lead101] the idle mob the walk to `to` (the leader's route search) wakes, `exempt` not judged (null: none)
+    Unit* WalkWakes(Position const& to, ObjectGuid exempt);
     // [lead71] the member's own MoveTo guards run dry (MovementAction::s_dryRun) for a walk to `to`: would it go?
     bool DryMoveTo(Position const& to);
 };

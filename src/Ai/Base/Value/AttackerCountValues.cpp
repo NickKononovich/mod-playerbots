@@ -10,6 +10,7 @@
 #include "Creature.h"
 #include "Engine.h"
 #include "Group.h"
+#include "LeaderKnowledge.h"  // [lead102] flee-for-assist health
 #include "Map.h"
 #include "MotionMaster.h"
 #include "Playerbots.h"
@@ -651,7 +652,15 @@ Unit* FleeingMobValue::Calculate()
     for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
     {
         Unit* unit = botAI->GetUnit(guid);
-        if (!FledMobs::IsRunning(unit))
+        // [lead102] b140 rfc-h 139-153 s: a Ragefire Shaman hit its SmartAI flee-for-assist health (smart_scripts
+        // 11319: 0-15 %) and ran 20 -> 83 yd, 24 yd down into the Trogg camp before anyone stopped it - the stop came
+        // only once it ran (and was soon out of range / sight). A mob at its known flee health is stopped as it gets
+        // there, before the run (a game fact: its own script's health line)
+        bool const atFleeHealth =
+            unit && unit->IsAlive() && unit->ToCreature() &&
+            unit->GetHealthPct() <= Leader::Knowledge::FleeForAssistHealthPct(unit->GetEntry()) &&
+            !unit->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT) && !FledMobs::StoppedRecently(unit->GetGUID());
+        if (!atFleeHealth && !FledMobs::IsRunning(unit))
             continue;
 
         FledMobs::Note(unit);

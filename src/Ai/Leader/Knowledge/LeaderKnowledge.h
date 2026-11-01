@@ -389,6 +389,11 @@ namespace Leader::Knowledge
         char const* note;
     };
 
+    // [lead102] the health (percent) at which a creature's SmartAI flees for assistance (smart_scripts: a
+    // SMART_EVENT_HEALTH_PCT event whose action is SMART_ACTION_FLEE_FOR_ASSIST, the event's upper bound); 0: it does
+    // not. Read once per entry from the loaded SmartAI scripts
+    float FleeForAssistHealthPct(uint32 creatureEntry);
+
     std::vector<EventStarterDef const*> EventStarters(uint32 mapId);
     std::vector<EventSpotDef const*> EventSpots(uint32 mapId);
     std::vector<RouteLinkDef const*> RouteLinks(uint32 mapId);

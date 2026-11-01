@@ -473,6 +473,7 @@ namespace TestHarness
             ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
             bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
             std::set<ObjectGuid> routeSkips;   // [lead96] route targets skipped while the leader refuses them
+            ObjectGuid walkWakesFirst;         // [lead101] the pack the walk to a patrol wakes: the pull first
             std::vector<G3D::Vector3> routePath;  // [lead97] the leg's path, taken once, walked by index
             size_t routePathIndex = 0;
             ObjectGuid routePathTarget;
