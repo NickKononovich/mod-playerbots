@@ -23723,12 +23723,23 @@ namespace TestHarness
                     for (Unit* attacker : tank->getAttackers())
                         if (attacker && attacker->IsAlive() && attacker->GetVictim() != tank)
                             allOnTank = false;
-                    if (lead.healStarted || allOnTank || emergency)
+                    // [lead89] b131 rfc-h: 4 of 9 aggro losses on the healer - after the first heal "the heals go on"
+                    // for the whole fight, also while a joining mob the tank had not hit yet took the heals' threat.
+                    // Past the start the heals go on while the healer has headroom on every fight mob (its threat
+                    // below the tank's on each: the game's own measure, the damage dealers' rule), or a member dies
+                    bool healerHeadroom = lead.healStarted;
+                    for (ObjectGuid const& fightMob : killOrder)
+                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, fightMob); healerHeadroom && mob &&
+                            mob->IsAlive() &&
+                            !(mob->GetThreatMgr().GetThreat(bot) < mob->GetThreatMgr().GetThreat(tank)))
+                            healerHeadroom = false;
+                    if (healerHeadroom || allOnTank || emergency)
                     {
                         if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
                             logEvent(bot, "Heal", JsonObject().Str("why", allOnTank ? "every fight mob is on the tank"
                                                                          : emergency ? emergencyWhy
-                                                                                     : "the heals go on"));
+                                                                                     : "the heals go on: headroom on "
+                                                                                       "every fight mob"));
                         lead.healStarted = true;
                     }
                 }
@@ -23755,10 +23766,17 @@ namespace TestHarness
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
                     // can reach around it (the AoE radius)
+                    // [lead89] b131 rfc-h: 35-44 headroom stops per damage dealer while the tank's lead on their target
+                    // averaged 3.9 at the end - a mob near the target the tank had not hit yet (0 against 0) stopped
+                    // a ranged single-target attacker too. The mobs around the target count for a member whose damage
+                    // splashes onto them (a melee: cleave, procs, its totems); the AoE gate below holds every AoE
+                    bool const splashes = !PlayerbotAI::IsRanged(bot);
                     auto const headroom = [&](Unit* mob)
                     {
                         if (!headroomOn(mob))
                             return false;
+                        if (!splashes)
+                            return true;
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* close = ObjectAccessor::GetUnit(*tank, other);
                                 close && close != mob && close->IsAlive() &&
