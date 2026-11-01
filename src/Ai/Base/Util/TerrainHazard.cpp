@@ -824,6 +824,16 @@ bool HasSwimWater(Unit* mover, float x, float y, float z)
            liquid.Level > liquid.DepthLevel && liquid.Level - liquid.DepthLevel >= mover->GetMinHeightInWater();
 }
 
+bool InHarmfulLiquid(Unit* mover, float x, float y, float z)
+{
+    Map* map = mover ? mover->GetMap() : nullptr;
+    if (!map)
+        return false;
+    LiquidData const liquid =
+        map->GetLiquidData(mover->GetPhaseMask(), x, y, z, mover->GetCollisionHeight(), DefaultHazardLiquids());
+    return (liquid.Status & MAP_LIQUID_STATUS_IN_CONTACT) && liquid.Level > INVALID_HEIGHT;
+}
+
 LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char const* what)
 {
     LedgeDropVerdict verdict;
@@ -945,7 +955,12 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         // any height, a listed shortcut with the health margin, else under the fall damage height
         verdict.water = probedWater || HasSwimWater(mover, landing.x, landing.y, landing.z);  // [lead145]
         verdict.listed = ListedShortcut(map->GetId(), landing) != nullptr;
-        verdict.safe = SafeFallFor(mover, verdict.height, verdict.water, verdict.listed);
+        // [lead223] b185 rfc-h 5B 615-617 s: "shortcut_drop ... dry, navmesh under the destination (no ground path)",
+        // 12.7 yd "safe" onto (-209.7,116.5,-38.4) - Ragefire's magma: the tank stood in it, the healer up on the
+        // ledge lost it and the group died one by one, the tank burned to death at 841 s. The navmesh polygon under
+        // the lava is floor and the fall harmless; the landing is not: unsafe, no stranded drop, no fallback
+        verdict.burns = InHarmfulLiquid(mover, landing.x, landing.y, landing.z);
+        verdict.safe = !verdict.burns && SafeFallFor(mover, verdict.height, verdict.water, verdict.listed);
         if (Player* player = mover->ToPlayer())
             if (Group* group = player->GetGroup())
                 for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
@@ -970,7 +985,7 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         // the group at -16.1; its walks to the containment sphere (14.2 yd down, 1.3% fall damage) were refused for
         // 250 s. Allowed onto navmesh floor joined to a living member near by a ground path, while the mover keeps
         // LEDGE_LISTED_HP_MARGIN of its health after the fall; the members up there are judged on their own.
-        if (!verdict.allowed && verdict.onMesh && !verdict.listed)
+        if (!verdict.allowed && verdict.onMesh && !verdict.listed && !verdict.burns)
         {
             G3D::Vector3 under;
             bool const stranded = !NavmeshLanding(mover, here, under) || here.z - under.z > LEDGE_DROP_DZ;
@@ -1028,7 +1043,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                                                        FallDamageShare(unit, verdict.height) >=
                                                    LEDGE_LISTED_HP_MARGIN;
             };
-            bool fallback = memo.refusals >= LEDGE_REFUSALS_FALLBACK && verdict.onMesh && survives(mover);
+            bool fallback =
+                !verdict.burns && memo.refusals >= LEDGE_REFUSALS_FALLBACK && verdict.onMesh && survives(mover);
             if (fallback)
                 if (Player* player = mover->ToPlayer())
                     if (Group* group = player->GetGroup())
@@ -1060,7 +1076,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         {
             memo.loggedMs = now ? now : 1;
             char const* const by = what ? what : "walk";
-            char const* const kind = verdict.water      ? "water"
+            char const* const kind = verdict.burns      ? "lava/slime"
+                                     : verdict.water    ? "water"
                                      : verdict.listed   ? "listed"
                                      : verdict.stranded ? "stranded"
                                      : verdict.fallback ? "fallback"
