@@ -31,6 +31,7 @@ class Player;
 class Unit;  // [lead3]
 #include "HazardZone.h"  // [lead16]
 #include "DungeonLeaderState.h"  // [lead107]
+#include "LeaderGroup.h"         // [lead107] the leader's group view (PartyLeaderGroup)
 namespace PullPlanner
 {
     struct Decision;  // [lead15] ChooseTargetActions.h
@@ -382,13 +383,7 @@ namespace TestHarness
         std::map<ObjectGuid, uint32> skipUntil;
         // [lead41] the leader's on-the-path verdict per idle candidate (the route rules of Retarget: blocks route,
         // patrol crosses route, required, boss area, joins the boss ...; off the path: its route distance and reach)
-        struct PathVerdict
-        {
-            bool on = false;
-            std::string why;
-            float routeDist = -1.0f;
-            float reach = 0.0f;
-        };
+        using PathVerdict = Leader::LeaderGroup::PathVerdict;  // [lead107] the leader's group view's
         std::map<ObjectGuid, PathVerdict> pathVerdicts;
         std::map<ObjectGuid, bool> pathVerdictLogged;  // the verdict last logged per mob (path_verdict)
         std::map<ObjectGuid, std::string> skipReason;  // why skipUntil holds it (the run's missing-boss report)
@@ -748,6 +743,8 @@ namespace TestHarness
 
     class TestHarnessMgr
     {
+        friend class PartyLeaderGroup;  // [lead107] its SkipTarget / LogEvent
+
     public:
         static TestHarnessMgr& Instance();
 
@@ -1080,6 +1077,42 @@ namespace TestHarness
         SetupJob _setup;
         uint32 _setupTimer = 0;
         uint32 _queueTimer = 0;
+    };
+
+    // [lead107] the leader's view of a harness party (Ai/Leader/LeaderGroup.h): read from the Party, its actions
+    // carried out by the harness (TestHarnessMgr::SkipTarget / LogEvent). Lives for one leader call.
+    class PartyLeaderGroup : public Leader::LeaderGroup
+    {
+    public:
+        PartyLeaderGroup(TestHarnessMgr& mgr, Party& party) : _mgr(mgr), _party(party) {}
+
+        Leader::DungeonLeaderState& State() override { return _party.lead; }
+        DecisionRun Run() const override { return DecisionRun{_party.id, _party.seq, _party.runStartMs}; }
+        std::vector<ObjectGuid> MemberGuids() const override;
+        ObjectGuid LeaderGuid() const override { return _party.leader; }
+        uint32 MapId() const override;
+        uint32 InstanceId() const override { return _party.instanceId; }
+        ObjectGuid RouteTarget() const override { return _party.target; }
+        std::string const& RouteRule() const override { return _party.targetRouteRule; }
+        bool RouteTargetIsBoss() const override { return _party.targetIsBoss; }
+        bool RouteTargetIsStarter() const override { return _party.targetIsStarter; }
+        bool InCombat() const override { return _party.inCombat; }
+        bool FightOn(Player* leader) const override { return _party.FightOn(leader); }
+        uint32 PullStartMs() const override { return _party.pullStartMs; }
+        bool NeedBuff() const override { return _party.needBuff; }
+        std::set<ObjectGuid> const& BossCreatures() const override { return _party.bossCreatures; }
+        std::map<ObjectGuid, PathVerdict> const& PathVerdicts() const override { return _party.pathVerdicts; }
+        std::map<ObjectGuid, bool>& PathVerdictLogged() override { return _party.pathVerdictLogged; }
+        ObjectGuid PhantomHunt() const override { return _party.phantomHunt; }
+        void ClearPhantomHunt() override { _party.phantomHunt.Clear(); }
+        void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
+        void LogEvent(std::string const& type, JsonObject fields) override;
+
+        Party& GetParty() { return _party; }
+
+    private:
+        TestHarnessMgr& _mgr;
+        Party& _party;
     };
 }
 

@@ -8,6 +8,7 @@
 #define PLAYERBOTS_TESTHARNESSLOG_H
 
 #include "Define.h"
+#include "LeaderLog.h"  // [lead107]
 #include "ObjectGuid.h"
 
 #include <atomic>
@@ -25,38 +26,12 @@ class Unit;
 
 namespace TestHarness
 {
-    std::string JsonEscape(std::string const& text);
+    // [lead107] the JSON builder and the decision run live in the leader (Ai/Leader/LeaderLog.h)
+    using Leader::DecisionRun;
+    using Leader::JsonArray;
+    using Leader::JsonEscape;
+    using Leader::JsonObject;
     std::string WallClock();
-
-    // One JSON object, built field by field; every line written by the harness is self-contained.
-    class JsonObject
-    {
-    public:
-        JsonObject& Str(char const* key, std::string const& value);
-        JsonObject& Num(char const* key, int64 value);
-        JsonObject& Real(char const* key, double value);
-        JsonObject& Bool(char const* key, bool value);
-        JsonObject& Raw(char const* key, std::string const& json);
-        JsonObject& Merge(JsonObject const& other);
-        std::string Build() const { return "{" + _body + "}"; }
-
-    private:
-        void Key(char const* key);
-        std::string _body;
-    };
-
-    class JsonArray
-    {
-    public:
-        JsonArray& Raw(std::string const& json);
-        JsonArray& Str(std::string const& value);
-        JsonArray& Num(int64 value);
-        std::string Build() const { return "[" + _body + "]"; }
-        bool Empty() const { return _body.empty(); }
-
-    private:
-        std::string _body;
-    };
 
     // <LogsDir>/tests/<fileName>, one line per call.
     void AppendLine(std::string const& fileName, std::string const& line);
@@ -133,26 +108,19 @@ namespace TestHarness
     // Conflicts: two different owners deciding about one mob within Leader::DECISION_CONFLICT_MS ("two_owners"), and
     // the kinds the harness notes itself (NoteConflict: "waypoint_in_order", ...). Each is a line what="conflict" and
     // a count in the run's summary (SummaryJson, the run's "leader_decisions" event). World thread only.
-    struct DecisionRun
-    {
-        std::string runId;
-        uint32 runSeq = 0;
-        uint32 runStartMs = 0;
-    };
-
-    class DecisionLog
+    class DecisionLog : public Leader::DecisionSink
     {
     public:
         static DecisionLog& Instance();
 
         // One decision / report line; `ms` is its getMSTime() stamp (0: now). Returns the line's id.
         uint32 Write(DecisionRun const& run, std::string const& who, std::string const& what, ObjectGuid mob,
-                     std::string const& mobName, bool decides, JsonObject fields, uint32 ms = 0);
+                     std::string const& mobName, bool decides, JsonObject fields, uint32 ms = 0) override;
         // A conflict the caller detected (`about`: the decision line ids or a short description).
         void NoteConflict(DecisionRun const& run, std::string const& kind, ObjectGuid mob, std::string const& about,
-                          JsonObject fields);
+                          JsonObject fields) override;
         // [lead15] counts a conflict of `kind` without a line of its own (own_decision: the line is the decision)
-        void CountConflict(DecisionRun const& run, std::string const& kind);
+        void CountConflict(DecisionRun const& run, std::string const& kind) override;
         // The run's counts: lines by `what`, conflicts by kind, decisions by owner.
         std::string SummaryJson(uint32 runSeq);
         void EndRun(uint32 runSeq);

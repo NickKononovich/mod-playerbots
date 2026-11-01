@@ -5934,4 +5934,25 @@ namespace TestHarness
         }
         return true;
     }
+
+    std::vector<ObjectGuid> PartyLeaderGroup::MemberGuids() const
+    {
+        std::vector<ObjectGuid> out;
+        out.reserve(_party.members.size());
+        for (Member const& member : _party.members)
+            out.push_back(member.guid);
+        return out;
+    }
+
+    uint32 PartyLeaderGroup::MapId() const { return _party.content ? _party.content->mapId : 0; }
+
+    void PartyLeaderGroup::SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason)
+    {
+        _mgr.SkipTarget(_party, guid, ms, reason);
+    }
+
+    void PartyLeaderGroup::LogEvent(std::string const& type, JsonObject fields)
+    {
+        _mgr.LogEvent(_party, type, std::move(fields));
+    }
 }
