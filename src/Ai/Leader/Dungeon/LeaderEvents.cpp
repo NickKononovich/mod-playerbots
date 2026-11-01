@@ -243,7 +243,9 @@ namespace Leader::Dungeon
         {
             Player* bot = ObjectAccessor::FindPlayer(member);
             // [lead127] the arbiter's one owner: a move barred for the member is neither judged nor issued
-            if (Leader::Events::MoveBarred(member, why))
+            // [lead137] ... and no "along with the tank" walk while the group fights (b162: the shaman 83 s)
+            if (Leader::Events::MoveBarred(member, why) ||
+                (why.rfind("along with the tank", 0) == 0 && group.FightOn(tank)))
                 return false;
             if (bot && move != Leader::MoveEvent::Hold && Leader::LEADER_SPOT_AGGRO_GUARD)
             {
@@ -2165,15 +2167,15 @@ namespace Leader::Dungeon
                         breaks.clear();
                     else
                     {
+                        // [lead137] b162: the combat-spot rule moved the mage 268 s, the hunter 247 s, the shaman 296 s
+                        // a run. A held spot is left only when its Attack target is out of its reach or sight from it
+                        // (melee: out of melee reach), or a hazard / cleave / drop-off covers it - not because the
+                        // fight's anchor or the target moved a little, nor for the heal reach (its own rule)
                         breaks = LeaderCombatSpotBreaks(bot, botAI, target, found->second.second, melee, zones,
                                                         keeps, sight);
-                        if (lead.combatSpotAnchor[guid] != lead.fightAnchorSerial)
-                        {
-                            if (breaks.empty())
-                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
-                            else
-                                breaks = "the fight spot moved: " + breaks;
-                        }
+                        if (breaks == "heal reach")
+                            breaks.clear();
+                        lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                     }
                     // [lead38] no first spot for a ranged / healer while the target runs in: it stays (and casts)
                     if (breaks == "first spot" && target->isMoving() &&
@@ -2181,25 +2183,27 @@ namespace Leader::Dungeon
                     {
                         breaks.clear();
                         moved = true;
-                        // [lead64] user: «одной командой» - melee go to the meeting point once (the leader's
-                        // predicted meeting of the tank and the mob) and adjust once the mob stands on the tank
-                        if (melee && !bot->IsWithinMeleeRange(target) &&
-                            moveOrStay(bot, meleeMeetAt(bot, target->GetGUID()), 3.0f,
-                                       "along with the tank: to the meeting point"))
-                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                     JsonObject().Str("why", "along with the tank: to the meeting point"));
+                        // [lead137] no "along with the tank" walk in a fight (b162: the shaman 83 s): the member
+                        // stays until the mob stands on the tank, then takes its spot
                     }
                     if (!breaks.empty())
                     {
                         Position spot;
+                        // [lead137] where the member stands is its spot when it fits there (reaches and sees its
+                        // target, safe, in heal reach): no walk
+                        bool const here = !melee && breaks == "first spot" &&
+                                          LeaderCombatSpotValid(bot, botAI, target, bot->GetPosition(), melee, zones,
+                                                                keeps, true);
+                        if (here)
+                            spot = bot->GetPosition();
                         bool const got =
-                            slow([&]
-                                 {
-                                     SpotAcquire const acquire;  // [lead36]
-                                     return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(), melee,
-                                                                    zones, keeps, spot) ||
-                                            LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot);
-                                 });
+                            here || slow([&]
+                                         {
+                                             SpotAcquire const acquire;  // [lead36]
+                                             return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(),
+                                                                            melee, zones, keeps, spot) ||
+                                                    LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot);
+                                         });
                         if (got)
                         {
                             if (found != lead.combatSpots.end())
@@ -2634,6 +2638,14 @@ namespace Leader::Dungeon
                     }
                     for (Unit* attacker : tank->getAttackers())
                         if (attacker && attacker->IsAlive() && attacker->GetVictim() != tank)
+                            allOnTank = false;
+                    // [lead138] b162 20261101-121409: a Searing Blade Warlock standing back took the healer 12 s (its
+                    // heals' threat, the tank had none on it). Every mob of the fight counts, the casters the tank
+                    // has not touched too: on the tank, with the tank's threat on it
+                    for (ObjectGuid const& fightMob : killOrder)
+                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, fightMob);
+                            mob && mob->IsAlive() &&
+                            (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f))
                             allOnTank = false;
                     // [lead89] b131 rfc-h: 4 of 9 aggro losses on the healer - after the first heal "the heals go on"
                     // for the whole fight, also while a joining mob the tank had not hit yet took the heals' threat.
