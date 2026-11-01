@@ -93,6 +93,14 @@ namespace Leader::Fight
         return (fleeAt > 0.0f && mob->GetHealthPct() <= fleeAt) || FledMobs::IsRunning(mob);
     }
 
+    bool IsFleer(Unit* mob)
+    {
+        if (!mob || !mob->IsAlive() || !mob->ToCreature())
+            return false;
+        float const fleeAt = Leader::Knowledge::FleeForAssistHealthPct(mob->GetEntry());
+        return (fleeAt > 0.0f && mob->GetHealthPct() <= fleeAt) || FledMobs::IsRunning(mob);
+    }
+
     Player* FleeStopper(std::vector<Player*> const& members, Unit* mob)
     {
         for (Player* member : members)

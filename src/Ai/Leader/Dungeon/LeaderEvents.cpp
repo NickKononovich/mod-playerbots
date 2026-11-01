@@ -878,6 +878,9 @@ namespace Leader::Dungeon
         // AoE reach, in heal reach) and stops its damage, the tank takes the mob back (a taunt when ready, else an
         // AoE threat spell, else it attacks it), the others leave the mob alone until the tank has it; the healer
         // keeps the victim up (Heal(group)). Logged: leader_aggro_loss -> the commands -> leader_aggro_recovered.
+        // [lead200] b181 rfc-h 5G 144.4 / 197.8 / 712.5 s: a flee stop turned the fleer onto its stopper, and the fleer
+        // became "loose" - DontAttack for everyone else on a mob the leader made the focus (Howling Blast held 55
+        // times "the area holds the leader's DontAttack mob"). A fleer is the group's kill, not the tank's to take back
         std::map<ObjectGuid, Unit*> looseOn;  // victim -> the loose mob on it
         std::set<ObjectGuid> looseMobs;
         if (fighting)
@@ -885,7 +888,7 @@ namespace Leader::Dungeon
             for (Player* bot : seats)
                 for (Unit* attacker : bot->getAttackers())
                     if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot && attacker->ToCreature() &&
-                        LeaderFightMob(tank, attacker) &&
+                        LeaderFightMob(tank, attacker) && !Leader::Fight::IsFleer(attacker) &&
                         !looseOn.count(bot->GetGUID()))
                     {
                         looseOn[bot->GetGUID()] = attacker;

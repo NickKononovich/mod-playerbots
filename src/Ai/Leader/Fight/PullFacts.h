@@ -31,6 +31,8 @@ namespace Leader::Fight
     // [lead104] a fight mob the leader has stopped from fleeing: at its SmartAI flee-for-assist health or running,
     // not held (stunned, rooted, crowd-controlled), not stopped within the group's stop spread
     bool NeedsFleeStop(Unit* mob);
+    // [lead200] a fight mob at its SmartAI flee-for-assist health or running, held or not: the group kills it
+    bool IsFleer(Unit* mob);
     // [lead104] the member (not a healer) with a stop ready that takes `mob` now; null: none
     Player* FleeStopper(std::vector<Player*> const& members, Unit* mob);
     // [lead146] the mob runs to the tank: alive, in combat, its victim the tank, moving, not rooted and not out of
