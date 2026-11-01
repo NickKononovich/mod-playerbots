@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <map>  // [rot42]
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -208,8 +209,10 @@ float ObservedLifetime(Unit* target)
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return unknown;
 
-    // Map threads tick their units; each keeps its own table.
-    thread_local std::unordered_map<ObjectGuid, HealthTrack> tracks;
+    // Map threads tick their units; each keeps its own table. [rot42] Keyed by the instance too: one thread updates
+    // several instances of the same dungeon, and their creatures share low GUIDs (b180: 8 parallel rfc-h runs, one
+    // Oggleflint's samples mixed with another's - "37 % health, lives 1.8 s" for a 448k boss at 15k group dps).
+    thread_local std::map<std::pair<uint32, ObjectGuid>, HealthTrack> tracks;
     uint32 const now = getMSTime();
     if (tracks.size() > LIFE_MAX_TRACKED)
     {
@@ -222,7 +225,7 @@ float ObservedLifetime(Unit* target)
         }
     }
 
-    HealthTrack& track = tracks[target->GetGUID()];
+    HealthTrack& track = tracks[{target->GetInstanceId(), target->GetGUID()}];
     uint32 const health = target->GetHealth();
     // Healed, reset or evaded since: start over.
     if (track.count && (health > track.health[track.count - 1] ||
