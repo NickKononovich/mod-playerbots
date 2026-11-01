@@ -1651,6 +1651,7 @@ namespace Leader::Dungeon
         {
             lead.combatSpots.clear();
             lead.tankGroundSpots.clear();  // [lead152]
+            lead.tankGroundFor.clear();
             lead.combatSpotAnchor.clear();
             lead.fightAnchorSerial = 0;
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
@@ -2218,7 +2219,23 @@ namespace Leader::Dungeon
                 bool const sight = !losMs || getMSTimeDiff(losMs, now) >= LEADER_SPOT_LOS_MS;
                 if (sight)
                     losMs = now;
-                if (Leader::LEADER_ANCHORED_SPOTS)
+                // [lead156] b175 20261101-161451 733.4-735.5 s: the shaman's "behind the target" StandAt moved with its
+                // walking Cultist every tick ((-254,209.2) -> (-254,206.2) -> (-251,207.1), command_repeat). While a
+                // melee member's target walks (it is on the tank: the walk is the fight's, not its run in), its one
+                // command is the chase - a Follow behind that mob, issued once per target; the spot "behind the
+                // target" once it stands
+                bool const chases = melee && target->isMoving() && target->GetVictim() == tank &&
+                                    tank->IsWithinMeleeRange(target);
+                if (chases)
+                {
+                    if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
+                                                  "chase: behind the target"))
+                        logEvent(bot, "Follow",
+                                 JsonObject().Str("why", "chase: behind the target").Str("target", target->GetName()));
+                    lead.combatSpots.erase(guid);
+                    moved = true;
+                }
+                else if (Leader::LEADER_ANCHORED_SPOTS)
                 {
                     // [lead18] anchored: kept for the whole fight while it fits; a target change alone never moves
                     // anyone; a new spot is the nearest that fits (from where the member stands), else a fresh one
@@ -2360,11 +2377,20 @@ namespace Leader::Dungeon
                                 {
                                     lead.combatSpots[guid] = {target->GetGUID(), chosen};
                                     lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                    // [lead156] one decision per member, target and point (b175: 5 in a row)
+                                    auto const before = lead.tankGroundSpots.find(guid);
+                                    bool const same = before != lead.tankGroundSpots.end() &&
+                                                      before->second.GetExactDist(chosen) <= 1.0f &&
+                                                      lead.tankGroundFor[guid] == target->GetGUID();
                                     lead.tankGroundSpots[guid] = chosen;
-                                    Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(), true,
-                                                      JsonObject().Str("member", bot->GetName()).Str("why", breaks)
-                                                          .Str("target", target->GetName()).Str("from", from)
-                                                          .Real("walk", bot->GetExactDist(chosen)));
+                                    lead.tankGroundFor[guid] = target->GetGUID();
+                                    if (!same)
+                                        Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(),
+                                                          true,
+                                                          JsonObject().Str("member", bot->GetName())
+                                                              .Str("why", breaks).Str("target", target->GetName())
+                                                              .Str("from", from)
+                                                              .Real("walk", bot->GetExactDist(chosen)));
                                 }
                             }
                         }
