@@ -458,7 +458,14 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
                 *opener = "righteous defense";
             return mob;
         }
-        for (char const* name : TANK_OPENERS)
+        // [lead211] b182 rfc-h: the engage's opener at the commit missed out of range (opener_miss "34-97 of 30 yd")
+        // and the open order's mob was opened here as it came into range - with the old list, Taunt before Charge /
+        // Shoot (no threat on a mob that fights nobody). An untouched mob gets the leader's engage openers (damage
+        // first: TankEngageOpeners); a mob on another member the taunts first (TANK_OPENERS)
+        std::vector<char const*> const openers =
+            takeBack ? std::vector<char const*>(std::begin(TANK_OPENERS), std::end(TANK_OPENERS))
+                     : TankEngageOpeners(bot, !TankWalkIntoIdlePack(botAI, bot, mob));
+        for (char const* name : openers)
             if (botAI->CanCastSpell(name, mob))
             {
                 if (opener)
