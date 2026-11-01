@@ -295,10 +295,12 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // mob back from another member is the most urgent thing a tank does
     triggers.push_back(new TriggerNode("tank incoming mob",
         { NextAction("tank open incoming", ACTION_INTERRUPT + 1.0f) }));
+    // [lead159] b176 20261101-163239: Consecration 51 of 96 possible, the tank's threat on Jergosh 82 % of wowsims -
+    // the lowest of the 969 band, it lost each free GCD to Judgement (wowsims: Consecration before Judgement)
+    triggers.push_back(new TriggerNode("consecration ready",
+        { NextAction("consecration", ACTION_HIGH + 5.75f) }));
     triggers.push_back(new TriggerNode("judgement of wisdom ready",
         { NextAction("judgement of wisdom", ACTION_HIGH + 5.7f) }));
-    triggers.push_back(new TriggerNode("consecration ready",
-        { NextAction("consecration", ACTION_HIGH + 5.5f) }));
     triggers.push_back(new TriggerNode("avenger's shield boss filler",
         { NextAction("avenger's shield", ACTION_HIGH + 5.2f) }));
     triggers.push_back(
