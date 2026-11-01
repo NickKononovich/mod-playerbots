@@ -13,6 +13,8 @@
 // [b31_deep] Refresh window of the shouts (wowsims arms / prot APL: Battle / Commanding Shout refreshed 3 s before it
 // expires): a plain buff trigger only fired once the shout had dropped. A shout has no ticks, nothing is lost.
 constexpr uint32 WARRIOR_SHOUT_REFRESH_MS = 3 * IN_MILLISECONDS;
+// [rot34] wowsims protection_warrior__default: Thunder Clap / Demoralizing Shout refreshed 2 s before they expire
+constexpr uint32 WARRIOR_DEBUFF_REFRESH_MS = 2 * IN_MILLISECONDS;
 
 namespace WarriorRage
 {
@@ -82,7 +84,10 @@ SNARE_TRIGGER(ThunderClapSnareTrigger, "thunder clap");
 class ThunderClapTrigger : public DebuffTrigger
 {
 public:
-    ThunderClapTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "thunder clap") {}
+    ThunderClapTrigger(PlayerbotAI* botAI)
+        : DebuffTrigger(botAI, "thunder clap", 1, false, 8.0f, WARRIOR_DEBUFF_REFRESH_MS)
+    {
+    }
 
     bool IsActive() override;
 };
@@ -92,7 +97,10 @@ public:
 class DemoralizingShoutDebuffTrigger : public DebuffTrigger
 {
 public:
-    DemoralizingShoutDebuffTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "demoralizing shout", 1, false, 15.0f) {}
+    DemoralizingShoutDebuffTrigger(PlayerbotAI* botAI)
+        : DebuffTrigger(botAI, "demoralizing shout", 1, false, 15.0f, WARRIOR_DEBUFF_REFRESH_MS)
+    {
+    }
 
     bool IsActive() override;
 };
