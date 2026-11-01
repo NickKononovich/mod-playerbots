@@ -1636,6 +1636,50 @@ namespace Leader::Dungeon
                 if (samples.size() < 4000)
                     samples.push_back(bot->GetExactDist(tank));
             }
+        // [lead178] [lead184] one member's burn cooldowns on trash: each one ready, allowed unless the next boss does
+        // not fit without it and it would not be back for his pull (else held for him)
+        auto const burnVerdict = [&](Player* who, PlayerbotAI* whoAI, std::vector<std::string>& allowedOut,
+                                     std::string& allowedNote, std::string& heldNote)
+        {
+            for (char const* burn : Leader::BURN_COOLDOWNS)
+            {
+                uint32 const spell = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
+                SpellInfo const* info = spell && who->HasSpell(spell) && !who->HasSpellCooldown(spell)
+                                            ? sSpellMgr->GetSpellInfo(spell)
+                                            : nullptr;
+                if (!info)
+                    continue;
+                float const rechargeSec = std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
+                bool const allowed = !lead.bossNeedsBurn || lead.bossPullSec < 0.0f || lead.bossPullSec >= rechargeSec;
+                if (allowed)
+                    allowedOut.push_back(burn);
+                std::string& note = allowed ? allowedNote : heldNote;
+                note += Acore::StringFormat("{}{} ({:.0f} s)", note.empty() ? "" : ", ", burn, rechargeSec);
+            }
+        };
+        // [lead187] b180: the blood DK tank cast no Raise Dead / Army of the Dead (sim 1.3 / min each) - its DK
+        // cooldowns run only under the leader's Burn (LeaderBurnRule) and the leader gave the tank none. The tank's
+        // Intensity by the same rule: a boss fight burns, trash the cooldowns the boss does not need
+        if (fighting && Leader::LEADER_ATTACK_EVENTS && tank->IsAlive())
+            if (PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank))
+            {
+                std::vector<std::string> tankAllowed;
+                std::string tankAllowedNote;
+                std::string tankHeldNote;
+                if (intensity != Leader::Intensity::Burn)
+                    burnVerdict(tank, tankAI, tankAllowed, tankAllowedNote, tankHeldNote);
+                Leader::Intensity const tankIntensity = intensity == Leader::Intensity::Burn || !tankAllowed.empty()
+                                                            ? Leader::Intensity::Burn
+                                                            : Leader::Intensity::Normal;
+                if (Leader::Events::SetIntensity(tank->GetGUID(), tankIntensity, tankAllowed) &&
+                    tankIntensity == Leader::Intensity::Burn)
+                    logEvent(tank, "Intensity",
+                             JsonObject()
+                                 .Str("intensity", "burn")
+                                 .Str("who", "tank")
+                                 .Str("why", intensity == Leader::Intensity::Burn ? "a dungeon boss"
+                                                                                  : "trash: " + tankAllowedNote));
+            }
         // [lead21] slabs-h 20261026-195203: the tank executing a leader PullOrder out of combat had no fresh command -
         // rot3's stale mode ("keeps to its current target, no area spell") vetoed its pull: 17 orders "nothing came".
         // While an order runs, its target is the tank's fresh Attack, an area pull allowed on that pack
@@ -3029,25 +3073,7 @@ namespace Leader::Dungeon
                 {
                     std::string allowedNote;
                     std::string heldNote;  // [lead184] the cooldowns the boss needs (held for him)
-                    for (char const* burn : Leader::BURN_COOLDOWNS)
-                    {
-                        uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
-                        SpellInfo const* info = spell && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell)
-                                                    ? sSpellMgr->GetSpellInfo(spell)
-                                                    : nullptr;
-                        if (!info)
-                            continue;
-                        float const rechargeSec =
-                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
-                        // [lead184] held only for a boss who does not fit without it and when it is not back by
-                        // then; else used on trash on cooldown (the effect's length no longer gates it)
-                        bool const allowed =
-                            !lead.bossNeedsBurn || lead.bossPullSec < 0.0f || lead.bossPullSec >= rechargeSec;
-                        if (allowed)
-                            burnAllowed.push_back(burn);
-                        std::string& note = allowed ? allowedNote : heldNote;
-                        note += Acore::StringFormat("{}{} ({:.0f} s)", note.empty() ? "" : ", ", burn, rechargeSec);
-                    }
+                    burnVerdict(bot, botAI, burnAllowed, allowedNote, heldNote);
                     if (!burnAllowed.empty())
                         burnable = Leader::Intensity::Burn;
                     if (!burnAllowed.empty() || !heldNote.empty())
