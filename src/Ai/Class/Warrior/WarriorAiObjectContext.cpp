@@ -241,10 +241,11 @@ private:
     {
         return new WarriorSpellReadyTrigger(botAI, "heroic throw");
     }
-    // wowsims arms: Heroic Strike at 40 rage; 45 here so it never takes Mortal Strike's 30 (Slam filler uses 45 too)
+    // [rot29] wowsims arms: Heroic Strike at 40 rage, keeping the rage of a Mortal Strike due within a GCD (was a flat
+    // 45)
     static Trigger* arms_heroic_strike_rage(PlayerbotAI* botAI)
     {
-        return new WarriorRageAvailableTrigger(botAI, "arms heroic strike rage", 45);
+        return new FuryHeroicStrikeRageTrigger(botAI, "arms heroic strike rage", 40);
     }
     static Trigger* fury_heroic_strike_rage(PlayerbotAI* botAI) { return new FuryHeroicStrikeRageTrigger(botAI); }
     static Trigger* shattering_throw_boss(PlayerbotAI* botAI) { return new ShatteringThrowBossTrigger(botAI); }

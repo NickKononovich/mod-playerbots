@@ -113,14 +113,7 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
-    triggers.push_back(
-        new TriggerNode(
-            "rend on attacker",
-            {
-                NextAction("rend on attacker", ACTION_HIGH + 8)
-            }
-        )
-    );
+    // [rot29] no Rend on every other attacker (wowsims arms: Rend only on the target, when missing)
 
     // [b31_deep] Mortal Strike on cooldown once its 30 rage is there (was the "mortal strike" debuff trigger plus a
     // 20 rage node shared with Slam): 5.1 a minute against a ceiling of ~10.
@@ -248,7 +241,8 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "bladestorm",
             {
-                NextAction("bladestorm", ACTION_HIGH + 4)
+                // [rot29] wowsims arms: Bladestorm above Mortal Strike (25), under Rend / Overpower
+                NextAction("bladestorm", ACTION_HIGH + 5.5f)
             }
         )
     );

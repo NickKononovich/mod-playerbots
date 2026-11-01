@@ -148,14 +148,15 @@ private:
 };
 
 // [rot19] wowsims fury: Heroic Strike at 12+ rage, as long as it leaves the rage for a Bloodthirst / Whirlwind about
-// to come off cooldown (WarriorLeavesRageForStrike)
+// to come off cooldown (WarriorLeavesRageForStrike). [rot29] arms uses it at 40 (Mortal Strike's rage kept).
 class FuryHeroicStrikeRageTrigger : public WarriorRageAvailableTrigger
 {
 public:
     static constexpr int32 FURY_HEROIC_STRIKE_RAGE = 12;
 
-    FuryHeroicStrikeRageTrigger(PlayerbotAI* botAI)
-        : WarriorRageAvailableTrigger(botAI, "fury heroic strike rage", FURY_HEROIC_STRIKE_RAGE)
+    FuryHeroicStrikeRageTrigger(PlayerbotAI* botAI, std::string const name = "fury heroic strike rage",
+                                int32 rage = FURY_HEROIC_STRIKE_RAGE)
+        : WarriorRageAvailableTrigger(botAI, name, rage)
     {
     }
 
