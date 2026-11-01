@@ -170,6 +170,11 @@ public:
 
     bool isUseful() override;
     bool isPossible() override;
+
+private:
+    // [rot49] debug trace of the finisher choice at 4+ combo points on a dungeon boss (logged when it changes)
+    void TraceFinisher();
+    std::string lastTrace;
 };
 
 class CastTricksOfTheTradeOnMainTankAction : public BuffOnMainTankAction

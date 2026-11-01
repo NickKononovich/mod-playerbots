@@ -7,6 +7,7 @@
 #include "RogueActions.h"
 
 #include <algorithm>
+#include <string>
 
 #include "AiFactory.h"
 #include "DBCStores.h"
@@ -19,6 +20,7 @@
 #include "RoguePoisons.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StringFormat.h"
 
 namespace
 {
@@ -91,8 +93,45 @@ bool CastVanishAction::isUseful()
            !bot->HasAura(BG_EY_NETHERSTORM_FLAG_SPELL);
 }
 
+// [rot49] b184 5E-19 Taragaman: no Envenom in a 68 s boss fight (the sim casts 6.2 a minute), the points went to
+// Slice and Dice. One line per change of the inputs of every finisher the 4-point state can take, on a boss only.
+void CastEnvenomAction::TraceFinisher()
+{
+    constexpr uint8 TRACE_MIN_COMBO_POINTS = 4;
+    Unit* target = GetTarget();
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !boss->IsDungeonBoss())
+        return;
+
+    uint8 const combo = AI_VALUE2(uint8, "combo", "current target");
+    if (combo < TRACE_MIN_COMBO_POINTS)
+    {
+        lastTrace.clear();
+        return;
+    }
+
+    Aura const* snd = botAI->GetAura("slice and dice", bot);
+    Aura const* envenom = botAI->GetAura("envenom", bot);
+    uint32 const vanish = AI_VALUE2(uint32, "spell id", "vanish");
+    uint32 const coldBlood = AI_VALUE2(uint32, "spell id", "cold blood");
+    std::string const trace = Acore::StringFormat(
+        "cp {} energy {} melee {} deadly poison state {} envenom buff {} ms, spell useful {} possible {}, slice and "
+        "dice {} ms, vanish ready {}, cold blood ready {}, expose armor on target {}, bleeding {}",
+        combo, AI_VALUE2(uint8, "energy", "self target"), bot->IsWithinMeleeRange(target),
+        target->HasAuraState(AURA_STATE_DEADLY_POISON, nullptr, bot), envenom ? envenom->GetDuration() : 0,
+        CastSpellAction::isUseful(), CastMeleeSpellAction::isPossible(), snd ? snd->GetDuration() : 0,
+        vanish && !bot->HasSpellCooldown(vanish), coldBlood && !bot->HasSpellCooldown(coldBlood),
+        botAI->HasAura("expose armor", target), target->HasAuraState(AURA_STATE_BLEEDING));
+    if (trace == lastTrace)
+        return;
+
+    lastTrace = trace;
+    LOG_INFO("playerbots", "[rot49] {} envenom check on {}: {}", bot->GetName(), boss->GetName(), trace);
+}
+
 bool CastEnvenomAction::isUseful()
 {
+    TraceFinisher();
     // [rot27] wowsims rogue__mutilate: Envenom (at 4+ points) only while its buff is down or at 85+ energy
     constexpr uint8 ENVENOM_POOL_ENERGY = 85;
     uint8 const energy = AI_VALUE2(uint8, "energy", "self target");
