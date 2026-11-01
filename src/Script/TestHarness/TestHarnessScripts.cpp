@@ -8,6 +8,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "SpellAuraEffects.h"  // [lead111] [sting-tick]
 #include "Creature.h"
 #include "Item.h"
 #include "Log.h"
@@ -108,6 +109,28 @@ public:
         // Also called for periodic heals (before ModifyHealReceived): only harmful ticks count as damage.
         if (spellInfo && !spellInfo->IsPositive())
             TestHarness::StatsRegistry::Instance().OnSpellAmount(attacker, target, spellInfo, damage, false);
+        // [lead111] b143 rfc-h Taragaman: Serpent Sting and Chimera Shot - Serpent dealt about half the sim's while
+        // the formulas match (242 + 0.04 RAP a tick); the tick, the caster's ranged attack power and the aura's
+        // ticks, once per caster every 10 s, for the check against the sim
+        if (spellInfo && attacker && attacker->IsPlayer() && spellInfo->SpellFamilyName == SPELLFAMILY_HUNTER &&
+            (spellInfo->SpellFamilyFlags[0] & 0x4000))
+        {
+            thread_local std::unordered_map<ObjectGuid, uint32> logged;
+            uint32 const now = getMSTime();
+            uint32& last = logged[attacker->GetGUID()];
+            if (!last || getMSTimeDiff(last, now) >= 10 * IN_MILLISECONDS)
+            {
+                last = now ? now : 1;
+                AuraEffect const* effect =
+                    target ? target->GetAuraEffect(spellInfo->Id, EFFECT_0, attacker->GetGUID()) : nullptr;
+                LOG_INFO("playerbots", "[sting-tick] {}: {} on {}: tick {} (aura amount {}, ticks {}, duration {} ms), "
+                         "ranged AP {:.0f}, melee AP {:.0f}", attacker->GetName(), spellInfo->SpellName[0],
+                         target ? target->GetName() : "?", damage, effect ? effect->GetAmount() : -1,
+                         effect ? effect->GetTotalTicks() : -1, effect ? effect->GetBase()->GetMaxDuration() : -1,
+                         attacker->GetTotalAttackPowerValue(RANGED_ATTACK),
+                         attacker->GetTotalAttackPowerValue(BASE_ATTACK));
+            }
+        }
     }
 
     void ModifyHealReceived(Unit* target, Unit* healer, uint32& heal, SpellInfo const* spellInfo) override
