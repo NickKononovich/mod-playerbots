@@ -25365,7 +25365,8 @@ namespace TestHarness
                 // [lead98] a boss too: "boss pulled where it stands" with "the tank's walk in for sight refused"
                 // (b138 328.5 s, Taragaman) - the route walk takes the group there first
                 if (mob && decision.kind == "engage" && !tank->IsWithinLOSInMap(mob) &&
-                    Leader::Events::Get(tank->GetGUID(), tankWalk) && tankWalk.move == Leader::MoveEvent::MoveTo && tankWalk.moveWhy == "route walk" &&
+                    Leader::Events::Get(tank->GetGUID(), tankWalk) && tankWalk.move == Leader::MoveEvent::MoveTo &&
+                    tankWalk.moveWhy == "route walk" &&
                     tank->GetExactDist2d(tankWalk.spot.GetPositionX(), tankWalk.spot.GetPositionY()) >
                         tankWalk.tolerance)
                 {
