@@ -292,8 +292,6 @@ namespace TestHarness
         using Leader::Travel::STEER_REST_NOT_STUCK;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_TWIN_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_GAP_MS;  // [lead107] RouteEvents.h
-        using Leader::Travel::STARTER_STUCK_RETRY_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::STARTER_NO_NEARER_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::DOOR_REARM_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::KEY_DOOR_CAST_RANGE;  // [lead107] RouteEvents.h
         using Leader::Travel::KEY_DOOR_HOLD_FRESH_MS;  // [lead107] RouteTargets.h
@@ -307,7 +305,6 @@ namespace TestHarness
         constexpr uint32 DOOR_REARM_COMBAT_MAX = 1000;
         constexpr uint32 DOOR_REARM_COMBAT_GAP_MS = 6 * IN_MILLISECONDS;
         using Leader::Travel::DOOR_REARM_GAP_MS;  // [lead107] RouteTargets.h
-        using Leader::Travel::STARTER_OBJECT_STUCK_SKIP_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::GAP_CROSS_MAX_DISTANCE;  // [lead107] RouteSteer.h
         using Leader::Travel::GAP_CROSS_TRIES;  // [lead107] RouteSteer.h
         using Leader::Travel::GAP_REACHABLE_LEFT;  // [lead107] RouteLegs.h
@@ -578,11 +575,8 @@ namespace TestHarness
         using Leader::Travel::DEAD_END_SAME_END;  // [lead107] RouteSteer.h
         using Leader::Travel::DEAD_END_SAME_GOAL;  // [lead107] RouteSteer.h
         using Leader::Travel::DEAD_END_PROGRESS;  // [lead107] RouteSteer.h
-        using Leader::Travel::DEAD_END_MEMORY_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::DEAD_END_LINK_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::DEAD_END_FALLBACK_REFUSALS;  // [lead107] RouteSteer.h
-        using Leader::Travel::DEAD_END_FALLBACK_WINDOW_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::DEAD_END_FALLBACK_MS;  // [lead107] RouteSteer.h
 
         using Leader::Travel::DeadEndVisit;  // [lead107] RouteSteer.h
         using Leader::Travel::deadEndVisits;  // [lead107] RouteSteer.h

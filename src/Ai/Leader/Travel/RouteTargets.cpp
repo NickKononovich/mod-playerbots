@@ -222,11 +222,25 @@ namespace Leader::Travel
         return path.complete || object->GetExactDist(path.end.x, path.end.y, path.end.z) <= STARTER_PATH_ARRIVE;
     }
 
-    // StarterTrack::stuckUntilMs: the leader's walk to this object got stuck a short while ago.
-    bool StarterObjectStuck(StarterTrack const& starter, ObjectGuid const& guid, uint32 now)
+    // StarterTrack::stuckFrom: the leader's walk to this object got stuck from about here (lead132: no clock, the
+    // object is passed over until the leader is elsewhere)
+    bool StarterObjectStuck(StarterTrack const& starter, ObjectGuid const& guid, Player* leader)
     {
-        auto const itr = starter.stuckUntilMs.find(guid);
-        return itr != starter.stuckUntilMs.end() && int32(itr->second - now) > 0;
+        auto const itr = starter.stuckFrom.find(guid);
+        return itr != starter.stuckFrom.end() &&
+               leader->GetExactDist2d(&itr->second) <= UNREACHABLE_RECHECK_DISTANCE &&
+               std::fabs(leader->GetPositionZ() - itr->second.GetPositionZ()) <= UNREACHABLE_RECHECK_HEIGHT;
+    }
+
+    uint32 OpenDoorCount(Map* map)
+    {
+        uint32 open = 0;
+        if (map)
+            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                if (go && go->isSpawned() && go->GetGoType() == GAMEOBJECT_TYPE_DOOR &&
+                    go->GetGoState() != GO_STATE_READY)
+                    ++open;
+        return open;
     }
 
     float NearestDist(std::vector<Position> const& anchors, WorldObject const* object)
@@ -1378,18 +1392,38 @@ namespace Leader::Travel
             return;
         }
 
+        // [lead132] user: a skip lasts until a fact changes, not for its duration: the leader moved off where it
+        // skipped (UNREACHABLE_RECHECK_DISTANCE / _HEIGHT: another part of the instance - Azjol-Nerub: Anub'arak
+        // skipped from the shaft, reachable once the group dropped to the pool), the skipped object moved
+        // (LEADER_COMMIT_MOVED_YD), a door of the instance opened or closed, or the object is dead / gone
+        uint32 const doorsOpen = OpenDoorCount(map);
         for (auto itr = group.Route().skipUntil.begin(); itr != group.Route().skipUntil.end();)
         {
-            // "Unreachable" was judged from where the leader stood; from another part of the instance it is checked
-            // again (Azjol-Nerub: Anub'arak skipped from the shaft, reachable once the group dropped to the pool).
+            WorldObject* skipped = ObjectAccessor::GetWorldObject(*leader, itr->first);
+            auto facts = group.Route().skipFacts.find(itr->first);
+            if (skipped && (facts == group.Route().skipFacts.end() || facts->second.stamp != itr->second))
+                facts = group.Route()
+                            .skipFacts.insert_or_assign(itr->first,
+                                                        GroupRouteState::SkipFacts{leader->GetPosition(),
+                                                                                   skipped->GetPosition(), doorsOpen,
+                                                                                   itr->second})
+                            .first;
             auto const from = group.Route().unreachableFrom.find(itr->first);
-            bool const moved = from != group.Route().unreachableFrom.end() &&
-                               (leader->GetExactDist2d(&from->second) > UNREACHABLE_RECHECK_DISTANCE ||
-                                std::fabs(leader->GetPositionZ() - from->second.GetPositionZ()) >
-                                    UNREACHABLE_RECHECK_HEIGHT);
-            if (int32(now - itr->second) >= 0 || moved)
+            Position const leaderAt = from != group.Route().unreachableFrom.end()
+                                          ? from->second
+                                          : (facts != group.Route().skipFacts.end() ? facts->second.leaderAt
+                                                                                    : leader->GetPosition());
+            bool const moved = leader->GetExactDist2d(&leaderAt) > UNREACHABLE_RECHECK_DISTANCE ||
+                               std::fabs(leader->GetPositionZ() - leaderAt.GetPositionZ()) > UNREACHABLE_RECHECK_HEIGHT;
+            Unit const* skippedUnit = skipped ? skipped->ToUnit() : nullptr;
+            bool const gone = !skipped || (skippedUnit && !skippedUnit->IsAlive());
+            bool const objectMoved = facts != group.Route().skipFacts.end() && skipped &&
+                                     skipped->GetExactDist(&facts->second.objectAt) > Leader::LEADER_COMMIT_MOVED_YD;
+            bool const doorChanged = facts != group.Route().skipFacts.end() && facts->second.doorsOpen != doorsOpen;
+            if (moved || gone || objectMoved || doorChanged)
             {
                 group.Route().unreachableFrom.erase(itr->first);
+                group.Route().skipFacts.erase(itr->first);
                 itr = group.Route().skipUntil.erase(itr);
             }
             else
@@ -3910,7 +3944,7 @@ namespace Leader::Travel
                     if (go && go->isSpawned() && !starter.usedObjects.count(go->GetGUID()) &&
                         std::find(starter.def->entries.begin(), starter.def->entries.end(), go->GetEntry()) !=
                             starter.def->entries.end() &&
-                        !(byItem && StarterObjectStuck(starter, go->GetGUID(), now) && !adjacentKeyDoor(go)) &&
+                        !(byItem && StarterObjectStuck(starter, go->GetGUID(), leader) && !adjacentKeyDoor(go)) &&
                         // [b32_strat_gate] a re-armed key gate the whole group is through: no walk back to key it
                         !(byItem && starter.doorRearms && GroupThroughKeyGate(group, go)) &&
                         (byItem || (!go->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE) &&

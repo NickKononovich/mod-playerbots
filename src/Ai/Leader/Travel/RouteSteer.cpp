@@ -167,14 +167,13 @@ namespace Leader::Travel
             return;
         G3D::Vector3 const here(walker->GetPositionX(), walker->GetPositionY(), walker->GetPositionZ());
         float const distance = (goal - here).length();
-        uint32 const now = getMSTime();
         std::vector<DeadEndVisit>& visits = found->second;
         visits.erase(std::remove_if(visits.begin(), visits.end(),
                                     [&](DeadEndVisit const& visit)
                                     {
-                                        return getMSTimeDiff(visit.ms, now) > DEAD_END_MEMORY_MS ||
-                                               ((visit.goal - goal).length() <= DEAD_END_SAME_GOAL &&
-                                                distance + DEAD_END_PROGRESS < visit.distance);
+                                        // [lead132] forgotten when passed, not after DEAD_END_MEMORY_MS
+                                        return (visit.goal - goal).length() <= DEAD_END_SAME_GOAL &&
+                                               distance + DEAD_END_PROGRESS < visit.distance;
                                     }),
                      visits.end());
     }
@@ -241,26 +240,28 @@ namespace Leader::Travel
 
     // [incomplete_route_deadend] The never-a-stall fallback: true while the leader walks partial routes the old
     // way. A refusal counts; the DEAD_END_FALLBACK_REFUSALS-th within the window starts it (started: this call).
-    bool DeadEndFallback(Player* leader, bool refusal, bool& started)
+    bool DeadEndFallback(Player* leader, ObjectGuid target, bool refusal, bool& started)
     {
+        // [lead132] user: no elapsed-time rule decides (DEAD_END_FALLBACK_WINDOW_MS 3 min / DEAD_END_FALLBACK_MS
+        // 10 min were the old clocks): DEAD_END_FALLBACK_REFUSALS refusals for the same target put the leader on the
+        // old walk for that target; another target starts the count anew
         started = false;
         uint32 const now = getMSTime();
         DeadEndRefusals& refusals = deadEndRefusals[leader->GetGUID()];
-        if (refusals.fallbackUntilMs && int32(refusals.fallbackUntilMs - now) > 0)
+        if (refusals.target != target)
+        {
+            refusals = DeadEndRefusals();
+            refusals.target = target;
+        }
+        if (refusals.fallbackUntilMs)
             return true;
-        refusals.fallbackUntilMs = 0;
-        refusals.ms.erase(std::remove_if(refusals.ms.begin(), refusals.ms.end(),
-                                         [now](uint32 ms)
-                                         { return getMSTimeDiff(ms, now) > DEAD_END_FALLBACK_WINDOW_MS; }),
-                          refusals.ms.end());
         if (!refusal)
             return false;
         refusals.ms.push_back(now);
         if (refusals.ms.size() < DEAD_END_FALLBACK_REFUSALS)
             return false;
         refusals.ms.clear();
-        uint32 const until = now + DEAD_END_FALLBACK_MS;
-        refusals.fallbackUntilMs = until ? until : 1;
+        refusals.fallbackUntilMs = now ? now : 1;  // on (since)
         started = true;
         return true;
     }
@@ -3568,7 +3569,11 @@ namespace Leader::Travel
             routeState.steerNearest = distance;
             routeState.steerNoNearerMs = 0;
         }
-        bool swingStuck = routeState.targetIsStarter && routeState.steerNoNearerMs > STARTER_NO_NEARER_MS &&
+        // [lead132] the swing is a fact of the walk, not STARTER_NO_NEARER_MS 90 s: the leader walked back off the
+        // nearest point it came to (STEER_PROGRESS_RANGE farther again) - the route-length check below tells a walk
+        // round from a swing
+        bool swingStuck = routeState.targetIsStarter && routeState.steerNearest >= 0.0f &&
+                          distance > routeState.steerNearest + STEER_PROGRESS_RANGE &&
                           routeState.starterIdx < routeState.starters.size() &&
                           routeState.starters[routeState.starterIdx].def->kind == StarterKind::UseItem;
         // [starter_route_progress] A walk that has to go round: progress is the remaining walk, not the straight
@@ -3808,13 +3813,10 @@ namespace Leader::Travel
                 // 2119,42 ended 11 yd above it on the Durnholde wall, steer_stuck; the starter waited 2 minutes and
                 // chose the same nearest barrel again, four times, 0 of 5 planted in 25 minutes): that object is
                 // passed over, the next nearest one comes at once - a player goes to another barrel.
-                if (starter.def->kind == StarterKind::UseItem)
-                {
-                    starter.stuckUntilMs[routeState.target] = now + STARTER_OBJECT_STUCK_SKIP_MS;
-                    starter.nextAllowedMs = now;
-                }
-                else
-                    starter.nextAllowedMs = now + STARTER_STUCK_RETRY_MS;
+                // [lead132] passed over until the leader is elsewhere (STARTER_OBJECT_STUCK_SKIP_MS 10 min /
+                // STARTER_STUCK_RETRY_MS 2 min were the old clocks)
+                starter.stuckFrom[routeState.target] = leader->GetPosition();
+                starter.nextAllowedMs = now;
                 routeState.target.Clear();
                 routeState.nextRetargetMs = now;
                 group.ClearWaypoint(group.LeaderGuid());
@@ -4831,16 +4833,15 @@ namespace Leader::Travel
         bool fallbackStarted = false;
         if (ROUTE_REFUSE_DEAD_END && leg.partial && !approachStopped && !routeState.approach &&
             !routeState.targetIsStarter && leg.points.size() >= 2 && !leader->IsFlying() && !leader->GetVehicle() &&
-            !DeadEndFallback(leader, false, fallbackStarted))
+            !DeadEndFallback(leader, routeState.target, false, fallbackStarted))
         {
             DeadEndVerdict const verdict = JudgeIncompleteEnd(leader, leg.end, goal, leg.type, routeState.target);
-            if (!verdict.why.empty() && DeadEndFallback(leader, true, fallbackStarted))
+            if (!verdict.why.empty() && DeadEndFallback(leader, routeState.target, true, fallbackStarted))
             {
                 group.LogEvent("incomplete_route_fallback",
                          JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
                              .Str("why", verdict.why).Num("refusals", DEAD_END_FALLBACK_REFUSALS)
-                             .Num("windowSec", DEAD_END_FALLBACK_WINDOW_MS / IN_MILLISECONDS)
-                             .Num("fallbackSec", DEAD_END_FALLBACK_MS / IN_MILLISECONDS)
+                             .Str("until", "the target changes")
                              .Real("endLeft", verdict.left).Real("x", leader->GetPositionX())
                              .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ()));
             }

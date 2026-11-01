@@ -458,7 +458,9 @@ namespace Leader::Travel
     bool StarterPathArrives(PathResult const& path, WorldObject const* object);
 
     // StarterTrack::stuckUntilMs: the leader's walk to this object got stuck a short while ago.
-    bool StarterObjectStuck(StarterTrack const& starter, ObjectGuid const& guid, uint32 now);
+    bool StarterObjectStuck(StarterTrack const& starter, ObjectGuid const& guid, Player* leader);
+    // [lead132] the doors of the instance standing open (a change ends the route's skips)
+    uint32 OpenDoorCount(Map* map);
 
     float NearestDist(std::vector<Position> const& anchors, WorldObject const* object);
 

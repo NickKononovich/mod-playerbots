@@ -46,9 +46,8 @@ namespace Leader
         uint32 combatRearms = 0;   // of doorRearms, the in-combat ones (DOOR_REARM_COMBAT_MAX)
         uint32 combatRearmMs = 0;  // the last in-combat re-key (DOOR_REARM_COMBAT_GAP_MS)
         std::set<ObjectGuid> steppedOut;  // UseItem: one step out of the object's model, then the use from there
-        // UseItem: an object the leader's walk got stuck on (steer_stuck) is passed over until then; the starter goes
-        // on with the next nearest one (Old Hillsbrad: 15 barrels, any five).
-        std::map<ObjectGuid, uint32> stuckUntilMs;
+        // [lead132] where the leader stood when its walk to the object got stuck: passed over until it is elsewhere
+        std::map<ObjectGuid, Position> stuckFrom;
         // Party::wipes when it was last used: a gossip / escort starter used up before a wipe is armed again once its
         // creature offers the gossip again (the event reset: Halls of Reflection, Violet Hold).
         uint32 wipesAtUse = 0;
@@ -181,6 +180,16 @@ namespace Leader
         uint32 lastFlipMs = 0;
         uint32 pingPongHoldUntilMs = 0;
         std::map<ObjectGuid, uint32> skipUntil;
+        // [lead132] a skip holds until one of its facts changes (the skip durations decide nothing): where the
+        // leader and the skipped object stood, and the instance's open doors, when it was skipped
+        struct SkipFacts
+        {
+            Position leaderAt;
+            Position objectAt;
+            uint32 doorsOpen = 0;
+            uint32 stamp = 0;  // the skipUntil value it was taken for (a new skip: new facts)
+        };
+        std::map<ObjectGuid, SkipFacts> skipFacts;
         // [lead41] the leader's on-the-path verdict per idle candidate (the route rules of Retarget: blocks route,
         // patrol crosses route, required, boss area, joins the boss ...; off the path: its route distance and reach)
         // the leader's on-the-path verdict per idle candidate (the route rules: blocks route, patrol crosses route,

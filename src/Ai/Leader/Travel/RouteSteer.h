@@ -166,11 +166,8 @@ namespace Leader::Travel
 
     constexpr float STEER_TWIN_RANGE = 30.0f;  // same-entry mobs skipped with an unreachable one (a ledge of them)
 
-    constexpr uint32 STARTER_STUCK_RETRY_MS = 2 * MINUTE * IN_MILLISECONDS;
 
-    constexpr uint32 STARTER_NO_NEARER_MS = 90 * IN_MILLISECONDS;
 
-    constexpr uint32 STARTER_OBJECT_STUCK_SKIP_MS = 10 * MINUTE * IN_MILLISECONDS;  // StarterTrack::stuckUntilMs
 
     // A target on another navmesh part next to the route's end (a ramp without polygons): walked over straight.
     constexpr float GAP_CROSS_MAX_DISTANCE = 45.0f;
@@ -300,7 +297,6 @@ namespace Leader::Travel
 
     constexpr float DEAD_END_PROGRESS = 10.0f;
 
-    constexpr uint32 DEAD_END_MEMORY_MS = 10 * MINUTE * IN_MILLISECONDS;
 
     // A known way on: an end (or goal) this near a route link's start or far end (RouteLinkDef: the Underbog root
     // to Musel'ek's terrace) is never refused.
@@ -310,9 +306,7 @@ namespace Leader::Travel
     // the old walk (the partial route, the own move at its end, steer_stuck) for DEAD_END_FALLBACK_MS.
     constexpr uint32 DEAD_END_FALLBACK_REFUSALS = 3;
 
-    constexpr uint32 DEAD_END_FALLBACK_WINDOW_MS = 3 * MINUTE * IN_MILLISECONDS;
 
-    constexpr uint32 DEAD_END_FALLBACK_MS = 10 * MINUTE * IN_MILLISECONDS;
 
     struct DeadEndVisit
     {
@@ -327,6 +321,7 @@ namespace Leader::Travel
 
     struct DeadEndRefusals
     {
+        ObjectGuid target;  // [lead132] the target the refusals count for
         std::vector<uint32> ms;      // recent refusals
         uint32 fallbackUntilMs = 0;  // the old walk until then
     };
@@ -359,7 +354,7 @@ namespace Leader::Travel
 
     // [incomplete_route_deadend] The never-a-stall fallback: true while the leader walks partial routes the old
     // way. A refusal counts; the DEAD_END_FALLBACK_REFUSALS-th within the window starts it (started: this call).
-    bool DeadEndFallback(Player* leader, bool refusal, bool& started);
+    bool DeadEndFallback(Player* leader, ObjectGuid target, bool refusal, bool& started);
 
     constexpr float AGGRO_EDGE_MARGIN = 8.0f;  // one harness tick of walking (7 yd/s) stays outside aggro
 
