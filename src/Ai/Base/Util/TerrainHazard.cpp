@@ -16,6 +16,7 @@
 #include "GameObjectModel.h"
 #include "GridTerrainData.h"
 #include "Group.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "InstanceScript.h"
 #include "Log.h"
 #include "Map.h"
@@ -34,6 +35,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 
@@ -600,11 +602,12 @@ namespace
 
     // A door whose click left it closed (a gossip script took the use, a cooldown): per thread, by GUID, so the
     // opener does not click it every tick and the harness treats it as a closed door again.
-    thread_local std::unordered_map<ObjectGuid, uint32> refusedDoors;
+    // [rot44] by (instance, GUID): one thread updates several instances of a dungeon and their doors share GUIDs
+    thread_local std::map<InstanceGuid, uint32> refusedDoors;
 
-    bool DoorRefused(ObjectGuid const& guid)
+    bool DoorRefused(GameObject const* door)
     {
-        auto found = refusedDoors.find(guid);
+        auto found = refusedDoors.find(InstanceKey(door));
         if (found == refusedDoors.end())
             return false;
         if (getMSTimeDiff(found->second, getMSTime()) < DOOR_REFUSED_MS)
@@ -632,7 +635,7 @@ bool DoorOpensByUse(GameObject const* door)
         return false;
 
     if (info->IconName == DOOR_ICON_POINT || info->name.rfind(DOOR_DOODAD_PREFIX, 0) == 0 ||
-        DoorRefused(door->GetGUID()))
+        DoorRefused(door))
         return false;
 
     return std::find(SCRIPT_DOOR_ENTRIES.begin(), SCRIPT_DOOR_ENTRIES.end(), door->GetEntry()) ==
@@ -668,7 +671,7 @@ bool OpenDoorByUse(Player* bot, GameObject* door)
         if (refusedDoors.size() >= DOOR_REFUSED_KEEP)
             refusedDoors.clear();
         uint32 const now = getMSTime();
-        refusedDoors[door->GetGUID()] = now ? now : 1;
+        refusedDoors[InstanceKey(door)] = now ? now : 1;
     }
 
     LOG_INFO("playerbots", "[door] {}: opens {} {}{}", bot->GetName(), door->GetName(), door->GetEntry(),
@@ -701,7 +704,7 @@ namespace
     // a water landing counts as harmless up to this drop (sp-h's walkway into the water ~52 yd); the Oculus islands
     // (329 yd over the floor) stay refused whatever lies below
     constexpr float LEDGE_WATER_MAX_DROP = 60.0f;
-    thread_local std::unordered_map<uint64, LedgeMemo> ledgeMemos;
+    thread_local std::map<InstanceGuid, LedgeMemo> ledgeMemos;  // [rot44] a guardian mover's GUID is per map
 
     // [ledge_drop_link] movers crossing a harness route link, until when (getMSTime); world thread writes, map
     // threads read
@@ -837,7 +840,7 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
     G3D::Vector3 const dest(x, y, z);
     if (ledgeMemos.size() >= LEDGE_MEMO_MAX)
         ledgeMemos.clear();
-    LedgeMemo& memo = ledgeMemos[mover->GetGUID().GetRawValue()];
+    LedgeMemo& memo = ledgeMemos[InstanceKey(mover)];
     if (memo.ms && getMSTimeDiff(memo.ms, now) < LEDGE_VERDICT_MS && (memo.dest - dest).length() <= LEDGE_SAME_DEST)
         return memo.verdict;
 

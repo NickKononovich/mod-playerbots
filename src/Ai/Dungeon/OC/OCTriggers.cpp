@@ -9,6 +9,7 @@
 #include "AiObject.h"
 #include "AiObjectContext.h"
 #include "DungeonInteract.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "InstanceScript.h"
 #include "MoveSpline.h"  // [b35_occ]
 #include "MovementActions.h"
@@ -24,6 +25,7 @@
 #include <atomic>
 #include <initializer_list>
 #include <limits>  // [b38_occ]
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>  // [b38_occ]
@@ -842,8 +844,8 @@ bool GetLowDrakeRefuge(Player* bot, Unit* drake, Position& refuge)
         uint32 ms = 0;
         bool found = false;
     };
-    thread_local std::unordered_map<uint64, Refuge> refuges;
-    Refuge& cached = refuges[drake->GetGUID().GetRawValue()];
+    thread_local std::map<InstanceGuid, Refuge> refuges;  // [rot44] by instance: the drake's GUID is per map
+    Refuge& cached = refuges[InstanceKey(drake)];
     uint32 const now = getMSTime();
     if (cached.ms && getMSTimeDiff(cached.ms, now) < REFUGE_RECHECK_MS)
     {

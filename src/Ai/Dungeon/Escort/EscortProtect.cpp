@@ -11,11 +11,13 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <map>
 
 #include "AttackersValue.h"
 #include "Creature.h"
 #include "DungeonInteract.h"  // [b32_pull] GroupLaggers
 #include "Group.h"            // [b32_pull]
+#include "InstanceGuid.h"     // [rot44]
 #include "LastMovementValue.h"  // [b33_ohb] the hold stops the walk for good
 #include "MotionMaster.h"       // [b33_ohb]
 #include "MoveSpline.h"         // [b33_ohb]
@@ -383,9 +385,9 @@ Creature* EscortWayBlocker(Player* bot, Creature* escort, float lookahead, float
         ObjectGuid blocker;
         float along = 0.0f;
     };
-    thread_local std::unordered_map<ObjectGuid, WayScan> scans;
+    thread_local std::map<InstanceGuid, WayScan> scans;  // [rot44] by instance: the escort's GUID is per map
     uint32 const now = getMSTime();
-    WayScan& scan = scans[escort->GetGUID()];
+    WayScan& scan = scans[InstanceKey(escort)];
     if (!scan.atMs || getMSTimeDiff(scan.atMs, now) >= ESCORT_WAY_CACHE_MS)
     {
         scan.atMs = now ? now : 1;
@@ -478,9 +480,9 @@ bool EscortGossipHeld(Player* bot, Creature* escort, std::string* why)
         bool gaveUp = false;
         Position spot;
     };
-    thread_local std::unordered_map<ObjectGuid, GossipHold> holds;
+    thread_local std::map<InstanceGuid, GossipHold> holds;  // [rot44] by instance: the escort's GUID is per map
     uint32 const now = getMSTime();
-    GossipHold& hold = holds[escort->GetGUID()];
+    GossipHold& hold = holds[InstanceKey(escort)];
     // [b38_ohb] The cap counts from the first hold at this stop, whatever the bot did in between: the step asks only
     // within 80 yd of Thrall and out of combat (ohb-h 20261026-050341: two "held 0 s" lines, then the tank was out
     // of range or pulling), so a reset after a short gap let the cap never come. A new stop (the NPC moved: walked

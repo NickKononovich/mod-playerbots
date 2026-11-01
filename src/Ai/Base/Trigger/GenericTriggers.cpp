@@ -196,7 +196,7 @@ bool FleeingMobTrigger::IsActive()
         return false;
 
     Unit* mob = AI_VALUE(Unit*, "fleeing mob");
-    return mob && !FledMobs::StoppedRecently(mob->GetGUID());
+    return mob && !FledMobs::StoppedRecently(mob);
 }
 
 bool FledSurvivorNearTrigger::IsActive()

@@ -10,11 +10,13 @@
 #include "AiObject.h"
 #include "AiObjectContext.h"
 #include "EventMap.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ScriptedCreature.h"
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -293,7 +295,9 @@ private:
     // The cooldown that applies to every bot
     static const std::time_t _roleSwapCooldown = 10;
 
-    static std::unordered_map<ObjectGuid, time_t> _harpoonCooldowns;
+    // [rot44] per map thread and by (instance, GUID): a game object's GUID is per map, and the plain static was
+    // written from every map thread
+    static thread_local std::map<InstanceGuid, time_t> _harpoonCooldowns;
 };
 
 // template <class BossAiType>

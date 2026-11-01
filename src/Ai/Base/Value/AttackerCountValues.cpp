@@ -10,6 +10,7 @@
 #include "Creature.h"
 #include "Engine.h"
 #include "Group.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "LeaderKnowledge.h"  // [lead102] flee-for-assist health
 #include "LeaderOrders.h"     // [lead104] the leader's flee-stop command
 #include "Map.h"
@@ -24,6 +25,7 @@
 #include "Timer.h"
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -556,7 +558,8 @@ struct FledNote
 };
 
 std::mutex fledLock;
-std::unordered_map<ObjectGuid, FledNote> fledMobs;
+// [rot44] by (instance, GUID): parallel instances of a dungeon share creature GUIDs (one table for every thread)
+std::map<InstanceGuid, FledNote> fledMobs;
 }
 
 bool FledMobs::IsRunning(Unit const* unit)
@@ -578,7 +581,7 @@ void FledMobs::Note(Unit const* unit)
 
     uint32 const now = getMSTime();
     std::lock_guard<std::mutex> lock(fledLock);
-    if (fledMobs.size() >= MAX_MOBS && !fledMobs.count(unit->GetGUID()))
+    if (fledMobs.size() >= MAX_MOBS && !fledMobs.count(InstanceKey(unit)))
     {
         auto oldest = fledMobs.begin();
         for (auto itr = fledMobs.begin(); itr != fledMobs.end(); ++itr)
@@ -589,7 +592,7 @@ void FledMobs::Note(Unit const* unit)
         fledMobs.erase(oldest);
     }
 
-    FledNote& note = fledMobs[unit->GetGUID()];
+    FledNote& note = fledMobs[InstanceKey(unit)];
     note.seenMs = now ? now : 1;
     note.mapId = unit->GetMapId();
     note.instanceId = unit->GetInstanceId();
@@ -608,7 +611,7 @@ bool FledMobs::IsSurvivor(Creature const* creature)
         return false;
 
     std::lock_guard<std::mutex> lock(fledLock);
-    auto const found = fledMobs.find(creature->GetGUID());
+    auto const found = fledMobs.find(InstanceKey(creature));
     return found != fledMobs.end() && getMSTimeDiff(found->second.seenMs, getMSTime()) <= MEMO_MS;
 }
 
@@ -617,28 +620,28 @@ GuidVector FledMobs::Noted(uint32 mapId, uint32 instanceId)
     GuidVector result;
     uint32 const now = getMSTime();
     std::lock_guard<std::mutex> lock(fledLock);
-    for (auto const& [guid, note] : fledMobs)
+    for (auto const& [key, note] : fledMobs)
     {
         if (note.mapId == mapId && note.instanceId == instanceId && getMSTimeDiff(note.seenMs, now) <= MEMO_MS)
-            result.push_back(guid);
+            result.push_back(key.second);
     }
 
     return result;
 }
 
-void FledMobs::MarkStopped(ObjectGuid mob)
+void FledMobs::MarkStopped(Unit const* mob)
 {
     uint32 const now = getMSTime();
     std::lock_guard<std::mutex> lock(fledLock);
-    auto const found = fledMobs.find(mob);
+    auto const found = fledMobs.find(InstanceKey(mob));
     if (found != fledMobs.end())
         found->second.stoppedMs = now ? now : 1;
 }
 
-bool FledMobs::StoppedRecently(ObjectGuid mob)
+bool FledMobs::StoppedRecently(Unit const* mob)
 {
     std::lock_guard<std::mutex> lock(fledLock);
-    auto const found = fledMobs.find(mob);
+    auto const found = fledMobs.find(InstanceKey(mob));
     return found != fledMobs.end() && found->second.stoppedMs &&
            getMSTimeDiff(found->second.stoppedMs, getMSTime()) <= STOP_SPREAD_MS;
 }

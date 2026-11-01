@@ -8,6 +8,7 @@
 #include "Cell.h"
 #include "CellImpl.h"
 #include "Creature.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Log.h"
@@ -17,6 +18,7 @@
 #include "SpellInfo.h"
 #include "Timer.h"
 #include <list>
+#include <map>
 #include <unordered_map>
 
 namespace ShadowLabyrinth
@@ -77,8 +79,8 @@ bool IsBlackheartRoomLocked(Creature* boss)
         return false;
 
     // per map thread; a map's bots run on its thread
-    thread_local std::unordered_map<uint64, BlackheartRoom> rooms;
-    BlackheartRoom& room = rooms[boss->GetGUID().GetRawValue()];
+    thread_local std::map<InstanceGuid, BlackheartRoom> rooms;  // [rot44] by instance: the boss's GUID is per map
+    BlackheartRoom& room = rooms[InstanceKey(boss)];
     uint32 const now = getMSTime();
     if (room.checkedMs && getMSTimeDiff(room.checkedMs, now) < BLACKHEART_ROOM_RECHECK_MS)
         return room.locked;

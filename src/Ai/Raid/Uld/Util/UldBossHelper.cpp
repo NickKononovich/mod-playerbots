@@ -53,7 +53,7 @@ const Position ULDUAR_YOGG_SARON_PHASE_3_MELEE_SPOT = Position(1998.5377f, -22.9
 const Position ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT = Position(2018.7628f, -18.896868f, 327.07245f);
 
 // Prevent harpoon spam
-std::unordered_map<ObjectGuid, time_t> RazorscaleBossHelper::_harpoonCooldowns;
+thread_local std::map<InstanceGuid, time_t> RazorscaleBossHelper::_harpoonCooldowns;  // [rot44]
 // Prevent role assignment spam
 std::unordered_map<ObjectGuid, std::time_t> RazorscaleBossHelper::_lastRoleSwapTime;
 const std::time_t RazorscaleBossHelper::_roleSwapCooldown;
@@ -101,7 +101,7 @@ bool RazorscaleBossHelper::IsHarpoonReady(GameObject* harpoonGO)
     if (!harpoonGO)
         return false;
 
-    auto it = _harpoonCooldowns.find(harpoonGO->GetGUID());
+    auto it = _harpoonCooldowns.find(InstanceKey(harpoonGO));
     if (it != _harpoonCooldowns.end())
     {
         time_t currentTime = std::time(nullptr);
@@ -119,7 +119,7 @@ void RazorscaleBossHelper::SetHarpoonOnCooldown(GameObject* harpoonGO)
         return;
 
     time_t currentTime = std::time(nullptr);
-    _harpoonCooldowns[harpoonGO->GetGUID()] = currentTime;
+    _harpoonCooldowns[InstanceKey(harpoonGO)] = currentTime;
 }
 
 GameObject* RazorscaleBossHelper::FindNearestHarpoon(float x, float y, float z) const

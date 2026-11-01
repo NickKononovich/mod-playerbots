@@ -1026,7 +1026,7 @@ FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob)
 bool FleeStopAction::isUseful()
 {
     Unit* mob = AI_VALUE(Unit*, "fleeing mob");
-    if (!mob || PlayerbotAI::IsHeal(bot) || FledMobs::StoppedRecently(mob->GetGUID()))
+    if (!mob || PlayerbotAI::IsHeal(bot) || FledMobs::StoppedRecently(mob))
         return false;
 
     // already held: a stun or a root from somebody else stops it as well
@@ -1043,7 +1043,7 @@ bool FleeStopAction::Execute(Event /*event*/)
     if (!stop || !botAI->CastSpell(stop->spell, stop->aroundSelf ? static_cast<Unit*>(bot) : mob))
         return false;
 
-    FledMobs::MarkStopped(mob->GetGUID());
+    FledMobs::MarkStopped(mob);
     MotionMaster* motion = mob->GetMotionMaster();
     char const* kind =
         motion && motion->GetCurrentMovementGeneratorType() == ASSISTANCE_MOTION_TYPE ? "for help" : "in fear";

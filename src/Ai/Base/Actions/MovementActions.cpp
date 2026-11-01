@@ -24,6 +24,7 @@
 #include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
 #include "LootObjectStack.h"
 #include "HoRTriggers.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSplineInitArgs.h"
@@ -61,6 +62,7 @@
 #include <cstdlib>
 #include <deque>
 #include <iomanip>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -3329,14 +3331,15 @@ bool MovementAction::HoldFightSpot(float& x, float& y, float& z)
                 float y;
             };
             static std::mutex standLock;
-            static std::unordered_map<uint64, Stand> stands;  // mob -> since when it stands there
+            // [rot44] by (instance, GUID): one table for every map thread, parallel instances share creature GUIDs
+            static std::map<InstanceGuid, Stand> stands;  // mob -> since when it stands there
             uint32 const nowMs = getMSTime() | 1u;
             uint32 standingMs = 0;
             {
                 std::lock_guard<std::mutex> guard(standLock);
                 if (stands.size() > 4096)
                     stands.clear();
-                Stand& entry = stands[chased->GetGUID().GetRawValue()];
+                Stand& entry = stands[InstanceKey(chased)];
                 if (!entry.sinceMs || getMSTimeDiff(entry.lastMs, nowMs) > 5000 ||
                     chased->GetExactDist2d(entry.x, entry.y) > STAY_CHASE_DRIFT)
                     entry = {nowMs, nowMs, chased->GetPositionX(), chased->GetPositionY()};

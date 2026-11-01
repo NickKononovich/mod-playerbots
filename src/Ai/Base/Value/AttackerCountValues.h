@@ -201,8 +201,8 @@ public:
     static bool IsSurvivor(Creature const* creature);
     // Every noted mob of this map instance (the caller looks them up).
     static GuidVector Noted(uint32 mapId, uint32 instanceId);
-    static void MarkStopped(ObjectGuid mob);
-    static bool StoppedRecently(ObjectGuid mob);
+    static void MarkStopped(Unit const* mob);
+    static bool StoppedRecently(Unit const* mob);
 };
 
 // [flee_stop] The nearest runner (FledMobs::IsRunning) among the bot's attackers within RANGE yards and in sight.

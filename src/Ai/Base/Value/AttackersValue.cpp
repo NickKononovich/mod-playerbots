@@ -7,6 +7,7 @@
 #include "AttackersValue.h"
 
 #include <cmath>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 
@@ -14,6 +15,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "Log.h"
 #include "LootMgr.h"
 #include "Map.h"
@@ -496,7 +498,8 @@ namespace
                 uint64 victim;
             };
             static std::mutex seenLock;
-            static std::unordered_map<uint64, Seen> seen;  // mob -> since when it stands on this victim, and where
+            // [rot44] by (instance, GUID): one table for every map thread, parallel instances share creature GUIDs
+            static std::map<InstanceGuid, Seen> seen;  // mob -> since when it stands on this victim, and where
             uint32 const nowMs = getMSTime() | 1u;
             uint64 const victimKey = victim->GetGUID().GetRawValue();
             uint32 standingMs = 0;
@@ -504,7 +507,7 @@ namespace
                 std::lock_guard<std::mutex> guard(seenLock);
                 if (seen.size() > 4096)
                     seen.clear();
-                Seen& entry = seen[mob->GetGUID().GetRawValue()];
+                Seen& entry = seen[InstanceKey(mob)];
                 // A new victim, a move, or an entry nobody refreshed for 5 s starts the clock again.
                 if (!entry.sinceMs || entry.victim != victimKey || getMSTimeDiff(entry.lastMs, nowMs) > 5000 ||
                     mob->GetExactDist2d(entry.x, entry.y) > STATIONARY_CASTER_DRIFT)
