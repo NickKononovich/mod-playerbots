@@ -501,6 +501,17 @@ public:
     bool IsActive() override;
 };
 
+// [lead95] b136 rfc-h: 94 s between the leader's issued pull order and the tank taking it (the tank's "aggressive
+// target" ran at 4.0, after its blessings, buffs and the ready reply) - a led tank with an order issued and not taken
+// yet takes it first (the order is the leader's decision; the readiness was checked before it was issued)
+class LeaderPullIssuedTrigger : public Trigger
+{
+public:
+    LeaderPullIssuedTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader pull issued") {}
+
+    bool IsActive() override;
+};
+
 class NoTargetTrigger : public Trigger
 {
 public:

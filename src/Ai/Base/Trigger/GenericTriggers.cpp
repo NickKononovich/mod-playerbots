@@ -8,6 +8,7 @@
 #include "AttackerCountValues.h"
 #include "BuyAction.h"
 #include "ChooseTargetActions.h"
+#include "LeaderOrders.h"  // [lead95] Leader::Orders::IsTracked
 #include "Corpse.h"
 #include "CreatureAI.h"
 #include "GenericBuffUtils.h"
@@ -301,6 +302,14 @@ bool NoAttackersTrigger::IsActive()
 bool InvalidTargetTrigger::IsActive() { return AI_VALUE2(bool, "invalid target", "current target"); }
 
 bool NoTargetTrigger::IsActive() { return !AI_VALUE(Unit*, "current target"); }
+
+bool LeaderPullIssuedTrigger::IsActive()
+{
+    if (bot->IsInCombat() || !PlayerbotAI::IsTank(bot) || !Leader::Orders::IsTracked(bot->GetGUID()))
+        return false;
+    PullPlanner::Decision issued;
+    return PullPlanner::TakeIssued(bot->GetGUID(), 0, issued, false);
+}
 
 bool MyAttackerCountTrigger::IsActive()
 {

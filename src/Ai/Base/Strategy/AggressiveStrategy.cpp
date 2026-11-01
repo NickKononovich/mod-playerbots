@@ -17,4 +17,14 @@ void AggressiveStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [lead95] the leader's issued pull order is taken first (above the out-of-combat buffs and the ready reply;
+    // under the drink, which the leader's readiness has ended before it issued)
+    triggers.push_back(
+        new TriggerNode(
+            "leader pull issued",
+            {
+                NextAction("aggressive target", 50.0f)
+            }
+        )
+    );
 }
