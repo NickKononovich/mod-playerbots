@@ -416,7 +416,10 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
             "misdirection", "misdirection on party", "tricks of the trade", "tricks of the trade on main tank",
             "hymn of hope", "divine hymn", "hand of salvation", "hand of freedom"}))
     {
-        if (!events.externalSpell)
+        // [lead169] b179 rfc-h 5F 650.5 s: the resto druid's Innervate on itself (its own mana tool, kept by rot38
+        // like Evocation) counted as an external - an external is a cast on another member
+        Unit* const onWhom = action->GetTarget();
+        if (!events.externalSpell && !(onWhom == bot && in({"innervate"})))
             note("external", "an external without a leader assignment");
         return;
     }
