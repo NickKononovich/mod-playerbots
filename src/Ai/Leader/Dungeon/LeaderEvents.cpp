@@ -2116,8 +2116,11 @@ namespace Leader::Dungeon
             // [lead136] a melee member's combat spot is judged against the mob it attacks (its Attack target), not
             // the tank's target: a switch of the tank's target is no reason to move; its own target moving out of
             // reach is
+            // [lead137] b163 20261101-124143 373.9-376.3 s: the hunter's spot was judged against the tank's target
+            // (Ragefire Shaman) here and against its Attack target (Ragefire Trogg) by the Attack's own rule - two
+            // re-spots in turn, command_repeat. Every damage dealer's spot is judged against its Attack target
             Unit* spotTarget = target;
-            if (target && !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot))
+            if (target && !PlayerbotAI::IsHeal(bot) && bot != healer)
             {
                 Leader::MemberEvents own;
                 if (Leader::Events::Get(guid, own) && own.attack == Leader::AttackEvent::Attack)
@@ -2130,9 +2133,17 @@ namespace Leader::Dungeon
                 Unit* const target = spotTarget;  // the block below judges the spot against it
                 bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                 std::vector<HazardZone> const& zones = lead.hazardZones[guid];
-                std::function<bool(Position const&)> const keeps =
+                std::function<bool(Position const&)> const keepsBase =
                     bot == healer ? std::function<bool(Position const&)>(healerKeeps)
                                   : std::function<bool(Position const&)>(keepsHealer);
+                // [lead137] never back to the spot it just left for this target
+                auto const left = lead.combatSpotLeft.find(guid);
+                std::function<bool(Position const&)> const keeps = [&](Position const& at)
+                {
+                    return keepsBase(at) && !(left != lead.combatSpotLeft.end() &&
+                                              left->second.first == target->GetGUID() &&
+                                              left->second.second.GetExactDist(at) <= 2.0f);
+                };
                 auto found = lead.combatSpots.find(guid);
                 uint32& losMs = lead.combatSpotLosMs[guid];
                 bool const sight = !losMs || getMSTimeDiff(losMs, now) >= LEADER_SPOT_LOS_MS;
@@ -2191,6 +2202,8 @@ namespace Leader::Dungeon
                                  });
                         if (got)
                         {
+                            if (found != lead.combatSpots.end())
+                                lead.combatSpotLeft[guid] = found->second;  // [lead137]
                             if (breaks != "first spot")
                                 Decisions().Write(
                                     run, "leader", "combat_respot", guid, bot->GetName(), true,
@@ -2765,8 +2778,14 @@ namespace Leader::Dungeon
                         if (!shootsFrom(bot->GetPosition()) && !spotShoots)
                         {
                             std::vector<HazardZone> const& zones = lead.hazardZones[guid];
-                            std::function<bool(Position const&)> const keeps =
-                                std::function<bool(Position const&)>(keepsHealer);
+                            // [lead137] never back to the spot it just left for this target
+                            auto const left = lead.combatSpotLeft.find(guid);
+                            std::function<bool(Position const&)> const keeps = [&](Position const& at)
+                            {
+                                return keepsHealer(at) && !(left != lead.combatSpotLeft.end() &&
+                                                            left->second.first == attackOn->GetGUID() &&
+                                                            left->second.second.GetExactDist(at) <= 2.0f);
+                            };
                             Position spot;
                             bool const got = slow(
                                 [&]
@@ -2778,6 +2797,8 @@ namespace Leader::Dungeon
                                 });
                             if (got && shootsFrom(spot))
                             {
+                                if (kept != lead.combatSpots.end())
+                                    lead.combatSpotLeft[guid] = kept->second;  // [lead137]
                                 lead.combatSpots[guid] = {attackOn->GetGUID(), spot};
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,
