@@ -151,6 +151,9 @@ public:
 class FaerieFireFeralTrigger : public DebuffTrigger
 {
 public:
+    static constexpr uint8 CAT_FF_MAX_ENERGY = 87;  // wowsims ffThresh: 107 - 10 (Clearcast special) - 10 (the GCD)
+    static constexpr uint8 CAT_RIP_ENERGY = 30;     // Rip's energy cost
+
     FaerieFireFeralTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "faerie fire (feral)") {}
 
     bool IsActive() override
@@ -170,6 +173,15 @@ public:
 
         // [b31_sd] Not under Berserk (the guides: every GCD of Berserk goes to the half-cost builders / finishers).
         if (botAI->HasAura("prowl", bot) || botAI->HasAura("berserk", bot))
+            return false;
+
+        // [rot25] wowsims feral ffNow: no Clearcasting, energy under CAT_FF_MAX_ENERGY, and not while a due Rip (5 points,
+        // no own Rip on the target) has its energy
+        uint8 const energy = AI_VALUE2(uint8, "energy", "self target");
+        if (botAI->HasAura("clearcasting", bot) || energy >= CAT_FF_MAX_ENERGY)
+            return false;
+        if (Unit* fought = AI_VALUE(Unit*, "current target"); fought && energy >= CAT_RIP_ENERGY &&
+            AI_VALUE2(uint8, "combo", "current target") >= 5 && !botAI->GetAura("rip", fought, true))
             return false;
 
         // Cat with Omen of Clarity: spam to fish for Clearcasting procs
@@ -564,21 +576,19 @@ public:
             botAI->HasAura("clearcasting", bot))
             return false;
 
+        // [rot25] wowsims canBite: Rip and Savage Roar both up with >= BiteTime left (4 s without bear-weaving; was
+        // > 10 s, and a missing Roar or Rip let Bite go)
         Aura* roar = botAI->GetAura("savage roar", bot);
-        bool roarCheck = !roar || roar->GetDuration() > 10000;
-        if (!roarCheck)
+        if (!roar || roar->GetDuration() < FEROCIOUS_BITE_TIME_MS)
             return false;
 
         Aura* rip = botAI->GetAura("rip", target, true);
-        bool ripCheck = !rip || rip->GetDuration() > 10000;
-        if (!ripCheck)
-            return false;
-
-        return true;
+        return rip && rip->GetDuration() >= FEROCIOUS_BITE_TIME_MS;
     }
 
 private:
     static constexpr uint8 FEROCIOUS_BITE_MAX_ENERGY = 67;
+    static constexpr int32 FEROCIOUS_BITE_TIME_MS = 4000;
 };
 
 // [b31_sd] Execute Bite on a target about to die, by its time to live (health / "estimated group dps") instead of

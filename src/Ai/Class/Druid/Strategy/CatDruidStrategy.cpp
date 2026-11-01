@@ -194,7 +194,7 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode(
             "rake", {
-                NextAction("rake", 22.2f)  // [b31_sd] above Mangle (22.0), as the guides
+                NextAction("rake", 21.9f)  // [rot25] wowsims feral: Mangle (22.0) before Rake
             }
         )
     );
@@ -286,7 +286,9 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode(
             "faerie fire (feral)", {
-                NextAction("faerie fire (feral)", 5.0f)
+                // [rot25] wowsims feral: Faerie Fire (Feral) first, above Berserk (27.5), Roar and Rip (its trigger
+                // keeps the sim's energy / Clearcasting / Rip conditions)
+                NextAction("faerie fire (feral)", 27.6f)
             }
         )
     );
