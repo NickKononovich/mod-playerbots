@@ -2283,30 +2283,55 @@ namespace Leader::Dungeon
                                 char const* from = "the tank's spot";
                                 float best = -1.0f;
                                 float const shoot = LeaderShootReach(bot);
-                                for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
+                                // [lead153] b172 20261101-151524: the hunter on the tank's spot (melee range, Auto
+                                // Shot's dead zone) swung white 752 dps, Wing Clip / Disengage. A ranged member
+                                // never stands inside the ranged minimum (LEADER_RANGED_MIN_YD): half its reach
+                                // first, then down to that minimum; no point - no fallback (the tank's spot is melee)
+                                constexpr float LEADER_RANGED_MIN_YD = 8.0f;  // Auto Shot's 5-8 yd dead zone
+                                for (float const minGap : {shoot / 2.0f, LEADER_RANGED_MIN_YD})
                                 {
-                                    Position const at(point.x, point.y, point.z);
-                                    float const gap = target->GetExactDist2d(at.GetPositionX(), at.GetPositionY());
-                                    bool const fits =
-                                        melee ? gap <= target->GetCombatReach() + bot->GetCombatReach() + 1.0f &&
-                                                    !target->HasInArc(float(M_PI) / 2.0f, &at)
-                                              : shoot > 0.0f && gap <= shoot && gap >= shoot / 2.0f &&
-                                                    LeaderSeesFrom(bot, target, at);
-                                    float const walk = bot->GetExactDist(at);
-                                    if (fits && (best < 0.0f || walk < best))
+                                    if (best >= 0.0f || (melee && minGap == LEADER_RANGED_MIN_YD))
+                                        break;
+                                    for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
                                     {
-                                        best = walk;
-                                        chosen = at;
-                                        from = "the tank's trail";
+                                        Position const at(point.x, point.y, point.z);
+                                        float const gap =
+                                            target->GetExactDist2d(at.GetPositionX(), at.GetPositionY());
+                                        bool const fits =
+                                            melee ? gap <= target->GetCombatReach() + bot->GetCombatReach() + 1.0f &&
+                                                        !target->HasInArc(float(M_PI) / 2.0f, &at)
+                                                  : shoot > 0.0f && gap <= shoot && gap >= minGap &&
+                                                        LeaderSeesFrom(bot, target, at);
+                                        float const walk = bot->GetExactDist(at);
+                                        if (fits && (best < 0.0f || walk < best))
+                                        {
+                                            best = walk;
+                                            chosen = at;
+                                            from = "the tank's trail";
+                                        }
                                     }
                                 }
-                                lead.combatSpots[guid] = {target->GetGUID(), chosen};
-                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
-                                lead.tankGroundSpots[guid] = chosen;
-                                Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(), true,
-                                                  JsonObject().Str("member", bot->GetName()).Str("why", breaks)
-                                                      .Str("target", target->GetName()).Str("from", from)
-                                                      .Real("walk", bot->GetExactDist(chosen)));
+                                if (!melee && best < 0.0f)
+                                {
+                                    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> noneLogged;
+                                    if (noneLogged.size() > 4096)
+                                        noneLogged.clear();
+                                    if (noneLogged.insert({guid, target->GetGUID()}).second)
+                                        Decisions().Write(run, "leader", "combat_spot_none", guid, bot->GetName(),
+                                                          false,
+                                                          JsonObject().Str("member", bot->GetName())
+                                                              .Str("why", breaks).Str("target", target->GetName()));
+                                }
+                                else
+                                {
+                                    lead.combatSpots[guid] = {target->GetGUID(), chosen};
+                                    lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                    lead.tankGroundSpots[guid] = chosen;
+                                    Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(), true,
+                                                      JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                                          .Str("target", target->GetName()).Str("from", from)
+                                                          .Real("walk", bot->GetExactDist(chosen)));
+                                }
                             }
                         }
                         found = lead.combatSpots.find(guid);
