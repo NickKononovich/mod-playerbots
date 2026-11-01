@@ -149,7 +149,16 @@ bool AggressiveTargetAction::Execute(Event event)
     // [lead7] the decision below was issued by the leader (TakeLeaderDecision): the reports say the tank executes it
     executingLeaderDecision = _fromLeader;
     if (_fromLeader)  // [lead4c] the issued decision is taken now that it runs
+    {
         PullPlanner::ConsumeIssued(bot->GetGUID(), _fromLeaderMs);
+        // [lead171] pull trace: the issued order's age when the take's Execute runs (the walk / opener starts here)
+        if (_fromLeaderMs && _fromLeaderMs != _traceExecuteMs)
+        {
+            _traceExecuteMs = _fromLeaderMs;
+            LOG_INFO("playerbots", "[lead171] pull_trace execute: {}: {} ms after the issue (moving {})",
+                     bot->GetName(), getMSTimeDiff(_fromLeaderMs, getMSTime()), bot->isMoving());
+        }
+    }
     _fromLeader = false;
     if (!_approach.IsEmpty())
     {
@@ -865,6 +874,17 @@ bool AggressiveTargetAction::TakeLeaderDecision()
     _planTarget.Clear();
     _approach.Clear();
     PullPlanner::Ask(bot);  // the engine looked at the tank's pull: the leader looks (in combat too: its stand clock)
+    // [lead171] pull trace: the engine's first look at a newly issued order (its age, what holds the take)
+    {
+        PullPlanner::Decision pending;
+        if (PullPlanner::TakeIssued(bot->GetGUID(), Leader::LEADER_ISSUE_FRESH_MS, pending, false) &&
+            pending.verdict == PullPlanner::Verdict::Go && pending.ms != _traceAskMs)
+        {
+            _traceAskMs = pending.ms;
+            LOG_INFO("playerbots", "[lead171] pull_trace ask: {}: {} ms after the issue (moving {}, combat {})",
+                     bot->GetName(), getMSTimeDiff(pending.ms, getMSTime()), bot->isMoving(), bot->IsInCombat());
+        }
+    }
     if (bot->IsInCombat())
         return false;
 
@@ -910,6 +930,14 @@ bool AggressiveTargetAction::TakeLeaderDecision()
     LoadDecision(decision);
     _fromLeader = true;
     _fromLeaderMs = decision.ms;  // [lead4c]
+    // [lead171] pull trace (a led tank only): the issued order's age when the tank's engine takes it
+    if (decision.ms != _tracePickupMs)
+    {
+        _tracePickupMs = decision.ms;
+        LOG_INFO("playerbots", "[lead171] pull_trace pickup: {}: {} {} ms after the issue (moving {}, combat {})",
+                 bot->GetName(), decision.lookTarget.ToString(), getMSTimeDiff(decision.ms, getMSTime()),
+                 bot->isMoving(), bot->IsInCombat());
+    }
     _activeDecision = decision;  // [lead31b] carried on while its order stays open
     _hasActive = true;
     return true;
