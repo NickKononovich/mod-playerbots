@@ -12,6 +12,7 @@
 // reads, moved out of TestHarnessRunner.cpp unchanged; the harness calls it through the group view.
 
 #include "Creature.h"
+#include "InstanceGuid.h"  // [lead191] caches keyed by (instance, GUID)
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
 #include "GameObject.h"
@@ -904,7 +905,7 @@ namespace Leader::Travel
         bool round = false;
     };
 
-    extern std::unordered_map<ObjectGuid, PassageRoundMemo> passageRoundMemos;  // world thread only
+    extern std::map<InstanceGuid, PassageRoundMemo> passageRoundMemos;  // world thread only
 
     bool GoesRoundPassageDoor(Player* leader, InstanceScript const* script, WorldObject* target, GameObject* door,
                               std::vector<GameObject*> const& shut);

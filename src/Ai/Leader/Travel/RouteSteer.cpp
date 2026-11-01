@@ -278,7 +278,7 @@ namespace Leader::Travel
         return false;
     }
 
-    std::unordered_map<uint64, uint32> tankRejectLogMs;  // mob -> last "approach ignores" line, world thread only
+    std::map<InstanceGuid, uint32> tankRejectLogMs;  // mob -> last "approach ignores" line, world thread only
 
     bool PatrolWaitSpot(Player* leader, G3D::Vector3& spot, Creature*& nearMob)
     {
@@ -337,21 +337,21 @@ namespace Leader::Travel
         return false;
     }
 
-    std::unordered_map<uint64, uint32> unseenRouteEndUntilMs;  // creature guid -> until (world thread)
+    std::map<InstanceGuid, uint32> unseenRouteEndUntilMs;  // creature guid -> until (world thread)
 
-    std::unordered_map<uint64, uint32> unseenRouteEndLogMs;
+    std::map<InstanceGuid, uint32> unseenRouteEndLogMs;
 
     void MarkUnseenRouteEnd(Creature* mob, uint32 untilMs)
     {
         if (ROUTE_UNSEEN_ROUTE_END_PASS && mob)
-            unseenRouteEndUntilMs[mob->GetGUID().GetRawValue()] = untilMs ? untilMs : 1;
+            unseenRouteEndUntilMs[InstanceKey(mob)] = untilMs ? untilMs : 1;
     }
 
     bool UnseenRouteEnd(Player* leader, Creature* mob)
     {
         if (!ROUTE_UNSEEN_ROUTE_END_PASS)
             return false;
-        auto const found = unseenRouteEndUntilMs.find(mob->GetGUID().GetRawValue());
+        auto const found = unseenRouteEndUntilMs.find(InstanceKey(mob));
         if (found == unseenRouteEndUntilMs.end())
             return false;
         uint32 const now = getMSTime();
@@ -360,7 +360,7 @@ namespace Leader::Travel
             unseenRouteEndUntilMs.erase(found);
             return false;
         }
-        uint32& loggedMs = unseenRouteEndLogMs[mob->GetGUID().GetRawValue()];
+        uint32& loggedMs = unseenRouteEndLogMs[InstanceKey(mob)];
         if (!loggedMs || getMSTimeDiff(loggedMs, now) > 30 * IN_MILLISECONDS)
         {
             loggedMs = now ? now : 1;
@@ -454,7 +454,7 @@ namespace Leader::Travel
                 if (ROUTE_LOG_TANK_REJECTS && leader->GetExactDist(mob) < AggroReach(mob, leader))
                 {
                     uint32 const now = getMSTime();
-                    uint32& loggedMs = tankRejectLogMs[mob->GetGUID().GetRawValue()];
+                    uint32& loggedMs = tankRejectLogMs[InstanceKey(mob)];
                     if (!loggedMs || getMSTimeDiff(loggedMs, now) > TANK_REJECT_LOG_MS)
                     {
                         loggedMs = now;
@@ -713,7 +713,7 @@ namespace Leader::Travel
         return true;
     }
 
-    std::unordered_map<uint64, uint32> harnessHoldLogMs;  // blocker -> last harness_hold_refused_pack, world thread
+    std::map<InstanceGuid, uint32> harnessHoldLogMs;  // blocker -> last harness_hold_refused_pack, world thread
 
     std::unordered_map<ObjectGuid, HoldReady> holdReady;
 
@@ -766,7 +766,7 @@ namespace Leader::Travel
         return true;
     }
 
-    std::unordered_map<ObjectGuid, BehindRootTry> behindRootTries;
+    std::map<InstanceGuid, BehindRootTry> behindRootTries;
 
     std::unordered_map<ObjectGuid, uint32> pullEstimateSeen;
 
@@ -1756,7 +1756,7 @@ namespace Leader::Travel
         if (!leader || !blocker)
             return;
         uint32 const now = getMSTime();
-        uint32& loggedMs = harnessHoldLogMs[blocker->GetGUID().GetRawValue()];
+        uint32& loggedMs = harnessHoldLogMs[InstanceKey(blocker)];
         if (loggedMs && getMSTimeDiff(loggedMs, now) < HARNESS_HOLD_LOG_MS)
             return;
         loggedMs = now ? now : 1;
@@ -2770,7 +2770,7 @@ namespace Leader::Travel
                         // BEHIND_ROOT_TRIES per blocker in BEHIND_ROOT_WINDOW_MS; then the skip stands as before.
                         if (!finalSkip && BEHIND_ROOT_PULL && group.GroupFullyReady(leader) && !group.NeedBuff())
                         {
-                            BehindRootTry& tried = behindRootTries[blocker->GetGUID()];
+                            BehindRootTry& tried = behindRootTries[InstanceKey(blocker)];
                             if (!tried.firstMs || getMSTimeDiff(tried.firstMs, now) > BEHIND_ROOT_WINDOW_MS)
                             {
                                 tried.firstMs = now ? now : 1;

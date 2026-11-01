@@ -12,6 +12,7 @@
 // TestHarnessRunner.cpp unchanged; the harness calls it through the group view.
 
 #include "Creature.h"
+#include "InstanceGuid.h"  // [lead191] caches keyed by (instance, GUID)
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
 #include "GameObject.h"
@@ -374,7 +375,7 @@ namespace Leader::Travel
     constexpr uint32 TANK_REJECT_LOG_MS = 10 * IN_MILLISECONDS;
 
     // mob -> last "approach ignores" line, world thread only
-    extern std::unordered_map<uint64, uint32> tankRejectLogMs;
+    extern std::map<InstanceGuid, uint32> tankRejectLogMs;
 
     // Approach to sight (ROUTE_APPROACH_TO_SIGHT): from a stop that does not see its blocker, the route ahead is
     // sampled every APPROACH_SAMPLE_STEP up to APPROACH_SIGHT_PATH yd for the first point that sees it, at most
@@ -410,9 +411,9 @@ namespace Leader::Travel
     // (unseenStop) 64 s, the run idle 138 s. A mob that sees the route point still stops it (line of sight).
     constexpr bool ROUTE_UNSEEN_ROUTE_END_PASS = true;
 
-    extern std::unordered_map<uint64, uint32> unseenRouteEndUntilMs;  // creature guid -> until (world thread)
+    extern std::map<InstanceGuid, uint32> unseenRouteEndUntilMs;  // creature guid -> until (world thread)
 
-    extern std::unordered_map<uint64, uint32> unseenRouteEndLogMs;
+    extern std::map<InstanceGuid, uint32> unseenRouteEndLogMs;
 
     void MarkUnseenRouteEnd(Creature* mob, uint32 untilMs);
 
@@ -481,7 +482,7 @@ namespace Leader::Travel
                          G3D::Vector3& point, Creature*& blocker, bool& held, Leader::LeaderGroup* group = nullptr);
 
     // blocker -> last harness_hold_refused_pack, world thread
-    extern std::unordered_map<uint64, uint32> harnessHoldLogMs;
+    extern std::map<InstanceGuid, uint32> harnessHoldLogMs;
 
     // [pull_after_hold] User 2026-10-25 (scholo-h 153805, «тупят, излишне ждут»): every approach stop, guarantee
     // hold and careful-pull refusal of a pack on the way or on the required route ends PULL_AFTER_HOLD_MS after
@@ -570,7 +571,7 @@ namespace Leader::Travel
         uint32 count = 0;
     };
 
-    extern std::unordered_map<ObjectGuid, BehindRootTry> behindRootTries;
+    extern std::map<InstanceGuid, BehindRootTry> behindRootTries;
 
     // [pull_estimate_vs_actual] the last PullEstimate result the leader's JSONL has
     extern std::unordered_map<ObjectGuid, uint32> pullEstimateSeen;

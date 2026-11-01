@@ -828,7 +828,7 @@ namespace Leader::Travel
         return false;
     }
 
-    std::unordered_map<ObjectGuid, PassageRoundMemo> passageRoundMemos;  // world thread only
+    std::map<InstanceGuid, PassageRoundMemo> passageRoundMemos;  // world thread only
 
     bool GoesRoundPassageDoor(Player* leader, InstanceScript const* script, WorldObject* target, GameObject* door,
                               std::vector<GameObject*> const& shut)
@@ -853,7 +853,7 @@ namespace Leader::Travel
                                 return false;
                 }
         uint32 const now = getMSTime();
-        PassageRoundMemo& memo = passageRoundMemos[target->GetGUID()];
+        PassageRoundMemo& memo = passageRoundMemos[InstanceKey(target)];
         if (memo.ms && memo.door == door->GetGUID() && getMSTimeDiff(memo.ms, now) <= PASSAGE_ROUND_MEMO_MS)
             return memo.round;
         PathResult const round = DoorFreeRoute(
