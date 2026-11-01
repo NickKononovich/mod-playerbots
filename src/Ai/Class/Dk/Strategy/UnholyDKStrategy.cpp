@@ -108,10 +108,12 @@ std::vector<NextAction> UnholyDKStrategy::getDefaultActions()
         NextAction("death and decay", ACTION_HIGH + 5),
         NextAction("scourge strike", ACTION_DEFAULT + 0.8f),
         NextAction("icy touch", ACTION_DEFAULT + 0.7f),
-        NextAction("blood strike", ACTION_DEFAULT + 0.6f),
+        // [rot22] wowsims unholy_dw_ss: Blood Boil is the Blood-rune spender (single target too); Blood Strike only
+        // for Desolation ("no desolation", 5.75); Horn of Winter last, under Death Coil and the Ghoul Frenzy pair
+        NextAction("blood boil", ACTION_DEFAULT + 0.6f),
         NextAction("plague strike", ACTION_DEFAULT + 0.5f),
-        NextAction("horn of winter", ACTION_DEFAULT + 0.2f),
         NextAction("death coil", ACTION_DEFAULT + 0.1f),
+        NextAction("horn of winter", ACTION_DEFAULT + 0.04f),
         NextAction("melee", ACTION_DEFAULT)
     };
 }
@@ -142,17 +144,10 @@ void UnholyDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode("unholy presence after gargoyle", { NextAction("blood presence", ACTION_MOVE + 9) }));
 
-    // [b31_deep] Ghoul Frenzy on our ghoul above Scourge Strike (13.5), Blood Tap first for the Death rune (wowsims
-    // uh_2h_ss); was 5.9 inside the Death and Decay block and never cast
-    triggers.push_back(
-        new TriggerNode(
-            "ghoul frenzy",
-            {
-                NextAction("blood tap", ACTION_NORMAL + 4.1f),
-                NextAction("ghoul frenzy", ACTION_NORMAL + 4)
-            }
-        )
-    );
+    // [b31_deep] Ghoul Frenzy on our ghoul, Blood Tap first for the Death rune. [rot22] wowsims unholy_dw_ss: the
+    // Blood Tap -> Ghoul Frenzy sequence sits under Death Coil (5.1), not above Scourge Strike
+    triggers.push_back(new TriggerNode("ghoul frenzy", {NextAction("blood tap", ACTION_DEFAULT + 0.07f),
+                                                        NextAction("ghoul frenzy", ACTION_DEFAULT + 0.06f)}));
 
     // [b31_deep] no Death and Decay coupling (was "dd cd and no desolation")
     triggers.push_back(
@@ -173,14 +168,6 @@ void UnholyDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             {
                 NextAction("scourge strike", ACTION_NORMAL + 3.5f),
                 NextAction("icy touch", ACTION_NORMAL + 3)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "high blood rune",
-            {
-                NextAction("blood strike", ACTION_NORMAL + 2)
             }
         )
     );
@@ -221,13 +208,7 @@ void UnholyDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // the Gargoyle (5.5) and the missing diseases, above Death and Decay (5) so the refilled runes go to it first
     triggers.push_back(new TriggerNode("empower rune weapon under gargoyle",
                                        { NextAction("empower rune weapon", ACTION_HIGH + 5.15f) }));
-    triggers.push_back(
-        new TriggerNode("bone shield",
-            {
-                NextAction("bone shield", ACTION_HIGH + 3)
-            }
-        )
-    );
+    // [rot22] no in-combat Bone Shield (wowsims unholy_dw_ss never casts it in the fight); out of combat it stays
     // [b31_dk] Above Death and Decay (default HIGH + 5, cast on cooldown on a single target as wowsims unholy does)
     // and the missing diseases: the trigger already waits for the Gargoyle fight (boss, player, burst window).
     triggers.push_back(

@@ -148,8 +148,8 @@ bool FrostStrikeRunicPowerTrigger::IsActive()
 
 bool GhoulFrenzyTrigger::IsActive()
 {
-    // [b31_deep] our ghoul (the Master of Ghouls pet) without our Ghoul Frenzy, the spell off cooldown, and an Unholy
-    // or Death rune for it or Blood Tap ready to make one
+    // [b31_deep] our ghoul (the Master of Ghouls pet) without our Ghoul Frenzy, the spell off cooldown, and Blood Tap
+    // ready to make the Death rune for it
     Pet* pet = bot->GetPet();
     if (!pet || !pet->IsAlive() || !bot->IsInCombat() || pet->HasAura(SPELL_DK_GHOUL_FRENZY, bot->GetGUID()))
         return false;
@@ -157,9 +157,8 @@ bool GhoulFrenzyTrigger::IsActive()
     if (!bot->HasSpell(SPELL_DK_GHOUL_FRENZY) || bot->HasSpellCooldown(SPELL_DK_GHOUL_FRENZY))
         return false;
 
-    if (HasReadyRunes(bot, 0, 0, 1))
-        return true;
-
+    // [rot22] only through Blood Tap (wowsims unholy_dw_ss: the Blood Tap -> Ghoul Frenzy sequence): a real Unholy rune
+    // stays for Scourge Strike
     return bot->HasSpell(SPELL_DK_BLOOD_TAP) && !bot->HasSpellCooldown(SPELL_DK_BLOOD_TAP);
 }
 
