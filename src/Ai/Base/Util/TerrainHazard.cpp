@@ -421,7 +421,8 @@ uint32 InInstanceExit(uint32 mapId, float x, float y, float z, float margin)
         float const dy = y - trigger->y;
         float const along = dx * c - dy * s;
         float const across = dx * s + dy * c;
-        if (std::fabs(along) <= trigger->length / 2.0f + margin && std::fabs(across) <= trigger->width / 2.0f + margin &&
+        if (std::fabs(along) <= trigger->length / 2.0f + margin &&
+            std::fabs(across) <= trigger->width / 2.0f + margin &&
             std::fabs(z - trigger->z) <= trigger->height / 2.0f + margin)
             return trigger->entry;
     }
