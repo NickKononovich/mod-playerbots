@@ -103,6 +103,25 @@ public:
     bool IsActive() override;
 };
 
+// [rot27] wowsims rogue__mutilate: Mutilate at <= 3 combo points (4+ wait for Envenom)
+class MutilateComboPointsTrigger : public Trigger
+{
+public:
+    static constexpr uint8 MUTILATE_MAX_COMBO_POINTS = 3;
+
+    MutilateComboPointsTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mutilate combo points") {}
+    bool IsActive() override;
+};
+
+// [rot27] wowsims rogue__mutilate: Vanish whenever the Overkill buff is down (the talent's 20 s of +30 % energy
+// regeneration out of stealth)
+class VanishForOverkillTrigger : public Trigger
+{
+public:
+    VanishForOverkillTrigger(PlayerbotAI* botAI) : Trigger(botAI, "vanish for overkill") {}
+    bool IsActive() override;
+};
+
 class InShadowDanceTrigger : public HasAuraTrigger
 {
 public:

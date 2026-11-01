@@ -90,6 +90,8 @@ public:
         creators["adrenaline rush"] = &RogueTriggerFactoryInternal::adrenaline_rush;
         creators["killing spree"] = &RogueTriggerFactoryInternal::killing_spree;
         creators["shadow dance"] = &RogueTriggerFactoryInternal::shadow_dance;
+        creators["mutilate combo points"] = &RogueTriggerFactoryInternal::mutilate_combo_points;  // [rot27]
+        creators["vanish for overkill"] = &RogueTriggerFactoryInternal::vanish_for_overkill;      // [rot27]
         creators["in shadow dance"] = &RogueTriggerFactoryInternal::in_shadow_dance;
         creators["hemorrhage"] = &RogueTriggerFactoryInternal::hemorrhage;  // [b31_wr]
         creators["premeditation"] = &RogueTriggerFactoryInternal::premeditation;  // [b31_wr]
@@ -146,6 +148,8 @@ private:
     static Trigger* adrenaline_rush(PlayerbotAI* botAI) { return new AdrenalineRushTrigger(botAI); }
     static Trigger* killing_spree(PlayerbotAI* botAI) { return new KillingSpreeTrigger(botAI); }
     static Trigger* shadow_dance(PlayerbotAI* botAI) { return new ShadowDanceTrigger(botAI); }
+    static Trigger* mutilate_combo_points(PlayerbotAI* botAI) { return new MutilateComboPointsTrigger(botAI); }
+    static Trigger* vanish_for_overkill(PlayerbotAI* botAI) { return new VanishForOverkillTrigger(botAI); }
     static Trigger* in_shadow_dance(PlayerbotAI* botAI) { return new InShadowDanceTrigger(botAI); }
     static Trigger* hemorrhage(PlayerbotAI* botAI) { return new HemorrhageDebuffTrigger(botAI); }
     static Trigger* premeditation(PlayerbotAI* botAI) { return new PremeditationTrigger(botAI); }

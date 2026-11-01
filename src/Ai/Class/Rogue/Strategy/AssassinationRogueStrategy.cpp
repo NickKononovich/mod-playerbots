@@ -85,14 +85,9 @@ void AssassinationRogueStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         )
     );
 
-    triggers.push_back(
-        new TriggerNode(
-            "combo points not full",
-            {
-                NextAction("mutilate", ACTION_NORMAL + 3)
-            }
-        )
-    );
+    // [rot27] wowsims rogue__mutilate: Mutilate at <= 3 combo points, Vanish for Overkill above the finishers
+    triggers.push_back(new TriggerNode("mutilate combo points", {NextAction("mutilate", ACTION_NORMAL + 3)}));
+    triggers.push_back(new TriggerNode("vanish for overkill", {NextAction("vanish", ACTION_HIGH + 5.3f)}));
 
     // [b31_wr] Rupture only as the bleed Hunger for Blood needs ("rupture" at 4 points outranked Envenom: build 30
     // Envenom 0.5 a minute, none in 21 of 33 boss fights, Rupture 1.7).

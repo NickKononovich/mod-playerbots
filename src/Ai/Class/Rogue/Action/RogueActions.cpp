@@ -93,7 +93,11 @@ bool CastVanishAction::isUseful()
 
 bool CastEnvenomAction::isUseful()
 {
-    return CastMeleeSpellAction::isUseful() && AI_VALUE2(uint8, "energy", "self target") >= 35;
+    // [rot27] wowsims rogue__mutilate: Envenom (at 4+ points) only while its buff is down or at 85+ energy
+    constexpr uint8 ENVENOM_POOL_ENERGY = 85;
+    uint8 const energy = AI_VALUE2(uint8, "energy", "self target");
+    return CastMeleeSpellAction::isUseful() && energy >= 35 &&
+           (energy >= ENVENOM_POOL_ENERGY || !botAI->HasAura("envenom", bot));
 }
 
 // [b31_wr] Was "has Master Poisoner rank 3" alone, in place of CastSpellAction::isPossible (no CanCast, cooldown or

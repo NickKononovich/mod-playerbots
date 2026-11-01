@@ -284,6 +284,26 @@ bool PremeditationTrigger::IsActive()
            AI_VALUE2(uint8, "combo", "current target") <= PREMEDITATION_MAX_COMBO_POINTS;
 }
 
+// [rot27]
+bool MutilateComboPointsTrigger::IsActive()
+{
+    return AI_VALUE(Unit*, "current target") &&
+           AI_VALUE2(uint8, "combo", "current target") <= MUTILATE_MAX_COMBO_POINTS;
+}
+
+// [rot27]
+bool VanishForOverkillTrigger::IsActive()
+{
+    constexpr uint32 SPELL_OVERKILL_TALENT = 58426;
+    constexpr uint32 SPELL_OVERKILL_BUFF = 58427;
+    if (!bot->IsInCombat() || !bot->HasSpell(SPELL_OVERKILL_TALENT) || bot->HasAura(SPELL_OVERKILL_BUFF) ||
+        bot->HasAuraType(SPELL_AURA_MOD_STEALTH))
+        return false;
+
+    uint32 const vanish = AI_VALUE2(uint32, "spell id", "vanish");
+    return vanish && !bot->HasSpellCooldown(vanish) && AI_VALUE(Unit*, "current target");
+}
+
 bool ShadowDanceTrigger::IsActive()
 {
     // [rot26] wowsims shadow_dance.go: the dance at combo points <= 2 and energy >= 60 (was 70, any combo points)
