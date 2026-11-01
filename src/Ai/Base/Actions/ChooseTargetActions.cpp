@@ -377,7 +377,9 @@ bool AggressiveTargetAction::Execute(Event event)
 
 Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
 {
-    if (!PlayerbotAI::IsTank(bot) || !bot->IsInCombat())
+    // [lead112] b147 rfc-h 59.9-78 s: two Earthborers on the healer and the shaman while the tank, not in combat
+    // itself, stood 18 s idle - a mob on a member is the tank's to take back whether the tank fights or not
+    if (!PlayerbotAI::IsTank(bot) || !bot->IsAlive())
         return nullptr;
     std::vector<Unit*> fight;
     for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())

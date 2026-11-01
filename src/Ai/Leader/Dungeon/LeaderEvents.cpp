@@ -242,7 +242,7 @@ namespace Leader::Dungeon
                             // move over open air") - one verdict: the member's own MoveTo guards, run dry from where
                             // it stands, before the move is issued
                             if (reject.empty() && !mover->DryMoveTo(spot))
-                                reject = "the member's own move guards refuse it";
+                                reject = "the member's own move guards refuse it: " + LastMoveRefusal();  // [lead112]
                         }
                 if (!reject.empty())
                 {
@@ -825,6 +825,12 @@ namespace Leader::Dungeon
         {
             // the tank: the first loose mob (its taunt when ready, else its AoE threat, else an attack)
             Unit* mob = looseOn.begin()->second;
+            // [lead112] b147 rfc-h 60-78 s: the tank owns its fight, but a mob on a member while the tank fights
+            // nothing is the leader's command: the tank attacks it (issued once per change of the mob)
+            if (Leader::LEADER_TANK_OWNS_FIGHT && !tank->IsInCombat() &&
+                Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {}))
+                logEvent(tank, "Attack", JsonObject().Str("mob", mob->GetName())
+                                             .Str("why", "aggro loss: the tank fights nothing"));
             // [lead54] b103 rfc-h pull 8 (wipe): 10 754 "taunt 31789" (Righteous Defense) commands - it is cast on
             // the friend, the executor casts the leader's taunt on the mob: it never went off and stayed "ready". The
             // taunts cast on the mob (Hand of Reckoning, Taunt, Growl, Dark Command); none ready: the AoE threat, else
@@ -2031,7 +2037,15 @@ namespace Leader::Dungeon
                     runEvents.spot.GetExactDist(tank->GetPosition()) <= LEADER_LOOSE_TANK_YD + 1.5f)
                     spot = runEvents.spot;
                 lead.runHold.insert(guid);  // [lead59]
-                if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank"))
+                bool runs = checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank");
+                // [lead112] b147: the spot by the tank refused by the healer's own move guards, it stayed and died -
+                // the tank's own spot is the second choice (the same checks before it is issued)
+                if (!runs && spot.GetExactDist(tank->GetPosition()) > 0.5f)
+                {
+                    spot = tank->GetPosition();
+                    runs = checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank");
+                }
+                if (runs)
                     logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", "aggro loss: to the tank").Str("mob", loose->second->GetName())
                                  .Real("gap", bot->GetExactDist(tank)));

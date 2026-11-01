@@ -2026,6 +2026,12 @@ void PlayerbotAI::DoNextAction(bool min)
     // DpsAssistAction::HealerGroupUnderAttack.
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && DpsAssistAction::HealerGroupUnderAttack(this))
         ChangeEngine(BOT_STATE_COMBAT);
+    // [lead112] a tank joins the combat engine as soon as a mob it can take back is on a member (TankIncomingMob):
+    // its take-back ("tank open incoming") is a combat action; b147 rfc-h the tank stood 18 s in its non-combat
+    // engine (its last action a blessing) while the healer and the shaman died
+    else if (currentEngine == engines[BOT_STATE_NON_COMBAT] && isBotAlive && PlayerbotAI::IsTank(bot) &&
+             bot->GetGroup() && TankIncomingMob(this, bot))
+        ChangeEngine(BOT_STATE_COMBAT);
 
     // Clear targets if in combat but sticking with old data
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
