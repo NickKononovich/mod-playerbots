@@ -46,6 +46,9 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+    // [rot23] wowsims warlock__affliction: Summon Infernal near the boss' end, after UA, before Curse of Agony (18.5);
+    // it was wired for Destruction only
+    triggers.push_back(new TriggerNode("inferno boss", {NextAction("inferno", 19.0f)}));
     // [b31_deep] wowsims opener Corruption -> Haunt -> UA -> CoA: Haunt and Shadow Bolt roll Corruption (Everlasting
     // Affliction) only once it is up, so it ranks above Haunt. With EA it rarely needs a refresh after that.
     triggers.push_back(
