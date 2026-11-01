@@ -16,6 +16,8 @@
 // starters, event spots, route links, area gates, door events, guarded doors, event items, class-gated
 // bosses, absent script slots, encounter requirements / credits, key door passes. Moved out of the test
 // harness (TestHarnessData); the leader QUERIES it, the harness reads it too.
+#include "ObjectGuid.h"
+
 namespace Leader::Knowledge
 {
     enum class StarterKind : uint8
@@ -433,6 +435,13 @@ namespace Leader::Knowledge
     // A dbc encounter credited by no kill: the instance data id that is DONE once it is done, 0 for none.
     uint32 EncounterDoneData(uint32 mapId, uint32 creditEntry);
     std::vector<KnownGapDef const*> KnownGaps(uint32 mapId);
+
+    // [b32_strat_gate] [lead107 final] the members the leader found cut off behind a closed door (its TickDoorCut),
+    // moved out of the test runner's registry (TestRunner::SetDoorCut / IsDoorCut): written on the world thread,
+    // read by the tank's pull gate on the map threads (LeaderPlanner, "behind a closed door")
+    void SetDoorCut(ObjectGuid bot, bool cut);
+    bool IsDoorCut(ObjectGuid bot);
+    void ClearDoorCuts();
 }  // namespace Leader::Knowledge
 
 #endif

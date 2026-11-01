@@ -10,6 +10,7 @@
 #include "SmartScriptMgr.h"  // [lead102] flee for assist
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <algorithm>
 #include <cstring>
@@ -1340,5 +1341,35 @@ namespace Leader::Knowledge
                     holder.GetActionType() == SMART_ACTION_FLEE_FOR_ASSIST)
                     itr->second = std::max(itr->second, float(holder.event.minMaxRepeat.max));
         return itr->second;
+    }
+}
+
+namespace Leader::Knowledge
+{
+    namespace
+    {
+        std::mutex doorCutLock;
+        std::unordered_set<ObjectGuid> doorCut;
+    }
+
+    void SetDoorCut(ObjectGuid bot, bool cut)
+    {
+        std::lock_guard<std::mutex> lock(doorCutLock);
+        if (cut)
+            doorCut.insert(bot);
+        else
+            doorCut.erase(bot);
+    }
+
+    bool IsDoorCut(ObjectGuid bot)
+    {
+        std::lock_guard<std::mutex> lock(doorCutLock);
+        return doorCut.count(bot) != 0;
+    }
+
+    void ClearDoorCuts()
+    {
+        std::lock_guard<std::mutex> lock(doorCutLock);
+        doorCut.clear();
     }
 }

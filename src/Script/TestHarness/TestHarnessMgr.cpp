@@ -4515,7 +4515,7 @@ namespace TestHarness
         for (Member const& member : party.members)
         {
             TestRunner::ClearWaypoint(member.guid);
-            TestRunner::SetDoorCut(member.guid, false);  // [b32_strat_gate]
+            Leader::Knowledge::SetDoorCut(member.guid, false);  // [b32_strat_gate]
             SelfTravel::ClearPortalGoal(member.guid);
         }
         StatsRegistry::Instance().UntrackRun(party.seq);

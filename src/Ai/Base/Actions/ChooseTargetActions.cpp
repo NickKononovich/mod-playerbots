@@ -40,7 +40,6 @@
 #include "CoSTriggers.h"  // [b39_cos] CoSHelpers::IsGuardianTimerRunning
 #include "MgTShared.h"
 #include "PossibleRpgTargetsValue.h"
-#include "TestRunnerStrategy.h"  // [b32_strat_gate] TestRunner::IsDoorCut
 #include "PullStrategy.h"
 #include "PullActions.h"  // FightHold ([drift_fight_hold])
 #include "PvpTriggers.h"

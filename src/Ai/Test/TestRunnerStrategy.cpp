@@ -6,6 +6,8 @@
 
 #include "TestRunnerStrategy.h"
 
+#include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
+
 #include "Map.h"
 #include "MoveConflict.h"
 #include "Player.h"
@@ -42,7 +44,6 @@ namespace
 
     std::mutex waypointLock;
     std::unordered_map<ObjectGuid, TestRunner::Waypoint> waypoints;
-    std::unordered_set<ObjectGuid> doorCut;  // [b32_strat_gate] TestRunner::SetDoorCut
 }
 
 namespace TestRunner
@@ -74,23 +75,7 @@ namespace TestRunner
     {
         std::lock_guard<std::mutex> lock(waypointLock);
         waypoints.clear();
-        doorCut.clear();  // [b32_strat_gate]
-    }
-
-    // [b32_strat_gate] set by the harness (world thread), read by the tank's pull gate (map threads)
-    void SetDoorCut(ObjectGuid bot, bool cut)
-    {
-        std::lock_guard<std::mutex> lock(waypointLock);
-        if (cut)
-            doorCut.insert(bot);
-        else
-            doorCut.erase(bot);
-    }
-
-    bool IsDoorCut(ObjectGuid bot)
-    {
-        std::lock_guard<std::mutex> lock(waypointLock);
-        return doorCut.count(bot) != 0;
+        Leader::Knowledge::ClearDoorCuts();  // [b32_strat_gate] [lead107 final] the leader's registry
     }
 }
 

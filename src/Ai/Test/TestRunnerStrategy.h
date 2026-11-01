@@ -42,10 +42,7 @@ namespace TestRunner
     void ClearWaypoint(ObjectGuid bot);
     bool GetWaypoint(ObjectGuid bot, Waypoint& waypoint);
     void ClearAll();
-    // [b32_strat_gate] A member the harness found cut off behind a closed door (TickDoorCut): the tank's pull gate
-    // holds every pull while one of its group is (ChooseTargetActions, "behind a closed door").
-    void SetDoorCut(ObjectGuid bot, bool cut);
-    bool IsDoorCut(ObjectGuid bot);
+    // [lead107 final] the door-cut members are the leader's (Leader::Knowledge::SetDoorCut / IsDoorCut)
 }
 
 class TestRunnerStrategy : public Strategy

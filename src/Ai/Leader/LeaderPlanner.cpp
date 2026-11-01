@@ -22,6 +22,7 @@
 #include "HealthTriggers.h"
 #include "InstanceScript.h"
 #include "KillOrder.h"
+#include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
 #include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
 #include "LootObjectStack.h"
 #include "Map.h"
@@ -40,7 +41,6 @@
 #include "CoSTriggers.h"  // [b39_cos] CoSHelpers::IsGuardianTimerRunning
 #include "MgTShared.h"
 #include "PossibleRpgTargetsValue.h"
-#include "TestRunnerStrategy.h"  // [b32_strat_gate] TestRunner::IsDoorCut
 #include "PullStrategy.h"
 #include "PullActions.h"  // FightHold ([drift_fight_hold])
 #include "PvpTriggers.h"
@@ -980,11 +980,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // Alive in the instance is not with the group (user, Stockade 2026-10-24: «танк убегает, не ждет основную
         // группу»): the healer within GATHER_HEALER_RANGE of the tank and at least one dps within GATHER_DPS_RANGE,
         // else the tank waits where it is and the group catches up.
-        // [b32_strat_gate] a member the harness found cut off behind a closed door (TestRunner::SetDoorCut) holds every
+        // [b32_strat_gate] a member the harness found cut off behind a closed door (Leader::Knowledge::SetDoorCut) holds every
         // pull, however near it stands: strat-n 20261025-221216-strat-n-5H-2, the healer 8 yd behind the shut Service
         // Entrance Gate counted "with the group" (GATHER_HEALER_RANGE) while it could neither heal nor come.
         // [lead10] LEADER_DOOR_INPUTS: on a leader look the leader's own door cut (LeaderInputs::doorCut), not the
-        // TestRunner registry the harness wrote for the tank's thread.
+        // door-cut registry the leader wrote for the tank's thread.
         PullPlanner::LeaderInputs const* const doorInputs =
             Leader::Leads(Leader::LEADER_DOOR_INPUTS) ? PullPlanner::CurrentLeaderInputs() : nullptr;
         auto const doorCut = [doorInputs](Player* member)
@@ -992,7 +992,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (doorInputs)
                 return std::find(doorInputs->doorCut.begin(), doorInputs->doorCut.end(), member->GetGUID()) !=
                        doorInputs->doorCut.end();
-            return TestRunner::IsDoorCut(member->GetGUID());
+            return Leader::Knowledge::IsDoorCut(member->GetGUID());
         };
         if (Group* group = bot->GetGroup())
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())

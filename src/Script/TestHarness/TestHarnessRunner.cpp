@@ -2524,7 +2524,7 @@ namespace TestHarness
                          JsonObject().Str("state", "end").Str("why", why)
                              .Num("sec", getMSTimeDiff(party.doorCutSinceMs, now) / IN_MILLISECONDS));
             if (!party.doorCutMember.IsEmpty())
-                TestRunner::SetDoorCut(party.doorCutMember, false);
+                Leader::Knowledge::SetDoorCut(party.doorCutMember, false);
             if (!party.doorCutMember.IsEmpty() && party.keyPassDoor.IsEmpty())
                 ClearGateWaypoints(party);  // [b33_strat_gate] the cut is over: no walk back to the gate
             party.doorCutMember.Clear();
@@ -2608,7 +2608,7 @@ namespace TestHarness
         if (fresh)
         {
             if (!party.doorCutMember.IsEmpty())
-                TestRunner::SetDoorCut(party.doorCutMember, false);
+                Leader::Knowledge::SetDoorCut(party.doorCutMember, false);
             // [b34_gnomer] the DOOR_CUT_OTHER_MAX_MS cap runs per door: two members cut by the same door in turn
             // restarted it on every switch, and the hold never ended (gnomer-n 014521: "start", sec 0, x67).
             if (party.doorCutDoor != cutDoor->GetGUID() || !party.doorCutSinceMs)
@@ -2618,7 +2618,7 @@ namespace TestHarness
             party.doorCutLogMs = 0;
         }
         party.doorCutHold = keyDoor || getMSTimeDiff(party.doorCutSinceMs, now) < DOOR_CUT_OTHER_MAX_MS;
-        TestRunner::SetDoorCut(cut->GetGUID(), party.doorCutHold);  // the tank's pull gate (ChooseTargetActions)
+        Leader::Knowledge::SetDoorCut(cut->GetGUID(), party.doorCutHold);  // the tank's pull gate (ChooseTargetActions)
         if (fresh || !party.doorCutLogMs || getMSTimeDiff(party.doorCutLogMs, now) >= DOOR_CUT_LOG_MS)
         {
             party.doorCutLogMs = now ? now : 1;
