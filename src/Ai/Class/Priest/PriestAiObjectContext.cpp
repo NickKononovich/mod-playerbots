@@ -94,6 +94,7 @@ public:
         creators["power infusion"] = &PriestTriggerFactoryInternal::power_infusion;
         creators["hymn of hope needed"] = &PriestTriggerFactoryInternal::hymn_of_hope_needed;
         creators["inner focus"] = &PriestTriggerFactoryInternal::inner_focus;
+        creators["inner focus shadow weaving"] = &PriestTriggerFactoryInternal::inner_focus_shadow_weaving;  // [rot18]
         creators["shadow protection"] = &PriestTriggerFactoryInternal::shadow_protection;
         creators["shadow protection on party"] = &PriestTriggerFactoryInternal::shadow_protection_on_party;
         creators["shackle undead"] = &PriestTriggerFactoryInternal::shackle_undead;
@@ -154,6 +155,7 @@ private:
     static Trigger* power_infusion(PlayerbotAI* botAI) { return new PowerInfusionTrigger(botAI); }
     static Trigger* hymn_of_hope_needed(PlayerbotAI* botAI) { return new HymnOfHopeNeededTrigger(botAI); }
     static Trigger* inner_focus(PlayerbotAI* botAI) { return new InnerFocusTrigger(botAI); }
+    static Trigger* inner_focus_shadow_weaving(PlayerbotAI* botAI) { return new InnerFocusShadowWeavingTrigger(botAI); }
     static Trigger* shadow_protection_on_party(PlayerbotAI* botAI) { return new ShadowProtectionOnPartyTrigger(botAI); }
     static Trigger* shadow_protection(PlayerbotAI* botAI) { return new ShadowProtectionTrigger(botAI); }
     static Trigger* shackle_undead(PlayerbotAI* botAI) { return new ShackleUndeadTrigger(botAI); }

@@ -220,20 +220,27 @@ bool MindFlayClipTrigger::IsActive()
 
     // [b31_deep] the DoTs only while their strategy runs, else nothing would cast them after the clip
     bool const dots = botAI->HasStrategy("shadow debuff", BOT_STATE_COMBAT);
-    bool const due = MindBlastReady() ||
-                     (dots && DotDue(target, "vampiric touch",
-                                     ai::priest::VampiricTouchRefreshMs(
-                                         bot, AI_VALUE2(uint32, "spell id", "vampiric touch")))) ||
-                     (dots && DotDue(target, "devouring plague", ai::priest::DOT_REFRESH_MS));
+    bool const due =
+        (dots && DotDue(target, "vampiric touch",
+                        ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", "vampiric touch")))) ||
+        (dots && DotDue(target, "devouring plague", ai::priest::DOT_REFRESH_MS));
 
     return due && !HeldForThreat(target);
 }
 
-// [b31_deep]
-bool MindFlayClipTrigger::MindBlastReady()
+// [rot18] wowsims shadow: Inner Focus then Mind Flay at 5 Shadow Weaving stacks (the APL's strict sequence); the
+// DoTs rank above it, so the next GCD is the Mind Flay
+bool InnerFocusShadowWeavingTrigger::IsActive()
 {
-    uint32 const mindBlast = AI_VALUE2(uint32, "spell id", "mind blast");
-    return mindBlast && !bot->HasSpellCooldown(mindBlast);
+    constexpr uint32 SPELL_SHADOW_WEAVING = 15258;
+    constexpr uint8 SHADOW_WEAVING_MAX_STACKS = 5;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", "inner focus");
+    if (!spellId || bot->HasSpellCooldown(spellId) || !bot->IsInCombat() || bot->HasAura(spellId))
+        return false;
+
+    Aura const* weaving = bot->GetAura(SPELL_SHADOW_WEAVING);
+    return weaving && weaving->GetStackAmount() >= SHADOW_WEAVING_MAX_STACKS && AI_VALUE(Unit*, "current target");
 }
 
 // [b31_deep] the same test as PriestDotTrigger: missing or inside the refresh window, on a target that lives long
@@ -329,6 +336,10 @@ bool HymnOfHopeNeededTrigger::IsActive()
         return false;
 
     std::string const qualifier = ai::raidutil::LowManaHealerQualifier(false, sPlayerbotAIConfig.MediumMana);
+    // [rot18] wowsims shadow never channels Hymn of Hope: the healer priests only
+    if (!PlayerbotAI::IsHeal(bot))
+        return false;
+
     // [guide_b31_dead] a 5-man has one healer, so the >= 2 rule never fired there: also allow the priest alone
     // at < 30 % mana when it is a healer (Shadow has Dispersion and Shadowfiend instead).
     if (AI_VALUE2(uint8, "low mana healer count", qualifier) < 2 &&

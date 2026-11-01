@@ -72,6 +72,13 @@ public:
     bool IsActive() override;
 };
 BUFF_TRIGGER(InnerFocusTrigger, "inner focus");
+// [rot18] Shadow: Inner Focus ready, at 5 Shadow Weaving stacks, in a fight
+class InnerFocusShadowWeavingTrigger : public Trigger
+{
+public:
+    InnerFocusShadowWeavingTrigger(PlayerbotAI* botAI) : Trigger(botAI, "inner focus shadow weaving") {}
+    bool IsActive() override;
+};
 CC_TRIGGER(ShackleUndeadTrigger, "shackle undead");
 INTERRUPT_TRIGGER(SilenceTrigger, "silence");
 INTERRUPT_HEALER_TRIGGER(SilenceEnemyHealerTrigger, "silence");
@@ -98,10 +105,10 @@ public:
     bool IsActive() override;
 };
 
-// [guide_b31_dead] Clip Mind Flay for Mind Blast: Mind Blast is off cooldown and off GCD, Mind Flay has landed at
-// least one tick, one more tick is left, and the last tick landed under 400 ms ago (so no tick is thrown away).
-// [b31_deep] Also for Vampiric Touch / Devouring Plague due on the channel target (wowsims "wait for VT"), and never
-// while the threat strategy holds the next cast: the bot would only re-channel Mind Flay or wand.
+// [guide_b31_dead] Clip Mind Flay: it has landed at least one tick, one more tick is left, and the last tick landed
+// under 400 ms ago (so no tick is thrown away). [b31_deep] For Vampiric Touch / Devouring Plague due on the channel
+// target (wowsims "wait for VT"; [rot18] no longer for Mind Blast, which wowsims never casts), and never while the
+// threat strategy holds the next cast: the bot would only re-channel Mind Flay or wand.
 class MindFlayClipTrigger : public Trigger
 {
 public:
@@ -109,7 +116,6 @@ public:
     bool IsActive() override;
 
 private:
-    bool MindBlastReady();
     bool DotDue(Unit* target, std::string const spell, uint32 refreshMs);
     bool HeldForThreat(Unit* target);
 };

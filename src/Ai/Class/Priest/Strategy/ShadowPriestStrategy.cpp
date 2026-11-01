@@ -15,8 +15,9 @@ ShadowPriestStrategy::ShadowPriestStrategy(PlayerbotAI* botAI) : GenericPriestSt
 
 std::vector<NextAction> ShadowPriestStrategy::getDefaultActions()
 {
+    // [rot18] wowsims shadow_priest__default: Mind Blast is hidden (never cast); Inner Focus right before a Mind Flay
+    // at 5 Shadow Weaving stacks
     return {
-        NextAction("mind blast", ACTION_DEFAULT + 0.3f),
         NextAction("mind flay", ACTION_DEFAULT + 0.2f),
         NextAction("shadow word: death", ACTION_DEFAULT + 0.1f), // cast during movement
         NextAction("shoot", ACTION_DEFAULT)
@@ -36,9 +37,11 @@ void ShadowPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    // [guide_b31_dead] clip Mind Flay right after a tick when Mind Blast is ready; Mind Blast (default 5.3) then
-    // outranks a new Mind Flay (5.2). Movement already breaks the channel, so Shadow Word: Death needs no clip.
+    // [guide_b31_dead] clip Mind Flay right after a tick when a DoT is due ([rot18] not for Mind Blast, which wowsims
+    // never casts). Movement already breaks the channel, so Shadow Word: Death needs no clip.
     triggers.push_back(new TriggerNode("mind flay clip", { NextAction("cancel channel", ACTION_HIGH + 5.5f) }));
+    triggers.push_back(
+        new TriggerNode("inner focus shadow weaving", {NextAction("inner focus", ACTION_DEFAULT + 0.25f)}));
     triggers.push_back(
         new TriggerNode(
             "low mana",
