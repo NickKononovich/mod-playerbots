@@ -251,7 +251,7 @@ namespace
         // [lead105] Heroism / Bloodlust only as the leader's command (its external order), never the shaman's own
         if (name == "heroism" || name == "bloodlust")
             return true;
-        if (events.intensity != Leader::Intensity::Burn && Leader::IsBurnCooldown(name))
+        if (Leader::IsBurnCooldown(name) && !Leader::BurnAllows(events, name))  // [lead178] per cooldown
             return true;
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
         // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
@@ -425,7 +425,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
     }
     if (Leader::IsBurnCooldown(name))  // [lead80] the one list
     {
-        if (events.intensity != Leader::Intensity::Burn)
+        if (!Leader::BurnAllows(events, name))  // [lead178]
             note("burn", "a burn cooldown without the leader's Intensity burn");
         return;
     }

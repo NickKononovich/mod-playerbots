@@ -217,7 +217,8 @@ namespace Leader
         "rapid fire", "readiness", "bestial wrath", "adrenaline rush", "blade flurry", "killing spree",
         "shadowfiend", "feral spirit", "elemental mastery", "fire elemental totem", "earth elemental totem",
         "metamorphosis", "starfall", "force of nature", "summon infernal", "summon doomguard",
-        "dancing rune weapon", "unholy frenzy", "hysteria", "bladestorm", "shadow dance", "cold blood"};
+        "dancing rune weapon", "unholy frenzy", "hysteria", "bladestorm", "shadow dance", "cold blood",
+        "unbreakable armor"};
     inline bool IsBurnCooldown(std::string const& name)
     {
         for (char const* burn : BURN_COOLDOWNS)
@@ -555,6 +556,8 @@ namespace Leader
         float aoeRadius = 0.0f;
         Intensity intensity = Intensity::Normal;
         uint32 intensityMs = 0;
+        // [lead178] a trash Burn: only these burn cooldowns (each one back before the next boss pull); empty: all
+        std::vector<std::string> burnAllowed;
         ObjectGuid cc;  // the mob this member crowd-controls (the leader's assignment)
         uint32 ccMs = 0;
         ObjectGuid interrupt;  // the caster this member interrupts
@@ -577,6 +580,18 @@ namespace Leader
         ReadyEvent ready = ReadyEvent::None;
         uint32 readyMs = 0;
     };
+    // [lead178] the leader's verdict on one burn cooldown: under its Burn, and on trash only one it allowed
+    inline bool BurnAllows(MemberEvents const& events, std::string const& name)
+    {
+        if (events.intensity != Intensity::Burn)
+            return false;
+        if (events.burnAllowed.empty())
+            return true;
+        for (std::string const& allowed : events.burnAllowed)
+            if (allowed == name)
+                return true;
+        return false;
+    }
     struct OwnDecision
     {
         std::string action;
@@ -621,7 +636,7 @@ namespace Leader
         bool SetHealTarget(ObjectGuid member, ObjectGuid target);
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder);
-        bool SetIntensity(ObjectGuid member, Intensity intensity);
+        bool SetIntensity(ObjectGuid member, Intensity intensity, std::vector<std::string> const& burnAllowed = {});
         bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius);
         bool SetCc(ObjectGuid member, ObjectGuid mob);
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster);

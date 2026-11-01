@@ -281,6 +281,7 @@ namespace Leader
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
         float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
+        float bossPullSec = -1.0f;  // [lead178] seconds to the next boss pull: this fight, the on-path fights, the walk
         std::set<ObjectGuid> burnLogged;                  // [lead80] burn_decision logged in this fight
         std::string slowestPass;                       // [lead76] the slowest leader pass this minute
         uint32 slowestPassUs = 0;

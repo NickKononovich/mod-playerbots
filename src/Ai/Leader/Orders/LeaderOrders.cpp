@@ -606,13 +606,14 @@ namespace Leader
             return changed;
         }
 
-        bool SetIntensity(ObjectGuid member, Intensity intensity)
+        bool SetIntensity(ObjectGuid member, Intensity intensity, std::vector<std::string> const& burnAllowed)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
-            bool const changed = e.intensity != intensity;
+            bool const changed = e.intensity != intensity || e.burnAllowed != burnAllowed;
             e.intensity = intensity;
+            e.burnAllowed = burnAllowed;
             e.intensityMs = slot.gen;
             if (changed)
                 ++e.seq;
@@ -837,6 +838,7 @@ namespace Leader
             if (e.intensity != Intensity::Normal && drop(e.intensityMs))
             {
                 e.intensity = Intensity::Normal;
+                e.burnAllowed.clear();
                 changed = true;
             }
             if (!e.cc.IsEmpty() && drop(e.ccMs))

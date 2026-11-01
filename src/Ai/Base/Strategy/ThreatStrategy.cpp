@@ -723,7 +723,7 @@ float LeaderCommandMultiplier::GetValue(Action* action)
 
     bool const stop =
         !stale && (_command.attack == Leader::AttackEvent::StopDps || _command.intensity == Leader::Intensity::Stop);
-    bool const burn = !stale && _command.intensity == Leader::Intensity::Burn;
+    bool const burn = !stale && Leader::BurnAllows(_command, name);  // [lead178] the leader's verdict per cooldown
     // [rot5] the tool uses of a burn cooldown stay the bot's (IsBurnCooldown's comment)
     bool const burnException =
         (PlayerbotAI::IsHeal(bot) && (name == "avenging wrath" || name == "shadowfiend")) ||

@@ -511,6 +511,20 @@ bool BoostTrigger::IsActive()
     if (!BuffTrigger::IsActive())
         return false;
 
+    // [lead178] user: a led bot's big offensive cooldown is the leader's decision - on trash only one that is back
+    // before the next boss pull, else held for the boss (the leader's Intensity burn and its allowed list)
+    // (the tool uses stay the bot's, as ThreatMultiplier's burn exceptions: a healer's, Mirror Image with attackers on
+    // it, Shadowfiend for mana)
+    std::string const name = getName();
+    bool const toolUse =
+        PlayerbotAI::IsHeal(bot) || (name == "mirror image" && AI_VALUE(uint8, "my attacker count")) ||
+        (name == "shadowfiend" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.MediumMana));
+    if (!toolUse && Leader::IsBurnCooldown(name) && Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        return Leader::Events::Get(bot->GetGUID(), events) && Leader::BurnAllows(events, name);
+    }
+
     Unit* target = AI_VALUE(Unit*, "current target");
     if (target && target->ToPlayer())
         return true;

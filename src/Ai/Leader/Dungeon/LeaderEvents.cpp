@@ -791,6 +791,19 @@ namespace Leader::Dungeon
                     if (bossYd < 0.0f || tank->GetExactDist(boss) < bossYd)
                         bossYd = tank->GetExactDist(boss);
             lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+            // [lead178] the time to the next boss pull: what is left of this fight, the fights of the idle mobs the
+            // leader holds on the path (their health over the group's dps) and the walk; no boss left: -1
+            lead.bossPullSec = -1.0f;
+            if (lead.bossWalkSec >= 0.0f)
+            {
+                float onPathHealth = 0.0f;
+                for (auto const& [mobGuid, verdict] : group.PathVerdicts())
+                    if (verdict.on)
+                        if (Creature* mob = map->GetCreature(mobGuid);
+                            mob && mob->IsAlive() && !mob->IsInCombat() && !mob->IsDungeonBoss() && !mob->isWorldBoss())
+                            onPathHealth += float(mob->GetHealth());
+                lead.bossPullSec = lead.fightSecLeft + onPathHealth / std::max(groupDps, 1.0f) + lead.bossWalkSec;
+            }
         }
 
         // [lead20] the tank holds every fight mob near `to` and the walk from `from` (its victim is the tank, or it is
@@ -2950,8 +2963,14 @@ namespace Leader::Dungeon
                                         lead.noHeadroom[guid];
                 // [lead80] a trash burn when it pays: the member's burn cooldown's effect fits in the fight's
                 // seconds and the cooldown is back before the next boss (no boss left: it pays whenever it fits)
+                // [lead178] user (approved): per cooldown - on trash only the ones back before the next boss pull
+                // (their recharge within lead.bossPullSec: this fight, the on-path fights, the walk), the others held
+                // for the boss; the member casts only the allowed ones (Leader::BurnAllows)
                 Leader::Intensity burnable = intensity;
+                std::vector<std::string> burnAllowed;
                 if (burnable != Leader::Intensity::Burn && !victim && !overThreat && bot != healer && botAI)
+                {
+                    std::string allowedNote;
                     for (char const* burn : Leader::BURN_COOLDOWNS)
                     {
                         uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
@@ -2964,25 +2983,35 @@ namespace Leader::Dungeon
                         float const rechargeSec =
                             std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
                         if (lead.fightSecLeft >= effectSec &&
-                            (lead.bossWalkSec < 0.0f || lead.bossWalkSec >= rechargeSec))
+                            (lead.bossPullSec < 0.0f || lead.bossPullSec >= rechargeSec))
                         {
-                            burnable = Leader::Intensity::Burn;
-                            if (lead.burnLogged.insert(bot->GetGUID()).second)
-                                Decisions().Write(
-                                    run, "leader", "burn_decision", guid, bot->GetName(), true,
-                                    JsonObject().Str("member", bot->GetName()).Str("cooldown", burn)
-                                        .Real("fightSec", lead.fightSecLeft).Real("effectSec", effectSec)
-                                        .Real("rechargeSec", rechargeSec).Real("bossWalkSec", lead.bossWalkSec));
-                            break;
+                            burnAllowed.push_back(burn);
+                            allowedNote += Acore::StringFormat("{}{} ({:.0f} s)", allowedNote.empty() ? "" : ", ", burn,
+                                                               rechargeSec);
                         }
                     }
+                    if (!burnAllowed.empty())
+                    {
+                        burnable = Leader::Intensity::Burn;
+                        if (lead.burnLogged.insert(bot->GetGUID()).second)
+                            Decisions().Write(
+                                run, "leader", "burn_decision", guid, bot->GetName(), true,
+                                JsonObject().Str("member", bot->GetName()).Str("cooldowns", allowedNote)
+                                    .Real("fightSec", lead.fightSecLeft).Real("bossPullSec", lead.bossPullSec)
+                                    .Real("bossWalkSec", lead.bossWalkSec));
+                    }
+                }
                 Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : burnable;
-                if (Leader::Events::SetIntensity(guid, mine) && mine != Leader::Intensity::Normal)
+                if (Leader::Events::SetIntensity(
+                        guid, mine, mine == Leader::Intensity::Burn ? burnAllowed : std::vector<std::string>()) &&
+                    mine != Leader::Intensity::Normal)
                     logEvent(bot, "Intensity",
                              JsonObject().Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
                                  .Str("why", victim       ? "aggro loss: the tank takes the mob back"
                                              : overThreat ? std::string("threat: no mob with headroom")
-                                                          : "a dungeon boss"));
+                                             : intensity == Leader::Intensity::Burn
+                                                 ? std::string("a dungeon boss")
+                                                 : "trash: cooldowns back before the next boss pull"));
                 if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
