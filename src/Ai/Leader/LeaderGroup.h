@@ -46,6 +46,16 @@ namespace Leader
             uint32 apartIgnoreUntilMs = 0;  // the group's apart rule ignores it until then (a member brought back)
             bool usesMana = false;          // its role and class use mana (the rest's mana line counts)
             uint32 backInMs = 0;            // when it came back in through the portal (0: never during this run)
+            bool physical = false;          // a melee / ranged / tank role (the physical buffs are for it)
+        };
+
+        // [lead107 stage 5] what the group does now (the group owner's bookkeeping: the harness's run phase)
+        enum class Activity : uint8
+        {
+            Waiting,
+            Drinking,
+            Traveling,
+            Reviving
         };
 
         // a member's walk point (the route walk's waypoint registry the group's owner keeps)
@@ -200,6 +210,20 @@ namespace Leader
         // a member's own movement could not do it (bot_cannot_move)
         virtual void LogCannotMove(Player* bot, std::string const& capability, std::string const& reason, float toX,
                                    float toY, float toZ) = 0;
+        // [lead107 stage 5] the group does `activity` now (its owner's bookkeeping)
+        virtual void NoteActivity(Activity activity) = 0;
+        // the group's apart rule ignores `member` until `untilMs`
+        virtual void SetApartIgnore(ObjectGuid member, uint32 untilMs) = 0;
+        // a member with no walk back to the group is put in again at the entrance by the group's owner (true: it was,
+        // counted as a death)
+        virtual bool StrandedReenter(ObjectGuid member, Player* bot, Player* leader) = 0;
+        // the damage done and taken and the healing done by the members so far (the owner's counters)
+        virtual uint64 CombatActivity() const = 0;
+        // the owner's test setup of a buffing pass, a member's consumables (true: it used a flask / food) and a
+        // member's buff state for the log
+        virtual void BuffPassSetup(std::vector<Player*> const& players) = 0;
+        virtual bool UseConsumables(Player* bot, bool food) = 0;
+        virtual std::string MemberBuffJson(Player* bot) = 0;
     };
 }
 

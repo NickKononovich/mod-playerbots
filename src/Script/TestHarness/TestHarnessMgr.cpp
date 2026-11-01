@@ -26,6 +26,8 @@
 #include "InstanceSaveMgr.h"
 #include "InstanceScript.h"
 #include "LeaderOrders.h"  // [lead1]
+#include "LeaderCombatEnd.h"  // [lead107] the leader's phantom-combat end / stale-victim drop
+#include "LeaderRest.h"       // [lead107] the leader's rest / far wait
 #include "Log.h"
 #include "Map.h"
 #include "MobRoles.h"
@@ -123,13 +125,9 @@ namespace TestHarness
 
         bool IsTerminal(Phase phase) { return IsTerminalPhase(phase); }
 
-        // Regen wait: a member who waits this long without sitting down to eat / drink is a "[regen]" stall.
-        constexpr uint32 REGEN_SIT_GRACE_MS = 8 * IN_MILLISECONDS;
-        // Wave 21 (*.bak_w21idle): a member still standing this long after its regen_stall is no longer waited for.
-        constexpr uint32 REGEN_STALL_RELEASE_MS = 20 * IN_MILLISECONDS;
-        // [regen_wait_below_line] a sitter is waited for only below its own rest line, a standing member only below
-        // the hard lines; false restores "every sitter until it stands up, every member below its line".
-        constexpr bool REGEN_WAIT_BELOW_LINE = true;
+        using Leader::Dungeon::REGEN_SIT_GRACE_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGEN_STALL_RELEASE_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGEN_WAIT_BELOW_LINE;  // [lead107] LeaderRest.h
         // [downtime_positions] / [downtime_phase] diagnostics for tools/downtime_audit.py
         constexpr bool DOWNTIME_POSITIONS = true;
         constexpr bool DOWNTIME_PHASE_LOG = true;
@@ -149,88 +147,32 @@ namespace TestHarness
                    std::find(std::begin(VIOLET_HOLD_PRISONERS), std::end(VIOLET_HOLD_PRISONERS),
                              creature->GetEntry()) != std::end(VIOLET_HOLD_PRISONERS);
         }
-        // Meet <-> route ping-pong (2026-10-24, *.bak_doorgate), false restores the plain alternation. BRS heroic
-        // 22:41: the tank above (z 66.6 at 76,-327, 4x bot_cannot_move), the others below (z 49-54) 45-61 yd away; the
-        // far wait walked the leader back (meet_member), the leader came within 45 yd, the route took over and picked
-        // the next target (Legionnaire <-> Warlock, both "blocks route" and unseen by the tank), the leader walked off,
-        // the far wait came again - for minutes. After REGROUP_PING_PONG_FLIPS changes of decision with no gap over
-        // REGROUP_PING_PONG_GAP_MS, the first REGROUP_PING_PONG_MS ago, the meet is held: no route until every living
-        // member stands within REGROUP_PING_PONG_TOGETHER of the leader on its map (MeetMember: the members' own
-        // follow first - the group gathers on the leader's level - then the leader's walk back over the route), at
-        // most REGROUP_PING_PONG_HOLD_MS, then REGROUP_PING_PONG_COOLDOWN_MS without a new hold.
-        constexpr bool REGROUP_PING_PONG_GUARD = true;
-        constexpr uint8 DECISION_MEET = 1;
-        constexpr uint8 DECISION_ROUTE = 2;
-        constexpr uint32 REGROUP_PING_PONG_FLIPS = 3;
-        constexpr uint32 REGROUP_PING_PONG_MS = 20 * IN_MILLISECONDS;
-        constexpr uint32 REGROUP_PING_PONG_GAP_MS = 45 * IN_MILLISECONDS;
-        // At most 60 s (ok-n wave 8: two members 41 yd away on the lower ramp held the group 279 s over 90 s holds).
-        constexpr uint32 REGROUP_PING_PONG_HOLD_MS = 60 * IN_MILLISECONDS;
-        constexpr uint32 REGROUP_APART_IGNORE_MS = 3 * MINUTE * IN_MILLISECONDS;  // after a timed-out hold
-        // [b30_topped_up] wait_timeouts in a row with the same member far: then no far wait for it (and no
-        // GroupFullyReady check while it stays far) for FAR_TIMEOUTS_IGNORE_MS. dmw-n 20261025-184229-dmw-n-5C-16: 5
-        // wait_timeouts of 60 s for "Rlpriam(far)", stranded in Immol'thar's pit, each 45 s after the last.
-        constexpr uint32 FAR_TIMEOUTS_DROP = 2;
-        constexpr uint32 FAR_TIMEOUTS_IGNORE_MS = 10 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 REGROUP_PING_PONG_COOLDOWN_MS = 2 * MINUTE * IN_MILLISECONDS;
-        constexpr float REGROUP_PING_PONG_TOGETHER = 30.0f;
-        constexpr float REGROUP_PING_PONG_LEVEL_DZ = 6.0f;  // a member this far above / below is on another level
-        constexpr float REGROUP_PING_PONG_MEET_RANGE = 45.0f;  // MeetMember's MEET_RANGE (TestHarnessRunner.cpp)
-        // [meet_hysteresis] MeetMember's MEET_END_RANGE: the member being met counts far until this close - now
-        // FAR_RESUME_RANGE ([b31_far_threshold]; [meet_end_follow_trail] had 30, before it 20)
-        // [b31_far_threshold] mara-h 20261025-184229-mara-h-5A-52: the shaman followed at 10-25 yd, on the steep ramps
-        // the 3D distance (horizontal + dz) crossed the far line, the group held 1-13 s, the shaman came to 5-9 yd,
-        // the tank walked on, the next ramp the same; user: «чё танк не подождал его? чё он полез вперед? Мы ж не
-        // эгоисты, должны подождать». Apart is measured as the horizontal distance plus the dz beyond
-        // FAR_SLOPE_DZ_ALLOWANCE (a ramp); far: beyond FAR_WAIT_RANGE, or beyond FAR_TRAIL_RANGE without closing in
-        // for FAR_NOT_CLOSING_MS while the leader stands; a member waited for (a far wait, a meet, a ping-pong hold)
-        // stays far until within FAR_RESUME_RANGE - the group goes on together. While travelling the leader pauses
-        // (COMPACT_PAUSE_MAX_MS at most) for a member over FAR_TRAIL_RANGE behind, before a far wait comes of it.
-        constexpr float FAR_SLOPE_DZ_ALLOWANCE = 10.0f;
-        constexpr float FAR_WAIT_RANGE = 40.0f;
-        constexpr float FAR_TRAIL_RANGE = 25.0f;
-        constexpr float FAR_RESUME_RANGE = 15.0f;
-        constexpr float FAR_CLOSING_STEP = 2.0f;
-        constexpr uint32 FAR_NOT_CLOSING_MS = 5 * IN_MILLISECONDS;
-        constexpr uint32 COMPACT_PAUSE_MAX_MS = 10 * IN_MILLISECONDS;
-        constexpr uint32 COMPACT_PAUSE_GAP_MS = 20 * IN_MILLISECONDS;  // no new pause this soon after one ran out
-        // [b33_harn] vh-h 20261026-001930-vh-h-5D-67: a pause begun at 754 s was not evaluated through the fight and
-        // the drinking (other phases), "timed out" at its first look back at 803 s ("sec 49", 22.7 yd) and the tank
-        // walked on with the healer still drinking 20 yd behind; he body-pulled at 815 s, the healer 31 yd off, and
-        // the group wiped. A pause not evaluated for COMPACT_PAUSE_STALE_MS starts its clock anew, and while the
-        // trailing member is a healer drinking / eating, out of the leader's sight or beyond FAR_RESUME_RANGE, the
-        // pause holds up to COMPACT_PAUSE_HEALER_MS (bounded: then the far wait takes over as before).
-        constexpr uint32 COMPACT_PAUSE_STALE_MS = 3 * IN_MILLISECONDS;
-        constexpr uint32 COMPACT_PAUSE_HEALER_MS = 30 * IN_MILLISECONDS;
-
-        float ApartMetric(Player* bot, Player* leader)
-        {
-            float const dz = std::fabs(bot->GetPositionZ() - leader->GetPositionZ());
-            return bot->GetExactDist2d(leader) + std::max(0.0f, dz - FAR_SLOPE_DZ_ALLOWANCE);
-        }
-
-        // Food (spell category 11) or water (59) in the bags, the items the bot's own "food" / "drink" use.
-        uint32 CountRestItems(Player* bot, uint32 spellCategory)
-        {
-            uint32 count = 0;
-            auto const add = [&count, spellCategory](Item const* item)
-            {
-                if (!item)
-                    return;
-                ItemTemplate const* proto = item->GetTemplate();
-                if (proto && proto->Class == ITEM_CLASS_CONSUMABLE &&
-                    (proto->SubClass == ITEM_SUBCLASS_FOOD || proto->SubClass == ITEM_SUBCLASS_CONSUMABLE) &&
-                    proto->Spells[0].SpellCategory == spellCategory)
-                    count += item->GetCount();
-            };
-            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-                add(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
-            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
-                if (Bag const* bag = bot->GetBagByPos(bagSlot))
-                    for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-                        add(bag->GetItemByPos(uint8(slot)));
-            return count;
-        }
+        using Leader::Dungeon::REGROUP_PING_PONG_GUARD;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::DECISION_MEET;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::DECISION_ROUTE;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_FLIPS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_GAP_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_HOLD_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_APART_IGNORE_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_TIMEOUTS_DROP;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_TIMEOUTS_IGNORE_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_COOLDOWN_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_TOGETHER;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_LEVEL_DZ;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::REGROUP_PING_PONG_MEET_RANGE;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_SLOPE_DZ_ALLOWANCE;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_WAIT_RANGE;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_TRAIL_RANGE;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_RESUME_RANGE;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_CLOSING_STEP;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::FAR_NOT_CLOSING_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::COMPACT_PAUSE_MAX_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::COMPACT_PAUSE_GAP_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::COMPACT_PAUSE_STALE_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::COMPACT_PAUSE_HEALER_MS;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::ApartMetric;  // [lead107] LeaderRest.h
+        using Leader::Dungeon::CountRestItems;  // [lead107] LeaderRest.h
     }
 
     bool IsTerminalPhase(Phase phase)
@@ -1429,12 +1371,10 @@ namespace TestHarness
     namespace
     {
         constexpr uint32 AGGRO_LOSS_MS = 2 * IN_MILLISECONDS;
-        constexpr uint32 PHANTOM_COMBAT_MS = 15 * IN_MILLISECONDS;      // in combat, nothing dealt / taken / healed
-        constexpr uint32 PHANTOM_COMBAT_END_MS = 45 * IN_MILLISECONDS;  // then the stale combat references are ended
-        // [phantom_mob_hunt] a live mob of the phantom combat that the leader can walk to is hunted this many times
-        // (the target for PHANTOM_HUNT_MS each) before its combat is ended as an unreachable one's
-        constexpr uint32 PHANTOM_HUNT_MAX_TRIES = 3;
-        constexpr uint32 PHANTOM_HUNT_MS = 2 * MINUTE * IN_MILLISECONDS;
+        using Leader::Fight::PHANTOM_COMBAT_MS;  // [lead107] LeaderCombatEnd.h
+        using Leader::Fight::PHANTOM_COMBAT_END_MS;  // [lead107] LeaderCombatEnd.h
+        using Leader::Fight::PHANTOM_HUNT_MAX_TRIES;  // [lead107] LeaderCombatEnd.h
+        using Leader::Fight::PHANTOM_HUNT_MS;  // [lead107] LeaderCombatEnd.h
         // [b33_sh2] for [b33_brd] (brd-n 20261026-000434-brd-n-5F-6): the core flags a pet's owner only with
         // UNIT_FLAG_PET_IN_COMBAT, never IN_COMBAT, so a train chasing a hunter's pet was no fight for the harness
         // (pull_end of #59 at 3026 s while the mobs still walked in, the next pull planned into them). A member's pet
@@ -3701,11 +3641,12 @@ namespace TestHarness
                 // second of pull_end, the clock had run on from before the fight).
                 for (Member& member : party.members)
                 {
-                    member.regenSinceMs = 0;
-                    member.regenStallLogged = false;
-                    member.regenStallMs = 0;
-                    member.regenStallReleased = false;
-                    member.regenAboveLineLogged = false;
+                    Leader::MemberRest& rest = party.rest[member.guid];  // [lead107] the leader's rest facts
+                    rest.regenSinceMs = 0;
+                    rest.regenStallLogged = false;
+                    rest.regenStallMs = 0;
+                    rest.regenStallReleased = false;
+                    rest.regenAboveLineLogged = false;
                 }
                 SetPhase(party, activeBoss ? Phase::BossFight : Phase::Clearing);
                 AssistMember(party, players, leader);
@@ -3919,844 +3860,43 @@ namespace TestHarness
             CheckIdle(party, players, leader, anyInCombat);
     }
 
-    // [lead107 stage 5] the phantom-combat end, out of TickRun unchanged
+    // [lead107 stage 5] the phantom-combat end is the leader's (Ai/Leader/Fight/LeaderCombatEnd.h)
     void TestHarnessMgr::TickPhantomCombat(Party& party, std::vector<Player*> const& players, Player* leader,
                                            uint32 now, bool activeBoss, bool& anyInCombat)
     {
-        // Phantom combat: somebody stays flagged in combat while nobody of the party deals, takes or heals anything
-        // (a mob stuck on a ledge, a fish below the surface). It held Ragefire Chasm in "clearing trash" for 18
-        // minutes: no stall detection, no resurrection (the paladin's Redemption is a non-combat action). After
-        // PHANTOM_COMBAT_MS the run treats the party as out of combat; after PHANTOM_COMBAT_END_MS the stale combat
-        // references are ended, as an evading mob would. Not during a boss attempt (phases without damage).
-        if (anyInCombat && !activeBoss)
-        {
-            uint64 activity = 0;
-            for (Member const& member : party.members)
-            {
-                MemberCounters const counters = StatsRegistry::Instance().Snapshot(member.guid);
-                activity += counters.damageDone + counters.damageTaken + counters.healingDone;
-            }
-
-            if (!party.phantomCombatSinceMs || activity != party.combatActivity)
-            {
-                party.combatActivity = activity;
-                party.phantomCombatSinceMs = now;
-                party.phantomCombatLogged = false;
-                party.phantomCombatEnded = false;
-                party.phantomCombatEndedMs = 0;  // [b33_sh2]
-                party.phantomCombatEnds = 0;
-            }
-            else if (getMSTimeDiff(party.phantomCombatSinceMs, now) > PHANTOM_COMBAT_MS)
-            {
-                if (!party.phantomCombatLogged)
-                {
-                    party.phantomCombatLogged = true;
-                    JsonArray refs;
-                    for (Player* bot : players)
-                    {
-                        if (!bot->IsAlive() || !bot->IsInCombat())
-                            continue;
-                        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
-                        {
-                            Unit* other = ref ? ref->GetOther(bot) : nullptr;
-                            if (!other)
-                                continue;
-                            Unit* victim = other->GetVictim();
-                            refs.Raw(JsonObject().Str("member", bot->GetName()).Str("with", other->GetName())
-                                         .Num("entry", other->IsCreature() ? other->GetEntry() : 0)
-                                         .Bool("alive", other->IsAlive())
-                                         .Bool("evading", other->IsCreature() && other->ToCreature()->IsInEvadeMode())
-                                         .Bool("underWater", other->IsUnderWater())
-                                         .Real("dist", bot->GetExactDist(other))
-                                         .Real("dz", other->GetPositionZ() - bot->GetPositionZ())
-                                         .Str("victim", victim ? victim->GetName() : "").Build());
-                        }
-                    }
-                    LogEvent(party, "phantom_combat",
-                             JsonObject().Num("sec", getMSTimeDiff(party.phantomCombatSinceMs, now) / IN_MILLISECONDS)
-                                 .Raw("refs", refs.Build()));
-
-                    // [phantom_mob_hunt] User 2026-10-25: «стоит моб, а группа просто стоит... почему группа не бежит
-                    // и не бьет». strat-h 20261025-163739-strat-h-5A-11 pulls 52-55: a Crimson Initiate 10420 alive,
-                    // not evading, 97-133 yd off on the hunter's Raptor kept every pull 45 s in phantom combat. A live
-                    // hostile the leader can walk to (a complete path) is made the group's target; only an
-                    // unreachable one has its combat ended below.
-                    if (party.phantomHuntTries < PHANTOM_HUNT_MAX_TRIES)
-                    {
-                        Creature* hunt = nullptr;
-                        float huntDistance = 0.0f;
-                        std::string huntPath;
-                        auto const consider = [&](Unit* owner)
-                        {
-                            for (auto const& [guid, ref] : owner->GetCombatManager().GetPvECombatRefs())
-                            {
-                                Unit* other = ref ? ref->GetOther(owner) : nullptr;
-                                Creature* creature = other ? other->ToCreature() : nullptr;
-                                if (!creature || !creature->IsAlive() || creature->IsInEvadeMode() ||
-                                    !leader->IsValidAttackTarget(creature) || creature->GetMap() != leader->GetMap())
-                                    continue;
-
-                                float const distance = leader->GetExactDist(creature);
-                                if (hunt && distance >= huntDistance)
-                                    continue;
-
-                                PathGenerator path(leader);
-                                path.CalculatePath(creature->GetPositionX(), creature->GetPositionY(),
-                                                   creature->GetPositionZ());
-                                if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
-                                    continue;
-
-                                hunt = creature;
-                                huntDistance = distance;
-                                huntPath = Acore::StringFormat("path type {}, {} points", uint32(path.GetPathType()),
-                                                               path.GetPath().size());
-                            }
-                        };
-                        for (Player* bot : players)
-                        {
-                            if (!bot->IsAlive())
-                                continue;
-                            consider(bot);
-                            for (Unit* controlled : bot->m_Controlled)
-                                if (controlled && controlled->IsInWorld())
-                                    consider(controlled);
-                        }
-
-                        if (hunt)
-                        {
-                            ++party.phantomHuntTries;
-                            party.phantomHunt = hunt->GetGUID();
-                            party.neighbourTarget = hunt->GetGUID();
-                            party.neighbourTargetUntilMs = now + PHANTOM_HUNT_MS;
-                            party.target = hunt->GetGUID();
-                            party.targetIsBoss = false;
-                            party.targetIsStarter = false;
-                            party.targetRouteRule = "phantom mob hunt";
-                            party.targetSinceMs = now;
-                            party.guaranteeHolding = false;
-                            party.arrivedMs = 0;
-                            party.approach = 0;
-                            party.approachBlocker.Clear();
-                            party.stopSinceMs = 0;
-                            Unit* victim = hunt->GetVictim();
-                            LOG_INFO("playerbots", "[phantom_mob_hunt] {}: {} {} alive, {:.0f} % health, {:.1f} yd "
-                                     "(dz {:.1f}), on {}: reachable ({}), the group's target (try {} of {})",
-                                     leader->GetName(), hunt->GetName(), hunt->GetEntry(), hunt->GetHealthPct(),
-                                     huntDistance, hunt->GetPositionZ() - leader->GetPositionZ(),
-                                     victim ? victim->GetName() : "nobody", huntPath, party.phantomHuntTries,
-                                     PHANTOM_HUNT_MAX_TRIES);
-                            LogEvent(party, "phantom_mob_hunt",
-                                     JsonObject().Str("mob", hunt->GetName()).Num("entry", hunt->GetEntry())
-                                         .Real("hpPct", hunt->GetHealthPct()).Real("dist", huntDistance)
-                                         .Real("dz", hunt->GetPositionZ() - leader->GetPositionZ())
-                                         .Str("victim", victim ? victim->GetName() : "").Str("path", huntPath)
-                                         .Num("try", party.phantomHuntTries));
-                        }
-                    }
-                }
-
-                // [phantom_mob_hunt] while the group walks to a hunted mob its combat stays: no end, the clock again
-                Creature* hunted = party.phantomHunt ? leader->GetMap()->GetCreature(party.phantomHunt) : nullptr;
-                bool const hunting = hunted && hunted->IsAlive() && party.target == party.phantomHunt &&
-                                     int32(now - party.neighbourTargetUntilMs) < 0;
-                if (!hunting)
-                    party.phantomHunt.Clear();
-
-                // [b33_sh2] sh-n 20261026-003732-sh-n-5B-89: the one end at 1421 s left the tank Rlwaraj flagged in
-                // combat (0 attackers, a stealthed Shattered Hand Assassin 17695 19 yd off that the hunt cannot see);
-                // nobody left combat, so the episode never reset and never ended again, and Steer held every walk
-                // on leader->IsInCombat() for 90 s. The end repeats every PHANTOM_COMBAT_END_MS while it lasts.
-                bool const endAgain = party.phantomCombatEnded && party.phantomCombatEndedMs &&
-                                      getMSTimeDiff(party.phantomCombatEndedMs, now) > PHANTOM_COMBAT_END_MS;
-                if ((!party.phantomCombatEnded || endAgain) && !hunting &&
-                    getMSTimeDiff(party.phantomCombatSinceMs, now) > PHANTOM_COMBAT_END_MS)
-                {
-                    party.phantomCombatEnded = true;
-                    party.phantomCombatEndedMs = now ? now : 1;
-                    ++party.phantomCombatEnds;
-                    // the pets and guardians too: a pet's ref put its owner back in combat after every pull
-                    // (strat-h 5A-11: the Crimson Initiate on the hunter's Raptor, 45 s after pulls 52-55)
-                    uint32 controlledEnded = 0;
-                    for (Player* bot : players)
-                    {
-                        if (!bot->IsAlive())
-                            continue;
-                        bot->GetCombatManager().EndAllPvECombat();
-                        for (Unit* controlled : bot->m_Controlled)
-                        {
-                            if (controlled && controlled->IsInWorld() && controlled->IsInCombat())
-                            {
-                                controlled->GetCombatManager().EndAllPvECombat();
-                                ++controlledEnded;
-                            }
-                        }
-                    }
-                    // [b33_sh2] who is still flagged right after the end, and with what (the ref that comes back)
-                    JsonArray stillFlagged;
-                    for (Player* bot : players)
-                    {
-                        if (!bot->IsAlive() || !bot->IsInCombat())
-                            continue;
-                        std::string with;
-                        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
-                            if (Unit* other = ref ? ref->GetOther(bot) : nullptr)
-                                with += (with.empty() ? "" : ", ") + std::string(other->GetName());
-                        stillFlagged.Raw(JsonObject().Str("member", bot->GetName()).Str("with", with)
-                                             .Num("attackers", bot->getAttackers().size())
-                                             .Bool("pvp", bot->GetCombatManager().HasPvPCombat()).Build());
-                    }
-                    LogEvent(party, "phantom_combat_end",
-                             JsonObject().Num("sec", getMSTimeDiff(party.phantomCombatSinceMs, now) / IN_MILLISECONDS)
-                                 .Num("petsEnded", controlledEnded).Num("huntTries", party.phantomHuntTries)
-                                 .Num("end", party.phantomCombatEnds).Raw("stillFlagged", stillFlagged.Build()));
-                }
-                anyInCombat = false;
-            }
-        }
-        else if (!anyInCombat)
-        {
-            party.phantomCombatSinceMs = 0;
-            party.phantomHuntTries = 0;  // [phantom_mob_hunt] a real fight end: the next phantom gets its tries
-            party.phantomHunt.Clear();
-        }
+        PartyLeaderGroup group(*this, party);
+        Leader::Fight::TickPhantomCombat(group, players, leader, now, activeBoss, anyInCombat);
     }
 
-    // [lead107 stage 5] the stale-victim drop, out of TickRun unchanged
+    // [lead107 stage 5] the stale-victim drop is the leader's (LeaderCombatEnd.h)
     void TestHarnessMgr::TickStaleVictim(Party& party, Player* leader, uint32 now, bool anyInCombat, bool activeBoss)
     {
-        // [queue-stale-idle-victim] build 27 (ac-n 20261025-150737-ac-n-5A-55, ub-n 150737-ub-n-5A-29, strat-h
-        // 150737-strat-h-5A-10): the tank's own target pick took an idle boss (Shirrak / Hungarfen / Hearthsinger)
-        // into its swing and the combat engine, out of any fight (no attacker, not in combat), while
-        // [reach_idle_waits_ready] (ReachMeleeAction::isUseful) refuses the walk until the group is ready - the tank
-        // at 0-67 % mana. In the combat engine it neither drinks nor walks the harness waypoint ("melee (5.00) ->
-        // Shirrak 24.8 yd" every tick, 219 s / 240 s / 181 s without a fight). A swing / target on an idle mob out of
-        // melee range for STALE_VICTIM_MS outside any fight is dropped: AttackStop, no current target, the non-combat
-        // engine - the rest triggers run, and the tank's own pick takes the mob again once the group is ready.
-        constexpr uint32 STALE_VICTIM_MS = 15 * IN_MILLISECONDS;
-        if (!anyInCombat && !activeBoss && leader->IsAlive() && !leader->IsInCombat() &&
-            leader->getAttackers().empty())
-        {
-            PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
-            Unit* victim = leader->GetVictim();
-            Unit* current = leaderAI ? leaderAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get()
-                                     : nullptr;
-            Unit* stale = victim ? victim : current;
-            bool const idleOut = stale && stale->IsCreature() && stale->IsAlive() && !stale->IsInCombat() &&
-                                 !leader->IsWithinMeleeRange(stale);
-            if (!idleOut)
-            {
-                party.staleVictim.Clear();
-                party.staleVictimSinceMs = 0;
-            }
-            else if (party.staleVictim != stale->GetGUID())
-            {
-                party.staleVictim = stale->GetGUID();
-                party.staleVictimSinceMs = now ? now : 1;
-            }
-            else if (getMSTimeDiff(party.staleVictimSinceMs, now) > STALE_VICTIM_MS)
-            {
-                ++party.staleVictimReleases;
-                LogEvent(party, "stale_idle_victim_release",
-                         JsonObject().Str("name", stale->GetName()).Num("entry", stale->GetEntry())
-                             .Bool("boss", stale->ToCreature()->IsDungeonBoss())
-                             .Real("distance", leader->GetExactDist(stale))
-                             .Num("sec", getMSTimeDiff(party.staleVictimSinceMs, now) / IN_MILLISECONDS)
-                             .Real("leaderMana",
-                                   leader->GetMaxPower(POWER_MANA) ? leader->GetPowerPct(POWER_MANA) : 100.0f)
-                             .Num("releases", party.staleVictimReleases));
-                LOG_INFO("playerbots",
-                         "[queue-stale-idle-victim] {}: {} held idle {} ({:.1f} yd) as its target outside a fight for "
-                         "{} s - dropped (release {})",
-                         party.id, leader->GetName(), stale->GetName(), leader->GetExactDist(stale),
-                         getMSTimeDiff(party.staleVictimSinceMs, now) / IN_MILLISECONDS, party.staleVictimReleases);
-                leader->AttackStop();
-                leader->SetTarget(ObjectGuid::Empty);
-                if (leaderAI)
-                {
-                    leaderAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
-                    leaderAI->ChangeEngine(BOT_STATE_NON_COMBAT);
-                }
-                party.staleVictim.Clear();
-                party.staleVictimSinceMs = 0;
-            }
-        }
+        PartyLeaderGroup group(*this, party);
+        Leader::Fight::TickStaleVictim(group, leader, now, anyInCombat, activeBoss);
     }
 
-    // [lead107 stage 5] the wait for the dead / outside members, out of TickRun unchanged
+    // [lead107 stage 5] the wait for the dead / outside members is the leader's (Ai/Leader/Dungeon/LeaderRest.h)
     void TestHarnessMgr::WaitForAway(Party& party, std::vector<Player*> const& players, Player* leader,
                                      std::vector<std::string> const& away)
     {
-        // Wait for the dead / outside members (resurrection or the walk back); no buffing, no pull.
-        party.waitingFor.clear();
-        for (std::string const& name : away)
-            party.waitingFor += (party.waitingFor.empty() ? "" : ",") + name;
-        if (!MeetMember(party, players, leader))
-            TestRunner::ClearWaypoint(party.leader);
-        SetPhase(party, leader->IsAlive() ? Phase::Waiting : Phase::Reviving);
+        PartyLeaderGroup group(*this, party);
+        Leader::Dungeon::WaitForAway(group, players, leader, away);
     }
 
-    // [lead107 stage 5] the rest / far wait and the regroup ping-pong, out of TickRun unchanged; true: the group
-    // travels on (TickTravel)
+    // [lead107 stage 5] the rest / far wait and the regroup ping-pong are the leader's (LeaderRest.h); true: the
+    // group travels on (TickTravel)
     bool TestHarnessMgr::RestWait(Party& party, std::vector<Player*> const& players, Player* leader, uint32 now,
                                   bool wingWalking, bool& ledGather)
     {
-        bool travel = false;
-        std::vector<std::string> low;
-        std::vector<std::string> farAway;
-        // [lead17] LEADER_ONE_GATHER_OWNER: a led party's far / compact / ping-pong gates read the leader's
-        // trailing set (TickLeaderEvents), never their own distance rules
-        ledGather = Leader::LEADER_ONE_GATHER_OWNER && Leader::LEADER_PLANNER_IN_LEADER &&
-                    party.content && !party.content->raid && party.content->size <= 5 &&
-                    Leader::Orders::IsTracked(party.leader);
-        bool anySeated = false;
-        // [b33_cos2] A timed run (heroic Culling, Guardian of Time running): a sitter is no far wait. Above its
-        // line it stands up at that line by itself ([b33_cos] RestState::RestDone / TimedRunStandsAtLine,
-        // the shorter timed-run lines of WantsDrink) and follows; below it the regen wait holds the group
-        // where it stands - no MeetMember walk back to a drinker, no ping-pong hold for it. cos-h
-        // 20261026-000434-cos-h-5H-22: 25 "sits above its line, not waited for", yet the same sitters were
-        // "(far)" waits and ping-pong holds (00:15:02 "Rtpriae(56 yd)", 00:18:25-00:19:01, 00:21:55-00:22:52
-        // ...), ~175 s of the timer.
-        bool const timedRun = leader->GetMapId() == CoSIds::MAP_CULLING_OF_STRATHOLME &&
-                              CoSHelpers::IsGuardianTimerRunning(leader);
-        for (Member& member : party.members)
-        {
-            Player* bot = ObjectAccessor::FindPlayer(member.guid);
-            if (!bot || !bot->IsAlive())
-                continue;
-            // [b30_topped_up] no walk back to the group: out and in again at the entrance (a death)
-            if (TickStrandedReenter(party, member, bot, leader))
-                continue;
-            bool const mana = UsesMana(member.spec->role, member.cls) && bot->GetMaxPower(POWER_MANA);
-            float const manaPct = mana ? bot->GetPowerPct(POWER_MANA) : 100.0f;
-            float const healthPct = bot->GetHealthPct();
-            // Only real eating/drinking counts (the food / drink aura by its spell specific, not a passive
-            // MOD_POWER_REGEN talent). A sitting member is waited for while it is below its own line
-            // ([regen_wait_below_line] below; before: until it stood up full - the group walked off
-            // 2026-10-24 18:57:49 while the healer still drank, *.bak_standup).
-            bool const seated = RestState::IsEating(bot) || RestState::IsDrinking(bot);
-            // The bots rest after a pull by themselves ("rest mana" / "rest health", food strategy): below
-            // the rest line with water / food in the bags the group waits for them to sit down, as a group
-            // waits for its drinker (Stockade 2026-10-24: the wait only held below 20 % mana, the bot only
-            // drank below 15 %, so the group stood around a priest at 15-20 % who never sat down).
-            uint32 const drinks = mana ? CountRestItems(bot, 59) : 0;
-            uint32 const foods = CountRestItems(bot, 11);
-            // The bots' own rest lines (RestState::WantsDrink / WantsFood): a hurt bot with a healer
-            // close by gets healed, it does not sit down, and that is no stall.
-            bool const drinkLine = mana && RestState::WantsDrink(bot);
-            bool const foodLine = RestState::WantsFood(bot);
-            bool const wantsDrink = drinkLine && drinks;
-            bool const wantsFood = foodLine && foods;
-            bool const lowMana = mana && manaPct < 20.0f;
-            // [regen_wait_below_line] User rule 2026-10-25 (combat time as high as possible): a sitting member
-            // is waited for only while it is below its own line (RestState::WantsDrink / WantsFood: trash
-            // 75 %, company 45 %, a protection paladin 30 %, 95 % before a boss), and a member that does not
-            // sit only below the hard lines (45 % health, 20 % mana). Above them the group goes on, the
-            // sitter stands up by itself (rest_stand_at_line) or when the fight starts. DOWNTIME_AUDIT: regen
-            // waits 20,724 s a wave, the group's average mana >= 80 % in 68 % of them.
-            bool const hardLine = healthPct < 45.0f || lowMana;
-            bool const seatedBelowLine = seated && ((RestState::IsDrinking(bot) && drinkLine) ||
-                                                    (RestState::IsEating(bot) && foodLine));
-            // [queue-rest-sit-grace] the bot sat down by its own line a moment ago and the line moved since
-            // (the next fight's prediction changed after a boss): hor-h 20261025 build 29, the mage sat at
-            // 53 % after Marwyn, the hunter at 66 % after the General, "sits above its line, not waited for",
-            // the group walked off and meet_member / meet_stuck brought the tank back, ~30 s each. A fresh
-            // sitter below the trash line is waited for up to REST_SIT_GRACE_MS: one rule - who sits is waited
-            // for a moment, nobody walks off a sitter.
-            constexpr uint32 REST_SIT_GRACE_MS = 10 * IN_MILLISECONDS;
-            constexpr float REST_SIT_GRACE_MAX_PCT = 75.0f;  // RestState PREDICT_MAX_LINE_PCT
-            if (!seated)
-                member.seatedSinceMs = 0;
-            else if (!member.seatedSinceMs)
-                member.seatedSinceMs = now ? now : 1;
-            bool const freshSitter =
-                seated && member.seatedSinceMs &&
-                getMSTimeDiff(member.seatedSinceMs, now) < REST_SIT_GRACE_MS &&
-                ((RestState::IsDrinking(bot) && mana && manaPct < REST_SIT_GRACE_MAX_PCT) ||
-                 (RestState::IsEating(bot) && healthPct < REST_SIT_GRACE_MAX_PCT));
-            // [lead15] LEADER_ONE_REST_RULE: in a group the leader leads every sitter is waited for
-            bool const leaderRest = Leader::Leads(Leader::LEADER_ONE_REST_RULE) && party.content &&
-                                    !party.content->raid && party.content->size <= 5 &&
-                                    Leader::Orders::IsTracked(party.leader);
-            bool const regenerating =
-                REGEN_WAIT_BELOW_LINE && !leaderRest ? (seatedBelowLine || freshSitter) : seated;
-            bool const waitedFor = !REGEN_WAIT_BELOW_LINE || regenerating || hardLine;
-            anySeated |= regenerating;
-            if (seated && !regenerating && !hardLine && !member.regenAboveLineLogged)
-            {
-                member.regenAboveLineLogged = true;
-                LogEvent(party, "regen_wait_below_line",
-                         JsonObject().Str("name", member.name).Real("hp", healthPct).Real("mana", manaPct)
-                             .Str("state", "sits above its line, not waited for"));
-            }
-            if (seated || hardLine || wantsDrink || wantsFood)
-            {
-                // Its combat engine runs out of combat (it "attacks" a mob that does not fight back: Violet
-                // Hold's released prisoner): the drink never runs, a wait only holds the group. Logged below
-                // (regen_stall), not waited for.
-                PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot);
-                // REGEN_STALL_RELEASE_MS: a member logged as regen_stall (it should sit down and does not)
-                // and still standing that long after is no longer waited for while above the hard lines
-                // (45 % health, 20 % mana): the wait only holds the group. Wave 21 hol-h: a mage at 77-84 %
-                // mana "casting", its drink failing every tick, held the group before Loken until the stall
-                // watchdog skipped the boss.
-                bool const stallReleased = !seated && member.regenStallLogged && member.regenStallMs &&
-                                           getMSTimeDiff(member.regenStallMs, now) > REGEN_STALL_RELEASE_MS &&
-                                           healthPct >= 45.0f && !lowMana;
-                if (stallReleased && !member.regenStallReleased)
-                {
-                    member.regenStallReleased = true;
-                    LOG_INFO("playerbots",
-                             "[regen] {}: regen_stall_release: {} still not eating / drinking {} s after its "
-                             "regen_stall (hp {:.0f}%, mana {:.0f}%) - no longer waited for",
-                             party.id, member.name, getMSTimeDiff(member.regenStallMs, now) / IN_MILLISECONDS,
-                             healthPct, manaPct);
-                    LogEvent(party, "regen_stall_release",
-                             JsonObject().Str("name", member.name).Real("hp", healthPct).Real("mana", manaPct)
-                                 .Num("sec", getMSTimeDiff(member.regenStallMs, now) / IN_MILLISECONDS));
-                }
-                if (!stallReleased && waitedFor &&
-                    (seated || !memberAI || memberAI->GetState() != BOT_STATE_COMBAT || bot->IsInCombat()))
-                    low.push_back(member.name);
-                if (!member.regenSinceMs || !party.waitSinceMs)
-                {
-                    member.regenSinceMs = now;
-                    // A released stall stays released for this stretch (the wait ended without it).
-                    if (!member.regenStallReleased)
-                    {
-                        member.regenStallLogged = false;
-                        member.regenStallMs = 0;
-                    }
-                }
-                // Waiting for regen must mean eating / drinking: a member who waits without sitting down
-                // (no water, or something keeps it standing) is a bug to see, not minutes of standing.
-                bool const noWater = lowMana && !drinks;
-                bool const shouldSit = noWater || drinkLine || foodLine;
-                if (!seated && shouldSit && !member.regenStallLogged && !bot->IsInCombat() &&
-                    (noWater || getMSTimeDiff(member.regenSinceMs, now) > REGEN_SIT_GRACE_MS))
-                {
-                    member.regenStallLogged = true;
-                    member.regenStallMs = now ? now : 1;
-                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-                    std::string const why =
-                        noWater ? "no drink in the bags, spirit regen only"
-                        : (drinkLine && !drinks)                              ? "no drink in the bags"
-                        : (foodLine && !foods)                                ? "no food in the bags"
-                        : bot->IsMounted()                                    ? "mounted"
-                        : bot->Unit::IsInWater()                              ? "in the water"
-                        : bot->IsNonMeleeSpellCast(false)                     ? "casting"
-                        : (botAI && botAI->GetState() == BOT_STATE_COMBAT)
-                            ? "combat engine without combat (drink is a non-combat action)"
-                            : "does not sit down";
-                    LOG_INFO("playerbots",
-                             "[regen] {}: {} waits for regen (hp {:.0f}%, mana {:.0f}%) but is not "
-                             "eating / drinking after {} s: {} (drinks {}, food {})",
-                             party.id, member.name, healthPct, manaPct,
-                             getMSTimeDiff(member.regenSinceMs, now) / IN_MILLISECONDS, why, drinks, foods);
-                    LogEvent(party, "regen_stall",
-                             JsonObject().Str("name", member.name).Real("hp", healthPct).Real("mana", manaPct)
-                                 .Num("drinks", drinks).Num("food", foods).Str("why", why));
-                }
-            }
-            else
-            {
-                member.regenSinceMs = 0;
-                member.regenStallLogged = false;
-                member.regenStallMs = 0;
-                member.regenStallReleased = false;
-            }
-            // The straggler MeetMember handles (party.meeting) stays far until within its 45 yd: the leader's
-            // walk back across 50 yd flipped the wait on and off, its 60 s timeout never came (SFK 5B-5).
-            // [b31_far_threshold] the far line (FAR_WAIT_RANGE / FAR_TRAIL_RANGE, horizontal + steep dz),
-            // waited for down to FAR_RESUME_RANGE
-            bool isFar = bot->GetMap() != leader->GetMap();
-            if (!isFar && bot != leader)
-            {
-                float const metric = ApartMetric(bot, leader);
-                if (!member.farClosingMs || metric < member.farLastMetric - FAR_CLOSING_STEP ||
-                    metric <= FAR_TRAIL_RANGE)
-                {
-                    member.farLastMetric = metric;
-                    member.farClosingMs = now ? now : 1;
-                }
-                else if (metric > member.farLastMetric)
-                    member.farLastMetric = metric;
-                bool const notClosing = getMSTimeDiff(member.farClosingMs, now) >= FAR_NOT_CLOSING_MS;
-                // [b32_dmw] A member sitting with food / drink inside FAR_WAIT_RANGE rests where its fight
-                // ended, it does not trail: the regen wait above holds for it while it is below its line, and
-                // it stands up and follows by itself above it (RestDone). dmw-n 20261025-221216-5E-12: the
-                // priest ended the open-courtyard pulls 25-35 yd from the tank (flee from "enemy too close
-                // for spell", wand at 30 yd; median 21 yd at pull end vs 14-16 in sfk-h / rfk-h 5E), sat down
-                // there, never "closed" and was a "Rlpriad(far)" wait 54 times; MeetMember walked the leader
-                // back to a drinker.
-                bool const seatedNear = seated && metric <= FAR_WAIT_RANGE;
-                isFar = (timedRun && seated) ? false :  // [b33_cos2] a timed run's sitter: no far wait
-                      metric > FAR_WAIT_RANGE ||
-                      (!seatedNear && metric > FAR_TRAIL_RANGE && notClosing && !leader->isMoving()) ||
-                      (!seatedNear && (member.farWaited || party.meeting == member.guid) &&
-                       metric > FAR_RESUME_RANGE);
-            }
-            if (ledGather && bot != leader)
-                isFar = bot->GetMap() != leader->GetMap() || party.lead.trailing.count(member.guid) > 0;
-            // [b32_strat_gate] a member cut off behind a closed door is waited for wherever it stands (8 yd
-            // behind the shut gate is no "together"), stranded or ignored or not.
-            bool const doorCut = party.doorCutHold && party.doorCutMember == member.guid;
-            if (doorCut ||
-                (isFar && !MemberStranded(party, bot, leader) && !BlackMorassHoldsAtMedivh(bot) &&
-                 !(member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0)))
-            {
-                farAway.push_back(member.name);
-                member.farWaited = true;
-            }
-            else
-            {
-                member.farWaited = false;
-                if (!isFar)
-                    member.farTimeouts = 0;  // [b30_topped_up] back with the group: the timeouts start anew
-            }
-        }
-
-        // A member who sits eating / drinking is waited for past the 60 s cap (its food / drink ends by
-        // itself, "rested" stands it up when full); 3 min stays the hard cap, then the 45 s cooldown.
-        // [b32_strat_gate] no timeout and no cooldown while a member is cut off behind a closed door
-        // (TickDoorCut): strat-n 221216 wait_timeout at 188 s, the group went on without the healer.
-        bool const doorCutWait = party.doorCutHold && !party.doorCutMember.IsEmpty();
-        bool const waitTooLong =
-            party.waitSinceMs && !doorCutWait &&
-            getMSTimeDiff(party.waitSinceMs, now) > (anySeated ? 180 : 60) * IN_MILLISECONDS;
-        bool const waitAllowed = int32(now - party.waitCooldownUntilMs) >= 0 || doorCutWait;
-        // A walked wing change: every member walks out and in on its own, apart by design (Dire Maul East
-        // 2026-10-25: the far wait and its ping-pong hold pulled the leader back during the walk).
-        // [cos-event-trash] (PATCH_queue_encounters section 2) no far wait while the heroic Culling's
-        // Infinite Corruptor detour runs against the Guardian of Time (cos-h 132016: 80 s for 66 yd, a mage
-        // 91 yd behind waited for); a low member is still waited for.
-        bool const corruptorDetour = leader->GetMapId() == CoSIds::MAP_CULLING_OF_STRATHOLME &&
-                                     CoSHelpers::GetCorruptorDetourTarget(leader) != nullptr;
-        bool const waiting =
-            (!low.empty() || (!farAway.empty() && !wingWalking && !corruptorDetour)) && !waitTooLong &&
-            waitAllowed && party.escort.IsEmpty();
-
-        // REGROUP_PING_PONG_GUARD: who is apart from the leader (another map, or farther than
-        // REGROUP_PING_PONG_TOGETHER), and how many of them on another level.
-        std::string apartNames;
-        uint32 apart = 0;
-        uint32 otherLevel = 0;
-        std::vector<ObjectGuid> apartGuids;
-        for (Member const& member : party.members)
-        {
-            Player* bot = ObjectAccessor::FindPlayer(member.guid);
-            if (!bot || bot == leader || !bot->IsAlive() || MemberStranded(party, bot, leader) ||
-                BlackMorassHoldsAtMedivh(bot) ||  // [hleft-bm-tank-fetch]
-                (member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0) ||
-                (timedRun && (RestState::IsEating(bot) || RestState::IsDrinking(bot))))  // [b33_cos2]
-                continue;
-            bool const otherMap = bot->GetMap() != leader->GetMap();
-            float const dz = bot->GetPositionZ() - leader->GetPositionZ();
-            // [b31_far_threshold] horizontal + steep dz; a ramp's dz up to FAR_SLOPE_DZ_ALLOWANCE is no level
-            float const distance = otherMap ? 0.0f : ApartMetric(bot, leader);
-            bool const levelApart =
-                std::fabs(dz) > std::max(REGROUP_PING_PONG_LEVEL_DZ, FAR_SLOPE_DZ_ALLOWANCE);
-            // [b31_far_threshold] a running hold ends only with everyone within FAR_RESUME_RANGE
-            bool const holding = party.pingPongHoldUntilMs != 0;
-            // Apart only where the meet acts: MeetMember walks to nobody within MEET_RANGE (ok-n 2026-10-25:
-            // Rlshaah 30.07 yd, dz 2.1 held the group until the distance dipped under 30).
-            if (!otherMap && (distance <= (holding ? FAR_RESUME_RANGE : REGROUP_PING_PONG_TOGETHER) ||
-                              (!holding && distance <= REGROUP_PING_PONG_MEET_RANGE && !levelApart)))
-                continue;
-            ++apart;
-            apartGuids.push_back(member.guid);
-            if (!otherMap && levelApart)
-                ++otherLevel;
-            apartNames += (apartNames.empty() ? "" : ",") + member.name +
-                          (otherMap ? std::string("(other map)")
-                                    : Acore::StringFormat("({:.0f} yd, dz {:.1f})", bot->GetExactDist(leader),
-                                                          bot->GetPositionZ() - leader->GetPositionZ()));
-        }
-        // The decision of this tick (the regen wait is no side of the ping-pong) and its flips.
-        uint8 const decision = !waiting ? DECISION_ROUTE : (low.empty() ? DECISION_MEET : 0);
-        if (REGROUP_PING_PONG_GUARD && decision && !leader->IsInCombat() && decision != party.decision)
-        {
-            if (party.decision)
-            {
-                if (!party.flipSinceMs || getMSTimeDiff(party.lastFlipMs, now) > REGROUP_PING_PONG_GAP_MS)
-                {
-                    party.flipSinceMs = now ? now : 1;
-                    party.decisionFlips = 0;
-                }
-                ++party.decisionFlips;
-                party.lastFlipMs = now;
-            }
-            party.decision = decision;
-        }
-        if (REGROUP_PING_PONG_GUARD && !ledGather && !wingWalking && !party.pingPongHoldUntilMs && apart &&
-            !leader->IsInCombat() &&
-            party.decisionFlips >= REGROUP_PING_PONG_FLIPS && party.flipSinceMs &&
-            getMSTimeDiff(party.flipSinceMs, now) >= REGROUP_PING_PONG_MS &&
-            int32(now - party.pingPongCooldownUntilMs) >= 0)
-        {
-            party.pingPongHoldUntilMs = now + REGROUP_PING_PONG_HOLD_MS;
-            // The meet itself decides how: the members' own follow first (MeetMember's grace: the group
-            // gathers on the leader's level), then the leader's walk back over the route to the farthest.
-            std::string const how = otherLevel * 2 >= apart
-                                        ? "the group on another level: members follow first, then the "
-                                          "leader rejoins them over the route"
-                                        : "the group gathers on the leader's level";
-            LOG_INFO("playerbots",
-                     "[regroup] {}: ping-pong meet <-> route for {} s ({} flips): hold the meet up to {} s, no "
-                     "new target - {}; apart: {}",
-                     party.id, getMSTimeDiff(party.flipSinceMs, now) / IN_MILLISECONDS, party.decisionFlips,
-                     REGROUP_PING_PONG_HOLD_MS / IN_MILLISECONDS, how, apartNames);
-            LogEvent(party, "regroup_ping_pong",
-                     JsonObject().Str("state", "hold meet").Num("flips", party.decisionFlips)
-                         .Num("sec", getMSTimeDiff(party.flipSinceMs, now) / IN_MILLISECONDS)
-                         .Num("apart", apart).Num("otherLevel", otherLevel).Str("how", how)
-                         .Str("members", apartNames).Real("x", leader->GetPositionX())
-                         .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ()));
-        }
-        bool pingPongMeet = false;
-        if (party.pingPongHoldUntilMs)
-        {
-            bool const timedOut = int32(now - party.pingPongHoldUntilMs) >= 0;
-            if (!apart || timedOut || leader->IsInCombat())
-            {
-                char const* const why = !apart ? "together" : timedOut ? "timed out" : "combat";
-                LOG_INFO("playerbots", "[regroup] {}: ping-pong hold ends: {}{}{}", party.id, why,
-                         apart ? "; apart: " : "", apartNames);
-                LogEvent(party, "regroup_ping_pong",
-                         JsonObject().Str("state", "end").Str("why", why).Str("members", apartNames));
-                // Timed out with members still apart: the route goes on without them for
-                // REGROUP_APART_IGNORE_MS (their own follow brings them; no new hold, no far wait for them).
-                if (timedOut)
-                    for (Member& member : party.members)
-                        if (std::find(apartGuids.begin(), apartGuids.end(), member.guid) != apartGuids.end())
-                            member.apartIgnoreUntilMs = now + REGROUP_APART_IGNORE_MS;
-                party.pingPongHoldUntilMs = 0;
-                party.pingPongCooldownUntilMs = now + REGROUP_PING_PONG_COOLDOWN_MS;
-                party.decisionFlips = 0;
-                party.flipSinceMs = 0;
-            }
-            else
-                pingPongMeet = low.empty();
-        }
-
-        if (pingPongMeet)
-        {
-            // The held meet (REGROUP_PING_PONG_GUARD): the far wait's own timeout does not hand over to the
-            // route while the group is apart.
-            party.waitingFor = "ping-pong hold: " + apartNames;
-            if (!MeetMember(party, players, leader))
-                TestRunner::ClearWaypoint(party.leader);
-            SetPhase(party, Phase::Waiting);
-        }
-        // An escort walks on: the group keeps up with it instead of resting (it fights alone otherwise).
-        else if (waiting)
-        {
-            if (!party.waitSinceMs)
-                party.waitSinceMs = now;
-            party.waitingFor.clear();
-            for (std::string const& name : low)
-                party.waitingFor += (party.waitingFor.empty() ? "" : ",") + name + "(regen)";
-            for (std::string const& name : farAway)
-                party.waitingFor += (party.waitingFor.empty() ? "" : ",") + name + "(far)";
-            // [b32_strat_gate] the member behind a closed door: the leader walks toward it - its walk holds at
-            // the door (door_hold, SetLeaderWaypoint) and ReopenKeyDoorHeld keys it from the leader's side;
-            // the member keys it from its own side meanwhile (MemberKeyAtDoor). No other walk, no pull.
-            Player* const cutBot =
-                doorCutWait ? ObjectAccessor::FindPlayer(party.doorCutMember) : nullptr;
-            if (cutBot && cutBot->GetMap() == leader->GetMap())
-            {
-                party.waitingFor += (party.waitingFor.empty() ? "" : ",") + std::string(cutBot->GetName()) +
-                                    "(behind a closed door)";
-                // [b35_ss] not while a key pass runs (TickKeyDoorPass): the leader's pass walk to the far
-                // point stands - this walk to the cut member replaced it and held the tank at the gate while
-                // the group went through (strat-n 20261026-024524-5E-2, 79-93 s).
-                TestRunner::Waypoint passWalk;
-                bool const passing = !party.keyPassDoor.IsEmpty() &&
-                                     TestRunner::GetWaypoint(party.leader, passWalk) && passWalk.gatePass;
-                // [b51_strat] User 2026-10-26: the door is opened for the stranded member, nobody crosses
-                // back to fetch it. The leader walks to its OWN side of the door (DOOR_REOPEN_STEP yd from
-                // the door's centre toward the leader), never to the member: a waypoint at the member ran
-                // the leader through the door the moment it opened.
-                GameObject* cutDoor = leader->GetMap()->GetGameObject(party.doorCutDoor);
-                if (!passing && low.empty() && cutDoor)
-                {
-                    constexpr float DOOR_REOPEN_STEP = 3.0f;
-                    float const dx = leader->GetPositionX() - cutDoor->GetPositionX();
-                    float const dy = leader->GetPositionY() - cutDoor->GetPositionY();
-                    float const len = std::max(0.1f, std::hypot(dx, dy));
-                    float const step = std::min(DOOR_REOPEN_STEP, len);
-                    float const x = cutDoor->GetPositionX() + dx / len * step;
-                    float const y = cutDoor->GetPositionY() + dy / len * step;
-                    float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), x, y,
-                                                                     cutDoor->GetPositionZ() + 3.0f, true,
-                                                                     10.0f);
-                    if (leader->GetExactDist2d(x, y) > 2.0f)
-                        SetLeaderWaypoint(party, leader, x, y,
-                                          ground > INVALID_HEIGHT ? ground : leader->GetPositionZ());
-                    else
-                        TestRunner::ClearWaypoint(party.leader);
-                    static std::unordered_map<uint64, uint32> reopenLogMs;  // world thread only
-                    uint32& logged = reopenLogMs[cutBot->GetGUID().GetRawValue()];
-                    if (!logged || getMSTimeDiff(logged, now) >= 10 * IN_MILLISECONDS)
-                    {
-                        logged = now ? now : 1;
-                        LogEvent(party, "door_reopen_for",
-                                 JsonObject().Str("member", cutBot->GetName()).Str("door", cutDoor->GetName())
-                                     .Num("doorEntry", cutDoor->GetEntry())
-                                     .Real("leaderToDoor", leader->GetExactDist(cutDoor))
-                                     .Real("memberToDoor", cutBot->GetExactDist(cutDoor)));
-                        LOG_INFO("playerbots", "[b51_strat] door_reopen_for {}: {} waits on its side of {} {} "
-                                 "({:.1f} yd), the door is opened for the member, nobody crosses back",
-                                 cutBot->GetName(), leader->GetName(), cutDoor->GetName(),
-                                 cutDoor->GetEntry(), leader->GetExactDist(cutDoor));
-                    }
-                }
-                else if (!passing)
-                    TestRunner::ClearWaypoint(party.leader);
-            }
-            else if (!low.empty() &&
-                     (LeaderDecides(party) && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER)
-                          ? LeaderPatrolTick(party, leader)  // [lead4] the leader's one patrol decision
-                          : PatrolStepBack(party, leader)))
-            {
-                // [b46_patrol] a member rests or is about to while a patrol walks in: the group steps back
-                // out of its way first (the step-back walk holds the leader's waypoint), then rests there
-            }
-            else if (!low.empty() || !MeetMember(party, players, leader))
-                TestRunner::ClearWaypoint(party.leader);
-            SetPhase(party, low.empty() ? Phase::Waiting : Phase::Drinking);
-            if (!low.empty())
-                LeaveWater(party, players, true);  // rest on dry ground, never in the water
-        }
-        else
-        {
-            if (waitTooLong)
-            {
-                LogEvent(party, "wait_timeout", JsonObject().Str("waitingFor", party.waitingFor));
-                party.waitCooldownUntilMs = now + 45 * IN_MILLISECONDS;
-                // [b30_topped_up] FAR_TIMEOUTS_DROP timeouts in a row for the same far member: no more
-                for (Member& member : party.members)
-                {
-                    if (std::find(farAway.begin(), farAway.end(), member.name) == farAway.end())
-                    {
-                        member.farTimeouts = 0;
-                        continue;
-                    }
-                    if (++member.farTimeouts < FAR_TIMEOUTS_DROP)
-                        continue;
-                    member.farTimeouts = 0;
-                    member.apartIgnoreUntilMs = now + FAR_TIMEOUTS_IGNORE_MS;
-                    Player* farBot = ObjectAccessor::FindPlayer(member.guid);
-                    float const farDistance = farBot && farBot->GetMap() == leader->GetMap()
-                                                  ? farBot->GetExactDist(leader)
-                                                  : -1.0f;
-                    LOG_INFO("playerbots",
-                             "[far_wait_dropped] {}: {} far ({:.0f} yd) through {} wait_timeouts in a row: no "
-                             "far wait and no ready check for it for {} s",
-                             party.id, member.name, farDistance, FAR_TIMEOUTS_DROP,
-                             FAR_TIMEOUTS_IGNORE_MS / IN_MILLISECONDS);
-                    LogEvent(party, "far_wait_dropped",
-                             JsonObject().Str("name", member.name).Real("distance", farDistance)
-                                 .Num("timeouts", FAR_TIMEOUTS_DROP)
-                                 .Num("ignoreSec", FAR_TIMEOUTS_IGNORE_MS / IN_MILLISECONDS));
-                }
-            }
-            // The rest is over: the next target (and its walk) at once, not on the 4 s retarget clock.
-            if (party.waitSinceMs)
-                party.nextRetargetMs = now;
-            party.waitSinceMs = 0;
-            party.waitingFor.clear();
-            // The rest / wait is over: the phase label said "drinking" for minutes in wave 6 (HoR) while
-            // nobody drank and the route was running.
-            SetPhase(party, Phase::Traveling);
-            travel = true;
-        }
-        return travel;
+        PartyLeaderGroup group(*this, party);
+        return Leader::Dungeon::RestWait(group, players, leader, now, wingWalking, ledGather);
     }
 
-    // [lead107 stage 5] the travel pause for a trailing member, out of TickRun unchanged; true: the leader pauses
+    // [lead107 stage 5] the travel pause for a trailing member is the leader's (LeaderRest.h); true: it pauses
     bool TestHarnessMgr::CompactPause(Party& party, Player* leader, uint32 now, bool ledGather)
     {
-        bool compactPause = false;
-        // [b31_far_threshold] the group travels together: the leader pauses for a member over
-        // FAR_TRAIL_RANGE behind until it is within FAR_RESUME_RANGE (COMPACT_PAUSE_MAX_MS at most)
-        if (!party.approach && party.escort.IsEmpty() && party.linkIdx < 0 && !party.content->raid &&
-            !leader->IsInCombat())
-        {
-            Player* trailing = nullptr;
-            float trail = 0.0f;
-            for (Member const& member : party.members)
-            {
-                Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                if (!bot || bot == leader || !bot->IsAlive() || bot->GetMap() != leader->GetMap() ||
-                    bot->IsInCombat() || MemberStranded(party, bot, leader) ||
-                    (member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0))
-                    continue;
-                float const metric = ApartMetric(bot, leader);
-                if (metric > trail)
-                {
-                    trail = metric;
-                    trailing = bot;
-                }
-            }
-            // [b33_harn] a healer drinking / out of sight / beyond FAR_RESUME_RANGE behind
-            Player* healerBehind = nullptr;
-            for (Member const& member : party.members)
-            {
-                Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                if (!bot || bot == leader || !bot->IsAlive() || !PlayerbotAI::IsHeal(bot) ||
-                    bot->GetMap() != leader->GetMap() || bot->IsInCombat() ||
-                    MemberStranded(party, bot, leader) ||
-                    (member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0))
-                    continue;
-                bool const resting = bot->HasAuraType(SPELL_AURA_MOD_POWER_REGEN) ||
-                                     bot->HasAuraType(SPELL_AURA_MOD_REGEN) || bot->IsSitState();
-                if (ApartMetric(bot, leader) > FAR_RESUME_RANGE || !bot->IsWithinLOSInMap(leader) ||
-                    (resting && bot->GetExactDist(leader) > FAR_RESUME_RANGE * 0.5f))
-                    healerBehind = bot;
-            }
-            // [b33_harn] a pause not looked at for a while (another phase ran): its clock starts anew
-            if (party.compactPauseSinceMs && party.compactPauseTickMs &&
-                getMSTimeDiff(party.compactPauseTickMs, now) > COMPACT_PAUSE_STALE_MS)
-                party.compactPauseSinceMs = now ? now : 1;
-            party.compactPauseTickMs = now ? now : 1;
-            bool const want = !ledGather &&
-                              (trailing && trail > (party.compactPauseSinceMs ? FAR_RESUME_RANGE
-                                                                              : FAR_TRAIL_RANGE)) ||
-                              (healerBehind && party.compactPauseSinceMs);
-            bool const gap = party.compactPauseEndMs &&
-                             getMSTimeDiff(party.compactPauseEndMs, now) < COMPACT_PAUSE_GAP_MS;
-            if (want && !gap && !party.compactPauseSinceMs)
-            {
-                party.compactPauseSinceMs = now ? now : 1;
-                LogEvent(party, "compact_pause", JsonObject().Str("state", "start")
-                                                     .Str("member", trailing->GetName())
-                                                     .Real("apart", trail));
-            }
-            if (party.compactPauseSinceMs)
-            {
-                uint32 const pausedMs = getMSTimeDiff(party.compactPauseSinceMs, now);
-                bool const timedOut =
-                    pausedMs >= (healerBehind ? COMPACT_PAUSE_HEALER_MS : COMPACT_PAUSE_MAX_MS);
-                if (want && !timedOut)
-                    compactPause = true;
-                else
-                {
-                    LogEvent(party, "compact_pause",
-                             JsonObject().Str("state", timedOut ? "timed out" : "together")
-                                 .Num("sec", getMSTimeDiff(party.compactPauseSinceMs, now) /
-                                                 IN_MILLISECONDS)
-                                 .Real("apart", trail));
-                    party.compactPauseSinceMs = 0;
-                    party.compactPauseEndMs = now ? now : 1;
-                }
-            }
-        }
-        else if (party.compactPauseSinceMs)
-        {
-            party.compactPauseSinceMs = 0;
-            party.compactPauseEndMs = now ? now : 1;
-        }
-        return compactPause;
+        PartyLeaderGroup group(*this, party);
+        return Leader::Dungeon::CompactPause(group, leader, now, ledGather);
     }
 
     // [lead107 stage 5] the travel step after the rest, out of TickRun unchanged; true: the run ended

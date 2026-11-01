@@ -32,6 +32,7 @@ class Unit;  // [lead3]
 #include "HazardZone.h"  // [lead16]
 #include "DungeonLeaderState.h"  // [lead107]
 #include "LeaderGroup.h"         // [lead107] the leader's group view (PartyLeaderGroup)
+#include "LeaderBuffing.h"       // [lead107] HasWellFed
 
 namespace Leader::Travel
 {
@@ -149,21 +150,7 @@ namespace TestHarness
         uint32 reenterWatchdogSec = 0;
         uint32 strandedReentries = 0;
         Position reenterPos;
-        // [b30_topped_up] wait_timeouts in a row with this member far (FAR_TIMEOUTS_DROP: no more far waits)
-        uint32 farTimeouts = 0;
-        // [b31_far_threshold] waited for (far wait / meet): far until within FAR_RESUME_RANGE; the apart metric at
-        // the last closing in, and when
-        bool farWaited = false;
-        float farLastMetric = 0.0f;
-        uint32 farClosingMs = 0;
-        // Regen wait: the group waits for this member since (0 = not waiting), and whether its "[regen]" stall line
-        // (waiting but not eating / drinking) went out for the current wait.
-        uint32 regenSinceMs = 0;
-        bool regenStallLogged = false;
-        uint32 regenStallMs = 0;  // when regen_stall was logged (REGEN_STALL_RELEASE_MS)
-        bool regenStallReleased = false;  // "regen_stall_release" logged: no longer waited for
-        bool regenAboveLineLogged = false;  // regen_wait_below_line logged for this rest (reset by a fight)
-        uint32 seatedSinceMs = 0;           // [queue-rest-sit-grace] when this member sat down to eat / drink
+        // [lead107 stage 5] the rest / far-wait facts are the leader's (GroupRouteState::rest, Leader::MemberRest)
     };
 
     struct BossTrack : Leader::BossFacts  // [lead107] the facts the leader reads
@@ -329,33 +316,9 @@ namespace TestHarness
         // 2026-10-25 skipped a living Imp / Fel Lash / Whip Lasher as "respawning trash" after four refusals.
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
         ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
-        // Combat with nothing happening: no damage done or taken and no healing by anybody of the party since
-        // phantomCombatSinceMs (an unreachable mob on a ledge keeps everybody flagged, Ragefire Chasm 18 minutes).
-        uint64 combatActivity = 0;
-        uint32 phantomCombatSinceMs = 0;
-        bool phantomCombatLogged = false;
-        bool phantomCombatEnded = false;
-        // [b33_sh2] when the stale refs were last ended and how often in this phantom episode: the end repeats every
-        // PHANTOM_COMBAT_END_MS while the flag stays (sh-n 5B-89: one end at 1421 s, the tank flagged again, 90 s idle)
-        uint32 phantomCombatEndedMs = 0;
-        uint32 phantomCombatEnds = 0;
+        // [lead107 stage 5] the phantom-combat facts, the buffing pass and the waits are the leader's (GroupRouteState)
         uint32 noWalkSinceMs = 0;     // [b33_sh2] target set, traveling, no waypoint and the leader standing since
         uint32 noWalkLogMs = 0;       // [b33_sh2] the last harness_hold "no walk" event
-        // [phantom_mob_hunt] the live, reachable mob of a phantom combat the group was sent to, and how often
-        ObjectGuid phantomHunt;
-        uint32 phantomHuntTries = 0;
-
-        // buffing
-        bool needBuff = true;
-        uint8 buffStep = 0;
-        uint32 buffStepMs = 0;
-        uint32 buffSinceMs = 0;  // the buffing pass started (BUFF_TOTAL_MAX_MS)
-        std::string buffReason = "run start";
-
-        // waits
-        uint32 waitSinceMs = 0;
-        uint32 waitCooldownUntilMs = 0;
-        std::string waitingFor;
 
         // heartbeat / stall
         uint32 lastHeartbeatMs = 0;
@@ -407,7 +370,7 @@ namespace TestHarness
     // Bosses the run must kill: every track but phantom slots and class-gated bosses (bossesTotal in the logs).
     uint32 RequiredBossCount(Party const& party);
     bool HasFlaskAura(Player* bot);
-    bool HasWellFed(Player* bot);
+    using Leader::Dungeon::HasWellFed;  // [lead107] LeaderBuffing.h
     // Combat-time fields of one member between two snapshots: activeSec, activeDps, activeHps, activeDtps.
     JsonObject CombatStatsJson(MemberCounters const& now, MemberCounters const& start, uint32 combatMs);
     // Sum of ExpectedMemberDps over the party (each member's own level and item level).
@@ -883,6 +846,13 @@ namespace TestHarness
             _mgr.LogCannotMove(_party, bot, capability, reason, toX, toY, toZ);
         }
         bool BossEncounterInProgress() const override;
+        void NoteActivity(Activity activity) override;
+        void SetApartIgnore(ObjectGuid member, uint32 untilMs) override;
+        bool StrandedReenter(ObjectGuid member, Player* bot, Player* leader) override;
+        uint64 CombatActivity() const override;
+        void BuffPassSetup(std::vector<Player*> const& players) override;
+        bool UseConsumables(Player* bot, bool food) override;
+        std::string MemberBuffJson(Player* bot) override;
         void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
         void LogEvent(std::string const& type, JsonObject fields) override;
 

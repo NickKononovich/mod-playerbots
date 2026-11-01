@@ -102,6 +102,26 @@ namespace Leader
         bool lowBreathLogged = false;  // HARNESS_MOVES_BOTS off: the bot's own "breathe" surfaces, logged once
     };
 
+    // [lead107 stage 5] a member's rest / far-wait facts (RestWait), moved out of the harness's member record
+    struct MemberRest
+    {
+        // [b30_topped_up] wait_timeouts in a row with this member far (FAR_TIMEOUTS_DROP: no more far waits)
+        uint32 farTimeouts = 0;
+        // [b31_far_threshold] waited for (far wait / meet): far until within FAR_RESUME_RANGE; the apart metric at
+        // the last closing in, and when
+        bool farWaited = false;
+        float farLastMetric = 0.0f;
+        uint32 farClosingMs = 0;
+        // Regen wait: the group waits for this member since (0 = not waiting), and whether its "[regen]" stall line
+        // (waiting but not eating / drinking) went out for the current wait.
+        uint32 regenSinceMs = 0;
+        bool regenStallLogged = false;
+        uint32 regenStallMs = 0;  // when regen_stall was logged (REGEN_STALL_RELEASE_MS)
+        bool regenStallReleased = false;  // "regen_stall_release" logged: no longer waited for
+        bool regenAboveLineLogged = false;  // regen_wait_below_line logged for this rest (reset by a fight)
+        uint32 seatedSinceMs = 0;           // [queue-rest-sit-grace] when this member sat down to eat / drink
+    };
+
     struct GroupRouteState
     {
         std::vector<StarterTrack> starters;
@@ -381,6 +401,31 @@ namespace Leader
         Position dryPos;
         bool hasDryPos = false;
         std::map<ObjectGuid, MemberWater> water;
+        // [lead107 stage 5] moved with the phantom-combat / rest / buffing stage.
+        // Combat with nothing happening: no damage done or taken and no healing by anybody of the party since
+        // phantomCombatSinceMs (an unreachable mob on a ledge keeps everybody flagged, Ragefire Chasm 18 minutes).
+        uint64 combatActivity = 0;
+        uint32 phantomCombatSinceMs = 0;
+        bool phantomCombatLogged = false;
+        bool phantomCombatEnded = false;
+        // [b33_sh2] when the stale refs were last ended and how often in this phantom episode: the end repeats every
+        // PHANTOM_COMBAT_END_MS while the flag stays (sh-n 5B-89: one end at 1421 s, the tank flagged again, 90 s idle)
+        uint32 phantomCombatEndedMs = 0;
+        uint32 phantomCombatEnds = 0;
+        // [phantom_mob_hunt] the live, reachable mob of a phantom combat the group was sent to, and how often
+        ObjectGuid phantomHunt;
+        uint32 phantomHuntTries = 0;
+        // buffing
+        bool needBuff = true;
+        uint8 buffStep = 0;
+        uint32 buffStepMs = 0;
+        uint32 buffSinceMs = 0;  // the buffing pass started (BUFF_TOTAL_MAX_MS)
+        std::string buffReason = "run start";
+        // waits
+        uint32 waitSinceMs = 0;
+        uint32 waitCooldownUntilMs = 0;
+        std::string waitingFor;
+        std::map<ObjectGuid, MemberRest> rest;  // each member's rest / far-wait facts
     };
 }
 
