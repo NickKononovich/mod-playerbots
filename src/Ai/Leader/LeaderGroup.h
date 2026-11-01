@@ -14,6 +14,7 @@
 
 #include "DungeonLeaderState.h"
 #include "G3D/Vector3.h"
+#include "GroupRouteState.h"
 #include "LeaderLog.h"
 #include "ObjectGuid.h"
 
@@ -33,15 +34,8 @@ namespace Leader
     class LeaderGroup
     {
     public:
-        // the leader's on-the-path verdict per idle candidate (the route rules: blocks route, patrol crosses route,
-        // required, boss area, joins the boss ...; off the path: its route distance and reach)
-        struct PathVerdict
-        {
-            bool on = false;
-            std::string why;
-            float routeDist = -1.0f;
-            float reach = 0.0f;
-        };
+        // the leader's on-the-path verdict per idle candidate (GroupRouteState.h)
+        using PathVerdict = GroupRouteState::PathVerdict;
 
         // a member as the leader sees it
         struct MemberInfo
@@ -70,6 +64,8 @@ namespace Leader
         virtual DungeonLeaderState& State() = 0;
         // the run the group's decision lines belong to
         virtual DecisionRun Run() const = 0;
+        // [lead107] the group's route state (its target, the walk, skips, verdicts, escort, doors, links ...)
+        virtual GroupRouteState& Route() = 0;
 
         // members, the leader (the tank) and where the group is
         virtual std::vector<ObjectGuid> MemberGuids() const = 0;
