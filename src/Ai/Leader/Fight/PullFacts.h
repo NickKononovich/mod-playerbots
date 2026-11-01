@@ -33,6 +33,9 @@ namespace Leader::Fight
     bool NeedsFleeStop(Unit* mob);
     // [lead104] the member (not a healer) with a stop ready that takes `mob` now; null: none
     Player* FleeStopper(std::vector<Player*> const& members, Unit* mob);
+    // [lead146] the mob runs to the tank: alive, in combat, its victim the tank, moving, not rooted and not out of
+    // its reach - the fight is where the tank took it, the tank does not walk to meet it
+    bool MobComesToTank(Player* tank, Unit* mob);
 }
 
 #endif

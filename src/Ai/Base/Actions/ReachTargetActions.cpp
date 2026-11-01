@@ -21,6 +21,7 @@
 #include "PathGenerator.h"
 #include "PlayerbotAIConfig.h"
 #include "LeaderOrders.h"  // [lead29] the planned pull's mobs
+#include "PullFacts.h"  // [lead146] MobComesToTank
 #include "Playerbots.h"
 #include "PullActions.h"  // [b46_ohb] FightHold
 #include "RangedPositionActions.h"
@@ -510,6 +511,12 @@ bool ReachMeleeAction::isUseful()
 
     Unit* target = GetTarget();
     if (!target || TankLeashHolds(botAI, bot, target))
+        return false;
+
+    // [lead146] b162 20261101-121409: after the opener at range the led tank walked "reach melee" to meet its
+    // incoming mob (17 of 42 pulls >5 yd in the first 12 s, 10 of them a plain "engage at its spot"), and every
+    // ranged / healer spot followed. The mob runs to the tank: the fight is where the tank took it
+    if (PlayerbotAI::IsTank(bot) && Leader::LedBot(bot) && Leader::Fight::MobComesToTank(bot, target))
         return false;
 
     // [reach_idle_waits_ready] The tank's walk in to a mob that fights nobody yet is a pull: it waits while the group

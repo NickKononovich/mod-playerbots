@@ -100,4 +100,13 @@ namespace Leader::Fight
         }
         return nullptr;
     }
+
+    bool MobComesToTank(Player* tank, Unit* mob)
+    {
+        if (!tank || !mob || !mob->IsAlive() || !mob->IsInCombat() || mob->GetVictim() != tank || !mob->isMoving() ||
+            mob->HasUnitState(UNIT_STATE_ROOT) || tank->IsWithinMeleeRange(mob))
+            return false;
+        Creature* creature = mob->ToCreature();
+        return !creature || !creature->CanNotReachTarget();
+    }
 }
