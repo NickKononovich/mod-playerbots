@@ -18,6 +18,7 @@
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "InstanceGuid.h"  // [rot44]
 #include "Map.h"
 #include "MotionMaster.h"
 #include "MovementActions.h"
@@ -32,7 +33,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -490,10 +493,12 @@ struct PetClearSpot
 struct PetControlState
 {
     std::mutex lock;
-    GuidSet passivated;                                      // pets this control set passive (restored outside)
-    std::unordered_map<ObjectGuid, ObjectGuid> logged;       // pet -> last victim it was called back from (log once)
-    std::unordered_map<ObjectGuid, PetApproach> approaches;  // pet -> its wait for the tank's lead
-    std::unordered_map<ObjectGuid, PetClearSpot> clear;      // pet -> its place out of idle mobs' reach
+    // [rot44] by (instance, GUID): a guardian (Raise Dead ghoul, Army ghouls, Feral Spirits, Shadowfiend, Mirror
+    // Image, treants) gets a per-map GUID, so the parallel instances' guardians collided in this one global table
+    std::set<InstanceGuid> passivated;                   // pets this control set passive (restored outside)
+    std::map<InstanceGuid, ObjectGuid> logged;           // pet -> last victim it was called back from (log once)
+    std::map<InstanceGuid, PetApproach> approaches;      // pet -> its wait for the tank's lead
+    std::map<InstanceGuid, PetClearSpot> clear;          // pet -> its place out of idle mobs' reach
 };
 
 PetControlState& ControlState()
@@ -625,9 +630,9 @@ bool PetDetours(Creature* pet, Unit* target)
         uint32 ms = 0;
         bool detours = false;
     };
-    thread_local std::unordered_map<ObjectGuid, Memo> memos;
+    thread_local std::map<InstanceGuid, Memo> memos;  // [rot44] by instance (a guardian's GUID is per map)
     uint32 const now = getMSTime();
-    Memo& memo = memos[pet->GetGUID()];
+    Memo& memo = memos[InstanceKey(pet)];
     if (memo.ms && memo.target == target->GetGUID() && getMSTimeDiff(memo.ms, now) < PET_DETOUR_MEMO_MS)
         return memo.detours;
 
@@ -773,9 +778,9 @@ bool IsAllowedPetTarget(Player* bot, Creature* pet, Unit* target, bool ownerInCo
                                                    target->GetExactDist(tank) > ReachMeleeAction::TANK_FAR_MOB)
         if (Creature* idle = IdleMobReachingSpot(GET_PLAYERBOT_AI(bot), bot, target))
         {
-            thread_local std::unordered_map<ObjectGuid, uint32> idleLog;
+            thread_local std::map<InstanceGuid, uint32> idleLog;  // [rot44]
             uint32 const now = getMSTime();
-            uint32& last = idleLog[pet->GetGUID()];
+            uint32& last = idleLog[InstanceKey(pet)];
             if (!last || getMSTimeDiff(last, now) >= 10 * IN_MILLISECONDS)
             {
                 last = now ? now : 1;
@@ -841,7 +846,7 @@ void ControlGuardian(Player* bot, Creature* guardian)
     {
         PetControlState& state = ControlState();
         std::lock_guard<std::mutex> guard(state.lock);
-        ObjectGuid& last = state.logged[guardian->GetGUID()];
+        ObjectGuid& last = state.logged[InstanceKey(guardian)];
         log = last != victim->GetGUID();
         last = victim->GetGUID();
     }
@@ -905,7 +910,7 @@ constexpr int PET_APPROACH_RUN_SAMPLES = 4;            // the straight run there
 
 PetApproach* FindApproach(PetControlState& state, Creature* pet)
 {
-    auto const found = state.approaches.find(pet->GetGUID());
+    auto const found = state.approaches.find(InstanceKey(pet));
     return found == state.approaches.end() ? nullptr : &found->second;
 }
 
@@ -924,7 +929,7 @@ void EndApproach(PetControlState& state, Creature* pet, bool forget)
         approach->moving = false;
         approach->movedMs = 0;
         if (forget)
-            state.approaches.erase(pet->GetGUID());
+            state.approaches.erase(InstanceKey(pet));
     }
 
     CharmInfo* charmInfo = pet->GetCharmInfo();
@@ -969,7 +974,7 @@ bool PetMayEngage(PlayerbotAI* botAI, Creature* pet, Unit* target, PetControlSta
     uint32 waited = 0;
     {
         std::lock_guard<std::mutex> guard(state.lock);
-        PetApproach& approach = state.approaches[pet->GetGUID()];
+        PetApproach& approach = state.approaches[InstanceKey(pet)];
         if (approach.target != target->GetGUID() || getMSTimeDiff(approach.lastSeenMs, now) > PET_WAIT_FORGET_MS)
         {
             approach.target = target->GetGUID();
@@ -1148,7 +1153,7 @@ void EndClearSpot(PetControlState& state, Creature* pet)
     bool restore = false;
     {
         std::lock_guard<std::mutex> guard(state.lock);
-        auto const found = state.clear.find(pet->GetGUID());
+        auto const found = state.clear.find(InstanceKey(pet));
         if (found == state.clear.end())
             return;
 
@@ -1184,7 +1189,7 @@ bool NoteClearSpot(PetControlState& state, Creature* pet, Creature* worst, bool 
 {
     uint32 const now = getMSTime();
     std::lock_guard<std::mutex> guard(state.lock);
-    PetClearSpot& spot = state.clear[pet->GetGUID()];
+    PetClearSpot& spot = state.clear[InstanceKey(pet)];
     // the order again only when its motion was lost (`force`), and not more often than PET_CLEAR_REISSUE_MS
     bool const due = !spot.orderedMs || (force && getMSTimeDiff(spot.orderedMs, now) >= PET_CLEAR_REISSUE_MS);
     bool const same = spot.orderedMs && spot.parked == parked &&
@@ -1253,7 +1258,7 @@ bool KeepOutOfIdleReach(PlayerbotAI* botAI, Creature* pet, PetControlState& stat
         bool placed = false;
         {
             std::lock_guard<std::mutex> guard(state.lock);
-            placed = state.clear.count(pet->GetGUID()) > 0;
+            placed = state.clear.count(InstanceKey(pet)) > 0;
         }
 
         if (placed)
@@ -1268,7 +1273,7 @@ bool KeepOutOfIdleReach(PlayerbotAI* botAI, Creature* pet, PetControlState& stat
     bool wasParked = false;
     {
         std::lock_guard<std::mutex> guard(state.lock);
-        auto const found = state.clear.find(pet->GetGUID());
+        auto const found = state.clear.find(InstanceKey(pet));
         wasParked = found != state.clear.end() && found->second.parked;
     }
 
@@ -1594,7 +1599,7 @@ void Update(PlayerbotAI* botAI)
                 pet->GetMotionMaster()->MoveFollow(bot, PET_FOLLOW_DIST, pet->GetFollowAngle());
 
             std::lock_guard<std::mutex> guard(state.lock);
-            auto const itr = state.passivated.find(pet->GetGUID());
+            auto const itr = state.passivated.find(InstanceKey(pet));
             if (itr != state.passivated.end())
             {
                 if (pet->HasReactState(REACT_PASSIVE))
@@ -1610,7 +1615,7 @@ void Update(PlayerbotAI* botAI)
         {
             pet->SetReactState(REACT_PASSIVE);
             std::lock_guard<std::mutex> guard(state.lock);
-            state.passivated.insert(pet->GetGUID());
+            state.passivated.insert(InstanceKey(pet));
         }
 
         // [pet-quick-engage] the pet's taunt stays off in a group with a tank, also for a pet called mid-fight
@@ -1670,7 +1675,7 @@ void Update(PlayerbotAI* botAI)
                     bool log = false;
                     {
                         std::lock_guard<std::mutex> guard(state.lock);
-                        ObjectGuid& last = state.logged[pet->GetGUID()];
+                        ObjectGuid& last = state.logged[InstanceKey(pet)];
                         log = last != tankTarget->GetGUID();
                         last = tankTarget->GetGUID();
                     }
@@ -1722,7 +1727,7 @@ void Update(PlayerbotAI* botAI)
             bool log = false;
             {
                 std::lock_guard<std::mutex> guard(state.lock);
-                ObjectGuid& last = state.logged[pet->GetGUID()];
+                ObjectGuid& last = state.logged[InstanceKey(pet)];
                 log = last != victim->GetGUID();
                 last = victim->GetGUID();
             }
