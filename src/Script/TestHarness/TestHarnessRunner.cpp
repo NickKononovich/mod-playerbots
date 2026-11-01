@@ -55,6 +55,7 @@
 #include "RouteTargets.h"  // [lead107] the leader's route target choice
 #include "RouteSteer.h"    // [lead107] the leader's route walk
 #include "RouteMeet.h"     // [lead107] the leader's meet
+#include "RouteWater.h"    // [lead107] the leader's water rule
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderEvents.h"       // [lead107] the leader's event tick
@@ -261,11 +262,11 @@ namespace TestHarness
         constexpr float FLY_ARRIVE_DISTANCE = 6.0f;  // 2D distance at which the descent to the portal starts
         constexpr float FLY_SIDE_DISTANCE = 25.0f;   // the descent point beside the portal (ROUTE_FLY_SIDE_APPROACH)
         constexpr uint32 MOUNT_CAST_WAIT_MS = 4 * IN_MILLISECONDS;
-        constexpr int32 BREATH_MAX_MS = 3 * MINUTE * IN_MILLISECONDS;  // Player::getMaxTimer(BREATH_TIMER)
-        constexpr int32 BREATH_REFILL_RATE = 10;                         // Player::HandleDrowning above water
-        constexpr int32 BREATH_SURFACE_MS = BREATH_MAX_MS * 40 / 100;    // surface below 40 %
-        constexpr int32 BREATH_RESUME_MS = BREATH_MAX_MS * 90 / 100;     // and dive again from 90 %
-        constexpr uint32 SURFACE_HOLD_MS = 2 * IN_MILLISECONDS;          // bot AI paused while it swims up
+        using Leader::Travel::BREATH_MAX_MS;  // [lead107] RouteWater.h
+        using Leader::Travel::BREATH_REFILL_RATE;  // [lead107] RouteWater.h
+        using Leader::Travel::BREATH_SURFACE_MS;  // [lead107] RouteWater.h
+        using Leader::Travel::BREATH_RESUME_MS;  // [lead107] RouteWater.h
+        using Leader::Travel::SURFACE_HOLD_MS;  // [lead107] RouteWater.h
         using Leader::Travel::DEEP_TARGET_DEPTH;  // [lead107] RouteTargets.h
         using Leader::Travel::DRY_SPOT_SPREAD;  // [lead107] RouteEvents.h
         using Leader::Travel::ROUTE_SKIP_BEHIND_SKIPPED;  // [lead107] RouteSteer.h
@@ -4410,119 +4411,9 @@ namespace TestHarness
 
     void TestHarnessMgr::LeaveWater(Party& party, std::vector<Player*> const& players, bool resting)
     {
-        uint32 const now = getMSTime();
-        uint32 index = 0;
-        for (Player* bot : players)
-        {
-            ++index;
-            Member* member = nullptr;
-            for (Member& candidate : party.members)
-                if (candidate.guid == bot->GetGUID())
-                    member = &candidate;
-            if (!member)
-                continue;
-
-            if (!bot->IsAlive() || bot->GetMapId() != party.content->mapId)
-            {
-                member->breathMs = -1;
-                member->surfacing = false;
-                member->leavingWater = false;
-                continue;
-            }
-
-            // Breath, as Player::HandleDrowning counts it (no breath used with a water breathing aura).
-            bool const under = bot->IsUnderWater() && !bot->HasWaterBreathingAura();
-            int32 const elapsed =
-                member->breathSampleMs ? int32(std::min<uint32>(getMSTimeDiff(member->breathSampleMs, now), 5000)) : 0;
-            member->breathSampleMs = now;
-            if (member->breathMs < 0)
-                member->breathMs = BREATH_MAX_MS;
-            member->breathMs = under ? std::max<int32>(0, member->breathMs - elapsed)
-                                     : std::min<int32>(BREATH_MAX_MS, member->breathMs + elapsed * BREATH_REFILL_RATE);
-
-            if (!HARNESS_MOVES_BOTS)
-            {
-                // Bots walk by themselves: the bot's own "breathe" swims up. Logged once per dive, for comparison
-                // with its death events (environment: drowning).
-                if (under && member->breathMs < BREATH_SURFACE_MS && !member->lowBreathLogged)
-                {
-                    member->lowBreathLogged = true;
-                    LogEvent(party, "low_breath", JsonObject().Str("name", bot->GetName())
-                                                      .Num("breathPct", member->breathMs * 100 / BREATH_MAX_MS)
-                                                      .Bool("combat", bot->IsInCombat()));
-                }
-                if (!under)
-                    member->lowBreathLogged = false;
-            }
-            else if (under && member->breathMs < BREATH_SURFACE_MS)
-            {
-                // Straight up to the surface, like a player would, then back to what it was doing.
-                LiquidData const& liquid = bot->GetLiquidData();
-                if (liquid.Level != INVALID_HEIGHT)
-                {
-                    if (!member->surfacing)
-                        LogEvent(party, "surface", JsonObject().Str("name", bot->GetName())
-                                                       .Num("breathPct", member->breathMs * 100 / BREATH_MAX_MS)
-                                                       .Real("depth", liquid.Level - bot->GetPositionZ())
-                                                       .Bool("combat", bot->IsInCombat()));
-                    member->surfacing = true;
-                    ++party.harnessMoves;
-                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                        botAI->SetNextCheckDelay(SURFACE_HOLD_MS);
-                    bot->GetMotionMaster()->MovePoint(0, bot->GetPositionX(), bot->GetPositionY(), liquid.Level + 0.5f,
-                                                      FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
-                }
-                continue;
-            }
-            if (HARNESS_MOVES_BOTS && member->surfacing && (under || member->breathMs < BREATH_RESUME_MS))
-            {
-                // At the surface: hold there until breathed (the bot AI would dive straight back).
-                if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                    botAI->SetNextCheckDelay(SURFACE_HOLD_MS);
-                continue;
-            }
-            member->surfacing = false;
-
-            bool const wet = bot->Unit::IsInWater();
-            // Resting (eating / drinking / waiting for mana) happens on dry ground, out of combat.
-            bool const leave = resting && wet && !bot->IsInCombat();
-            if (!wet || !leave)
-            {
-                // Out of the water, or the rest is over: the dry spot is no longer its waypoint.
-                if (member->leavingWater && !HARNESS_MOVES_BOTS && member->guid != party.leader)
-                    ClearMemberWaypoint(*member);
-                if (!wet)
-                    member->leavingWater = false;
-            }
-            if (!leave || !party.hasDryPos || (HARNESS_MOVES_BOTS && bot->isMoving()))
-                continue;
-
-            float const angle = float(index) * 2.0f * float(M_PI) / 5.0f;
-            float const dryX = party.dryPos.GetPositionX() + DRY_SPOT_SPREAD * std::cos(angle);
-            float const dryY = party.dryPos.GetPositionY() + DRY_SPOT_SPREAD * std::sin(angle);
-            if (!HARNESS_MOVES_BOTS)
-            {
-                // As a leader says "rest over here": the dry spot is the member's waypoint, its own walk out.
-                SetMemberWaypoint(party, *member, bot, dryX, dryY, party.dryPos.GetPositionZ());
-            }
-            else
-            {
-                if (bot->IsSitState())
-                    bot->SetStandState(UNIT_STAND_STATE_STAND);  // also ends eating / drinking under water
-                ++party.harnessMoves;
-                bot->GetMotionMaster()->MovePoint(0, dryX, dryY, party.dryPos.GetPositionZ(), FORCED_MOVEMENT_NONE,
-                                                  0.0f, 0.0f, true, false);
-            }
-            if (!member->leavingWater)
-            {
-                member->leavingWater = true;
-                LogEvent(party, "leave_water", JsonObject().Str("name", bot->GetName()).Bool("underWater", under)
-                                                   .Bool("resting", resting).Real("z", bot->GetPositionZ())
-                                                   .Real("dryX", party.dryPos.GetPositionX())
-                                                   .Real("dryY", party.dryPos.GetPositionY())
-                                                   .Real("dryZ", party.dryPos.GetPositionZ()));
-            }
-        }
+        // [lead107] the leader's (RouteWater.h)
+        PartyLeaderGroup group(*this, party);
+        Leader::Travel::LeaveWater(group, players, resting);
     }
 
     bool TestHarnessMgr::UseItem(Player* bot, uint32 itemId, uint32 spellOverride)

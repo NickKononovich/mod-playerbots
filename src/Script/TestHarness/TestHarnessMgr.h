@@ -119,13 +119,6 @@ namespace TestHarness
         Position flyApproach;     // where the flight descends beside the portal (the portal itself without a side)
         uint8 flyStage = 0;       // 0 cruise / descent to flyApproach, 1 the last straight leg into the trigger
         bool flyRefusedLogged = false;
-        bool leavingWater = false;
-        // Breath estimate: Player::m_MirrorTimer is not reachable from a module, so the harness counts it the way
-        // Player::HandleDrowning does (3 minutes under water, refilled 10x as fast above).
-        int32 breathMs = -1;  // -1 = not sampled yet (full)
-        uint32 breathSampleMs = 0;
-        bool surfacing = false;
-        bool lowBreathLogged = false;  // HARNESS_MOVES_BOTS off: the bot's own "breathe" surfaces, logged once
         // HARNESS_MOVES_BOTS off: intent given to this member (not the leader): its own "test runner move" walks to
         // the waypoint (dry spot, gather spot, link), its own "instance portal" into the instance.
         bool hasWaypoint = false;
@@ -310,10 +303,6 @@ namespace TestHarness
         std::map<ObjectGuid, LooseMob> looseMobs;
         uint32 aggroLosses = 0;
         uint32 lastPositionsMs = 0;  // "positions" event, every POSITIONS_MS in combat
-        // last place the leader stood on dry ground out of combat inside the instance: the group rests there, never
-        // in water (Underbog, Blackfathom Deeps: bots drank at the lake bottom and drowned)
-        Position dryPos;
-        bool hasDryPos = false;
         // members dead or outside the instance while the rest of the group is not wiped
         bool membersAway = false;
         uint32 awaySinceMs = 0;

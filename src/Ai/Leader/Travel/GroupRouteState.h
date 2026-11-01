@@ -90,6 +90,18 @@ namespace Leader
         uint32 wipes = 0;             // [lead107] the group's wipes at it
     };
 
+    // [lead107] a member's water facts (LeaveWater), moved out of the harness's member record
+    struct MemberWater
+    {
+        bool leavingWater = false;
+        // Breath estimate: Player::m_MirrorTimer is not reachable from a module, so the harness counts it the way
+        // Player::HandleDrowning does (3 minutes under water, refilled 10x as fast above).
+        int32 breathMs = -1;  // -1 = not sampled yet (full)
+        uint32 breathSampleMs = 0;
+        bool surfacing = false;
+        bool lowBreathLogged = false;  // HARNESS_MOVES_BOTS off: the bot's own "breathe" surfaces, logged once
+    };
+
     struct GroupRouteState
     {
         std::vector<StarterTrack> starters;
@@ -363,6 +375,12 @@ namespace Leader
         // to (MeetMember), logged once per episode
         bool wiped = false;
         ObjectGuid meeting;
+        // [lead107] moved with the water stage: the last place the leader stood on dry ground out of combat inside
+        // the instance: the group rests there, never in water (Underbog, Blackfathom Deeps: bots drank at the lake
+        // bottom and drowned); each member's water facts
+        Position dryPos;
+        bool hasDryPos = false;
+        std::map<ObjectGuid, MemberWater> water;
     };
 }
 
