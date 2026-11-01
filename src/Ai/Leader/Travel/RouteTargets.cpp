@@ -1353,7 +1353,8 @@ namespace Leader::Travel
         // told apart by entrance (SM, Dire Maul): a wing content's entrances are portals of the same wing.
         if (ROUTE_WING_DONE_CHANGE && (map->GetId() == 189 || map->GetId() == 429) &&
             group.ContentBossEntries().empty() && group.Route().entrances.size() > 1 &&
-            group.Route().entranceIdx < group.Route().entrances.size() && !group.Route().wingWalk && group.Route().escort.IsEmpty() &&
+            group.Route().entranceIdx < group.Route().entrances.size() && !group.Route().wingWalk &&
+                group.Route().escort.IsEmpty() &&
             !leader->IsInCombat() && !group.InCombat() && !EventGatherApplies(group) && EventSpotIndex(group) < 0)
         {
             int32 nextWing = -1;
@@ -1505,7 +1506,8 @@ namespace Leader::Travel
         if (ROUTE_CLOSED_DOORS_ALL && !group.Route().doorHold.IsEmpty())
         {
             GameObject* door = map->GetGameObject(group.Route().doorHold);
-            bool const fresh = group.Route().doorHoldMs && getMSTimeDiff(group.Route().doorHoldMs, now) < DOOR_HOLD_FRESH_MS;
+            bool const fresh = group.Route().doorHoldMs && getMSTimeDiff(group.Route().doorHoldMs, now) <
+                DOOR_HOLD_FRESH_MS;
             group.Route().doorHold.Clear();
             WorldObject* held = nullptr;
             if (!group.Route().target.IsEmpty())
@@ -1567,7 +1569,8 @@ namespace Leader::Travel
                 // 0-1, conditions 22 GetData(2) == / != IN_PROGRESS); Eranikus comes back once they open (Avatar dead
                 // or the event reset), not CLOSED_DOOR_SKIP_MS later.
                 constexpr char const* bossPrefix = "next boss behind a closed door (";
-                if ((why.rfind(prefix, 0) != 0 && why.rfind(bossPrefix, 0) != 0) || !group.Route().skipUntil.count(guid))
+                if ((why.rfind(prefix, 0) != 0 && why.rfind(bossPrefix, 0) != 0) ||
+                    !group.Route().skipUntil.count(guid))
                     continue;
                 size_t const close = why.rfind(')');
                 size_t const space = why.rfind(' ', close);
@@ -1600,7 +1603,8 @@ namespace Leader::Travel
         // bosses outside holdRadius and every starter wait too - 2026-10-25 brd-n: an Anvilrage Guardsman 86 yd out
         // was the target 1 s after the trigger, the group left the arena and the waves failed.
         bool const eventHold = holdSpot && holdSpot->eventData >= 0;
-        if (eventHold && (!group.Route().eventHoldLogMs || getMSTimeDiff(group.Route().eventHoldLogMs, now) >= EVENT_HOLD_LOG_MS))
+        if (eventHold && (!group.Route().eventHoldLogMs || getMSTimeDiff(group.Route().eventHoldLogMs, now) >=
+            EVENT_HOLD_LOG_MS))
         {
             group.Route().eventHoldLogMs = now ? now : 1;
             group.LogEvent("brd_ring_hold",
@@ -2056,7 +2060,8 @@ namespace Leader::Travel
         }
 
         // After a trash loop: straight for the next boss of the route, the trash in between only as it comes.
-        bool const bossRush = nextBoss && group.Route().bossRushUntilMs && int32(group.Route().bossRushUntilMs - now) > 0;
+        bool const bossRush = nextBoss && group.Route().bossRushUntilMs &&
+            int32(group.Route().bossRushUntilMs - now) > 0;
 
         // Bosses alive by entry, for trash that cannot die while its boss lives.
         auto bossAlive = [&group, map](uint32 entry)
@@ -2075,7 +2080,8 @@ namespace Leader::Travel
             {
                 int32 const wing = NearestEntrance(group, object);
                 return wing < 0 || size_t(wing) == group.Route().entranceIdx ||
-                       group.Route().entrances[size_t(wing)].GetExactDist(&group.Route().entrances[group.Route().entranceIdx]) <
+                       group.Route().entrances[size_t(wing)].GetExactDist(
+                           &group.Route().entrances[group.Route().entranceIdx]) <
                            SAME_ENTRANCE_RANGE;
             }
             return InThisWing(group, object);
@@ -2946,7 +2952,8 @@ namespace Leader::Travel
                     refusedWhy = judged->second.why;
                 if (!refusedWhy.empty())
                 {
-                    group.Route().pathVerdicts[creature->GetGUID()] = {false, "refused by the leader: " + refusedWhy, -1.0f,
+                    group.Route().pathVerdicts[creature->GetGUID()] = {false, "refused by the leader: " + refusedWhy,
+                        -1.0f,
                                                                0.0f};
                     continue;
                 }
@@ -2959,7 +2966,8 @@ namespace Leader::Travel
             {
                 offRouteHostiles.emplace_back(leader->GetExactDist(creature), creature);
                 RouteWhy const& off = routeWhy[creature->GetGUID()];
-                group.Route().pathVerdicts[creature->GetGUID()] = {false, "off the route", off.check.routeDist, off.reach};
+                group.Route().pathVerdicts[creature->GetGUID()] = {false, "off the route", off.check.routeDist,
+                    off.reach};
                 continue;
             }
 
@@ -3105,7 +3113,8 @@ namespace Leader::Travel
                          JsonObject().Str("why", holdForBoss ? "next boss not attackable yet" : "starter uses left")
                              .Str("boss", holdForBoss ? nextBoss->GetName() : "")
                              .Str("starter", holdStarter ? holdStarter->note : "")
-                             .Num("sinceStarterSec", getMSTimeDiff(group.Route().lastStarterUseMs, holdNow) / IN_MILLISECONDS)
+                             .Num("sinceStarterSec", getMSTimeDiff(group.Route().lastStarterUseMs,
+                                 holdNow) / IN_MILLISECONDS)
                              .Num("dropped", int64(before - hostiles.size())));
             }
         }
@@ -3355,7 +3364,8 @@ namespace Leader::Travel
             // it from this side), unless the door opens for it (DoorOpensFor: a DoorEventDef key creature).
             bool const doorChecked = ROUTE_CLOSED_DOORS_ALL ||
                                      (!creature->IsInCombat() && !creature->IsDungeonBoss() &&
-                                      !creature->isWorldBoss() && !group.Route().bossCreatures.count(creature->GetGUID()) &&
+                                      !creature->isWorldBoss() &&
+                                          !group.Route().bossCreatures.count(creature->GetGUID()) &&
                                       group.BossOrder(creature) < 0);
             // [hleft-passage-door-route] A door that opens on a boss's death and that the walk goes round is no
             // blocker: the target stays, Steer walks the way round (SteerLeg).
@@ -3375,7 +3385,8 @@ namespace Leader::Travel
                     // [strat_trap_gate_trash] a rat-trap portcullis opens again in 20 s: no target now, no 60 s skip.
                     if (IsTrapGate(door))
                     {
-                        if (!group.Route().trapGateLogMs || getMSTimeDiff(group.Route().trapGateLogMs, now) >= TRAP_GATE_LOG_MS)
+                        if (!group.Route().trapGateLogMs || getMSTimeDiff(group.Route().trapGateLogMs, now) >=
+                            TRAP_GATE_LOG_MS)
                         {
                             group.Route().trapGateLogMs = now ? now : 1;
                             group.LogEvent("strat_trap_gate_trash",
@@ -3499,7 +3510,8 @@ namespace Leader::Travel
             // the shield 30 -> 0 in 28 s. The shield-hitting adds come first when the shield is under
             // HOLD_GUARD_SHIELD_PCT, and a non-boss keeper farther than HOLD_KEEPER_DISTANT from the spot ranks below
             // them; otherwise the keepers first.
-            bool const guardFirst = holdSpot && group.Route().watchedShield >= 0 && group.Route().watchedShield < HOLD_GUARD_SHIELD_PCT;
+            bool const guardFirst = holdSpot && group.Route().watchedShield >= 0 && group.Route().watchedShield <
+                HOLD_GUARD_SHIELD_PCT;
             if (holdSpot && !holdObjective && !leader->IsInCombat() && AtHoldGuard(*holdSpot, creature))
                 score -= guardFirst ? HOLD_OBJECTIVE_PRIORITY + HOLD_GUARD_PRIORITY : HOLD_GUARD_PRIORITY;
             // [b32_st] An objective that is also a guard (Sunken Temple: the Nightmare Suppressor 8497, holdAlways and
@@ -3507,12 +3519,15 @@ namespace Leader::Travel
             // the group by themselves; an idle Suppressor drains the Shade's counter 2, a fight stops it).
             if (holdSpot && holdObjective && !creature->IsInCombat() && AtHoldGuard(*holdSpot, creature))
                 score -= HOLD_GUARD_PRIORITY;
-            if (holdObjective && !creature->IsDungeonBoss() && !group.Route().bossCreatures.count(creature->GetGUID()) &&
+            if (holdObjective && !creature->IsDungeonBoss() &&
+                !group.Route().bossCreatures.count(creature->GetGUID()) &&
                 (guardFirst || creature->GetExactDist(holdSpot->x, holdSpot->y, holdSpot->z) > HOLD_KEEPER_DISTANT))
                 score += HOLD_OBJECTIVE_PRIORITY - HOLD_GUARD_PRIORITY / 2.0f;
             bool const isBoss = creature->IsDungeonBoss() || creature->isWorldBoss() ||
-                                group.Route().bossCreatures.count(creature->GetGUID()) || group.BossOrder(creature) >= 0;
-            if (creature->GetGUID() == group.Route().target && !group.Route().targetIsStarter && !creature->IsInCombat())
+                                group.Route().bossCreatures.count(creature->GetGUID()) ||
+                                group.BossOrder(creature) >= 0;
+            if (creature->GetGUID() == group.Route().target && !group.Route().targetIsStarter &&
+                !creature->IsInCombat())
             {
                 commitGuid = creature->GetGUID();  // [target_commit]
                 commitScore = score;
@@ -3560,7 +3575,8 @@ namespace Leader::Travel
                                          .Real("score", commitScore).Str("over", challenger->GetName())
                                          .Num("overEntry", challenger->GetEntry()).Real("overScore", bestScore)
                                          .Real("margin", margin)
-                                         .Num("sinceSec", getMSTimeDiff(group.Route().targetSinceMs, now) / IN_MILLISECONDS));
+                                         .Num("sinceSec", getMSTimeDiff(group.Route().targetSinceMs,
+                                             now) / IN_MILLISECONDS));
                     bestGuid = commitGuid;
                     bestScore = commitScore;
                     bestIsBoss = commitIsBoss;
@@ -3749,7 +3765,8 @@ namespace Leader::Travel
                     // side, the gate shut after 3 s with all five outside, 0 starter_rearmed, 388 "route through a
                     // closed door" skips and the stall at 338 s.
                     // [b32_strat_gate] not when the whole group is through it already (GroupThroughKeyGate)
-                    bool const leaderHeld = !behind && group.Route().doorHold == go->GetGUID() && group.Route().doorHoldMs &&
+                    bool const leaderHeld = !behind && group.Route().doorHold == go->GetGUID() &&
+                        group.Route().doorHoldMs &&
                                             getMSTimeDiff(group.Route().doorHoldMs, now) <= KEY_DOOR_HOLD_FRESH_MS &&
                                             !GroupThroughKeyGate(group, go);
                     if (!behind && !leaderHeld)
@@ -4329,7 +4346,8 @@ namespace Leader::Travel
                 group.LogEvent("skip_lifted", JsonObject().Str("name", lift->GetName())
                                                    .Num("entry", lift->GetEntry())
                                                    .Str("was", group.Route().skipReason[lift->GetGUID()])
-                                                   .Num("refusals", int64(group.Route().carefulRefused[lift->GetGUID()]))
+                                                   .Num("refusals",
+                                                       int64(group.Route().carefulRefused[lift->GetGUID()]))
                                                    .Str("why", "nothing else left"));
                 ++group.Route().carefulRefused[lift->GetGUID()];  // each lift counts: LIFT_REFUSALS_MAX bounds the asks
                 group.Route().skipUntil.erase(lift->GetGUID());
@@ -4496,7 +4514,8 @@ namespace Leader::Travel
                 routeRule = chosenWhy.rule;
             else if (routeFallback)
                 routeRule = "fallback (nothing on the route)";
-            else if (group.Route().bossCreatures.count(chosen) || creature->IsDungeonBoss() || creature->isWorldBoss() ||
+            else if (group.Route().bossCreatures.count(chosen) || creature->IsDungeonBoss() ||
+                creature->isWorldBoss() ||
                      group.BossOrder(creature) >= 0)
                 routeRule = "boss";
             else if (creature->IsInCombat())
@@ -4541,7 +4560,8 @@ namespace Leader::Travel
         float insideWalk = -1.0f;
         if (!HARNESS_MOVES_BOTS && wingLeader && wingLeader->IsAlive() &&
             wingLeader->GetMapId() == group.MapId() && !wingLeader->IsInCombat() &&
-            !wingLeader->GetTransport() && !wingLeader->GetVehicle() && group.Route().linkIdx < 0 && group.Route().escort.IsEmpty())
+            !wingLeader->GetTransport() && !wingLeader->GetVehicle() && group.Route().linkIdx < 0 &&
+                group.Route().escort.IsEmpty())
         {
             PathResult const inside =
                 RoutePath(wingLeader, entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
@@ -4617,7 +4637,8 @@ namespace Leader::Travel
             if (wing < 0)
                 continue;
             if (size_t(wing) == group.Route().entranceIdx ||
-                group.Route().entrances[size_t(wing)].GetExactDist(&group.Route().entrances[group.Route().entranceIdx]) < SAME_ENTRANCE_RANGE)
+                group.Route().entrances[size_t(wing)].GetExactDist(
+                    &group.Route().entrances[group.Route().entranceIdx]) < SAME_ENTRANCE_RANGE)
                 return true;
             int32 const order = group.BossOrder(boss);
             if (nextWing < 0 || (order >= 0 && (nextWingOrder < 0 || order < nextWingOrder)))
