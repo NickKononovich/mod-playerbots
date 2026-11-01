@@ -219,7 +219,7 @@ namespace
                 G3D::Vector3 const spot(landing.x + radius * std::cos(angle), landing.y + radius * std::sin(angle),
                                         landing.z);
                 if (std::hypot(spot.x - here.x, spot.y - here.y) > WATER_DROP_REACH ||
-                    !map->HasEnoughWater(bot, spot.x, spot.y, spot.z) ||
+                    !HasSwimWater(bot, spot.x, spot.y, spot.z) ||  // [lead145]
                     !bot->IsWithinLOS(spot.x, spot.y, spot.z + lift))
                     continue;
                 jump = spot;

@@ -189,6 +189,10 @@ struct LedgeDropVerdict
 // "[ledge drop] <mover>: refused ..." (throttled) and "ledge_drop_refused". `what` names the walk.
 LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char const* what);
 
+// [lead145] Map::HasEnoughWater for water and ocean only: it counts every liquid (MAP_ALL_LIQUIDS), so a fall into
+// lava or slime was a "water landing, safe" (rfc-h b165: "drop 6.0 yd (water) ... fall safe" into Ragefire's magma)
+bool HasSwimWater(Unit* mover, float x, float y, float z);
+
 // [ledge_drop_link] A harness route link the mover is crossing (RouteLinkDef: Immol'thar's pit step, the Shattered
 // Halls sewer drop) is a deliberate step down: while allowed (renewed by the harness each tick of the crossing,
 // for `forMs`) JudgeLedgeDrop lets every drop of the mover pass ("shortcut_drop ... (link)"). Thread-safe.

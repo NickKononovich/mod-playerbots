@@ -810,6 +810,17 @@ namespace
     }
 }
 
+bool HasSwimWater(Unit* mover, float x, float y, float z)
+{
+    Map* map = mover ? mover->GetMap() : nullptr;
+    if (!map)
+        return false;
+    LiquidData const liquid = map->GetLiquidData(mover->GetPhaseMask(), x, y, z, mover->GetCollisionHeight(),
+                                                 uint8(MAP_LIQUID_TYPE_WATER | MAP_LIQUID_TYPE_OCEAN));
+    return (liquid.Status & MAP_LIQUID_STATUS_SWIMMING) && liquid.Level > INVALID_HEIGHT &&
+           liquid.Level > liquid.DepthLevel && liquid.Level - liquid.DepthLevel >= mover->GetMinHeightInWater();
+}
+
 LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char const* what)
 {
     LedgeDropVerdict verdict;
@@ -899,7 +910,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                 if (surface > INVALID_HEIGHT && surface <= z + 1.0f)
                 {
                     landing.z = surface;
-                    probedWater = groundZ > INVALID_HEIGHT && surface - groundZ >= LEDGE_SWIM_DEPTH;
+                    probedWater = groundZ > INVALID_HEIGHT && surface - groundZ >= LEDGE_SWIM_DEPTH &&
+                                  HasSwimWater(mover, x, y, groundZ);  // [lead145] not lava / slime
                     verdict.onMesh = NavmeshLanding(mover, landing, snapped) ||
                                      (probedWater &&
                                       NavmeshLanding(mover, G3D::Vector3(x, y, groundZ), snapped));
@@ -924,7 +936,7 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         verdict.connected = PathIsGround(back.type) && SteepStep(back.points, true) <= 0.0f;
         // (b) + (c) the fall is safe for the mover and for every member near that follows it: a water landing at
         // any height, a listed shortcut with the health margin, else under the fall damage height
-        verdict.water = probedWater || map->HasEnoughWater(mover, landing.x, landing.y, landing.z);
+        verdict.water = probedWater || HasSwimWater(mover, landing.x, landing.y, landing.z);  // [lead145]
         verdict.listed = ListedShortcut(map->GetId(), landing) != nullptr;
         verdict.safe = SafeFallFor(mover, verdict.height, verdict.water, verdict.listed);
         if (Player* player = mover->ToPlayer())
