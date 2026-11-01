@@ -105,21 +105,14 @@ namespace Leader
     // [lead107 stage 5] a member's rest / far-wait facts (RestWait), moved out of the harness's member record
     struct MemberRest
     {
-        // [b30_topped_up] wait_timeouts in a row with this member far (FAR_TIMEOUTS_DROP: no more far waits)
-        uint32 farTimeouts = 0;
-        // [b31_far_threshold] waited for (far wait / meet): far until within FAR_RESUME_RANGE; the apart metric at
-        // the last closing in, and when
+        // [b31_far_threshold] waited for (far wait / meet): far until within FAR_RESUME_RANGE
         bool farWaited = false;
-        float farLastMetric = 0.0f;
-        uint32 farClosingMs = 0;
         // Regen wait: the group waits for this member since (0 = not waiting), and whether its "[regen]" stall line
         // (waiting but not eating / drinking) went out for the current wait.
         uint32 regenSinceMs = 0;
         bool regenStallLogged = false;
-        uint32 regenStallMs = 0;  // when regen_stall was logged (REGEN_STALL_RELEASE_MS)
-        bool regenStallReleased = false;  // "regen_stall_release" logged: no longer waited for
+        uint32 regenStallMs = 0;  // when regen_stall was logged
         bool regenAboveLineLogged = false;  // regen_wait_below_line logged for this rest (reset by a fight)
-        uint32 seatedSinceMs = 0;           // [queue-rest-sit-grace] when this member sat down to eat / drink
     };
 
     struct GroupRouteState
@@ -180,7 +173,6 @@ namespace Leader
         uint32 flipSinceMs = 0;
         uint32 lastFlipMs = 0;
         uint32 pingPongHoldUntilMs = 0;
-        uint32 pingPongCooldownUntilMs = 0;
         std::map<ObjectGuid, uint32> skipUntil;
         // [lead41] the leader's on-the-path verdict per idle candidate (the route rules of Retarget: blocks route,
         // patrol crosses route, required, boss area, joins the boss ...; off the path: its route distance and reach)
@@ -413,7 +405,7 @@ namespace Leader
         std::set<ObjectGuid> phantomEndedRefs;
         // [phantom_mob_hunt] the live, reachable mob of a phantom combat the group was sent to, and how often
         ObjectGuid phantomHunt;
-        uint32 phantomHuntTries = 0;
+        std::set<ObjectGuid> phantomHunted;  // the mobs hunted in this phantom episode (once each)
         // buffing
         bool needBuff = true;
         uint8 buffStep = 0;

@@ -143,6 +143,14 @@ namespace Leader::Dungeon
         return count;
     }
 
+    bool MemberClosing(Player* bot, Player* leader)
+    {
+        if (!bot->isMoving() || bot->movespline->Finalized() || bot->GetMap() != leader->GetMap())
+            return false;
+        G3D::Vector3 const end = bot->movespline->FinalDestination();
+        return leader->GetExactDist(end.x, end.y, end.z) < bot->GetExactDist(leader);
+    }
+
     void WaitForAway(LeaderGroup& group, std::vector<Player*> const& players, Player* leader,
                      std::vector<std::string> const& away)
     {
@@ -169,7 +177,6 @@ namespace Leader::Dungeon
         ledGather = Leader::LEADER_ONE_GATHER_OWNER && Leader::LEADER_PLANNER_IN_LEADER &&
                     group.HasContent() && !group.IsRaid() && group.ContentSize() <= 5 &&
                     Leader::Orders::IsTracked(group.LeaderGuid());
-        bool anySeated = false;
         // [b33_cos2] A timed run (heroic Culling, Guardian of Time running): a sitter is no far wait. Above its
         // line it stands up at that line by itself ([b33_cos] RestState::RestDone / TimedRunStandsAtLine,
         // the shorter timed-run lines of WantsDrink) and follows; below it the regen wait holds the group
@@ -218,23 +225,15 @@ namespace Leader::Dungeon
             bool const hardLine = healthPct < 45.0f || lowMana;
             bool const seatedBelowLine = seated && ((RestState::IsDrinking(bot) && drinkLine) ||
                                                     (RestState::IsEating(bot) && foodLine));
-            // [queue-rest-sit-grace] the bot sat down by its own line a moment ago and the line moved since
-            // (the next fight's prediction changed after a boss): hor-h 20261025 build 29, the mage sat at
-            // 53 % after Marwyn, the hunter at 66 % after the General, "sits above its line, not waited for",
-            // the group walked off and meet_member / meet_stuck brought the tank back, ~30 s each. A fresh
-            // sitter below the trash line is waited for up to REST_SIT_GRACE_MS: one rule - who sits is waited
-            // for a moment, nobody walks off a sitter.
-            constexpr uint32 REST_SIT_GRACE_MS = 10 * IN_MILLISECONDS;
-            constexpr float REST_SIT_GRACE_MAX_PCT = 75.0f;  // RestState PREDICT_MAX_LINE_PCT
-            if (!seated)
-                rest.seatedSinceMs = 0;
-            else if (!rest.seatedSinceMs)
-                rest.seatedSinceMs = now ? now : 1;
-            bool const freshSitter =
-                seated && rest.seatedSinceMs &&
-                getMSTimeDiff(rest.seatedSinceMs, now) < REST_SIT_GRACE_MS &&
-                ((RestState::IsDrinking(bot) && mana && manaPct < REST_SIT_GRACE_MAX_PCT) ||
-                 (RestState::IsEating(bot) && healthPct < REST_SIT_GRACE_MAX_PCT));
+            // [queue-rest-sit-grace] hor-h 20261025 build 29: the mage sat at 53 % after Marwyn, its line moved
+            // after the boss, "sits above its line, not waited for", the group walked off and the meet brought the
+            // tank back. [lead128] user: no elapsed-time rule decides (REST_SIT_GRACE_MS 10 s was the old clock): a
+            // sitter the leader told to rest (its Rest command) is waited for - the leader's rest decision, not the
+            // time it sat
+            Leader::MemberEvents restEvents;
+            bool const leaderRests =
+                Leader::Events::Get(member.guid, restEvents) && restEvents.ready == Leader::ReadyEvent::Rest;
+            bool const freshSitter = seated && leaderRests;
             // [lead15] LEADER_ONE_REST_RULE: in a group the leader leads every sitter is waited for
             bool const leaderRest = Leader::Leads(Leader::LEADER_ONE_REST_RULE) && group.HasContent() &&
                                     !group.IsRaid() && group.ContentSize() <= 5 &&
@@ -242,7 +241,6 @@ namespace Leader::Dungeon
             bool const regenerating =
                 REGEN_WAIT_BELOW_LINE && !leaderRest ? (seatedBelowLine || freshSitter) : seated;
             bool const waitedFor = !REGEN_WAIT_BELOW_LINE || regenerating || hardLine;
-            anySeated |= regenerating;
             if (seated && !regenerating && !hardLine && !rest.regenAboveLineLogged)
             {
                 rest.regenAboveLineLogged = true;
@@ -253,70 +251,60 @@ namespace Leader::Dungeon
             if (seated || hardLine || wantsDrink || wantsFood)
             {
                 // Its combat engine runs out of combat (it "attacks" a mob that does not fight back: Violet
-                // Hold's released prisoner): the drink never runs, a wait only holds the group. Logged below
-                // (regen_stall), not waited for.
+                // Hold's released prisoner): the drink never runs, a wait only holds the group. Not waited for.
                 PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot);
-                // REGEN_STALL_RELEASE_MS: a member logged as regen_stall (it should sit down and does not)
-                // and still standing that long after is no longer waited for while above the hard lines
-                // (45 % health, 20 % mana): the wait only holds the group. Wave 21 hol-h: a mage at 77-84 %
-                // mana "casting", its drink failing every tick, held the group before Loken until the stall
-                // watchdog skipped the boss.
-                bool const stallReleased = !seated && rest.regenStallLogged && rest.regenStallMs &&
-                                           getMSTimeDiff(rest.regenStallMs, now) > REGEN_STALL_RELEASE_MS &&
-                                           healthPct >= 45.0f && !lowMana;
-                if (stallReleased && !rest.regenStallReleased)
+                // [lead128] user: no elapsed-time rule decides (REGEN_STALL_RELEASE_MS: a member standing 20 s
+                // after its regen_stall was let go). A standing member that should sit is waited for while it CAN
+                // rest - the leader's Rest (LeaderEvents, the same rest line) sits it down, the member executes;
+                // what keeps it from resting is the fact that ends the wait for it at once: no drink / food in its
+                // bags, mounted, in the water, its group fighting (RestState::CanRest), its combat engine
+                bool const noWater = lowMana && !drinks;
+                bool const shouldSit = noWater || drinkLine || foodLine;
+                std::string cannot;
+                if (!seated && shouldSit)
                 {
-                    rest.regenStallReleased = true;
-                    LOG_INFO("playerbots",
-                             "[regen] {}: regen_stall_release: {} still not eating / drinking {} s after its "
-                             "regen_stall (hp {:.0f}%, mana {:.0f}%) - no longer waited for",
-                             group.Run().runId, member.name, getMSTimeDiff(rest.regenStallMs, now) / IN_MILLISECONDS,
-                             healthPct, manaPct);
-                    group.LogEvent("regen_stall_release",
-                             JsonObject().Str("name", member.name).Real("hp", healthPct).Real("mana", manaPct)
-                                 .Num("sec", getMSTimeDiff(rest.regenStallMs, now) / IN_MILLISECONDS));
+                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                    cannot = noWater ? "no drink in the bags, spirit regen only"
+                             : (drinkLine && !drinks && !(foodLine && foods)) ? "no drink in the bags"
+                             : (foodLine && !foods && !(drinkLine && drinks)) ? "no food in the bags"
+                             : bot->IsMounted()                               ? "mounted"
+                             : bot->Unit::IsInWater()                         ? "in the water"
+                             : !RestState::CanRest(bot)                       ? "cannot rest: its group fights"
+                             : (botAI && botAI->GetState() == BOT_STATE_COMBAT)
+                                 ? "combat engine without combat (drink is a non-combat action)"
+                                 : "";
                 }
-                if (!stallReleased && waitedFor &&
+                if (waitedFor && cannot.empty() &&
                     (seated || !memberAI || memberAI->GetState() != BOT_STATE_COMBAT || bot->IsInCombat()))
                     low.push_back(member.name);
                 if (!rest.regenSinceMs || !route.waitSinceMs)
                 {
                     rest.regenSinceMs = now;
-                    // A released stall stays released for this stretch (the wait ended without it).
-                    if (!rest.regenStallReleased)
-                    {
-                        rest.regenStallLogged = false;
-                        rest.regenStallMs = 0;
-                    }
+                    rest.regenStallLogged = false;
+                    rest.regenStallMs = 0;
                 }
-                // Waiting for regen must mean eating / drinking: a member who waits without sitting down
-                // (no water, or something keeps it standing) is a bug to see, not minutes of standing.
-                bool const noWater = lowMana && !drinks;
-                bool const shouldSit = noWater || drinkLine || foodLine;
+                // Waiting for regen must mean eating / drinking: a member that cannot rest is logged at once with
+                // its fact; one that can and still stands after REGEN_SIT_GRACE_MS is logged too (a diagnostic only,
+                // the wait for it is the leader's Rest)
                 if (!seated && shouldSit && !rest.regenStallLogged && !bot->IsInCombat() &&
-                    (noWater || getMSTimeDiff(rest.regenSinceMs, now) > REGEN_SIT_GRACE_MS))
+                    (!cannot.empty() || getMSTimeDiff(rest.regenSinceMs, now) > REGEN_SIT_GRACE_MS))
                 {
                     rest.regenStallLogged = true;
                     rest.regenStallMs = now ? now : 1;
-                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
                     std::string const why =
-                        noWater ? "no drink in the bags, spirit regen only"
-                        : (drinkLine && !drinks)                              ? "no drink in the bags"
-                        : (foodLine && !foods)                                ? "no food in the bags"
-                        : bot->IsMounted()                                    ? "mounted"
-                        : bot->Unit::IsInWater()                              ? "in the water"
-                        : bot->IsNonMeleeSpellCast(false)                     ? "casting"
-                        : (botAI && botAI->GetState() == BOT_STATE_COMBAT)
-                            ? "combat engine without combat (drink is a non-combat action)"
-                            : "does not sit down";
+                        !cannot.empty()                    ? cannot
+                        : bot->IsNonMeleeSpellCast(false)  ? "casting"
+                        : leaderRests                      ? "under the leader's Rest, does not sit down"
+                                                           : "does not sit down (no Rest command yet)";
                     LOG_INFO("playerbots",
                              "[regen] {}: {} waits for regen (hp {:.0f}%, mana {:.0f}%) but is not "
-                             "eating / drinking after {} s: {} (drinks {}, food {})",
-                             group.Run().runId, member.name, healthPct, manaPct,
-                             getMSTimeDiff(rest.regenSinceMs, now) / IN_MILLISECONDS, why, drinks, foods);
+                             "eating / drinking: {} (drinks {}, food {}){}",
+                             group.Run().runId, member.name, healthPct, manaPct, why, drinks, foods,
+                             cannot.empty() ? "" : " - not waited for");
                     group.LogEvent("regen_stall",
                              JsonObject().Str("name", member.name).Real("hp", healthPct).Real("mana", manaPct)
-                                 .Num("drinks", drinks).Num("food", foods).Str("why", why));
+                                 .Num("drinks", drinks).Num("food", foods).Str("why", why)
+                                 .Bool("waited", cannot.empty()));
                 }
             }
             else
@@ -324,7 +312,6 @@ namespace Leader::Dungeon
                 rest.regenSinceMs = 0;
                 rest.regenStallLogged = false;
                 rest.regenStallMs = 0;
-                rest.regenStallReleased = false;
             }
             // The straggler MeetMember handles (route.meeting) stays far until within its 45 yd: the leader's
             // walk back across 50 yd flipped the wait on and off, its 60 s timeout never came (SFK 5B-5).
@@ -334,15 +321,9 @@ namespace Leader::Dungeon
             if (!isFar && bot != leader)
             {
                 float const metric = ApartMetric(bot, leader);
-                if (!rest.farClosingMs || metric < rest.farLastMetric - FAR_CLOSING_STEP ||
-                    metric <= FAR_TRAIL_RANGE)
-                {
-                    rest.farLastMetric = metric;
-                    rest.farClosingMs = now ? now : 1;
-                }
-                else if (metric > rest.farLastMetric)
-                    rest.farLastMetric = metric;
-                bool const notClosing = getMSTimeDiff(rest.farClosingMs, now) >= FAR_NOT_CLOSING_MS;
+                // [lead128] user: closing in is a fact of the member's walk, not elapsed time (FAR_NOT_CLOSING_MS
+                // 5 s was the old clock): it walks, and its walk ends nearer the leader than it stands
+                bool const notClosing = !MemberClosing(bot, leader);
                 // [b32_dmw] A member sitting with food / drink inside FAR_WAIT_RANGE rests where its fight
                 // ended, it does not trail: the regen wait above holds for it while it is below its line, and
                 // it stands up and follows by itself above it (RestDone). dmw-n 20261025-221216-5E-12: the
@@ -370,22 +351,14 @@ namespace Leader::Dungeon
                 rest.farWaited = true;
             }
             else
-            {
                 rest.farWaited = false;
-                if (!isFar)
-                    rest.farTimeouts = 0;  // [b30_topped_up] back with the group: the timeouts start anew
-            }
         }
 
-        // A member who sits eating / drinking is waited for past the 60 s cap (its food / drink ends by
-        // itself, "rested" stands it up when full); 3 min stays the hard cap, then the 45 s cooldown.
-        // [b32_strat_gate] no timeout and no cooldown while a member is cut off behind a closed door
-        // (TickDoorCut): strat-n 221216 wait_timeout at 188 s, the group went on without the healer.
+        // [lead128] user: no elapsed-time rule decides - the wait has no timeout and no cooldown (the 60 s / 180 s
+        // wait_timeout, its 45 s cooldown and the far_wait_dropped after two of them were the old clocks). It ends on
+        // its facts: the sitter at its line, the far member together (or stranded: no walk either way), the
+        // door-cut member through.
         bool const doorCutWait = route.doorCutHold && !route.doorCutMember.IsEmpty();
-        bool const waitTooLong =
-            route.waitSinceMs && !doorCutWait &&
-            getMSTimeDiff(route.waitSinceMs, now) > (anySeated ? 180 : 60) * IN_MILLISECONDS;
-        bool const waitAllowed = int32(now - route.waitCooldownUntilMs) >= 0 || doorCutWait;
         // A walked wing change: every member walks out and in on its own, apart by design (Dire Maul East
         // 2026-10-25: the far wait and its ping-pong hold pulled the leader back during the walk).
         // [cos-event-trash] (PATCH_queue_encounters section 2) no far wait while the heroic Culling's
@@ -394,8 +367,7 @@ namespace Leader::Dungeon
         bool const corruptorDetour = leader->GetMapId() == CoSIds::MAP_CULLING_OF_STRATHOLME &&
                                      CoSHelpers::GetCorruptorDetourTarget(leader) != nullptr;
         bool const waiting =
-            (!low.empty() || (!farAway.empty() && !wingWalking && !corruptorDetour)) && !waitTooLong &&
-            waitAllowed && route.escort.IsEmpty();
+            (!low.empty() || (!farAway.empty() && !wingWalking && !corruptorDetour)) && route.escort.IsEmpty();
 
         // REGROUP_PING_PONG_GUARD: who is apart from the leader (another map, or farther than
         // REGROUP_PING_PONG_TOGETHER), and how many of them on another level.
@@ -434,28 +406,28 @@ namespace Leader::Dungeon
                                                           bot->GetPositionZ() - leader->GetPositionZ()));
         }
         // The decision of this tick (the regen wait is no side of the ping-pong) and its flips.
+        // [lead128] user: no elapsed-time rule decides (REGROUP_PING_PONG_MS / _GAP_MS / _HOLD_MS / _COOLDOWN_MS and
+        // REGROUP_APART_IGNORE_MS were the old clocks). The ping-pong is a fact of the decisions: since the group was
+        // last together, the decision came back to one it had already taken (meet -> route -> meet). Then the meet
+        // is held - no new target - until the group is together, or a fight starts.
         uint8 const decision = !waiting ? DECISION_ROUTE : (low.empty() ? DECISION_MEET : 0);
+        if (!apart && !route.pingPongHoldUntilMs)
+            route.decisionFlips = 0;  // together: the next ping-pong counts from here
         if (REGROUP_PING_PONG_GUARD && decision && !leader->IsInCombat() && decision != route.decision)
         {
-            if (route.decision)
+            if (route.decision && apart)
             {
-                if (!route.flipSinceMs || getMSTimeDiff(route.lastFlipMs, now) > REGROUP_PING_PONG_GAP_MS)
-                {
-                    route.flipSinceMs = now ? now : 1;
-                    route.decisionFlips = 0;
-                }
+                if (!route.decisionFlips)
+                    route.flipSinceMs = now ? now : 1;  // for the logs
                 ++route.decisionFlips;
                 route.lastFlipMs = now;
             }
             route.decision = decision;
         }
         if (REGROUP_PING_PONG_GUARD && !ledGather && !wingWalking && !route.pingPongHoldUntilMs && apart &&
-            !leader->IsInCombat() &&
-            route.decisionFlips >= REGROUP_PING_PONG_FLIPS && route.flipSinceMs &&
-            getMSTimeDiff(route.flipSinceMs, now) >= REGROUP_PING_PONG_MS &&
-            int32(now - route.pingPongCooldownUntilMs) >= 0)
+            !leader->IsInCombat() && route.decisionFlips >= 2)
         {
-            route.pingPongHoldUntilMs = now + REGROUP_PING_PONG_HOLD_MS;
+            route.pingPongHoldUntilMs = now ? now : 1;  // the hold is on (since)
             // The meet itself decides how: the members' own follow first (MeetMember's grace: the group
             // gathers on the leader's level), then the leader's walk back over the route to the farthest.
             std::string const how = otherLevel * 2 >= apart
@@ -463,13 +435,12 @@ namespace Leader::Dungeon
                                           "leader rejoins them over the route"
                                         : "the group gathers on the leader's level";
             LOG_INFO("playerbots",
-                     "[regroup] {}: ping-pong meet <-> route for {} s ({} flips): hold the meet up to {} s, no "
-                     "new target - {}; apart: {}",
-                     group.Run().runId, getMSTimeDiff(route.flipSinceMs, now) / IN_MILLISECONDS, route.decisionFlips,
-                     REGROUP_PING_PONG_HOLD_MS / IN_MILLISECONDS, how, apartNames);
+                     "[regroup] {}: ping-pong meet <-> route ({} flips): hold the meet until the group is together, "
+                     "no new target - {}; apart: {}",
+                     group.Run().runId, route.decisionFlips, how, apartNames);
             group.LogEvent("regroup_ping_pong",
                      JsonObject().Str("state", "hold meet").Num("flips", route.decisionFlips)
-                         .Num("sec", getMSTimeDiff(route.flipSinceMs, now) / IN_MILLISECONDS)
+                         .Num("sec", route.flipSinceMs ? getMSTimeDiff(route.flipSinceMs, now) / IN_MILLISECONDS : 0)
                          .Num("apart", apart).Num("otherLevel", otherLevel).Str("how", how)
                          .Str("members", apartNames).Real("x", leader->GetPositionX())
                          .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ()));
@@ -477,22 +448,14 @@ namespace Leader::Dungeon
         bool pingPongMeet = false;
         if (route.pingPongHoldUntilMs)
         {
-            bool const timedOut = int32(now - route.pingPongHoldUntilMs) >= 0;
-            if (!apart || timedOut || leader->IsInCombat())
+            if (!apart || leader->IsInCombat())
             {
-                char const* const why = !apart ? "together" : timedOut ? "timed out" : "combat";
+                char const* const why = !apart ? "together" : "combat";
                 LOG_INFO("playerbots", "[regroup] {}: ping-pong hold ends: {}{}{}", group.Run().runId, why,
                          apart ? "; apart: " : "", apartNames);
                 group.LogEvent("regroup_ping_pong",
                          JsonObject().Str("state", "end").Str("why", why).Str("members", apartNames));
-                // Timed out with members still apart: the route goes on without them for
-                // REGROUP_APART_IGNORE_MS (their own follow brings them; no new hold, no far wait for them).
-                if (timedOut)
-                    for (LeaderGroup::MemberInfo const& member : group.Members())
-                        if (std::find(apartGuids.begin(), apartGuids.end(), member.guid) != apartGuids.end())
-                            group.SetApartIgnore(member.guid, now + REGROUP_APART_IGNORE_MS);
                 route.pingPongHoldUntilMs = 0;
-                route.pingPongCooldownUntilMs = now + REGROUP_PING_PONG_COOLDOWN_MS;
                 route.decisionFlips = 0;
                 route.flipSinceMs = 0;
             }
@@ -502,8 +465,7 @@ namespace Leader::Dungeon
 
         if (pingPongMeet)
         {
-            // The held meet (REGROUP_PING_PONG_GUARD): the far wait's own timeout does not hand over to the
-            // route while the group is apart.
+            // The held meet (REGROUP_PING_PONG_GUARD): the route waits while the group is apart.
             route.waitingFor = "ping-pong hold: " + apartNames;
             if (!Travel::MeetMember(group, players, leader))
                 group.ClearWaypoint(group.LeaderGuid());
@@ -591,38 +553,6 @@ namespace Leader::Dungeon
         }
         else
         {
-            if (waitTooLong)
-            {
-                group.LogEvent("wait_timeout", JsonObject().Str("waitingFor", route.waitingFor));
-                route.waitCooldownUntilMs = now + 45 * IN_MILLISECONDS;
-                // [b30_topped_up] FAR_TIMEOUTS_DROP timeouts in a row for the same far member: no more
-                for (LeaderGroup::MemberInfo const& member : group.Members())
-                {
-                    MemberRest& rest = route.rest[member.guid];
-                    if (std::find(farAway.begin(), farAway.end(), member.name) == farAway.end())
-                    {
-                        rest.farTimeouts = 0;
-                        continue;
-                    }
-                    if (++rest.farTimeouts < FAR_TIMEOUTS_DROP)
-                        continue;
-                    rest.farTimeouts = 0;
-                    group.SetApartIgnore(member.guid, now + FAR_TIMEOUTS_IGNORE_MS);
-                    Player* farBot = ObjectAccessor::FindPlayer(member.guid);
-                    float const farDistance = farBot && farBot->GetMap() == leader->GetMap()
-                                                  ? farBot->GetExactDist(leader)
-                                                  : -1.0f;
-                    LOG_INFO("playerbots",
-                             "[far_wait_dropped] {}: {} far ({:.0f} yd) through {} wait_timeouts in a row: no "
-                             "far wait and no ready check for it for {} s",
-                             group.Run().runId, member.name, farDistance, FAR_TIMEOUTS_DROP,
-                             FAR_TIMEOUTS_IGNORE_MS / IN_MILLISECONDS);
-                    group.LogEvent("far_wait_dropped",
-                             JsonObject().Str("name", member.name).Real("distance", farDistance)
-                                 .Num("timeouts", FAR_TIMEOUTS_DROP)
-                                 .Num("ignoreSec", FAR_TIMEOUTS_IGNORE_MS / IN_MILLISECONDS));
-                }
-            }
             // The rest is over: the next target (and its walk) at once, not on the 4 s retarget clock.
             if (route.waitSinceMs)
                 route.nextRetargetMs = now;
@@ -642,7 +572,7 @@ namespace Leader::Dungeon
         GroupRouteState& route = group.Route();
         bool compactPause = false;
         // [b31_far_threshold] the group travels together: the leader pauses for a member over
-        // FAR_TRAIL_RANGE behind until it is within FAR_RESUME_RANGE (COMPACT_PAUSE_MAX_MS at most)
+        // FAR_TRAIL_RANGE behind until it is within FAR_RESUME_RANGE, while it comes
         if (!route.approach && route.escort.IsEmpty() && route.linkIdx < 0 && !group.IsRaid() &&
             !leader->IsInCombat())
         {
@@ -664,6 +594,7 @@ namespace Leader::Dungeon
             }
             // [b33_harn] a healer drinking / out of sight / beyond FAR_RESUME_RANGE behind
             Player* healerBehind = nullptr;
+            bool healerResting = false;
             for (LeaderGroup::MemberInfo const& member : group.Members())
             {
                 Player* bot = ObjectAccessor::FindPlayer(member.guid);
@@ -676,37 +607,37 @@ namespace Leader::Dungeon
                                      bot->HasAuraType(SPELL_AURA_MOD_REGEN) || bot->IsSitState();
                 if (ApartMetric(bot, leader) > FAR_RESUME_RANGE || !bot->IsWithinLOSInMap(leader) ||
                     (resting && bot->GetExactDist(leader) > FAR_RESUME_RANGE * 0.5f))
+                {
                     healerBehind = bot;
+                    healerResting = resting;
+                }
             }
-            // [b33_harn] a pause not looked at for a while (another phase ran): its clock starts anew
-            if (route.compactPauseSinceMs && route.compactPauseTickMs &&
-                getMSTimeDiff(route.compactPauseTickMs, now) > COMPACT_PAUSE_STALE_MS)
-                route.compactPauseSinceMs = now ? now : 1;
-            route.compactPauseTickMs = now ? now : 1;
+            // [lead128] user: no elapsed-time rule decides (COMPACT_PAUSE_MAX_MS 10 s / _HEALER_MS 30 s / _GAP_MS
+            // 20 s / _STALE_MS 3 s were the old clocks). The pause holds while its member comes: the trailing member
+            // closing in (its walk ends nearer the leader, MemberClosing), the healer behind resting or closing in.
+            // One that is not coming is no pause - the far wait's facts take it (RestWait: far, not closing).
+            bool const trailComes = trailing && MemberClosing(trailing, leader);
+            bool const healerComes = healerBehind && (healerResting || MemberClosing(healerBehind, leader));
             bool const want = !ledGather &&
-                              (trailing && trail > (route.compactPauseSinceMs ? FAR_RESUME_RANGE
-                                                                              : FAR_TRAIL_RANGE)) ||
-                              (healerBehind && route.compactPauseSinceMs);
-            bool const gap = route.compactPauseEndMs &&
-                             getMSTimeDiff(route.compactPauseEndMs, now) < COMPACT_PAUSE_GAP_MS;
-            if (want && !gap && !route.compactPauseSinceMs)
+                              ((trailing && trailComes &&
+                                trail > (route.compactPauseSinceMs ? FAR_RESUME_RANGE : FAR_TRAIL_RANGE)) ||
+                               (healerComes && route.compactPauseSinceMs));
+            if (want && !route.compactPauseSinceMs)
             {
                 route.compactPauseSinceMs = now ? now : 1;
                 group.LogEvent("compact_pause", JsonObject().Str("state", "start")
-                                                     .Str("member", trailing->GetName())
+                                                     .Str("member", trailing ? trailing->GetName() : "")
                                                      .Real("apart", trail));
             }
             if (route.compactPauseSinceMs)
             {
-                uint32 const pausedMs = getMSTimeDiff(route.compactPauseSinceMs, now);
-                bool const timedOut =
-                    pausedMs >= (healerBehind ? COMPACT_PAUSE_HEALER_MS : COMPACT_PAUSE_MAX_MS);
-                if (want && !timedOut)
+                if (want)
                     compactPause = true;
                 else
                 {
+                    bool const together = !trailing || trail <= FAR_RESUME_RANGE;
                     group.LogEvent("compact_pause",
-                             JsonObject().Str("state", timedOut ? "timed out" : "together")
+                             JsonObject().Str("state", together ? "together" : "not coming")
                                  .Num("sec", getMSTimeDiff(route.compactPauseSinceMs, now) /
                                                  IN_MILLISECONDS)
                                  .Real("apart", trail));

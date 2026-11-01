@@ -20,10 +20,9 @@ class Player;
 
 namespace Leader::Fight
 {
-    // [phantom_mob_hunt] a live mob of the phantom combat that the leader can walk to is hunted this many times
-    // (the target for PHANTOM_HUNT_MS each) before its combat is ended as an unreachable one's
-    constexpr uint32 PHANTOM_HUNT_MAX_TRIES = 3;
-    constexpr uint32 PHANTOM_HUNT_MS = 2 * MINUTE * IN_MILLISECONDS;
+    // [phantom_mob_hunt] the route's hold on a hunted mob (GroupRouteState::neighbourTargetUntilMs) has no end of
+    // its own: the farthest getMSTime() comparison ahead; the hunt's facts end it (TickPhantomCombat)
+    constexpr uint32 PHANTOM_HUNT_HOLD_OPEN = 0x7FFFFFFF;
 
     // anyInCombat: the group's pull state, false while a phantom combat counts out (activeBoss: a boss attempt runs)
     void TickPhantomCombat(LeaderGroup& group, std::vector<Player*> const& players, Player* leader, uint32 now,

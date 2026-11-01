@@ -3286,7 +3286,6 @@ namespace TestHarness
         member.stranded = false;
         member.strandedSinceMs = 0;
         member.apartIgnoreUntilMs = 0;
-        party.rest[member.guid].farTimeouts = 0;  // [lead107] the leader's rest facts
         // [b32_sh_ooze] The walk from the entrance crosses a respawn zone: the member counts as back in through the
         // portal (Member::backInMs), so MeetMember's regroup decides - it runs only on a clear walk, else the group
         // comes to the entrance and walks back with it - instead of a lone walk through the refilled mobs.

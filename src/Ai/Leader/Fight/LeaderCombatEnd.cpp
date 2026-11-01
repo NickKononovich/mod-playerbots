@@ -249,17 +249,27 @@ namespace Leader::Fight
             // 20261025-163739-strat-h-5A-11 pulls 52-55: a Crimson Initiate 10420 alive, not evading, 97-133 yd off on
             // the hunter's Raptor kept every pull 45 s in phantom combat. A live hostile the leader can walk to (a
             // complete path) is made the group's target, once per mob; only an unreachable one has its combat ended.
+            // [lead128] user: no elapsed-time rule decides (PHANTOM_HUNT_MS 2 min per hunt, PHANTOM_HUNT_MAX_TRIES 3
+            // were the old clock and cap). The hunt lasts while its facts hold - the mob alive, still the group's
+            // target, still one the leader can walk to (or attacking) - and each mob is hunted once per episode
             Creature* hunted = route.phantomHunt ? leader->GetMap()->GetCreature(route.phantomHunt) : nullptr;
-            bool hunting = hunted && hunted->IsAlive() && route.target == route.phantomHunt &&
-                           int32(now - route.neighbourTargetUntilMs) < 0;
-            if (!hunting)
-                route.phantomHunt.Clear();
-            if (!hunting && hunt && route.phantomHuntTries < PHANTOM_HUNT_MAX_TRIES)
+            float huntedDistance = 0.0f;
+            std::string huntedNote;
+            bool hunting = hunted && route.target == route.phantomHunt &&
+                           JudgeRef(leader, hunted, huntedDistance, huntedNote) != RefFight::None;
+            if (!hunting && !route.phantomHunt.IsEmpty())
             {
-                ++route.phantomHuntTries;
+                if (route.neighbourTarget == route.phantomHunt)
+                    route.neighbourTargetUntilMs = now;  // the route's hold on it ends with the hunt
+                route.phantomHunt.Clear();
+            }
+            if (!hunting && hunt && !route.phantomHunted.count(hunt->GetGUID()))
+            {
+                route.phantomHunted.insert(hunt->GetGUID());
                 route.phantomHunt = hunt->GetGUID();
                 route.neighbourTarget = hunt->GetGUID();
-                route.neighbourTargetUntilMs = now + PHANTOM_HUNT_MS;
+                // the route keeps it as its target until the hunt's facts end it (above)
+                route.neighbourTargetUntilMs = now + PHANTOM_HUNT_HOLD_OPEN;
                 route.target = hunt->GetGUID();
                 route.targetIsBoss = false;
                 route.targetIsStarter = false;
@@ -273,17 +283,16 @@ namespace Leader::Fight
                 hunting = true;
                 Unit* victim = hunt->GetVictim();
                 LOG_INFO("playerbots", "[phantom_mob_hunt] {}: {} {} alive, {:.0f} % health, {:.1f} yd "
-                         "(dz {:.1f}), on {}: reachable ({}), the group's target (try {} of {})",
+                         "(dz {:.1f}), on {}: reachable ({}), the group's target (hunt {})",
                          leader->GetName(), hunt->GetName(), hunt->GetEntry(), hunt->GetHealthPct(),
                          huntDistance, hunt->GetPositionZ() - leader->GetPositionZ(),
-                         victim ? victim->GetName() : "nobody", huntPath, route.phantomHuntTries,
-                         PHANTOM_HUNT_MAX_TRIES);
+                         victim ? victim->GetName() : "nobody", huntPath, route.phantomHunted.size());
                 group.LogEvent("phantom_mob_hunt",
                                JsonObject().Str("mob", hunt->GetName()).Num("entry", hunt->GetEntry())
                                    .Real("hpPct", hunt->GetHealthPct()).Real("dist", huntDistance)
                                    .Real("dz", hunt->GetPositionZ() - leader->GetPositionZ())
                                    .Str("victim", victim ? victim->GetName() : "").Str("path", huntPath)
-                                   .Num("try", route.phantomHuntTries));
+                                   .Num("try", uint32(route.phantomHunted.size())));
             }
 
             // nothing attacks and no hunt runs: the refs are ended, once per set ([b33_sh2] sh-n 5B-89: a ref that
@@ -327,7 +336,8 @@ namespace Leader::Fight
                 }
                 group.LogEvent("phantom_combat_end",
                                JsonObject().Num("refs", uint32(others.size())).Num("petsEnded", controlledEnded)
-                                   .Num("huntTries", route.phantomHuntTries).Num("end", route.phantomCombatEnds)
+                                   .Num("huntTries", uint32(route.phantomHunted.size()))
+                                   .Num("end", route.phantomCombatEnds)
                                    .Raw("stillFlagged", stillFlagged.Build()));
             }
             anyInCombat = false;
@@ -337,7 +347,7 @@ namespace Leader::Fight
             route.phantomCombatSinceMs = 0;
             route.phantomCombatLogged = false;
             route.phantomEndedRefs.clear();
-            route.phantomHuntTries = 0;  // [phantom_mob_hunt] a real fight end: the next phantom gets its tries
+            route.phantomHunted.clear();  // [phantom_mob_hunt] a real fight end: the next phantom hunts anew
             route.phantomHunt.Clear();
         }
     }
@@ -370,6 +380,16 @@ namespace Leader::Fight
                     why = "dead";
                 else if (stale->IsCreature() && stale->ToCreature()->IsInEvadeMode())
                     why = "evading";
+                // [lead128] build 27 (Shirrak / Hungarfen / Hearthsinger): the tank's own pick held an idle boss in
+                // its swing out of melee range. In a group the leader leads, the tank's target outside a fight is
+                // the leader's pull order's: an idle mob no open order is for is no target of the group
+                else if (group.LeaderDecides() && stale->IsCreature() && !stale->IsInCombat() &&
+                         !leader->IsWithinMeleeRange(stale))
+                {
+                    Leader::PullOrder order;
+                    if (!Leader::Orders::GetOpen(group.LeaderGuid(), order) || order.target != staleGuid)
+                        why = "an idle mob no pull order is for";
+                }
             }
             else if (ObjectGuid const selected = leader->GetTarget();
                      !selected.IsEmpty() && !ObjectAccessor::GetUnit(*leader, selected))

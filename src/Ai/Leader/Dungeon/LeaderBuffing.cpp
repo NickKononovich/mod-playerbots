@@ -130,15 +130,9 @@ namespace Leader::Dungeon
 
     namespace
     {
-        // Buffing before a pull (TickBuffing): every step ends on its condition; the old fixed timers (15 s buffs,
-        // 2 s, 12 s food, 10 s ready check: 39 s before every boss, RFC 5B-1 Taragaman / Jergosh / Bazzalan) are
-        // upper bounds only.
-        constexpr uint32 BUFF_STEP_MAX_MS = 15 * IN_MILLISECONDS;
-        constexpr uint32 BUFF_STEP_MIN_MS = 1500;                   // the bots' first ticks with the window open
-        constexpr uint32 BUFF_IDLE_GRACE_MS = 3 * IN_MILLISECONDS;  // nobody buffs, a givable buff still missing
-        constexpr uint32 FLASK_GCD_MS = 1600;                       // a flask used: its global cooldown before food
-        constexpr uint32 FOOD_STEP_MIN_MS = IN_MILLISECONDS;        // the food just used shows its aura
-        constexpr uint32 FOOD_STEP_MAX_MS = 12 * IN_MILLISECONDS;
+        // Buffing before a pull (TickBuffing): every step ends on its own facts (user: no elapsed-time rule decides;
+        // BUFF_STEP_MAX_MS / BUFF_STEP_MIN_MS / BUFF_IDLE_GRACE_MS / FOOD_STEP_MIN_MS / FOOD_STEP_MAX_MS are gone).
+        constexpr uint32 FLASK_GCD_MS = 1600;  // the game's global cooldown after the flask (1.5 s), before the food
         // [ready_reply_now] mirrors ReadyCheckAction: the bots answer a ready check when it reaches them.
         constexpr bool READY_REPLY_ON_RECEIPT = true;
         // [single_ready_check] User rule 2026-10-25: one ready check per boss. With the bots' raid leader layer
@@ -270,16 +264,6 @@ namespace Leader::Dungeon
             return workers;
         }
 
-        // Eating for Well Fed: sitting with food and no Well Fed yet.
-        std::string Eaters(std::vector<Player*> const& players, Player* leader)
-        {
-            std::string eaters;
-            for (Player* bot : players)
-                if (InBuffRange(bot, leader) && RestState::IsEating(bot) && !HasWellFed(bot))
-                    eaters += (eaters.empty() ? "" : ", ") + bot->GetName();
-            return eaters;
-        }
-
         // A member answers the ready check by itself: at once, or with the "force rebuff" strategy when the rebuff
         // window the check opened (Begin(true): the reply flag, kept after End) closes (ReadyReplyAction). The
         // buffing step's Begin(false) cleared the flag of a closed window before.
@@ -299,8 +283,8 @@ namespace Leader::Dungeon
         struct BuffWait
         {
             std::string waitedFor;
-            uint32 idleSinceMs = 0;
             bool consumableUsed = false;  // step 1 -> 2: a flask was used; step 2 -> 3: food was used
+            std::set<ObjectGuid> fed;     // step 2 -> 3: the members given food
         };
         std::unordered_map<uint32, BuffWait> buffWaits;  // per instance, world thread only
     }
@@ -333,8 +317,10 @@ namespace Leader::Dungeon
                 route.buffStep = next;
                 route.buffStepMs = now;
                 bool const consumableUsed = wait.consumableUsed;
+                std::set<ObjectGuid> const fed = wait.fed;
                 wait = BuffWait();
                 wait.consumableUsed = consumableUsed;
+                wait.fed = fed;
             };
             auto const waitingFor = [&wait](std::string const& what)
             {
@@ -360,27 +346,17 @@ namespace Leader::Dungeon
                     break;
                 case 1:
                 {
-                    // Buffs: nobody casts, walks to buff or keeps its rebuff window open, and every buff the group can
-                    // give is on every member it is for. Nobody buffing while one is missing ends it after the grace.
+                    // Buffs: the step ends on its facts - nobody works on a buff any more (no cast, no walk to a
+                    // buff target, no rebuff window open: Begin opens it at once and the bot's own pass closes it
+                    // once no buff trigger fires), and every buff the group can give now is on every member it is
+                    // for; a buff still missing when every caster's pass ended is one its casters do not give
                     std::string const workers = BuffWorkers(players, leader);
                     std::string const missing = MissingGivableBuffs(group, players, leader);
                     waitingFor(workers.empty() ? missing : workers);
-                    if (!workers.empty())
-                        wait.idleSinceMs = 0;
-                    else if (!wait.idleSinceMs)
-                        wait.idleSinceMs = now;
                     std::string why;
-                    if (stepMs >= BUFF_STEP_MAX_MS)
-                        why = "upper bound " + std::to_string(BUFF_STEP_MAX_MS / IN_MILLISECONDS) + " s" +
-                              (workers.empty() ? std::string() : ", still buffing: " + workers) +
-                              (missing.empty() ? std::string() : ", missing: " + missing);
-                    // [ready_instant] User 2026-10-25 («ботам зачем проверять готовность? просто стоять и тупить»):
-                    // nothing missing and nobody buffing ends the step at once, no BUFF_STEP_MIN_MS pause
-                    else if (workers.empty() && missing.empty())
-                        why = "every buff the group can give is present";
-                    else if (stepMs >= BUFF_STEP_MIN_MS && workers.empty() &&
-                             getMSTimeDiff(wait.idleSinceMs, now) >= BUFF_IDLE_GRACE_MS)
-                        why = "nobody buffs any more, missing: " + missing;
+                    if (workers.empty())
+                        why = missing.empty() ? "every buff the group can give is present"
+                                              : "every caster's buff pass ended, missing: " + missing;
                     if (why.empty())
                         break;
                     stepDone(2, why);
@@ -397,8 +373,13 @@ namespace Leader::Dungeon
                         break;
                     }
                     uint32 eating = 0;
+                    wait.fed.clear();
                     for (Player* bot : players)
-                        eating += group.UseConsumables(bot, true) ? 1 : 0;
+                        if (group.UseConsumables(bot, true))
+                        {
+                            ++eating;
+                            wait.fed.insert(bot->GetGUID());
+                        }
                     stepDone(3, eating ? std::to_string(eating) + " member(s) sat down to eat"
                                        : std::string("Well Fed on everyone, no food needed"));
                     wait.consumableUsed = eating != 0;  // step 3: somebody eats
@@ -406,14 +387,16 @@ namespace Leader::Dungeon
                 }
                 case 3:
                 {
-                    // Food: only while somebody actually eats and has no Well Fed yet.
-                    std::string const eaters = Eaters(players, leader);
+                    // Food: while a member given food eats (its food aura, or the food's cast still under way) and
+                    // has no Well Fed yet; one that stood up without it is no longer waited for
+                    std::string eaters;
+                    for (Player* bot : players)
+                        if (wait.fed.count(bot->GetGUID()) && InBuffRange(bot, leader) && !HasWellFed(bot) &&
+                            (RestState::IsEating(bot) || bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)))
+                            eaters += (eaters.empty() ? "" : ", ") + bot->GetName();
                     waitingFor(eaters.empty() ? std::string() : "eating: " + eaters);
                     std::string why;
-                    if (stepMs >= FOOD_STEP_MAX_MS)
-                        why = "upper bound " + std::to_string(FOOD_STEP_MAX_MS / IN_MILLISECONDS) + " s" +
-                              (eaters.empty() ? std::string() : ", still eating: " + eaters);
-                    else if (eaters.empty() && (!wait.consumableUsed || stepMs >= FOOD_STEP_MIN_MS))
+                    if (eaters.empty())
                         why = wait.consumableUsed ? "Well Fed on everyone who ate" : "nobody eats";
                     if (why.empty())
                         break;
@@ -453,8 +436,12 @@ namespace Leader::Dungeon
                         {
                             if (!bot->IsAlive() || !InBuffRange(bot, leader))
                                 continue;
-                            bool const drinks = RestState::WantsDrink(bot) && CountRestItems(bot, 59) > 0;
-                            bool const eats = RestState::WantsFood(bot) && CountRestItems(bot, 11) > 0;
+                            // [lead128] only a member that can rest is waited for: sitting, or out of the fight on
+                            // dry ground and unmounted (RestState::CanRest), with the drink / food in its bags - the
+                            // leader's Rest (LeaderEvents, the same rest line) sits it down; one that cannot is not
+                            bool const canRest = bot->IsSitState() || RestState::CanRest(bot);
+                            bool const drinks = canRest && RestState::WantsDrink(bot) && CountRestItems(bot, 59) > 0;
+                            bool const eats = canRest && RestState::WantsFood(bot) && CountRestItems(bot, 11) > 0;
                             if (drinks || eats)
                                 belowLine += (belowLine.empty() ? "" : ", ") + bot->GetName() +
                                              (drinks ? " mana" : " health");

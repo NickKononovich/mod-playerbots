@@ -126,7 +126,6 @@ namespace TestHarness
         bool IsTerminal(Phase phase) { return IsTerminalPhase(phase); }
 
         using Leader::Dungeon::REGEN_SIT_GRACE_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGEN_STALL_RELEASE_MS;  // [lead107] LeaderRest.h
         using Leader::Dungeon::REGEN_WAIT_BELOW_LINE;  // [lead107] LeaderRest.h
         // [downtime_positions] / [downtime_phase] diagnostics for tools/downtime_audit.py
         constexpr bool DOWNTIME_POSITIONS = true;
@@ -150,14 +149,6 @@ namespace TestHarness
         using Leader::Dungeon::REGROUP_PING_PONG_GUARD;  // [lead107] LeaderRest.h
         using Leader::Dungeon::DECISION_MEET;  // [lead107] LeaderRest.h
         using Leader::Dungeon::DECISION_ROUTE;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGROUP_PING_PONG_FLIPS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGROUP_PING_PONG_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGROUP_PING_PONG_GAP_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGROUP_PING_PONG_HOLD_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGROUP_APART_IGNORE_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::FAR_TIMEOUTS_DROP;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::FAR_TIMEOUTS_IGNORE_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::REGROUP_PING_PONG_COOLDOWN_MS;  // [lead107] LeaderRest.h
         using Leader::Dungeon::REGROUP_PING_PONG_TOGETHER;  // [lead107] LeaderRest.h
         using Leader::Dungeon::REGROUP_PING_PONG_LEVEL_DZ;  // [lead107] LeaderRest.h
         using Leader::Dungeon::REGROUP_PING_PONG_MEET_RANGE;  // [lead107] LeaderRest.h
@@ -165,12 +156,6 @@ namespace TestHarness
         using Leader::Dungeon::FAR_WAIT_RANGE;  // [lead107] LeaderRest.h
         using Leader::Dungeon::FAR_TRAIL_RANGE;  // [lead107] LeaderRest.h
         using Leader::Dungeon::FAR_RESUME_RANGE;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::FAR_CLOSING_STEP;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::FAR_NOT_CLOSING_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::COMPACT_PAUSE_MAX_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::COMPACT_PAUSE_GAP_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::COMPACT_PAUSE_STALE_MS;  // [lead107] LeaderRest.h
-        using Leader::Dungeon::COMPACT_PAUSE_HEALER_MS;  // [lead107] LeaderRest.h
         using Leader::Dungeon::ApartMetric;  // [lead107] LeaderRest.h
         using Leader::Dungeon::CountRestItems;  // [lead107] LeaderRest.h
     }
@@ -1371,8 +1356,6 @@ namespace TestHarness
     namespace
     {
         constexpr uint32 AGGRO_LOSS_MS = 2 * IN_MILLISECONDS;
-        using Leader::Fight::PHANTOM_HUNT_MAX_TRIES;  // [lead107] LeaderCombatEnd.h
-        using Leader::Fight::PHANTOM_HUNT_MS;  // [lead107] LeaderCombatEnd.h
         // [b33_sh2] for [b33_brd] (brd-n 20261026-000434-brd-n-5F-6): the core flags a pet's owner only with
         // UNIT_FLAG_PET_IN_COMBAT, never IN_COMBAT, so a train chasing a hunter's pet was no fight for the harness
         // (pull_end of #59 at 3026 s while the mobs still walked in, the next pull planned into them). A member's pet
@@ -2995,16 +2978,14 @@ namespace TestHarness
         // no aggro event, no burst, taunt does nothing: EffectTaunt needs a threat list). In combat it never bursts
         // and a PvE reference never times out: 20 min "in combat on nobody", the rogue's and the AoE's hits reset the
         // phantom clock below every few seconds, so its 45 s end came twice. A creature in combat with a member that
-        // its AI has not engaged (CreatureAI::IsEngaged false), with no victim, for UNENGAGED_REF_MS is no fight: that
+        // its AI has not engaged (CreatureAI::IsEngaged false), with no victim, standing, is no fight: that
         // reference is ended whatever the damage (the trap then bursts on the next walk past it, out of combat).
         if (anyInCombat && !activeBoss)
         {
-            constexpr uint32 UNENGAGED_REF_MS = 20 * IN_MILLISECONDS;
-            // per party (parties run side by side): creature guid -> first seen unengaged
-            static std::map<uint32, std::unordered_map<uint64, uint32>> unengagedByParty;
-            std::unordered_map<uint64, uint32>& unengagedSince = unengagedByParty[party.seq];
+            // [lead128] user: no elapsed-time rule decides (UNENGAGED_REF_MS 20 s was the old clock). The facts: in
+            // combat, its AI never engaged (CreatureAI::IsEngaged), no victim, not evading and standing still - a
+            // creature that fights chases a victim; such a reference is no fight and ends at once
             std::vector<std::pair<Player*, ObjectGuid>> stale;  // looked up again at the end (an end may free refs)
-            std::set<uint64> seen;
             for (Player* bot : players)
             {
                 if (!bot->IsAlive())
@@ -3014,20 +2995,13 @@ namespace TestHarness
                     Unit* other = ref ? ref->GetOther(bot) : nullptr;
                     Creature* creature = other ? other->ToCreature() : nullptr;
                     if (!creature || !creature->IsAlive() || !creature->IsInCombat() || creature->IsEngaged() ||
-                        creature->GetVictim() || creature->IsInEvadeMode() || creature->IsDungeonBoss() ||
-                        creature->isWorldBoss() || creature->IsPet() || creature->IsGuardian())
+                        creature->GetVictim() || creature->IsInEvadeMode() || creature->isMoving() ||
+                        creature->IsDungeonBoss() || creature->isWorldBoss() || creature->IsPet() ||
+                        creature->IsGuardian())
                         continue;
-                    uint64 const raw = creature->GetGUID().GetRawValue();
-                    seen.insert(raw);
-                    uint32& since = unengagedSince[raw];
-                    if (!since)
-                        since = now ? now : 1;
-                    else if (getMSTimeDiff(since, now) >= UNENGAGED_REF_MS)
-                        stale.emplace_back(bot, guid);
+                    stale.emplace_back(bot, guid);
                 }
             }
-            for (auto itr = unengagedSince.begin(); itr != unengagedSince.end();)
-                itr = seen.count(itr->first) ? std::next(itr) : unengagedSince.erase(itr);
             for (auto const& [bot, guid] : stale)
             {
                 auto const& refs = bot->GetCombatManager().GetPvECombatRefs();
@@ -3038,8 +3012,8 @@ namespace TestHarness
                 Unit* first = ref->first;
                 Unit* second = ref->second;
                 LOG_INFO("playerbots", "[b34_arc] {}: ends the combat of {} with {} (in combat, never engaged by its "
-                         "AI, no victim, {} s)", party.id, first ? first->GetName() : "?",
-                         second ? second->GetName() : "?", UNENGAGED_REF_MS / IN_MILLISECONDS);
+                         "AI, no victim, standing)", party.id, first ? first->GetName() : "?",
+                         second ? second->GetName() : "?");
                 LogEvent(party, "unengaged_ref_end",
                          JsonObject().Str("a", first ? first->GetName() : "").Str("b", second ? second->GetName() : "")
                              .Num("entry", second && second->IsCreature() ? second->GetEntry()
@@ -3643,7 +3617,6 @@ namespace TestHarness
                     rest.regenSinceMs = 0;
                     rest.regenStallLogged = false;
                     rest.regenStallMs = 0;
-                    rest.regenStallReleased = false;
                     rest.regenAboveLineLogged = false;
                 }
                 SetPhase(party, activeBoss ? Phase::BossFight : Phase::Clearing);
@@ -3803,12 +3776,13 @@ namespace TestHarness
                                 focusHealer = healer;
                             }
                         }
-                        if (Group* group = leader->GetGroup(); group && focus)
-                            group->SetTargetIcon(7, leader->GetGUID(), focus->GetGUID());  // RtiTargetValue skull
+                        // [lead128] user: no elapsed-time rule decides a bot's target (the skull after STALEMATE_FOCUS_MS
+                        // was the old clock's decision): the stalemate is logged with the mob that would be the
+                        // focus, the leader's kill order decides the focus; STALEMATE_END_MS stays the run's stop
                         LogEvent(party, "trash_stalemate",
                                  JsonObject().Num("sec", flatMs / IN_MILLISECONDS).Num("pull", party.pullSeq)
                                      .Num("enemies", uint32(enemies.size()))
-                                     .Str("decision", "skull on the weakest " +
+                                     .Str("decision", "logged only (the leader's kill order); the weakest " +
                                                           std::string(focusHealer ? "healer" : "mob"))
                                      .Str("focus", focus ? focus->GetName() : "")
                                      .Real("focusHpPct", focus ? focus->GetHealthPct() : 0.0f)
