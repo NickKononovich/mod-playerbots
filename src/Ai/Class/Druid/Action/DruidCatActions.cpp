@@ -12,6 +12,16 @@
 #include "SpellMgr.h"
 #include <algorithm>
 
+// [rot41]
+bool CastSavageRoarAction::isUseful()
+{
+    if (!CastMeleeSpellAction::isUseful() || !AI_VALUE2(uint8, "combo", "current target"))
+        return false;
+
+    Aura* roar = botAI->GetAura("savage roar", bot);
+    return !roar || roar->GetDuration() <= int32(SAVAGE_ROAR_REFRESH_WINDOW_MS);
+}
+
 bool CastCowerAction::isUseful()
 {
     Unit* target = AI_VALUE(Unit*, "current target");

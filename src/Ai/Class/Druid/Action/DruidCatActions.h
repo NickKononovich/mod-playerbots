@@ -49,17 +49,15 @@ public:
     CastTigersFuryAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "tiger's fury") {}
 };
 
-class CastSavageRoarAction : public CastBuffSpellAction
+// [rot41] Savage Roar 52610's explicit target is the enemy that holds the combo points (as Slice and Dice): cast on
+// the cat itself SpellInfo::CheckExplicitTarget refused it ("CheckCast BAD_TARGETS", b180 5H Rtdruaf: 0 Roars in every
+// boss fight against the sim's 3/min). Cast on the current target; useful while the cat's own Roar is missing or
+// inside SAVAGE_ROAR_REFRESH_WINDOW_MS.
+class CastSavageRoarAction : public CastMeleeSpellAction
 {
 public:
-    // [b31_sd] A self buff: the "current target" override made isUseful() look for the Roar on the mob, where it
-    // never is, so the action was always "useful". Self target now (CastBuffSpellAction); the cast needs no explicit
-    // unit target, the core reads the combo points of the caster (Spell::CheckCast).
-    // [b31_sd] ...with the trigger's refresh window: with beforeDuration 0, isUseful() refused while any Roar was up,
-    // so the 2 s refresh never acted and Roar fell off every cycle (FERAL_CAT_AUDIT.md 2.2.1).
-    // CastBuffSpellAction(botAI, spell, checkIsOwner, beforeDuration).
-    CastSavageRoarAction(PlayerbotAI* botAI)
-        : CastBuffSpellAction(botAI, "savage roar", false, SAVAGE_ROAR_REFRESH_WINDOW_MS) {}
+    CastSavageRoarAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "savage roar") {}
+    bool isUseful() override;
 };
 
 // [b31_sd] Roar recast early to desync it from Rip ("savage roar clip", SavageRoarClipTrigger decides when): no
@@ -69,7 +67,7 @@ class CastSavageRoarClipAction : public CastSpellAction
 public:
     CastSavageRoarClipAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "savage roar") {}
 
-    std::string const GetTargetName() override { return "self target"; }
+    // [rot41] on the current target, the holder of the combo points (see CastSavageRoarAction)
     std::string const getName() override { return "savage roar clip"; }
     bool isUseful() override
     {
