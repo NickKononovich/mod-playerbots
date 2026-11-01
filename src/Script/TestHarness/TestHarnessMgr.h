@@ -876,6 +876,7 @@ namespace TestHarness
         void ClearMemberWaypoint(ObjectGuid member) override;
         bool MemberHasWaypoint(ObjectGuid member) const override;
         void SetMemberHasWaypoint(ObjectGuid member, bool has) override;
+        void SetMemberHasPortalGoal(ObjectGuid member, bool has) override;
         void ClearMemberIntent() override { _mgr.ClearMemberIntent(_party); }
         uint32 HarnessMoves() const override { return _party.harnessMoves; }
         void CountHarnessMove() override { ++_party.harnessMoves; }

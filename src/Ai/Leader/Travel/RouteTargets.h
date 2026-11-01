@@ -1004,6 +1004,47 @@ namespace Leader::Travel
             return summon && summon->GetSummonerGUID() == summoner;
         }
     };
+
+    bool AnyMemberOnVehicle(LeaderGroup& group);
+
+    // [boss_dead_encounter_open] the script slot of a boss creature, as the boss_state event knows it (BossTrack:
+    // its bound creature, else its entry); -1 when the run tracks no slot for it.
+    int32 BossSlotOf(LeaderGroup& group, Creature const* boss);
+
+    // The door_spin_hold line: the door, the skips, and its opener (a key starter of the group, or none).
+    JsonObject DoorSpinFields(LeaderGroup& group, Player* leader, GameObject const* door, uint32 skips,
+              uint32 windowMs, char const* how, std::string& opener);
+
+    // [lead5] LEADER_ONE_PICKER: EncounterOrder::IsLocked is the one encounter-order rule (the planner's and the
+    // pick's: the Utgarde Keep forge order with its formations, Blackheart's room), not the harness's own copy of
+    // the forge rule (UKIds::IsForgeMasterLocked) for the route's target choice.
+    bool EncounterLockedFor(LeaderGroup& group, Creature* creature, InstanceScript const* script);
+
+    // [b32_strat_gate] An auto-closing key gate (KeyDoorPassDef) the whole living group is through: every member on
+    // the far side of the gate plane (away from its use point). A door_hold there is a walk BACK to what stands
+    // behind it - no reason to key it again (strat-h 221216-5C-1: 175352 re-armed at 1040 s for trash behind it).
+    bool GroupThroughKeyGate(LeaderGroup& group, GameObject const* door);
+
+    // Wing runs (Scarlet Monastery, Dire Maul, Blackrock Spire): a hostile closer to a boss of another wing than
+    // to every boss and entrance of this one belongs to the other wing.
+    bool InThisWing(LeaderGroup& group, WorldObject const* object);
+
+    // The entrance nearest (2D) to an object: the wing it stands in (Scarlet Monastery, Dire Maul).
+    int32 NearestEntrance(LeaderGroup& group, WorldObject const* object);
+
+    // ROUTE_REST_HOLD: the members the group waits for ("name(drinking)", ...); empty: no hold. A fight ends
+    // it (the bots fight, the harness has nothing to hold), and so does an escort (the group keeps up with it).
+    std::string RestHoldMembers(LeaderGroup& group, Player* leader);
+
+    bool SpotBossIsNext(LeaderGroup& group, EventSpotDef const& spot, Player* leader);
+
+    void Retarget(LeaderGroup& group, Player* leader);
+
+    void StartWingChange(LeaderGroup& group, size_t next, char const* why);
+
+    // [sm-wing-done] true while a living boss of the run stands in the wing of Party::entranceIdx (its nearest
+    // entrance); nextWing: the entrance of the lowest-order boss left in another wing (-1: none).
+    bool WingBossesLeft(LeaderGroup& group, Map* map, Player* leader, int32& nextWing);
 }
 
 #endif

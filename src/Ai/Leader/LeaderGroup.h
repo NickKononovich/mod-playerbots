@@ -44,6 +44,7 @@ namespace Leader
             ObjectGuid guid;
             std::string name;
             uint32 apartIgnoreUntilMs = 0;  // the group's apart rule ignores it until then (a member brought back)
+            bool usesMana = false;          // its role and class use mana (the rest's mana line counts)
         };
 
         // a member's walk point (the route walk's waypoint registry the group's owner keeps)
@@ -157,6 +158,8 @@ namespace Leader
         virtual void ClearMemberWaypoint(ObjectGuid member) = 0;
         virtual bool MemberHasWaypoint(ObjectGuid member) const = 0;
         virtual void SetMemberHasWaypoint(ObjectGuid member, bool has) = 0;
+        // a member's walk to an instance portal is set (SelfTravel's portal goal)
+        virtual void SetMemberHasPortalGoal(ObjectGuid member, bool has) = 0;
         virtual void ClearMemberIntent() = 0;
         // the walks the group's owner made itself (a metric), the run's wipes, the run's last progress (its stall
         // watch) and a progress now
