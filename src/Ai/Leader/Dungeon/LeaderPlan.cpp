@@ -49,6 +49,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "RouteLegs.h"  // [lead110] PackMobCheck
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
@@ -968,17 +969,59 @@ namespace Leader::Dungeon
             // pack (unplanned start, 8 mobs) - one check for EVERY engage (a still mob, a patrol, a boss): its walk-in
             // judged against every idle pack's reach, the plan's own mobs and the target's formation not judged
             // [lead104] the judgement is the leader's (Ai/Leader/Fight/PullFacts): the harness calls it and logs
+            // [lead110] user: the woken pack is planned as part of the pull, not refused separately - the pull's
+            // mobs, the walkers taken along and the woken mob's pack judged as one fight (PullPlanner::JudgePack, the
+            // planner's estimate): it fits, the pull goes with them (taken along: PullPack, the walk guards let them
+            // come); it does not, the woken pack is the pull first (as before)
             if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && committed.kind == "engage")
-                if (Unit* woken = Leader::Fight::WalkInWakes(tank, mob, LeaderPullMobs(lead.commit, lead.commitMob)))
+            {
+                std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+                pullMobs.insert(pullMobs.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
+                if (Unit* woken = Leader::Fight::WalkInWakes(tank, mob, pullMobs))
+                {
+                    std::vector<ObjectGuid> wokenPack{woken->GetGUID()};
+                    if (Creature* wokenMob = woken->ToCreature())
+                    {
+                        std::list<Creature*> pack;
+                        Leader::Travel::PackMobCheck check{tank, wokenMob};
+                        Acore::CreatureListSearcher<Leader::Travel::PackMobCheck> searcher(wokenMob, pack, check);
+                        Cell::VisitObjects(wokenMob, searcher, Leader::Travel::PACK_RADIUS);
+                        for (Creature* member : pack)
+                            if (member != wokenMob)
+                                wokenPack.push_back(member->GetGUID());
+                    }
+                    std::vector<ObjectGuid> combined = pullMobs;
+                    combined.insert(combined.end(), wokenPack.begin(), wokenPack.end());
+                    float overload = 0.0f;
+                    std::string judged;
+                    bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                    Decisions().Write(run, "leader", "walk_in_wakes", mob->GetGUID(), mob->GetName(), true,
+                                      JsonObject().Str("wakes", woken->GetName())
+                                          .Num("wakesLow", woken->GetGUID().GetCounter())
+                                          .Real("distance", tank->GetExactDist(woken))
+                                          .Num("wokenPack", int64(wokenPack.size())).Real("overload", overload)
+                                          .Str("judged", judged)
+                                          .Str("decision", fits ? "one pull: taken along" : "the pull first"));
+                    if (fits)
+                    {
+                        for (ObjectGuid const& guid : wokenPack)
+                            if (std::find(lead.takenWalkers.begin(), lead.takenWalkers.end(), guid) ==
+                                lead.takenWalkers.end())
+                                lead.takenWalkers.push_back(guid);
+                        if (Group* tankGroup = tank->GetGroup())
                         {
-                            lead.walkWakesFirst = woken->GetGUID();
-                            Decisions().Write(run, "leader", "walk_in_wakes", mob->GetGUID(),
-                                                          mob->GetName(), true,
-                                                          JsonObject().Str("wakes", woken->GetName())
-                                                              .Num("wakesLow", woken->GetGUID().GetCounter())
-                                                              .Real("distance", tank->GetExactDist(woken)));
-                            broken = "the walk in to it wakes " + woken->GetName() + ": it is the pull first";
+                            std::vector<ObjectGuid> mobs = LeaderPullMobs(lead.commit, lead.commitMob);
+                            mobs.insert(mobs.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
+                            Leader::PullPack::Set(tankGroup->GetGUID(), mobs);
                         }
+                    }
+                    else
+                    {
+                        lead.walkWakesFirst = woken->GetGUID();
+                        broken = "the walk in to it wakes " + woken->GetName() + ": it is the pull first";
+                    }
+                }
+            }
             if (!broken.empty())
             {
                 Decisions().Write(run, "leader", "commit_released", lead.commitMob,

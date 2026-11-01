@@ -9598,177 +9598,20 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 if (!quickOne)
                     _blockedTarget = one ? one->GetGUID() : ObjectGuid::Empty;
 
-                uint32 blockedMs = _blockedSinceMs ? getMSTimeDiff(_blockedSinceMs, blockNow) : 0;
-                // the pack's own stand, over the harness's retargets and skips (_packBlocked)
+                // [lead110] user: no fixed pack cap and no stand clock. The smallest pull is judged by the leader's
+                // own estimate - the overload of what it brings (JudgeMobs: the plans' danger model, "overload x of
+                // 1.00"): it fits, it is pulled now (walked in too when no ranged pull: what it wakes is part of the
+                // pull); it does not, round a corner, else no safe pull here (the split, the route round it). b143
+                // rfc-h 853-913 s: the cap / stand refusals cycled 60 s in the Searing Blade room.
+                (void)blockNow;
+                _lastResortCap = CAREFUL_LAST_RESORT_HARD_CAP;
+                float singleOverload = 0.0f;
+                std::string singleJudged;
+                bool const singleFits = one && !oneEstimate.boss && JudgeMobs(single, singleOverload, singleJudged);
+                if (one && !oneEstimate.boss && !singleFits)
                 {
-                    std::vector<ObjectGuid> packGuids = {target->GetGUID()};
-                    for (Unit* mob : adds)
-                        packGuids.push_back(mob->GetGUID());
-                    if (one)
-                        packGuids.push_back(one->GetGUID());
-                    blockedMs = std::max(blockedMs, PackBlockedMs(packGuids, blockNow));
-                }
-                float const hardCap = CAREFUL_LAST_RESORT_HARD_CAP *
-                                      (blockedMs >= 2 * CAREFUL_BLOCK_ESCALATE_MS ? 3.0f
-                                       : blockedMs >= CAREFUL_BLOCK_ESCALATE_MS   ? 2.0f
-                                                                                  : 1.0f);
-                _lastResortCap = hardCap;
-                // the hard cap trusts the measured calibration only down to LANDED_HARD_CAP_FLOOR
-                float const landedScale = estimateMode.landedScale;
-                float const capScale = std::max(landedScale, LANDED_HARD_CAP_FLOOR);
-                // [b34_scholo] ...for the melee part only: the calibration is the tank's taken damage over its cheap
-                // fights, and a caster pack's spells (Shadow Bolt: no armor, no avoidance) are not what it measured.
-                // scholo-h 20261026-014521-scholo-h-5H-3: landed scale 0.40 from three Risen Guard pulls (the tank
-                // took 0-156 damage), so "Spectral Researcher ... 9 mobs, cost 7.00" (4.67 scaled, 11.7 unscaled) was
-                // taken; in the hall fight the tank took 30k of Shadow Bolts in 15 s (7.7 tank healths in all).
-                float const spellShare =
-                    oneEstimate.cost > 0.0f ? std::clamp(oneEstimate.spellCost / oneEstimate.cost, 0.0f, 1.0f) : 0.0f;
-                float const capShare = capScale * (1.0f - spellShare) + spellShare;
-                float const capCost = landedScale > 0.0f ? oneEstimate.cost / landedScale * capShare : oneEstimate.cost;
-                if (one && !oneEstimate.boss && capCost <= hardCap && capCost > CAREFUL_LAST_RESORT_HARD_CAP)
-                    LOG_INFO("playerbots", "[pull escalate] {}: {} blocked {} s, cost {:.2f} within the escalated cap "
-                             "{:.2f}: taken as a hard pack", bot->GetName(), one->GetName(), blockedMs / 1000,
-                             capCost, hardCap);
-                // the stand's guarantee (CAREFUL_BLOCK_GUARANTEE_MS): a pack within the size cap is no stall for good
-                size_t const overCap = overCapMobs;
-                // The size against the weighted count (CAREFUL_SWARM_CAP_WEIGHT): weak swarm adds count less.
-                float singleWeighted = 0.0f;
-                for (Unit* mob : single)
-                    singleWeighted += CapWeight(mob, bot);
-                bool const withinCap = singleWeighted <= float(lastResortMobs) + 0.01f;
-                if (withinCap && single.size() > lastResortMobs)
-                    LOG_INFO("playerbots", "[pull swarm] {}: swarm_cap_weight: guarantee pack of {} counts {:.1f} "
-                             "against the cap {}", bot->GetName(), single.size(), singleWeighted, lastResortMobs);
-                uint32 const guaranteeMs = withinCap ? CAREFUL_BLOCK_GUARANTEE_MS : CAREFUL_BLOCK_GUARANTEE_OVER_MS;
-                // [b30_overpull] an over-cap guarantee pack is taken only while its cost stays within
-                // GUARANTEE_OVER_CAP_MAX_COST: strat-h 20261025-184229-strat-h-5C-5, "Ravaged Cadaver blocked 47 s,
-                // brings 16 mobs (cap 9), cost 16.21 over the hard cap 6.00: taken" (landed scale 1.00) - 20 came,
-                // the wipe at 227 s. The within-cap guarantee keeps taking any cost (the levelling overstatement).
-                // [b32_pull] The within-cap guarantee takes any cost because the levelling model overstates 3-7x. A
-                // tank whose measured calibration says the model does not overstate (landed scale ~1) gets the
-                // escalated hard cap's x2 as its ceiling: dtk-h 20261025-223307-dtk-h-5G-74, "Flesheating Ghoul
-                // blocked 15 s, brings 7 mobs (cap 9), cost 8.86 over the hard cap 3.00: taken" (landed scale 1.00),
-                // 7 came as estimated and all five died. The hard cap's own escalation (x3 after 60 s) still applies.
-                constexpr float MEASURED_COST_TRUST = 0.9f;
-                // [b34_scholo] a heroic / max-level pack whose cost is mostly spells has no measured calibration
-                // either (above): the same ceiling, waiting for the hard cap's escalation, not a dead end
-                constexpr float SPELL_PACK_SHARE = 0.5f;
-                bool const spellPack = estimateMode.rescaledSpells && spellShare >= SPELL_PACK_SHARE;
-                bool const measuredCeiling = withinCap && (landedScale >= MEASURED_COST_TRUST || spellPack) &&
-                                             capCost > 2.0f * CAREFUL_LAST_RESORT_HARD_CAP && capCost > hardCap;
-                bool const overCostCeiling =
-                    (!withinCap && capCost > GUARANTEE_OVER_CAP_MAX_COST) || measuredCeiling;
-                // [b32_pull] The hard minimum is a lone mob only while what it brings fits the pack-size cap: a cheap
-                // "one" that brings more than the cap went at once on cost alone (scholo-n 20261025-221216-scholo-n-
-                // 5C-4 pull 8, dtk-h 20261025-223307-dtk-h-5G-74 pull 7). Over the cap it is refused like a costly
-                // one: round a corner, a mover's wait, or the over-cap guarantee after its longer stand.
-                bool const overSize = one && !oneEstimate.boss && !withinCap;
-                bool const refusedSingle = capCost > hardCap || overSize;
-                // [b34_scholo] The stand's guarantee walks in on no pack, as the pack guarantee below
-                // ([guarantee_body_pull_route_only]): with no single-target ranged pull the "one" is walked in on, and
-                // a walk into a pack that brings more than that one mob is the harness's route body pull to decide.
-                // scholo-h 5H-3: "one mob walked in (no ranged pull) Spectral Researcher at 41.7 yd, 9 mobs", on the
-                // Chamber of Summoning floor (one linked area of 15-24 mobs, DUNGEON_TACTICS 2).
-                bool const walkInPack = walkIn && single.size() > 1;
-                bool const guarantee = one && !oneEstimate.boss && refusedSingle && blockedMs >= guaranteeMs &&
-                                       singleWeighted <= float(overCap) + 0.01f && !overCostCeiling && !walkInPack &&
-                                       std::none_of(single.begin(), single.end(),
-                                                    [](Unit* mob) { return IsBossMob(mob); });
-                if (guarantee)
-                {
-                    _planGuaranteed = true;
-                    LOG_INFO("playerbots", "[pull guarantee] {}: {} blocked {} s, brings {} mobs (cap {}), cost {:.2f} "
-                             "over the hard cap {:.2f}: taken, the stand ends", bot->GetName(), one->GetName(),
-                             blockedMs / 1000, single.size(), lastResortMobs, capCost, hardCap);
-                }
-                else if (one && !oneEstimate.boss && refusedSingle)  // [b32_pull] was capCost > hardCap
-                {
-                    // the refusal for the harness: hopeless only past the over-cap scale (a dead end, route round)
-                    // [b32_pull] the measured ceiling is a wait for the hard cap's escalation, not a dead end
-                    _planVerdictHopeless =
-                        singleWeighted > float(overCap) + 0.01f || (overCostCeiling && !measuredCeiling);
-                    _planVerdictGuaranteeWaitMs = blockedMs < guaranteeMs ? guaranteeMs - blockedMs : 0;
-                    _planVerdictWhy = overCostCeiling && !measuredCeiling && singleWeighted <= float(overCap) + 0.01f
-                                          ? Acore::StringFormat("no safe pull: the smallest pull ({} at range) "
-                                                                "brings {} mobs over the cap {} at cost {:.2f}, over "
-                                                                "the guarantee's ceiling {:.2f}",
-                                                                one->GetName(), single.size(), lastResortMobs, capCost,
-                                                                GUARANTEE_OVER_CAP_MAX_COST)
-                                      : _planVerdictHopeless
-                                          ? Acore::StringFormat("no safe pull: the smallest pull ({} at range) "
-                                                                "brings {} mobs, over {} (the cap {} x{:.1f})",
-                                                                one->GetName(), single.size(), overCap,
-                                                                baseLastResortMobs, GUARANTEE_OVER_CAP_SCALE)
-                                          : Acore::StringFormat("refused for now{}: {} brings {} mobs at cost {:.2f}, "
-                                                                "taken after a {} s stand (blocked {} s)",
-                                                                withinCap ? "" : " (unsafe, over the cap)",
-                                                                one->GetName(), single.size(), capCost,
-                                                                guaranteeMs / IN_MILLISECONDS, blockedMs / 1000);
-                    // [b34_scholo] said, and no guarantee wait the harness holds for. Worded as the over-cap class
-                    // (RefusalIsOverCap: "does not fit"), so the harness does not walk the whole group into it either.
-                    if (walkInPack && !_planVerdictHopeless)
-                    {
-                        _planVerdictGuaranteeWaitMs = 0;
-                        _planVerdictWhy = Acore::StringFormat(
-                            "refused for now: no ranged pull of {}; walked in, its pack does not fit the hard minimum "
-                            "({} mobs at cost {:.2f}, hard cap {:.2f}), and the stand's guarantee walks in on no pack",
-                            one->GetName(), single.size(), capCost, hardCap);
-                    }
-                }
-                // [b47_plan] within the hard cap but well over a tank health: a mover it brings walks off first
-                if (one && !oneEstimate.boss && !refusedSingle && !quickOne &&
-                    capCost > CAREFUL_LAST_RESORT_SOFT_COST && blockedMs < 2 * CAREFUL_BLOCK_ESCALATE_MS)
-                {
-                    Unit* mover = nullptr;
-                    for (Unit* mob : single)
-                    {
-                        Creature* creature = mob ? mob->ToCreature() : nullptr;
-                        if (mob != one && creature && !IsBossMob(creature) &&
-                            MotionOf(creature) != MobMotion::Static)
-                        {
-                            mover = mob;
-                            break;
-                        }
-                    }
-
-                    // its own bound too: the stand's clock restarts when the nearest target flips between packs
-                    constexpr uint32 SOFT_WAIT_MAX_MS = 45 * IN_MILLISECONDS;
-                    constexpr uint32 SOFT_WAIT_GAP_MS = 10 * IN_MILLISECONDS;
-                    thread_local std::unordered_map<uint64, std::pair<uint32, uint32>> softWaits;  // since, seen
-                    std::pair<uint32, uint32>& softWait = softWaits[bot->GetGUID().GetRawValue()];
-                    if (mover)
-                    {
-                        if (!softWait.first || getMSTimeDiff(softWait.second, now) > SOFT_WAIT_GAP_MS)
-                            softWait.first = now ? now : 1;
-                        softWait.second = now ? now : 1;
-                        if (getMSTimeDiff(softWait.first, now) >= SOFT_WAIT_MAX_MS)
-                            mover = nullptr;  // waited long enough: taken as before
-                    }
-
-                    if (mover)
-                    {
-                        std::string const why = Acore::StringFormat(
-                            "[b47_plan] last_resort_soft: the lone mob {} brings {} mobs at cost {:.2f} (over {:.2f}, "
-                            "blocked {} s); waits for {} ({}) to walk off", one->GetName(), single.size(), capCost,
-                            CAREFUL_LAST_RESORT_SOFT_COST, blockedMs / 1000, mover->GetName(),
-                            MobMotionName(MotionOf(mover->ToCreature())));
-                        LogPullHold(bot, why.c_str(), one);
-                        _planNotReadyWhy = "spacing wait: " + why;
-                        one = nullptr;
-                    }
-                }
-
-                if (one && !oneEstimate.boss && refusedSingle && !guarantee)  // [b32_pull] was capCost > hardCap
-                {
-                    std::string const capWhy =
-                        capCost > hardCap
-                            ? Acore::StringFormat("the lone mob {} brings {} mobs, cost {:.2f} tank hp, over the hard "
-                                                  "cap {:.2f} (blocked {} s)",
-                                                  one->GetName(), single.size(), capCost, hardCap, blockedMs / 1000)
-                            : Acore::StringFormat("the lone mob {} brings {} mobs ({:.1f} weighted), over the size "
-                                                  "cap {} (blocked {} s)",
-                                                  one->GetName(), single.size(), singleWeighted, lastResortMobs,
-                                                  blockedMs / 1000);
+                    std::string const capWhy = Acore::StringFormat("the lone mob {} brings {} mobs: {}",
+                                                                   one->GetName(), single.size(), singleJudged);
                     bool corner = false;
                     if (!measured || quickOne)  // a measured group tried the corner above already
                     {
@@ -9784,36 +9627,18 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     }
                     else
                     {
-                        // The wait for a mover is bounded by the stand's clock too: a patrol that paces beside its
-                        // pack (sh-n Legionnaire by the Darkcasters) never walks off.
-                        Unit* mover = nullptr;
-                        bool const moverWait = blockedMs < 2 * CAREFUL_BLOCK_ESCALATE_MS;
-                        for (Unit* mob : single)
-                        {
-                            Creature* creature = mob->ToCreature();
-                            if (moverWait && creature && !IsBossMob(creature) &&
-                                MotionOf(creature) != MobMotion::Static)
-                            {
-                                mover = mob;
-                                break;
-                            }
-                        }
-
-                        if (mover)
-                        {
-                            std::string const why = capWhy + Acore::StringFormat(
-                                "; waits for {} ({}) to walk off", mover->GetName(),
-                                MobMotionName(MotionOf(mover->ToCreature())));
-                            LogPullHold(bot, why.c_str(), one);
-                            _planNotReadyWhy = "spacing wait: " + why;
-                        }
-                        else
-                            LogPullBlocked(bot, capWhy + "; no pull round a corner, nothing walks off: left to the "
-                                                         "group's pre-pull crowd control", one);
+                        _planVerdictHopeless = true;
+                        _planVerdictGuaranteeWaitMs = 0;
+                        _planVerdictWhy = Acore::StringFormat("no safe pull: the smallest pull ({} {}) brings {} mobs: "
+                                                              "{}", one->GetName(), walkIn ? "walked in" : "at range",
+                                                              single.size(), singleJudged);
+                        LogPullBlocked(bot, capWhy + "; no pull round a corner", one);
                     }
 
                     one = nullptr;
                 }
+                else if (one && !oneEstimate.boss)
+                    _planGuaranteed = true;  // [lead110] the estimate carries it: no fixed cost cap refuses it later
 
                 if (one)
                 {
@@ -9853,51 +9678,34 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         }
     }
 
-    // The stand's guarantee for any refusal (wave 12: 3-4 mob packs refused with no plan at all, "smallest plan 4 mobs
-    // at cost 0.00": every way in woke a mob, no lone mob, a crowd control claim; the hard-minimum guarantee never
-    // ran for them). Topped up and blocked CAREFUL_BLOCK_GUARANTEE_MS on this pack, no boss in it, within the
-    // last resort's mob cap with what the way in wakes (each woken mob with its pack): the pack is pulled as it
-    // stands, at range when the tank has a pull, else walked in. Over the cap, or a boss woken: hopeless, said why.
-    size_t const guaranteeOverCap = overCapMobs;
-    // the smallest real pull of the pack: its best plan's count when one was looked at, else the pack at its spot
-    // [b33_fix1] reverted [b33_brs]'s weighted count (capMobs) here: the guarantee is the stand's hard minimum, it
-    // skips the cost gates for a pack within the cap, so the cap holds real mobs. scholo-h 20261026-012428-5G-3
-    // (241-369 s): the weighted count took "31 mobs, cost 48.93 tank hp" as within 18 (and within the 9 that skips
-    // GUARANTEE_OVER_CAP_MAX_COST), 42 enemies came, wipe.
+    // the smallest real pull of the pack (the split below): its best plan's count when one was looked at, else the pack
     size_t const smallestPull =
         best.mob.IsEmpty() ? adds.size() + 1 : std::min<size_t>(adds.size() + 1, best.estimate.mobs);
-    if (!found && toppedUp && !boss && !targetPackBoss && smallestPull <= guaranteeOverCap)
+    // [lead110] user: no fixed pack cap, no stand clock - the pack as it comes (the pack, what the way in wakes, the
+    // chain of the core's call for assistance) is judged by the leader's estimate (JudgeMobs, the plans' danger
+    // model): it fits, it is pulled now as one planned pull, at range when the tank has a pull, else walked in (the
+    // woken packs are part of the pull); it does not, no safe pull here (the split below, the route round it)
+    if (!found && toppedUp && !boss && !targetPackBoss)
     {
         std::vector<ObjectGuid> packGuids = {target->GetGUID()};
         for (Unit* mob : adds)
             packGuids.push_back(mob->GetGUID());
 
-        // an encounter tactic's request (GuaranteeRequest) takes the pack at once, walked in when asked
+        // an encounter tactic's request (GuaranteeRequest) is walked in when asked
         ObjectGuid requestedMob;
         bool requestedWalkIn = false;
         bool requested = GuaranteeRequest::Get(bot->GetGUID(), requestedMob, requestedWalkIn) &&
                          std::find(packGuids.begin(), packGuids.end(), requestedMob) != packGuids.end();
-        // [lead3] LEADER_NO_BODY_FALLBACK: the leader's whole-pack request (a pack it must clear: the old harness body
-        // pull's domain) comes in the look's inputs, not the GuaranteeRequest registry, and is offered whole at once
-        // (allowWholePack: the over-cap scale, no stand clock); the walk-in is priced by the rounds below.
-        bool leaderWhole = false;
+        // [lead3] LEADER_NO_BODY_FALLBACK: the leader's whole-pack request comes in the look's inputs
         if (PullPlanner::LeaderInputs const* inputs = _snap ? _snap->Leader() : nullptr;
             inputs && Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && !inputs->wholePack.IsEmpty() &&
             std::find(packGuids.begin(), packGuids.end(), inputs->wholePack) != packGuids.end())
         {
-            leaderWhole = true;
             requested = true;
             requestedMob = inputs->wholePack;
             requestedWalkIn = requestedWalkIn || inputs->walkIn;
         }
-        uint32 const stood = PackBlockedMs(packGuids, now);
-        uint32 const packBlocked =
-            leaderWhole ? std::max(stood, CAREFUL_BLOCK_GUARANTEE_OVER_MS)
-                        : (requested ? std::max(stood, CAREFUL_BLOCK_GUARANTEE_MS) : stood);
-        // within the cap after the stand, up to the over-cap scale after the longer one
-        size_t const allowed = packBlocked >= CAREFUL_BLOCK_GUARANTEE_OVER_MS ? guaranteeOverCap : lastResortMobs;
-        if (packBlocked >= CAREFUL_BLOCK_GUARANTEE_MS && smallestPull <= allowed && !IsCrowdControlled(target) &&
-            !EncounterOrder::IsLocked(target))
+        if (!IsCrowdControlled(target) && !EncounterOrder::IsLocked(target))
         {
             Position castSpot;
             bool const back = !(requested && requestedWalkIn) && PullBackSpot(target, castSpot);
@@ -9912,19 +9720,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             std::vector<Unit*> guaranteed(pack);
             if (std::find(guaranteed.begin(), guaranteed.end(), target) == guaranteed.end())
                 guaranteed.insert(guaranteed.begin(), target);
-            // [b33_fix1] reverted [b33_brs]'s base-pack chain weighting (ChainStepWeight on the pack's own hops): every
-            // mob of the pack and of what the way in wakes counts in full again, as in build 32; only the helpers the
-            // assistance calls bring after it count CHAIN_STEP_CAP_WEIGHT ([guarantee_chain_count] below)
-            size_t engagedByThemselves = 0;  // 0: not fixed yet (the walk rounds), every mob engages by itself
-            auto const guaranteedWeight = [&guaranteed, &engagedByThemselves]()
-            {
-                size_t const engaged =
-                    engagedByThemselves ? std::min(guaranteed.size(), engagedByThemselves) : guaranteed.size();
-                return float(engaged) + CHAIN_STEP_CAP_WEIGHT * float(guaranteed.size() - engaged);
-            };
             Unit* wokenBoss = nullptr;
             Creature* firstWoken = nullptr;
-            for (uint32 round = 0; round < GUARANTEE_WALK_ROUNDS && !wokenBoss && guaranteed.size() <= allowed; ++round)
+            for (uint32 round = 0; round < GUARANTEE_WALK_ROUNDS && !wokenBoss; ++round)
             {
                 bool walkable = false;
                 Creature* const woken = WalkEntersAggro(botAI, bot, possible, bot->GetPosition(), walkTo, guaranteed,
@@ -9950,26 +9748,16 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 }
             }
 
-            // [guarantee_chain_count] The pack as the core's call for assistance grows it (Creature::CallAssistance:
-            // an idle mob of a helping faction within CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS of a fighting one,
-            // in its sight), repeated over every mob it brings: the formation count alone took "a pack within 7"
-            // in the Scholomance Necromancer room (scholo-n w23, 20261025-112011-scholo-n-5A-7) and 25 came.
-            // [guarantee_chain_fight_position] plan29 follow-up 5 (scholo-h 20261025-163739-5, 141 s idle: "the way to
-            // Risen Guard wakes Scholomance Necrolyte ... with it 19 mobs, over 14", the chain run helper to helper
-            // from their spawns): only a mob that engages by itself (the pack, what the way in wakes) calls from
-            // where it stands; a helper engages with its call off (AssistDelayEvent) and calls next from where it
-            // fights - by the tank, counted by the pack there - so the chain is one step deep here, and each helper
-            // counts CHAIN_STEP_CAP_WEIGHT against the size (as in CollectPack, [chain_step_weight]).
-            engagedByThemselves = guaranteed.size();  // [b33_brs] the weight lambda moved above the walk rounds
+            // [guarantee_chain_count] the pack as the core's call for assistance grows it (Creature::CallAssistance),
+            // one step deep from the mobs that engage by themselves (the helpers call next from the tank's fight)
+            size_t const engagedByThemselves = guaranteed.size();
             float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
             if (!wokenBoss && assistRadius > 0.0f)
             {
-                for (size_t index = 0; index < engagedByThemselves && guaranteedWeight() <= float(allowed) &&
-                                       !wokenBoss;
-                     ++index)
+                for (size_t index = 0; index < engagedByThemselves && !wokenBoss; ++index)
                 {
                     Creature* caller = guaranteed[index]->ToCreature();
-                    if (!caller || !CallsOnEngage(caller))  // [b33_brs] no engage call: its periodic one is the pack's
+                    if (!caller || !CallsOnEngage(caller))
                         continue;
 
                     for (ObjectGuid const& guid : possible)
@@ -9990,49 +9778,23 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 }
             }
 
-            // [guarantee_body_pull_route_only] The guarantee walks in on a pack only when an encounter tactic asks
-            // it (GuaranteeRequest walk-in); a pack it cannot pull from range is left to the harness, whose
-            // BlockerPullGate body-pulls only the pack on the only way to a boss or an event.
-            bool const walkInRefused = !back && !(requested && requestedWalkIn);
-
-            float const guaranteedCount = guaranteedWeight();
-            if (walkInRefused && !wokenBoss && guaranteedCount <= float(allowed) + 0.01f)
-            {
-                _planVerdictHopeless = false;
-                _planVerdictWhy = Acore::StringFormat("refused for now: no pull of {} from range, and the stand's "
-                                                      "guarantee walks in on no pack (the route's body pull decides)",
-                                                      target->GetName());
-                LogPullBlocked(bot, "the stand's guarantee refused: " + _planVerdictWhy, target);
-            }
-            else if (wokenBoss || guaranteedCount > float(allowed) + 0.01f)
-            {
-                // hopeless only for a boss woken or past the over-cap scale; else the longer stand may take it
-                _planVerdictHopeless = wokenBoss || guaranteedCount > float(guaranteeOverCap) + 0.01f;
-                // [b33_brs] nothing woken on the way in: the pack's own chain is the count (was "wakes another pack")
-                _planVerdictWhy =
-                    firstWoken || wokenBoss
-                        ? Acore::StringFormat(
-                              "{}: the way in to {} wakes {}{}; with it {} mobs (counted {:.1f}), over {}",
-                              _planVerdictHopeless ? "no safe pull" : "refused for now (unsafe, over the cap)",
-                              target->GetName(), firstWoken ? firstWoken->GetName() : std::string("another pack"),
-                              wokenBoss ? " and brings " + wokenBoss->GetName() : std::string(), guaranteed.size(),
-                              guaranteedCount, allowed)
-                        : Acore::StringFormat("{}: the chain of {} itself brings {} mobs (counted {:.1f}), over {}",
-                                              _planVerdictHopeless ? "no safe pull"
-                                                                   : "refused for now (unsafe, over the cap)",
-                                              target->GetName(), guaranteed.size(), guaranteedCount, allowed);
-                LogPullBlocked(bot, "the stand's guarantee refused: " + _planVerdictWhy, target);
-            }
-            // [b30_overpull] the over-cap pack's cost ceiling, as the lone mob's guarantee (GUARANTEE_OVER_CAP_MAX_COST)
-            else if (PackEstimate const overEstimate = EstimatePack(guaranteed, bot, groupDps, estimateMode);
-                     guaranteedCount > float(lastResortMobs) + 0.01f && overEstimate.cost > GUARANTEE_OVER_CAP_MAX_COST)
+            float overload = 0.0f;
+            std::string judged;
+            bool const fits = !wokenBoss && JudgeMobs(guaranteed, overload, judged);
+            if (!fits)
             {
                 _planVerdictHopeless = true;
-                _planVerdictWhy = Acore::StringFormat("no safe pull: {} brings {} mobs over the cap {} at cost {:.2f}, "
-                                                      "over the guarantee's ceiling {:.2f}", target->GetName(),
-                                                      guaranteed.size(), lastResortMobs, overEstimate.cost,
-                                                      GUARANTEE_OVER_CAP_MAX_COST);
-                LogPullBlocked(bot, "the stand's guarantee refused: " + _planVerdictWhy, target);
+                _planVerdictGuaranteeWaitMs = 0;
+                _planVerdictWhy =
+                    firstWoken || wokenBoss
+                        ? Acore::StringFormat("no safe pull: the way in to {} wakes {}{}; with it {}",
+                                              target->GetName(),
+                                              firstWoken ? firstWoken->GetName() : std::string("another pack"),
+                                              wokenBoss ? " and brings " + wokenBoss->GetName() : std::string(),
+                                              wokenBoss ? Acore::StringFormat("{} mobs, a boss", guaranteed.size())
+                                                        : judged)
+                        : Acore::StringFormat("no safe pull: {} as it comes: {}", target->GetName(), judged);
+                LogPullBlocked(bot, "the pull as it comes refused: " + _planVerdictWhy, target);
             }
             else
             {
@@ -10048,11 +9810,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 _planFightNote.clear();
                 _planGuaranteed = true;
                 fallback = lastResort = found = true;
-                _planReason = Acore::StringFormat("the stand's guarantee: blocked {} s, {} mobs within {}",
-                                                  packBlocked / 1000, chosenPack.size(), allowed);
-                LOG_INFO("playerbots", "[pull guarantee] {}: {} blocked {} s (no plan of its own), {} mobs with the "
-                         "way in (allowed {}), cost {:.2f}: {} it, the stand ends", bot->GetName(), target->GetName(),
-                         packBlocked / 1000, chosenPack.size(), allowed, chosen.cost,
+                _planReason = Acore::StringFormat(
+                    "the pull as it comes{}: {}",
+                    firstWoken ? " with what the way in wakes (" + firstWoken->GetName() + ")" : std::string(), judged);
+                LOG_INFO("playerbots", "[pull as it comes] {}: {} ({} mobs with the way in): {}; {} it",
+                         bot->GetName(), target->GetName(), chosenPack.size(), judged,
                          back ? "pulls back" : "walks in on");
             }
         }
