@@ -5,6 +5,9 @@
  */
 
 #include "RogueActions.h"
+
+#include <algorithm>
+
 #include "AiFactory.h"
 #include "DBCStores.h"
 #include "Event.h"
@@ -135,8 +138,6 @@ namespace RoguePoisons
 {
     namespace
     {
-        constexpr uint8 DEADLY_POISON_MIN_LEVEL = 30;
-
         bool IsDeadlyPoisonEnchant(uint32 enchantId)
         {
             SpellItemEnchantmentEntry const* entry =
@@ -150,33 +151,6 @@ namespace RoguePoisons
 
             std::string const name = procSpell->SpellName[0];
             return name.rfind("Deadly Poison", 0) == 0;
-        }
-
-        // Another rogue of the group (same map: same thread) already puts Deadly Poison on the targets
-        bool OtherRogueBringsDeadly(Player* bot)
-        {
-            Group* group = bot->GetGroup();
-            if (!group)
-                return false;
-
-            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-            {
-                Player* member = ref->GetSource();
-                if (!member || member == bot || member->getClass() != CLASS_ROGUE || !member->IsInWorld() ||
-                    member->GetMap() != bot->GetMap())
-                    continue;
-
-                if (HasDeadlyOnWeapon(member))
-                    return true;
-
-                // a bot rogue with a lower GUID keeps Deadly: both bots reach the same answer before either has
-                // poisoned a weapon
-                if (GET_PLAYERBOT_AI(member) && member->GetGUID() < bot->GetGUID() &&
-                    member->GetLevel() >= DEADLY_POISON_MIN_LEVEL)
-                    return true;
-            }
-
-            return false;
         }
 
         Item* FindBest(PlayerbotAI* botAI, Kind kind)
@@ -223,6 +197,17 @@ namespace RoguePoisons
         return false;
     }
 
+    bool HasDeadly(Item const* weapon)
+    {
+        return weapon && IsDeadlyPoisonEnchant(weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT));
+    }
+
+    bool IsDeadlyItem(Item const* item)
+    {
+        std::vector<uint32> const& deadly = ItemIds(Kind::DEADLY);
+        return item && std::find(deadly.begin(), deadly.end(), item->GetEntry()) != deadly.end();
+    }
+
     Kind KindFor(PlayerbotAI* botAI, uint8 slot)
     {
         Player* bot = botAI->GetBot();
@@ -232,7 +217,7 @@ namespace RoguePoisons
         if (slot != deadlySlot)
             return Kind::INSTANT;
 
-        return OtherRogueBringsDeadly(bot) ? Kind::WOUND : Kind::DEADLY;
+        return Kind::DEADLY;
     }
 
     Item* ItemFor(PlayerbotAI* botAI, uint8 slot)

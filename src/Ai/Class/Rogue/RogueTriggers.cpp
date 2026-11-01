@@ -8,6 +8,7 @@
 #include "GenericTriggers.h"
 #include "Playerbots.h"
 #include "RaidUtilityAssignment.h"
+#include "RoguePoisons.h"
 #include "GenericBuffUtils.h"
 #include "ServerFacade.h"
 #include "TargetValue.h"
@@ -168,6 +169,11 @@ bool WeaponPoisonTrigger::IsActive()
     if (!weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
         return minTargetLifetime <= 0.0f ||
                AI_VALUE2(float, "estimated lifetime", "current target") >= minTargetLifetime;
+
+    // [rot4] the Deadly hand still carries another poison (the old Wound rule): replaced when Deadly is in the bags
+    if (RoguePoisons::KindFor(botAI, slot) == RoguePoisons::Kind::DEADLY && !RoguePoisons::HasDeadly(weapon) &&
+        RoguePoisons::IsDeadlyItem(RoguePoisons::ItemFor(botAI, slot)))
+        return true;
 
     return minRemainingMs && weapon->GetEnchantmentDuration(TEMP_ENCHANTMENT_SLOT) < minRemainingMs;
 }

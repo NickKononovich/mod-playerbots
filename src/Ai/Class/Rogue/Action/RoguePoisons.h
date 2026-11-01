@@ -19,9 +19,9 @@ class PlayerbotAI;
 // (RogueActions.cpp), "apply poison" (ImbueAction.cpp) and the poisons the factory stocks (PlayerbotFactory.cpp).
 //  - Assassination (Mutilate, two daggers): Deadly main hand / Instant off hand (wowsims preset default).
 //  - Combat / Subtlety: Instant main hand / Deadly off hand.
-//  - Deadly from two rogues does not stack: the hand that would get Deadly takes Wound when another rogue of the group
-//    already brings it (a non-bot rogue with Deadly on a weapon, or a bot rogue of 30+ with a lower GUID, so two bots
-//    settle on the same answer without waiting for each other's weapons).
+//  - Every rogue brings its own Deadly: Deadly Poison from different casters stacks (spell_group 1058 "Poisons" is
+//    SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT; periodic damage of another caster stacks, Aura::CanStackWith),
+//    and Envenom needs the rogue's own Deadly on the target.
 namespace RoguePoisons
 {
     enum class Kind : uint8
@@ -43,6 +43,12 @@ namespace RoguePoisons
 
     // Whether a weapon of player carries a Deadly Poison temporary enchant
     bool HasDeadlyOnWeapon(Player* player);
+
+    // Whether this weapon carries a Deadly Poison temporary enchant
+    bool HasDeadly(Item const* weapon);
+
+    // Whether item is a Deadly Poison
+    bool IsDeadlyItem(Item const* item);
 }
 
 #endif
