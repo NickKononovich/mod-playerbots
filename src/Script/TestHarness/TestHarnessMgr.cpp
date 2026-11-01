@@ -44,6 +44,7 @@
 #include "Random.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "TargetValue.h"  // [lead217] IsCrowdControlled
 #include "RandomPlayerbotMgr.h"
 #include "SelfTravelActions.h"
 #include "StringFormat.h"
@@ -1672,8 +1673,11 @@ namespace TestHarness
             for (Unit* attacker : bot->getAttackers())
             {
                 Creature* mob = attacker ? attacker->ToCreature() : nullptr;
+                // [lead217] b184 rfc-h 5D 900-937 / 1094-1124 s: Polymorphed Searing Blade Warlocks kept the member as
+                // their victim, 36 s and 29 s of "aggro off the tank" with 0 / 2937 damage taken: a mob under the
+                // group's crowd control hits nobody
                 if (!mob || !mob->IsAlive() || mob->GetVictim() != bot || mob->IsTotem() || mob->IsCritter() ||
-                    mob->GetOwnerGUID().IsPlayer())
+                    mob->GetOwnerGUID().IsPlayer() || IsCrowdControlled(mob))
                     continue;
 
                 seen.insert(mob->GetGUID());

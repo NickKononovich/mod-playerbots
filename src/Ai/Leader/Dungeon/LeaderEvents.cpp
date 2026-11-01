@@ -118,6 +118,16 @@ namespace Leader::Dungeon
                (!bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 99.0f);
     }
 
+    namespace
+    {
+        // [lead217] a loose mob that stands off its victim (out of its melee reach, not moving: a caster at range, a
+        // rooted mob) does not follow the victim anywhere
+        bool LooseStandsOff(Unit* mob, Unit* victim)
+        {
+            return mob && victim && !mob->isMoving() && !mob->IsWithinMeleeRange(victim);
+        }
+    }
+
     void TickLeaderEvents(LeaderGroup& group, Player* tank)
     {
         auto& lead = group.State();
@@ -887,9 +897,11 @@ namespace Leader::Dungeon
         {
             for (Player* bot : seats)
                 for (Unit* attacker : bot->getAttackers())
+                    // [lead217] a mob under crowd control (Polymorph) keeps its victim and hits nobody: no aggro loss,
+                    // no walk to the tank (b184 rfc-h 5D 900-937 s: the DK sent to the tank for a sheeped Warlock)
                     if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot && attacker->ToCreature() &&
                         LeaderFightMob(tank, attacker) && !Leader::Fight::IsFleer(attacker) &&
-                        !looseOn.count(bot->GetGUID()))
+                        !IsCrowdControlled(attacker) && !looseOn.count(bot->GetGUID()))
                     {
                         looseOn[bot->GetGUID()] = attacker;
                         looseMobs.insert(attacker->GetGUID());
@@ -1611,25 +1623,37 @@ namespace Leader::Dungeon
         // he died alone - a member a fight mob is on, beyond the tank's pick-up reach (its taunt's range, in sight):
         // the fight spot moves to it - the tank walks to the member (its walk checked) while the member runs to the
         // tank (the aggro-loss run) and the others leave that mob alone (the aggro-loss rule)
+        // [lead217] b184 rfc-h 5D: a caster that stands off its victim (not in its melee, not moving) does not follow
+        // the victim's run to the tank - the tank goes to the mob itself (its taunt's range, in sight)
         if (fighting && !lead.fightMoveTo)
         {
             float const pickUp = LeaderTauntReach(tank);
             float const arrive = pickUp > 0.0f ? pickUp : NOMINAL_MELEE_RANGE;
             Player* alone = nullptr;
+            Unit* goTo = nullptr;
             for (auto const& [victimGuid, mob] : looseOn)
                 if (Player* victim = ObjectAccessor::FindPlayer(victimGuid);
-                    victim && victim != tank && victim->IsAlive() && victim->GetMap() == map &&
-                    !(victim->GetExactDist(tank) <= arrive && tank->IsWithinLOSInMap(victim)) &&
-                    (!alone || victim->GetExactDist(tank) < alone->GetExactDist(tank)))
-                    alone = victim;
-            if (alone && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, alone->GetPosition(), arrive,
-                                     "aggro loss: the tank goes to the member"))
+                    victim && victim != tank && victim->IsAlive() && victim->GetMap() == map)
+                {
+                    Unit* const at = LooseStandsOff(mob, victim) ? mob : static_cast<Unit*>(victim);
+                    if (!(at->GetExactDist(tank) <= arrive && tank->IsWithinLOSInMap(at)) &&
+                        (!goTo || at->GetExactDist(tank) < goTo->GetExactDist(tank)))
+                    {
+                        alone = victim;
+                        goTo = at;
+                    }
+                }
+            bool const toMob = goTo && goTo != alone;
+            if (alone && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, goTo->GetPosition(), arrive,
+                                     toMob ? "aggro loss: the tank goes to the mob"
+                                           : "aggro loss: the tank goes to the member"))
                 Decisions().Write(run, "leader", "fight_spot_to_member", alone->GetGUID(),
                                               alone->GetName(), true,
                                               JsonObject().Str("member", alone->GetName())
-                                                  .Real("distance", alone->GetExactDist(tank))
+                                                  .Str("to", toMob ? goTo->GetName() : alone->GetName())
+                                                  .Real("distance", goTo->GetExactDist(tank))
                                                   .Real("pickUp", pickUp)
-                                                  .Bool("sight", tank->IsWithinLOSInMap(alone)));
+                                                  .Bool("sight", tank->IsWithinLOSInMap(goTo)));
         }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
@@ -2288,7 +2312,9 @@ namespace Leader::Dungeon
             auto const loose = looseOn.find(guid);
             float const pickUp = LeaderTauntReach(tank);
             bool const inPickUp = pickUp > 0.0f && bot->GetExactDist(tank) <= pickUp && tank->IsWithinLOSInMap(bot);
-            if (!moved && loose != looseOn.end() && !inPickUp)
+            // [lead217] ... nor does a mob that stands off it (a caster at range): the run would only take the member
+            // out of its spot; the tank goes to that mob (above)
+            if (!moved && loose != looseOn.end() && !inPickUp && !LooseStandsOff(loose->second, bot))
             {
                 float const dx = bot->GetPositionX() - tank->GetPositionX();
                 float const dy = bot->GetPositionY() - tank->GetPositionY();
