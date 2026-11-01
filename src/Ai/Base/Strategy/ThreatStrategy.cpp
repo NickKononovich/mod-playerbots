@@ -17,6 +17,7 @@
 #include "Playerbots.h"
 #include "RtiValue.h"  // [rot1] CrowdControlWouldBreak
 #include "Spell.h"
+#include "SpellAuras.h"  // [rot47]
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "ThreatManager.h"
@@ -511,6 +512,28 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
     float const radius = AreaRadius(bot, info, spell);
     uint8 const limit = careful ? CAREFUL_AOE_THREAT_LIMIT : AOE_THREAT_LIMIT;
 
+    // [rot47] The threat the spell adds to each mob it hits: the single-target projection's "next cast threat" over
+    // the time the spell keeps hitting - a lasting area (Death and Decay, Consecration, Rain of Fire: a persistent
+    // area aura; Starfall: a periodic trigger on the caster) over its duration, a channel (Hurricane, Blizzard,
+    // Volley) over its channel, Pestilence over the diseases it spreads (the own disease's full duration on the
+    // target). A lasting area also reads the mobs walking into it (their victim stands inside); the diseases spread
+    // only to the mobs already in Pestilence's radius.
+    float commit = CommitSeconds(bot, info);
+    bool lasting = false;
+    if (info && info->GetDuration() > 0 &&
+        (info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA) || info->HasAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL)))
+    {
+        commit = std::max(commit, static_cast<float>(info->GetDuration()) / IN_MILLISECONDS);
+        lasting = true;
+    }
+    if (spell == "pestilence" && mainTarget)
+    {
+        for (char const* disease : { "frost fever", "blood plague" })
+            if (Aura const* aura = botAI->GetAura(disease, mainTarget, true))
+                commit = std::max(commit, static_cast<float>(aura->GetMaxDuration()) / IN_MILLISECONDS);
+    }
+    float const added = AI_VALUE(float, "next cast threat") * commit / NextCastThreatValue::NEXT_CAST_SECONDS;
+
     std::vector<ObjectGuid> seen;
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
@@ -529,10 +552,19 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
             seen.push_back(mob->GetGUID());
 
             if (mob->IsControlledByPlayer() || mob->IsInEvadeMode() || mob->GetVictim() == bot ||
-                FledMobs::IsRunning(mob) || !center->IsWithinDist(mob, radius, false))
+                FledMobs::IsRunning(mob))
                 continue;
 
-            uint8 const share = ThreatLead::TankShare(bot, mob);
+            Unit* const mobVictim = mob->GetVictim();
+            bool const inArea = center->IsWithinDist(mob, radius, false);
+            if (!inArea && !(lasting && mobVictim && center->IsWithinDist(mobVictim, radius, false)))
+                continue;
+
+            // [rot47] the share after the spell's own threat (TankShare's rules when nobody holds the mob)
+            float const holder = ThreatLead::HolderThreat(bot, mob);
+            float const after = mob->GetThreatMgr().GetThreat(bot) + added;
+            uint8 const share = holder > 0.0f ? static_cast<uint8>(std::min(after * 100.0f / holder, 255.0f))
+                                              : ThreatLead::TankShare(bot, mob);
             if (share < limit)
                 continue;
 
@@ -542,9 +574,10 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
                 _aoeLoggedMs = now ? now : 1;
                 Unit* victim = mob->GetVictim();
                 LOG_INFO("playerbots", "[rot1] [aoe-threat] {} holds {}: {} {} ({:.1f} yd from the {} centre, on {}) "
-                         "at {} % of the tank's threat, limit {} % in {:.0f} yd", bot->GetName(), spell, mob->GetName(),
-                         mob->GetEntry(), center->GetExactDist2d(mob), selfCentred ? "own" : "target",
-                         victim ? victim->GetName() : "nobody", share, limit, radius);
+                         "at {} % of the tank's threat after {:.1f} s of the spell [rot47], limit {} % in {:.0f} yd",
+                         bot->GetName(), spell, mob->GetName(), mob->GetEntry(), center->GetExactDist2d(mob),
+                         selfCentred ? "own" : "target", victim ? victim->GetName() : "nobody", share, commit, limit,
+                         radius);
             }
 
             return true;
