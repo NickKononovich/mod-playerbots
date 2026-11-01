@@ -5670,40 +5670,109 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return nullptr;
     }
 
-    // [lead206] How many of `ranged` (standing where they are) the tank holds from `from` with its ranged tools
-    // (TankRangedTools): each tool it knows and has off cooldown takes the nearest ones in its range, as many as
-    // the spell jumps to (Avenger's Shield's chain targets), else one. loose: the ones it does not hold.
-    uint32 TankRangedHolds(PlayerbotAI* tankAI, Player* tank, Position const& from, std::vector<Unit*> ranged,
-                           std::vector<Unit*>* loose = nullptr)
+    // [lead206] [lead215] the tank's ranged tools as spells: TankRangedTools by name, and a warrior's ranged weapon
+    // (Shoot with a bow / gun / crossbow, Throw with a thrown weapon: CastShootAction's spells) when one is equipped.
+    // readySec: its cooldown left now; againSec: the wait for its next cast once used (its cooldown, the global
+    // cooldown, its cast)
+    struct RangedToolSpell
     {
-        std::sort(ranged.begin(), ranged.end(),
-                  [&from](Unit* a, Unit* b) { return from.GetExactDist(a) < from.GetExactDist(b); });
-        uint32 held = 0;
+        SpellInfo const* info = nullptr;
+        float range = 0.0f;
+        uint32 targets = 1;
+        float readySec = 0.0f;
+        float againSec = 0.0f;
+    };
+
+    std::vector<RangedToolSpell> TankRangedToolSpells(PlayerbotAI* tankAI, Player* tank)
+    {
+        std::vector<uint32> ids;
         for (char const* tool : TankRangedTools(tank))
+            if (uint32 const spellId = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", tool)->Get())
+                ids.push_back(spellId);
+        constexpr uint32 SPELL_SHOOT = 3018;  // CastShootAction's ids
+        constexpr uint32 SPELL_THROW = 2764;
+        if (tank->getClass() == CLASS_WARRIOR)
+            if (Item* const ranged = tank->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+                switch (ranged->GetTemplate()->SubClass)
+                {
+                    case ITEM_SUBCLASS_WEAPON_GUN:
+                    case ITEM_SUBCLASS_WEAPON_BOW:
+                    case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+                        ids.push_back(SPELL_SHOOT);
+                        break;
+                    case ITEM_SUBCLASS_WEAPON_THROWN:
+                        ids.push_back(SPELL_THROW);
+                        break;
+                    default:
+                        break;
+                }
+        std::vector<RangedToolSpell> tools;
+        for (uint32 const spellId : ids)
         {
-            uint32 const spellId = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", tool)->Get();
-            SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
-            if (!info || tank->HasSpellCooldown(spellId))
+            RangedToolSpell tool;
+            tool.info = sSpellMgr->GetSpellInfo(spellId);
+            if (!tool.info)
                 continue;
-            float const range = info->GetMaxRange(false);
-            uint32 targets = 1;
+            tool.range = tool.info->GetMaxRange(false);
             for (uint8 effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
-                targets = std::max(targets, info->Effects[effect].ChainTarget);
+                tool.targets = std::max(tool.targets, tool.info->Effects[effect].ChainTarget);
+            tool.readySec = float(tank->GetSpellCooldownDelay(spellId)) / IN_MILLISECONDS;
+            tool.againSec = float(std::max({tool.info->RecoveryTime, tool.info->CategoryRecoveryTime,
+                                            tool.info->StartRecoveryTime, uint32(tool.info->CalcCastTime(tank))})) /
+                            IN_MILLISECONDS;
+            tools.push_back(tool);
+        }
+        return tools;
+    }
+
+    // [lead206] [lead215] The casters / shooters of `ranged` against the tank's ranged tools from `from` (`gathered`:
+    // every one comes to `from`, round a corner). Each tool ready now takes the nearest ones in its range, as many as
+    // the spell jumps to (the chain targets), else one: held. Every other one hits a member until the first tool in
+    // its range is ready again or it dies (its health over the group's damage): its damage meanwhile
+    // (LandedMeleeDps: a caster's spells) over the healers' healing rate is the seconds it costs. Its kill time is
+    // in the fight already; this is the threat loss only.
+    struct RangedLoss
+    {
+        uint32 held = 0;
+        float lossSec = 0.0f;
+    };
+
+    RangedLoss TankRangedHolds(PlayerbotAI* tankAI, Player* tank, Position const& from, std::vector<Unit*> ranged,
+                               bool gathered, float groupDps, float healRate)
+    {
+        auto const gap = [&](Unit* mob) { return gathered ? 0.0f : from.GetExactDist(mob); };
+        std::sort(ranged.begin(), ranged.end(), [&](Unit* a, Unit* b) { return gap(a) < gap(b); });
+        RangedLoss loss;
+        std::vector<RangedToolSpell> tools = TankRangedToolSpells(tankAI, tank);
+        for (RangedToolSpell& tool : tools)
+        {
+            if (tool.readySec > 0.0f)
+                continue;
+            uint32 targets = tool.targets;
             for (auto mob = ranged.begin(); mob != ranged.end() && targets;)
             {
-                if (from.GetExactDist(*mob) <= range + (*mob)->GetCombatReach())
+                if (gap(*mob) <= tool.range + (*mob)->GetCombatReach())
                 {
                     mob = ranged.erase(mob);
-                    ++held;
+                    ++loss.held;
                     --targets;
                 }
                 else
                     ++mob;
             }
+            if (targets < tool.targets)
+                tool.readySec = tool.againSec;  // used now
         }
-        if (loose)
-            *loose = ranged;
-        return held;
+        for (Unit* mob : ranged)
+        {
+            float looseSec = groupDps > 0.0f ? float(mob->GetHealth()) / groupDps : 0.0f;
+            for (RangedToolSpell const& tool : tools)
+                if (gap(mob) <= tool.range + mob->GetCombatReach())
+                    looseSec = std::min(looseSec, tool.readySec);
+            float const damage = LandedMeleeDps(mob, tank) * looseSec;
+            loss.lossSec += healRate > 0.0f ? damage / healRate : looseSec;
+        }
+        return loss;
     }
 
     // [lead206] the farthest walk of a living member (not the tank) to `to`, straight
@@ -5718,15 +5787,23 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return farthest;
     }
 
-    // [lead206] user: a corner pull only when it is cheaper. Both ways in seconds of the group's time: the corner -
-    // the tank's walk to the cast spot and on to the corner or the group's walk to its spot behind it (the longer),
-    // then the casters' walk round it, then the fight of the pack that comes, then the walk back to the pack's spot
-    // (lead212); standing - the walk in, the fight of the pack where it stands, and the threat loss: every caster /
-    // shooter the tank's ranged tools do not hold from there (TankRangedHolds) fights off the tank until it dies (its
-    // health over the group's damage).
+    bool RangedMob(Unit* mob)
+    {
+        Creature* creature = mob->ToCreature();
+        return MobRoles::IsCaster(mob) || (creature && KeepsRange(creature));
+    }
+
+    // [lead206] user: a corner pull only when it is cheaper. Both ways in seconds of the group's time, each to the
+    // pack's spot, where the route goes on: the corner - the tank's walk to the cast spot and on to the corner or the
+    // group's walk to its spot behind it (the longer), the casters' walk round it, the fight of the pack that comes,
+    // the walk back to the pack's spot (lead212) and the threat loss of the casters that come round (lead215);
+    // standing - the walk in, the fight where the pack stands and the threat loss there; [lead215] a pull back - the
+    // walk to its cast spot, the pack's walk to the kill spot, the fight there, the walk on to the pack's spot and
+    // the threat loss of the casters that keep their range from the kill spot. The threat loss: TankRangedHolds.
     struct CornerCost
     {
         float cornerSec = 0.0f;
+        float cornerLossSec = 0.0f;
         float standSec = 0.0f;
         float lossSec = 0.0f;
         uint32 ranged = 0;
@@ -5736,38 +5813,52 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     CornerCost CornerVsStand(PlayerbotAI* tankAI, Player* tank, Unit* candidate, Position const& castSpot,
                              Position const& corner, Position const& gather, std::vector<Unit*> const& losPack,
                              float losFightSec, std::vector<Unit*> const& standPack, float standFightSec,
-                             float groupDps)
+                             float groupDps, float healRate, Position const* pullBackKill)
     {
         CornerCost cost;
         float const speed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
         float const tankCorner = tank->GetExactDist(castSpot) + castSpot.GetExactDist(corner);
         float casterSec = 0.0f;
+        std::vector<Unit*> losRanged;
         for (Unit* mob : losPack)
-        {
-            Creature* creature = mob->ToCreature();
-            if (MobRoles::IsCaster(mob) || (creature && KeepsRange(creature)))
+            if (RangedMob(mob))
+            {
+                losRanged.push_back(mob);
                 casterSec = std::max(casterSec, mob->GetExactDist(corner) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
-        }
+            }
         // [lead212] ... and the walk back from the corner to where the pack stood: the route goes on from there, where
         // the fight without the corner ends (b184 rfc-h 5F: the corner cost ended at the corner)
         float const walkBack = corner.GetExactDist(candidate->GetPosition());
-        cost.cornerSec =
-            (std::max(tankCorner, GroupWalkTo(tank, gather)) + walkBack) / speed + casterSec + losFightSec;
+        // [lead215] b184 rfc-h 5D: 99 s of aggro off the tank in corner pulls - the casters that come round are the
+        // tank's tools' too
+        cost.cornerLossSec = TankRangedHolds(tankAI, tank, corner, losRanged, true, groupDps, healRate).lossSec;
+        cost.cornerSec = (std::max(tankCorner, GroupWalkTo(tank, gather)) + walkBack) / speed + casterSec +
+                         losFightSec + cost.cornerLossSec;
 
         std::vector<Unit*> ranged;
         for (Unit* mob : standPack)
-        {
-            Creature* creature = mob->ToCreature();
-            if (MobRoles::IsCaster(mob) || (creature && KeepsRange(creature)))
+            if (RangedMob(mob))
                 ranged.push_back(mob);
-        }
         cost.ranged = uint32(ranged.size());
-        std::vector<Unit*> loose;
-        cost.held = TankRangedHolds(tankAI, tank, candidate->GetPosition(), ranged, &loose);
-        for (Unit* mob : loose)
-            cost.lossSec += groupDps > 0.0f ? float(mob->GetHealth()) / groupDps : standFightSec;
-        float const standWalk = std::max(tank->GetExactDist(candidate), GroupWalkTo(tank, candidate->GetPosition()));
-        cost.standSec = standWalk / speed + standFightSec + cost.lossSec;
+        Position const fight = pullBackKill ? *pullBackKill : candidate->GetPosition();
+        RangedLoss const loss = TankRangedHolds(tankAI, tank, fight, ranged, false, groupDps, healRate);
+        cost.held = loss.held;
+        cost.lossSec = loss.lossSec;
+        if (pullBackKill)
+        {
+            float mobSec = 0.0f;
+            for (Unit* mob : standPack)
+                mobSec = std::max(mobSec, mob->GetExactDist(*pullBackKill) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
+            float const walk = std::max(tank->GetExactDist(castSpot), GroupWalkTo(tank, castSpot)) +
+                               pullBackKill->GetExactDist(candidate->GetPosition());
+            cost.standSec = walk / speed + mobSec + standFightSec + cost.lossSec;
+        }
+        else
+        {
+            float const standWalk =
+                std::max(tank->GetExactDist(candidate), GroupWalkTo(tank, candidate->GetPosition()));
+            cost.standSec = standWalk / speed + standFightSec + cost.lossSec;
+        }
         return cost;
     }
 
@@ -8954,28 +9045,33 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             return !losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort);
 
         // [lead206] b181 rfc-h 5E: 8 corner pulls, 351 yd in fights (5B: 5, 153 yd). The corner's cost against the
-        // engage where the pack stands - the plan the planner takes without the corner, when that plan is an engage
+        // plan the planner takes without the corner: [lead215] an engage or a pull back (b184 rfc-h 5F: 9 of 13
+        // corners were taken against a pull back without a comparison)
         Position const corner = _losSpot;
         Position const gather = _losGather;
         std::vector<Unit*> const packBefore = pack;
         std::vector<PackOverlap> const overlapsBefore = overlaps;
         auto const hopsBefore = lastPackHops;
         std::string cornerNote;
-        if (!losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort) && !_planPullBack && !_planLos &&
+        if (!losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort) && !_planLos &&
             _planCached == candidate->GetGUID())
         {
             Position castSpot = bot->GetPosition();
             PullBackSpot(candidate, castSpot);
-            CornerCost const cost = CornerVsStand(botAI, bot, candidate, castSpot, corner, gather, losSeen,
-                                                  losEstimate.fightSec, chosenPack, chosen.fightSec, groupDps);
+            // [lead215] the healers' healing rate turns a loose caster's damage into seconds (CarefulOverload's)
+            float const healRate = PlanTankHealth(bot) * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
+            Position const pullBackKill = _planKill;
+            CornerCost const cost =
+                CornerVsStand(botAI, bot, candidate, castSpot, corner, gather, losSeen, losEstimate.fightSec,
+                              chosenPack, chosen.fightSec, groupDps, healRate, _planPullBack ? &pullBackKill : nullptr);
             // [lead212] b184 rfc-h 5F 784 s: "corner 23 s vs where it stands 23 s (threat loss 0 s)": the corner. At
             // the same cost the group stays where the route takes it
             bool const stand = cost.standSec <= cost.cornerSec;
             cornerNote = Acore::StringFormat(
-                "corner {:.0f} s vs where it stands {:.0f} s (threat loss {:.0f} s, "
-                "ranged tools hold {} of {}): {}",
-                cost.cornerSec, cost.standSec, cost.lossSec, cost.held, cost.ranged,
-                stand ? "no corner" : "the corner");
+                "corner {:.0f} s vs where it stands {:.0f} s{} (threat loss {:.0f} s, "
+                "ranged tools hold {} of {}; the corner's threat loss {:.0f} s): {}",
+                cost.cornerSec, cost.standSec, _planPullBack ? " pulled back" : "", cost.lossSec, cost.held,
+                cost.ranged, cost.cornerLossSec, stand ? "no corner" : "the corner");
             LOG_DEBUG("playerbots", "[lead206] {}: {}: {}", bot->GetName(), candidate->GetName(), cornerNote);
             if (stand)
             {
