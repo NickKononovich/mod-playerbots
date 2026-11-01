@@ -302,6 +302,18 @@ bool AggressiveTargetAction::Execute(Event event)
             FightSpot::Plan(bot, _planFight, _planFightBack, _planFightNote);
 
         _planFightFor.Clear();
+        // [lead75] b118: the tank opened 21 of 40 pulls without a hit (a body pull: the mobs ran at a tank with no
+        // threat, the damage dealers waited for headroom). The tank's own opener at range before the walk-in: its
+        // ranged threat spell on the engaged mob (the tank's choice of ability, the leader's method stays the engage)
+        if (PlayerbotAI::IsTank(bot) && !target->IsInCombat() && !bot->IsInCombat())
+            for (char const* opener : {"avenger's shield", "hand of reckoning", "judgement of wisdom", "heroic throw",
+                                       "death grip", "icy touch", "faerie fire (feral)"})
+                if (botAI->CanCastSpell(opener, target) && botAI->CastSpell(opener, target))
+                {
+                    LOG_INFO("playerbots", "[lead75] {}: opens the engage on {} with {}", bot->GetName(),
+                             target->GetName(), opener);
+                    break;
+                }
         return PostCommit(bot, target, Attack(target), Leader::PullMethod::Engage,
                           "engage" + (commitReason.empty() ? std::string() : " (" + commitReason + ")"), commitMobs,
                           commitCost, single);  // [lead1]
