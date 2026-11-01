@@ -486,11 +486,34 @@ namespace Leader
 
         }
 
+        namespace
+        {
+            // [lead127] b159 20261101-113309 127.5-128.4 s: Rtshaab's position had three owners in one fight ("in
+            // reach of its target", the follow rule's "along with the tank: to the meeting point" 136 yd off and its
+            // stay, the combat spot). A member under the leader's Attack fights: its position belongs to the fight's
+            // rules; the out-of-fight follow ("along with the tank ...", its stays included) is no move for it
+            bool Barred(Slot const& slot, std::string const& why)
+            {
+                MemberEvents const& e = slot.events;
+                return e.attack == AttackEvent::Attack && e.attackMs + 1 >= slot.gen &&
+                       why.rfind("along with the tank", 0) == 0;
+            }
+        }
+
+        bool MoveBarred(ObjectGuid member, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            return found != eventSlots.end() && Barred(found->second, why);
+        }
+
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            if (Barred(slot, why))
+                return false;
             // [lead64] the position arbiter: a move asserted this tick by a rule of higher precedence holds - a lower
             // one cannot overwrite it in the same tick (b109: "aggro loss: to the tank" then "combat spot" at 32.6 s)
             // [lead69] ... nor one it asserted last tick (b114: heal reach <-> combat spot flipped every tick, 204

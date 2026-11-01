@@ -4695,9 +4695,6 @@ namespace TestHarness
         using Leader::Fight::LEADER_LOOSE_TANK_YD;
         using Leader::Fight::LEADER_OPENING_MS;
         using Leader::Fight::LEADER_PATROL_GROUP_YD;
-        using Leader::Fight::LEADER_RANGED_MAX_YD;
-        using Leader::Fight::LEADER_RANGED_MIN_YD;
-        using Leader::Fight::LEADER_RANGED_YD;
         using Leader::Fight::LEADER_SAVE_HP_PCT;
         using Leader::Fight::LEADER_SAVE_MANA_PCT;
         using Leader::Fight::LEADER_SPOT_LOS_MS;

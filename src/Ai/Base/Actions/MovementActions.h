@@ -449,6 +449,8 @@ class SetFacingTargetAction : public Action
 public:
     SetFacingTargetAction(PlayerbotAI* botAI) : Action(botAI, "set facing") {}
 
+    // it turns to the current target (the default "self target" named the bot itself in its intent and gates)
+    std::string const GetTargetName() override { return "current target"; }
     bool Execute(Event event) override;
     bool isUseful() override;
     bool isPossible() override;

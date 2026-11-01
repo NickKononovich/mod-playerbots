@@ -120,6 +120,8 @@ namespace Leader::Fight
     // [lead124] the member's own attack reach: the range its rotation positions by (PlayerbotAI::GetRange "spell":
     // the configured spell distance, a hunter's weapon range); 0 for no bot AI
     float LeaderShootReach(Player* bot);
+    // [lead127] the member standing at `at` sees `target` (the game's IsWithinLOSInMap from there)
+    bool LeaderSeesFrom(Player* bot, Unit* target, Position const& at);
 
     // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
     // unpulled pack) stands within the AoE radius (plus a margin) of it
@@ -171,9 +173,6 @@ namespace Leader::Fight
     constexpr float LEADER_HAZARD_EDGE = 2.0f;      // a safe spot stands this far outside every circle
     constexpr float LEADER_HAZARD_DZ = 5.0f;        // a circle on another floor does not count
     constexpr float LEADER_TERRAIN_EDGE = 2.0f;     // and this far from lava / slime / a drop-off
-    constexpr float LEADER_RANGED_YD = 25.0f;       // ranged: 22-28 yd from the target
-    constexpr float LEADER_RANGED_MIN_YD = 22.0f;
-    constexpr float LEADER_RANGED_MAX_YD = 28.0f;
     constexpr float LEADER_HEALER_YD = 20.0f;
     constexpr uint32 LEADER_SPOT_LOS_MS = 500;      // a combat spot's sight re-check
 
@@ -196,7 +195,7 @@ namespace Leader::Fight
                                std::vector<HazardZone> const& zones,
                                std::function<bool(Position const&)> const& keeps, bool sight);
 
-    // a new combat spot: melee behind the target, ranged at LEADER_RANGED_YD / the healer at LEADER_HEALER_YD
+    // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) / the healer at LEADER_HEALER_YD
     // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
     bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                           std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,

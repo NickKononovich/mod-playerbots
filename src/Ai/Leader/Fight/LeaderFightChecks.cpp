@@ -59,6 +59,20 @@ namespace Leader::Fight
         return botAI ? botAI->GetRange("spell") : 0.0f;
     }
 
+    bool LeaderSeesFrom(Player* bot, Unit* target, Position const& at)
+    {
+        // WorldObject::IsWithinLOSInMap as the member would stand at `at`: its eye (its collision height) to the
+        // target's hit sphere point towards it
+        float const eye = at.GetPositionZ() + bot->GetCollisionHeight();
+        float ox = 0.0f;
+        float oy = 0.0f;
+        float oz = 0.0f;
+        target->GetHitSpherePointFor(Position(at.GetPositionX(), at.GetPositionY(), eye), ox, oy, oz);
+        return target->GetMap()->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), eye, ox, oy, oz,
+                                                 bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                 VMAP::ModelIgnoreFlags::Nothing);
+    }
+
     bool HealReaches(Player* tank, Position const& from, Position const& to)
     {
         return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&
@@ -416,24 +430,28 @@ namespace Leader::Fight
             if (gap > reach || target->HasInArc(float(M_PI), &spot))
                 return false;
         }
+        else if (PlayerbotAI::IsHeal(bot))
+        {
+            if (gap < LEADER_HEALER_YD - 6.0f || gap > LEADER_HEALER_YD + 10.0f)
+                return false;
+        }
         else
         {
-            float const low = PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD - 6.0f : LEADER_RANGED_MIN_YD - 2.0f;
-            if (gap < low || gap > LEADER_RANGED_MAX_YD + 2.0f)
+            // [lead127] the member's own reach (LeaderShootReach), not a fixed band: within it, and not nearer than
+            // half of it (out of the target's melee and cleaves)
+            float const reach = LeaderShootReach(bot);
+            if (reach <= 0.0f || gap < reach / 2.0f || gap > reach)
                 return false;
         }
         if (!LeaderSpotSafe(bot, botAI, zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()) ||
             !keeps(spot))
             return false;
-        return !sight || melee ||
-               target->GetMap()->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(),
-                                                 spot.GetPositionZ() + 2.0f, target->GetPositionX(),
-                                                 target->GetPositionY(), target->GetPositionZ() + 2.0f,
-                                                 target->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
-                                                 VMAP::ModelIgnoreFlags::Nothing);
+        // [lead127] the game's own sight from the spot (b159: the hunter's spot passed a +2 yd eye-to-eye ray, its
+        // shots "no line of sight" all fight)
+        return !sight || melee || LeaderSeesFrom(bot, target, spot);
     }
 
-    // a new combat spot: melee behind the target, ranged at LEADER_RANGED_YD / the healer at LEADER_HEALER_YD
+    // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) / the healer at LEADER_HEALER_YD
     // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
     bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                           std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
@@ -445,7 +463,7 @@ namespace Leader::Fight
         float const base = melee ? target->GetOrientation() + float(M_PI) : target->GetAngle(bot);
         float const distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
                                : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
-                                                          : LEADER_RANGED_YD;
+                                                          : LeaderShootReach(bot) - 2.0f;  // [lead127] its reach
         Map* map = target->GetMap();
         for (float turn : TURNS)
         {

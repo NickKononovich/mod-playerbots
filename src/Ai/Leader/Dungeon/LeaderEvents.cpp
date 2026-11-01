@@ -242,6 +242,9 @@ namespace Leader::Dungeon
                                      std::string const& why) -> bool
         {
             Player* bot = ObjectAccessor::FindPlayer(member);
+            // [lead127] the arbiter's one owner: a move barred for the member is neither judged nor issued
+            if (Leader::Events::MoveBarred(member, why))
+                return false;
             if (bot && move != Leader::MoveEvent::Hold && Leader::LEADER_SPOT_AGGRO_GUARD)
             {
                 auto& checked = lead.spotChecked[member];
@@ -2709,137 +2712,50 @@ namespace Leader::Dungeon
                     // the target (its own attack reach, in sight), else its spot when that does, else the spot kept
                     // for this target, else one round the target in range and sight (one the tank holds the walk to
                     // first, then the nearest), kept for the fight while it reaches the target
-                    // [lead124] the reach is the member's own (LeaderShootReach), the spots at it less the walk's
-                    // tolerance and at half of it; a melee member left standing off its target by a refused walk
-                    // (its "<why>: stays (...)") gets the walk to its target
+                    // [lead124] the reach is the member's own (LeaderShootReach)
+                    // [lead127] the melee walk to the target (lead124 / lead125) is gone: in a fight the member's
+                    // position has one owner, its combat spot (the follow rule's stays that started it no longer run
+                    // under an Attack, LeaderOrders.cpp MoveBarred)
                     bool const meleeMember = !PlayerbotAI::IsRanged(bot);
                     float const shootReach = LeaderShootReach(bot);
-                    Leader::MemberEvents heldEvents;
-                    float const meleeReach = NOMINAL_MELEE_RANGE + bot->GetCombatReach() + attackOn->GetCombatReach();
-                    bool const meleeHeld = meleeMember && !bot->IsWithinMeleeRange(attackOn) &&
-                                           Leader::Events::Get(guid, heldEvents) &&
-                                           heldEvents.move == Leader::MoveEvent::StandAt &&
-                                           heldEvents.moveWhy.find(": stays (") != std::string::npos &&
-                                           heldEvents.spot.GetExactDist(attackOn->GetPosition()) > meleeReach;
-                    // [lead125] b158 20261101-111229 806.5-807.4 s: the walk to the target was issued past the follow
-                    // rule's own aggro check (Rtshaab to a Searing Blade Warlock through a Searing Blade Enforcer's
-                    // reach), the next tick's follow stay overruled it, back and forth. The walk to the target is
-                    // judged first by the same checks (the target's spot and the whole walk out of every unpulled
-                    // mob's reach, a walk at all); refused, there is no move - the member stays, and the decision is
-                    // kept until a fact changes (another target, the target moves, the mob pulled or dead): the
-                    // target is the tank's to bring
-                    bool meleeBlockedNow = false;
-                    if (meleeHeld)
-                    {
-                        auto kept = lead.meleeBlocked.find(guid);
-                        Creature* keptMob = kept != lead.meleeBlocked.end() && !kept->second.mob.IsEmpty()
-                                                ? map->GetCreature(kept->second.mob)
-                                                : nullptr;
-                        bool const factsHold =
-                            kept != lead.meleeBlocked.end() && kept->second.target == attackOn->GetGUID() &&
-                            kept->second.targetAt.GetExactDist(attackOn->GetPosition()) <= NOMINAL_MELEE_RANGE &&
-                            (kept->second.mob.IsEmpty() ||
-                             (keptMob && keptMob->IsAlive() && !keptMob->IsInCombat()));
-                        if (factsHold)
-                            meleeBlockedNow = true;
-                        else
-                        {
-                            bool noPath = false;
-                            Creature* inWay = LeaderAggroAt(bot, attackOn->GetPosition());
-                            if (!inWay)
-                                inWay = LeaderAggroOnWalk(bot, attackOn->GetPosition(), noPath);
-                            if (inWay || noPath)
-                            {
-                                meleeBlockedNow = true;
-                                lead.meleeBlocked[guid] = {attackOn->GetGUID(), attackOn->GetPosition(),
-                                                           inWay ? inWay->GetGUID() : ObjectGuid::Empty};
-                                Decisions().Write(run, "leader", "melee_walk_refused", guid, bot->GetName(), true,
-                                                  JsonObject().Str("member", bot->GetName())
-                                                      .Str("target", attackOn->GetName())
-                                                      .Str("reject", inWay ? "the walk is in the reach of " +
-                                                                                 inWay->GetName()
-                                                                           : std::string("no walk to the target"))
-                                                      .Str("decision", "stays: the target is the tank's to bring"));
-                            }
-                            else
-                                lead.meleeBlocked.erase(guid);
-                        }
-                    }
-                    else
-                        lead.meleeBlocked.erase(guid);
-                    if (meleeHeld && !meleeBlockedNow &&
-                        checkedMove(guid, Leader::MoveEvent::MoveTo, attackOn->GetPosition(), NOMINAL_MELEE_RANGE,
-                                    "in reach of its target"))
-                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                 JsonObject().Str("why", "in reach of its target").Str("target", attackOn->GetName()));
+                    // [lead127] b159 20261101-113309 43.0-44.2 s / 79.6-81.1 s: the "in range of its target" MoveTo
+                    // and the combat spot StandAt owned the hunter's position one after the other (it walked to one
+                    // spot, was sent to another 1.5 s later, and never shot). One owner: the combat spot. A ranged
+                    // member that cannot shoot its Attack target from where it stands (its own reach, the game's
+                    // sight) gets its combat spot chosen now, for that target (the nearest spot that fits, else a
+                    // fresh one) - the combat spot rule walks it there from the next tick on and keeps it
                     if (!meleeMember && shootReach > 0.0f)
                     {
                         auto const shootsFrom = [&](Position const& at)
                         {
                             return at.GetExactDist(attackOn->GetPosition()) <= shootReach &&
-                                   map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
-                                                        attackOn->GetPositionX(), attackOn->GetPositionY(),
-                                                        attackOn->GetPositionZ() + 2.0f, bot->GetPhaseMask(),
-                                                        LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+                                   LeaderSeesFrom(bot, attackOn, at);
                         };
-                        Leader::MemberEvents events;
-                        bool const placed = Leader::Events::Get(guid, events) &&
-                                            (events.move == Leader::MoveEvent::MoveTo ||
-                                             events.move == Leader::MoveEvent::StandAt) &&
-                                            shootsFrom(events.spot);
-                        if (!shootsFrom(bot->GetPosition()) && !placed)
+                        auto const kept = lead.combatSpots.find(guid);
+                        bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second);
+                        if (!shootsFrom(bot->GetPosition()) && !spotShoots)
                         {
-                            bool issued = false;
-                            auto const kept = lead.rangeSpots.find(guid);
-                            if (kept != lead.rangeSpots.end() && kept->second.first == attackOn->GetGUID() &&
-                                shootsFrom(kept->second.second))
-                                issued = checkedMove(guid, Leader::MoveEvent::MoveTo, kept->second.second, 2.0f,
-                                                     "in range of its target");
-                            if (!issued)
-                            {
-                                std::vector<std::pair<Position, bool>> candidates;  // the spot, the tank holds it
-                                for (float ring : {shootReach - 2.0f, shootReach / 2.0f})
-                                    for (uint32 i = 0; i < 12; ++i)
-                                    {
-                                        float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
-                                        float x = attackOn->GetPositionX() + std::cos(angle) * ring;
-                                        float y = attackOn->GetPositionY() + std::sin(angle) * ring;
-                                        float z = attackOn->GetPositionZ();
-                                        if (!map->CheckCollisionAndGetValidCoords(
-                                                attackOn, attackOn->GetPositionX(), attackOn->GetPositionY(),
-                                                attackOn->GetPositionZ(), x, y, z))
-                                            continue;
-                                        Position const at(x, y, z);
-                                        if (shootsFrom(at))
-                                            candidates.emplace_back(at, tankHolds(bot->GetPosition(), at));
-                                    }
-                                std::sort(candidates.begin(), candidates.end(),
-                                          [bot](auto const& a, auto const& b)
-                                          {
-                                              if (a.second != b.second)
-                                                  return a.second;
-                                              return bot->GetExactDist(a.first) < bot->GetExactDist(b.first);
-                                          });
-                                std::vector<Position> refused;
-                                for (auto const& [at, held] : candidates)
+                            std::vector<HazardZone> const& zones = lead.hazardZones[guid];
+                            std::function<bool(Position const&)> const keeps =
+                                std::function<bool(Position const&)>(keepsHealer);
+                            Position spot;
+                            bool const got = slow(
+                                [&]
                                 {
-                                    if (std::any_of(refused.begin(), refused.end(), [&at](Position const& was)
-                                                    { return was.GetExactDist(at) <= LEADER_FOLLOW_START_YD; }))
-                                        continue;
-                                    if (!checkedMove(guid, Leader::MoveEvent::MoveTo, at, 2.0f,
-                                                     "in range of its target"))
-                                    {
-                                        refused.push_back(at);
-                                        continue;
-                                    }
-                                    lead.rangeSpots[guid] = {attackOn->GetGUID(), at};
-                                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                             JsonObject().Str("why", "in range of its target")
-                                                 .Str("target", attackOn->GetName())
-                                                 .Real("x", at.GetPositionX()).Real("y", at.GetPositionY())
-                                                 .Real("z", at.GetPositionZ()));
-                                    break;
-                                }
+                                    SpotAcquire const acquire;
+                                    return LeaderNearestCombatSpot(bot, botAI, attackOn, bot->GetPosition(), false,
+                                                                   zones, keeps, spot) ||
+                                           LeaderCombatSpot(bot, botAI, attackOn, false, zones, keeps, spot);
+                                });
+                            if (got && shootsFrom(spot))
+                            {
+                                lead.combatSpots[guid] = {attackOn->GetGUID(), spot};
+                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName())
+                                                      .Str("why", "out of its reach / sight of its Attack target")
+                                                      .Str("target", attackOn->GetName())
+                                                      .Real("walk", bot->GetExactDist(spot)));
                             }
                         }
                     }
