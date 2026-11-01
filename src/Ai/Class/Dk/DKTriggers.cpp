@@ -15,6 +15,8 @@
 #include "RaidUtilityAssignment.h"
 #include "SharedDefines.h"
 #include "Spell.h"
+#include "SpellAuras.h"  // [rot21]
+#include <algorithm>     // [rot21]
 #include "SpellInfo.h"
 #include "SpellMgr.h"  // [rot10]
 #include <string>
@@ -40,7 +42,74 @@ bool DKPresenceTrigger::IsActive()
            !bot->HasAura(SPELL_DK_UNHOLY_PRESENCE);
 }
 
-bool KillingMachineTrigger::IsActive() { return bot->HasAura(SPELL_DK_KILLING_MACHINE_PROC); }  // [b31_dk]
+namespace
+{
+constexpr uint32 SPELL_DK_FREEZING_FOG = 59052;
+constexpr uint32 SPELL_DK_UNBREAKABLE_ARMOR = 51271;
+
+// [rot21] the bot's own Frost Fever on its current target (ms left, 0 when none)
+int32 OwnFrostFeverMs(PlayerbotAI* botAI)
+{
+    Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    Aura* fever = target ? botAI->GetAura("frost fever", target, true, true) : nullptr;
+    return fever ? fever->GetDuration() : 0;
+}
+
+// [rot21] the longest rune grace of a ready rune of this type (how long it has stood ready)
+uint32 RuneGraceMs(Player* bot, RuneType type)
+{
+    uint32 grace = 0;
+    for (uint8 i = 0; i < MAX_RUNES; ++i)
+    {
+        if (bot->GetCurrentRune(i) == type && !bot->GetRuneCooldown(i))
+            grace = std::max(grace, bot->GetGracePeriod(i));
+    }
+    return grace;
+}
+}  // namespace
+
+// [rot21]
+bool KillingMachineFrostStrikeTrigger::IsActive()
+{
+    return bot->HasAura(SPELL_DK_KILLING_MACHINE_PROC) && RuneGraceMs(bot, RUNE_FROST) <= FROST_KM_RUNE_GRACE_MS &&
+           RuneGraceMs(bot, RUNE_UNHOLY) <= FROST_KM_RUNE_GRACE_MS && OwnFrostFeverMs(botAI) >= FROST_FF_KEEP_MS;
+}
+
+// [rot21]
+bool FreezingFogFrostFeverTrigger::IsActive()
+{
+    return bot->HasAura(SPELL_DK_FREEZING_FOG) && OwnFrostFeverMs(botAI) >= FROST_FF_KEEP_MS;
+}
+
+// [rot21]
+bool FrostBloodStrikeTrigger::IsActive()
+{
+    for (uint8 i = 0; i < MAX_RUNES; ++i)
+    {
+        if (bot->GetCurrentRune(i) == RUNE_BLOOD && !bot->GetRuneCooldown(i))
+            return OwnFrostFeverMs(botAI) > FROST_BLOOD_STRIKE_FF_MS;
+    }
+    return false;
+}
+
+// [rot21] rune slot 0 is the left Blood slot
+bool FrostPestilenceTrigger::IsActive()
+{
+    if (!bot->HasAura(SPELL_DK_GLYPH_OF_DISEASE) || bot->GetCurrentRune(0) != RUNE_BLOOD || bot->GetRuneCooldown(0))
+        return false;
+
+    uint32 const pestilence = AI_VALUE2(uint32, "spell id", "pestilence");
+    if (!pestilence || bot->HasSpellCooldown(pestilence))
+        return false;
+
+    if (bot->HasSpell(SPELL_DK_UNBREAKABLE_ARMOR) &&
+        (!bot->HasSpellCooldown(SPELL_DK_UNBREAKABLE_ARMOR) ||
+         bot->GetSpellCooldownDelay(SPELL_DK_UNBREAKABLE_ARMOR) < uint32(FROST_PESTILENCE_FF_MS)))
+        return false;
+
+    int32 const fever = OwnFrostFeverMs(botAI);
+    return fever > 0 && fever <= FROST_PESTILENCE_FF_MS;
+}
 
 // [b31_deep]
 bool HasReadyRunes(Player* bot, uint8 blood, uint8 frost, uint8 unholy)
@@ -70,17 +139,6 @@ bool RuneStrikeTrigger::IsActive()
         return false;
 
     return bot->HasSpell(SPELL_DK_RUNE_STRIKE);
-}
-
-bool BloodRuneReadyTrigger::IsActive()
-{
-    // [b31_deep] a ready Blood rune in either slot (a Death rune does not count)
-    for (uint8 i = 0; i < MAX_RUNES; ++i)
-    {
-        if (bot->GetCurrentRune(i) == RUNE_BLOOD && !bot->GetRuneCooldown(i))
-            return true;
-    }
-    return false;
 }
 
 bool FrostStrikeRunicPowerTrigger::IsActive()

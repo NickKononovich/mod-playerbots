@@ -115,7 +115,15 @@ void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // (runic power). Above the default rotation (Obliterate 5.7), below the disease refreshes (22) and Pestilence (29).
     // [b31_deep] No Howling Blast on Killing Machine: on one target it spends Obliterate's runes for about half the
     // damage (wowsims frost_bl_pesti: Killing Machine on Frost Strike, Howling Blast with Rime only).
-    triggers.push_back(new TriggerNode("killing machine", { NextAction("frost strike", ACTION_NORMAL + 2) }));
+    // [rot21] wowsims frost_bl_pesti: Killing Machine Frost Strike right above Obliterate, only while no Frost / Unholy
+    // rune has stood ready over a second and Frost Fever has 3 s; Rime Howling Blast (Frost Fever >= 3 s) above both
+    triggers.push_back(
+        new TriggerNode("killing machine frost strike", {NextAction("frost strike", ACTION_DEFAULT + 0.72f)}));
+    triggers.push_back(
+        new TriggerNode("freezing fog frost fever", {NextAction("howling blast", ACTION_DEFAULT + 0.75f)}));
+    // [rot21] Pestilence at Frost Fever <= 6 s with the left Blood rune (keeps the diseases without Icy Touch / Plague
+    // Strike), under Frost Strike at 115 runic power
+    triggers.push_back(new TriggerNode("frost pestilence", {NextAction("pestilence", ACTION_DEFAULT + 0.62f)}));
     // [b31_deep] Frost Strike at >= 115 runic power right below Obliterate, above Unbreakable Armor / Rime / Blood
     // Strike (wowsims frost_bl_pesti), so runic power does not cap
     triggers.push_back(
@@ -139,16 +147,9 @@ void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
-    // [b31_deep] every ready Blood rune (was "high blood rune": both slots ready, so the second rune idled ~8 s after
-    // each Blood Strike); a Death rune is left for Obliterate
-    triggers.push_back(
-        new TriggerNode(
-            "blood rune ready",
-            {
-                NextAction("blood strike", ACTION_DEFAULT + 0.45f)
-            }
-        )
-    );
+    // [b31_deep] every ready Blood rune; a Death rune is left for Obliterate. [rot21] wowsims: only while Frost Fever
+    // has more than 10 s, so the Blood rune for Pestilence stays
+    triggers.push_back(new TriggerNode("frost blood strike", {NextAction("blood strike", ACTION_DEFAULT + 0.45f)}));
     // [b31_deep] Raise Dead as a damage cooldown (wowsims frost_bl_pesti: after Rime, before the Frost Strike filler)
     triggers.push_back(new TriggerNode("raise dead boost", { NextAction("raise dead", ACTION_DEFAULT + 0.42f) }));
 

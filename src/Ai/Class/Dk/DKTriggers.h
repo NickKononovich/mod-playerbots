@@ -106,16 +106,6 @@ public:
 // PlayerbotAI::CanCastSpell does not see rune costs, so a rune-paid priority gates itself with this.
 bool HasReadyRunes(Player* bot, uint8 blood, uint8 frost, uint8 unholy);
 
-// [b31_deep] A ready Blood rune (not a Death rune): Frost's Blood Strike spends every Blood rune (wowsims
-// frost_bl_pesti; with Blood of the North it turns into the Death rune Obliterate uses). "high blood rune" needed both
-// Blood slots ready, so after one Blood Strike the second ready rune waited ~8 s. Death runes stay for Obliterate.
-class BloodRuneReadyTrigger : public Trigger
-{
-public:
-    BloodRuneReadyTrigger(PlayerbotAI* botAI) : Trigger(botAI, "blood rune ready") {}
-
-    bool IsActive() override;
-};
 
 // [b31_deep] Frost Strike before the runic power caps (wowsims frost_bl_pesti: Frost Strike at >= 115 right after
 // Obliterate, above Pestilence / Blood Strike / Rime Howling Blast; 130 is the cap with Runic Power Mastery 2/2).
@@ -213,11 +203,43 @@ public:
 // name, so a name lookup ("killing machine") can match the talent instead of the proc.
 inline constexpr uint32 SPELL_DK_KILLING_MACHINE_PROC = 51124;
 
-class KillingMachineTrigger : public Trigger
+// [rot21] wowsims deathknight__frost_bl_pesti conditions on the bot's own Frost Fever (FF) on the current target:
+//  - "killing machine frost strike": Killing Machine with neither a Frost nor an Unholy rune ready longer than
+//    FROST_KM_RUNE_GRACE_MS (rune grace, a game mechanic: Player::GetGracePeriod) and FF >= FROST_FF_KEEP_MS
+//  - "freezing fog frost fever": Rime (Freezing Fog) with FF >= FROST_FF_KEEP_MS: Howling Blast above Obliterate
+//  - "frost blood strike": a ready Blood rune and FF > FROST_BLOOD_STRIKE_FF_MS (the runes for Pestilence stay)
+//  - "frost pestilence": Glyph of Disease, FF up and <= FROST_PESTILENCE_FF_MS, the left Blood rune ready, Unbreakable
+//    Armor not ready within FROST_PESTILENCE_FF_MS
+inline constexpr uint32 FROST_KM_RUNE_GRACE_MS = 1000;
+inline constexpr int32 FROST_FF_KEEP_MS = 3000;
+inline constexpr int32 FROST_BLOOD_STRIKE_FF_MS = 10000;
+inline constexpr int32 FROST_PESTILENCE_FF_MS = 6000;
+
+class KillingMachineFrostStrikeTrigger : public Trigger
 {
 public:
-    KillingMachineTrigger(PlayerbotAI* botAI) : Trigger(botAI, "killing machine") {}
+    KillingMachineFrostStrikeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "killing machine frost strike") {}
+    bool IsActive() override;
+};
 
+class FreezingFogFrostFeverTrigger : public Trigger
+{
+public:
+    FreezingFogFrostFeverTrigger(PlayerbotAI* botAI) : Trigger(botAI, "freezing fog frost fever") {}
+    bool IsActive() override;
+};
+
+class FrostBloodStrikeTrigger : public Trigger
+{
+public:
+    FrostBloodStrikeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "frost blood strike") {}
+    bool IsActive() override;
+};
+
+class FrostPestilenceTrigger : public Trigger
+{
+public:
+    FrostPestilenceTrigger(PlayerbotAI* botAI) : Trigger(botAI, "frost pestilence") {}
     bool IsActive() override;
 };
 

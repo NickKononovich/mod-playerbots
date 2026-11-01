@@ -99,10 +99,13 @@ public:
         creators["icebound fortitude health"] = &DeathKnightTriggerFactoryInternal::icebound_fortitude_health;
         // [b31_dk]
         creators["no presence"] = &DeathKnightTriggerFactoryInternal::no_presence;
-        creators["killing machine"] = &DeathKnightTriggerFactoryInternal::killing_machine;
         // [b31_deep]
         creators["rune strike"] = &DeathKnightTriggerFactoryInternal::rune_strike;
-        creators["blood rune ready"] = &DeathKnightTriggerFactoryInternal::blood_rune_ready;
+        // [rot21]
+        creators["killing machine frost strike"] = &DeathKnightTriggerFactoryInternal::killing_machine_frost_strike;
+        creators["freezing fog frost fever"] = &DeathKnightTriggerFactoryInternal::freezing_fog_frost_fever;
+        creators["frost blood strike"] = &DeathKnightTriggerFactoryInternal::frost_blood_strike;
+        creators["frost pestilence"] = &DeathKnightTriggerFactoryInternal::frost_pestilence;
         creators["frost strike runic power"] = &DeathKnightTriggerFactoryInternal::frost_strike_runic_power;
         creators["ghoul frenzy"] = &DeathKnightTriggerFactoryInternal::ghoul_frenzy;
         creators["raise dead boost"] = &DeathKnightTriggerFactoryInternal::raise_dead_boost;
@@ -179,10 +182,15 @@ private:
     }
     // [b31_dk]
     static Trigger* no_presence(PlayerbotAI* botAI) { return new DKPresenceTrigger(botAI); }
-    static Trigger* killing_machine(PlayerbotAI* botAI) { return new KillingMachineTrigger(botAI); }
     // [b31_deep]
     static Trigger* rune_strike(PlayerbotAI* botAI) { return new RuneStrikeTrigger(botAI); }
-    static Trigger* blood_rune_ready(PlayerbotAI* botAI) { return new BloodRuneReadyTrigger(botAI); }
+    static Trigger* killing_machine_frost_strike(PlayerbotAI* botAI)
+    {
+        return new KillingMachineFrostStrikeTrigger(botAI);
+    }
+    static Trigger* freezing_fog_frost_fever(PlayerbotAI* botAI) { return new FreezingFogFrostFeverTrigger(botAI); }
+    static Trigger* frost_blood_strike(PlayerbotAI* botAI) { return new FrostBloodStrikeTrigger(botAI); }
+    static Trigger* frost_pestilence(PlayerbotAI* botAI) { return new FrostPestilenceTrigger(botAI); }
     static Trigger* frost_strike_runic_power(PlayerbotAI* botAI) { return new FrostStrikeRunicPowerTrigger(botAI); }
     static Trigger* ghoul_frenzy(PlayerbotAI* botAI) { return new GhoulFrenzyTrigger(botAI); }
     static Trigger* raise_dead_boost(PlayerbotAI* botAI) { return new RaiseDeadBoostTrigger(botAI); }
