@@ -120,6 +120,9 @@ namespace Leader::Fight
     // [lead124] the member's own attack reach: the range its rotation positions by (PlayerbotAI::GetRange "spell":
     // the configured spell distance, a hunter's weapon range); 0 for no bot AI
     float LeaderShootReach(Player* bot);
+    // [lead157] the nearest a ranged member stands to `target` (centre to centre): out of the target's melee reach,
+    // and a hunter out of Auto Shot's dead zone (its minimum range) as well
+    float LeaderRangedMinGap(Player* bot, Unit* target);
     // [lead127] the member standing at `at` sees `target` (the game's IsWithinLOSInMap from there)
     bool LeaderSeesFrom(Player* bot, Unit* target, Position const& at);
 

@@ -59,6 +59,17 @@ namespace Leader::Fight
         return botAI ? botAI->GetRange("spell") : 0.0f;
     }
 
+    float LeaderRangedMinGap(Player* bot, Unit* target)
+    {
+        constexpr float MELEE_REACH_EXTRA = 4.0f / 3.0f;  // the game's melee range bonus (NOMINAL_MELEE_RANGE)
+        constexpr float AUTO_SHOT_MIN_YD = 8.0f;          // the hunter's dead zone (Auto Shot's minimum range)
+        float const reaches = target->GetCombatReach() + bot->GetCombatReach();
+        float gap = reaches + MELEE_REACH_EXTRA + 1.0f;
+        if (bot->getClass() == CLASS_HUNTER)
+            gap = std::max(gap, reaches + AUTO_SHOT_MIN_YD);
+        return gap;
+    }
+
     bool LeaderSeesFrom(Player* bot, Unit* target, Position const& at)
     {
         // WorldObject::IsWithinLOSInMap as the member would stand at `at`: its eye (its collision height) to the
@@ -472,7 +483,7 @@ namespace Leader::Fight
             // [lead127] the member's own reach (LeaderShootReach), not a fixed band: within it, and not nearer than
             // half of it (out of the target's melee and cleaves)
             float const reach = LeaderShootReach(bot);
-            if (reach <= 0.0f || gap < reach / 2.0f || gap > reach)
+            if (reach <= 0.0f || gap < std::max(reach / 2.0f, LeaderRangedMinGap(bot, target)) || gap > reach)
                 return false;
         }
         if (!LeaderSpotSafe(bot, botAI, zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()) ||
@@ -800,6 +811,8 @@ namespace Leader::Fight
             return "out of melee reach of the target";
         if (!melee && !PlayerbotAI::IsHeal(bot) && gap > LeaderSpellReach(bot) - g_spotAcquireMargin)
             return "out of spell range of the target";
+        if (!melee && !PlayerbotAI::IsHeal(bot) && gap < LeaderRangedMinGap(bot, target))  // [lead157]
+            return "inside its minimum range of the target";
         if (LeaderZoneAt(zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), LEADER_HAZARD_EDGE))
             return "a hazard covers it";
         if (NearHazard(bot->GetMap(), bot->GetPhaseMask(), spot.GetPositionX(), spot.GetPositionY(),
@@ -838,7 +851,7 @@ namespace Leader::Fight
                                     std::fabs(z - from.GetPositionZ()) > 4.0f))
                     continue;
                 Position const spot(x, y, z);
-                if (!melee && target->GetExactDist2d(x, y) < 8.0f)
+                if (!melee && target->GetExactDist2d(x, y) < std::max(8.0f, LeaderRangedMinGap(bot, target)))
                     continue;
                 if (!LeaderCombatSpotBreaks(bot, botAI, target, spot, melee, zones, keeps, true).empty())
                     continue;

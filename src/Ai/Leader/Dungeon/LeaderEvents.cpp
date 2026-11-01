@@ -2330,10 +2330,10 @@ namespace Leader::Dungeon
                                 // Shot's dead zone) swung white 752 dps, Wing Clip / Disengage. A ranged member
                                 // never stands inside the ranged minimum (LEADER_RANGED_MIN_YD): half its reach
                                 // first, then down to that minimum; no point - no fallback (the tank's spot is melee)
-                                constexpr float LEADER_RANGED_MIN_YD = 8.0f;  // Auto Shot's 5-8 yd dead zone
-                                for (float const minGap : {shoot / 2.0f, LEADER_RANGED_MIN_YD})
+                                float const rangedMin = LeaderRangedMinGap(bot, target);  // [lead157]
+                                for (float const minGap : {std::max(shoot / 2.0f, rangedMin), rangedMin})
                                 {
-                                    if (best >= 0.0f || (melee && minGap == LEADER_RANGED_MIN_YD))
+                                    if (best >= 0.0f || (melee && minGap == rangedMin))
                                         break;
                                     for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
                                     {
@@ -2864,9 +2864,14 @@ namespace Leader::Dungeon
                     // fresh one) - the combat spot rule walks it there from the next tick on and keeps it
                     if (!meleeMember && shootReach > 0.0f)
                     {
+                        // [lead157] b176 20261101-163239: the hunter at 48-59 % of wowsims, white melee 557 dps, Wing
+                        // Clip / Disengage - "where it stands reaches and sees its target" took a spot in its dead
+                        // zone (the mob came to the tank, the group 5-10 yd behind it). A ranged spot is also out of
+                        // its minimum range (LeaderRangedMinGap)
                         auto const shootsFrom = [&](Position const& at)
                         {
-                            return at.GetExactDist(attackOn->GetPosition()) <= shootReach &&
+                            float const gap = at.GetExactDist(attackOn->GetPosition());
+                            return gap <= shootReach && gap >= LeaderRangedMinGap(bot, attackOn) &&
                                    LeaderSeesFrom(bot, attackOn, at);
                         };
                         auto const kept = lead.combatSpots.find(guid);
