@@ -4526,6 +4526,18 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
             return waterGen.points;
         }
     }
+    // [lead147] b166 20261101-134022 73.7-76.8 s: the leader's Leader::Route found the walk to a spot by the tank, the
+    // member's own search from the floor height there (GetMapHeight inside the rock, the tank had sunk) found none. A
+    // bot on the leader's route walks to the destination's own navmesh point: the route's end, the same answer
+    if (UsesLeaderRoute(bot))
+    {
+        BotPath const route = FindBotPath(bot, x, y, z);
+        if (route.leaderRoute && (route.type & PATHFIND_NORMAL) && !route.points.empty())
+        {
+            modified_z = route.points.back().z;
+            return route.points;
+        }
+    }
     BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
     Movement::PointsArray result = gen.points;
     float min_length = gen.length;

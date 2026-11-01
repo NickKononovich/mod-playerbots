@@ -37,10 +37,12 @@ namespace Leader::Travel
     // The long search: an own dtNavMeshQuery on the walker's map navmesh (per thread), the player filter flags
     // (+ NAV_GROUND_STEEP when steep), the corridor as corner points. False when start or end has no polygon;
     // complete: the corridor reaches the end polygon. `avoidBoxes` / `avoidDiscs`: polygons refused (closed passage
-    // doors, a hopeless pack's reach).
+    // doors, a hopeless pack's reach). [lead147] `samples` (with `sampleStep` > 0): the corridor walked every
+    // `sampleStep` yd, each point at the navmesh's detail height of its corridor polygon.
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes = nullptr,
-                   std::vector<G3D::Vector4> const* avoidDiscs = nullptr);
+                   std::vector<G3D::Vector4> const* avoidDiscs = nullptr, float sampleStep = 0.0f,
+                   Movement::PointsArray* samples = nullptr);
 
     // [lead107] the point `walk` yd along `points` (its last point when the path is shorter)
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk);

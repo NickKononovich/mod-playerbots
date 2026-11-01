@@ -7,6 +7,7 @@
 #include "Common.h"  // math defines first (Position.h)
 #include "RouteSearch.h"
 
+#include "DetourCommon.h"
 #include "DetourNavMesh.h"
 #include "LeaderOrders.h"
 #include "Log.h"
@@ -78,9 +79,53 @@ namespace Leader::Travel
         }
     };
 
+    // [lead147] the floor of a tall column: of the polygons in it, the highest whose closest point lies at most the
+    // tile's walkable climb above the point (the floor under a walker), the ones the point stands over first; with
+    // none, the lowest above it (a walker sunk under its floor steps up onto it). Detour's own nearest polygon took
+    // the nearest in 3D, a floor above as soon as one below
+    class ColumnFloorQuery : public dtPolyQuery
+    {
+    public:
+        ColumnFloorQuery(dtNavMeshQuery const* query, float const* centre) : _query(query), _centre(centre) {}
+
+        void process(dtMeshTile const* tile, dtPoly** /*polys*/, dtPolyRef* refs, int count) override
+        {
+            for (int index = 0; index < count; ++index)
+            {
+                float closest[3];
+                bool over = false;
+                if (dtStatusFailed(_query->closestPointOnPoly(refs[index], _centre, closest, &over)))
+                    continue;
+                float const climb = tile && tile->header ? tile->header->walkableClimb : 0.0f;
+                bool const under = closest[1] <= _centre[1] + climb;
+                // a floor under it before one above, over it before beside it, then the nearest in height
+                int const rank = (under ? 0 : 2) + (over ? 0 : 1);
+                float const gap = std::fabs(closest[1] - _centre[1]);
+                if (!_ref || rank < _rank || (rank == _rank && gap < _gap))
+                {
+                    _ref = refs[index];
+                    _rank = rank;
+                    _gap = gap;
+                    dtVcopy(_nearest, closest);
+                }
+            }
+        }
+
+        dtPolyRef Ref() const { return _ref; }
+        float const* Nearest() const { return _nearest; }
+
+    private:
+        dtNavMeshQuery const* _query;
+        float const* _centre;
+        dtPolyRef _ref = 0;
+        int _rank = 0;
+        float _gap = 0.0f;
+        float _nearest[3] = {0.0f, 0.0f, 0.0f};
+    };
+
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes,
-                   std::vector<G3D::Vector4> const* avoidDiscs)
+                   std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep, Movement::PointsArray* samples)
     {
         complete = false;
         dtNavMesh const* navMesh = owner->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
@@ -119,10 +164,11 @@ namespace Leader::Travel
             if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
                 return ref;
             extents[1] = 50.0f;
-            ref = 0;
-            if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
-                return ref;
-            return dtPolyRef(0);
+            ColumnFloorQuery column(query.get(), point);  // [lead147]
+            if (dtStatusFailed(query->queryPolygons(point, extents, &filter, &column)) || !column.Ref())
+                return dtPolyRef(0);
+            dtVcopy(nearest, column.Nearest());
+            return column.Ref();
         };
         float startNearest[3];
         float endNearest[3];
@@ -197,6 +243,67 @@ namespace Leader::Travel
         for (int index = 0; index < cornerCount; ++index)
             corners.emplace_back(straight[size_t(index) * 3 + 2], straight[size_t(index) * 3],
                                  straight[size_t(index) * 3 + 1]);
+        if (samples && sampleStep > 0.0f)
+        {
+            // [lead147] b168 20261101-140326 [height_gap]: the samples between two corners were a straight line in 3D
+            // (RFC y -37: -23.9 -> -26.7 under the navmesh's -21.0 -> -17.3 hump, inside the rock, where the ground
+            // snap finds no floor) and the walker's spline went through the rock. Each sample takes the detail height
+            // of the corridor polygon under it (the corridor in order: a cursor), else of the nearer of the cursor's
+            // polygon and the next (a point on their shared edge)
+            samples->clear();
+            size_t cursor = 0;
+            auto const onSurface = [&](G3D::Vector3& point)
+            {
+                float const position[3] = {point.y, point.z, point.x};
+                for (bool const offMesh : {false, true})
+                    for (size_t index = cursor; index < size_t(polyCount); ++index)
+                    {
+                        dtMeshTile const* tile = nullptr;
+                        dtPoly const* poly = nullptr;
+                        if (dtStatusFailed(navMesh->getTileAndPolyByRef(polys[index], &tile, &poly)) || !poly ||
+                            (poly->getType() == DT_POLYTYPE_OFFMESH_CONNECTION) != offMesh)
+                            continue;
+                        float height = 0.0f;
+                        if (dtStatusSucceed(query->getPolyHeight(polys[index], position, &height)))
+                        {
+                            cursor = index;
+                            point.z = height;
+                            return;
+                        }
+                    }
+                float best = -1.0f;
+                for (size_t index = cursor; index < size_t(polyCount) && index <= cursor + 1; ++index)
+                {
+                    float closest[3];
+                    if (dtStatusFailed(query->closestPointOnPoly(polys[index], position, closest, nullptr)))
+                        continue;
+                    float const distance = dtVdist2DSqr(position, closest);
+                    if (best < 0.0f || distance < best)
+                    {
+                        best = distance;
+                        point.z = closest[1];
+                    }
+                }
+            };
+            G3D::Vector3 first = corners.front();
+            onSurface(first);
+            samples->push_back(first);
+            for (size_t index = 1; index < corners.size(); ++index)
+            {
+                G3D::Vector3 const a = corners[index - 1];
+                G3D::Vector3 const b = corners[index];
+                float const length = (b - a).length();
+                for (float at = sampleStep; at < length; at += sampleStep)
+                {
+                    G3D::Vector3 point = a + (b - a) * (at / length);
+                    onSurface(point);
+                    samples->push_back(point);
+                }
+                G3D::Vector3 corner = b;
+                onSurface(corner);
+                samples->push_back(corner);
+            }
+        }
         return true;
     }
 
@@ -302,15 +409,20 @@ namespace Leader
             return result;
         }
         Movement::PointsArray corners;
+        Movement::PointsArray surface;  // [lead147] the walk on the navmesh's detail height
         for (bool const steep : {false, true})
         {
             Movement::PointsArray tried;
+            Movement::PointsArray triedSurface;
             bool complete = false;
-            if (!Travel::LongRoute(walker, from, to, steep, tried, complete) || tried.empty())
+            if (!Travel::LongRoute(walker, from, to, steep, tried, complete, nullptr, nullptr, ROUTE_SAMPLE_YD,
+                                   &triedSurface) ||
+                tried.empty())
                 continue;
             if (result.found && !complete)
                 continue;
             corners = tried;
+            surface = triedSurface;
             result.found = true;
             result.complete = complete;
             if (complete)
@@ -319,24 +431,21 @@ namespace Leader
         if (!result.found)
             return result;
         if (corners.size() == 1)
-            corners.insert(corners.begin(), from);
-        result.corners.assign(corners.begin(), corners.end());
-        result.points.push_back(corners.front());
-        for (size_t i = 1; i < corners.size(); ++i)
         {
-            G3D::Vector3 const a = corners[i - 1];
-            G3D::Vector3 const b = corners[i];
-            float const len = (b - a).length();
-            result.length += len;
-            for (float at = ROUTE_SAMPLE_YD; at < len; at += ROUTE_SAMPLE_YD)
-            {
-                G3D::Vector3 p = a + (b - a) * (at / len);
-                float const beforeSnap = p.z;
-                walker->UpdateAllowedPositionZ(p.x, p.y, p.z);  // on its ground (a step shows as a step)
-                Travel::NoteHeightGap(walker, p, beforeSnap, "route sample");  // [lead144]
-                result.points.push_back(p);
-            }
-            result.points.push_back(b);
+            corners.insert(corners.begin(), from);
+            surface.insert(surface.begin(), from);
+        }
+        result.corners.assign(corners.begin(), corners.end());
+        for (size_t i = 1; i < corners.size(); ++i)
+            result.length += (corners[i] - corners[i - 1]).length();
+        // [lead147] the samples stand on the navmesh's detail height (LongRoute); the ground snap is only the
+        // [height_gap] cross-check now
+        for (G3D::Vector3 const& point : surface)
+        {
+            G3D::Vector3 ground = point;
+            walker->UpdateAllowedPositionZ(ground.x, ground.y, ground.z);
+            Travel::NoteHeightGap(walker, ground, point.z, "route sample ground");  // [lead144]
+            result.points.push_back(point);
         }
         return result;
     }

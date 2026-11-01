@@ -933,7 +933,11 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
     {
         // (a) a ground path leads from the landing spot back to where the mover stands, with no cliff to climb
         BotPath const back = FindBotPath(mover, landing.x, landing.y, landing.z, here.x, here.y, here.z);  // [lead109]
-        verdict.connected = PathIsGround(back.type) && SteepStep(back.points, true) <= 0.0f;
+        // [lead147] ... from a landing on the route's own navmesh (the low box): the route search's tall box snapped a
+        // landing on Ragefire's magma (b165 (-82.9,-37.3,-31.3)) onto the ground 11 yd above it, "joined to the rest"
+        G3D::Vector3 landingPoly;
+        verdict.connected = NavmeshLanding(mover, landing, landingPoly) && PathIsGround(back.type) &&
+                            SteepStep(back.points, true) <= 0.0f;
         // (b) + (c) the fall is safe for the mover and for every member near that follows it: a water landing at
         // any height, a listed shortcut with the health margin, else under the fall damage height
         verdict.water = probedWater || HasSwimWater(mover, landing.x, landing.y, landing.z);  // [lead145]
