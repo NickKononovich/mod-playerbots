@@ -144,8 +144,9 @@ bool GroupPreparing(Player* bot, std::string* why)
             return true;
         }
 
-        if ((RestState::IsDrinking(member) && RestState::WantsDrink(member)) ||
-            (RestState::IsEating(member) && RestState::WantsFood(member)))
+        // [lead85] b128 rfc-h 1092 s: "Rtshaab rests below its line (health 100 %, mana 100 %)" - WantsDrink counts the
+        // leader's Rest (to 100 %), so the hold and the Rest held each other up to full. The member's own line
+        if ((RestState::IsDrinking(member) || RestState::IsEating(member)) && RestState::BelowOwnLine(member))
         {
             if (why)
                 *why = Acore::StringFormat("{} rests below its line (health {:.0f} %, mana {:.0f} %)",

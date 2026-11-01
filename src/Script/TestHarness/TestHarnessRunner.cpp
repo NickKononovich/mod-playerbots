@@ -24921,6 +24921,12 @@ namespace TestHarness
                 for (Member const& member : party.members)
                     if (member.name == restFor)
                         lead.topUpFor = member.guid;
+            // [lead85] b128 rfc-h 756.6-772.6 / 1083-1102.6 s: before a boss the planner named one member at a time
+            // ("Rtshaab at 49 %", then "Rthunaa at 67 %") and they drank one after the other. A line hold on a boss is
+            // the boss wait: every member below its boss line rests at once (MemberBossGap, lead46)
+            if (decision.verdict == PullPlanner::Verdict::Held && lineHold && !decision.lookTarget.IsEmpty() &&
+                IsBossLook(tank, decision.lookTarget))
+                lead.bossWaitFor = decision.lookTarget;
             if (restFor != lead.plannerRestFor)
             {
                 lead.plannerRestFor = restFor;

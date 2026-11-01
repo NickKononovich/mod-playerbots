@@ -376,6 +376,7 @@ public:
     // [lead70] the tank's own walk-in for an engage out of sight, run dry (MovementAction::s_dryRun): would its walk
     // guards (path, ledge drop, closed door, idle packs on the path, fight zone) let it walk in from where it stands?
     bool DryWalkIn(Unit* target);
+    float OpenerRange();  // [lead85] the range of the tank's first ready opener (0: none)
 
     std::string const GetTargetName() override { return "aggressive target"; }
     bool Execute(Event event) override;

@@ -557,6 +557,19 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
     return false;
 }
 
+float OwnManaLine(Player* bot)
+{
+    NextFight fight;
+    if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) && PredictNextFight(bot, fight) &&
+        (fight.boss || fight.mobs))
+    {
+        float const fightSec =
+            fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+        return PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight) : FightManaLine(bot, fightSec, fight.cost);
+    }
+    return PlayerbotAI::IsHeal(bot) ? HEALER_REST_MANA_PCT : REST_MANA_PCT;
+}
+
 bool BelowOwnLine(Player* bot, std::string* why)
 {
     ignoreLeaderRest = true;

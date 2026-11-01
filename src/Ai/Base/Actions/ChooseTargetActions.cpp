@@ -71,6 +71,13 @@
 #include <vector>
 #include "LeaderPlannerShared.h"  // [lead31a] the pull planner lives in the leader (Ai/Leader/LeaderPlanner.cpp)
 
+// [lead85] the tank's ranged threat openers (lead75), and the range of the first one ready
+namespace
+{
+    constexpr char const* TANK_OPENERS[] = {"avenger's shield", "hand of reckoning", "judgement of wisdom",
+                                            "heroic throw", "death grip", "icy touch", "faerie fire (feral)"};
+}
+
 // [lead31a] C:/WoW/LEADER_REFACTOR_PLAN.md: the pull planner moved into the leader module (Ai/Leader); this file keeps
 // the tank's EXECUTION of a pull decision (isUseful / TakeLeaderDecision / LoadDecision / Execute / PullBack /
 // StartLosPull) and the other target actions.
@@ -272,7 +279,12 @@ bool AggressiveTargetAction::Execute(Event event)
                                   "engage: the leader walks the path in for sight", commitMobs, commitCost, single);
             if (Leader::LEADER_TANK_WALKS_PULL && Leader::LedBot(bot))
             {
-                bool const walked = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+                // [lead85] b128: 22 of 45 pulls "planned (body)" - the walk in for sight went into the mob's reach
+                // and it came before the opener; first to the first point that sees it within the opener's range
+                float const opener = OpenerRange();
+                bool const walked = (opener > 0.0f && !target->IsInCombat() &&
+                                     MoveToSight(target, opener, "engage: to its opener's range")) ||
+                                    ReachCombatTo(target, 0.0f) || MoveToLOS(target);
                 return PostCommit(bot, target, walked, Leader::PullMethod::Engage,
                                   walked ? "engage: the tank walks its path in for sight"
                                          : "engage: the tank's walk in for sight refused",
@@ -306,14 +318,24 @@ bool AggressiveTargetAction::Execute(Event event)
         // threat, the damage dealers waited for headroom). The tank's own opener at range before the walk-in: its
         // ranged threat spell on the engaged mob (the tank's choice of ability, the leader's method stays the engage)
         if (PlayerbotAI::IsTank(bot) && !target->IsInCombat() && !bot->IsInCombat())
-            for (char const* opener : {"avenger's shield", "hand of reckoning", "judgement of wisdom", "heroic throw",
-                                       "death grip", "icy touch", "faerie fire (feral)"})
+        {
+            bool opened = false;
+            for (char const* opener : TANK_OPENERS)
                 if (botAI->CanCastSpell(opener, target) && botAI->CastSpell(opener, target))
                 {
                     LOG_INFO("playerbots", "[lead75] {}: opens the engage on {} with {}", bot->GetName(),
                              target->GetName(), opener);
+                    opened = true;
                     break;
                 }
+            // [lead85] in sight but beyond the opener's range: the walk ends at its range (the next look opens),
+            // not in the mob's reach (a body pull)
+            float const range = opened ? 0.0f : OpenerRange();
+            if (range > 0.0f && bot->GetExactDist(target) > range &&
+                MoveToSight(target, range, "engage: to its opener's range"))
+                return PostCommit(bot, target, true, Leader::PullMethod::Engage,
+                                  "engage: walks to its opener's range", commitMobs, commitCost, single);
+        }
         return PostCommit(bot, target, Attack(target), Leader::PullMethod::Engage,
                           "engage" + (commitReason.empty() ? std::string() : " (" + commitReason + ")"), commitMobs,
                           commitCost, single);  // [lead1]
@@ -330,12 +352,27 @@ bool AggressiveTargetAction::Execute(Event event)
                       commitMobs, commitCost, single);
 }
 
+// [lead85] the range of the tank's first ready opener (TANK_OPENERS)
+float AggressiveTargetAction::OpenerRange()
+{
+    if (!PlayerbotAI::IsTank(bot))
+        return 0.0f;
+    for (char const* opener : TANK_OPENERS)
+        if (uint32 const spell = AI_VALUE2(uint32, "spell id", opener);
+            spell && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell))
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+                return info->GetMaxRange(false);
+    return 0.0f;
+}
+
 bool AggressiveTargetAction::DryWalkIn(Unit* target)
 {
     if (!target || bot->IsWithinLOSInMap(target))
         return true;
     MovementAction::s_dryRun = true;
-    bool const walks = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+    float const opener = OpenerRange();
+    bool const walks = (opener > 0.0f && MoveToSight(target, opener, "engage: to its opener's range")) ||
+                       ReachCombatTo(target, 0.0f) || MoveToLOS(target);
     MovementAction::s_dryRun = false;
     return walks;
 }
