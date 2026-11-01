@@ -15,6 +15,8 @@
 #include "LeaderOrders.h"  // [lead15] the leader's member events
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
+#include "SpellInfo.h"  // [lead188] the dispel types
+#include "SpellMgr.h"
 
 #include <map>
 #include <mutex>
@@ -162,6 +164,42 @@ namespace
         return false;
     }
 
+    // [lead188] the dispel types (1 << DispelType) a spell removes (its SPELL_EFFECT_DISPEL effects)
+    uint32 DispelMask(uint32 spellId)
+    {
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        uint32 mask = 0;
+        if (info)
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.Effect == SPELL_EFFECT_DISPEL && effect.MiscValue >= 0 && effect.MiscValue < 32)
+                    mask |= 1u << effect.MiscValue;
+        return mask;
+    }
+
+    // [lead188] b180: the elemental shaman cast Cure Toxins 8.7 times a minute on Bazzalan's poison on the tank with a
+    // holy paladin in the group. A dispel on another member is the healer's while a group healer here removes that
+    // type (its known dispel spells' effects): a damage dealer's own dispel on others waits
+    bool HealerDispels(Player* self, uint32 mask)
+    {
+        // Cleanse, Purify, Dispel Magic, Cure / Abolish Disease, Cleanse Spirit, Cure Toxins, Remove Curse,
+        // Cure / Abolish Poison: what a healer may carry (the types come from the spells' own effects)
+        static constexpr uint32 DISPELS[] = {4987, 1152, 527, 988, 528, 552, 51886, 526, 2782, 8946, 2893};
+        Group* group = self->GetGroup();
+        if (!group || !mask)
+            return false;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* healer = ref->GetSource();
+            if (!healer || healer == self || !healer->IsAlive() || healer->GetMap() != self->GetMap() ||
+                !PlayerbotAI::IsHeal(healer))
+                continue;
+            for (uint32 spell : DISPELS)
+                if (healer->HasSpell(spell) && (DispelMask(spell) & mask))
+                    return true;
+        }
+        return false;
+    }
+
     bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
                         bool combat, bool gate = false)
     {
@@ -258,6 +296,20 @@ namespace
             else if (Unit* healTarget = action->GetTarget(); healTarget && healTarget != self)
                 return true;
         }
+        // [lead188] a damage dealer's dispel on another member waits while a group healer removes that type
+        if (!PlayerbotAI::IsHeal(self) &&
+            (name.find("cure") != std::string::npos || name.find("cleanse") != std::string::npos ||
+             name.find("dispel") != std::string::npos || name.find("purify") != std::string::npos ||
+             name.find("abolish") != std::string::npos || name.find("remove curse") != std::string::npos))
+            if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(self))
+                if (auto* cast = dynamic_cast<CastSpellAction*>(action))
+                    if (Unit* dispelled = gate ? nullptr : action->GetTarget(); dispelled && dispelled != self)
+                    {
+                        uint32 const spell =
+                            selfAI->GetAiObjectContext()->GetValue<uint32>("spell id", cast->getSpell())->Get();
+                        if (HealerDispels(self, DispelMask(spell)))
+                            return true;
+                    }
         // [lead36] ... and the mage handed out food in the fight
         if (combat && in({"give food", "give water"}))
             return true;
