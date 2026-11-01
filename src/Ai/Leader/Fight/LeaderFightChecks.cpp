@@ -53,6 +53,12 @@ namespace Leader::Fight
 
     float g_spotAcquireMargin = 0.0f;
 
+    float LeaderShootReach(Player* bot)
+    {
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        return botAI ? botAI->GetRange("spell") : 0.0f;
+    }
+
     bool HealReaches(Player* tank, Position const& from, Position const& to)
     {
         return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&

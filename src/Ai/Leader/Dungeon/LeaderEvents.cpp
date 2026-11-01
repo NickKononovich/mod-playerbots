@@ -2374,8 +2374,9 @@ namespace Leader::Dungeon
                 !lead.commitMob.IsEmpty())
             {
                 Position const meet = lead.meetPoint;
+                // [lead124] the member's own attack reach, not a fixed number
                 float const roleReach = bot == healer || PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEAL_REACH_YD
-                                                                                  : LEADER_RANGED_MAX_YD;
+                                                                                  : LeaderShootReach(bot);
                 auto const inReach = [&](Position const& at)
                 {
                     return at.GetExactDist(meet) <= roleReach &&
@@ -2809,14 +2810,31 @@ namespace Leader::Dungeon
                     // [lead122] b156 rfc-h 20261101-105614 91.7-117.5 s: the hunter got Attack 7 times 86 yd from
                     // its target ("the attack refused: no line of sight", nothing ran) and no spot all fight. A
                     // ranged member's Attack comes with a spot it can shoot from: where it stands when that reaches
-                    // the target (LEADER_RANGED_MAX_YD, in sight), else its spot when that does, else the spot kept
+                    // the target (its own attack reach, in sight), else its spot when that does, else the spot kept
                     // for this target, else one round the target in range and sight (one the tank holds the walk to
                     // first, then the nearest), kept for the fight while it reaches the target
-                    if (PlayerbotAI::IsRanged(bot))
+                    // [lead124] the reach is the member's own (LeaderShootReach), the spots at it less the walk's
+                    // tolerance and at half of it; a melee member left standing off its target by a refused walk
+                    // (its "<why>: stays (...)") gets the walk to its target
+                    bool const meleeMember = !PlayerbotAI::IsRanged(bot);
+                    float const shootReach = LeaderShootReach(bot);
+                    Leader::MemberEvents heldEvents;
+                    float const meleeReach = NOMINAL_MELEE_RANGE + bot->GetCombatReach() + attackOn->GetCombatReach();
+                    bool const meleeHeld = meleeMember && !bot->IsWithinMeleeRange(attackOn) &&
+                                           Leader::Events::Get(guid, heldEvents) &&
+                                           heldEvents.move == Leader::MoveEvent::StandAt &&
+                                           heldEvents.moveWhy.find(": stays (") != std::string::npos &&
+                                           heldEvents.spot.GetExactDist(attackOn->GetPosition()) > meleeReach;
+                    if (meleeHeld &&
+                        checkedMove(guid, Leader::MoveEvent::MoveTo, attackOn->GetPosition(), NOMINAL_MELEE_RANGE,
+                                    "in reach of its target"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "in reach of its target").Str("target", attackOn->GetName()));
+                    if (!meleeMember && shootReach > 0.0f)
                     {
                         auto const shootsFrom = [&](Position const& at)
                         {
-                            return at.GetExactDist(attackOn->GetPosition()) <= LEADER_RANGED_MAX_YD &&
+                            return at.GetExactDist(attackOn->GetPosition()) <= shootReach &&
                                    map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
                                                         attackOn->GetPositionX(), attackOn->GetPositionY(),
                                                         attackOn->GetPositionZ() + 2.0f, bot->GetPhaseMask(),
@@ -2838,7 +2856,7 @@ namespace Leader::Dungeon
                             if (!issued)
                             {
                                 std::vector<std::pair<Position, bool>> candidates;  // the spot, the tank holds it
-                                for (float ring : {LEADER_RANGED_YD, LEADER_RANGED_MIN_YD})
+                                for (float ring : {shootReach - 2.0f, shootReach / 2.0f})
                                     for (uint32 i = 0; i < 12; ++i)
                                     {
                                         float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;

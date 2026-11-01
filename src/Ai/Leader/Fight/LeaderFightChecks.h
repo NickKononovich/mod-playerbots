@@ -117,6 +117,10 @@ namespace Leader::Fight
 
     bool HealReaches(Player* tank, Position const& from, Position const& to);
 
+    // [lead124] the member's own attack reach: the range its rotation positions by (PlayerbotAI::GetRange "spell":
+    // the configured spell distance, a hunter's weapon range); 0 for no bot AI
+    float LeaderShootReach(Player* bot);
+
     // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
     // unpulled pack) stands within the AoE radius (plus a margin) of it
     Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, std::string& why);
