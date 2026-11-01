@@ -632,6 +632,10 @@ namespace Leader::Travel
         uint32 loggedMs = 0;
         uint32 unknownSinceMs = 0;     // held at the edge of this blocker since then
         std::vector<ObjectGuid> pack;  // the keep-out pack: not marked as unseen by the wait's skip
+        // [lead132] the facts the hold was searched for: the blocker's and the leader's spot, the planner's verdict
+        Position blockerAt;
+        Position leaderAt;
+        uint8 verdict = 0;
     };
 
     extern std::unordered_map<ObjectGuid, SightHold> sightHolds;  // world thread only

@@ -235,8 +235,6 @@ namespace TestHarness
         using Leader::Travel::UNSEEN_BLOCKER_PACK_MAX;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_BLOCKER_BODY_PULL;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_BLOCKER_MAX_TRIES;  // [lead107] RouteSteer.h
-        using Leader::Travel::ROUTE_BLOCKER_PREP_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::ROUTE_BLOCKER_SIGHT_HOLD_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_BLOCKER_THROUGH_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::NEIGHBOUR_HOLD_MAX;  // [lead107] RouteSteer.h
         using Leader::Travel::NEIGHBOUR_PASS_PACK_MAX;  // [lead107] RouteSteer.h
@@ -266,7 +264,6 @@ namespace TestHarness
         using Leader::Travel::ROUTE_SKIP_BEHIND_SKIPPED;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_STOP_KEEPS_WAIT;  // [lead107] RouteSteer.h
         using Leader::Travel::STOP_SAME_RANGE;  // [lead107] RouteSteer.h
-        using Leader::Travel::STOP_KEEP_GAP_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SAME_TARGET_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::RESPAWNING_SKIP_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::ESCORT_FIGHT_RADIUS;  // [lead107] RouteTargets.h
@@ -1052,7 +1049,6 @@ namespace TestHarness
 
         using Leader::Travel::SightKeepOutOthers;  // [lead107] RouteSteer.h
 
-        using Leader::Travel::SIGHT_HOLD_RECHECK_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SIGHT_HOLD_LOG_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SightHold;  // [lead107] RouteTargets.h
         using Leader::Travel::sightHolds;  // [lead107] RouteTargets.h

@@ -126,9 +126,7 @@ namespace Leader::Travel
     // skipped Atal'ai Slave"; the group stood.
     constexpr bool ROUTE_BLOCKER_BODY_PULL = true;
 
-    constexpr uint32 ROUTE_BLOCKER_PREP_MS = 30 * IN_MILLISECONDS;   // the planner's chance before the walk in
 
-    constexpr uint32 ROUTE_BLOCKER_SIGHT_HOLD_MS = 8 * IN_MILLISECONDS;  // the edge hold for a route blocker
 
     // [route_blocker_walk_through] an idle pack this close to the route blocker is part of its body pull
     constexpr float ROUTE_BLOCKER_THROUGH_RANGE = 30.0f;
@@ -155,7 +153,6 @@ namespace Leader::Travel
 
     constexpr float STOP_SAME_RANGE = 5.0f;
 
-    constexpr uint32 STOP_KEEP_GAP_MS = 15 * IN_MILLISECONDS;
 
 
     // [steer_rest_not_stuck] The leader seated with food / drink (RestState: the aura by its spell specific) out of
@@ -638,7 +635,6 @@ namespace Leader::Travel
     // once per SIGHT_HOLD_LOG_MS. Per leader, for one target and blocker. The search runs only with the leader at
     // its stop; 2.5 s, not 5 s: Utgarde Keep heroic 22:26:01 held at the edge, 22:26:11 skip at once, the pull at
     // 22:26:16 - two rechecks of idling the user noticed (*.bak_doorgate: 5 s).
-    constexpr uint32 SIGHT_HOLD_RECHECK_MS = 2500;
 
     constexpr uint32 SIGHT_HOLD_LOG_MS = 10 * IN_MILLISECONDS;
 

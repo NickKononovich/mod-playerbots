@@ -2666,6 +2666,9 @@ namespace Leader::Travel
                         hold.target = routeState.target;
                         hold.blocker = blocker->GetGUID();
                         hold.checkedMs = now;
+                        hold.blockerAt = blocker->GetPosition();
+                        hold.leaderAt = leader->GetPosition();
+                        hold.verdict = uint8(verdict);
                         hold.pack.clear();
                         for (Creature* packMob : pack)
                             hold.pack.push_back(packMob->GetGUID());
@@ -2949,32 +2952,35 @@ namespace Leader::Travel
                         // after SIGHT_HOLD_RECHECK_MS.
                         // A fresh look-up: logHold above may have inserted into sightHolds (iterators invalidated).
                         auto const held = sightHolds.find(group.LeaderGuid());
-                        bool const recentHold = held != sightHolds.end() &&
-                                                getMSTimeDiff(held->second.checkedMs, now) < SIGHT_HOLD_RECHECK_MS;
                         std::vector<Creature*> keepOut;
                         PlanVerdict verdict = PlanVerdict::Unknown;
-                        bool gaveWay = false;    // the edge hold timed out (SIGHT_UNKNOWN_HOLD_MS) without a plan
-                        bool intoReach = false;  // the sight point may lie in the target's (accepted) pack's reach
-                        if (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED && !sightTried && !recentHold)
+                        if (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED && !sightTried)
                         {
                             keepOut = SightKeepOutPack(group, leader, mob, blocker);
                             verdict = TankPlanVerdict(group, leader, keepOut);
+                        }
+                        // [lead132] user: the hold is searched again when one of its facts changed, not after
+                        // SIGHT_HOLD_RECHECK_MS: the blocker or the leader moved, or the planner's verdict changed
+                        bool const recentHold =
+                            held != sightHolds.end() && held->second.blocker == blocker->GetGUID() &&
+                            blocker->GetExactDist(&held->second.blockerAt) <= STEER_PROGRESS_RANGE &&
+                            leader->GetExactDist(&held->second.leaderAt) <= STEER_PROGRESS_RANGE &&
+                            held->second.verdict == uint8(verdict);
+                        bool gaveWay = false;    // the edge hold gives way: the tank cannot plan the pack (lead132)
+                        bool intoReach = false;  // the sight point may lie in the target's (accepted) pack's reach
+                        if (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED && !sightTried && !recentHold)
+                        {
                             // Sweep batch3 (SM Library 21:47): "holds at the edge: no accepted plan" for minutes
                             // while the tank had "no aggressive target" - it cannot plan a pack it does not see, so
-                            // the hold waited for a verdict that never came. An unknown verdict holds at most
-                            // SIGHT_UNKNOWN_HOLD_MS, then walking into sight is the pull again (a refusal still holds).
-                            constexpr uint32 SIGHT_UNKNOWN_HOLD_MS = 20 * IN_MILLISECONDS;
-                            // Uldaman heroic (same wave): a stale refusal (the harness's carefulRefused count)
-                            // held a tank with "no aggressive target" just as long - after the same time out of
-                            // combat the hold gives way to the planner, which then sees the pack (hard minimum,
-                            // pull back or "[pull blocked]"; user rule: always pull at least one mob when ready).
-                            uint32 const unknownHoldMs =
-                                IsRouteBlocker(group, routeState.target) || IsRouteBlocker(group, blocker->GetGUID())
-                                    ? ROUTE_BLOCKER_SIGHT_HOLD_MS
-                                    : SIGHT_UNKNOWN_HOLD_MS;
+                            // the hold waited for a verdict that never came. [lead132] that is the fact (not
+                            // SIGHT_UNKNOWN_HOLD_MS 20 s / ROUTE_BLOCKER_SIGHT_HOLD_MS 8 s): an unknown verdict while
+                            // the tank sees no mob of the pack gives way - walking into sight is the pull again (a
+                            // refusal still holds)
+                            bool const seesPack = std::any_of(keepOut.begin(), keepOut.end(),
+                                                              [leader](Creature* packMob)
+                                                              { return leader->IsWithinLOSInMap(packMob); });
                             if (!leader->IsInCombat() && held != sightHolds.end() &&
-                                held->second.blocker == blocker->GetGUID() && held->second.unknownSinceMs &&
-                                getMSTimeDiff(held->second.unknownSinceMs, now) >= unknownHoldMs)
+                                held->second.blocker == blocker->GetGUID() && !seesPack)
                                 gaveWay = verdict == PlanVerdict::Unknown &&  // [queue-blocker-pull-gate]
                                           !(Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) &&
                                             group.LeaderDecides());  // [lead3] the leader never gives way
@@ -3932,7 +3938,7 @@ namespace Leader::Travel
                 // stop keeps the clock; a boss and a body pull keep their own.
                 bool const sameStop = ROUTE_STOP_KEEPS_WAIT && routeState.stopSinceMs && !routeState.targetIsBoss &&
                                       !routeState.approach &&
-                                      getMSTimeDiff(routeState.stopLastMs, now) <= STOP_KEEP_GAP_MS &&
+
                                       leader->GetExactDist(&routeState.stopPos) <= STOP_SAME_RANGE;
                 routeState.arrivedMs = sameStop ? routeState.stopSinceMs : now;
                 routeState.stopSinceMs = routeState.arrivedMs;
@@ -4060,7 +4066,9 @@ namespace Leader::Travel
             // 0.92" from 593 s to the stall, the walk-in never came)
             if (leaderPulls)
                 heldForNowCapped = false;
-            else if (routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS)
+            // [lead132] the planner had its chance when it answered (not ROUTE_BLOCKER_PREP_MS 30 s): a route blocker
+            // it holds for now is no hold
+            else if (routeBlocker && plannerRefused)
                 heldForNowCapped = true;
             if (!heldForNowCapped && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
             {
@@ -4118,11 +4126,11 @@ namespace Leader::Travel
                 }
                 if (!refusalWaitMs && !routeState.guaranteeDueMs)
                     routeState.guaranteeDueMs = now;
-                // [lead131] user: no elapsed-time rule decides (GUARANTEE_HOLD_TOTAL_MS 150 s, GUARANTEE_EXECUTE_MS 30 s,
-                // GUARANTEE_UNKNOWN_HOLD_MS 120 s were the old clocks): the group holds while the planner refuses the
-                // pack and it is not hopeless - the planner's own verdict (it takes the pack, or calls it hopeless)
-                // ends the hold
-                bool const hold = !holdForce && !(routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS);
+                // [lead131] user: no elapsed-time rule decides (GUARANTEE_HOLD_TOTAL_MS 150 s, GUARANTEE_EXECUTE_MS
+                // 30 s, GUARANTEE_UNKNOWN_HOLD_MS 120 s were the old clocks): the group holds while the planner
+                // refuses the pack and it is not hopeless - the planner's own verdict (it takes the pack, or calls
+                // it hopeless) ends the hold; a route blocker is no hold (lead132)
+                bool const hold = !holdForce && !routeBlocker;
                 if (hold)
                 {
                     if (!routeState.guaranteeHolding)
@@ -4181,7 +4189,7 @@ namespace Leader::Travel
                                        : group.GroupFullyReady(leader);
             // [lead24] LEADER_NO_FORCING_TIMERS: a led party's stop resolves on evaluations only (a boss pull now, a
             // hopeless refusal); the stop's wait / the route blocker's prep time only log waited_long
-            bool const timedOut = waited > pullWaitMs || (routeBlocker && waited > ROUTE_BLOCKER_PREP_MS) || holdForce;
+            bool const timedOut = waited > pullWaitMs || holdForce;  // the waited_long diagnostic's line
             if (ledNoForce && timedOut && !bossPullNow && !(plannerRefused && refusalHopeless))
                 Leader::Dungeon::WaitedLong(group, "stop_wait", waited,
                                             object->GetName() + (plannerRefused ? ": " + refusalWhy : ""));
