@@ -22783,13 +22783,18 @@ namespace TestHarness
                 if (legTarget && (lead.routePathTarget != party.target || lead.routePath.empty() ||
                                   lead.routePathIndex >= lead.routePath.size()))
                 {
-                    PathGenerator path(tank);
-                    path.CalculatePath(legTarget->GetPositionX(), legTarget->GetPositionY(),
-                                       legTarget->GetPositionZ(), false);
+                    // [lead98] b138 rfc-h 335-427 s: from the Oggleflint ledge the plain navmesh path to the route
+                    // target was partial and the walk stood at its end - the route is data the leader reads: the
+                    // harness's own route leg (SteerLeg: its long route search, door and detour legs, the route
+                    // links), taken once per leg and walked by index
+                    PathResult leg;
+                    SteerLeg(tank, G3D::Vector3(legTarget->GetPositionX(), legTarget->GetPositionY(),
+                                                legTarget->GetPositionZ()),
+                             leg);
                     lead.routePath.clear();
-                    if ((path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && path.GetPath().size() >= 2)
-                        lead.routePath.assign(path.GetPath().begin(), path.GetPath().end());
-                    lead.routePathIndex = 1;  // [0] is where the tank stands
+                    if (!(leg.type & PATHFIND_NOPATH) && leg.points.size() >= 2)
+                        lead.routePath.assign(leg.points.begin(), leg.points.end());
+                    lead.routePathIndex = 0;  // the arrived points are skipped below
                     lead.routePathTarget = party.target;
                 }
                 while (!lead.routePath.empty() && lead.routePathIndex + 1 < lead.routePath.size() &&
@@ -25357,9 +25362,10 @@ namespace TestHarness
                 // accepted by the leader's checks) toward a mob it does not see yet, no engage is committed - the group
                 // walks the route; the engage comes once the tank sees the mob or the route walk ends
                 Leader::MemberEvents tankWalk;
-                if (mob && decision.kind == "engage" && !IsBossLook(tank, mobGuid) &&
-                    !tank->IsWithinLOSInMap(mob) && Leader::Events::Get(tank->GetGUID(), tankWalk) &&
-                    tankWalk.move == Leader::MoveEvent::MoveTo && tankWalk.moveWhy == "route walk" &&
+                // [lead98] a boss too: "boss pulled where it stands" with "the tank's walk in for sight refused"
+                // (b138 328.5 s, Taragaman) - the route walk takes the group there first
+                if (mob && decision.kind == "engage" && !tank->IsWithinLOSInMap(mob) &&
+                    Leader::Events::Get(tank->GetGUID(), tankWalk) && tankWalk.move == Leader::MoveEvent::MoveTo && tankWalk.moveWhy == "route walk" &&
                     tank->GetExactDist2d(tankWalk.spot.GetPositionX(), tankWalk.spot.GetPositionY()) >
                         tankWalk.tolerance)
                 {
