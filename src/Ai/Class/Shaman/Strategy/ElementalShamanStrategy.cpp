@@ -82,9 +82,10 @@ void ElementalShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    // [b31_deep] Flame Shock multidot on a second / third mob (wowsims elemental APLs): below Lava Burst (5.2), above
-    // Lightning Bolt (5.0); the action keeps the current target's own Flame Shock first.
-    triggers.push_back(new TriggerNode("flame shock on attacker", { NextAction("flame shock on attacker", 5.15f) }));
+    // [b31_deep] Flame Shock multidot on a second / third mob; the action keeps the current target's own Flame Shock
+    // first. [rot17] wowsims elemental_shaman__default: the multidot Flame Shock above Chain Lightning (5.25) and Lava
+    // Burst (5.2), under the main target's Flame Shock (5.3).
+    triggers.push_back(new TriggerNode("flame shock on attacker", {NextAction("flame shock on attacker", 5.27f)}));
     // [b44_cast] No single-target Chain Lightning filler: wowsims elemental casts Chain Lightning only when
     // numberTargets > 1 ("chain lightning aoe", ShamanAoeStrategy). Sim A/B on the bots' own counted boss fights
     // (3 requests, 3000 iterations, same seed): Chain Lightning on cooldown on one target 4801 DPS vs the APL 5062
