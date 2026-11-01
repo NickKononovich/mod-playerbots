@@ -351,6 +351,8 @@ bool BelowOwnLine(Player* bot, std::string* why = nullptr);
 // [lead85] the member's own computed mana line for its next fight (the led group's FightManaLine / TankManaLine), the
 // fixed rest line when no next fight is known - the hunter's Viper reads it
 float OwnManaLine(Player* bot);
+// [lead47] the leader's Rest command is on this led bot
+bool LeaderRests(Player* bot);
 // Sitting with food / drink that has nothing left to do: full, or a fight started, or (REST_STAND_AT_LINE) above its
 // own line while nobody close by still sits.
 bool RestDone(Player* bot);

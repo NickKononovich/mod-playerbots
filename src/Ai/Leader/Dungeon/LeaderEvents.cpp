@@ -1992,6 +1992,16 @@ namespace Leader::Dungeon
 
             // 2. the moves: out of a cleave (keeping the heal reach), the pull's spot, along with the tank
             bool moved = walking;
+            // [lead150] b170 356-428 s: the leader's Follow kept moving a member that had to drink - the leader's Rest
+            // owns its position: no move command while it holds (a sitter stands still, the Follow resumes after)
+            if (restCommanded && !moved)
+            {
+                Leader::MemberEvents held;
+                if (Leader::Events::Get(guid, held) && held.move != Leader::MoveEvent::None &&
+                    held.move != Leader::MoveEvent::Hold)
+                    Leader::Events::SetMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "rests");
+                moved = true;
+            }
             if (Leader::LEADER_OWNS_DODGE && combat &&
                 DungeonTactics::InFrontalCleave(bot, botAI, 1.0f, 20.0f * float(M_PI) / 180.0f))
             {

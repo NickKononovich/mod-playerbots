@@ -118,8 +118,10 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
         // measured spend over the target's remaining seconds), else it would drink after the fight
         // [lead140] b164: back to Dragonhawk once the mana lasts the rest of this fight (its measured spend over
         // the target's remaining seconds) - the top-up after the fight is the leader's rest, not Viper's
-        if (bot->IsInCombat() && Leader::LedGroup(bot))
-            return float(mana) >= HunterFightManaLeft(botAI, bot);
+        // [lead150] ... and the next planned fight (the same need as the Viper trigger's)
+        if (Leader::LedGroup(bot))
+            return float(mana) >= (bot->IsInCombat() ? HunterFightManaLeft(botAI, bot) : 0.0f) +
+                                      RestState::OwnManaLine(bot);
         return true;
     }
 
@@ -221,8 +223,12 @@ bool HunterAspectOfTheViperTrigger::IsActive()
     // [lead140] b164 20261101-125734: the hunter did 44-69 % of its sim - Viper (half the ranged damage) for the
     // next fight's line. In a led group: Viper only while the mana does not last the rest of this fight (the
     // measured spend over the target's remaining seconds); out of a fight never (the rest is the leader's)
+    // [lead150] b170 20261101-142639 356-428 s: the hunter at 1-7 % mana every pack (lead140 left Viper as soon as the
+    // rest of this fight was covered, the next fight never). Viper while the mana does not last the rest of this
+    // fight plus the next planned one (its computed line, RestState::OwnManaLine); out of a fight while it is below
+    // that line (the regen costs no damage)
     if (Leader::LedGroup(bot))
-        return bot->IsInCombat() && float(mana) < HunterFightManaLeft(botAI, bot);
+        return float(mana) < (bot->IsInCombat() ? HunterFightManaLeft(botAI, bot) : 0.0f) + RestState::OwnManaLine(bot);
     return mana < ASPECT_OF_THE_VIPER_MANA_PCT;
 }
 

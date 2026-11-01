@@ -8,6 +8,7 @@
 #include "AggressiveTargetValue.h"
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 
@@ -747,6 +748,39 @@ bool RestDone(Player* bot)
 }
 }  // namespace RestState
 
+namespace
+{
+    // [lead150] one own_decision line per member and below-line stretch, cleared when the member stands at its line
+    // again or the leader rests it. Noted on the trigger's second look in a row (it asks every two seconds): the
+    // leader's own tick between them had the chance to rest it - the first look alone is no disagreement
+    std::mutex ownRestLock;
+    std::unordered_map<uint64, uint32> ownRestLooks;
+
+    uint64 OwnRestKey(Player* bot, char const* trigger)
+    {
+        return bot->GetGUID().GetRawValue() * 2 + (std::strcmp(trigger, "rest health") == 0 ? 1 : 0);
+    }
+
+    // the trigger's verdict: `own` - it would fire without the leader's Rest (noted once per stretch)
+    void OwnRestVerdict(Player* bot, char const* trigger, bool own)
+    {
+        {
+            std::lock_guard<std::mutex> guard(ownRestLock);
+            if (!own)
+            {
+                ownRestLooks.erase(OwnRestKey(bot, trigger));
+                return;
+            }
+            if (++ownRestLooks[OwnRestKey(bot, trigger)] != 2)
+                return;
+        }
+        std::string const why = Acore::StringFormat("its own rest line (mana {:.0f} %, health {:.0f} %) without the "
+                                                    "leader's Rest",
+                                                    bot->GetPowerPct(POWER_MANA), bot->GetHealthPct());
+        Leader::Events::NoteOwn(bot->GetGUID(), Leader::OwnDecision{trigger, "rest", why, 0});
+    }
+}
+
 bool RestManaTrigger::IsActive()
 {
     if (RestState::IsDrinking(bot) || !RestState::CanRest(bot))
@@ -755,6 +789,16 @@ bool RestManaTrigger::IsActive()
         if (bot->IsInCombat() || RestState::IsDrinking(bot))
             _skipLogged.clear();
         return false;
+    }
+
+    // [lead150] user: rest is the leader's decision. A led executor member's own rest trigger is off; one that would
+    // fire without the leader's Rest (below its own line, able to rest) is an own decision (the run's detector)
+    if (Leader::ExecutorMember(bot))
+    {
+        bool const leaderRest = RestState::LeaderRests(bot);
+        bool const wants = RestState::WantsDrink(bot);
+        OwnRestVerdict(bot, "rest mana", !leaderRest && wants);
+        return leaderRest && wants;
     }
 
     std::string skip;
@@ -774,7 +818,16 @@ bool RestManaTrigger::IsActive()
 
 bool RestHealthTrigger::IsActive()
 {
-    return !RestState::IsEating(bot) && RestState::CanRest(bot) && RestState::WantsFood(bot);
+    if (RestState::IsEating(bot) || !RestState::CanRest(bot))
+        return false;
+    if (Leader::ExecutorMember(bot))  // [lead150] as "rest mana"
+    {
+        bool const leaderRest = RestState::LeaderRests(bot);
+        bool const wants = RestState::WantsFood(bot);
+        OwnRestVerdict(bot, "rest health", !leaderRest && wants);
+        return leaderRest && wants;
+    }
+    return RestState::WantsFood(bot);
 }
 
 bool RestedTrigger::IsActive() { return RestState::RestDone(bot); }

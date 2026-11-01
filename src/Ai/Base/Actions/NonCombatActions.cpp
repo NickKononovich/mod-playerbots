@@ -105,6 +105,11 @@ bool DrinkAction::isUseful()
     if (PatrolKeepsStanding(bot, "drink"))
         return false;
 
+    // [lead150] user: rest is the leader's decision - a led executor member drinks only under the leader's Rest
+    // (b170 356-428 s: the hunter's own last-resort drink at 1-7 % mana against the leader's Follow)
+    if (Leader::ExecutorMember(bot))
+        return RestState::LeaderRests(bot);
+
     // Below the low line the old last-resort drink, even with the group fighting close by; above it only by the
     // rest lines ("rest mana" decides when) and not while the group fights (it would stand up at the first hit).
     if (bot->GetPowerPct(POWER_MANA) < sPlayerbotAIConfig.LowMana)
@@ -157,6 +162,8 @@ bool EatAction::isUseful()
 
     if (PatrolKeepsStanding(bot, "eat"))  // [b46_patrol]
         return false;
+    if (Leader::ExecutorMember(bot))  // [lead150] the leader's Rest only
+        return RestState::LeaderRests(bot);
 
     // By the rest lines only ("rest health" decides when): a hurt bot with a healer close by gets healed, for free.
     return !RestState::GroupFighting(bot) && RestState::WantsFood(bot);

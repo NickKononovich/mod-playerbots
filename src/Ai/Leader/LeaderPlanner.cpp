@@ -177,8 +177,10 @@ bool GroupPreparing(Player* bot, std::string* why)
 
         if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member); memberAI && memberAI->forceRebuff.IsPending())
         {
+            // [lead150] b170 356-428 s: "Rthunaa buffing" for 70 s at 1-7 % mana - a member below its own line
+            // rests first (the leader's Rest; no buff under it), the label says so
             if (why)
-                *why = member->GetName() + " buffing";
+                *why = member->GetName() + (RestState::BelowOwnLine(member) ? " rests below its line" : " buffing");
             return true;
         }
 
