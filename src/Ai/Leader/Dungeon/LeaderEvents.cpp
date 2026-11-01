@@ -175,6 +175,25 @@ namespace Leader::Dungeon
         // [lead93] b134 rfc-h 1206 s: the whole group was ported to the entrance (map 1) and the leader went on with
         // in-instance moves ("refused a straight move over open air on map 1 ... to (-330.8,243.0,-11.7)"). Outside
         // the instance the leader issues nothing (logged once); the harness's own re-entry walk brings them back
+        // [lead227] b185 rfc-h 5B 838-920 s: the leader's last "Follow along with the tank" (838.6 s, 174 yd) stood
+        // after the tank burned to death and its ghost left the instance - nobody re-asserted or ended it, the rogue
+        // walked alone to the tank's corpse by the Enforcers, pulled them (913 s) and died (920 s). A dead leader or
+        // one outside commands nothing: its members' commands end once (the group waits), it leads again when back
+        bool const leaderDown = !tank->IsAlive() || tank->GetMapId() != group.MapId();
+        if (leaderDown && !lead.leaderDownCleared)
+        {
+            lead.leaderDownCleared = true;
+            for (ObjectGuid const& groupMember : group.MemberGuids())
+                Leader::Events::Clear(groupMember);
+            Decisions().Write(group.Run(), "leader", "leader_down", tank->GetGUID(), tank->GetName(), true,
+                              JsonObject().Str("why", tank->IsAlive() ? "the leader is outside the instance"
+                                                                      : "the leader is dead")
+                                  .Str("then", "every member's command ended; the group waits"));
+        }
+        if (!leaderDown)
+            lead.leaderDownCleared = false;
+        if (!tank->IsAlive())
+            return;
         if (tank->GetMapId() != group.MapId())
         {
             if (!lead.outsideLogged)

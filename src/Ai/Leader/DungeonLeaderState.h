@@ -200,6 +200,7 @@ namespace Leader
         std::string lingeringSig;          // [lead84] the lingering combat's mob set (lingering_combat logged)
         ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
         bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
+        bool leaderDownCleared = false;    // [lead227] the members' commands ended for this death / stay outside
         std::set<ObjectGuid> routeSkips;   // [lead96] route targets skipped while the leader refuses them
         ObjectGuid walkWakesFirst;         // [lead101] the pack the walk to a patrol wakes: the pull first
         std::map<ObjectGuid, ObjectGuid> meleeChase;  // [lead190] member -> the walked-off target it chases
