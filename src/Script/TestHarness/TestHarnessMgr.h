@@ -505,6 +505,20 @@ namespace TestHarness
         bool TickGrouping(Party& party);
         bool TickTeleport(Party& party);
         void TickRun(Party& party);
+        // [lead107 stage 5] TickRun's group decisions, each its own step: the phantom-combat end (anyInCombat false
+        // while a phantom combat counts out), the stale-victim drop, the wait for the dead / outside members, the
+        // rest / far wait (true: the group travels on), the travel pause for a trailing member (true: it pauses) and
+        // the travel step after the rest (true: the run ended)
+        void TickPhantomCombat(Party& party, std::vector<Player*> const& players, Player* leader, uint32 now,
+                               bool activeBoss, bool& anyInCombat);
+        void TickStaleVictim(Party& party, Player* leader, uint32 now, bool anyInCombat, bool activeBoss);
+        void WaitForAway(Party& party, std::vector<Player*> const& players, Player* leader,
+                         std::vector<std::string> const& away);
+        bool RestWait(Party& party, std::vector<Player*> const& players, Player* leader, uint32 now, bool wingWalking,
+                      bool& ledGather);
+        bool CompactPause(Party& party, Player* leader, uint32 now, bool ledGather);
+        bool TickTravel(Party& party, std::vector<Player*> const& players, Player* leader, uint32 now,
+                        bool wingWalking, bool ledGather);
         void Finish(Party& party, std::string const& result, std::string const& reason);
         void ReleaseParty(Party& party);
         void AssignProfessions(Party& party);
@@ -699,6 +713,7 @@ namespace TestHarness
 
         // buffs and consumables
         void TickBuffing(Party& party, std::vector<Player*> const& players, Player* leader);
+        void BuffPassSetup(Party& party, std::vector<Player*> const& players);  // the pass's test setup
         bool UseConsumables(Party& party, Player* bot, bool food);  // true: it used a flask / food
         void PrePot(Party& party, std::vector<Player*> const& players);
         bool UseItem(Player* bot, uint32 itemId, uint32 spellOverride = 0);

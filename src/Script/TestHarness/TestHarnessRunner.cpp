@@ -4655,6 +4655,24 @@ namespace TestHarness
         std::unordered_map<uint32, BuffWait> buffWaits;  // per instance, world thread only
     }
 
+    // [lead107 stage 5] the test setup of a buffing pass (stays in the harness): the run start puts everyone full
+    void TestHarnessMgr::BuffPassSetup(Party& party, std::vector<Player*> const& players)
+    {
+        // [lead59] b106: the run started with members at 50 % health / mana (the last run's state) - the
+        // run start is test setup: everyone full
+        if (party.buffReason == "run start")
+            for (Player* bot : players)
+                if (bot->IsAlive())
+                {
+                    // [lead67] PerfMon b112: "new rpg do quest" ran in the led dungeon bots - off for the run
+                    if (PlayerbotAI* runAI = GET_PLAYERBOT_AI(bot))
+                        runAI->ChangeStrategy("-new rpg,-rpg,-quest,-grind,-travel", BOT_STATE_NON_COMBAT);
+                    bot->SetFullHealth();
+                    if (bot->GetMaxPower(POWER_MANA))
+                        bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
+                }
+    }
+
     void TestHarnessMgr::TickBuffing(Party& party, std::vector<Player*> const& players, Player* leader)
     {
         uint32 const now = getMSTime();
@@ -4699,19 +4717,7 @@ namespace TestHarness
             switch (party.buffStep)
             {
                 case 0:
-                    // [lead59] b106: the run started with members at 50 % health / mana (the last run's state) - the
-                    // run start is test setup: everyone full
-                    if (party.buffReason == "run start")
-                        for (Player* bot : players)
-                            if (bot->IsAlive())
-                            {
-                                // [lead67] PerfMon b112: "new rpg do quest" ran in the led dungeon bots - off for the run
-                                if (PlayerbotAI* runAI = GET_PLAYERBOT_AI(bot))
-                                    runAI->ChangeStrategy("-new rpg,-rpg,-quest,-grind,-travel", BOT_STATE_NON_COMBAT);
-                                bot->SetFullHealth();
-                                if (bot->GetMaxPower(POWER_MANA))
-                                    bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
-                            }
+                    BuffPassSetup(party, players);  // [lead107 stage 5] the test setup of a buffing pass
                     for (Player* bot : players)
                         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
                             if (bot->IsAlive() && !bot->IsInCombat() &&
