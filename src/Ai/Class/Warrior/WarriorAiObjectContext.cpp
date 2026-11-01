@@ -84,6 +84,7 @@ public:
         creators["mortal strike ready"] = &WarriorTriggerFactoryInternal::mortal_strike_ready;
         creators["heroic throw ready"] = &WarriorTriggerFactoryInternal::heroic_throw_ready;
         creators["arms heroic strike rage"] = &WarriorTriggerFactoryInternal::arms_heroic_strike_rage;
+        creators["fury heroic strike rage"] = &WarriorTriggerFactoryInternal::fury_heroic_strike_rage;  // [rot19]
         creators["shattering throw boss"] = &WarriorTriggerFactoryInternal::shattering_throw_boss;
         creators["victory rush and medium health"] = &WarriorTriggerFactoryInternal::victory_rush_and_medium_health;
         creators["demoralizing shout"] = &WarriorTriggerFactoryInternal::demoralizing_shout;
@@ -239,6 +240,7 @@ private:
     {
         return new WarriorRageAvailableTrigger(botAI, "arms heroic strike rage", 45);
     }
+    static Trigger* fury_heroic_strike_rage(PlayerbotAI* botAI) { return new FuryHeroicStrikeRageTrigger(botAI); }
     static Trigger* shattering_throw_boss(PlayerbotAI* botAI) { return new ShatteringThrowBossTrigger(botAI); }
     static Trigger* victory_rush_and_medium_health(PlayerbotAI* botAI)
     {

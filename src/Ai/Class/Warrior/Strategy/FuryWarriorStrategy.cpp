@@ -187,14 +187,11 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot19] wowsims fury: Heroic Strike from 12 rage (was 40), keeping the rage of the next Bloodthirst / Whirlwind
     triggers.push_back(
-        new TriggerNode(
-            "medium rage available",
-            {
-                NextAction("heroic strike", ACTION_DEFAULT + 0.1f)
-            }
-        )
-    );
+        new TriggerNode("fury heroic strike rage", {NextAction("heroic strike", ACTION_DEFAULT + 0.1f)}));
+    // [rot19] wowsims fury: Heroic Throw as the filler (no rage) under every strike
+    triggers.push_back(new TriggerNode("heroic throw ready", {NextAction("heroic throw", ACTION_DEFAULT + 0.25f)}));
 
     triggers.push_back(
         new TriggerNode(

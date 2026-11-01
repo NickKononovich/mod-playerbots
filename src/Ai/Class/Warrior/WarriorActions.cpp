@@ -58,6 +58,11 @@ constexpr uint32 STANCE_DANCE_WINDOW_MS = 2 * IN_MILLISECONDS;   // a dance gets
 constexpr uint32 STANCE_DANCE_RETRY_MS = 10 * IN_MILLISECONDS;   // and is not begun again for this long
 }
 
+bool WarriorLeavesRageForStrike(PlayerbotAI* botAI, Player* bot, char const* spell)
+{
+    return LeavesRageForStrike(botAI, bot, spell);
+}
+
 bool CastChargeAction::isPossible()
 {
     if (CastWarriorGapCloserAction::isPossible())

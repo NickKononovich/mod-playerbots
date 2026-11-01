@@ -301,4 +301,7 @@ public:
     bool isUseful() override;
 };
 
+// [rot19] Rage (x10) left after `spell` for Mortal Strike / Bloodthirst / Whirlwind coming off cooldown within a GCD
+bool WarriorLeavesRageForStrike(PlayerbotAI* botAI, Player* bot, char const* spell);
+
 #endif

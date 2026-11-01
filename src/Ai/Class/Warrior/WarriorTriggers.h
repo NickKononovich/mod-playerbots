@@ -137,6 +137,21 @@ private:
     std::string const triggerName;
 };
 
+// [rot19] wowsims fury: Heroic Strike at 12+ rage, as long as it leaves the rage for a Bloodthirst / Whirlwind about
+// to come off cooldown (WarriorLeavesRageForStrike)
+class FuryHeroicStrikeRageTrigger : public WarriorRageAvailableTrigger
+{
+public:
+    static constexpr int32 FURY_HEROIC_STRIKE_RAGE = 12;
+
+    FuryHeroicStrikeRageTrigger(PlayerbotAI* botAI)
+        : WarriorRageAvailableTrigger(botAI, "fury heroic strike rage", FURY_HEROIC_STRIKE_RAGE)
+    {
+    }
+
+    bool IsActive() override;
+};
+
 // [b31_deep] Shattering Throw as a boss cooldown (wowsims arms / fury APL MCD, Warcraft Tavern Arms): engaged boss
 // after 6 s, not while the burst waits for Bloodlust, target lives 15 s more, no Shattering Throw on it yet, Battle
 // Stance (no dance), its rage on hand. It was only cast on Divine Shield / Ice Block / Hand of Protection: 0 in PvE.

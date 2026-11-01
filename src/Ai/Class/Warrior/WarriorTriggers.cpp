@@ -5,6 +5,7 @@
  */
 
 #include "WarriorTriggers.h"
+#include "WarriorActions.h"  // [rot19] WarriorLeavesRageForStrike
 #include "Playerbots.h"
 #include "RaidUtilityAssignment.h"
 #include "SpellAuraEffects.h"  // [b33_class]
@@ -393,4 +394,10 @@ bool WarriorStanceAoeTrigger::IsActive()
         return false;
 
     return AoeTrigger::IsActive();
+}
+
+// [rot19]
+bool FuryHeroicStrikeRageTrigger::IsActive()
+{
+    return RageAvailable::IsActive() && WarriorLeavesRageForStrike(botAI, bot, "heroic strike");
 }
