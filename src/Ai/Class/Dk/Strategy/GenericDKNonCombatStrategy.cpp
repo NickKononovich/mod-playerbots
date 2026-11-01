@@ -21,6 +21,8 @@ void GenericDKNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
     triggers.push_back(new TriggerNode("often", { NextAction("apply stone", 1.0f) }));
     triggers.push_back(
         new TriggerNode("horn of winter", { NextAction("horn of winter", 21.0f) }));
+    // [rot10] a member who came into range after the DK's own Horn
+    triggers.push_back(new TriggerNode("horn of winter on party", {NextAction("horn of winter", 20.8f)}));
     // [rot_b31_pdd] a group tank: every Horn of Winter off cooldown, runic power for the next pull's defensives
     triggers.push_back(
         new TriggerNode("horn of winter ready", { NextAction("horn of winter", 20.5f) }));

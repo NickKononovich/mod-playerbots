@@ -424,6 +424,16 @@ public:
     bool IsActive() override;
 };
 
+// [rot10] Out of combat a group member within Horn of Winter's radius has neither Horn of Winter nor Strength of
+// Earth (the DK's own buff can still run while a member who came later lacks it). A scan of the group (5 members).
+class HornOfWinterOnPartyTrigger : public Trigger
+{
+public:
+    HornOfWinterOnPartyTrigger(PlayerbotAI* botAI) : Trigger(botAI, "horn of winter on party") {}
+
+    bool IsActive() override;
+};
+
 // The current target is casting a magic (non-physical) spell at the bot.
 class AntiMagicShellTrigger : public SpellTrigger
 {

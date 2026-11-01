@@ -6,6 +6,7 @@
 
 #include "DKTriggers.h"
 #include "GenericTriggers.h"
+#include "Group.h"  // [rot10]
 #include "LeaderCommand.h"  // [rot2]
 #include "LeaderCommandState.h"  // [rot3]
 #include "Map.h"  // [b35_uh] IsGargoyleFight
@@ -15,6 +16,7 @@
 #include "SharedDefines.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"  // [rot10]
 #include <string>
 
 // [rot2]
@@ -438,6 +440,33 @@ bool HornOfWinterReadyTrigger::IsActive()
 
     uint32 const spellId = AI_VALUE2(uint32, "spell id", "horn of winter");
     return spellId && !bot->HasSpellCooldown(spellId);
+}
+
+// [rot10]
+bool HornOfWinterOnPartyTrigger::IsActive()
+{
+    Group* group = bot->GetGroup();
+    if (!group || bot->IsInCombat() || bot->IsMounted())
+        return false;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", "horn of winter");
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!spellInfo || bot->HasSpellCooldown(spellId))
+        return false;
+
+    float const radius = spellInfo->Effects[EFFECT_0].CalcRadius(bot);
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+            member->GetMap() != bot->GetMap() || !bot->IsWithinDistInMap(member, radius))
+            continue;
+
+        if (!botAI->HasAura("horn of winter", member) && !botAI->HasAura("strength of earth", member))
+            return true;
+    }
+
+    return false;
 }
 
 // [rot1]

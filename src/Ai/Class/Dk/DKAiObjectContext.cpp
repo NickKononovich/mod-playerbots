@@ -71,6 +71,7 @@ public:
         creators["plague strike 3s"] = &DeathKnightTriggerFactoryInternal::plague_strike_3s;
         creators["horn of winter"] = &DeathKnightTriggerFactoryInternal::horn_of_winter;
         creators["horn of winter ready"] = &DeathKnightTriggerFactoryInternal::horn_of_winter_ready;  // [rot_b31_pdd]
+        creators["horn of winter on party"] = &DeathKnightTriggerFactoryInternal::horn_of_winter_on_party;  // [rot10]
         creators["mind freeze"] = &DeathKnightTriggerFactoryInternal::mind_freeze;
         creators["mind freeze on enemy healer"] = &DeathKnightTriggerFactoryInternal::mind_freeze_on_enemy_healer;
         creators["strangulate"] = &DeathKnightTriggerFactoryInternal::strangulate;
@@ -139,6 +140,7 @@ private:
     static Trigger* improved_icy_talons(PlayerbotAI* botAI) { return new ImprovedIcyTalonsTrigger(botAI); }
     static Trigger* horn_of_winter(PlayerbotAI* botAI) { return new HornOfWinterTrigger(botAI); }
     static Trigger* horn_of_winter_ready(PlayerbotAI* botAI) { return new HornOfWinterReadyTrigger(botAI); }
+    static Trigger* horn_of_winter_on_party(PlayerbotAI* botAI) { return new HornOfWinterOnPartyTrigger(botAI); }
     static Trigger* mind_freeze(PlayerbotAI* botAI) { return new MindFreezeInterruptSpellTrigger(botAI); }
     static Trigger* mind_freeze_on_enemy_healer(PlayerbotAI* botAI)
     {
