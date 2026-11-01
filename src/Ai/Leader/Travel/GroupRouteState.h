@@ -12,6 +12,7 @@
 // facts, the escort, the event and door states, the links, the pauses - moved out of the harness's Party unchanged.
 // The harness's Party is one (it derives from it); the leader reads it through its group view (LeaderGroup::Route).
 
+#include "LeaderKnowledge.h"
 #include "ObjectGuid.h"
 #include "Position.h"
 #include <map>
@@ -21,8 +22,55 @@
 
 namespace Leader
 {
+    struct StarterTrack
+    {
+        Knowledge::EventStarterDef const* def = nullptr;
+        uint32 uses = 0;
+        uint32 nextAllowedMs = 0;
+        std::set<ObjectGuid> usedObjects;  // UseItem: every object takes the item once (five different barrels)
+        // UseItem: casts the core refused per object (no cooldown started); after STARTER_ITEM_MAX_FAILS the object
+        // counts as used, so a starter never loops on one object.
+        std::map<ObjectGuid, uint32> failedUses;
+        uint32 doorRearms = 0;  // UseItem on an auto-closing door: armed again for a member behind it (DOOR_REARM_MAX)
+        // [queue-rearm-behind-priority] re-armed for a member stranded behind the door: the starter leads the route
+        // (priority) until it is used again, at most REARM_BEHIND_PRIORITY_MS.
+        uint32 rearmedBehindMs = 0;
+        uint32 combatRearms = 0;   // of doorRearms, the in-combat ones (DOOR_REARM_COMBAT_MAX)
+        uint32 combatRearmMs = 0;  // the last in-combat re-key (DOOR_REARM_COMBAT_GAP_MS)
+        std::set<ObjectGuid> steppedOut;  // UseItem: one step out of the object's model, then the use from there
+        // UseItem: an object the leader's walk got stuck on (steer_stuck) is passed over until then; the starter goes
+        // on with the next nearest one (Old Hillsbrad: 15 barrels, any five).
+        std::map<ObjectGuid, uint32> stuckUntilMs;
+        // Party::wipes when it was last used: a gossip / escort starter used up before a wipe is armed again once its
+        // creature offers the gossip again (the event reset: Halls of Reflection, Violet Hold).
+        uint32 wipesAtUse = 0;
+        // The object whose walk ends short of it was logged (starter_partial_walk), once per object.
+        ObjectGuid partialLogged;
+        // [expect_door] EventStarterDef::expectDoor: when the use is checked (0: none pending), the uses that left the
+        // door shut, and the last "expect_door_wait" line.
+        uint32 expectDoorCheckMs = 0;
+        uint32 expectDoorFails = 0;
+        uint32 expectDoorWaitLogMs = 0;
+        uint32 unconfirmedLogged = 0;  // [ulda-altar-confirm] uses already logged as starter_unconfirmed
+        std::string blockedLogged;     // [dme-starter-blocked] last starter_blocked reason (logged on change)
+        uint32 doorRearms2 = 0;        // [dme-ironbark-door] re-arms because EventStarterDef::opensDoor stayed closed
+        uint32 lastUseMs = 0;          // [dme-ironbark-door] when this starter was last used (UseStarter)
+        bool clearLogged = false;      // [ulda-altar-clear] starter_wait_clear logged for the current wait
+        uint32 escortDeathRearms = 0;  // [ohb-escort-death-rearm] uses given back after the escort died
+    };
+
+    struct TriggerTrack
+    {
+        uint32 triggerId = 0;
+        uint32 fires = 0;
+        uint32 lastFireMs = 0;
+        bool entrance = false;  // instance portal outside the map (ghosts walking back in)
+    };
+
     struct GroupRouteState
     {
+        std::vector<StarterTrack> starters;
+        std::vector<TriggerTrack> triggers;
         ObjectGuid target;
         bool targetIsStarter = false;
         size_t starterIdx = 0;
