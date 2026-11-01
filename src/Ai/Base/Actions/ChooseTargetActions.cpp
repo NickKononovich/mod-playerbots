@@ -393,9 +393,12 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
     // [lead115] b149 rfc-h 12.8-17.4 s: the engage on Earthborer 3 walked the tank on with no target and the mob
     // reached the group first - the open engage order's mob is opened on (the untouched pass below: no tank threat,
     // beyond its melee) as soon as an opener reaches it in sight, before the walk goes into its own reach
+    // [lead123] b156 rfc-h 20261101-105614 276 s: a "pull back" on a Ragefire Shaman 20 yd off (Avenger's Shield 30
+    // yd) never started - the pull's walk had no current target ("pull action isUseful false: no target"), the
+    // tank stood. Every pull method's mob is opened on the same way: its target set, the ranged opener first (the
+    // pull back's walk back follows the mob that comes)
     Leader::PullOrder order;
-    if (Leader::Orders::GetOpen(bot->GetGUID(), order) && order.method == Leader::PullMethod::Engage &&
-        order.state != Leader::OrderState::Fighting)
+    if (Leader::Orders::GetOpen(bot->GetGUID(), order) && order.state != Leader::OrderState::Fighting)
         if (Unit* engaged = botAI->GetUnit(order.target))
             fight.push_back(engaged);
     // [lead106] b140 rfc-h 262.7-286.7 s: a Ragefire Shaman on the mage for 24 s while Hand of Reckoning went to
