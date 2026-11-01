@@ -9,6 +9,7 @@
 
 #include "DetourNavMesh.h"
 #include "LeaderOrders.h"
+#include "Log.h"
 #include "Map.h"
 #include "MapDefines.h"
 #include "Unit.h"
