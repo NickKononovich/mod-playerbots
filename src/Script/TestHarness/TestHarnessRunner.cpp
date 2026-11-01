@@ -21673,10 +21673,14 @@ namespace TestHarness
                         }
                 if (!reject.empty())
                 {
-                    uint32& last = lead.spotRejectLogMs[member];
-                    if (!last || getMSTimeDiff(last, now) >= 3 * IN_MILLISECONDS)
+                    // [lead81] b124: group_blocked / spot_rejected_aggro every tick (the reason's running numbers, a
+                    // stay that flipped between two texts) - the reason without its numbers, logged on a change only
+                    std::string const reason = reject.substr(0, reject.find(" ("));
+                    lead.spotRejectLogMs[member] = now;
+                    std::string& logged = lead.spotRejectLogged[member];
+                    if (logged != why + "|" + reason)
                     {
-                        last = now;
+                        logged = why + "|" + reason;
                         DecisionLog::Instance().Write(run, "leader", "spot_rejected_aggro", member, bot->GetName(),
                                                       false,
                                                       JsonObject().Str("member", bot->GetName()).Str("why", why)
@@ -21750,13 +21754,14 @@ namespace TestHarness
                         if (!lead.groupBlockedBy.count(member))
                             DecisionLog::Instance().Write(run, "leader", "group_blocked", member, bot->GetName(), true,
                                                           JsonObject().Str("member", bot->GetName()).Str("why", reject)
-                                                              .Str("mob", mob ? mob->GetName() : "-"));
+                                                              .Str("mob", mob ? mob->GetName() : "-")
+                                                              .Str("walk", why));
                         lead.groupBlockedBy[member] = mob ? mob->GetGUID() : ObjectGuid::Empty;
                     }
                     // [lead71] the arbiter's next candidate: the member stays where it is (never a move it refuses)
                     if (move != Leader::MoveEvent::StandAt || spot.GetExactDist(bot->GetPosition()) > 1.0f)
                         Leader::Events::SetMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
-                                                why + ": stays (" + reject + ")");
+                                                why + ": stays (" + reason + ")");
                     return false;
                 }
                 if (again)
@@ -21769,7 +21774,12 @@ namespace TestHarness
             bool const changed = Leader::Events::SetMove(member, move, spot, tolerance, why);
             if (changed)
                 Leader::Events::StampPhase(member, lead.movePhase);  // [lead74] the purpose's phase
-            lead.groupBlockedBy.erase(member);  // [lead77] its walk is clear again
+            // [lead77] its walk is clear again - [lead81] a real walk, not its own stay where it stands
+            if (bot && (move != Leader::MoveEvent::StandAt || spot.GetExactDist(bot->GetPosition()) > tolerance))
+            {
+                lead.groupBlockedBy.erase(member);
+                lead.spotRejectLogged.erase(member);
+            }
             // [lead55] command_repeat: the new command is the one before the current (a ping-pong) - logged once per
             // member and purpose, counted (should be 0)
             if (changed && hadMove && bot)
@@ -21815,7 +21825,8 @@ namespace TestHarness
             ObjectGuid const member = bot->GetGUID();
             bool const changed = checkedMove(member, Leader::MoveEvent::MoveTo, spot, tolerance, why);
             Leader::MemberEvents now;
-            if (Leader::Events::Get(member, now) && now.moveWhy == why)
+            // [lead81] checkedMove's own stay ("<why>: stays (...)") is the answer too: no second stay text flipping
+            if (Leader::Events::Get(member, now) && now.moveWhy.rfind(why, 0) == 0)
                 return changed;
             std::string const stay = why + ": stays (the spot is in an unpulled mob's reach)";
             bool const stays = checkedMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay);
@@ -22660,6 +22671,30 @@ namespace TestHarness
                                  "hazard: the fight moves away from an unpulled pack"))
                 LogFightDrag(run, tank, *lead.fightMoveTo, lead.meetPoint, "away from an unpulled pack");
         }
+        // [lead81] b124 rfc-h 167.8-182 s: Rtshaab pulled a Trogg 150 yd from the tank (no sight), the tank stood and
+        // he died alone - a member a fight mob is on, beyond the tank's pick-up reach (its taunt's range, in sight):
+        // the fight spot moves to it - the tank walks to the member (its walk checked) while the member runs to the
+        // tank (the aggro-loss run) and the others leave that mob alone (the aggro-loss rule)
+        if (fighting && !lead.fightMoveTo)
+        {
+            float const pickUp = LeaderTauntReach(tank);
+            float const arrive = pickUp > 0.0f ? pickUp : NOMINAL_MELEE_RANGE;
+            Player* alone = nullptr;
+            for (auto const& [victimGuid, mob] : looseOn)
+                if (Player* victim = ObjectAccessor::FindPlayer(victimGuid);
+                    victim && victim != tank && victim->IsAlive() && victim->GetMap() == map &&
+                    !(victim->GetExactDist(tank) <= arrive && tank->IsWithinLOSInMap(victim)) &&
+                    (!alone || victim->GetExactDist(tank) < alone->GetExactDist(tank)))
+                    alone = victim;
+            if (alone && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, alone->GetPosition(), arrive,
+                                     "aggro loss: the tank goes to the member"))
+                DecisionLog::Instance().Write(run, "leader", "fight_spot_to_member", alone->GetGUID(),
+                                              alone->GetName(), true,
+                                              JsonObject().Str("member", alone->GetName())
+                                                  .Real("distance", alone->GetExactDist(tank))
+                                                  .Real("pickUp", pickUp)
+                                                  .Bool("sight", tank->IsWithinLOSInMap(alone)));
+        }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
             for (Player* bot : seats)
@@ -23358,17 +23393,31 @@ namespace TestHarness
                 if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
                     Leader::Orders::GetOpen(party.leader, engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+                // [lead81] b124 rfc-h 147.6-166 s: the group walked 120 yd to the engage's range / meeting point while
+                // the tank never left (-90,-40) - the tank leads the walk: a walk-along point nearer the engaged mob
+                // than the tank stands is ahead of the tank, the member follows the tank until the tank is past it
+                Unit* const engagedMob = lead.commit && lead.commitIssued && lead.commit->kind == "engage"
+                                             ? ObjectAccessor::GetUnit(*tank, lead.commitMob)
+                                             : nullptr;
+                auto const aheadOfTank = [&](Position const& at)
+                { return engagedMob && engagedMob->GetExactDist(at) < engagedMob->GetExactDist(tank); };
+                bool aheadHolds = false;
                 // [lead64] melee at an engage: one command when the tank goes - to the meeting point
                 bool meleeToMeeting = false;
                 if (melee && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
                     Leader::Orders::GetOpen(party.leader, engage))
                 {
-                    meleeToMeeting = true;
-                    if (moveOrStay(bot, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
-                                   "along with the tank: to the meeting point"))
-                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                 JsonObject().Str("why", "along with the tank: to the meeting point"));
-                    moved = true;
+                    Position const meetAt = LeaderMeleeWait(bot, lead.meetPoint);
+                    if (aheadOfTank(meetAt))
+                        aheadHolds = true;
+                    else
+                    {
+                        meleeToMeeting = true;
+                        if (moveOrStay(bot, meetAt, 3.0f, "along with the tank: to the meeting point"))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", "along with the tank: to the meeting point"));
+                        moved = true;
+                    }
                 }
                 // [lead29] the range spot is validated before it is issued (ground, lava / slime / a drop-off, an
                 // unpulled mob's reach, the member's own walk guards): the nearest valid one between its range and
@@ -23424,19 +23473,26 @@ namespace TestHarness
                 {
                     lead.engageRangeSpots[guid] = {engaged->GetGUID(), rangeSpot};
                     lead.engageRangeOrder[guid] = engage.id;
-                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
-                                    "along with the tank: to range of the engage"))
-                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                 JsonObject().Str("why", "along with the tank: to range of the engage"));
-                    moved = true;
+                    if (aheadOfTank(rangeSpot))
+                        aheadHolds = true;  // [lead81]
+                    else
+                    {
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
+                                        "along with the tank: to range of the engage"))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", "along with the tank: to range of the engage"));
+                        moved = true;
+                    }
                 }
                 // [lead44] the member buffs (its rebuff window): the buff is the command while the tank stands - no
                 // Follow that would replace it, only a walk when the tank walks on or the member is far / out of sight
                 // [lead47] b96: Rtshaab got fresh follow walks every few seconds under the leader's Rest and never
                 // sat - a resting member is not walked along while the tank stands
-                else if (!(restCommanded && !tank->isMoving()) &&
-                         (engaged || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
-                          gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank)))
+                if (!moved && !meleeToMeeting &&
+                    (aheadHolds ||
+                     (!(restCommanded && !tank->isMoving()) &&
+                      (engaged || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
+                       gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank)))))
                 {
                     lead.following.insert(guid);
                     if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))

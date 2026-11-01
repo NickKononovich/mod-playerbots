@@ -571,6 +571,12 @@ namespace Leader
         std::string why;
         uint32 ms = 0;
     };
+    struct MemberEvents;
+    // [lead81] b124 rfc-h 161.7-167.8 s: Rtshaab's "stays" (StandAt where it stood) never stopped its old walk - the
+    // spot moved with it, so it was always "on the spot" - and it walked into the Trogg its walk would wake. An
+    // executor member under StandAt / Hold whose walk under way ends off that spot: the walk is stopped
+    bool WalksOffStand(Player* member, MemberEvents const& events);
+
     namespace Events
     {
         // Leader side (world thread). Each returns true when the field changed (a new event to log).

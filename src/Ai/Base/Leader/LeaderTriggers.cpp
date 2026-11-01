@@ -213,6 +213,8 @@ bool LeaderMoveOrderTrigger::IsActive()
         return target && target->IsAlive() &&
                (bot->GetExactDist(target) > Leader::LEADER_FOLLOW_KEEP_YD || !bot->IsWithinLOSInMap(target));
     }
+    if (Leader::WalksOffStand(bot, events))  // [lead81]
+        return true;
     if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
         return false;
     return bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) > events.tolerance ||

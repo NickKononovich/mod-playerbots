@@ -1675,7 +1675,9 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             return false;
         // [lead77] b120 rfc-h 470-560 s: the led tank dropped 6.8 yd onto an island the group could not follow and
         // walked on alone - the group moves as one: a led tank takes no ledge drop (its members refuse it too)
-        if (PlayerbotAI::IsTank(bot) && Leader::Orders::IsTracked(bot->GetGUID()))
+        // [lead81] b124 rfc-h 112-182 s: the tank stood at (-90,-40,-24) for 70 s - every walk to a mob more than
+        // LEDGE_DROP_DZ below was refused although JudgeLedgeDrop found no drop on it (RFC's slope down): only a drop
+        if (ledge.drop && PlayerbotAI::IsTank(bot) && Leader::Orders::IsTracked(bot->GetGUID()))
             return false;
 
         // [b33_sp] an allowed water drop no ground path carries: from the brink, a jump into the water, together

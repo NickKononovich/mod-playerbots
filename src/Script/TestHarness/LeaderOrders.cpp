@@ -12,6 +12,7 @@
 
 #include "Group.h"
 #include "Map.h"
+#include "MoveSpline.h"
 #include "Player.h"
 #include "Timer.h"
 #include "Unit.h"
@@ -437,6 +438,15 @@ namespace Leader
             return false;
         Map* map = bot->GetMap();
         return map && map->IsDungeon() && !map->IsRaid() && LedGroup(bot);
+    }
+
+    bool WalksOffStand(Player* member, MemberEvents const& events)
+    {
+        if ((events.move != MoveEvent::StandAt && events.move != MoveEvent::Hold) || !ExecutorMember(member) ||
+            !member->isMoving() || member->movespline->Finalized())
+            return false;
+        G3D::Vector3 const end = member->movespline->FinalDestination();
+        return events.spot.GetExactDist2d(end.x, end.y) > std::max(events.tolerance, 1.0f);
     }
 
     bool ExecutorMember(Player* member)

@@ -626,6 +626,15 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
         return true;
     }
+    // [lead81] the leader's stand / hold: an old walk that leads off the spot stops at once
+    if (Leader::WalksOffStand(bot, events))
+    {
+        bot->StopMoving();
+        bot->GetMotionMaster()->Clear();
+        Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::Hold ? "hold" : "stand",
+                            "stops its walk: " + events.moveWhy);
+        return true;
+    }
     if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
         return false;
     if (!bot->IsStandState())
