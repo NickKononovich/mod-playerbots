@@ -85,6 +85,17 @@ bool BlackArrowTrigger::IsActive()
     return DebuffTrigger::IsActive();
 }
 
+// [lead140] the mana (%) the rest of this fight takes at the hunter's measured spend: the current target's health
+// over the group's damage, against FightManaLine (the run's measured rate)
+float HunterFightManaLeft(PlayerbotAI* botAI, Player* bot)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    Unit* fought = AI_VALUE(Unit*, "current target");
+    float const groupDps = AI_VALUE(float, "estimated group dps");
+    float const left = fought && groupDps > 0.0f ? float(fought->GetHealth()) / groupDps : 0.0f;
+    return std::max(0.0f, RestState::FightManaLine(bot, left, 0.0f) - RestState::FightManaLine(bot, 0.0f, 0.0f));
+}
+
 bool HunterAspectOfTheDragonhawkTrigger::IsActive()
 {
     Unit* target = GetTarget();
@@ -105,15 +116,10 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
             return false;
         // [lead85] a led group's fight: back once the mana covers its own line after the rest of this fight (the
         // measured spend over the target's remaining seconds), else it would drink after the fight
+        // [lead140] b164: back to Dragonhawk once the mana lasts the rest of this fight (its measured spend over
+        // the target's remaining seconds) - the top-up after the fight is the leader's rest, not Viper's
         if (bot->IsInCombat() && Leader::LedGroup(bot))
-        {
-            Unit* fought = AI_VALUE(Unit*, "current target");
-            float const groupDps = AI_VALUE(float, "estimated group dps");
-            float const left = fought && groupDps > 0.0f ? float(fought->GetHealth()) / groupDps : 0.0f;
-            float const spend = std::max(0.0f, RestState::FightManaLine(bot, left, 0.0f) -
-                                                   RestState::FightManaLine(bot, 0.0f, 0.0f));
-            return float(mana) >= RestState::OwnManaLine(bot) + spend;
-        }
+            return float(mana) >= HunterFightManaLeft(botAI, bot);
         return true;
     }
 
@@ -212,11 +218,12 @@ bool HunterAspectOfTheViperTrigger::IsActive()
     if (!BuffTrigger::IsActive())
         return false;
     uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
-    if (mana < ASPECT_OF_THE_VIPER_MANA_PCT)
-        return true;
-    // [lead85] b128 rfc-h: Rthunaa drank 9 times (26-45 % mana, net spend 0.8-1.2 %/s) - in a led group's fight a
-    // hunter below its own computed line (what its next fight needs) would drink after this fight: Viper now
-    return bot->IsInCombat() && Leader::LedGroup(bot) && float(mana) < RestState::OwnManaLine(bot);
+    // [lead140] b164 20261101-125734: the hunter did 44-69 % of its sim - Viper (half the ranged damage) for the
+    // next fight's line. In a led group: Viper only while the mana does not last the rest of this fight (the
+    // measured spend over the target's remaining seconds); out of a fight never (the rest is the leader's)
+    if (Leader::LedGroup(bot))
+        return bot->IsInCombat() && float(mana) < HunterFightManaLeft(botAI, bot);
+    return mana < ASPECT_OF_THE_VIPER_MANA_PCT;
 }
 
 bool HunterAspectOfThePackTrigger::IsActive()

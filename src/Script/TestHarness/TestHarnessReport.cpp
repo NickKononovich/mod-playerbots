@@ -1125,6 +1125,12 @@ namespace TestHarness
                     starter = "unplanned (" + source + ")";
             }
         }
+        // [lead140] b164: 8 "unplanned" pulls each had the leader's open pull order (orders 4, 11, 13, 15, 20, 27,
+        // 31, 48): the mob came during the order's own walk. A pull under the leader's open order is the leader's
+        if (Leader::PullOrder openOrder; planned && first && starter.rfind("unplanned (", 0) == 0 &&
+                                         Leader::Orders::GetOpen(first->guid, openOrder))
+            starter = std::string("planned (the leader's order: ") + Leader::MethodName(openOrder.method) + "; " +
+                      starter.substr(11);
         if (!planned)
             starter = "unplanned: " + first->name + " " +
                       (firstMember ? std::string(firstMember->spec->label) + "/" + RoleName(firstMember->spec->role)
