@@ -70,6 +70,44 @@
 #include <utility>
 #include <vector>
 
+// [lead99] user: no PathGenerator in the leader's planning - the planner's walk checks read the one route search
+// (Leader::Route) through PathGenerator's interface: PATHFIND_NORMAL a complete walk, PATHFIND_INCOMPLETE a partial
+// one, PATHFIND_NOPATH none; the walk sampled on its ground (Leader::RouteResult)
+namespace
+{
+    class LeaderPath
+    {
+    public:
+        explicit LeaderPath(Unit* walker) : _walker(walker) {}
+
+        void CalculatePath(float x, float y, float z, bool /*forceDest*/)
+        {
+            Take(Leader::Route(_walker, Position(x, y, z)));
+        }
+        void CalculatePath(float fromX, float fromY, float fromZ, float x, float y, float z, bool /*forceDest*/)
+        {
+            Take(Leader::Route(_walker, G3D::Vector3(fromX, fromY, fromZ), G3D::Vector3(x, y, z)));
+        }
+        uint32 GetPathType() const { return _type; }
+        float getPathLength() const { return _length; }
+        Movement::PointsArray const& GetPath() const { return _points; }
+
+    private:
+        void Take(Leader::RouteResult const& route)
+        {
+            _type = !route.found ? uint32(PATHFIND_NOPATH)
+                                 : route.complete ? uint32(PATHFIND_NORMAL) : uint32(PATHFIND_INCOMPLETE);
+            _length = route.length;
+            _points.assign(route.points.begin(), route.points.end());
+        }
+
+        Unit* _walker;
+        uint32 _type = PATHFIND_BLANK;
+        float _length = 0.0f;
+        Movement::PointsArray _points;
+    };
+}
+
 // [lead31a] the planner's helpers, shared with the tank's execution (ChooseTargetActions.cpp)
 namespace PullPlanning
 {
@@ -2224,7 +2262,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                               bool& walkable)
     {
         walkable = false;
-        PathGenerator path(bot);
+        LeaderPath path(bot);  // [lead99]
         path.CalculatePath(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ(), to.GetPositionX(),
                            to.GetPositionY(), to.GetPositionZ(), false);
         if (path.GetPathType() != PATHFIND_NORMAL || path.getPathLength() > maxLength)
@@ -3142,7 +3180,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 // walks round the corner calls along its navmesh walk there, at the assistance radius (an assist).
                 if (losPull && !stays && !arriving && assistRadius > 0.0f && caller->GetExactDist(kill) > assistRadius)
                 {
-                    PathGenerator walk(caller);
+                    LeaderPath walk(caller);  // [lead99]
                     walk.CalculatePath(kill.GetPositionX(), kill.GetPositionY(), kill.GetPositionZ(), false);
                     if (walk.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE))
                     {
@@ -4769,7 +4807,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             return false;
 
         --budget;
-        PathGenerator path(bot);
+        LeaderPath path(bot);  // [lead99]
         path.CalculatePath(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ(), to.GetPositionX(),
                            to.GetPositionY(), to.GetPositionZ(), false);
         // [b34_ss] The navmesh has no doors: a walk through a closed one is no walk. scholo-n 20261026-014521-5E-4
@@ -7334,7 +7372,7 @@ ObjectGuid AggressiveTargetAction::FindApproachTarget()
         bot->UpdateAllowedPositionZ(x, y, z);
 
         --paths;
-        PathGenerator path(bot);
+        LeaderPath path(bot);  // [lead99]
         path.CalculatePath(x, y, z, false);
         if (path.GetPathType() & PATHFIND_NOPATH)
             continue;
@@ -9071,7 +9109,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             // The walk there enters no idle mob's aggro reach but the pack's own.
             auto const safeWalk = [&](Position const& spot, std::vector<Unit*> const& sidePack) -> bool
             {
-                PathGenerator path(bot);
+                LeaderPath path(bot);  // [lead99]
                 path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
                 if (path.GetPathType() != PATHFIND_NORMAL || path.getPathLength() > SIDE_PULL_MAX_WALK)
                     return false;
@@ -11737,7 +11775,7 @@ bool AggressiveTargetAction::PullBackSpot(Unit* candidate, Position& spot, bool 
     // spot is there, or further in (still in range) where the healer sees it too. Stockade wave 2: a Defias Convict
     // in its cell, out of sight of the corridor spot at 30 yd; the tank walked in to 9.5 yd, by Hamhock's room, and
     // 11 came.
-    PathGenerator path(bot);
+    LeaderPath path(bot);  // [lead99]
     path.CalculatePath(candidate->GetPositionX(), candidate->GetPositionY(), candidate->GetPositionZ(), false);
     if (path.GetPathType() != PATHFIND_NORMAL || path.getPathLength() > CAREFUL_MAX_WALK_CHECK)
         return false;

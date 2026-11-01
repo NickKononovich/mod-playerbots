@@ -48,6 +48,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "RouteSearch.h"  // [lead99] the leader's route search
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -862,15 +863,15 @@ namespace TestHarness
         // Caverns: Anacondra ~460 yd over 113-160 polygons). Such a route is searched again with an own query
         // (LongRoute): the same navmesh and filter flags, a larger node pool and corridor, corner points.
         constexpr float ROUTE_PROGRESS = 2.0f;
-        constexpr int LONG_ROUTE_NODES = 8192;  // 8x MMapMgr's 1024; one query per navmesh, ~350 KB
+        using Leader::Travel::LONG_ROUTE_NODES;  // [lead99] RouteSearch.h
         // Both directions out of nodes: once more with Detour's largest pool, one shared query bound anew per call
         // (dtNavMeshQuery::init keeps a pool that is big enough). Old Hillsbrad 2026-10-25: every Durnholde barrel from
         // outside is 1300-2100 yd over the wall top and its SW stairs; 8192 nodes ended both ways on the wall 13-50 yd
         // off and 11 yd above the barrel (0 plants in 25 minutes), 65535 complete (461-552 polygons).
-        constexpr int LONG_ROUTE_BIG_NODES = 65535;
-        constexpr bool ROUTE_LONG_BIG_POOL = true;
-        constexpr int LONG_ROUTE_MAX_POLYS = 2048;
-        constexpr int LONG_ROUTE_MAX_CORNERS = 256;
+        using Leader::Travel::LONG_ROUTE_BIG_NODES;  // [lead99] RouteSearch.h
+        using Leader::Travel::ROUTE_LONG_BIG_POOL;  // [lead99] RouteSearch.h
+        using Leader::Travel::LONG_ROUTE_MAX_POLYS;  // [lead99] RouteSearch.h
+        using Leader::Travel::LONG_ROUTE_MAX_CORNERS;  // [lead99] RouteSearch.h
 
         constexpr uint32 POINT_PATH_FAILED = PATHFIND_SHORTCUT | PATHFIND_NOPATH;
 
@@ -887,7 +888,7 @@ namespace TestHarness
         //   to sight), or skips it at once - not after PULL_WAIT_MS (RFC 18:22-18:24: Earthborers round a corner
         //   on a rising slope, 45 s stood each);
         // - a mob the tank rejects (TankRejects) is logged when it would have held the approach.
-        constexpr bool ROUTE_LONG_REVERSE = true;
+        using Leader::Travel::ROUTE_LONG_REVERSE;  // [lead99] RouteSearch.h
         constexpr bool ROUTE_BACKBONE_COMPLETE_ONLY = true;
         constexpr bool ROUTE_APPROACH_TO_SIGHT = true;
         constexpr bool ROUTE_LOG_TANK_REJECTS = true;
@@ -1081,188 +1082,10 @@ namespace TestHarness
             return steepType;
         }
 
-        struct NavMeshQueryFree
-        {
-            void operator()(dtNavMeshQuery* query) const { dtFreeNavMeshQuery(query); }
-        };
-
-        // The long search: an own dtNavMeshQuery on the map's navmesh (the harness runs on the world thread while no
-        // map updates, as its PathGenerator calls do), PathGenerator's player filter flags (+ NAV_GROUND_STEEP when
-        // steep), the corridor as corner points. False when start or end has no polygon; complete: the corridor
-        // reaches the end polygon.
-        // [hleft-passage-door-route] A filter that refuses every polygon whose bounds meet one of `boxes` (closed
-        // doors that open only on a boss's death, DOOR_TYPE_PASSAGE): the navmesh holds no game objects, so a walk
-        // "through" Talon King Ikiss's exit door 183398 (Sethekk Halls, the shortcut from the entrance hall up to
-        // his room) is the shortest path while the door is shut. The long search with it finds the way a player
-        // takes (the stairs round, seth-h 2026-10-25: "next boss behind a closed door" for Ikiss, the route fell back
-        // to the full clear).
-        class DoorAvoidFilter : public dtQueryFilter
-        {
-        public:
-            std::vector<G3D::AABox> const* boxes = nullptr;
-            // [b32_brs] discs (x, y, z, radius): a polygon whose centre lies within radius (2D, within 10 yd in
-            // height) of one is refused - a hopeless pack's aggro reach (HopelessDetourLeg)
-            std::vector<G3D::Vector4> const* discs = nullptr;
-
-            bool passFilter(dtPolyRef const ref, dtMeshTile const* tile, dtPoly const* poly) const override
-            {
-                if (!dtQueryFilter::passFilter(ref, tile, poly))
-                    return false;
-                if (discs && !discs->empty() && tile && poly && poly->vertCount > 0)
-                {
-                    G3D::Vector3 centre(0.0f, 0.0f, 0.0f);
-                    for (uint8 index = 0; index < poly->vertCount; ++index)
-                    {
-                        float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
-                        centre += G3D::Vector3(vertex[2], vertex[0], vertex[1]);  // Detour stores (y, z, x)
-                    }
-                    centre /= float(poly->vertCount);
-                    for (G3D::Vector4 const& disc : *discs)
-                        if (std::fabs(centre.z - disc.z) <= 10.0f &&
-                            (centre.x - disc.x) * (centre.x - disc.x) + (centre.y - disc.y) * (centre.y - disc.y) <=
-                                disc.w * disc.w)
-                            return false;
-                }
-                if (!boxes || boxes->empty() || !tile || !poly || poly->vertCount == 0)
-                    return true;
-                // Detour stores (y, z, x).
-                G3D::Vector3 low(1e9f, 1e9f, 1e9f);
-                G3D::Vector3 high(-1e9f, -1e9f, -1e9f);
-                for (uint8 index = 0; index < poly->vertCount; ++index)
-                {
-                    float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
-                    G3D::Vector3 const point(vertex[2], vertex[0], vertex[1]);
-                    low = low.min(point);
-                    high = high.max(point);
-                }
-                for (G3D::AABox const& box : *boxes)
-                    if (high.x >= box.low().x && low.x <= box.high().x && high.y >= box.low().y &&
-                        low.y <= box.high().y && high.z >= box.low().z && low.z <= box.high().z)
-                        return false;
-                return true;
-            }
-        };
-
-        bool LongRoute(Player* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
-                       Movement::PointsArray& corners, bool& complete,
-                       std::vector<G3D::AABox> const* avoidBoxes = nullptr,
-                       std::vector<G3D::Vector4> const* avoidDiscs = nullptr)
-        {
-            complete = false;
-            dtNavMesh const* navMesh = owner->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
-            if (!navMesh)
-                return false;
-            // One query per navmesh, kept: it only holds the navmesh pointer and its node pool, cleared by every
-            // findPath, and is used with a navmesh taken from a live map only (instances share their parent's).
-            static std::unordered_map<dtNavMesh const*, std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree>> queries;
-            auto& query = queries[navMesh];
-            if (!query)
-            {
-                query.reset(dtAllocNavMeshQuery());
-                if (!query || dtStatusFailed(query->init(navMesh, LONG_ROUTE_NODES)))
-                {
-                    query.reset();
-                    return false;
-                }
-            }
-
-            DoorAvoidFilter filter;
-            filter.boxes = avoidBoxes;
-            filter.discs = avoidDiscs;  // [b32_brs]
-            filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | (steep ? NAV_GROUND_STEEP : 0)));
-            filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
-
-            // Detour works in (y, z, x).
-            float const startPoint[3] = {start.y, start.z, start.x};
-            float const endPoint[3] = {dest.y, dest.z, dest.x};
-            auto nearestPoly = [&query, &filter](float const* point, float* nearest)
-            {
-                // PathGenerator::GetPolyByLocation: a low box first, then a tall one.
-                float extents[3] = {3.0f, 5.0f, 3.0f};
-                dtPolyRef ref = 0;
-                if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
-                    return ref;
-                extents[1] = 50.0f;
-                ref = 0;
-                if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
-                    return ref;
-                return dtPolyRef(0);
-            };
-            float startNearest[3];
-            float endNearest[3];
-            dtPolyRef const startRef = nearestPoly(startPoint, startNearest);
-            dtPolyRef const endRef = nearestPoly(endPoint, endNearest);
-            if (!startRef || !endRef)
-                return false;
-
-            std::vector<dtPolyRef> polys(LONG_ROUTE_MAX_POLYS);
-            int polyCount = 0;
-            dtStatus const status = query->findPath(startRef, endRef, startNearest, endNearest, &filter, polys.data(),
-                                                    &polyCount, LONG_ROUTE_MAX_POLYS);
-            if (dtStatusFailed(status) || polyCount <= 0)
-                return false;
-
-            complete = polys[size_t(polyCount - 1)] == endRef;
-            // The search ran out of nodes: the same search from dest back to the start (SelfTravel::LongRoute's
-            // reverse fallback; Wailing Caverns wave 2: the A* from the cliff top floods the plateau towards the goal
-            // below and spends its pool, from the goal it leaves the basin at once). Only a complete corridor back to
-            // the start's own polygon counts, none through an off-mesh link (they can be one-way). A search that
-            // exhausted its part of the navmesh without the nodes running out has no way there in either direction.
-            if (!complete && ROUTE_LONG_REVERSE && dtStatusDetail(status, DT_OUT_OF_NODES))
-            {
-                std::vector<dtPolyRef> back(LONG_ROUTE_MAX_POLYS);
-                int backCount = 0;
-                bool usable = dtStatusSucceed(query->findPath(endRef, startRef, endNearest, startNearest, &filter,
-                                                              back.data(), &backCount, LONG_ROUTE_MAX_POLYS)) &&
-                              backCount > 0 && back[size_t(backCount - 1)] == startRef;
-                for (int index = 0; usable && index < backCount; ++index)
-                {
-                    dtMeshTile const* tile = nullptr;
-                    dtPoly const* poly = nullptr;
-                    usable = dtStatusSucceed(navMesh->getTileAndPolyByRef(back[size_t(index)], &tile, &poly)) && poly &&
-                             poly->getType() != DT_POLYTYPE_OFFMESH_CONNECTION;
-                }
-                if (usable)
-                {
-                    std::reverse(back.begin(), back.begin() + backCount);
-                    polys.swap(back);
-                    polyCount = backCount;
-                    complete = true;
-                }
-            }
-            if (!complete && ROUTE_LONG_BIG_POOL && dtStatusDetail(status, DT_OUT_OF_NODES))
-            {
-                static std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree> big(dtAllocNavMeshQuery());
-                std::vector<dtPolyRef> wide(LONG_ROUTE_MAX_POLYS);
-                int wideCount = 0;
-                if (big && dtStatusSucceed(big->init(navMesh, LONG_ROUTE_BIG_NODES)) &&
-                    dtStatusSucceed(big->findPath(startRef, endRef, startNearest, endNearest, &filter, wide.data(),
-                                                  &wideCount, LONG_ROUTE_MAX_POLYS)) &&
-                    wideCount > 0 && wide[size_t(wideCount - 1)] == endRef)
-                {
-                    polys.swap(wide);
-                    polyCount = wideCount;
-                    complete = true;
-                }
-            }
-            float target[3] = {endNearest[0], endNearest[1], endNearest[2]};
-            if (!complete)
-                query->closestPointOnPoly(polys[size_t(polyCount - 1)], endNearest, target, nullptr);
-
-            std::vector<float> straight(size_t(LONG_ROUTE_MAX_CORNERS) * 3);
-            int cornerCount = 0;
-            if (dtStatusFailed(query->findStraightPath(startNearest, target, polys.data(), polyCount, straight.data(),
-                                                       nullptr, nullptr, &cornerCount, LONG_ROUTE_MAX_CORNERS)) ||
-                cornerCount < 1)
-                return false;
-
-            corners.clear();
-            corners.reserve(size_t(cornerCount));
-            for (int index = 0; index < cornerCount; ++index)
-                corners.emplace_back(straight[size_t(index) * 3 + 2], straight[size_t(index) * 3],
-                                     straight[size_t(index) * 3 + 1]);
-            return true;
-        }
+        // [lead99] the route search lives in the leader's Travel area (Ai/Leader/Travel/RouteSearch): the harness
+        // calls it
+        using Leader::Travel::LongRoute;
+        using Leader::Travel::NavMeshQueryFree;
 
         // The liquid surface at a point that lies in or under water, INVALID_HEIGHT anywhere else.
         float WaterSurfaceAt(Player* walker, G3D::Vector3 const& point)
@@ -20604,16 +20427,14 @@ namespace TestHarness
             noPath = false;
             if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
                 return nullptr;
-            PathGenerator path(bot);
-            path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
-            if (path.GetPathType() & PATHFIND_NOPATH)
+            Leader::RouteResult const route = Leader::Route(bot, spot);  // [lead99]
+            if (!route.found)
             {
                 noPath = true;
                 return nullptr;
             }
-            Movement::PointsArray const& points = path.GetPath();
-            for (size_t i = 0; i < points.size(); i += 2)
-                if (Creature* mob = LeaderAggroAt(bot, Position(points[i].x, points[i].y, points[i].z)))
+            for (G3D::Vector3 const& point : route.points)
+                if (Creature* mob = LeaderAggroAt(bot, Position(point.x, point.y, point.z)))
                     return mob;
             return nullptr;
         }
@@ -21028,12 +20849,11 @@ namespace TestHarness
         bool LeaderMemberWalks(Player* bot, Position const& spot, std::list<Creature*> const& idle,
                                std::vector<ObjectGuid> const& pack)
         {
-            PathGenerator path(bot);
-            path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
-            if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+            Leader::RouteResult const route = Leader::Route(bot, spot);  // [lead99]
+            if (!route.found || !route.complete)
                 return false;
-            Movement::PointsArray const& points = path.GetPath();
-            for (size_t i = 0; i < points.size(); i += 2)
+            std::vector<G3D::Vector3> const& points = route.points;
+            for (size_t i = 0; i < points.size(); ++i)
             {
                 Position const at(points[i].x, points[i].y, points[i].z);
                 for (Creature* mob : idle)
@@ -21109,12 +20929,22 @@ namespace TestHarness
         // way to Taragaman, which b100 walked fine)
         std::string LeaderWalkVerdict(Player* walker, Creature* mob, bool onRoute = false)
         {
-            PathResult const path = EvaluatePath(walker, mob);
+            // [lead99] the one route search (Leader::Route); the verdict's text names the path's source and whether
+            // it is complete (b138 could not tell a partial path)
+            Leader::RouteResult const path = Leader::Route(walker, mob->GetPosition());
             float const straight = walker->GetExactDist(mob);
-            if (!path.reachable)
-                return Acore::StringFormat("unreachable (no walk for {:.0f} yd)", straight);
-            if (!onRoute && path.length > std::max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA))
-                return Acore::StringFormat("detour ({:.0f} yd for {:.0f} yd)", path.length, straight);
+            // a partial walk still counts when it ends nearer the mob than the walker stands (RoutePath's rule)
+            float const left = path.found && !path.points.empty()
+                                   ? (path.points.back() - G3D::Vector3(mob->GetPositionX(), mob->GetPositionY(),
+                                                                        mob->GetPositionZ()))
+                                         .length()
+                                   : straight;
+            bool const reachable = path.found && (path.complete || left + 5.0f < straight);
+            if (!reachable)
+                return Acore::StringFormat("unreachable (no walk for {:.0f} yd; {})", straight, path.Describe());
+            float const length = path.length + (path.complete ? 0.0f : left);
+            if (!onRoute && length > std::max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA))
+                return Acore::StringFormat("detour ({:.0f} yd for {:.0f} yd; {})", length, straight, path.Describe());
             return std::string();
         }
 
@@ -21123,11 +20953,10 @@ namespace TestHarness
         {
             if (std::fabs(to.GetPositionZ() - bot->GetPositionZ()) > 4.0f)
                 return false;
-            PathGenerator path(bot);
-            path.CalculatePath(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
-            if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT))
+            Leader::RouteResult const route = Leader::Route(bot, to);  // [lead99]
+            if (!route.found || !route.complete)
                 return false;
-            Movement::PointsArray const& points = path.GetPath();
+            std::vector<G3D::Vector3> const& points = route.points;
             for (size_t i = 1; i < points.size(); ++i)
                 if (std::fabs(points[i].z - points[i - 1].z) > 2.5f)
                     return false;
@@ -21241,9 +21070,7 @@ namespace TestHarness
                 if (std::find(pack.begin(), pack.end(), mob->GetGUID()) == pack.end() &&
                     IdleMobReachesSpot(tank, mob, spot))
                     return false;
-            PathGenerator path(tank);
-            path.CalculatePath(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false);
-            return !(path.GetPathType() & PATHFIND_NOPATH);
+            return Leader::Route(tank, spot).found;  // [lead99]
         }
     }
 
@@ -21778,6 +21605,18 @@ namespace TestHarness
                                                       JsonObject().Num("packMobs", int64(packMobs.size()))
                                                           .Real("overload", overload).Str("judged", judged)
                                                           .Str("blocked", bot->GetName()));
+                    }
+                    // [lead99] b138 rfc-h 339-427 s: the engage's range / meeting spots on the ledge had no walk
+                    // ("no walk to the spot"), the members stayed and blocked the group - the order stood open and
+                    // nobody could execute it. A walk-along spot with no walk at all (the route search found none) is
+                    // no spot: the member follows the tank on the tank's own way (a fact, not a wait)
+                    if (noPath && member != tank->GetGUID() && why.rfind("along with the tank", 0) == 0)
+                    {
+                        if (Leader::Events::SetFollow(member, tank->GetGUID(), 0, "along with the tank"))
+                            DecisionLog::Instance().Write(run, "leader", "spot_no_walk_follow", member, bot->GetName(),
+                                                          true,
+                                                          JsonObject().Str("member", bot->GetName()).Str("why", why));
+                        return false;
                     }
                     // [lead77] the group moves as one: a member's walk with the tank refused (an idle mob's reach on
                     // its path, no walk) out of a fight blocks the group - the tank stays until it is clear, the mob
@@ -22707,7 +22546,9 @@ namespace TestHarness
                                                   JsonObject().Real("straight",
                                                                     lead.travelFrom.GetExactDist(tank->GetPosition()))
                                                       .Real("sec", lead.travelSec).Real("moving", lead.travelMoving)
-                                                      .Real("fights", lead.travelFight).Raw("stops", stops.Build()));
+                                                      .Real("fights", lead.travelFight).Raw("stops", stops.Build())
+                                                      .Str("pathSource", lead.routePathSource)
+                                                      .Bool("pathComplete", lead.routePathComplete));
                 }
                 lead.travelTarget = party.target;
                 lead.travelFrom = tank->GetPosition();
@@ -22787,13 +22628,14 @@ namespace TestHarness
                     // target was partial and the walk stood at its end - the route is data the leader reads: the
                     // harness's own route leg (SteerLeg: its long route search, door and detour legs, the route
                     // links), taken once per leg and walked by index
-                    PathResult leg;
-                    SteerLeg(tank, G3D::Vector3(legTarget->GetPositionX(), legTarget->GetPositionY(),
-                                                legTarget->GetPositionZ()),
-                             leg);
+                    // [lead99] the leader's own route search (Ai/Leader/Travel, Leader::Route): the leg's corners
+                    Leader::RouteResult const leg = Leader::Route(tank, legTarget->GetPosition());
                     lead.routePath.clear();
-                    if (!(leg.type & PATHFIND_NOPATH) && leg.points.size() >= 2)
-                        lead.routePath.assign(leg.points.begin(), leg.points.end());
+                    if (leg.found && leg.corners.size() >= 2)
+                        lead.routePath = leg.corners;
+                    // the leg path's source and completeness, for travel_leg
+                    lead.routePathSource = leg.Describe();
+                    lead.routePathComplete = leg.found && leg.complete;
                     lead.routePathIndex = 0;  // the arrived points are skipped below
                     lead.routePathTarget = party.target;
                 }
@@ -25259,10 +25101,9 @@ namespace TestHarness
                                                                   to.GetPositionZ())};
                     if (from.GetExactDist(here) < 1.0f)
                     {
-                        PathGenerator path(tank);
-                        path.CalculatePath(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
-                        if (!(path.GetPathType() & PATHFIND_NOPATH) && path.GetPath().size() >= 2)
-                            points.assign(path.GetPath().begin(), path.GetPath().end());
+                        Leader::RouteResult const route = Leader::Route(tank, to);  // [lead99]
+                        if (route.found && route.points.size() >= 2)
+                            points = route.points;
                     }
                     ClosedDoorHit const hit = PathThroughClosedDoor(tank, points);
                     if (hit.Found())
@@ -26035,11 +25876,9 @@ namespace TestHarness
                     if (from.GetExactDist(to) < 1.0f)
                         return;
                     Movement::PointsArray points;
-                    PathGenerator path(leader);
-                    path.CalculatePath(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ(),
-                                       to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
-                    if (!(path.GetPathType() & PATHFIND_NOPATH))
-                        points = path.GetPath();
+                    Leader::RouteResult const route = Leader::Route(leader, vec(from), vec(to));  // [lead99]
+                    if (route.found)
+                        points.assign(route.points.begin(), route.points.end());
                     if (points.size() < 2)
                         points = {vec(from), vec(to)};
                     size_t const budget = std::min(ROUTE_VIZ_PATH_MAX, ROUTE_VIZ_MAX_MARKERS - viz.markers.size());

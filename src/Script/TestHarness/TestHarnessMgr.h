@@ -476,6 +476,8 @@ namespace TestHarness
             std::vector<G3D::Vector3> routePath;  // [lead97] the leg's path, taken once, walked by index
             size_t routePathIndex = 0;
             ObjectGuid routePathTarget;
+            std::string routePathSource;      // [lead99] the leg path's source, logged in travel_leg
+            bool routePathComplete = false;
             // [lead94] the travel of the current route leg (travel_leg)
             ObjectGuid travelTarget;
             Position travelFrom;

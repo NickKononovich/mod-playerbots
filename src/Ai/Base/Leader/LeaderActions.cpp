@@ -716,11 +716,11 @@ bool LeaderMoveOrderAction::DryMoveTo(Position const& to)
 
 std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
 {
-    PathGenerator path(bot);
-    path.CalculatePath(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false);
-    if (path.GetPathType() & PATHFIND_NOPATH)
-        return "no path";
-    Movement::PointsArray const& points = path.GetPath();
+    // [lead99] the one route search (Leader::Route), no PathGenerator
+    Leader::RouteResult const route = Leader::Route(bot, to);
+    if (!route.found)
+        return "no path (" + route.Describe() + ")";
+    Movement::PointsArray const points(route.points.begin(), route.points.end());
     if (points.size() >= 2)
     {
         std::vector<G3D::Vector3> walk(points.begin(), points.end());

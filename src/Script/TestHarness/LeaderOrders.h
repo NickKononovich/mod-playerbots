@@ -12,6 +12,7 @@
 #include "Position.h"
 #include "SafeZone.h"  // [lead9] Leader::FightPlan / SafeZone (Ai/Base/Util)
 
+#include "G3D/Vector3.h"  // [lead99] Leader::Route
 #include <string>
 #include <vector>  // [lead15]
 
@@ -472,6 +473,24 @@ namespace Leader
     bool ExecutorMember(Player* member);
     // [lead15] any bot of a led 5-man dungeon group, the tank included (the command getters, LeaderCommand.h)
     bool LedBot(Player* bot);
+
+    // [lead99] user: the leader never uses the core PathGenerator for planning or a walk check - one route search
+    // (the long Detour search, TestHarness LongRoute: its cost follows the nodes it expands, so a short way costs the
+    // same; its bigger pool is only a cap). `points`: the walk sampled every ROUTE_SAMPLE_YD on its ground (the
+    // corners joined); `found` false: no walk at all; `complete` false: the walk ends short of `to` (partial);
+    // `source`: "long route" or "no navmesh (straight)". PathGenerator stays inside core movement only.
+    struct RouteResult
+    {
+        std::vector<G3D::Vector3> points;
+        std::vector<G3D::Vector3> corners;  // the walk's corners only (a route leg walked point by point)
+        float length = 0.0f;
+        bool found = false;
+        bool complete = false;
+        std::string source;
+        std::string Describe() const;  // "long route, complete" / "long route, partial" / "long route, none"
+    };
+    RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to);
+    RouteResult Route(Unit* walker, Position const& to);  // from where the walker stands
 
     // [lead15] The leader -> member event channel. One record per member, written by the leader (world thread) every
     // LEADER_EVENT_TICK_MS while it holds, read by the member on its own tick (map thread): behind a lock. A field
