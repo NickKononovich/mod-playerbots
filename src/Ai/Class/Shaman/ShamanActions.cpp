@@ -7,7 +7,6 @@
 #include "ShamanActions.h"
 #include "Action.h"
 #include "Group.h"
-#include "HealthTriggers.h"  // [lead159] RestState::OwnManaLine
 #include "LeaderOrders.h"  // [lead149] AtCommandedSpot
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -63,13 +62,8 @@ bool AllowsSingleTargetFireAoe(PlayerbotAI* botAI, Unit* target)
     if (!target || !botAI->HasStrategy("enh", BOT_STATE_COMBAT))
         return false;
 
+    // No mana line here: wowsims casts Fire Nova on cooldown; the mana for the next fight is the leader's rest
     Player* bot = botAI->GetBot();
-    // [lead159] b176 20261101-163239: Rtshaab rested 74 s over 12 rests ("rests below its line (mana 35 %)"), Fire Nova
-    // 23 % of its damage - Fire Nova / Magma on a lone target cost the next fight's mana. In a led group the
-    // single-target fire AoE only while the mana stays above the next planned fight's line (RestState::OwnManaLine);
-    // a pack of FIRE_AOE_MIN_TARGETS is not this rule
-    if (Leader::LedGroup(bot) && bot->GetPowerPct(POWER_MANA) < RestState::OwnManaLine(bot))
-        return false;
     if (bot->GetLevel() >= FIRE_AOE_SINGLE_TARGET_LEVEL)
         return true;
 
