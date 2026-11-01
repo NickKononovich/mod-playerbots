@@ -776,12 +776,17 @@ namespace Leader::Dungeon
         };
         Position healerAt = healer ? plannedAt(healer) : Position();
         auto const reaches = [tank](Position const& from, Position const& to) { return HealReaches(tank, from, to); };
+        // [lead120] where the tank fights: its fight anchor in a fight (moved on with it, LEADER_ANCHOR_MOVE_YD), else
+        // where it stands - a heal-reach spot is judged against it, not against the tank's every step
+        auto const tankFightAt = [&]()
+        { return fighting && lead.fightAnchorSerial ? lead.fightAnchor : tank->GetPosition(); };
         // the healer at `spot` reaches every member (where it will stand) and the tank
         auto const healerKeeps = [&](Position const& spot)
         {
-            // [lead18] the tank first: within LEADER_HEALER_TANK_YD of its current position and in sight
-            if (!reaches(spot, tank->GetPosition()) ||
-                spot.GetExactDist(tank->GetPosition()) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
+            // [lead18] the tank first: within LEADER_HEALER_TANK_YD of where it fights and in sight
+            Position const tankAt = tankFightAt();
+            if (!reaches(spot, tankAt) ||
+                spot.GetExactDist(tankAt) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
                 return false;
             // [lead38] a held spot (no acquire margin) keeps a member it reaches where it stands or where it goes:
             // b87 rfc-h 23.6-24.0 s, 6 "heal reach" re-spots in 0.4 s while the counterparts' planned spots moved
@@ -1612,6 +1617,8 @@ namespace Leader::Dungeon
             lead.combatSpots.clear();
             lead.combatSpotAnchor.clear();
             lead.fightAnchorSerial = 0;
+            lead.healReachOut.clear();  // [lead120] the next fight's heal reach is decided anew
+            lead.healReachAnchor = 0;
         }
         else if (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD)
         {
@@ -2923,16 +2930,26 @@ namespace Leader::Dungeon
             std::vector<Player*> out;
             auto const outOfReach = [&](Position const& at)
             { return !reaches(healerAt, at) && !reaches(healer->GetPosition(), at); };
-            if (outOfReach(tank->GetPosition()))
+            Position const tankAt = tankFightAt();  // [lead120]
+            if (outOfReach(tankAt))
                 out.push_back(tank);
             for (Player* other : seats)
                 if (other != healer && outOfReach(plannedAt(other)) && outOfReach(other->GetPosition()))
                     out.push_back(other);
             // [lead55] the heal-reach spot it walks to is kept while it still keeps the group (no new spot per tick)
+            // [lead120] b154 rfc-h 20261101-103101 127.2-134.7 s: the fallback spot was taken anew from the walking
+            // tank and healer every 0.3 s (x -191 -> -174 -> -205, command_repeat) - one decision per fact: the spot
+            // is also kept while it reaches where the tank fights, the fight anchor is the one it was judged
+            // against and no member went out of reach since it was decided
             Leader::MemberEvents healerEvents;
-            bool const keepsOwn = Leader::Events::Get(healer->GetGUID(), healerEvents) &&
-                                  healerEvents.move == Leader::MoveEvent::MoveTo &&
-                                  healerEvents.moveWhy == "heal reach" && healerKeeps(healerEvents.spot);
+            bool const ownSpot = Leader::Events::Get(healer->GetGUID(), healerEvents) &&
+                                 healerEvents.move == Leader::MoveEvent::MoveTo &&
+                                 healerEvents.moveWhy == "heal reach";
+            bool sameFacts = ownSpot && lead.healReachAnchor == lead.fightAnchorSerial &&
+                             reaches(healerEvents.spot, tankAt);
+            for (Player* other : out)
+                sameFacts = sameFacts && lead.healReachOut.count(other->GetGUID()) > 0;
+            bool const keepsOwn = ownSpot && (healerKeeps(healerEvents.spot) || sameFacts);
             // [lead72] b116: the kept heal-reach spot was not re-asserted (the tick ended it), the combat spot took the
             // healer back the next tick ("was -") and the heal reach respotted again - the held spot is asserted
             // every tick while it still keeps the group (its end condition), so a lower rule cannot take it
@@ -2956,23 +2973,23 @@ namespace Leader::Dungeon
                 // [lead118] b152 rfc-h 895-931 s: "Rtpalaa out of the healer's reach, 57.9 yd, fix: none" until the
                 // wipe (the re-spot searches 16 yd round the healer) - in a fight the healer always gets a spot:
                 // on the line from the tank to the healer within the heal reach (in sight of the tank), else the
-                // tank's own spot (the same checks before it is issued)
+                // tank's own spot (the same checks before it is issued); [lead120] the tank where it fights
                 std::string how = issued ? "the healer re-spots" : "none";
                 if (!issued)
                 {
-                    float const dx = healer->GetPositionX() - tank->GetPositionX();
-                    float const dy = healer->GetPositionY() - tank->GetPositionY();
+                    float const dx = healer->GetPositionX() - tankAt.GetPositionX();
+                    float const dy = healer->GetPositionY() - tankAt.GetPositionY();
                     float const length = std::max(0.1f, std::hypot(dx, dy));
                     for (float at = std::min(length, Leader::LEADER_HEAL_REACH_YD - 5.0f); at > 0.0f && !issued;
                          at -= 5.0f)
                     {
-                        float x = tank->GetPositionX() + dx / length * at;
-                        float y = tank->GetPositionY() + dy / length * at;
-                        float z = tank->GetPositionZ();
-                        if (!map->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
-                                                                  tank->GetPositionZ(), x, y, z) ||
-                            !map->isInLineOfSight(x, y, z + 2.0f, tank->GetPositionX(), tank->GetPositionY(),
-                                                  tank->GetPositionZ() + 2.0f, tank->GetPhaseMask(),
+                        float x = tankAt.GetPositionX() + dx / length * at;
+                        float y = tankAt.GetPositionY() + dy / length * at;
+                        float z = tankAt.GetPositionZ();
+                        if (!map->CheckCollisionAndGetValidCoords(tank, tankAt.GetPositionX(), tankAt.GetPositionY(),
+                                                                  tankAt.GetPositionZ(), x, y, z) ||
+                            !map->isInLineOfSight(x, y, z + 2.0f, tankAt.GetPositionX(), tankAt.GetPositionY(),
+                                                  tankAt.GetPositionZ() + 2.0f, tank->GetPhaseMask(),
                                                   LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
                             continue;
                         fix.Relocate(x, y, z);
@@ -2980,11 +2997,19 @@ namespace Leader::Dungeon
                     }
                     if (!issued)
                     {
-                        fix = tank->GetPosition();
+                        fix = tankAt;
                         issued = checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f, "heal reach");
                     }
                     if (issued)
                         how = "the healer walks back into reach of the tank";
+                }
+                if (issued)
+                {
+                    // [lead120] the facts this decision was made for
+                    lead.healReachAnchor = lead.fightAnchorSerial;
+                    lead.healReachOut.clear();
+                    for (Player* other : out)
+                        lead.healReachOut.insert(other->GetGUID());
                 }
                 if (issued)
                     logEvent(healer, MoveEventName(Leader::MoveEvent::MoveTo),
