@@ -82,24 +82,19 @@ namespace Leader::Travel
     // real dead end) is skipped at once, the planner's `why` in the skip reason, and the route goes round it.
     constexpr bool ROUTE_CAREFUL_GUARANTEE_HOLD = true;
 
-    constexpr uint32 GUARANTEE_EXECUTE_MS = 30 * IN_MILLISECONDS;
 
     // [guarantee_hold_trim] 150 s (was 240): the planner's guarantee now comes after 30 s within the cap and 90 s
     // over it (ChooseTargetActions.cpp careful_guarantee_trim), plus GUARANTEE_EXECUTE_MS for the pull.
-    constexpr uint32 GUARANTEE_HOLD_TOTAL_MS = 150 * IN_MILLISECONDS;
 
-    constexpr uint32 GUARANTEE_UNKNOWN_HOLD_MS = 120 * IN_MILLISECONDS;
 
     constexpr uint32 PATROL_WAIT_HOLD_MS = 30 * IN_MILLISECONDS;  // [patrol_wait_spot] the stand there at most
 
     // [held_for_now_cap] a "held for now" with the group fully ready this long is a refusal (under the 120 s idle
     // stall watchdog)
-    constexpr uint32 HELD_FOR_NOW_MAX_MS = 75 * IN_MILLISECONDS;
 
     // The bots' own boss hold (RaidLeader "pull hold": its ready check, PULL_HOLD_MAX_MS 150 s) is waited out
     // before a boss counts as "not pulled" (Oculus heroic 2026-10-25: Drakos, who never aggroes by sight, was
     // skipped after 10 s while the tank was held).
-    constexpr uint32 BOSS_PULL_HOLD_WAIT_MS = 150 * IN_MILLISECONDS;
 
     constexpr uint32 WING_DONE_NO_TARGET_MS = 3 * IN_MILLISECONDS;
 
@@ -512,9 +507,7 @@ namespace Leader::Travel
     // of the planner keeps its own short clock. Per leader, world thread.
     constexpr bool PULL_AFTER_HOLD = true;
 
-    constexpr uint32 PULL_AFTER_HOLD_MS = 10 * IN_MILLISECONDS;
 
-    constexpr uint32 PULL_AFTER_HOLD_GATE_MS = 20 * IN_MILLISECONDS;  // the body pull's gate lets it through
 
     struct HoldReady
     {
@@ -563,7 +556,6 @@ namespace Leader::Travel
     // only then the walk in. Bosses keep their body pull (the planner never picks a boss). Per leader.
     constexpr bool BODY_PULL_VIA_PLANNER = true;
 
-    constexpr uint32 BODY_PULL_PLANNER_MS = 8 * IN_MILLISECONDS;
 
     struct PlannerAsk
     {
@@ -658,7 +650,6 @@ namespace Leader::Travel
     // ROUTE_BOSS_PULL_IMMEDIATE: a boss the group stands ready for (GroupFullyReady, the boss buffs done, no
     // crowd control hold of the tank's) is body-pulled after this, not after PULL_WAIT_MS: the tank's careful
     // planner never picks a boss ("[pull hold] no aggressive target"), the wait was always spent for nothing.
-    constexpr uint32 BOSS_PULL_READY_MS = 3 * IN_MILLISECONDS;
 
     // [pull_option] The tank's two ways to pull a pack, cheapest first (user 2026-10-25, MgT heroic Selin room):
     // (1) the sight pull - a spot on the arc round the pack (MovementAction::SightArcCandidates, the sight-arc
@@ -820,9 +811,7 @@ namespace Leader::Travel
     // pull hold is no route stall for PULL_HOLD_STALL_MS; past it the hold is the pull planner's deadlock: logged
     // once (pull_hold_stall, with the pull's state), the waypoint is no longer withheld for PULL_HOLD_RELEASE_MS
     // and the steer clock runs again.
-    constexpr uint32 PULL_HOLD_STALL_MS = 60 * IN_MILLISECONDS;
 
-    constexpr uint32 PULL_HOLD_RELEASE_MS = 30 * IN_MILLISECONDS;
 
     // The bots' own raid-leader pull hold (LeaderValues PullHoldValue) holds the leader now.
     bool LeaderPullHeld(Player* leader);

@@ -753,14 +753,17 @@ namespace Leader::Travel
     {
         first = false;
         PlannerAsk& ask = plannerAsks[leaderGuid];
-        if (ask.target != target->GetGUID() || !ask.sinceMs ||
-            getMSTimeDiff(ask.sinceMs, now) > 4 * BODY_PULL_PLANNER_MS)
+        if (ask.target != target->GetGUID() || !ask.sinceMs)
         {
             ask.target = target->GetGUID();
             ask.sinceMs = now ? now : 1;
             first = true;
         }
-        if (getMSTimeDiff(ask.sinceMs, now) >= BODY_PULL_PLANNER_MS)
+        // [lead131] user: the planner's verdict, not BODY_PULL_PLANNER_MS 8 s: the walk-in waits while the planner
+        // has no verdict on the pack or takes it; its refusal hands the pack to the walk-in
+        bool accepted = false;
+        uint32 mobs = 0;
+        if (CarefulPlanVerdict::Get(leaderGuid, target->GetGUID(), accepted, mobs) && !accepted)
             return false;
         GuaranteeRequest::Set(leaderGuid, target->GetGUID(), false);
         return true;
@@ -1664,7 +1667,7 @@ namespace Leader::Travel
                     group.LogEvent("body_pull_planner_request",
                              JsonObject().Str("name", target->GetName()).Num("entry", target->GetEntry())
                                  .Num("packMobs", uint32(pack.size())).Str("why", why)
-                                 .Num("waitSec", BODY_PULL_PLANNER_MS / IN_MILLISECONDS));
+                                 .Str("until", "the planner's verdict"));
                 group.ClearWaypoint(group.LeaderGuid());
                 return;
             }
@@ -3666,7 +3669,7 @@ namespace Leader::Travel
         // [lead2] LEADER_ONE_TANK_MOVER: the tank's open pull order owns its movement - no route stall while it is
         // open, and no clock hands the tank back (PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS are the A/B's old path):
         // the order's own events do (DrainOrderReports; a lost report is order_orphan, a bug event).
-        if (Leader::LEADER_ONE_TANK_MOVER)
+        static_assert(Leader::LEADER_ONE_TANK_MOVER, "[lead131] the pull-hold stall clocks are gone");
         {
             if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(group, leader))
             {
@@ -3690,59 +3693,6 @@ namespace Leader::Travel
                                                      .Real("y", leader->GetPositionY())
                                                      .Real("z", leader->GetPositionZ()));
                 }
-            }
-        }
-        // [queue-pull-hold-not-stuck] the harness withholds the waypoint for the tank's own pull (GiveWaypoint): no
-        // route stall, up to PULL_HOLD_STALL_MS in place; then pull_hold_stall, the waypoint released.
-        else if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(group, leader))
-        {
-            PullHoldTrack& hold = pullHolds[group.LeaderGuid()];
-            if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > STEER_GAP_MS ||
-                leader->GetExactDist(&hold.anchor) > STEER_PROGRESS_RANGE)
-            {
-                hold.sinceMs = now ? now : 1;
-                hold.anchor = leader->GetPosition();
-                hold.logged = false;
-                hold.stallLogged = false;
-            }
-            hold.seenMs = now ? now : 1;
-            uint32 const heldMs = getMSTimeDiff(hold.sinceMs, now);
-            if (heldMs < PULL_HOLD_STALL_MS)
-            {
-                routeState.steerSinceMs = now;
-                routeState.steerAnchor = leader->GetPosition();
-                routeState.steerNoNearerMs = 0;
-                routeState.driveSinceMs = now;
-                routeState.driveAnchor = leader->GetPosition();
-                if (!hold.logged)
-                {
-                    hold.logged = true;
-                    group.LogEvent("pull_hold", JsonObject().Str("name", object->GetName())
-                                                     .Num("entry", object->GetEntry()).Real("distance", distance)
-                                                     .Str("pull", TankPullState(leader))
-                                                     .Real("x", leader->GetPositionX())
-                                                     .Real("y", leader->GetPositionY())
-                                                     .Real("z", leader->GetPositionZ()));
-                }
-            }
-            else if (!hold.stallLogged)
-            {
-                hold.stallLogged = true;
-                hold.releaseUntilMs = now + PULL_HOLD_RELEASE_MS;
-                routeState.steerSinceMs = now;  // the released walk gets its own STEER_STUCK_MS
-                routeState.steerAnchor = leader->GetPosition();
-                group.LogEvent("pull_hold_stall",
-                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
-                             .Real("distance", distance).Num("heldSec", heldMs / IN_MILLISECONDS)
-                             .Str("pull", TankPullState(leader))
-                             .Num("releaseSec", PULL_HOLD_RELEASE_MS / IN_MILLISECONDS)
-                             .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
-                             .Real("z", leader->GetPositionZ()));
-                LOG_INFO("playerbots",
-                         "[queue-pull-hold-not-stuck] {}: {} held {} s in place by its own pull ({}) - the waypoint "
-                         "to {} is no longer withheld for {} s",
-                         group.Run().runId, leader->GetName(), heldMs / IN_MILLISECONDS, TankPullState(leader),
-                         object->GetName(), PULL_HOLD_RELEASE_MS / IN_MILLISECONDS);
             }
         }
         if (!arrived && routeState.steerReachWaived && distance <= PULL_RANGE)
@@ -4003,97 +3953,11 @@ namespace Leader::Travel
                                       std::find(spot->holdAlways.begin(), spot->holdAlways.end(),
                                                 object->GetEntry()) != spot->holdAlways.end();
             uint32 const pullWaitMs = atEventHold ? BODY_PULL_WAIT_MS : PULL_WAIT_MS;
-            // [pull_after_hold] the group stands ready at this target PULL_AFTER_HOLD_MS: the hold ends (below)
-            bool holdForce = false;
-            // [lead24] LEADER_NO_FORCING_TIMERS: no ready-hold release for a led party (pull_after_hold off)
-            bool const ledNoForce = Leader::LEADER_NO_FORCING_TIMERS && group.LeaderDecides();
-            if (PULL_AFTER_HOLD && !ledNoForce && !routeState.approach && !atEventHold && !group.IsRaid() &&
-                !routeState.targetIsStarter)
-            {
-                bool const groupReady =
-                    group.GroupFullyReady(leader) && !group.NeedBuff() && !PrePullCc::IsHolding(leader);
-                HoldReady& ready = holdReady[group.LeaderGuid()];
-                // plan29 follow-up 2: the targets flip at one stop (the 4 s retarget between the mobs of a pack or
-                // the targets behind one blocker): the same stop keeps the clock, as ROUTE_STOP_KEEPS_WAIT does
-                bool const sameStop = ready.sinceMs && leader->GetExactDist(&ready.at) <= STOP_SAME_RANGE;
-                if ((ready.target != routeState.target && !sameStop) || !groupReady)
-                {
-                    ready.target = routeState.target;
-                    ready.sinceMs = groupReady ? (now ? now : 1) : 0;
-                    ready.at = leader->GetPosition();
-                }
-                else if (ready.target != routeState.target)
-                    ready.target = routeState.target;
-                else if (!ready.sinceMs)
-                {
-                    ready.sinceMs = now ? now : 1;
-                    ready.at = leader->GetPosition();
-                }
-                Creature* const stopper =
-                    routeState.approachBlocker.IsEmpty() ? nullptr : map->GetCreature(routeState.approachBlocker);
-                Creature* const holdBlocker =
-                    stopper && stopper->IsAlive() && !stopper->IsInCombat() ? stopper : object->ToCreature();
-                std::string requiredWhy;
-                bool const onWay = stopper && stopper->IsAlive() && !stopper->IsInCombat();
-                bool const required = routeState.targetIsBoss || IsRouteBlocker(group, routeState.target) ||
-                                      RouteBlockerBehindRequired(group, map, object, requiredWhy);
-                if (groupReady && ready.sinceMs && getMSTimeDiff(ready.sinceMs, now) >= PULL_AFTER_HOLD_MS &&
-                    holdBlocker && (onWay || required) && (!routeState.targetIsBoss || onWay))
-                {
-                    holdForce = true;
-                    // (4) a closed door that opens by use hides the blocker: the tank opens it, the pull follows
-                    if (!leader->IsWithinLOSInMap(holdBlocker) && !holdBlocker->IsDungeonBoss())
-                    {
-                        Movement::PointsArray doorPath;
-                        {
-                            PathGenerator path(leader);
-                            path.CalculatePath(holdBlocker->GetPositionX(), holdBlocker->GetPositionY(),
-                                               holdBlocker->GetPositionZ(), false);
-                            if (!(path.GetPathType() & PATHFIND_NOPATH))
-                                doorPath = path.GetPath();
-                        }
-                        if (doorPath.size() < 2)
-                            doorPath = {G3D::Vector3(leader->GetPositionX(), leader->GetPositionY(),
-                                                     leader->GetPositionZ()),
-                                        G3D::Vector3(holdBlocker->GetPositionX(), holdBlocker->GetPositionY(),
-                                                     holdBlocker->GetPositionZ())};
-                        ClosedDoorHit const hit = PathThroughClosedDoor(leader, doorPath);
-                        if (hit.Found() && !DoorEventOf(hit.door) && DoorOpensByUse(hit.door))
-                        {
-                            bool const opened = OpenDoorByUse(leader, hit.door);
-                            G3D::Vector3 const at = PointOnPath(doorPath, std::max(0.0f, hit.walked - DOOR_OPEN_BACK));
-                            if (!opened)
-                                doorWalks[group.LeaderGuid()] = {hit.door->GetGUID(), holdBlocker->GetGUID(), at,
-                                                           now + DOOR_WALK_MS};
-                            group.LogEvent("pull_after_hold",
-                                     JsonObject().Str("action", opened ? "opened the door" : "walks to the door")
-                                         .Str("name", object->GetName()).Num("entry", object->GetEntry())
-                                         .Str("blocker", holdBlocker->GetName())
-                                         .Num("blockerEntry", holdBlocker->GetEntry())
-                                         .Str("door", hit.door->GetName()).Num("doorEntry", hit.door->GetEntry())
-                                         .Real("doorWalk", hit.walked)
-                                         .Num("readySec", getMSTimeDiff(ready.sinceMs, now) / IN_MILLISECONDS)
-                                         .Num("waitedSec", waited / IN_MILLISECONDS));
-                            ready.sinceMs = now ? now : 1;  // the pull through the open door gets its own clock
-                            if (!opened)
-                                group.SetLeaderWaypoint(leader, at.x, at.y, at.z);
-                            return;
-                        }
-                    }
-                    pullAfterHoldGates[group.LeaderGuid()] = {holdBlocker->GetGUID(), now + PULL_AFTER_HOLD_GATE_MS};
-                    group.LogEvent("pull_after_hold",
-                             JsonObject().Str("action", onWay && holdBlocker == stopper ? "pull the blocker on the way"
-                                                                                        : "pull the target")
-                                 .Str("name", object->GetName()).Num("entry", object->GetEntry())
-                                 .Str("blocker", holdBlocker->GetName()).Num("blockerEntry", holdBlocker->GetEntry())
-                                 .Bool("boss", routeState.targetIsBoss).Str("required", requiredWhy)
-                                 .Real("blockerDistance", leader->GetExactDist(holdBlocker))
-                                 .Bool("blockerLos", leader->IsWithinLOSInMap(holdBlocker))
-                                 .Num("readySec", getMSTimeDiff(ready.sinceMs, now) / IN_MILLISECONDS)
-                                 .Num("waitedSec", waited / IN_MILLISECONDS));
-                    ready.sinceMs = now ? now : 1;  // one forced decision per PULL_AFTER_HOLD_MS
-                }
-            }
+            bool const holdForce = false;  // [lead131] no ready-hold release by time (pull_after_hold gone)
+            // [lead24] LEADER_NO_FORCING_TIMERS: no ready-hold release (pull_after_hold off), no timed-out body pull
+            // [lead131] user: for every group, not only a led one (PULL_AFTER_HOLD_MS / _GATE_MS, the stop's
+            // PULL_WAIT_MS / BODY_PULL_WAIT_MS walk-in, the unknown-verdict GUARANTEE_UNKNOWN_HOLD_MS were the clocks)
+            bool const ledNoForce = Leader::LEADER_NO_FORCING_TIMERS;
             // ROUTE_BOSS_PULL_IMMEDIATE: a boss is body-pulled BOSS_PULL_READY_MS after the group stands ready for it
             // (GroupFullyReady, its boss buffs done, the rest hold above passed), not after PULL_WAIT_MS. The tank's
             // careful planner never picks a boss (RFC 20:10, Oggleflint: "[pull hold] no aggressive target" until
@@ -4139,8 +4003,9 @@ namespace Leader::Travel
                         group.State().atLinesSinceMs = 0;
                     else if (!group.State().atLinesSinceMs)
                         group.State().atLinesSinceMs = now ? now : 1;
-                    levelsReady = group.State().atLinesSinceMs && getMSTimeDiff(group.State().atLinesSinceMs, now) >=
-                                                                      RaidLeader::PULL_HOLD_READY_MAX_MS;
+                    // [lead131] every member at its lines with the leader ready is the fact (PULL_HOLD_READY_MAX_MS
+                    // 30 s at them was the old clock)
+                    levelsReady = group.State().atLinesSinceMs != 0;
                     if (levelsReady)
                         LOG_INFO("playerbots",
                                  "[lead13] boss_ready_at_lines {}: {} - every member above its own "
@@ -4159,8 +4024,9 @@ namespace Leader::Travel
                 }
                 else if (!boss.sinceMs)
                     boss.sinceMs = now;
-                bossPullNow = ready && boss.sinceMs && getMSTimeDiff(boss.sinceMs, now) >= BOSS_PULL_READY_MS &&
-                              waited <= pullWaitMs;
+                // [lead131] the group ready is the fact (BOSS_PULL_READY_MS 3 s ready and the PULL_WAIT_MS window
+                // were the old clocks)
+                bossPullNow = ready && boss.sinceMs;
                 if (bossPullNow)
                     LOG_INFO("playerbots", "[approach] {}: boss pull: immediate (group ready) - {} {:.1f} yd, "
                              "waited {} s", leader->GetName(), object->GetName(), distance, waited / IN_MILLISECONDS);
@@ -4179,34 +4045,10 @@ namespace Leader::Travel
                 (PartyRefusal(group, routeState.target, refusalHopeless, refusalWaitMs, refusalWhy) ||
                  (!routeState.approachBlocker.IsEmpty() &&
                   PartyRefusal(group, routeState.approachBlocker, refusalHopeless, refusalWaitMs, refusalWhy)));
-            // No verdict at all (GetRefusal false: unknown) while the tank sees the target: held up to
-            // GUARANTEE_UNKNOWN_HOLD_MS before the careful-refused skip below, the planner may still take it.
-            if (ROUTE_CAREFUL_GUARANTEE_HOLD && !ledNoForce && !plannerRefused && !routeState.approach &&
-                !routeState.targetIsBoss && !atEventHold && !group.IsRaid() && group.ContentSize() <= 5 &&
-                waited > pullWaitMs && waited < GUARANTEE_UNKNOWN_HOLD_MS && !holdForce)
-                if (Unit* unit = object->ToUnit();
-                    unit && PartyTankView(group, leader, unit).rfind("accepted", 0) == 0)
-                {
-                    if (routeState.guaranteeTarget != routeState.target || !routeState.guaranteeHolding)
-                    {
-                        routeState.guaranteeTarget = routeState.target;
-                        routeState.guaranteeDueMs = 0;
-                        routeState.guaranteeHolding = true;
-                        group.LogEvent("guarantee_hold", JsonObject().Str("name", object->GetName())
-                                                              .Num("entry", object->GetEntry())
-                                                              .Num("waitSec", 0)
-                                                              .Num("waitedSec", waited / IN_MILLISECONDS)
-                                                              .Str("why", "no verdict (unknown)"));
-                    }
-                    return;
-                }
             // "held for now" (the planner's honest pause: the group rests / tops up, a boss-ready hold): the group
             // waits and the wait does not count - the arrival clock restarts, no guarantee skip timer runs.
-            // [held_for_now_cap] ... unless the group stands fully ready for HELD_FOR_NOW_MAX_MS and the planner still
-            // holds the same target: then no rest can change it, and it is a refusal - the guarantee branch below
-            // decides at once (its skip / route blocker / body pull rules). Wave 23 (build 24): gd-h, nex-h and
-            // scholo-h held "fallback plan costs 0.9x tank hp" / "overlap wait ... (0 s)" with the group at 100 %
-            // until the 4-minute stall.
+            // [lead131] no cap by time (HELD_FOR_NOW_MAX_MS 75 s fully ready was the old clock): the planner's own
+            // verdict ends a "held for now".
             bool heldForNowCapped = false;
             // [lead3] LEADER_NO_BODY_FALLBACK: the leader never turns its planner's hold into a walk-in; a hold no rest
             // can change is its planner_no_option report (TickLeaderPlanner, LEADER_HELD_READY_MAX_MS)
@@ -4218,48 +4060,6 @@ namespace Leader::Travel
                 heldForNowCapped = false;
             else if (routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS)
                 heldForNowCapped = true;
-            // [pull_after_hold] a ready group's "held for now" (not a patrol / overlap wait) is a refusal now
-            else if (!leaderPulls && holdForce && plannerRefused && !refusalHopeless &&
-                     refusalWhy.rfind("held for now", 0) == 0 &&
-                     refusalWhy.find("patrol wait") == std::string::npos &&
-                     refusalWhy.find("overlap wait") == std::string::npos)
-            {
-                heldForNowCapped = true;
-                routeState.heldForNowSinceMs = 0;
-                routeState.arrivedMs = now - GUARANTEE_HOLD_TOTAL_MS;
-                waited = GUARANTEE_HOLD_TOTAL_MS;
-                routeState.guaranteeTarget = routeState.target;
-                routeState.guaranteeDueMs = 0;
-                routeState.guaranteeHolding = false;
-            }
-            else if (!leaderPulls && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
-            {
-                if (routeState.heldForNowTarget != routeState.target || !routeState.heldForNowSinceMs)
-                {
-                    routeState.heldForNowTarget = routeState.target;
-                    routeState.heldForNowSinceMs = now ? now : 1;
-                }
-                if (!group.GroupFullyReady(leader))
-                    routeState.heldForNowSinceMs = now ? now : 1;
-                else if (getMSTimeDiff(routeState.heldForNowSinceMs, now) >= HELD_FOR_NOW_MAX_MS)
-                {
-                    heldForNowCapped = true;
-                    LOG_INFO("playerbots", "[held_for_now_cap] {}: {} held {} s with the group fully ready ({}): "
-                             "taken as a refusal", leader->GetName(), object->GetName(),
-                             getMSTimeDiff(routeState.heldForNowSinceMs, now) / IN_MILLISECONDS, refusalWhy);
-                    group.LogEvent("held_for_now_cap",
-                             JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
-                                 .Num("heldSec", getMSTimeDiff(routeState.heldForNowSinceMs, now) / IN_MILLISECONDS)
-                                 .Str("why", refusalWhy));
-                    routeState.heldForNowSinceMs = 0;
-                    // the guarantee branch reads the hold as waited out
-                    routeState.arrivedMs = now - GUARANTEE_HOLD_TOTAL_MS;
-                    waited = GUARANTEE_HOLD_TOTAL_MS;
-                    routeState.guaranteeTarget = routeState.target;
-                    routeState.guaranteeDueMs = 0;
-                    routeState.guaranteeHolding = false;
-                }
-            }
             if (!heldForNowCapped && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
             {
                 // [patrol_wait_spot] a patrol wait: the group waits out of every idle pack's reach (the patrol fight
@@ -4316,13 +4116,11 @@ namespace Leader::Travel
                 }
                 if (!refusalWaitMs && !routeState.guaranteeDueMs)
                     routeState.guaranteeDueMs = now;
-                // No remaining time and no reason from the planner (wave 11: waitSec 0, why "" while its guarantee
-                // needs ~90 s of block time; [pull guarantee] fired 0 times): held up to GUARANTEE_UNKNOWN_HOLD_MS.
-                bool const unknown = !refusalWaitMs && refusalWhy.empty();
-                bool const hold = !holdForce && waited < GUARANTEE_HOLD_TOTAL_MS &&
-                                  !(routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS) &&
-                                  (refusalWaitMs || (unknown && waited < GUARANTEE_UNKNOWN_HOLD_MS) ||
-                                   getMSTimeDiff(routeState.guaranteeDueMs, now) < GUARANTEE_EXECUTE_MS);
+                // [lead131] user: no elapsed-time rule decides (GUARANTEE_HOLD_TOTAL_MS 150 s, GUARANTEE_EXECUTE_MS 30 s,
+                // GUARANTEE_UNKNOWN_HOLD_MS 120 s were the old clocks): the group holds while the planner refuses the
+                // pack and it is not hopeless - the planner's own verdict (it takes the pack, or calls it hopeless)
+                // ends the hold
+                bool const hold = !holdForce && !(routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS);
                 if (hold)
                 {
                     if (!routeState.guaranteeHolding)
@@ -4351,10 +4149,23 @@ namespace Leader::Travel
                 return;
             }
             // [lead3] a boss pull the leader issued that brought no fight: "not pulled", as the old walk-in's was
-            if (leaderPulls && routeState.targetIsBoss && group.State().bossPullIssued == routeState.target &&
-                group.State().bossPullIssuedMs &&
-                getMSTimeDiff(group.State().bossPullIssuedMs, now) > BOSS_PULL_HOLD_WAIT_MS)
+            // [lead131] user: its order's facts, not BOSS_PULL_HOLD_WAIT_MS 150 s: the tank opened the boss pull's
+            // order and it closed without a fight (the boss and the group out of combat)
+            bool bossOrderOpen = false;
+            if (leaderPulls && routeState.targetIsBoss && group.State().bossPullIssued == routeState.target)
             {
+                Leader::PullOrder bossOrder;
+                bossOrderOpen = Leader::Orders::GetOpen(group.LeaderGuid(), bossOrder) &&
+                                bossOrder.target == routeState.target;
+                if (bossOrderOpen)
+                    group.State().bossPullOrderSeen = true;
+            }
+            Creature const* pulledBoss = object->ToCreature();
+            if (leaderPulls && routeState.targetIsBoss && group.State().bossPullIssued == routeState.target &&
+                group.State().bossPullIssuedMs && group.State().bossPullOrderSeen && !bossOrderOpen &&
+                !leader->IsInCombat() && !group.InCombat() && pulledBoss && !pulledBoss->IsInCombat())
+            {
+                group.State().bossPullOrderSeen = false;
                 group.State().bossPullIssued.Clear();
                 group.State().bossPullIssuedMs = 0;
                 group.SkipTarget(routeState.target,
@@ -4862,7 +4673,7 @@ namespace Leader::Travel
                             group.LogEvent("body_pull_planner_request",
                                      JsonObject().Str("name", pack->GetName()).Num("entry", pack->GetEntry())
                                          .Str("why", "the stop's wait")
-                                         .Num("waitSec", BODY_PULL_PLANNER_MS / IN_MILLISECONDS));
+                                         .Str("until", "the planner's verdict"));
                         group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
@@ -4977,14 +4788,12 @@ namespace Leader::Travel
                              .Bool("immediate", bossPullNow)
                              .Num("react", pack ? uint32(pack->GetReactState()) : 0));
             }
-            // [b32_bm] beside a non-aggressive boss the tank's own attack needs its idle-boss delay (10 s) and its
-            // tries: the walk-in's 10 s were gone before it (the boss hold's wait instead).
-            else if (routeState.approach &&
-                     waited > (routeState.targetIsBoss && object->ToCreature() &&
-                                       !object->ToCreature()->HasReactState(REACT_AGGRESSIVE)
-                                   ? BOSS_PULL_HOLD_WAIT_MS
-                                   : BODY_PULL_WAIT_MS) &&
-                     !(routeState.targetIsBoss && waited <= BOSS_PULL_HOLD_WAIT_MS && LeaderPullHeld(leader)))
+            // [b32_bm] beside a non-aggressive boss the tank's own attack needs its idle-boss delay and its tries.
+            // [lead131] user: the facts, not BODY_PULL_WAIT_MS 10 s / BOSS_PULL_HOLD_WAIT_MS 150 s: the walk-in stands
+            // in the tank's melee reach of its target, the target out of combat, the tank attacking nothing and not
+            // holding its pull - the walk-in brought no fight
+            else if (routeState.approach && object->ToUnit() && leader->IsWithinMeleeRange(object->ToUnit()) &&
+                     !object->ToUnit()->IsInCombat() && !leader->GetVictim() && !LeaderPullHeld(leader))
                 group.SkipTarget(
                     routeState.target,
                     routeState.targetIsBoss && ROUTE_OCULUS_DRAKE_ONLY ? BOSS_NOT_PULLED_SKIP_MS : NOT_PULLED_SKIP_MS,

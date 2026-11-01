@@ -198,14 +198,9 @@ namespace TestHarness
         using Leader::Dungeon::CAREFUL_REFUSED_SKIP_MS;  // [lead107] LeaderPlan.h (3 min)
         using Leader::Travel::ROUTE_ADOPT_GROUP_ESCORT;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_CAREFUL_GUARANTEE_HOLD;  // [lead107] RouteSteer.h
-        using Leader::Travel::GUARANTEE_EXECUTE_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::GUARANTEE_HOLD_TOTAL_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::GUARANTEE_UNKNOWN_HOLD_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::PATROL_WAIT_HOLD_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::HELD_FOR_NOW_MAX_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_LIFT_REFUSED_SKIP;  // [lead107] RouteTargets.h
         using Leader::Travel::LIFT_REFUSALS_MAX;  // [lead107] RouteTargets.h
-        using Leader::Travel::BOSS_PULL_HOLD_WAIT_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SAME_ENTRANCE_RANGE;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_WING_DONE_CHANGE;  // [lead107] RouteTargets.h
         using Leader::Travel::WING_DONE_NO_TARGET_MS;  // [lead107] RouteSteer.h
@@ -999,8 +994,6 @@ namespace TestHarness
         using Leader::Travel::sightStops;  // [lead107] RouteTargets.h
 
         using Leader::Travel::PULL_AFTER_HOLD;  // [lead107] RouteSteer.h
-        using Leader::Travel::PULL_AFTER_HOLD_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::PULL_AFTER_HOLD_GATE_MS;  // [lead107] RouteSteer.h
         using Leader::Dungeon::DOOR_WALK_MS;  // [lead107] LeaderPlan.h (15 s)
 
         using Leader::Travel::HoldReady;  // [lead107] RouteSteer.h
@@ -1019,7 +1012,6 @@ namespace TestHarness
         using Leader::Travel::doorWalks;  // [lead107] RouteSteer.h
 
         using Leader::Travel::BODY_PULL_VIA_PLANNER;  // [lead107] RouteSteer.h
-        using Leader::Travel::BODY_PULL_PLANNER_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::PlannerAsk;  // [lead107] RouteSteer.h
         using Leader::Travel::plannerAsks;  // [lead107] RouteSteer.h
 
@@ -1071,7 +1063,6 @@ namespace TestHarness
         using Leader::Travel::SightHold;  // [lead107] RouteTargets.h
         using Leader::Travel::sightHolds;  // [lead107] RouteTargets.h
 
-        using Leader::Travel::BOSS_PULL_READY_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::BossReady;  // [lead107] RouteTargets.h
         using Leader::Travel::bossReady;  // [lead107] RouteTargets.h
 
@@ -1455,8 +1446,6 @@ namespace TestHarness
 
         using Leader::Travel::TankPullRunning;  // [lead107] RouteEvents.h
 
-        using Leader::Travel::PULL_HOLD_STALL_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::PULL_HOLD_RELEASE_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::PullHoldTrack;  // [lead107] RouteEvents.h
         using Leader::Travel::pullHolds;  // [lead107] RouteEvents.h
 

@@ -47,6 +47,7 @@ namespace Leader
         std::string bossPullWhy;
         ObjectGuid bossPullIssued;  // the boss pull issued last, when (its "not pulled" end)
         uint32 bossPullIssuedMs = 0;
+        bool bossPullOrderSeen = false;  // [lead131] the tank opened the boss pull\'s order
         // [lead4] the patrol the leader decided to pull (an intercept), and the declared wait
         ObjectGuid intercept;
         uint32 interceptMs = 0;
