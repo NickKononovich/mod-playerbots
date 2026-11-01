@@ -118,16 +118,10 @@ void DpsPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    // Mana comes from Judgements of Wisdom and Divine Plea on cooldown, never from swapping the seal to Wisdom:
-    // under Seal of Wisdom the Seal of Vengeance stacks and Righteous Vengeance procs are lost.
-    triggers.push_back(
-        new TriggerNode(
-            "ret divine plea",
-            {
-                NextAction("divine plea", ACTION_HIGH)
-            }
-        )
-    );
+    // Mana comes from Judgements of Wisdom and Divine Plea, never from swapping the seal to Wisdom: under Seal of
+    // Wisdom the Seal of Vengeance stacks and Righteous Vengeance procs are lost.
+    // [rot13] wowsims ret never casts Divine Plea: it takes only a GCD the whole rotation leaves empty
+    triggers.push_back(new TriggerNode("ret divine plea", {NextAction("divine plea", ACTION_DEFAULT + 0.25f)}));
 
     triggers.push_back(
         new TriggerNode(
