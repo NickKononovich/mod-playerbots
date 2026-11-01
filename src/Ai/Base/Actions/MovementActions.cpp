@@ -1689,8 +1689,11 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         // walked on alone - the group moves as one: a led tank takes no ledge drop (its members refuse it too)
         // [lead81] b124 rfc-h 112-182 s: the tank stood at (-90,-40,-24) for 70 s - every walk to a mob more than
         // LEDGE_DROP_DZ below was refused although JudgeLedgeDrop found no drop on it (RFC's slope down): only a drop
-        if (ledge.drop && PlayerbotAI::IsTank(bot) && Leader::Orders::IsTracked(bot->GetGUID()))
-            return refuse("a led tank's ledge drop");
+        // [lead141] b165 rfc-h 60-138 s: every engage walk refused on the route's 6 yd step into the water by the
+        // first cave (landing joined to the rest, a safe fall) - the group follows a drop with a way back; an
+        // island (no ground path back) stays refused
+        if (ledge.drop && !ledge.connected && PlayerbotAI::IsTank(bot) && Leader::Orders::IsTracked(bot->GetGUID()))
+            return refuse("a led tank's ledge drop onto an island");
 
         // [b33_sp] an allowed water drop no ground path carries: from the brink, a jump into the water, together
         // (JudgeWaterDrop)

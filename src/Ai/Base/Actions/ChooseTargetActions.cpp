@@ -285,13 +285,25 @@ bool AggressiveTargetAction::Execute(Event event)
             {
                 // [lead85] b128: 22 of 45 pulls "planned (body)" - the walk in for sight went into the mob's reach
                 // and it came before the opener; first to the first point that sees it within the opener's range
+                // [lead141] b165 20261101-132637 60-138 s: every engage "walk in for sight refused" - no sight spot in
+                // the first 50 yd of a 54-220 yd way, and the walk on was refused as "a led tank's ledge drop" (the
+                // route's 6 yd step into the water). The order mob's way is the leader's route: with a sight spot
+                // outside its aggro reach the tank stops there, else it walks the route on (the opener goes as soon
+                // as the mob is in its range and sight: TankIncomingMob, live each tick); no route at all is the
+                // only unreachable
                 float const opener = OpenerRange();
-                bool const walked = (opener > 0.0f && !target->IsInCombat() &&
-                                     MoveToSight(target, opener, "engage: to its opener's range")) ||
-                                    ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+                if (opener > 0.0f && !target->IsInCombat() &&
+                    MoveToSight(target, opener, "engage: to its opener's range"))
+                    return PostCommit(bot, target, true, Leader::PullMethod::Engage,
+                                      "engage: the tank walks to its opener's range", commitMobs, commitCost, single);
+                if (!Leader::Route(bot, target->GetPosition()).found)
+                    return PostCommit(bot, target, false, Leader::PullMethod::Engage,
+                                      "engage: no route to the order mob", commitMobs, commitCost, single);
+                bool const walked = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
+                std::string const refusal = LastMoveRefusal().empty() ? "its chase guard" : LastMoveRefusal();
                 return PostCommit(bot, target, walked, Leader::PullMethod::Engage,
-                                  walked ? "engage: the tank walks its path in for sight"
-                                         : "engage: the tank's walk in for sight refused",
+                                  walked ? "engage: the tank walks its route in"
+                                         : "engage: the route walk refused by " + refusal,
                                   commitMobs, commitCost, single);
             }
             if (MoveToLOS(target))
