@@ -1022,13 +1022,27 @@ namespace Leader::Dungeon
                         fits = true;
                         judged += "; the planner pulls it as the boss's fight";
                     }
-                    Decisions().Write(run, "leader", "walk_in_wakes", mob->GetGUID(), mob->GetName(), true,
-                                      JsonObject().Str("wakes", woken->GetName())
-                                          .Num("wakesLow", woken->GetGUID().GetCounter())
-                                          .Real("distance", tank->GetExactDist(woken))
-                                          .Num("wokenPack", int64(wokenPack.size())).Real("overload", overload)
-                                          .Str("judged", judged)
-                                          .Str("decision", fits ? "one pull: taken along" : "the pull first"));
+                    // [lead180] b180 rfc-h 5F 1377.8-1609 s: the planner's boss plan said "boss pulled where it
+                    // stands; the walk wakes Searing Blade Cultist: it joins his fight" (no plan takes that pack
+                    // first, lead90), the walk-in check held the boss for the Cultist "not pullable first" until the
+                    // run stalled. The plan already took the woken mob into the boss's fight: one pull
+                    if (!fits && IsBossLook(tank, mob->GetGUID()) &&
+                        committed.reason.find("the walk wakes " + woken->GetName() + ": it joins his fight") !=
+                            std::string::npos)
+                    {
+                        fits = true;
+                        judged += "; the boss plan takes it into his fight";
+                    }
+                    bool const sameFact = !fits && lead.walkWakesFirst == woken->GetGUID() &&
+                                          lead.walkWakesReleased == mob->GetGUID();  // logged once
+                    if (!sameFact)
+                        Decisions().Write(run, "leader", "walk_in_wakes", mob->GetGUID(), mob->GetName(), true,
+                                          JsonObject().Str("wakes", woken->GetName())
+                                              .Num("wakesLow", woken->GetGUID().GetCounter())
+                                              .Real("distance", tank->GetExactDist(woken))
+                                              .Num("wokenPack", int64(wokenPack.size())).Real("overload", overload)
+                                              .Str("judged", judged)
+                                              .Str("decision", fits ? "one pull: taken along" : "the pull first"));
                     if (fits)
                     {
                         for (ObjectGuid const& guid : wokenPack)
