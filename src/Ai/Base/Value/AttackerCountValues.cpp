@@ -674,7 +674,7 @@ Unit* FleeingMobValue::Calculate()
         bool const atFleeHealth =
             unit && unit->IsAlive() && unit->ToCreature() &&
             unit->GetHealthPct() <= Leader::Knowledge::FleeForAssistHealthPct(unit->GetEntry()) &&
-            !unit->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT) && !FledMobs::StoppedRecently(unit->GetGUID());
+            !unit->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT) && !FledMobs::StoppedRecently(unit);
         if (!atFleeHealth && !FledMobs::IsRunning(unit))
             continue;
 

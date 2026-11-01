@@ -87,7 +87,7 @@ namespace Leader::Fight
     {
         if (!mob || !mob->IsAlive() || !mob->ToCreature() || mob->HasAuraType(SPELL_AURA_MOD_STUN) ||
             mob->HasAuraType(SPELL_AURA_MOD_ROOT) || mob->HasBreakableByDamageCrowdControlAura() ||
-            FledMobs::StoppedRecently(mob->GetGUID()))
+            FledMobs::StoppedRecently(mob))
             return false;
         float const fleeAt = Leader::Knowledge::FleeForAssistHealthPct(mob->GetEntry());
         return (fleeAt > 0.0f && mob->GetHealthPct() <= fleeAt) || FledMobs::IsRunning(mob);
