@@ -360,6 +360,8 @@ public:
 
     bool isUseful() override;
     bool Execute(Event event) override;
+    // [lead104] the leader's question: this member has a stop ready that takes `mob` now (in range and sight)
+    bool CanStop(Unit* mob) { return mob && Pick(mob) != nullptr; }
 
 private:
     struct Stop

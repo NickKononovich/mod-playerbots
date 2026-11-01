@@ -474,6 +474,8 @@ namespace TestHarness
             bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
             std::set<ObjectGuid> routeSkips;   // [lead96] route targets skipped while the leader refuses them
             ObjectGuid walkWakesFirst;         // [lead101] the pack the walk to a patrol wakes: the pull first
+            std::map<ObjectGuid, ObjectGuid> fleeStoppers;  // [lead104] fleer -> the member the leader set to stop it
+            ObjectGuid fleeFocusLogged;                     // [lead104] flee_focus logged for this fleer
             std::vector<G3D::Vector3> routePath;  // [lead97] the leg's path, taken once, walked by index
             size_t routePathIndex = 0;
             ObjectGuid routePathTarget;

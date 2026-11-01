@@ -49,6 +49,7 @@
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
 #include "RouteSearch.h"  // [lead99] the leader's route search
+#include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -19774,8 +19775,7 @@ namespace TestHarness
             closeOrder(Leader::OrderState::Done, "no engaged mob: the fight is over", "order_done");
             // [lead101] the order's own mob alive and in no fight (another pack came instead): it stays the leader's
             // pick, the next pull goes for it from where the group stands now (released by the kept pick's facts)
-            if (Creature* own = leader->GetMap()->GetCreature(order.target);
-                own && own->IsAlive() && !own->IsInCombat())
+            if (Creature* own = leader->GetMap()->GetCreature(order.target); Leader::Fight::OrderMobStaysPick(own))
             {
                 party.lead.keptPick = order.target;
                 party.lead.keptPickWhy = "its order ended with it out of the fight";
@@ -23864,6 +23864,51 @@ namespace TestHarness
             }
         }
 
+        // [lead104] the flee stop is ONE leader command per fleer (project rule: the leader decides, a member
+        // executes): a fight mob at its flee-for-assist health or running gets one member with a stop ready (kept
+        // while it can), else it is the damage dealers' focus (burst before it runs). The facts are the leader's
+        // (Ai/Leader/Fight/PullFacts)
+        if (fighting && Leader::LEADER_ATTACK_EVENTS)
+        {
+            std::vector<Player*> stoppers = seats;
+            stoppers.push_back(tank);
+            for (ObjectGuid const& fightMob : std::vector<ObjectGuid>(killOrder))
+            {
+                Unit* fleer = ObjectAccessor::GetUnit(*tank, fightMob);
+                if (!Leader::Fight::NeedsFleeStop(fleer))
+                {
+                    lead.fleeStoppers.erase(fightMob);
+                    continue;
+                }
+                Player* stopper = nullptr;
+                if (auto const kept = lead.fleeStoppers.find(fightMob); kept != lead.fleeStoppers.end())
+                    if (Player* keptBot = ObjectAccessor::FindPlayer(kept->second))
+                        if (Leader::Fight::FleeStopper({keptBot}, fleer) == keptBot)
+                            stopper = keptBot;
+                if (!stopper)
+                    stopper = Leader::Fight::FleeStopper(stoppers, fleer);
+                if (stopper)
+                {
+                    lead.fleeStoppers[fightMob] = stopper->GetGUID();
+                    if (Leader::Events::SetFleeStop(stopper->GetGUID(), fightMob))
+                        logEvent(stopper, "FleeStop", JsonObject().Str("mob", fleer->GetName())
+                                                          .Real("health", fleer->GetHealthPct()));
+                }
+                else
+                {
+                    lead.fleeStoppers.erase(fightMob);
+                    killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), fightMob), killOrder.end());
+                    killOrder.insert(killOrder.begin(), fightMob);  // nobody can stop it: the focus bursts it
+                    if (lead.fleeFocusLogged != fightMob)
+                    {
+                        lead.fleeFocusLogged = fightMob;
+                        DecisionLog::Instance().Write(run, "leader", "flee_focus", fightMob, fleer->GetName(), true,
+                                                      JsonObject().Real("health", fleer->GetHealthPct()));
+                    }
+                }
+            }
+        }
+
         // 3b. interrupts: one kicker per casting mob, the member with an interrupt ready (kept while it holds)
         if (fighting && Leader::LEADER_ATTACK_EVENTS)
         {
@@ -24502,16 +24547,9 @@ namespace TestHarness
             // [lead103] b140 rfc-h 475.9-508.1 s: the boss engage on Taragaman walked the tank in past the Earthborer
             // pack (unplanned start, 8 mobs) - one check for EVERY engage (a still mob, a patrol, a boss): its walk-in
             // judged against every idle pack's reach, the plan's own mobs and the target's formation not judged
-            std::vector<ObjectGuid> const planMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+            // [lead104] the judgement is the leader's (Ai/Leader/Fight/PullFacts): the harness calls it and logs
             if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && committed.kind == "engage")
-                if (PlayerbotAI* walkerAI = GET_PLAYERBOT_AI(tank))
-                    if (auto* mover = dynamic_cast<LeaderMoveOrderAction*>(
-                            walkerAI->GetAiObjectContext()->GetAction("leader move order")))
-                        if (Unit* woken = mover->WalkWakes(mob->GetPosition(), mob->GetGUID());
-                            woken && woken->ToCreature() &&
-                            std::find(planMobs.begin(), planMobs.end(), woken->GetGUID()) == planMobs.end() &&
-                            !(mob->ToCreature()->GetFormation() &&
-                              woken->ToCreature()->GetFormation() == mob->ToCreature()->GetFormation()))
+                if (Unit* woken = Leader::Fight::WalkInWakes(tank, mob, LeaderPullMobs(lead.commit, lead.commitMob)))
                         {
                             lead.walkWakesFirst = woken->GetGUID();
                             DecisionLog::Instance().Write(run, "leader", "walk_in_wakes", mob->GetGUID(),

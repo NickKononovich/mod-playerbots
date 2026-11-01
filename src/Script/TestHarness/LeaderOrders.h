@@ -559,6 +559,8 @@ namespace Leader
         uint32 ccMs = 0;
         ObjectGuid interrupt;  // the caster this member interrupts
         uint32 interruptMs = 0;
+        ObjectGuid fleeStop;  // [lead104] the fleer this member stops (stun / root / snare)
+        uint32 fleeStopMs = 0;
         uint32 externalSpell = 0;  // an external save / buff the leader tells this member to cast, and on whom
         ObjectGuid externalTarget;
         uint32 externalMs = 0;
@@ -618,6 +620,7 @@ namespace Leader
         bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius);
         bool SetCc(ObjectGuid member, ObjectGuid mob);
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster);
+        bool SetFleeStop(ObjectGuid member, ObjectGuid mob);  // [lead104]
         bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob);

@@ -612,6 +612,19 @@ namespace Leader
             return changed;
         }
 
+        bool SetFleeStop(ObjectGuid member, ObjectGuid mob)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.fleeStop != mob;
+            e.fleeStop = mob;
+            e.fleeStopMs = slot.gen;
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target)
         {
             std::lock_guard<std::mutex> lock(eventLock);
@@ -787,6 +800,11 @@ namespace Leader
                 e.interrupt.Clear();
                 changed = true;
             }
+            if (!e.fleeStop.IsEmpty() && drop(e.fleeStopMs))
+            {
+                e.fleeStop.Clear();
+                changed = true;
+            }
             if (!e.threatTarget.IsEmpty() && drop(e.threatMs))
             {
                 e.threatSpell = 0;
@@ -869,7 +887,8 @@ namespace Leader
             }
             return out.move != MoveEvent::None || out.attack != AttackEvent::None ||
                    out.intensity != Intensity::Normal || out.ready != ReadyEvent::None || !out.cc.IsEmpty() ||
-                   !out.interrupt.IsEmpty() || out.externalSpell || !out.threatTarget.IsEmpty() ||
+                   !out.interrupt.IsEmpty() || !out.fleeStop.IsEmpty() || out.externalSpell ||
+                   !out.threatTarget.IsEmpty() ||
                    !out.dontAttack.IsEmpty() || out.loot || out.preSaveUntilMs;
         }
 

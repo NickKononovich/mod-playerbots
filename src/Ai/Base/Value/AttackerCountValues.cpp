@@ -11,6 +11,7 @@
 #include "Engine.h"
 #include "Group.h"
 #include "LeaderKnowledge.h"  // [lead102] flee-for-assist health
+#include "LeaderOrders.h"     // [lead104] the leader's flee-stop command
 #include "Map.h"
 #include "MotionMaster.h"
 #include "Playerbots.h"
@@ -646,6 +647,17 @@ Unit* FleeingMobValue::Calculate()
 {
     if (!bot->IsInCombat() || !bot->GetGroup())
         return nullptr;
+
+    // [lead104] project rule: the leader decides, the members execute - in a led group the fleer to stop is the
+    // leader's command (one member per fleer), never the member's own pick
+    if (Leader::LedBot(bot))
+    {
+        Leader::MemberEvents events;
+        if (!Leader::Events::Get(bot->GetGUID(), events) || events.fleeStop.IsEmpty())
+            return nullptr;
+        Unit* commanded = botAI->GetUnit(events.fleeStop);
+        return commanded && commanded->IsAlive() ? commanded : nullptr;
+    }
 
     Unit* nearest = nullptr;
     float nearestDistance = 0.0f;
