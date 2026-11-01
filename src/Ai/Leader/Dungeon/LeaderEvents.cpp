@@ -1620,6 +1620,7 @@ namespace Leader::Dungeon
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
             lead.healReachAnchor = 0;
             lead.healReachFrom.reset();
+            lead.rangeSpots.clear();  // [lead122]
         }
         else if (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD)
         {
@@ -2309,6 +2310,15 @@ namespace Leader::Dungeon
             // pull mob's and idle mob's reach (rings round the meeting point from the pull mob's reach out, the
             // member's side first), the healer in heal reach and sight of the meeting point; nothing nearer than
             // where it stands: the hold below
+            // out of every pull mob's and idle mob's reach at `at`
+            auto const pullWalkClear = [&](Position const& at)
+            {
+                for (ObjectGuid const& mobGuid : pullMobs)
+                    if (Creature* mob = map->GetCreature(mobGuid);
+                        mob && mob->IsAlive() && IdleMobReachesSpot(bot, mob, at))
+                        return false;
+                return !LeaderAggroAt(bot, at);
+            };
             if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState() &&
                 !lead.commitMob.IsEmpty())
             {
@@ -2320,15 +2330,7 @@ namespace Leader::Dungeon
                              (pullMob->GetDefaultMovementType() == RANDOM_MOTION_TYPE ? pullMob->GetWanderDistance()
                                                                                       : 0.0f);
                 auto const fits = [&](Position const& at)
-                {
-                    for (ObjectGuid const& mobGuid : pullMobs)
-                        if (Creature* mob = map->GetCreature(mobGuid);
-                            mob && mob->IsAlive() && IdleMobReachesSpot(bot, mob, at))
-                            return false;
-                    if (LeaderAggroAt(bot, at))
-                        return false;
-                    return bot != healer || reaches(at, meet);
-                };
+                { return pullWalkClear(at) && (bot != healer || reaches(at, meet)); };
                 float const standsAt = bot->GetExactDist(meet);
                 for (float ring = start; ring < standsAt - LEADER_FOLLOW_TOLERANCE && !moved;
                      ring += LEADER_LOOSE_TANK_YD)
@@ -2361,6 +2363,57 @@ namespace Leader::Dungeon
                              JsonObject().Str("why", "the pull walks: next to the meeting point, out of its reach")
                                  .Str("mob", pullMob ? pullMob->GetName() : "-"));
                     moved = true;
+                }
+            }
+            // [lead122] b156 rfc-h 20261101-105614 83.1 s: the ring search found no walk for the hunter ("its walk
+            // is in the reach of Ragefire Trogg"), it held where it stood 86 yd from the fight and did nothing all
+            // fight. No member is left beyond its role's reach of the meeting point (the heal reach for a healer, the
+            // ranged reach for the rest) or out of its sight: the point of the tank's own walk (its trail) nearest
+            // the member within that reach and out of every mob's reach; it stays only where it already is in reach
+            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState() &&
+                !lead.commitMob.IsEmpty())
+            {
+                Position const meet = lead.meetPoint;
+                float const roleReach = bot == healer || PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEAL_REACH_YD
+                                                                                  : LEADER_RANGED_MAX_YD;
+                auto const inReach = [&](Position const& at)
+                {
+                    return at.GetExactDist(meet) <= roleReach &&
+                           map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
+                                                meet.GetPositionX(), meet.GetPositionY(), meet.GetPositionZ() + 2.0f,
+                                                bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                VMAP::ModelIgnoreFlags::Nothing);
+                };
+                if (!inReach(bot->GetPosition()))
+                {
+                    std::vector<Position> trail;
+                    for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
+                        if (Position const at(point.x, point.y, point.z); inReach(at) && pullWalkClear(at))
+                            trail.push_back(at);
+                    std::sort(trail.begin(), trail.end(), [bot](Position const& a, Position const& b)
+                              { return bot->GetExactDist(a) < bot->GetExactDist(b); });
+                    std::vector<Position> refused;
+                    for (Position const& at : trail)
+                    {
+                        // a refused walk refuses its neighbours on the trail too (the same way there)
+                        if (std::any_of(refused.begin(), refused.end(), [&at](Position const& was)
+                                        { return was.GetExactDist(at) <= LEADER_FOLLOW_START_YD; }))
+                            continue;
+                        if (!checkedMove(guid, Leader::MoveEvent::MoveTo, at, LEADER_FOLLOW_TOLERANCE,
+                                         "the pull walks"))
+                        {
+                            refused.push_back(at);
+                            continue;
+                        }
+                        Creature* const pullMob = map->GetCreature(lead.commitMob);
+                        lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
+                                                    pullMob ? pullMob->GetPosition() : meet, at, false};
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "the pull walks: on the tank's walk, in reach of the fight")
+                                     .Str("mob", pullMob ? pullMob->GetName() : "-"));
+                        moved = true;
+                        break;
+                    }
                 }
             }
             if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState())
@@ -2753,6 +2806,83 @@ namespace Leader::Dungeon
                                                                     : "allowed-on-pack")
                                                     .Str("aoeWhy", memberAoeWhy)
                                                     .Bool("headroom", mine != nullptr));
+                    // [lead122] b156 rfc-h 20261101-105614 91.7-117.5 s: the hunter got Attack 7 times 86 yd from
+                    // its target ("the attack refused: no line of sight", nothing ran) and no spot all fight. A
+                    // ranged member's Attack comes with a spot it can shoot from: where it stands when that reaches
+                    // the target (LEADER_RANGED_MAX_YD, in sight), else its spot when that does, else the spot kept
+                    // for this target, else one round the target in range and sight (one the tank holds the walk to
+                    // first, then the nearest), kept for the fight while it reaches the target
+                    if (PlayerbotAI::IsRanged(bot))
+                    {
+                        auto const shootsFrom = [&](Position const& at)
+                        {
+                            return at.GetExactDist(attackOn->GetPosition()) <= LEADER_RANGED_MAX_YD &&
+                                   map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
+                                                        attackOn->GetPositionX(), attackOn->GetPositionY(),
+                                                        attackOn->GetPositionZ() + 2.0f, bot->GetPhaseMask(),
+                                                        LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+                        };
+                        Leader::MemberEvents events;
+                        bool const placed = Leader::Events::Get(guid, events) &&
+                                            (events.move == Leader::MoveEvent::MoveTo ||
+                                             events.move == Leader::MoveEvent::StandAt) &&
+                                            shootsFrom(events.spot);
+                        if (!shootsFrom(bot->GetPosition()) && !placed)
+                        {
+                            bool issued = false;
+                            auto const kept = lead.rangeSpots.find(guid);
+                            if (kept != lead.rangeSpots.end() && kept->second.first == attackOn->GetGUID() &&
+                                shootsFrom(kept->second.second))
+                                issued = checkedMove(guid, Leader::MoveEvent::MoveTo, kept->second.second, 2.0f,
+                                                     "in range of its target");
+                            if (!issued)
+                            {
+                                std::vector<std::pair<Position, bool>> candidates;  // the spot, the tank holds it
+                                for (float ring : {LEADER_RANGED_YD, LEADER_RANGED_MIN_YD})
+                                    for (uint32 i = 0; i < 12; ++i)
+                                    {
+                                        float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
+                                        float x = attackOn->GetPositionX() + std::cos(angle) * ring;
+                                        float y = attackOn->GetPositionY() + std::sin(angle) * ring;
+                                        float z = attackOn->GetPositionZ();
+                                        if (!map->CheckCollisionAndGetValidCoords(
+                                                attackOn, attackOn->GetPositionX(), attackOn->GetPositionY(),
+                                                attackOn->GetPositionZ(), x, y, z))
+                                            continue;
+                                        Position const at(x, y, z);
+                                        if (shootsFrom(at))
+                                            candidates.emplace_back(at, tankHolds(bot->GetPosition(), at));
+                                    }
+                                std::sort(candidates.begin(), candidates.end(),
+                                          [bot](auto const& a, auto const& b)
+                                          {
+                                              if (a.second != b.second)
+                                                  return a.second;
+                                              return bot->GetExactDist(a.first) < bot->GetExactDist(b.first);
+                                          });
+                                std::vector<Position> refused;
+                                for (auto const& [at, held] : candidates)
+                                {
+                                    if (std::any_of(refused.begin(), refused.end(), [&at](Position const& was)
+                                                    { return was.GetExactDist(at) <= LEADER_FOLLOW_START_YD; }))
+                                        continue;
+                                    if (!checkedMove(guid, Leader::MoveEvent::MoveTo, at, 2.0f,
+                                                     "in range of its target"))
+                                    {
+                                        refused.push_back(at);
+                                        continue;
+                                    }
+                                    lead.rangeSpots[guid] = {attackOn->GetGUID(), at};
+                                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                             JsonObject().Str("why", "in range of its target")
+                                                 .Str("target", attackOn->GetName())
+                                                 .Real("x", at.GetPositionX()).Real("y", at.GetPositionY())
+                                                 .Real("z", at.GetPositionZ()));
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
                 // the aggro-loss victim stops its damage until the tank has the mob back; the others leave the
                 // loose mob alone

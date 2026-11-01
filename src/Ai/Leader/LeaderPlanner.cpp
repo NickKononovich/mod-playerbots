@@ -10940,6 +10940,12 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             std::string decision;
             if (staysPut)
                 decision = "does not walk off, counted in the pack (plans it merged)";
+            // [lead122] a led tank's planner never counts holds (ledNow): its answer is decided at once - the crossing
+            // patrol first when it fits (tryPlan's estimate), else the pack planned merged; the old text named the
+            // hold count, which decides nothing for it
+            else if (cycledOut && ledNow)
+                decision = "the leader decides at once (no overlap wait): the crossing patrol first when it fits, "
+                           "else planned merged";
             else if (cycledOut)
                 decision = Acore::StringFormat("held {} times with no fight between, [b36_sv] gives up the wait",
                                                _overlapCycles);

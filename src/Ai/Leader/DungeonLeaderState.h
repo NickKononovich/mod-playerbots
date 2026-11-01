@@ -117,6 +117,8 @@ namespace Leader
         std::map<ObjectGuid, std::optional<Position>> healReachSpots;
         uint32 healReachAnchor = 0;
         std::optional<Position> healReachFrom;
+        // [lead122] a ranged member's spot in range and sight of its attack target (target, spot), for the fight
+        std::map<ObjectGuid, std::pair<ObjectGuid, Position>> rangeSpots;
         std::map<ObjectGuid, ObjectGuid> kickers;     // casting mob -> its assigned interrupter
         // [lead15] the cadence: ticks per state (calm / pre-pull / combat / hazard) and the layers' cost
         uint32 cadenceTicks[4] = {};
