@@ -9402,51 +9402,26 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // The wait runs across a nearest target that flips between mobs of the same packs (Steam Vault wave 16:
         // Coilfang Siren / Warrior alternated, the per-target wait restarted for 4 minutes). A wait older than a
         // few stall periods is from an earlier stand (a fight came between) and starts again.
-        bool const freshStall = _stallFor.IsEmpty() || getMSTimeDiff(_stallMs, now) >= 6 * CAREFUL_STALL_MS;
-        if (freshStall)
+        // [lead111] user: no elapsed-time rule changes a decision - the last resort runs whenever there is no plan,
+        // by fact (the group topped up); the stall clock, the quick lone-mob mode and its period are gone
+        if (_stallFor.IsEmpty())
         {
             _stallFor = target->GetGUID();
             _stallMs = now;
         }
-        // [careful_ready_last_resort] ready and within the cap (or no plan built at all): the slow path at once
-        bool const sittingBelowLine = IsAnyoneSittingBelowLine(bot);
         bool const noPlanBuilt = best.mob.IsEmpty() || best.estimate.cost <= 0.0f;
-        bool const readyNow = CAREFUL_READY_LAST_RESORT && !sittingBelowLine &&
-                              (noPlanBuilt || best.estimate.mobs <= lastResortMobs);
-        if (uint32 const stalled = getMSTimeDiff(_stallMs, now);
-            (!freshStall || readyNow) &&
-            (stalled >= CAREFUL_STALL_MS || readyNow ||
-             (stalled >= CAREFUL_READY_ONE_MS && getMSTimeDiff(_quickOneMs, now) >= CAREFUL_READY_ONE_MS &&
-              !sittingBelowLine)))
         {
-            // The quick lone mob (CAREFUL_READY_ONE_MS): the group is ready, only the single is tried, once per
-            // CAREFUL_READY_ONE_MS, and a failed try keeps the stall running to the CAREFUL_STALL_MS path.
-            bool const quickOne = stalled < CAREFUL_STALL_MS && !readyNow;
-            if (readyNow && stalled < CAREFUL_STALL_MS)
-            {
-                static thread_local uint32 readyLogMs = 0;  // per map thread
-                if (!readyLogMs || getMSTimeDiff(readyLogMs, now) > 10 * IN_MILLISECONDS)
-                {
-                    readyLogMs = now ? now : 1;
-                    LOG_INFO("playerbots", "[careful_ready_last_resort] {}: {} refused after {} s, group ready, {}: "
-                             "last resort now (cap {})", bot->GetName(), target->GetName(), stalled / IN_MILLISECONDS,
-                             noPlanBuilt ? std::string("no plan built (cost 0)")
-                                         : Acore::StringFormat("smallest plan {} mobs at cost {:.2f}",
-                                                               best.estimate.mobs, best.estimate.cost),
-                             lastResortMobs);
-                }
-            }
-            if (quickOne)
-                _quickOneMs = now;
+            bool const quickOne = false;
+            uint32 const stalled = getMSTimeDiff(_stallMs, now);  // the reason's text only
 
             fallbackCost = true;
             bool const losFallback = !quickOne && measured && planAround(CAREFUL_FALLBACK_OVERLOAD, false, true);
             fallbackCost = false;
             if (losFallback)
                 fallback = lastResort = found = true;
-            else if (!quickOne && !measured && !noPlanBuilt && best.estimate.mobs <= lastResortMobs &&
-                     best.estimate.cost <= SmallPackCostCap(best.estimate.mobs, CAREFUL_LAST_RESORT_MAX_COST) &&
-                     best.estimate.cost < SmallPackCostCap(best.estimate.mobs, CAREFUL_FALLBACK_MAX_COST))
+            // [lead111] the smallest plan when the leader's estimate carries it (JudgeMobs), no size / cost cap
+            else if (float smallestOverload = 0.0f; !quickOne && !measured && !noPlanBuilt &&
+                     [&]() { std::string judged; return JudgeMobs(best.pack, smallestOverload, judged); }())
             {
                 _planCached = best.mob;
                 _planPullBack = best.pullBack;
@@ -9505,26 +9480,29 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 Position castSpot;
                 // The lone mob is pulled at range with a single-target spell; while none is ready (Hand of
                 // Reckoning on cooldown) the tank waits instead of walking in (Stratholme wave 24: 16 mobs came).
-                // The wait ends (user rule: the tank always takes one mob): with no ranged pull it can use for
-                // CAREFUL_LONE_MOB_RANGED_WAIT_MS (no ranged weapon, a Taunt outside Defensive Stance), the tank walks
-                // in on the lone mob. Wave 37: the wait had no end, 87 refusals of one Ragefire Trogg.
                 bool walkIn = false;
+                // [lead111] no ranged pull ready (a cooldown, a stance): the walk in when the leader's estimate
+                // carries what it brings (JudgeMobs), else the wait for the ranged pull - a game mechanic, no clock
                 if (one && !PullBackSpot(one, castSpot, true))
                 {
-                    if (!_loneWaitMs || getMSTimeDiff(_loneSeenMs, now) >= CAREFUL_LONE_MOB_WAIT_GAP_MS)
-                        _loneWaitMs = now;
-
-                    _loneSeenMs = now;
-                    if (getMSTimeDiff(_loneWaitMs, now) <
-                        (quickOne ? CAREFUL_READY_ONE_MS : CAREFUL_LONE_MOB_RANGED_WAIT_MS))
+                    std::vector<Unit*> walkPack;
+                    CollectPack(botAI, bot, one, one->GetPosition(), possible, walkPack, FightHere(one->GetPosition()),
+                                measured, false, nullptr);
+                    if (std::find(walkPack.begin(), walkPack.end(), one) == walkPack.end())
+                        walkPack.insert(walkPack.begin(), one);
+                    float walkOverload = 0.0f;
+                    std::string walkJudged;
+                    if (JudgeMobs(walkPack, walkOverload, walkJudged))
                     {
-                        LogPullHold(bot, "lone-mob pull waits for a single-target ranged pull", one);
-                        one = nullptr;
+                        LogPullHold(bot, ("lone-mob pull: no single-target ranged pull ready, walks in (" +
+                                          walkJudged + ")").c_str(), one);
+                        walkIn = true;
                     }
                     else
                     {
-                        LogPullHold(bot, "lone-mob pull found no single-target ranged pull, walks in", one);
-                        walkIn = true;
+                        LogPullHold(bot, ("lone-mob pull waits for a single-target ranged pull (the walk in: " +
+                                          walkJudged + ")").c_str(), one);
+                        one = nullptr;
                     }
                 }
                 // The lone mob's pack where it is fought, as every plan's: walked in, at its spot; else its pull
@@ -9821,21 +9799,17 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     }
 
     // [b32_smpull] A big pack is split, not walked round (user 2026-10-25: «мы дали задачу всех боссов убивать...
-    // почему обойти, а не бить?»). A good group peels the chain from its edge: the nearest mob that comes with at most
-    // SPLIT_MAX_MOBS, pulled at range with a single-target spell and fought back on the line from it through the tank
-    // (KILL_SPOT_RETREAT_STEP at a time, SPLIT_RETREATS at most: the step back round a corner takes the rest out of
-    // sight), where the healer sees, reached by walks that wake nobody else, and cheap enough for the hard minimum's
-    // cap. Then the next one. Searched once per SPLIT_RETRY_MS for a pack the other rules refused as over the cap
-    // or hopeless; only SPLIT_FAILS_HOPELESS failed searches over SPLIT_HOPELESS_MS make the refusal hopeless (the
+    // почему обойти, а не бить?»). A good group peels the chain from its edge: the nearest mob, pulled at range with a
+    // single-target spell and fought back on the line from it through the tank (KILL_SPOT_RETREAT_STEP at a time,
+    // SPLIT_RETREATS at most: the step back round a corner takes the rest out of sight), where the healer sees,
+    // reached by walks that wake nobody else; [lead111] what comes is taken when the leader's estimate carries it
+    // (JudgeMobs: no peel size, no cost cap). Searched on every look with no plan; a failed search of the pack makes
+    // the refusal hopeless (the
     // harness's detour round it, hopeless_detour, is the last resort). lbrs-n 20261025-221216-lbrs-n-5D-10: the
     // Firebrand Grunt chain "brings 13 mobs over the cap 9 at cost 14.45" was hopeless at the first look and the
     // harness walked round it; strat-h King's Square ("22 mobs over 18"); sm-h Mograine's chapel (above, linked trash).
-    constexpr size_t SPLIT_MAX_MOBS = 4;
     constexpr uint32 SPLIT_CANDIDATES = 6;
     constexpr uint32 SPLIT_RETREATS = 3;
-    constexpr uint32 SPLIT_RETRY_MS = 3 * IN_MILLISECONDS;
-    constexpr uint32 SPLIT_FAILS_HOPELESS = 3;
-    constexpr uint32 SPLIT_HOPELESS_MS = 20 * IN_MILLISECONDS;
     constexpr uint32 SPLIT_MEMO_GAP_MS = 2 * MINUTE * IN_MILLISECONDS;
     struct SplitMemo
     {
@@ -9845,9 +9819,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         uint32 lastTryMs = 0;
     };
     static thread_local std::unordered_map<uint64, SplitMemo> splitMemos;  // per map thread, by tank
-    bool const splitWanted = !found && toppedUp && !boss && !targetPackBoss &&
-                             (_planVerdictHopeless || smallestPull > lastResortMobs ||
-                              adds.size() + 1 > size_t(lastResortMobs));
+    // [lead111] a split is looked for whenever no plan stands (no size trigger), every look (no retry clock)
+    bool const splitWanted = !found && toppedUp && !boss && !targetPackBoss;
+    (void)smallestPull;
     SplitMemo* splitMemo = nullptr;
     if (splitWanted)
     {
@@ -9863,10 +9837,16 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         }
         splitMemo = &memo;
     }
-    if (splitMemo && (!splitMemo->lastTryMs || getMSTimeDiff(splitMemo->lastTryMs, now) >= SPLIT_RETRY_MS))
+    if (splitMemo)
     {
         splitMemo->lastTryMs = now ? now : 1;
-        float const splitCostCap = std::max(CAREFUL_LAST_RESORT_HARD_CAP, _lastResortCap);
+        // [lead111] a peel is taken when the leader's estimate carries it (JudgeMobs), no cost cap
+        auto const peelFits = [this](std::vector<Unit*> const& peel)
+        {
+            float overload = 0.0f;
+            std::string judged;
+            return JudgeMobs(peel, overload, judged);
+        };
         std::vector<Unit*> candidates(adds);
         candidates.push_back(target);
         std::sort(candidates.begin(), candidates.end(),
@@ -9925,12 +9905,6 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         };
         std::stable_sort(candidates.begin(), candidates.end(), [&edgeInfo](Unit* a, Unit* b)
                          { return edgeInfo(a).touches < edgeInfo(b).touches; });
-        auto const edgePeelMax = [&edgeInfo, lastResortMobs](Unit* candidate) -> size_t
-        {
-            size_t const least = SPLIT_MAX_MOBS;
-            uint32 const unit = edgeInfo(candidate).unit;
-            return std::max(least, size_t(unit <= lastResortMobs ? unit : 0));
-        };
         uint32 tried = 0;
         size_t fewest = 0;  // the fewest a candidate brought (the failure's reason)
         // [b35_lbrs2] The peel round a corner (user 2026-10-26, brs-h 20261026-024524-brs-h-5D-8, the Firebrand hall by
@@ -9993,9 +9967,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     pack.insert(pack.begin(), candidate);
                 if (!fewest || pack.size() < fewest)
                     fewest = pack.size();
-                if (pack.size() > edgePeelMax(candidate) ||  // [b44_packs] was SPLIT_MAX_MOBS
-                    std::any_of(pack.begin(), pack.end(), [](Unit* mob) { return IsBossMob(mob); }))
-                    continue;
+                if (std::any_of(pack.begin(), pack.end(), [](Unit* mob) { return IsBossMob(mob); }))
+                    continue;  // [lead111] no size bound: the estimate below judges it
                 // the walk to the cast spot, and from it back to the kill spot, wakes nobody outside what comes
                 if (walkPulls(candidate, bot->GetPosition(), castSpot))
                     continue;
@@ -10009,7 +9982,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                         continue;
                 }
                 PackEstimate const estimate = EstimatePack(pack, bot, groupDps, estimateMode);
-                if (estimate.boss || estimate.cost >= splitCostCap)
+                if (estimate.boss || !peelFits(pack))
                     continue;
 
                 _planCached = candidate->GetGUID();
@@ -10085,16 +10058,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             // 20261026-050341-scholo-h-5B-3: "Diseased Ghoul / Reanimated Corpse brings 6 mobs round the corner at
             // (247.8 186.2 97.1), over 4" (the group proven 9.9 mobs over 13 clean fights, cap 9); the planner fell
             // to a lone-mob last resort expecting 7 and 14 came. The cost cap, the walks' checks below still apply.
-            constexpr size_t SPLIT_LOS_MAX_MOBS = 6;
-            size_t const losMaxMobs =
-                std::max({SPLIT_MAX_MOBS, std::min(SPLIT_LOS_MAX_MOBS, size_t(lastResortMobs)),
-                          edgePeelMax(candidate)});  // [b44_packs] a linked unit within the run's cap
-            if (pack.size() > losMaxMobs ||
-                std::any_of(pack.begin(), pack.end(), [](Unit* mob) { return IsBossMob(mob); }))
+            if (std::any_of(pack.begin(), pack.end(), [](Unit* mob) { return IsBossMob(mob); }))  // [lead111]
             {
                 LOG_DEBUG("playerbots", "[b35_lbrs2] split_los: {}: {} brings {} mobs round the corner at ({:.1f} "
                           "{:.1f} {:.1f}), over {}", bot->GetName(), candidate->GetName(), pack.size(),
-                          losSpot.GetPositionX(), losSpot.GetPositionY(), losSpot.GetPositionZ(), losMaxMobs);
+                          losSpot.GetPositionX(), losSpot.GetPositionY(), losSpot.GetPositionZ(), "a boss");
                 continue;
             }
             // the walk to the cast spot, and from it to the tank's spot, wakes nobody outside what comes
@@ -10108,7 +10076,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                  !losWalkable))
                 continue;
             PackEstimate const losEstimate = EstimatePack(pack, bot, groupDps, estimateMode, true);
-            if (losEstimate.boss || losEstimate.cost >= splitCostCap)
+            if (losEstimate.boss || !peelFits(pack))
                 continue;
 
             _planCached = candidate->GetGUID();
@@ -10148,10 +10116,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             ++splitMemo->fails;
             if (!splitMemo->firstFailMs)
                 splitMemo->firstFailMs = now ? now : 1;
-            LOG_INFO("playerbots", "[b32_smpull] split_failed: {}: {} ({} mobs): no peel of at most {} mobs from {} "
-                     "candidates (fewest {}; [b35_lbrs2] round a corner {} tried, fewest {}), search {} of {}",
-                     bot->GetName(), target->GetName(), adds.size() + 1, SPLIT_MAX_MOBS, tried, fewest, losTried,
-                     losFewest, splitMemo->fails, SPLIT_FAILS_HOPELESS);
+            LOG_INFO("playerbots", "[b32_smpull] split_failed: {}: {} ({} mobs): no peel the estimate carries from "
+                     "{} candidates (fewest {}; [b35_lbrs2] round a corner {} tried, fewest {}), search {}",
+                     bot->GetName(), target->GetName(), adds.size() + 1, tried, fewest, losTried, losFewest,
+                     splitMemo->fails);
         }
     }
 
@@ -10700,28 +10668,21 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
             if (_planVerdictWhy.empty())
                 _planVerdictWhy = Acore::StringFormat("refused for now: {} ({} mobs, the smallest plan {} mobs at cost "
-                                                      "{:.2f}); the stand's guarantee takes a pack within {} mobs",
-                                                      target->GetName(), adds.size() + 1, _planVerdictFightMobs,
-                                                      _planVerdictCost, lastResortMobs);
+                                                      "{:.2f})", target->GetName(), adds.size() + 1,
+                                                      _planVerdictFightMobs, _planVerdictCost);
 
             // The wait mirrors the guarantee's tiers exactly (ok-n build 18: "15 mobs", waitSec 192, a pack the
             // guarantee could never take): within the cap 90 s, within the over-cap scale 180 s, past it hopeless.
             // A pack that brings a boss is no guarantee's: it is pulled as his fight once the group is ready for him.
-            size_t const packSize = smallestPull;  // [b33_brs] the weighted smallest pull, as the guarantee's
-            size_t const packOverCap = overCapMobs;
-            if (!_planVerdictHopeless && !boss && !targetPackBoss && packSize > packOverCap)
-            {
-                _planVerdictHopeless = true;
-                _planVerdictWhy = Acore::StringFormat("no safe pull: {} brings {} mobs, over {} (the cap {} x{:.1f})",
-                                                      target->GetName(), packSize, packOverCap, baseLastResortMobs,
-                                                      GUARANTEE_OVER_CAP_SCALE);
-            }
-            else if (boss || targetPackBoss)
+            // [lead111] no size cap makes a refusal hopeless: the estimates above (the pull as it comes, the
+            // split) did
+            if (boss || targetPackBoss)
                 _planVerdictWhy = Acore::StringFormat("refused for now: the pack of {} brings a boss, pulled as his "
                                                       "fight once the group is ready for him", target->GetName());
 
-            // [b32_smpull] hopeless only once the split search failed SPLIT_FAILS_HOPELESS times over
-            // SPLIT_HOPELESS_MS on this pack (a group not topped up yet has not searched: it holds, no detour)
+            // [b32_smpull] hopeless only once the split search of this pack failed - [lead111] its last search (a
+            // fact: no peel the estimate carries), no count of searches over a time (a group not topped up yet has
+            // not searched: it holds, no detour)
             if (_planVerdictHopeless && !boss && !targetPackBoss)
             {
                 auto const memo = splitMemos.find(bot->GetGUID().GetRawValue());
@@ -10730,14 +10691,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     std::find(memo->second.pack.begin(), memo->second.pack.end(), target->GetGUID()) !=
                         memo->second.pack.end();
                 uint32 const fails = searched ? memo->second.fails : 0;
-                bool const exhausted = fails >= SPLIT_FAILS_HOPELESS && memo->second.firstFailMs &&
-                                       getMSTimeDiff(memo->second.firstFailMs, now) >= SPLIT_HOPELESS_MS;
+                bool const exhausted = fails >= 1;
                 if (!exhausted)
                 {
                     _planVerdictHopeless = false;
-                    _planVerdictWhy = Acore::StringFormat("refused for now (split search {} of {}): ", fails,
-                                                          SPLIT_FAILS_HOPELESS) +
-                                      _planVerdictWhy;
+                    _planVerdictWhy = "refused for now (no split searched yet): " + _planVerdictWhy;
                 }
                 else
                     _planVerdictWhy += Acore::StringFormat(" (no split in {} searches)", fails);
@@ -10750,12 +10708,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 _planVerdictWhy = aoeReadinessWhy;
             }
 
-            uint32 const packBlocked = PackBlockedMs(_planVerdictPack, now);
-            uint32 const dueMs = packSize <= lastResortMobs ? CAREFUL_BLOCK_GUARANTEE_MS
-                                                             : CAREFUL_BLOCK_GUARANTEE_OVER_MS;
-            _planVerdictGuaranteeWaitMs = _planVerdictHopeless || boss || targetPackBoss || packBlocked >= dueMs
-                                              ? 0
-                                              : dueMs - packBlocked + CAREFUL_STALL_MS;  // the next slow-path look
+            _planVerdictGuaranteeWaitMs = 0;  // [lead111] no stand to wait out
 
             // [rest_predict_real_pull] STN92_EFFICIENCY 2026-10-25: the rest logic's next fight is the pull this
             // refusal ends in - the last resort's single or the guarantee's pack, at most lastResortMobs - not the
