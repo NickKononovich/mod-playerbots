@@ -164,7 +164,6 @@ public:
         creators["devour magic cleanse"] = &WarlockTriggerFactoryInternal::devour_magic_cleanse;
         creators["backlash"] = &WarlockTriggerFactoryInternal::backlash;
         creators["corruption"] = &WarlockTriggerFactoryInternal::corruption;
-        creators["corruption long fight"] = &WarlockTriggerFactoryInternal::corruption_long_fight;
         creators["corruption on attacker"] = &WarlockTriggerFactoryInternal::corruption_on_attacker;
         creators["immolate"] = &WarlockTriggerFactoryInternal::immolate;
         creators["immolate on attacker"] = &WarlockTriggerFactoryInternal::immolate_on_attacker;
@@ -224,7 +223,6 @@ private:
     static Trigger* soulstone(PlayerbotAI* botAI) { return new SoulstoneTrigger(botAI); }
     static Trigger* ritual_of_souls(PlayerbotAI* botAI) { return new RitualOfSoulsTrigger(botAI); }
     static Trigger* corruption(PlayerbotAI* botAI) { return new CorruptionTrigger(botAI); }
-    static Trigger* corruption_long_fight(PlayerbotAI* botAI) { return new CorruptionLongFightTrigger(botAI); }
     static Trigger* corruption_on_attacker(PlayerbotAI* botAI) { return new CorruptionOnAttackerTrigger(botAI); }
     static Trigger* banish(PlayerbotAI* botAI) { return new BanishTrigger(botAI); }
     static Trigger* fear(PlayerbotAI* botAI) { return new FearTrigger(botAI); }

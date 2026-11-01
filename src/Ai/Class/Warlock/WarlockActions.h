@@ -272,7 +272,6 @@ public:
 constexpr uint32 CORRUPTION_REFRESH_MS = 1000;
 constexpr uint32 UNSTABLE_AFFLICTION_REFRESH_MS = 2000;
 constexpr uint32 IMMOLATE_REFRESH_MS = 2500;
-constexpr float CORRUPTION_FULL_DURATION_SECONDS = 18.0f;
 
 // A DoT is only applied when the target lives long enough (seconds, "estimated group dps") for it to out-damage
 // the filler cast it replaces; on a dying target the warlock keeps casting the filler / Drain Soul instead.

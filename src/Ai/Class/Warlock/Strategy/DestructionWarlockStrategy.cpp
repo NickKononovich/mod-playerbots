@@ -44,7 +44,7 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         new TriggerNode(
             "conflagrate",
             {
-                NextAction("conflagrate", 19.5f)
+                NextAction("conflagrate", 20.1f)  // [rot24] wowsims warlock__destro: Conflagrate before Immolate
             }
         )
     );
@@ -67,14 +67,7 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         )
     );
 
-    triggers.push_back(
-        new TriggerNode(
-            "corruption long fight",
-            {
-                NextAction("corruption", 18.5f)
-            }
-        )
-    );
+    // [rot24] no Corruption above Incinerate (wowsims destro never casts it); the movement / levelling filler stays
 
     // Leveling filler: these rank below Incinerate once it is learned at level 64
     triggers.push_back(

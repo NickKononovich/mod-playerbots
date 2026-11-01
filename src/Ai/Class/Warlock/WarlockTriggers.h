@@ -203,19 +203,6 @@ public:
     }
 };
 
-// Without Affliction talents Corruption only beats the filler when the target outlives a full application
-class CorruptionLongFightTrigger : public DebuffTrigger
-{
-public:
-    CorruptionLongFightTrigger(PlayerbotAI* botAI)
-        : DebuffTrigger(botAI, "corruption", 1, true, CORRUPTION_FULL_DURATION_SECONDS, CORRUPTION_REFRESH_MS) {}
-    std::string const getName() override { return "corruption long fight"; }
-    bool IsActive() override
-    {
-        return DebuffTrigger::IsActive() && !botAI->HasAura("seed of corruption", GetTarget(), false, true);
-    }
-};
-
 class CorruptionOnAttackerTrigger : public DebuffOnAttackerTrigger
 {
 public:
