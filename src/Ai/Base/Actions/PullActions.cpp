@@ -667,7 +667,10 @@ bool PullAction::Execute(Event event)
             strategy->RestartPullTimer();  // the walk to the cast spot does not eat into the pull time
 
         uint32 const waited = LosPull::BeginWait(bot);
-        if (!plan.gathered && waited < LosPull::GATHER_WAIT_MS)
+        // [lead92] b128-b133 rfc-h: every los pull of a led group waited the whole GATHER_WAIT_MS ("group gathered:
+        // false") - the leader owns the members' moves and stood them on its own pull spots (the order went out only
+        // once they stood there, LeaderSpotsWait), never on this gather spot. A led group's gather is the leader's
+        if (!plan.gathered && !Leader::LedGroup(bot) && waited < LosPull::GATHER_WAIT_MS)
             return false;
     }
 

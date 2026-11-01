@@ -183,11 +183,19 @@ namespace
                 everyoneCame = false;
         }
 
+        // [lead92] the hold ends once every mob of the pack in the fight is on the tank (its victim): the casters
+        // the corner was for are the tank's, wherever they stand
+        bool allOnTank = engaged > 0;
+        for (ObjectGuid const& guid : plan.pack)
+            if (Unit* mob = ObjectAccessor::GetUnit(*bot, guid);
+                allOnTank && mob && mob->IsAlive() && mob->IsInCombat() && mob->GetVictim() != tank)
+                allOnTank = false;
+
         uint32 const sinceCast = getMSTimeDiff(plan.castMs, now);
         if (sinceCast < LOS_PULL_ENGAGE_GRACE_MS)
             return;
 
-        if ((engaged && everyoneCame) || (!engaged && sinceCast >= LOS_PULL_NO_ENGAGE_MS))
+        if ((engaged && (everyoneCame || allOnTank)) || (!engaged && sinceCast >= LOS_PULL_NO_ENGAGE_MS))
             plan.released = true;
     }
 }
