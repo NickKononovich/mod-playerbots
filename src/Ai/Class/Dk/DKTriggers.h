@@ -106,7 +106,6 @@ public:
 // PlayerbotAI::CanCastSpell does not see rune costs, so a rune-paid priority gates itself with this.
 bool HasReadyRunes(Player* bot, uint8 blood, uint8 frost, uint8 unholy);
 
-
 // [b31_deep] Frost Strike before the runic power caps (wowsims frost_bl_pesti: Frost Strike at >= 115 right after
 // Obliterate, above Pestilence / Blood Strike / Rime Howling Blast; 130 is the cap with Runic Power Mastery 2/2).
 inline constexpr uint32 FROST_STRIKE_CAP_RUNIC_POWER = 1150;  // internal units (x10)

@@ -124,8 +124,9 @@ public:
 
 // Mana Tide only reaches the shaman's own party: one healer of the party very low, or two getting low.
 // [rot_b31_heal] ...and early (shaman below EARLY_MANA_PCT) in a fight that will drain the rest: a boss, or the
-// shaman's mana falling fast since the pull ([rot15] the 30 s fight-length path removed: no clock decides). A 5 min cooldown used at 15 % came too late (one
-// cast per run in build 30; an-h Hadronox: on cooldown when the shaman was at 0-3 %).
+// shaman's mana falling fast since the pull ([rot15] the 30 s fight-length path removed: no clock decides). A 5 min
+// cooldown used at 15 % came too late (one cast per run in build 30; an-h Hadronox: on cooldown when the shaman was
+// at 0-3 %).
 class PartyHealerLowManaTrigger : public Trigger
 {
 public:
