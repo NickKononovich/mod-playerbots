@@ -2327,127 +2327,11 @@ namespace Leader::Dungeon
                                                                                           : "patrol wait"));
                 moved = true;
             }
-            // [lead115] user: on a pull the healer and the damage dealers do not walk with the tank. b149 rfc-h
-            // 14.1-17.4 s: "Follow - along with the tank, gap 1.3" on the engage walk, Earthborer 3 took the shaman
-            // 3 yd from the tank. While the pull walks (the engage order open, the tank without threat on its mob)
-            // every member holds where it stands, outside the reach of the pull's mobs and of every idle mob, else
-            // steps back from the pull's mob out of its reach; it comes in on the leader's commands once the tank
-            // has the mob
-            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState())
-            {
-                // [lead117] b151 rfc-h 72.9-74.1 s: the shaman at a mob's reach edge flipped "out of its reach"
-                // MoveTo <-> Hold every 0.5 s - one decision per order and per fact: the spot decided for this order
-                // stands while its mob stays where it was judged (LEADER_COMMIT_MOVED_YD); a new order or the mob
-                // moved off decides again
-                auto memo = lead.pullWalkSpots.find(guid);
-                if (memo != lead.pullWalkSpots.end())
-                {
-                    Creature* judged = memo->second.mob.IsEmpty() ? nullptr : map->GetCreature(memo->second.mob);
-                    if (memo->second.orderId != pullWalkOrder ||
-                        (judged && judged->GetExactDist(memo->second.mobAt) > Leader::LEADER_COMMIT_MOVED_YD))
-                    {
-                        lead.pullWalkSpots.erase(memo);
-                        memo = lead.pullWalkSpots.end();
-                    }
-                }
-                if (memo != lead.pullWalkSpots.end())
-                {
-                    if (memo->second.hold)
-                        checkedMove(guid, Leader::MoveEvent::Hold, memo->second.spot, 0.0f, "the pull walks");
-                    else
-                        checkedMove(guid, Leader::MoveEvent::MoveTo, memo->second.spot, LEADER_FOLLOW_TOLERANCE,
-                                    "the pull walks");
-                    moved = true;
-                }
-            }
-            // out of every pull mob's and idle mob's reach at `at` (each mob's aggro range for this member's level)
-            auto const pullWalkClear = [&](Position const& at)
-            {
-                for (ObjectGuid const& mobGuid : pullMobs)
-                    if (Creature* mob = map->GetCreature(mobGuid);
-                        mob && mob->IsAlive() && IdleMobReachesSpot(bot, mob, at))
-                        return false;
-                return !LeaderAggroAt(bot, at);
-            };
-            // [lead126] user: one rule for the pull walk (it replaces lead115's step-back, lead121's rings round the
-            // meeting point and lead122's trail fallback). The members follow the tank along its own walked path
-            // (its trail) at their follow spread; once the tank's path enters the reach of a pull mob or an idle mob,
-            // each stops at the last trail point before that entry, out of every such reach. The healer's stop is in
-            // heal reach and sight of where the tank fights (the meeting point), a ranged member's in its own reach
-            // of it (LeaderShootReach): else the nearest trail point back along the trail that is both. One decision
-            // per order, kept until a fact changes (the memo above); the hold ends with the fight (lead118)
-            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState() &&
-                !lead.commitMob.IsEmpty())
-            {
-                std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(tank);
-                // the newest trail point out of every reach, after the tank's path entered one (-1: the tank's walk is
-                // still clear - the member follows, below)
-                int32 stop = -1;
-                bool entered = false;
-                for (int32 i = int32(trail.size()) - 1; i >= 0 && stop < 0; --i)
-                {
-                    if (!pullWalkClear(Position(trail[i].x, trail[i].y, trail[i].z)))
-                        entered = true;
-                    else if (entered)
-                        stop = i;
-                }
-                if (entered && stop < 0)
-                    stop = -2;  // the whole trail is in a reach: the member holds where it stands
-                if (stop != -1)
-                {
-                    Position const meet = lead.meetPoint;
-                    bool const healerRole = bot == healer || PlayerbotAI::IsHeal(bot);
-                    bool const rangedRole = !healerRole && PlayerbotAI::IsRanged(bot);
-                    float const roleReach = healerRole ? Leader::LEADER_HEAL_REACH_YD
-                                            : rangedRole ? LeaderShootReach(bot)
-                                                         : 0.0f;
-                    auto const reachesFight = [&](Position const& at)
-                    {
-                        if (roleReach <= 0.0f)
-                            return true;
-                        return at.GetExactDist(meet) <= roleReach &&
-                               map->isInLineOfSight(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f,
-                                                    meet.GetPositionX(), meet.GetPositionY(),
-                                                    meet.GetPositionZ() + 2.0f, bot->GetPhaseMask(),
-                                                    LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
-                    };
-                    int32 at = stop;
-                    if (at >= 0 && !reachesFight(Position(trail[at].x, trail[at].y, trail[at].z)))
-                        for (int32 i = at - 1; i >= 0; --i)
-                            if (Position const back(trail[i].x, trail[i].y, trail[i].z);
-                                pullWalkClear(back) && reachesFight(back))
-                            {
-                                at = i;
-                                break;
-                            }
-                    Creature* const pullMob = map->GetCreature(lead.commitMob);
-                    if (at >= 0)
-                    {
-                        Position const spot(trail[at].x, trail[at].y, trail[at].z);
-                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, LEADER_FOLLOW_TOLERANCE,
-                                        "the pull walks"))
-                        {
-                            lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
-                                                        pullMob ? pullMob->GetPosition() : meet, spot, false};
-                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                     JsonObject().Str("why", "the pull walks: on the tank's walk, before the reach")
-                                         .Str("mob", pullMob ? pullMob->GetName() : "-")
-                                         .Bool("inFightReach", reachesFight(spot)));
-                            moved = true;
-                        }
-                    }
-                    if (!moved)
-                    {
-                        // no stop point to walk to (the whole trail in a reach, or the walk refused): it stays
-                        if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the pull walks"))
-                            logEvent(bot, "Hold",
-                                     JsonObject().Str("why", "the pull walks: the tank takes the mob first"));
-                        lead.pullWalkSpots[guid] = {pullWalkOrder, lead.commitMob,
-                                                    pullMob ? pullMob->GetPosition() : meet, bot->GetPosition(), true};
-                        moved = true;
-                    }
-                }
-            }
+            // [lead148] user: no wait spots on a pull walk. b169 20261101-141316: "the pull walks" p90 82 yd, max
+            // 105-135 yd from the tank (lead126's stop before any reach on the tank's trail, an idle mob passed 80-100
+            // yd short of the pull); fights p90 47-70 yd. The members follow the tank at the follow spread behind it
+            // while it walks to its opener's range (the follow below, no engage walk-along spot); the fight's start
+            // ends the follow and the fight spots take them (lead118 / lead119)
             if (!moved && !combat && Leader::LEADER_NO_OWN_FOLLOW && Leader::ExecutorMember(bot) &&
                 !bot->IsSitState() && !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
             {
@@ -2458,7 +2342,7 @@ namespace Leader::Dungeon
                 // member keeps its place behind the tank by itself); an engage walk-along to range stays a point
                 Leader::PullOrder engage;
                 Unit* engaged = nullptr;
-                if (lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
+                if (!pullWalk && lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
                     Leader::Orders::GetOpen(group.LeaderGuid(), engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
                 // [lead81] b124 rfc-h 147.6-166 s: the group walked 120 yd to the engage's range / meeting point while
@@ -2472,7 +2356,7 @@ namespace Leader::Dungeon
                 bool aheadHolds = false;
                 // [lead64] melee at an engage: one command when the tank goes - to the meeting point
                 bool meleeToMeeting = false;
-                if (melee && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
+                if (!pullWalk && melee && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
                     Leader::Orders::GetOpen(group.LeaderGuid(), engage))
                 {
                     Position const meetAt = meleeMeetAt(bot, lead.commitMob);  // [lead83]
@@ -2559,7 +2443,7 @@ namespace Leader::Dungeon
                 if (!moved && !meleeToMeeting &&
                     (aheadHolds ||
                      (!(restCommanded && !tank->isMoving()) &&
-                      (engaged || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
+                      (engaged || pullWalk || (following && !botAI->forceRebuff.IsPending()) || tank->isMoving() ||
                        gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank)))))
                 {
                     lead.following.insert(guid);
