@@ -51,6 +51,7 @@
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "RouteLegs.h"    // [lead107] the leader's route legs
 #include "RoutePatrol.h"  // [lead107] the leader's patrol decision
+#include "RouteEvents.h"  // [lead107] the leader's event route steps
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderEvents.h"       // [lead107] the leader's event tick
@@ -168,10 +169,8 @@ namespace TestHarness
     namespace
     {
         constexpr uint32 MAX_PATH_CANDIDATES = 8;
-        constexpr float WAYPOINT_STEP = 30.0f;
-        // On a route over steep slopes the leader's own MoveTo (headless filter) has no polygon there and goes in a
-        // straight line: short steps keep that line on the slope.
-        constexpr float STEEP_WAYPOINT_STEP = 8.0f;
+        using Leader::Travel::WAYPOINT_STEP;  // [lead107] RouteEvents.h
+        using Leader::Travel::STEEP_WAYPOINT_STEP;  // [lead107] RouteEvents.h
         constexpr float PULL_RANGE = 20.0f;
         constexpr float BODY_PULL_RANGE = 5.0f;
         constexpr float BODY_PULL_MELEE_SLACK = 1.0f;  // [b32_bm] a walk-in arrives this far past the melee range
@@ -242,7 +241,7 @@ namespace TestHarness
         // [dme-ironbark-door]
         constexpr uint32 STARTER_DOOR_CHECK_MS = 45 * IN_MILLISECONDS;
         constexpr uint32 STARTER_DOOR_REARM_MAX = 2;
-        constexpr float EVENT_GATHER_ARRIVE = 6.0f;
+        using Leader::Travel::EVENT_GATHER_ARRIVE;  // [lead107] RouteEvents.h
         constexpr float PULL_HEALER_RANGE = 40.0f;
         constexpr uint32 TRIGGER_REFIRE_MS = 60 * IN_MILLISECONDS;
         constexpr uint32 TRIGGER_MAX_FIRES = 5;
@@ -319,7 +318,7 @@ namespace TestHarness
         // Only a target this deep below the surface is out of reach (the route may cross water, and mobs near the
         // surface are fought from it).
         constexpr float DEEP_TARGET_DEPTH = 15.0f;
-        constexpr float DRY_SPOT_SPREAD = 3.0f;
+        using Leader::Travel::DRY_SPOT_SPREAD;  // [lead107] RouteEvents.h
         // A target whose approach a skipped neighbour pack stops is skipped at once (Steer, approach stop).
         constexpr bool ROUTE_SKIP_BEHIND_SKIPPED = true;
         // The pull wait (PULL_WAIT_MS) runs per stop, not per target: a new target at the same stop keeps it.
@@ -330,13 +329,11 @@ namespace TestHarness
         constexpr uint32 RESPAWNING_SKIP_MS = 15 * MINUTE * IN_MILLISECONDS;
         // Escorts (StarterKind::Escort): what attacks the escorted creature is fought, the leader keeps up with it.
         constexpr float ESCORT_FIGHT_RADIUS = 40.0f;
-        constexpr float ESCORT_FOLLOW_RANGE = 10.0f;
-        constexpr uint32 ESCORT_IDLE_MS = 2 * MINUTE * IN_MILLISECONDS;  // standing, out of combat: the walk is over
-        constexpr uint32 ESCORT_MAX_MS = 30 * MINUTE * IN_MILLISECONDS;
-        // [ohb-escort-death-rearm] an escort that died (Old Hillsbrad: Thrall respawns at his last checkpoint and
-        // offers his gossip again) gives its use back, at most this often per starter.
-        constexpr uint32 ESCORT_DEATH_REARM_MAX = 6;
-        constexpr float EVENT_SPOT_HEIGHT = 15.0f;
+        using Leader::Travel::ESCORT_FOLLOW_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::ESCORT_IDLE_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::ESCORT_MAX_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::ESCORT_DEATH_REARM_MAX;  // [lead107] RouteEvents.h
+        using Leader::Travel::EVENT_SPOT_HEIGHT;  // [lead107] RouteEvents.h
         constexpr float HOLD_TARGET_RADIUS = 90.0f;  // around an event's waiting place (Violet Hold's portals ~90 yd)
         // An EventSpotDef::guardEntries add at the spot beats ordinary trash, never a holdAlways objective (a rift
         // keeper): bm-h build 10 (-1500 for the ring adds vs -1000 for the keepers): no keeper or Deja was ever
@@ -355,11 +352,10 @@ namespace TestHarness
         // defenders) keeps this much score over the other guards: one defender at a time, chosen nearest first. st-n
         // build 23 (103125 1714-1724 s): Gasher -> Zolo -> Gasher in 10 s on 7-15 points of score as the leader moved.
         constexpr float GUARD_TARGET_KEEP = 150.0f;
-        constexpr uint32 VIOLET_HOLD_MAP_ID = 608;  // prisoners released in a random order (see the next-boss loop)
+        using Leader::Travel::VIOLET_HOLD_MAP_ID;  // [lead107] RouteEvents.h
         constexpr uint32 GHOST_POS_MS = 30 * IN_MILLISECONDS;  // "ghost_pos" while members are outside
         constexpr size_t GHOST_POS_TRAIL = 300;
-        // Steering without progress (Party::steerAnchor): a walk covers 3 yd in well under a second.
-        constexpr float STEER_PROGRESS_RANGE = 3.0f;
+        using Leader::Travel::STEER_PROGRESS_RANGE;  // [lead107] RouteEvents.h
         constexpr uint32 STEER_STUCK_MS = 20 * IN_MILLISECONDS;
         // [steer_rest_not_stuck] The leader seated with food / drink (RestState: the aura by its spell specific) out of
         // combat is no lack of progress: st-n build 23 (103125 / 103436 -2 / -3) - all 7 "route end" skips of the
@@ -367,7 +363,7 @@ namespace TestHarness
         // group not waited for above its line), and each skip sent the walk to the next defender and back.
         constexpr bool STEER_REST_NOT_STUCK = true;
         constexpr float STEER_TWIN_RANGE = 30.0f;  // same-entry mobs skipped with an unreachable one (a ledge of them)
-        constexpr uint32 STEER_GAP_MS = 2 * IN_MILLISECONDS;  // Steer not called that long (rest, fight): anew
+        using Leader::Travel::STEER_GAP_MS;  // [lead107] RouteEvents.h
         constexpr uint32 STARTER_STUCK_RETRY_MS = 2 * MINUTE * IN_MILLISECONDS;
         constexpr uint32 STARTER_NO_NEARER_MS = 90 * IN_MILLISECONDS;
         // A key door that closes again by itself (door data2 autoCloseTime: Stratholme's Service Entrance Gate 175368,
@@ -375,7 +371,7 @@ namespace TestHarness
         // [b51_strat] User 2026-10-26: «Кто-то застрял за воротами - открываешь»: re-keyed as often as needed (was 6
         // per starter; strat-n 014521-5C-2 ran out and held 230 s with the healer 0.7 yd from the gate).
         constexpr uint32 DOOR_REARM_MAX = 1000;
-        constexpr float KEY_DOOR_CAST_RANGE = 3.0f;  // a key door cast without line of sight: from here, in front of it
+        using Leader::Travel::KEY_DOOR_CAST_RANGE;  // [lead107] RouteEvents.h
         constexpr uint32 KEY_DOOR_HOLD_FRESH_MS = 5 * IN_MILLISECONDS;  // a door_hold this recent re-arms its key
         // ReopenKeyDoorHeld: the leader this close to the closed key door.
         constexpr float KEY_DOOR_HELD_RANGE = INTERACTION_DISTANCE + 2.0f;  // the door hold stops ~5 yd from its centre
@@ -436,16 +432,9 @@ namespace TestHarness
         constexpr float SHORTCUT_REENTER_MEMBER_FAR = 100.0f;  // a member this far from the leader re-enters alone
         // Retarget: a summoned non-boss entry killed this often is no longer walked to (endless summons).
         constexpr uint32 ENDLESS_SUMMON_KILLS = 20;
-        // Harness drive (Party::driving, pass 3): no progress towards the same goal this long with a waypoint set, and
-        // the harness walks the leader itself in short straight steps along its route (each step lies on the route's
-        // polyline, so on the navmesh corridor), the bot AI held for the step. Wave 10: Utgarde Pinnacle (a 97-polygon
-        // ledge joined to the hall only over NAV_GROUND_STEEP, "test runner move - FAILED" for 4 minutes),
-        // Azjol-Nerub (the shaft ledge above the hole, same), Ahn'kahet ("use nerubian device - OK" every tick
-        // before Nadox), Culling ("cos dispel crate - OK" every tick) - the leader stood, steer_stuck skipped
-        // target after target.
-        constexpr uint32 DRIVE_AFTER_MS = 6 * IN_MILLISECONDS;
+        using Leader::Travel::DRIVE_AFTER_MS;  // [lead107] RouteEvents.h
         constexpr float DRIVE_STEP = 8.0f;
-        constexpr float DRIVE_SAME_GOAL = 10.0f;
+        using Leader::Travel::DRIVE_SAME_GOAL;  // [lead107] RouteEvents.h
         // Retarget guards (pass 3). An event chain (a starter of the map used, another one still pending with its
         // conditions met): ordinary trash farther than this from every pending starter object and event spot is no
         // target (Culling wave 10: after Chromie the route chose Risen Zombies 970 yd away in the city).
@@ -741,19 +730,16 @@ namespace TestHarness
             hold.members = who;
             return who;
         }
-        // A gossip starter found on a scripted walk at the click (ROUTE_STARTER_NOT_WALKING): tried again after this.
-        constexpr uint32 STARTER_WALKING_RETRY_MS = 3 * IN_MILLISECONDS;
+        using Leader::Travel::STARTER_WALKING_RETRY_MS;  // [lead107] RouteEvents.h
         // Utgarde Keep (ROUTE_FORGE_ORDER): the trash of a locked forge (Metalworkers 14.8-19.3 yd from their Forge
         // Master, acore_world map 574) waits with its master.
         constexpr float FORGE_STATION_RADIUS = 22.0f;
         // A boss whose body pull brought no fight: tried again after this (Oculus wave 9/10: Drakos "not pulled" at
         // 372 / 415 s; the 10 minute skip left nothing to do before him on foot).
         constexpr uint32 BOSS_NOT_PULLED_SKIP_MS = 2 * MINUTE * IN_MILLISECONDS;
-        // Event item starters (UseItem): standing this close to the object the leader is inside its model (Culling's
-        // crates: the CoS strategy walks to the crate's centre); it steps out to STARTER_ITEM_STEP_OUT first.
-        constexpr float STARTER_ITEM_MIN_RANGE = 2.0f;
-        constexpr float STARTER_ITEM_STEP_OUT = 3.5f;
-        constexpr uint32 STARTER_ITEM_MAX_FAILS = 3;
+        using Leader::Travel::STARTER_ITEM_MIN_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::STARTER_ITEM_STEP_OUT;  // [lead107] RouteEvents.h
+        using Leader::Travel::STARTER_ITEM_MAX_FAILS;  // [lead107] RouteEvents.h
         // Retarget: the next boss waits while idle trash stands in his room (ROUTE_BOSS_ROOM_FIRST).
         constexpr float BOSS_ROOM_TRASH_RADIUS = 40.0f;
         constexpr float BOSS_ROOM_TRASH_DZ = 10.0f;
@@ -787,41 +773,27 @@ namespace TestHarness
         // Trash no farther than the boss's own walk + this is on the boss's way, no detour (RFC wave 38).
         constexpr float DETOUR_BOSS_WAY_MARGIN = 60.0f;
         constexpr uint32 DETOUR_LOG_MS = MINUTE * IN_MILLISECONDS;
-        // WalkToEventGather: members farther than this from the gather spot are called in (HoR's start radius is 40 yd
-        // 2D from the altar centre, the spot 17 yd from it), at most every GATHER_CALL_MS.
-        constexpr float EVENT_GATHER_MEMBER_RANGE = 15.0f;
-        constexpr uint32 GATHER_CALL_MS = 5 * IN_MILLISECONDS;
-        constexpr uint32 STARTER_ITEM_RETRY_MS = 5 * IN_MILLISECONDS;
-        // [expect_door] EventStarterDef::expectDoor (Deadmines' Fire Cannon 6250: 2 s cast, range 5 yd, InterruptFlags
-        // 0x0F).
-        constexpr uint32 EXPECT_DOOR_MS = 5 * IN_MILLISECONDS;  // cast 2 s + SAI 500 ms + margin
-        constexpr uint32 EXPECT_DOOR_MAX_RETRIES = 4;
-        constexpr float EXPECT_DOOR_CAST_RANGE = 3.5f;  // to the object's centre (spell range 5 yd)
-        constexpr float EXPECT_DOOR_STEP = 2.5f;        // a step in: this far from the centre, toward the leader
-        constexpr uint32 EXPECT_DOOR_WAIT_MS = 1500;
-        constexpr uint32 EXPECT_DOOR_LOG_MS = 10 * IN_MILLISECONDS;
-        // [strat_key_*] KeyDoorPassDef (Stratholme's auto-closing key gates: Opening 3366 5 s cast, the gate shuts 3 s
-        // after it opens).
-        constexpr float KEY_PASS_LEADER_RANGE = 1.5f;  // the leader at the use point
-        constexpr float KEY_PASS_GATHER_RANGE = 5.0f;  // every member this close (2D) to the use point
-        constexpr float KEY_PASS_SPREAD = 2.0f;        // members called to points this far round the use point
-        constexpr uint32 KEY_PASS_RETRY_MS = 1500;
+        using Leader::Travel::EVENT_GATHER_MEMBER_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::GATHER_CALL_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::STARTER_ITEM_RETRY_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::EXPECT_DOOR_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::EXPECT_DOOR_MAX_RETRIES;  // [lead107] RouteEvents.h
+        using Leader::Travel::EXPECT_DOOR_CAST_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::EXPECT_DOOR_STEP;  // [lead107] RouteEvents.h
+        using Leader::Travel::EXPECT_DOOR_WAIT_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::EXPECT_DOOR_LOG_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_LEADER_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_GATHER_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_SPREAD;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_RETRY_MS;  // [lead107] RouteEvents.h
         constexpr uint32 KEY_PASS_MAX_MS = 15 * IN_MILLISECONDS;  // cast 5 s + open 3 s + margin
-        constexpr uint32 KEY_PASS_LOG_MS = 5 * IN_MILLISECONDS;
-        // [b30_overpull] strat-n 20261025-184229-strat-n-5D-6: the door hold left the leader 1.7 yd from the use point,
-        // the test runner counts a waypoint within 2.5 yd as reached (TestRunnerStrategy WAYPOINT_REACHED_DISTANCE) and
-        // never moved it - "leader to the use point" for 7.5 min, the key never used, 0 pulls. Within the runner's
-        // reach the leader keys from where it stands when the gate's centre is in the Opening's range and sight.
-        constexpr float KEY_PASS_RUNNER_REACH = 2.5f;     // = TestRunnerStrategy WAYPOINT_REACHED_DISTANCE
-        constexpr float KEY_PASS_CAST_CENTRE = 4.5f;      // Opening 3366: 5 yd to the object
-        // [b30_overpull] the gather wait retries at KEY_PASS_RETRY_MS, not the starter's 60 s cooldown (the 60 s gap
-        // let the retarget spin through the trash behind the gate one per second); at most this long, then the key is
-        // used with whoever stands at the use point (the re-key covers the rest).
-        constexpr uint32 KEY_PASS_GATHER_MAX_MS = 45 * IN_MILLISECONDS;
-        // [starter_wait_group] EventStarterDef::gatherRadius (Scholomance: Kirtonos' gate closes on the brazier use).
-        constexpr uint32 STARTER_GATHER_RETRY_MS = 2 * IN_MILLISECONDS;
-        constexpr uint32 STARTER_GATHER_MAX_MS = 60 * IN_MILLISECONDS;
-        constexpr uint32 STARTER_GATHER_LOG_MS = 15 * IN_MILLISECONDS;
+        using Leader::Travel::KEY_PASS_LOG_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_RUNNER_REACH;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_CAST_CENTRE;  // [lead107] RouteEvents.h
+        using Leader::Travel::KEY_PASS_GATHER_MAX_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::STARTER_GATHER_RETRY_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::STARTER_GATHER_MAX_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::STARTER_GATHER_LOG_MS;  // [lead107] RouteEvents.h
         // Bots walk by themselves (HARNESS_MOVES_BOTS off): the same bot_cannot_move (bot, capability, reason) is
         // logged at most this often; a walked wing change is over once every member stands this close (2D) to the
         // next entrance (SelfTravel's goal range), and fails after WING_WALK_MAX_MS.
@@ -914,15 +886,14 @@ namespace TestHarness
         constexpr uint32 SWIM_BACK_MAX_MS = 2 * MINUTE * IN_MILLISECONDS;
         // - a used-up gossip / escort starter armed again after a wipe once its gossip is offered again.
         constexpr bool ROUTE_STARTER_REARM = true;
-        // - at an event gather spot (Halls of Reflection) members left farther than EVENT_GATHER_MEMBER_RANGE walk in.
-        constexpr bool ROUTE_GATHER_MEMBERS = true;
+        using Leader::Travel::ROUTE_GATHER_MEMBERS;  // [lead107] RouteEvents.h
         // - FlyToPortal descends beside the portal (FLY_SIDE_DISTANCE out on its axis), not onto it.
         constexpr bool ROUTE_FLY_SIDE_APPROACH = true;
         constexpr bool ROUTE_CHAIN_GUARD = true;
         constexpr bool ROUTE_TWIN_SKIP = true;
         constexpr bool ROUTE_OCULUS_DRAKE_ONLY = true;
         constexpr bool ROUTE_HOLD_SPOT_FIGHT = true;
-        constexpr bool ROUTE_STARTER_ITEM_CHECK = true;
+        using Leader::Travel::ROUTE_STARTER_ITEM_CHECK;  // [lead107] RouteEvents.h
         // Event pass (2026-10-24, *.bak_events), false restores the behaviour before it:
         // - a walk-in event spot whose boss is the next one of the route and not spawned yet is walked to first: idle
         //   trash counts only on the way there (Utgarde Pinnacle: Svala, areatrigger 5140);
@@ -933,7 +904,7 @@ namespace TestHarness
         //   forge's trash waits and a route through its aggro reach scores as crossing a skipped pack.
         constexpr bool ROUTE_EVENT_SPOT_FIRST = true;
         constexpr bool ROUTE_INTRO_WAIT = true;
-        constexpr bool ROUTE_STARTER_NOT_WALKING = true;
+        using Leader::Travel::ROUTE_STARTER_NOT_WALKING;  // [lead107] RouteEvents.h
         constexpr bool ROUTE_FORGE_ORDER = true;
         // Wave 21 (*.bak_w21idle), false restores the behaviour before it: a usable starter comes first while the next
         // boss is skipped behind a closed door ("starter_door_priority", once per DOOR_STARTER_LOG_MS and instance).
@@ -967,7 +938,7 @@ namespace TestHarness
             return entry != inst->second.end() && entry->second != 0;
         }
         std::unordered_map<uint32, float> starterNearestPath;   // instance id -> shortest remaining walk to the starter
-        std::unordered_map<uint32, std::pair<uint32, uint32>> starterGatherMs;  // instance -> (wait since, last log)
+        using Leader::Travel::starterGatherMs;  // [lead107] RouteEvents.h
         std::unordered_map<uint32, uint32> passageDetourLogMs;  // instance id -> last "passage_door_detour" line
         constexpr uint32 PASSAGE_DETOUR_LOG_MS = 60 * IN_MILLISECONDS;
         // Route-only trash (2026-10-24, *.bak_routeonly), false restores the full clear: the group clears a ROUTE,
@@ -1277,83 +1248,7 @@ namespace TestHarness
             return itr != starter.stuckUntilMs.end() && int32(itr->second - now) > 0;
         }
 
-        // [b35_ss2] Where a key gate's bars stand along its facing, measured from its spawn point. The bars are not on
-        // the spawn's plane: strat-h 20261026-024524-strat-h-5C-1, King's Square Gate 175352, the leader held at
-        // +0.2 yd from the plane (3572.5,-3450.6) and the healer at +1.7 yd (3573.6,-3447.6) with the bars between
-        // them (door_cut "holding" 1294-1525 s, the leader's walk "walked 2.5" into them). The plane test called
-        // both "through": rearm_check "the whole group is through it" every 15 s, strat_key_pass "sent: []" after
-        // the healer's own key, 260 s stalled. Measured once while the gate is shut (its collision is off when open):
-        // a ray from the use point to the far point and one back, the middle of the two hits. 0 until measured.
-        float KeyGateBarsOffset(GameObject const* door, KeyDoorPassDef const& pass)
-        {
-            static std::unordered_map<uint64, float> offsets;  // the harness's world thread only
-            uint64 const key = (uint64(door->GetEntry()) << 32) | uint32(door->GetSpawnId());  // same in every instance
-            if (auto const found = offsets.find(key); found != offsets.end())
-                return found->second;
-            if (!door->m_model || !door->m_model->isEnabled() || door->GetGoState() != GO_STATE_READY)
-                return 0.0f;
-            // A portcullis is a lattice: a ray can slip between two bars, so a few heights and side offsets are tried.
-            static float const heights[] = {1.0f, 0.6f, 1.5f, 2.0f};
-            static float const lateral[] = {0.0f, 0.3f, -0.3f};
-            bool hit = false;
-            G3D::Vector3 middle;
-            float nearHit = 0.0f;  // [b36_ss] the two hit distances, for the log
-            float farHit = 0.0f;
-            for (float const height : heights)
-            {
-                for (float const side : lateral)
-                {
-                    G3D::Vector3 usePoint(pass.useX, pass.useY, pass.useZ + height);
-                    G3D::Vector3 farPoint(pass.farX, pass.farY, pass.farZ + height);
-                    float const length = (farPoint - usePoint).length();
-                    if (length < 0.5f)
-                        return 0.0f;
-                    G3D::Vector3 const dir = (farPoint - usePoint) / length;
-                    G3D::Vector3 const across(-dir.y * side, dir.x * side, 0.0f);
-                    usePoint += across;
-                    farPoint += across;
-                    float there = length;
-                    float back = length;
-                    if (door->m_model->intersectRay(G3D::Ray(usePoint, dir), there, true, door->GetPhaseMask(),
-                                                    VMAP::ModelIgnoreFlags::Nothing) &&
-                        door->m_model->intersectRay(G3D::Ray(farPoint, -dir), back, true, door->GetPhaseMask(),
-                                                    VMAP::ModelIgnoreFlags::Nothing))
-                    {
-                        middle = (usePoint + dir * there + farPoint - dir * back) * 0.5f;
-                        nearHit = there;
-                        farHit = back;
-                        hit = true;
-                        break;
-                    }
-                }
-                if (hit)
-                    break;
-            }
-            if (!hit)
-            {
-                // [b36_ss] a miss is said once per gate (0 until a ray hits; GroupThroughKeyGate etc. use the spawn
-                // plane meanwhile), not taken for a measurement
-                static std::unordered_set<uint64> missLogged;
-                if (missLogged.insert(key).second)
-                    LOG_INFO("playerbots", "[b36_ss] key gate {} {}: bars probe missed (12 rays), spawn plane used",
-                             door->GetName(), door->GetEntry());
-                return 0.0f;
-            }
-            float const offset = (middle.x - door->GetPositionX()) * std::cos(door->GetOrientation()) +
-                                 (middle.y - door->GetPositionY()) * std::sin(door->GetOrientation());
-            if (offsets.size() > 64)
-                offsets.clear();
-            offsets[key] = offset;
-            // [b36_ss] with the hits: a symmetric lattice (Smallportcullis.m2, +-1.34 yd) gives an honest 0.00 - the
-            // faces' distances from the use point / far point and the bars' thickness along the walk show it.
-            float const span =
-                G3D::Vector3(pass.farX - pass.useX, pass.farY - pass.useY, pass.farZ - pass.useZ).length();
-            LOG_INFO("playerbots",
-                     "[b35_ss2] key gate {} {}: bars {:.2f} yd from the spawn plane (hits {:.2f} from the use point, "
-                     "{:.2f} from the far point, {:.2f} yd thick)",
-                     door->GetName(), door->GetEntry(), offset, nearHit, farHit, span - nearHit - farHit);
-            return offset;
-        }
+        using Leader::Travel::KeyGateBarsOffset;  // [lead107] RouteEvents.h
 
         // [b32_strat_gate] An auto-closing key gate (KeyDoorPassDef) the whole living group is through: every member on
         // the far side of the gate plane (away from its use point). A door_hold there is a walk BACK to what stands
@@ -1402,69 +1297,16 @@ namespace TestHarness
             return NearestDist(party.wingAnchors, object) <= NearestDist(party.otherWingAnchors, object);
         }
 
-        // Where a started event waits for the group before its waves come; false: no such spot on that map.
-        bool EventGatherSpot(uint32 mapId, Position& spot)
-        {
-            if (mapId == HoRIds::HOR_MAP_ID)
-            {
-                spot = HoRIds::WAVE_GATHER_SPOT;  // instance_halls_of_reflection.cpp: all within 40 yd of the altar
-                return true;
-            }
-            return false;
-        }
+        using Leader::Travel::EventGatherSpot;  // [lead107] RouteEvents.h
 
-        // The event is at the stage where the group belongs on the spot. HoR: from the Jaina / Sylvanas gossip until
-        // Marwyn is dead - the group watches the intro at the altar, as players do; the waves start only with
-        // everybody within 40 yd of it (instance_halls_of_reflection.cpp Update). Waiting for IsWaveEventActive
-        // (intro persistent data) left the group at the entrance in wave 6: nobody ever walked to the altar.
-        bool EventGatherReady(uint32 mapId, Player* leader)
-        {
-            if (mapId == HoRIds::HOR_MAP_ID)
-            {
-                InstanceScript* instance = leader->GetInstanceScript();
-                return instance && instance->GetBossState(HoRIds::DATA_MARWYN) != DONE;
-            }
-            return true;
-        }
+        using Leader::Travel::EventGatherReady;  // [lead107] RouteEvents.h
 
-        // A straight walk (no navmesh path) only over ground: every 2 yd of the line has a floor at most
-        // DIRECT_MAX_DROP below it. A living member walking off a ledge or a floating platform falls to its death;
-        // a ghost takes no damage and may still go straight.
-        constexpr float DIRECT_STEP = 2.0f;
-        constexpr float DIRECT_MAX_DROP = 6.0f;
+        using Leader::Travel::DIRECT_STEP;  // [lead107] RouteEvents.h
+        using Leader::Travel::DIRECT_MAX_DROP;  // [lead107] RouteEvents.h
 
-        // [incomplete_route_deadend] DirectLineOverGround's test on a line from any point (a route link's own start).
-        bool LineOverGround(Map* map, uint32 phaseMask, G3D::Vector3 const& from, G3D::Vector3 const& to)
-        {
-            float const length = (to - from).length();
-            uint32 const steps = std::max<uint32>(1, uint32(length / DIRECT_STEP));
-            for (uint32 step = 1; step <= steps; ++step)
-            {
-                G3D::Vector3 const point = from + (to - from) * (float(step) / float(steps));
-                float const ground = map->GetHeight(phaseMask, point.x, point.y, point.z + 2.0f, true, 50.0f);
-                if (ground <= INVALID_HEIGHT || point.z - ground > DIRECT_MAX_DROP)
-                    return false;
-            }
-            return true;
-        }
+        using Leader::Travel::LineOverGround;  // [lead107] RouteEvents.h
 
-        bool DirectLineOverGround(Player* bot, float x, float y, float z)
-        {
-            Map* map = bot->GetMap();
-            float const length = bot->GetExactDist(x, y, z);
-            uint32 const steps = std::max<uint32>(1, uint32(length / DIRECT_STEP));
-            for (uint32 step = 1; step <= steps; ++step)
-            {
-                float const t = float(step) / float(steps);
-                float const px = bot->GetPositionX() + (x - bot->GetPositionX()) * t;
-                float const py = bot->GetPositionY() + (y - bot->GetPositionY()) * t;
-                float const pz = bot->GetPositionZ() + (z - bot->GetPositionZ()) * t;
-                float const ground = map->GetHeight(bot->GetPhaseMask(), px, py, pz + 2.0f, true, 50.0f);
-                if (ground <= INVALID_HEIGHT || pz - ground > DIRECT_MAX_DROP)
-                    return false;
-            }
-            return true;
-        }
+        using Leader::Travel::DirectLineOverGround;  // [lead107] RouteEvents.h
 
         using Leader::Travel::LeaderDoorStop;  // [lead107] RouteLegs.h
 
@@ -2536,15 +2378,7 @@ namespace TestHarness
             return false;
         }
 
-        bool RefusalIsOverCap(std::string const& why)
-        {
-            static char const* const OVER_CAP[] = {"does not fit", "over the cap", "split search", "no safe pull",
-                                                   " mobs, over ", "over the guarantee's ceiling"};
-            for (char const* const part : OVER_CAP)
-                if (why.find(part) != std::string::npos)
-                    return true;
-            return false;
-        }
+        using Leader::Travel::RefusalIsOverCap;  // [lead107] RouteEvents.h
 
         // [pull_after_hold] (4) the walk to a closed door that opens by use, between the leader and a blocker it
         // cannot see: kept over the ticks until it is open (the stop would walk the leader back).
@@ -3854,28 +3688,9 @@ namespace TestHarness
 
         using Leader::Travel::DoorEventOf;  // [lead107] RouteLegs.h
 
-        bool IsDoorKey(DoorEventDef const& def, Creature const* creature)
-        {
-            return creature && creature->GetEntry() == def.keyEntry &&
-                   creature->GetHomePosition().GetExactDist2d(def.keyX, def.keyY) < DOOR_KEY_MATCH;
-        }
+        using Leader::Travel::IsDoorKey;  // [lead107] RouteEvents.h
 
-        // The walk to `target` opens this closed door: the door is the target (a key used on it: Scholomance's
-        // Viewing Room Door), or the target is the key creature of its DoorEventDef (the pull opens it).
-        // 2026-10-25: or the door opens by use (TerrainHazard.h DoorOpensByUse: Scholomance's Iron Gates 175611-175618
-        // and Door 175610, lockId 0, flags 32) and is no DoorEventDef door (the Utgarde Keep forge walls stay shut
-        // until their Forge Master): the leader walks up and clicks it (LeaderDoorStop), for any target.
-        bool DoorOpensFor(GameObject const* door, WorldObject const* target)
-        {
-            if (!door || !target)
-                return false;
-            if (target == door)
-                return true;
-            DoorEventDef const* def = DoorEventOf(door);
-            if (!def && DoorOpensByUse(door))
-                return true;
-            return def && IsDoorKey(*def, target->ToCreature());
-        }
+        using Leader::Travel::DoorOpensFor;  // [lead107] RouteEvents.h
 
         // A DoorEventDef key creature whose earlier step has not started (GetData(afterData) 0): it evades when
         // engaged, so it is no target (Utgarde Keep: Forge Master 2 before forge 1, 3 before 2).
@@ -3968,32 +3783,7 @@ namespace TestHarness
             return false;
         }
 
-        // [starter_chest_open] The opening spell a client casts on a locked chest: the lock's LOCK_KEY_SKILL case the
-        // caster meets (its skill; SKILL_NONE for the generic types), then the first OPEN_LOCK spell of that lock type
-        // the caster knows, or one that needs no spellbook entry (TARGET_FLAG_GAMEOBJECT_ITEM: HandleCastSpellOpcode
-        // skips HasActiveSpell for it). UBRS Father Flame 175245, lock 93 = LOCKTYPE_OPEN_TINKERING 12 -> 6477
-        // "Opening". 0: none.
-        uint32 ChestOpeningSpell(Player* caster, GameObject const* go)
-        {
-            uint32 const lockId = go->GetGOInfo()->GetLockId();
-            LockEntry const* lock = lockId ? sLockStore.LookupEntry(lockId) : nullptr;
-            if (!lock)
-                return 0;
-            for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
-            {
-                if (lock->Type[i] != LOCK_KEY_SKILL)
-                    continue;
-                SkillType const skill = SkillByLockType(LockType(lock->Index[i]));
-                if (skill != SKILL_NONE && caster->GetSkillValue(skill) < lock->Skill[i])
-                    continue;
-                for (uint32 spellId : PlayerbotSpellRepository::Instance().GetOpeningSpells(lock->Index[i]))
-                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-                        info && info->HasEffect(SPELL_EFFECT_OPEN_LOCK) &&
-                        (caster->HasActiveSpell(spellId) || (info->Targets & TARGET_FLAG_GAMEOBJECT_ITEM)))
-                        return spellId;
-            }
-            return 0;
-        }
+        using Leader::Travel::ChestOpeningSpell;  // [lead107] RouteEvents.h
 
         // [hleft-cos-starters] Culling of Stratholme gossip starters held by the event's own state:
         // - Arthas 26499 while the heroic Infinite Corruptor detour runs (CoSHelpers::GetCorruptorDetourTarget: slot 4
@@ -4052,16 +3842,7 @@ namespace TestHarness
             return bossId < 0 || (script && script->GetBossState(uint32(bossId)) == DONE);
         }
 
-        // The closed doors a route to `target` must not run through (the ones that do not open for it).
-        std::vector<GameObject*> DoorsClosedFor(std::vector<GameObject*> const& doors, WorldObject const* target)
-        {
-            std::vector<GameObject*> result;
-            result.reserve(doors.size());
-            for (GameObject* door : doors)
-                if (!DoorOpensFor(door, target))
-                    result.push_back(door);
-            return result;
-        }
+        using Leader::Travel::DoorsClosedFor;  // [lead107] RouteEvents.h
 
         using Leader::Travel::PointOnPath;  // [lead107] RouteSearch.h
 
@@ -4132,63 +3913,14 @@ namespace TestHarness
             return false;
         }
 
-        // A creature on a scripted point walk (MovePoint in the active or controlled slot: an event NPC on its way, or
-        // paused on it). A gossip hello runs Creature::PauseMovementForInteraction, which pauses exactly that walk
-        // for the creature's InteractionPauseTimer (default CreatureStopForPlayer, 3 min; Bly / Weegli 3 s since AC
-        // #27731), and every click arms it again: Zul'Farrak's crew never reaches the stairs, ARRIVED_AT_STAIR never
-        // comes and the pyramid waves never start (AC issue #26436). Same guard as AC PR #26443 by lipeter1982
-        // ("prevent gossip from interrupting stairs event"), which took the crew's gossip flag away for the walk: a
-        // player does not click an NPC that is walking somewhere for its event.
-        // [b33_cos2] The Culling's Arthas (26499) offers his gossip at the event waypoints, and his escort
-        // (npc_escortAI: MoveSplinePath, ESCORT_MOTION_TYPE) or its return to the combat start (POINT_MOTION_TYPE)
-        // may still run when the flag is on: a hello then pauses him for Creature.MovingStopTimeForPlayer (180 s).
-        // cos-h 20261026-000434-cos-h-5H-22: the escort stood 3 min 15 s at (2428.5,1121.5) after a gossip, the
-        // Guardian of Time ran out. As [b33_cos]'s CoSArthasGossipTrigger: no hello while he moves (a spline, an
-        // escort or point walk in the active slot), at most ARTHAS_STARTER_MOVING_WAIT_MS, then the hello goes anyway.
-        constexpr uint32 ARTHAS_STARTER_MOVING_WAIT_MS = 30 * IN_MILLISECONDS;
-        constexpr uint32 ARTHAS_STARTER_SEEN_GAP_MS = 5 * IN_MILLISECONDS;  // a wait unseen this long starts anew
-        struct ArthasMovingWait
-        {
-            uint32 sinceMs = 0;
-            uint32 seenMs = 0;
-        };
-        std::unordered_map<uint32, ArthasMovingWait> arthasMovingWaits;  // instance id -> wait, world thread
+        using Leader::Travel::ARTHAS_STARTER_MOVING_WAIT_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::ARTHAS_STARTER_SEEN_GAP_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::ArthasMovingWait;  // [lead107] RouteEvents.h
+        using Leader::Travel::arthasMovingWaits;  // [lead107] RouteEvents.h
 
-        bool ArthasStarterMoving(Creature* creature)
-        {
-            MotionMaster* motion = creature->GetMotionMaster();
-            MovementGeneratorType const active = motion ? motion->GetMotionSlotType(MOTION_SLOT_ACTIVE)
-                                                        : IDLE_MOTION_TYPE;
-            bool const moving = creature->isMoving() || active == POINT_MOTION_TYPE || active == ESCORT_MOTION_TYPE ||
-                                (motion && motion->GetMotionSlotType(MOTION_SLOT_CONTROLLED) == POINT_MOTION_TYPE);
-            uint32 const now = getMSTime();
-            ArthasMovingWait& wait = arthasMovingWaits[creature->GetInstanceId()];
-            if (!moving || !creature->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP))
-            {
-                wait = ArthasMovingWait();
-                return false;
-            }
-            if (!wait.sinceMs || getMSTimeDiff(wait.seenMs, now) > ARTHAS_STARTER_SEEN_GAP_MS)
-            {
-                wait.sinceMs = now ? now : 1;
-                LOG_INFO("playerbots",
-                         "[b33_cos2] [starter] Arthas {} still moves (motion {}, spline {}) with his gossip on: no "
-                         "hello for up to {} s",
-                         creature->GetInstanceId(), uint32(active), creature->isMoving() ? 1 : 0,
-                         ARTHAS_STARTER_MOVING_WAIT_MS / IN_MILLISECONDS);
-            }
-            wait.seenMs = now ? now : 1;
-            return getMSTimeDiff(wait.sinceMs, now) < ARTHAS_STARTER_MOVING_WAIT_MS;
-        }
+        using Leader::Travel::ArthasStarterMoving;  // [lead107] RouteEvents.h
 
-        bool WalksScriptedPath(Creature* creature)
-        {
-            if (creature->GetEntry() == CoSIds::NPC_ARTHAS_COS)  // [b33_cos2]
-                return ArthasStarterMoving(creature);
-            MotionMaster* motion = creature->GetMotionMaster();
-            return motion && (motion->GetMotionSlotType(MOTION_SLOT_ACTIVE) == POINT_MOTION_TYPE ||
-                              motion->GetMotionSlotType(MOTION_SLOT_CONTROLLED) == POINT_MOTION_TYPE);
-        }
+        using Leader::Travel::WalksScriptedPath;  // [lead107] RouteEvents.h
 
         // [b35_up] Utgarde Pinnacle: Skadi's gauntlet runs (areatrigger 4991 -> boss_skadi ACTION_START_ENCOUNTER sets
         // DATA_SKADI_THE_RUTHLESS IN_PROGRESS). Skadi rides Grauf NOT_SELECTABLE and out of combat meanwhile, so his
@@ -4403,101 +4135,34 @@ namespace TestHarness
             return false;
         }
 
-        // Route links (RouteLinkDef): arrival at either end, the walk over it.
-        constexpr float LINK_ARRIVE_RANGE = 3.0f;
-        constexpr float LINK_ARRIVE_HEIGHT = 4.0f;
-        constexpr float LINK_DONE_RANGE = 6.0f;
-        constexpr float LINK_GATHER_RANGE = 30.0f;
-        constexpr uint32 LINK_MAX_MS = 4 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 LINK_CROSS_LOG_MS = 5 * IN_MILLISECONDS;  // "link_cross": the leader's position, crossing
-        // The walk to a link's start times out after LINK_MAX_MS without coming LINK_PROGRESS_STEP closer (fights on
-        // the way count as progress), LINK_WALK_MAX_MS at most. sh-h wave 11: the walk to the sewer jump took ~230 s
-        // with its fights in waves 7-10 (4 minutes flat), the build-11 guarantee holds added 30 s each, it timed out
-        // twice at 241 / 247 s and was given up (396 "closed door" skips, Nethekurse never reached).
-        constexpr float LINK_PROGRESS_STEP = 3.0f;
-        constexpr uint32 LINK_WALK_MAX_MS = 10 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 LINK_HOLD_MS = 2 * IN_MILLISECONDS;  // bot AI paused while the harness moves the member
-        // A link that failed this often (timeout, no ground) is given up for the run (Mechanar 2026-10-25: the lift
-        // timed out with nobody over and was chosen again at once, 2.6 yd away, for another 4 minutes).
-        constexpr uint32 LINK_MAX_FAILS = 2;
-        constexpr uint32 LIFT_MAX_MS = 90 * IN_MILLISECONDS;  // a lift crossing from the gathered landing
+        using Leader::Travel::LINK_ARRIVE_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_ARRIVE_HEIGHT;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_DONE_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_GATHER_RANGE;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_MAX_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_CROSS_LOG_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_PROGRESS_STEP;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_WALK_MAX_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_HOLD_MS;  // [lead107] RouteEvents.h
+        using Leader::Travel::LINK_MAX_FAILS;  // [lead107] RouteEvents.h
+        using Leader::Travel::LIFT_MAX_MS;  // [lead107] RouteEvents.h
 
-        bool AtLinkPoint(Player* bot, float x, float y, float z, float range)
-        {
-            return bot->GetExactDist2d(x, y) <= range && std::fabs(bot->GetPositionZ() - z) <= LINK_ARRIVE_HEIGHT;
-        }
+        using Leader::Travel::AtLinkPoint;  // [lead107] RouteEvents.h
 
-        // A crossing member this far (3D) from the link's line is off it (LINK_OFF_LINE_BACK: back to the start).
-        constexpr float LINK_OFF_LINE_RANGE = 6.0f;
+        using Leader::Travel::LINK_OFF_LINE_RANGE;  // [lead107] RouteEvents.h
 
-        // The 3D distance from the bot to the segment from the link's start to its far end.
-        float LinkLineDistance(Player* bot, RouteLinkDef const& link)
-        {
-            G3D::Vector3 const from(link.fromX, link.fromY, link.fromZ);
-            G3D::Vector3 const line = G3D::Vector3(link.toX, link.toY, link.toZ) - from;
-            G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-            float const lengthSq = line.squaredLength();
-            float const t = lengthSq > 0.0f ? std::clamp((at - from).dot(line) / lengthSq, 0.0f, 1.0f) : 0.0f;
-            return (at - (from + line * t)).length();
-        }
+        using Leader::Travel::LinkLineDistance;  // [lead107] RouteEvents.h
 
-        // [w24b-under-end] Under the far end on another layer (Ahn'kahet 2026-10-25: 4.2 yd under the step onto the
-        // Volazj ramp, 4.4 yd from the line, inside LINK_OFF_LINE_RANGE): off the line too, back to the start and over
-        // the line again.
-        bool LinkOffLine(Player* bot, RouteLinkDef const& link)
-        {
-            if (LinkLineDistance(bot, link) > LINK_OFF_LINE_RANGE)
-                return true;
-            if (bot->GetExactDist2d(link.toX, link.toY) > LINK_DONE_RANGE ||
-                link.toZ - bot->GetPositionZ() <= LINK_ARRIVE_HEIGHT)
-                return false;
-            static uint32 underEndLogMs = 0;
-            uint32 const now = getMSTime();
-            if (!underEndLogMs || getMSTimeDiff(underEndLogMs, now) > 10 * IN_MILLISECONDS)
-            {
-                underEndLogMs = now ? now : 1;
-                LOG_INFO("playerbots", "[w24b-under-end] {}: {:.1f} yd under the far end of {} - off the line",
-                         bot->GetName(), link.toZ - bot->GetPositionZ(), link.note);
-            }
-            return true;
-        }
+        using Leader::Travel::LinkOffLine;  // [lead107] RouteEvents.h
 
-        // A link over a lift (RouteLinkDef::goEntry of GAMEOBJECT_TYPE_TRANSPORT: The Mechanar's GO 183788).
-        bool LinkIsLift(RouteLinkDef const& link)
-        {
-            GameObjectTemplate const* info = link.goEntry ? sObjectMgr->GetGameObjectTemplate(link.goEntry) : nullptr;
-            return info && info->type == GAMEOBJECT_TYPE_TRANSPORT;
-        }
+        using Leader::Travel::LinkIsLift;  // [lead107] RouteEvents.h
 
-        // The bot's waypoint (the intent; its own "test runner move" walks there).
-        // ROUTE_NO_WALK_IN_PULL (build 12): the tank's own pull is running - a pull target or a pull pending / started
-        // (PullStrategy), or its group's line-of-sight pull plan (LosPull) - so the harness gives it no waypoint and
-        // drops the one it has. sv-n wave 11 03:20: "[los pull] starts ..., group to (40.0,-230.2)", then the
-        // approach walked the tank 12 yd toward the pack, the pull aborted out of range and the walk dragged the group
-        // into the whole 24-mob pack (wipe).
-        constexpr bool ROUTE_NO_WALK_IN_PULL = true;
-        std::unordered_map<ObjectGuid, uint32> pullWalkLogMs;  // tank -> last "[approach] pull running" line
+        using Leader::Travel::ROUTE_NO_WALK_IN_PULL;  // [lead107] RouteEvents.h
+        using Leader::Travel::pullWalkLogMs;  // [lead107] RouteEvents.h
 
         using Leader::Dungeon::PULL_ABORT_HOLD_MS;  // [lead107] LeaderReports.h
 
-        bool TankPullRunning(Player* tank)
-        {
-            PlayerbotAI* botAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
-            if (!botAI)
-                return false;
-            // A pull the tank just gave up before the cast: the group holds where it stands for the re-plan.
-            if (CarefulPlanVerdict::RecentlyAborted(tank->GetGUID(), PULL_ABORT_HOLD_MS))
-                return true;
-            // Pending or started within the pull's own time limit only: HasTarget() alone stayed set for whole runs
-            // (build 12: 109 "no harness waypoint" lines across all runs, vh-n Moragg not engaged for 2 min).
-            if (PullStrategy const* pull = PullStrategy::Get(botAI);
-                pull && (pull->IsPullPendingToStart() ||
-                         (pull->HasPullStarted() &&
-                          time(nullptr) - pull->GetPullStartTime() <= PullStrategy::GetMaxPullTime())))
-                return true;
-            LosPull::Plan plan;
-            return LosPull::Get(tank, plan) && plan.tank == tank->GetGUID() && !plan.released;
-        }
+        using Leader::Travel::TankPullRunning;  // [lead107] RouteEvents.h
 
         // [queue-pull-hold-not-stuck] ROUTE_NO_WALK_IN_PULL withholds the leader's waypoint while its own pull runs;
         // the steering / drive watchdogs then saw "own walk made no progress" although the harness itself gave no
@@ -4511,24 +4176,10 @@ namespace TestHarness
         // and the steer clock runs again.
         constexpr uint32 PULL_HOLD_STALL_MS = 60 * IN_MILLISECONDS;
         constexpr uint32 PULL_HOLD_RELEASE_MS = 30 * IN_MILLISECONDS;
-        struct PullHoldTrack
-        {
-            uint32 sinceMs = 0;
-            uint32 seenMs = 0;
-            uint32 releaseUntilMs = 0;
-            bool logged = false;
-            bool stallLogged = false;
-            Position anchor;
-            uint32 orderId = 0;  // [lead2] the order its pull_hold line was logged for
-        };
-        std::unordered_map<ObjectGuid, PullHoldTrack> pullHolds;  // leader -> its current pull hold (world thread)
+        using Leader::Travel::PullHoldTrack;  // [lead107] RouteEvents.h
+        using Leader::Travel::pullHolds;  // [lead107] RouteEvents.h
 
-        bool PullHoldReleased(ObjectGuid leader)
-        {
-            auto const it = pullHolds.find(leader);
-            return it != pullHolds.end() && it->second.releaseUntilMs &&
-                   int32(it->second.releaseUntilMs - getMSTime()) > 0;
-        }
+        using Leader::Travel::PullHoldReleased;  // [lead107] RouteEvents.h
 
         // The leader's waypoint is withheld for its own running pull (GiveWaypoint's ROUTE_NO_WALK_IN_PULL rule).
         // [lead2] LEADER_ONE_TANK_MOVER (C:/WoW/LEADER_REFACTOR_PLAN.md step 2): the tank's open pull order (Leader::
@@ -4645,20 +4296,7 @@ namespace TestHarness
             }
         }
 
-        // A jump link lands as a fall does (a client's MSG_MOVE_FALL_LAND): Player::HandleFall from the start's
-        // height. MoveJump is a controlled move, PlayerbotAI::UpdateFall never sees it. No damage in water.
-        void LandLinkJump(Player* bot, float fromZ)
-        {
-            LiquidData const& liquid = bot->GetLiquidData();
-            if ((liquid.Status & MAP_LIQUID_STATUS_SWIMMING) &&
-                liquid.Level - bot->GetPositionZ() >= bot->GetCollisionHeight() * 0.5f)
-                return;
-            MovementInfo landing = bot->m_movementInfo;
-            landing.pos.Relocate(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-            bot->SetFallInformation(0, fromZ);
-            bot->HandleFall(landing);
-            bot->SetFallInformation(0, bot->GetPositionZ());
-        }
+        using Leader::Travel::LandLinkJump;  // [lead107] RouteEvents.h
 
         // The bots' own raid-leader pull hold (LeaderValues PullHoldValue) holds the leader now.
         bool LeaderPullHeld(Player* leader)
@@ -18079,6 +17717,59 @@ namespace TestHarness
     void PartyLeaderGroup::SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight)
     {
         _mgr.SetLeaderWaypoint(_party, leader, x, y, z, straight);
+    }
+
+    void PartyLeaderGroup::GiveWaypoint(Player* bot, float x, float y, float z, bool jump, bool straight)
+    {
+        TestHarness::GiveWaypoint(_party, bot, x, y, z, jump, straight);
+    }
+
+    ::InstanceScript* PartyLeaderGroup::InstanceScript() const { return PartyInstanceScript(_party); }
+
+    bool PartyLeaderGroup::BossKilledFor(uint32 entry) const
+    {
+        bool done = false;
+        for (BossTrack const& boss : _party.bosses)
+            done |= boss.killed && (boss.entry == entry || std::find(boss.credits.begin(), boss.credits.end(),
+                                                                     entry) != boss.credits.end());
+        return done;
+    }
+
+    bool PartyLeaderGroup::BossesOpen() const
+    {
+        bool bossesOpen = false;
+        for (BossTrack const& boss : _party.bosses)
+            bossesOpen |= !boss.killed && !boss.failed;
+        return bossesOpen;
+    }
+
+    void PartyLeaderGroup::SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z)
+    {
+        for (Member& candidate : _party.members)
+            if (candidate.guid == member)
+                _mgr.SetMemberWaypoint(_party, candidate, bot, x, y, z);
+    }
+
+    void PartyLeaderGroup::ClearMemberWaypoint(ObjectGuid member)
+    {
+        for (Member& candidate : _party.members)
+            if (candidate.guid == member)
+                _mgr.ClearMemberWaypoint(candidate);
+    }
+
+    bool PartyLeaderGroup::MemberHasWaypoint(ObjectGuid member) const
+    {
+        for (Member const& candidate : _party.members)
+            if (candidate.guid == member)
+                return candidate.hasWaypoint;
+        return false;
+    }
+
+    void PartyLeaderGroup::SetMemberHasWaypoint(ObjectGuid member, bool has)
+    {
+        for (Member& candidate : _party.members)
+            if (candidate.guid == member)
+                candidate.hasWaypoint = has;
     }
 
     bool PartyLeaderGroup::BossEncounterInProgress() const

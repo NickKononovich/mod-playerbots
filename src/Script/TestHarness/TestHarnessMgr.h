@@ -435,15 +435,6 @@ namespace TestHarness
         uint32 harnessMoves = 0;
         uint32 cannotMoveEvents = 0;
         std::map<std::string, uint32> cannotMoveLoggedMs;
-        // The leader's waypoint stays while a starter step-out is walked (the no-target branch would clear it).
-        uint32 waypointHoldUntilMs = 0;
-        // The leader casts an event item on its object (Old Hillsbrad's 5 s bomb): no retarget and no waypoint until
-        // then, a new walk would interrupt the cast.
-        uint32 castHoldUntilMs = 0;
-        // [b51_strat] TickGateTrapGather: the group gathers inside a Stratholme rat-trap alley before anyone walks over
-        // the armed trap point; no retarget and no leader waypoint until then (refreshed every tick while it holds).
-        uint32 trapHoldUntilMs = 0;
-        bool doorGatherHeld = false;  // [b51_strat] the last DoorGatherHolds held the use (no progress)
         uint32 ghostPosMs = 0;  // last "ghost_pos" event
         // A wing change walked (Scarlet Monastery, Dire Maul, Maraudon): out through the exit, in through the next
         // entrance, every member on its own (SelfTravel portal goal).
@@ -889,6 +880,25 @@ namespace TestHarness
         void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point, uint32 untilMs) override;
         void FailRun(std::string const& reason) override;
         void SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight) override;
+        bool BossKilledFor(uint32 entry) const override;
+        void GiveWaypoint(Player* bot, float x, float y, float z, bool jump, bool straight) override;
+        ::InstanceScript* InstanceScript() const override;
+        bool BossesOpen() const override;
+        void SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z) override;
+        void ClearMemberWaypoint(ObjectGuid member) override;
+        bool MemberHasWaypoint(ObjectGuid member) const override;
+        void SetMemberHasWaypoint(ObjectGuid member, bool has) override;
+        void ClearMemberIntent() override { _mgr.ClearMemberIntent(_party); }
+        uint32 HarnessMoves() const override { return _party.harnessMoves; }
+        void CountHarnessMove() override { ++_party.harnessMoves; }
+        uint32 Wipes() const override { return _party.wipes; }
+        uint32 LastProgressMs() const override { return _party.lastProgressMs; }
+        void NoteProgress(uint32 ms) override { _party.lastProgressMs = ms; }
+        void LogCannotMove(Player* bot, std::string const& capability, std::string const& reason, float toX, float toY,
+                           float toZ) override
+        {
+            _mgr.LogCannotMove(_party, bot, capability, reason, toX, toY, toZ);
+        }
         bool BossEncounterInProgress() const override;
         void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
         void LogEvent(std::string const& type, JsonObject fields) override;

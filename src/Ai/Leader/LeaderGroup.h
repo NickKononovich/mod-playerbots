@@ -24,6 +24,7 @@
 #include <vector>
 
 class Creature;
+class InstanceScript;
 class GameObject;
 class Map;
 class Player;
@@ -148,6 +149,29 @@ namespace Leader
         virtual void SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight = false) = 0;
         // a boss encounter of the run is in progress
         virtual bool BossEncounterInProgress() const = 0;
+        // a boss (or one of its kill credits) of `entry` was killed this run; a boss of the run is still open
+        virtual bool BossKilledFor(uint32 entry) const = 0;
+        virtual bool BossesOpen() const = 0;
+        // a member's walk point given by the group's owner (the member walks it itself), its end, whether one is on
+        virtual void SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z) = 0;
+        virtual void ClearMemberWaypoint(ObjectGuid member) = 0;
+        virtual bool MemberHasWaypoint(ObjectGuid member) const = 0;
+        virtual void SetMemberHasWaypoint(ObjectGuid member, bool has) = 0;
+        virtual void ClearMemberIntent() = 0;
+        // the walks the group's owner made itself (a metric), the run's wipes, the run's last progress (its stall
+        // watch) and a progress now
+        virtual uint32 HarnessMoves() const = 0;
+        virtual void CountHarnessMove() = 0;
+        virtual uint32 Wipes() const = 0;
+        virtual uint32 LastProgressMs() const = 0;
+        virtual void NoteProgress(uint32 ms) = 0;
+        // the group owner's walk point for a bot (the route walk's waypoint: jumped / walked straight) and the
+        // group's instance script
+        virtual void GiveWaypoint(Player* bot, float x, float y, float z, bool jump = false, bool straight = false) = 0;
+        virtual ::InstanceScript* InstanceScript() const = 0;
+        // a member's own movement could not do it (bot_cannot_move)
+        virtual void LogCannotMove(Player* bot, std::string const& capability, std::string const& reason, float toX,
+                                   float toY, float toZ) = 0;
     };
 }
 

@@ -289,6 +289,16 @@ namespace Leader
         uint32 neighbourTargetUntilMs = 0;
         bool guaranteeHolding = false;
         std::string lastEvent;
+        // [lead107] the route's holds (moved with the event / starter stage)
+        // The leader's waypoint stays while a starter step-out is walked (the no-target branch would clear it).
+        uint32 waypointHoldUntilMs = 0;
+        // The leader casts an event item on its object (Old Hillsbrad's 5 s bomb): no retarget and no waypoint until
+        // then, a new walk would interrupt the cast.
+        uint32 castHoldUntilMs = 0;
+        // [b51_strat] TickGateTrapGather: the group gathers inside a Stratholme rat-trap alley before anyone walks over
+        // the armed trap point; no retarget and no leader waypoint until then (refreshed every tick while it holds).
+        uint32 trapHoldUntilMs = 0;
+        bool doorGatherHeld = false;  // [b51_strat] the last DoorGatherHolds held the use (no progress)
     };
 }
 
