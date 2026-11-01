@@ -14,6 +14,7 @@
 #include "Position.h"
 
 #include <string>
+#include <vector>
 
 class Player;
 class Unit;
@@ -30,6 +31,9 @@ namespace PullPlanning
 
     void NoteLosCorner(Player* tank, Position const& spot, Position const& gather);
     bool NoteLosPullStart(Player* bot, Unit* target);
+    // [lead199] the tank's engage openers on an idle mob, best first: the ones that land damage (threat) before a
+    // taunt (no threat on a mob that fights nobody); `gapClosers`: Charge / Feral Charge may land the tank at the mob
+    std::vector<char const*> TankEngageOpeners(Player* tank, bool gapClosers);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry

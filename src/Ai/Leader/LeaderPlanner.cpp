@@ -5651,6 +5651,38 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return nullptr;
     }
 
+    // [lead199] b181 rfc-h 5B / 5F: the prot warrior opened 37 / 48 and 33 / 41 pulls without a hit - Heroic Throw
+    // (1 min) on cooldown, the engage opened with Taunt, which gives no threat on a mob that fights nobody. Per class
+    // the damage openers first, the gap closer (rage and a stun, no walk), the ranged weapon, the taunt last.
+    std::vector<char const*> TankEngageOpeners(Player* tank, bool gapClosers)
+    {
+        std::vector<char const*> openers;
+        switch (tank->getClass())
+        {
+            case CLASS_PALADIN:
+                openers = {"avenger's shield", "hand of reckoning"};
+                break;
+            case CLASS_WARRIOR:
+                openers = {"heroic throw"};
+                if (gapClosers)
+                    openers.push_back("charge");
+                openers.insert(openers.end(), {"shoot", "throw", "taunt"});
+                break;
+            case CLASS_DRUID:
+                openers = {"faerie fire (feral)"};
+                if (gapClosers)
+                    openers.push_back("feral charge - bear");
+                openers.push_back("growl");
+                break;
+            case CLASS_DEATH_KNIGHT:
+                openers = {"death grip", "icy touch", "dark command"};  // the grip brings the mob, no walk
+                break;
+            default:
+                break;
+        }
+        return openers;
+    }
+
     // [drift_caster_corner] The casters and shooters of the fight on that stand off the tank and cast at it from
     // there (in its sight, not walking), no boss among the attackers. [lead202] b181 rfc-h: lone Searing Blade
     // Warlocks / Cultists and Ragefire Shamans at range took mobs off bear / warrior tanks (the corner wanted two):

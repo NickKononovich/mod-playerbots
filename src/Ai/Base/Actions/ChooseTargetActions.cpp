@@ -300,7 +300,7 @@ bool AggressiveTargetAction::Execute(Event event)
                 // outside its aggro reach the tank stops there, else it walks the route on (the opener goes as soon
                 // as the mob is in its range and sight: TankIncomingMob, live each tick); no route at all is the
                 // only unreachable
-                float const opener = OpenerRange();
+                float const opener = OpenerRange(target);
                 if (opener > 0.0f && !target->IsInCombat() &&
                     MoveToSight(target, opener, "engage: to its opener's range"))
                     return PostCommit(bot, target, true, Leader::PullMethod::Engage,
@@ -350,7 +350,8 @@ bool AggressiveTargetAction::Execute(Event event)
         if (PlayerbotAI::IsTank(bot) && !target->IsInCombat() && !bot->IsInCombat())
         {
             bool opened = false;
-            for (char const* opener : TANK_OPENERS)
+            std::vector<char const*> const openers = EngageOpeners(target);
+            for (char const* opener : openers)
                 if (botAI->CanCastSpell(opener, target) && botAI->CastSpell(opener, target))
                 {
                     LOG_INFO("playerbots", "[lead75] {}: opens the engage on {} with {}", bot->GetName(),
@@ -362,7 +363,7 @@ bool AggressiveTargetAction::Execute(Event event)
             if (!opened)
             {
                 std::string tried;
-                for (char const* opener : TANK_OPENERS)
+                for (char const* opener : openers)
                 {
                     uint32 const spell = AI_VALUE2(uint32, "spell id", opener);
                     if (!spell || !bot->HasSpell(spell))
@@ -378,7 +379,7 @@ bool AggressiveTargetAction::Execute(Event event)
             }
             // [lead85] in sight but beyond the opener's range: the walk ends at its range (the next look opens),
             // not in the mob's reach (a body pull)
-            float const range = opened ? 0.0f : OpenerRange();
+            float const range = opened ? 0.0f : OpenerRange(target);
             if (range > 0.0f && bot->GetExactDist(target) > range &&
                 MoveToSight(target, range, "engage: to its opener's range"))
                 return PostCommit(bot, target, true, Leader::PullMethod::Engage,
@@ -485,12 +486,19 @@ bool TankOpenIncomingAction::Execute(Event /*event*/)
     return true;
 }
 
-// [lead85] the range of the tank's first ready opener (TANK_OPENERS)
-float AggressiveTargetAction::OpenerRange()
+// [lead199] the leader's engage openers for this tank on `target` (TankEngageOpeners); a gap closer only where it
+// does not land the tank in an idle pack's aggro reach (TankWalkIntoIdlePack)
+std::vector<char const*> AggressiveTargetAction::EngageOpeners(Unit* target)
+{
+    return TankEngageOpeners(bot, target && !TankWalkIntoIdlePack(botAI, bot, target));
+}
+
+// [lead85] the range of the tank's first ready opener (TankEngageOpeners)
+float AggressiveTargetAction::OpenerRange(Unit* target)
 {
     if (!PlayerbotAI::IsTank(bot))
         return 0.0f;
-    for (char const* opener : TANK_OPENERS)
+    for (char const* opener : EngageOpeners(target))
         if (uint32 const spell = AI_VALUE2(uint32, "spell id", opener);
             spell && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell))
             if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
@@ -503,7 +511,7 @@ bool AggressiveTargetAction::DryWalkIn(Unit* target)
     if (!target || bot->IsWithinLOSInMap(target))
         return true;
     MovementAction::s_dryRun = true;
-    float const opener = OpenerRange();
+    float const opener = OpenerRange(target);
     bool const walks = (opener > 0.0f && MoveToSight(target, opener, "engage: to its opener's range")) ||
                        ReachCombatTo(target, 0.0f) || MoveToLOS(target);
     MovementAction::s_dryRun = false;
