@@ -354,6 +354,24 @@ void NoteManaRate(ObjectGuid member, float pctPerSec)
     measuredManaRate[member.GetRawValue()] = pctPerSec;
 }
 
+namespace
+{
+    struct FightLengthError
+    {
+        float sum = 0.0f;
+        uint32 fights = 0;
+    };
+    std::unordered_map<uint64, FightLengthError> fightLengthErrors;  // [lead88] by group, under manaRateLock
+}
+
+void NoteFightLengthError(ObjectGuid group, float errorSec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    FightLengthError& error = fightLengthErrors[group.GetRawValue()];
+    error.sum += errorSec;
+    ++error.fights;
+}
+
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
 {
     float rate = RoleManaRate(bot);
@@ -369,7 +387,24 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
     float need = rate * fightSec;
     if (PlayerbotAI::IsHeal(bot))
         need = std::max(need, HEALER_PCT_PER_TANK_HEALTH * cost);
-    float const reserve = PlayerbotAI::IsHeal(bot) ? HEALER_PREDICT_RESERVE_PCT : PREDICT_RESERVE_PCT;
+    // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
+    // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
+    // those seconds. The flat 20 / 25 % only while no fight is measured
+    float reserve = PlayerbotAI::IsHeal(bot) ? HEALER_PREDICT_RESERVE_PCT : PREDICT_RESERVE_PCT;
+    float uncertainSec = -1.0f;
+    if (Group* group = bot->GetGroup())
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        if (auto const found = fightLengthErrors.find(group->GetGUID().GetRawValue());
+            found != fightLengthErrors.end() && found->second.fights)
+            uncertainSec = found->second.sum / float(found->second.fights);
+    }
+    if (uncertainSec >= 0.0f && measured)
+    {
+        reserve = rate * uncertainSec;
+        if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
+            reserve += HEALER_PCT_PER_TANK_HEALTH * cost * uncertainSec / fightSec;
+    }
     // the mana its own ready cooldowns return in the fight (spell effects: Evocation 60 %, Divine Plea 25 %)
     constexpr uint32 SPELL_EVOCATION = 12051;
     constexpr uint32 SPELL_DIVINE_PLEA = 54428;
@@ -380,8 +415,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
         returned += 25.0f;
     float const line = std::clamp(need + reserve - returned, float(sPlayerbotAIConfig.LowMana), 100.0f);
     if (why)
-        *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve - {:.0f} cooldowns", line,
-                                   rate, measured ? "measured" : "role", fightSec, reserve, returned);
+        *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns",
+                                   line, rate, measured ? "measured" : "role", fightSec, reserve,
+                                   uncertainSec >= 0.0f && measured
+                                       ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
+                                       : std::string("flat"),
+                                   returned);
     return line;
 }
 

@@ -319,6 +319,9 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr);
 // [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
 void NoteManaRate(ObjectGuid member, float pctPerSec);
+// [lead88] the leader notes how far a fight's real length was from its estimate (seconds, either way) for its group;
+// FightManaLine's reserve is the spend over that measured uncertainty (the mean of this run's fights)
+void NoteFightLengthError(ObjectGuid group, float errorSec);
 // [lead74] a tank's mana line for its next fight: FightManaLine for the fight plus the cost of the pick-ups it may need
 // (the fight's mobs beyond the first, each one taunt: the cheapest known taunt's real mana cost); one line for the
 // planner's tank hold and the tank's rest. `why`: the terms

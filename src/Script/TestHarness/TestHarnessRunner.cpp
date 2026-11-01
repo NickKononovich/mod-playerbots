@@ -22542,6 +22542,28 @@ namespace TestHarness
         // earlier pull - an unplanned fight meets where the tank stands when it starts
         if (fighting && !lead.lastFighting && !(lead.commit && lead.commitIssued))
             lead.meetPoint = tank->GetPosition();
+        // [lead88] the fight's estimated length at its start (the planner's published next fight) against its real
+        // length at its end: the measured uncertainty the mana lines' reserve is computed from
+        if (fighting && !lead.lastFighting)
+        {
+            RestState::NextFight next;
+            lead.fightLenStartMs = now;
+            lead.fightLenEstSec = RestState::PredictNextFight(tank, next)
+                                      ? (next.fightSec > 0.0f ? next.fightSec
+                                                              : RestState::FIGHT_BASE_SEC +
+                                                                    RestState::FIGHT_SEC_PER_MOB * float(next.mobs))
+                                      : -1.0f;
+        }
+        else if (!fighting && lead.lastFighting && lead.fightLenStartMs && lead.fightLenEstSec >= 0.0f)
+        {
+            float const realSec = getMSTimeDiff(lead.fightLenStartMs, now) / 1000.0f;
+            if (Group* group = tank->GetGroup())
+                RestState::NoteFightLengthError(group->GetGUID(), std::fabs(realSec - lead.fightLenEstSec));
+            DecisionLog::Instance().Write(run, "leader", "fight_length", ObjectGuid(), tank->GetName(), false,
+                                          JsonObject().Real("estimatedSec", lead.fightLenEstSec)
+                                              .Real("realSec", realSec));
+            lead.fightLenStartMs = 0;
+        }
         lead.lastFighting = fighting;
         // [lead84] b127 rfc-h 206-306 s: a Ragefire Trogg 5.5 yd below on Rtdruaa (not evading, the tank out of its
         // sight, the attacks refused "no line of sight") kept the tank flagged in combat with nobody on it; the

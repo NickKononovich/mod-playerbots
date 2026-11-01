@@ -435,6 +435,8 @@ namespace TestHarness
             ObjectGuid looter;          // [lead16] the member told to loot after the last fight, and since when
             uint32 lootSinceMs = 0;
             bool lastFighting = false;
+            uint32 fightLenStartMs = 0;    // [lead88] the fight's start and its estimated length (-1: none)
+            float fightLenEstSec = -1.0f;
             std::map<std::string, uint32> staleCommands;  // [lead16] member -> stale_command ticks
             ObjectGuid bossPrepareFor;                     // [lead16] the boss pull the tank prepares for
             std::set<ObjectGuid> trailing;                 // [lead17] members the leader waits for (far behind)
