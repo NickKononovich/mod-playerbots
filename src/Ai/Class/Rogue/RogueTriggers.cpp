@@ -311,7 +311,9 @@ bool VanishForOverkillTrigger::IsActive()
 {
     constexpr uint32 SPELL_OVERKILL_TALENT = 58426;
     constexpr uint32 SPELL_OVERKILL_BUFF = 58427;
-    if (!bot->IsInCombat() || !bot->HasSpell(SPELL_OVERKILL_TALENT) || bot->HasAura(SPELL_OVERKILL_BUFF) ||
+    // Overkill is a passive talent: Player::LearnTalent never puts it into m_spells, so HasSpell() is always false
+    if (!bot->IsInCombat() || !bot->HasTalent(SPELL_OVERKILL_TALENT, bot->GetActiveSpec()) ||
+        bot->HasAura(SPELL_OVERKILL_BUFF) ||
         bot->HasAuraType(SPELL_AURA_MOD_STEALTH))
         return false;
 
