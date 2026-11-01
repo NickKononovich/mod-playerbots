@@ -19548,6 +19548,14 @@ namespace TestHarness
                                                          "the tank's walk refused: " + report.why};
                 Leader::Orders::Close(party.leader, Leader::OrderState::Aborted,
                                       "the tank's walk refused: " + report.why, leader->GetPosition(), nullptr);
+                // [lead109] b142 rfc-h 381.4-383 s: the leader had committed and issued the same mob again in the
+                // tick before this report came; the tank opened that order (19) and sat in it for 70 s. An issued
+                // decision for the refused mob is withdrawn with the order
+                PullPlanner::Decision waiting;
+                if (PullPlanner::TakeIssued(party.leader, 0, waiting, false) &&
+                    (waiting.planTarget == report.target || waiting.attack == report.target ||
+                     waiting.lookTarget == report.target))
+                    PullPlanner::CancelIssued(party.leader);
                 DecisionLog::Instance().Write(run, "leader", "pick_unreachable", report.target, report.targetName, true,
                                               JsonObject().Str("why", report.why).Str("pick", "the tank's walk"));
             }
@@ -19745,6 +19753,23 @@ namespace TestHarness
             watch.orderId = 0;
             return;
         }
+        // [lead109] an open order on a mob the leader judged unreachable (the tank's walk refused it) while that
+        // verdict's facts hold - the tank and the mob where they were judged - is closed: the tank does not sit in it
+        if (order.state != Leader::OrderState::Fighting)
+            if (auto const judged = party.lead.unreachable.find(order.target); judged != party.lead.unreachable.end())
+                if (Creature* mob = leader->GetMap()->GetCreature(order.target);
+                    mob && leader->GetExactDist(judged->second.tankAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                    mob->GetExactDist(judged->second.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD)
+                {
+                    closeOrder(Leader::OrderState::Aborted, "the walk to it is " + judged->second.why, "order_close");
+                    PullPlanner::Decision waiting;
+                    if (PullPlanner::TakeIssued(party.leader, 0, waiting, false) &&
+                        (waiting.planTarget == order.target || waiting.attack == order.target ||
+                         waiting.lookTarget == order.target))
+                        PullPlanner::CancelIssued(party.leader);
+                    watch.orderId = 0;
+                    return;
+                }
         if (order.state == Leader::OrderState::Fighting)
         {
             closeOrder(Leader::OrderState::Done, "no engaged mob: the fight is over", "order_done");

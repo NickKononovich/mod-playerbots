@@ -5,6 +5,7 @@
  */
 
 #include "RtiAction.h"
+#include "BotPath.h"  // [lead109]
 #include "AggressiveTargetValue.h"
 #include "AiFactory.h"
 #include "AttackersValue.h"  // [b44_st]
@@ -325,16 +326,16 @@ namespace
     bool SapLegIsSafe(Player* bot, Position const& from, Position const& to, std::vector<SapDetector> const& detectors,
                       Creature* target, float targetReach, SapRoute& route)
     {
-        PathGenerator path(bot);
-        path.CalculatePath(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ(), to.GetPositionX(),
-                           to.GetPositionY(), to.GetPositionZ(), false);
-        if (path.GetPathType() != PATHFIND_NORMAL || path.getPathLength() > SAP_MAX_WALK)
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, from.GetPositionX(), from.GetPositionY(), from.GetPositionZ(), to.GetPositionX(),
+                        to.GetPositionY(), to.GetPositionZ());
+        if (path.type != PATHFIND_NORMAL || path.length > SAP_MAX_WALK)
         {
             route.why = Acore::StringFormat("no walkable way of at most {:.0f} yd to the Sap spot", SAP_MAX_WALK);
             return false;
         }
 
-        float const walked = path.getPathLength();
+        float const walked = path.length;
         std::vector<SapDetector> nearby;
         for (SapDetector const& detector : detectors)
         {
@@ -343,7 +344,7 @@ namespace
         }
 
         float const eye = bot->GetCollisionHeight();
-        Movement::PointsArray const& points = path.GetPath();
+        Movement::PointsArray const& points = path.points;
         for (size_t i = 1; i < points.size(); ++i)
         {
             G3D::Vector3 const segment = points[i] - points[i - 1];

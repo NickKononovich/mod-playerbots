@@ -5,6 +5,7 @@
  */
 
 #include "UBActions.h"
+#include "BotPath.h"  // [lead109]
 #include "Group.h"
 #include "GridTerrainData.h"
 #include "Map.h"
@@ -137,9 +138,8 @@ bool UBClearUnderbatBackAction::Execute(Event /*event*/)
 
 bool UBLeaveLakeAction::PathOk(float x, float y, float z, float maxLength)
 {
-    PathGenerator path(bot);
-    return path.CalculatePath(x, y, z, false) && !(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) &&
-           path.getPathLength() <= maxLength;
+    BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+    return path.valid && !(path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) && path.length <= maxLength;
 }
 
 bool UBLeaveLakeAction::Execute(Event /*event*/)

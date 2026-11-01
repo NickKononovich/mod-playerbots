@@ -5,6 +5,7 @@
  */
 
 #include "TargetValue.h"
+#include "BotPath.h"  // [lead109]
 #include "TerrainHazard.h"
 #include "CombatManager.h"
 #include "LastMovementValue.h"
@@ -292,20 +293,20 @@ bool TargetReachability::IsReachable(Player* bot, Unit* unit)
     // Flying or swimming movers do not use the navmesh; the height filter of the caller covers them.
     if (!unit->IsFlying() && !bot->IsFlying() && !bot->IsInWater() && !unit->IsInWater())
     {
-        PathGenerator path(bot);
-        path.CalculatePath(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(), false);
-        PathType const type = path.GetPathType();
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ());
+        PathType const type = path.type;
         if (type & PATHFIND_NOT_USING_PATH)
             reachable = true;
         else if (type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT))
             reachable = false;
         else
         {
-            G3D::Vector3 const& end = path.GetActualEndPosition();
+            G3D::Vector3 const& end = path.actualEnd;
             float const straight = bot->GetExactDist(unit);
             float const reach = bot->GetCombatReach() + unit->GetCombatReach() + REACHABILITY_END_SLACK;
             reachable = unit->GetExactDist(end.x, end.y, end.z) <= reach &&
-                        path.getPathLength() <= std::max(straight * DETOUR_FACTOR, straight + DETOUR_SLACK);
+                        path.length <= std::max(straight * DETOUR_FACTOR, straight + DETOUR_SLACK);
         }
 
         // [ledge_drop] a mob below the bot is reachable only by a ground path or a justified drop (JudgeLedgeDrop:

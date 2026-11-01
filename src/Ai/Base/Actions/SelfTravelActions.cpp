@@ -5,6 +5,7 @@
  */
 
 #include "SelfTravelActions.h"
+#include "BotPath.h"  // [lead109]
 
 #include "DBCStores.h"
 #include "Event.h"
@@ -815,11 +816,10 @@ bool MoveToInstancePortalAction::FindEntryPoint(AreaTrigger const* portal, G3D::
             if (z <= INVALID_HEIGHT || std::fabs(z - portal->z) > radius + FLOOR_SNAP_UP)
                 continue;
 
-            PathGenerator path(bot);
-            path.CalculatePath(x, y, z, false);
-            if (path.GetPathType() != PATHFIND_NORMAL || path.GetPath().size() < 2)
+            BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+            if (path.type != PATHFIND_NORMAL || path.points.size() < 2)
                 continue;
-            if ((path.GetActualEndPosition() - G3D::Vector3(portal->x, portal->y, portal->z)).length() > radius)
+            if ((path.actualEnd - G3D::Vector3(portal->x, portal->y, portal->z)).length() > radius)
                 continue;
             _entryPoint = G3D::Vector3(x, y, z);
             _entryFound = true;
@@ -839,14 +839,13 @@ bool MoveToInstancePortalAction::HopOut(AreaTrigger const* portal, bool ghost)
     // How near a walk from a spot gets to the portal. A shortcut or no path reports the portal itself as its end,
     // which made every hop look no better (dtk-h 2026-10-25: a ghost on a 49-polygon pond in a pit, 5 yd from the
     // river region that leads up under the entrance, stood there "no walk to the portal" for good).
-    auto const walkGap = [&portalPos](PathGenerator const& path, G3D::Vector3 const& start)
+    auto const walkGap = [&portalPos](BotPath const& path, G3D::Vector3 const& start)  // [lead109]
     {
-        if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH))
+        if (path.type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH))
             return (start - portalPos).length();
-        return (path.GetActualEndPosition() - portalPos).length();
+        return (path.actualEnd - portalPos).length();
     };
-    PathGenerator here(bot);
-    here.CalculatePath(portal->x, portal->y, portal->z, false);
+    BotPath const here = FindBotPath(bot, portal->x, portal->y, portal->z);  // [lead109]
     float const hereGap =
         walkGap(here, G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()));
 
@@ -866,10 +865,9 @@ bool MoveToInstancePortalAction::HopOut(AreaTrigger const* portal, bool ghost)
                 !bot->IsWithinLOS(x, y, z + HOP_LOS_UP))
                 continue;
 
-            PathGenerator from(bot);
-            from.CalculatePath(x, y, z, portal->x, portal->y, portal->z, false);
+            BotPath const from = FindBotPath(bot, x, y, z, portal->x, portal->y, portal->z);  // [lead109]
             float const gap = walkGap(from, G3D::Vector3(x, y, z));
-            if (from.GetPathType() != PATHFIND_NORMAL && gap + HOP_MIN_GAIN > hereGap)
+            if (from.type != PATHFIND_NORMAL && gap + HOP_MIN_GAIN > hereGap)
                 continue;
             if (MoveStraight(bot->GetMapId(), x, y, z, !ghost))
                 return true;

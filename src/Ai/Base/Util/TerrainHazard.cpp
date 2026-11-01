@@ -5,6 +5,7 @@
  */
 
 #include "TerrainHazard.h"
+#include "BotPath.h"  // [lead109]
 
 #include "Optional.h"
 #include "BotMoveEvents.h"
@@ -837,9 +838,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
     bool groundPath = false;
     bool probedWater = false;  // [ledge_drop_false] the fall under an off-mesh destination ends in deep water
     {
-        PathGenerator path(mover);
-        path.CalculatePath(x, y, z, false);
-        groundPath = PathIsGround(path.GetPathType());
+        BotPath const path = FindBotPath(mover, x, y, z);  // [lead109]
+        groundPath = PathIsGround(path.type);
         // [b33_cos2] A long walk the navmesh query cuts short (PATHFIND_INCOMPLETE: the corridor's MAX_PATH_LENGTH
         // polygons or a stalled smooth path) is no drop of the whole height: its partial path is ground walked toward
         // the destination and the walk is judged again from where it ends. cos-h 20261026-000434-cos-h-5H-22 (and
@@ -854,8 +854,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         bool longWalk = false;
         if (!groundPath)
         {
-            PathType const type = path.GetPathType();
-            std::vector<G3D::Vector3> const& partial = path.GetPath();
+            PathType const type = path.type;
+            std::vector<G3D::Vector3> const& partial = path.points;
             if ((type & PATHFIND_INCOMPLETE) &&
                 !(type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH | PATHFIND_SHORT)) &&
                 partial.size() >= 2)
@@ -876,7 +876,7 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         }
         else if (groundPath)
         {
-            verdict.height = SteepStep(path.GetPath(), false, &landing);
+            verdict.height = SteepStep(path.points, false, &landing);
             verdict.onMesh = true;
         }
         else
@@ -920,9 +920,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
     if (verdict.drop)
     {
         // (a) a ground path leads from the landing spot back to where the mover stands, with no cliff to climb
-        PathGenerator back(mover);
-        back.CalculatePath(landing.x, landing.y, landing.z, here.x, here.y, here.z, false);
-        verdict.connected = PathIsGround(back.GetPathType()) && SteepStep(back.GetPath(), true) <= 0.0f;
+        BotPath const back = FindBotPath(mover, landing.x, landing.y, landing.z, here.x, here.y, here.z);  // [lead109]
+        verdict.connected = PathIsGround(back.type) && SteepStep(back.points, true) <= 0.0f;
         // (b) + (c) the fall is safe for the mover and for every member near that follows it: a water landing at
         // any height, a listed shortcut with the health margin, else under the fall damage height
         verdict.water = probedWater || map->HasEnoughWater(mover, landing.x, landing.y, landing.z);
@@ -972,11 +971,11 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                                 std::fabs(member->GetPositionZ() - landing.z) > LEDGE_DROP_DZ)
                                 continue;
 
-                            PathGenerator toMember(mover);
-                            toMember.CalculatePath(landing.x, landing.y, landing.z, member->GetPositionX(),
-                                                   member->GetPositionY(), member->GetPositionZ(), false);
-                            joined = PathIsGround(toMember.GetPathType()) &&
-                                     SteepStep(toMember.GetPath(), true) <= 0.0f;
+                            BotPath const toMember =  // [lead109]
+                                FindBotPath(mover, landing.x, landing.y, landing.z, member->GetPositionX(),
+                                            member->GetPositionY(), member->GetPositionZ());
+                            joined = PathIsGround(toMember.type) &&
+                                     SteepStep(toMember.points, true) <= 0.0f;
                         }
 
             if (joined)

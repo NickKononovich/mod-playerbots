@@ -5,6 +5,7 @@
  */
 
 #include "EscortProtect.h"
+#include "BotPath.h"  // [lead109]
 
 #include <algorithm>
 #include <array>
@@ -774,10 +775,9 @@ bool EscortStayCloseAction::Execute(Event /*event*/)
             if (!_pathCheckedMs || getMSTimeDiff(_pathCheckedMs, now) >= PATH_CHECK_MS)
             {
                 _pathCheckedMs = now ? now : 1;
-                PathGenerator path(bot);
-                path.CalculatePath(goal.x, goal.y, goal.z, false);
-                G3D::Vector3 const end = path.GetActualEndPosition();
-                _routeWalk = (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT)) &&
+                BotPath const path = FindBotPath(bot, goal.x, goal.y, goal.z);  // [lead109]
+                G3D::Vector3 const end = path.actualEnd;
+                _routeWalk = (path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT)) &&
                              (end - goal).length() > ROUTE_REACH;
             }
             G3D::Vector3 leg;

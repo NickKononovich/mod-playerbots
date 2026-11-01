@@ -5,6 +5,7 @@
  */
 
 #include "HoSActions.h"
+#include "BotPath.h"  // [lead109]
 #include "Pet.h"
 #include "CharmInfo.h"
 #include "Creature.h"
@@ -273,12 +274,12 @@ bool KrystallusSpreadMovementAction::StepAwayFromShatter(Unit* boss, std::vector
         float const y = botY + std::sin(line.first) * line.second;
         float z = botZ;
         bot->UpdateAllowedPositionZ(x, y, z);
-        PathGenerator path(bot);
-        if (!path.CalculatePath(x, y, z, false) || (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) ||
-            path.getPathLength() > line.second * SPREAD_WALK_STRETCH)
+        BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+        if (!path.valid || (path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) ||
+            path.length > line.second * SPREAD_WALK_STRETCH)
             continue;
 
-        G3D::Vector3 const end = path.GetActualEndPosition();
+        G3D::Vector3 const end = path.actualEnd;
         if (ShatterExposure(end.x, end.y, sources, radius) >= exposure - SPREAD_MIN_GAIN)
             continue;
 

@@ -5,6 +5,7 @@
  */
 
 #include "MgTShared.h"
+#include "BotPath.h"  // [lead109]
 #include "AggressiveTargetValue.h"
 #include "AiObjectContext.h"
 #include "AttackersValue.h"
@@ -3016,14 +3017,13 @@ CachedPath const* PathFromRally(Player* bot, float x, float y, float z, uint32& 
 
     --pathBudget;
     CachedPath entry;
-    PathGenerator path(bot);
-    path.CalculatePath(RALLY_X, RALLY_Y, RALLY_Z, x, y, z, false);
-    G3D::Vector3 const& end = path.GetActualEndPosition();
+    BotPath const path = FindBotPath(bot, RALLY_X, RALLY_Y, RALLY_Z, x, y, z);  // [lead109]
+    G3D::Vector3 const& end = path.actualEnd;
     // The stairs' top in the corridor's middle (x 203-207) is a navmesh island: no path ends there.
-    entry.ok = !(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) &&
+    entry.ok = !(path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) &&
                std::hypot(end.x - x, end.y - y) <= PATH_END_TOLERANCE;
     if (entry.ok)
-        entry.points = path.GetPath();
+        entry.points = path.points;
 
     // std::map nodes stay put: the entry may be read after the lock (never erased).
     std::lock_guard<std::mutex> lock(CacheMutex());

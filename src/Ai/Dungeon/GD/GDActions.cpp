@@ -5,6 +5,7 @@
  */
 
 #include "GDActions.h"
+#include "BotPath.h"  // [lead109]
 #include "DungeonInteract.h"
 #include "InstanceScript.h"
 #include "LastMovementValue.h"
@@ -98,10 +99,9 @@ bool FindPoisonNovaExit(Player* bot, Unit* boss, float& x, float& y, float& z)
         float const destX = boss->GetPositionX() + std::cos(angle) * POISON_NOVA_EXIT_YD;
         float const destY = boss->GetPositionY() + std::sin(angle) * POISON_NOVA_EXIT_YD;
 
-        PathGenerator path(bot);
-        path.CalculatePath(destX, destY, bot->GetPositionZ(), false);
-        uint32 const type = path.GetPathType();
-        Movement::PointsArray const& points = path.GetPath();
+        BotPath const path = FindBotPath(bot, destX, destY, bot->GetPositionZ());  // [lead109]
+        uint32 const type = path.type;
+        Movement::PointsArray const& points = path.points;
         if (!(type & PATHFIND_NORMAL) || (type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) || points.empty())
             continue;
 
@@ -110,7 +110,7 @@ bool FindPoisonNovaExit(Player* bot, Unit* boss, float& x, float& y, float& z)
             boss->GetExactDist2d(end.x, end.y) < POISON_NOVA_MIN_END_YD)
             continue;
 
-        if (path.getPathLength() > bot->GetExactDist2d(end.x, end.y) + POISON_NOVA_MAX_DETOUR_YD)
+        if (path.length > bot->GetExactDist2d(end.x, end.y) + POISON_NOVA_MAX_DETOUR_YD)
             continue;
 
         x = end.x;
@@ -397,9 +397,8 @@ bool GundrakCircleRouteAction::Execute(Event /*event*/)
 
     // Where the bottom touches the shore a complete walk exists: not stranded, the usual movement goes on.
     GundrakPoolExit const& preferred = GUNDRAK_POOL_EXITS[first];
-    PathGenerator direct(bot);
-    direct.CalculatePath(preferred.shoreX, preferred.shoreY, preferred.shoreZ);
-    if (direct.GetPathType() == PATHFIND_NORMAL)
+    BotPath const direct = FindBotPath(bot, preferred.shoreX, preferred.shoreY, preferred.shoreZ);  // [lead109]
+    if (direct.type == PATHFIND_NORMAL)
     {
         _refusedMs = now;
         return false;
@@ -415,12 +414,12 @@ bool GundrakCircleRouteAction::Execute(Event /*event*/)
             continue;
 
         // leg 2: a complete navmesh walk from the surface point to the shore
-        PathGenerator shore(bot);
-        shore.CalculatePath(poolExit.surfaceX, poolExit.surfaceY, poolExit.surfaceZ, poolExit.shoreX, poolExit.shoreY,
-                            poolExit.shoreZ, false);
-        Movement::PointsArray const& walk = shore.GetPath();
-        if (shore.GetPathType() != PATHFIND_NORMAL || walk.size() < 2 ||
-            shore.getPathLength() > POOL_SHORE_MAX_PATH_YD)
+        BotPath const shore =  // [lead109]
+            FindBotPath(bot, poolExit.surfaceX, poolExit.surfaceY, poolExit.surfaceZ, poolExit.shoreX, poolExit.shoreY,
+                        poolExit.shoreZ);
+        Movement::PointsArray const& walk = shore.points;
+        if (shore.type != PATHFIND_NORMAL || walk.size() < 2 ||
+            shore.length > POOL_SHORE_MAX_PATH_YD)
             continue;
 
         // three points or more: an escort spline is followed as given, not pathed again from the bottom
@@ -436,7 +435,7 @@ bool GundrakCircleRouteAction::Execute(Event /*event*/)
         motionMaster->Clear();
         motionMaster->MoveSplinePath(&points);
 
-        float const length = (surface - start).length() + shore.getPathLength();
+        float const length = (surface - start).length() + shore.length;
         _swimStartMs = now;
         _swimDurationMs = static_cast<uint32>(IN_MILLISECONDS * MoveDelay(length));
         float const delay =
@@ -449,7 +448,7 @@ bool GundrakCircleRouteAction::Execute(Event /*event*/)
             LOG_INFO("playerbots", "[gd circle route] {} leaves the pool bottom at ({:.1f}, {:.1f}, {:.1f}): swims "
                      "up to the {} exit ({:.1f}, {:.1f}, {:.1f}), then {:.1f} yd to the shore ({:.1f}, {:.1f}, {:.1f})",
                      bot->GetName(), start.x, start.y, start.z, poolExit.name, poolExit.surfaceX, poolExit.surfaceY,
-                     poolExit.surfaceZ, shore.getPathLength(), poolExit.shoreX, poolExit.shoreY, poolExit.shoreZ);
+                     poolExit.surfaceZ, shore.length, poolExit.shoreX, poolExit.shoreY, poolExit.shoreZ);
         return true;
     }
 

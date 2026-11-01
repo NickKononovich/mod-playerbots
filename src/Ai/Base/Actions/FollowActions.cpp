@@ -5,6 +5,7 @@
  */
 
 #include "FollowActions.h"
+#include "BotPath.h"  // [lead109]
 #include "LeaderOrders.h"  // [lead15]
 #include "CheckMountStateAction.h"
 #include "Creature.h"
@@ -343,9 +344,9 @@ bool FollowAction::CanDeadFollow(Unit* target)
     if (bot->IsAlive() && !target->IsAlive() && target->GetMapId() == bot->GetMapId() &&
         bot->GetPositionZ() - target->GetPositionZ() > DEAD_FOLLOW_MAX_DZ)
     {
-        PathGenerator path(bot);
-        path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
-        PathType const type = path.GetPathType();
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        PathType const type = path.type;
         if (!(type & PATHFIND_NORMAL) ||
             (type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOT_USING_PATH)))
             return false;

@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotsUserPack.h"
+#include "BotPath.h"  // [lead109]
 
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -1507,8 +1508,10 @@ namespace
                         if (bot->GetDistance(trainer) > TRAINER_REACH)
                         {
                             done = false;
-                            bot->GetMotionMaster()->MovePoint(0, trainer->GetPositionX(), trainer->GetPositionY(),
-                                                              trainer->GetPositionZ());
+                            if (!WalkBotRoute(bot, trainer->GetPositionX(), trainer->GetPositionY(),
+                                              trainer->GetPositionZ()))  // [lead109] the leader's route
+                                bot->GetMotionMaster()->MovePoint(0, trainer->GetPositionX(),
+                                                                  trainer->GetPositionY(), trainer->GetPositionZ());
                             break;
                         }
                         arrived = true;

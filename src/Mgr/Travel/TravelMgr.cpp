@@ -5,6 +5,7 @@
  */
 
 #include "TravelMgr.h"
+#include "BotPath.h"  // [lead109]
 #include "QuestLevelRules.h"
 #include "AreaDefines.h"
 #include "CellImpl.h"
@@ -796,11 +797,11 @@ std::vector<WorldPosition> WorldPosition::getPathStepFrom(WorldPosition startPos
     // Load mmaps and vmaps between the two points.
     loadMapAndVMaps(startPos);
 
-    PathGenerator path(bot);
-    path.CalculatePath(startPos.GetPositionX(), startPos.GetPositionY(), startPos.GetPositionZ());
+    BotPath const path =  // [lead109]
+        FindBotPath(bot, startPos.GetPositionX(), startPos.GetPositionY(), startPos.GetPositionZ());
 
-    Movement::PointsArray points = path.GetPath();
-    PathType type = path.GetPathType();
+    Movement::PointsArray points = path.points;
+    PathType type = path.type;
 
     if (sPlayerbotAIConfig.HasLog("pathfind_attempt_point.csv"))
     {

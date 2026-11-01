@@ -5,6 +5,7 @@
  */
 
 #include "StuckWatchdog.h"
+#include "BotPath.h"  // [lead109]
 #include "AiObjectContext.h"
 #include "Event.h"
 #include "Formations.h"
@@ -340,9 +341,9 @@ bool StuckRecoveryAction::Refollow(Player* leader)
     // The next stages (rebuild path, the leader's trail) take over.
     if (bot->GetMap() && bot->GetMap()->IsDungeon() && !bot->IsFlying() && !bot->isSwimming())
     {
-        PathGenerator path(bot);
-        path.CalculatePath(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), false);
-        if (!(path.GetPathType() & PATHFIND_NORMAL))
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+        if (!(path.type & PATHFIND_NORMAL))
             return false;
     }
     return Follow(leader);
@@ -352,10 +353,10 @@ bool StuckRecoveryAction::RebuildPath(Player* leader)
 {
     ResetMovement();
 
-    PathGenerator path(bot);
-    path.CalculatePath(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), false);
-    PathType const type = path.GetPathType();
-    Movement::PointsArray const& points = path.GetPath();
+    BotPath const path =  // [lead109]
+        FindBotPath(bot, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+    PathType const type = path.type;
+    Movement::PointsArray const& points = path.points;
     if ((type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && points.size() > 1)
     {
         // An incomplete path still ends at the reachable point nearest to the leader.
@@ -388,9 +389,9 @@ bool StuckRecoveryAction::WalkLeaderTrail(StuckWatchdogValue* watchdog)
             continue;
 
         ++checks;
-        PathGenerator path(bot);
-        path.CalculatePath(point.GetPositionX(), point.GetPositionY(), point.GetPositionZ(), false);
-        if (path.GetPathType() != PATHFIND_NORMAL)
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, point.GetPositionX(), point.GetPositionY(), point.GetPositionZ());
+        if (path.type != PATHFIND_NORMAL)
             continue;
 
         ResetMovement();

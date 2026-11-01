@@ -5,6 +5,7 @@
  */
 
 #include "GoAction.h"
+#include "BotPath.h"  // [lead109]
 #include "ChooseTravelTargetAction.h"
 #include "Event.h"
 #include "Formations.h"
@@ -123,15 +124,13 @@ bool GoAction::Execute(Event event)
 
         if (botAI->HasStrategy("debug move", BOT_STATE_NON_COMBAT))
         {
-            PathGenerator path(bot);
+            BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
 
-            path.CalculatePath(x, y, z, false);
+            Movement::Vector3 end = path.end;
+            Movement::Vector3 aend = path.actualEnd;
 
-            Movement::Vector3 end = path.GetEndPosition();
-            Movement::Vector3 aend = path.GetActualEndPosition();
-
-            Movement::PointsArray const& points = path.GetPath();
-            PathType type = path.GetPathType();
+            Movement::PointsArray const& points = path.points;
+            PathType type = path.type;
 
             std::ostringstream out;
 

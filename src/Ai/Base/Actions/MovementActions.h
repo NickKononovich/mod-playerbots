@@ -33,6 +33,9 @@ namespace Leader
 #define ANGLE_90_DEG M_PI_2
 #define ANGLE_120_DEG (2.f * static_cast<float>(M_PI) / 3.f)
 
+// [lead109] the guard that refused this thread's last MovementAction::MoveTo ("" = none)
+std::string const& LastMoveRefusal();
+
 class MovementAction : public Action
 {
 public:
@@ -41,6 +44,8 @@ public:
     // [lead70] a dry run of the walk guards: MoveTo judges as always but issues no motion (true: it would walk),
     // touches no movement memory and RefuseChase drops no target - the leader asks the tank's own walk-in with it
     static thread_local bool s_dryRun;
+    // [lead109] the guard that refused this thread's last MoveTo ("" = it walked), for the callers' refusal lines
+    static thread_local std::string s_moveRefusal;
 
     // The core's proximity aggro (Creature::CanStartAttack) of an idle `mob` on `who` standing at (x, y, z), in its
     // order: the Z gate (a mob that cannot fly never wakes on a walker more than CREATURE_Z_ATTACK_RANGE plus its

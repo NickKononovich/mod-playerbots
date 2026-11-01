@@ -5,6 +5,7 @@
  */
 
 #include "SSCHelpers.h"
+#include "BotPath.h"  // [lead109]
 #include "EncounterHelpers.h"
 #include "Map.h"
 #include "PathGenerator.h"
@@ -156,13 +157,12 @@ bool GetPathStepTowardPoint(
     if (bot->GetExactDist(destination) < stopDistance)
         return false;
 
-    PathGenerator path(bot);
-    path.CalculatePath(
-        destination.GetPositionX(), destination.GetPositionY(), destination.GetPositionZ());
-    if (!(path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT)))
+    BotPath const path =  // [lead109]
+        FindBotPath(bot, destination.GetPositionX(), destination.GetPositionY(), destination.GetPositionZ());
+    if (!(path.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT)))
         return false;
 
-    Movement::PointsArray const& points = path.GetPath();
+    Movement::PointsArray const& points = path.points;
     if (points.size() < 2)
         return false;
 
@@ -471,11 +471,11 @@ bool DoesPathRoundLurker(Player* bot, Unit* lurker, float x, float y, float z, i
     if (!lurker)
         return false;
 
-    PathGenerator path(bot);
-    if (!path.CalculatePath(x, y, z) || (path.GetPathType() & PATHFIND_NOPATH))
+    BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+    if (!path.valid || (path.type & PATHFIND_NOPATH))
         return false;
 
-    Movement::PointsArray const& points = path.GetPath();
+    Movement::PointsArray const& points = path.points;
     if (points.size() < 2)
         return false;
 
@@ -492,15 +492,15 @@ bool DoesPathRoundLurker(Player* bot, Unit* lurker, float x, float y, float z, i
 
 float GetArrivingPathLength(Player* bot, float x, float y, float z, float tolerance)
 {
-    PathGenerator path(bot);
-    if (!path.CalculatePath(x, y, z) || (path.GetPathType() & PATHFIND_NOPATH))
+    BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+    if (!path.valid || (path.type & PATHFIND_NOPATH))
         return -1.0f;
 
-    G3D::Vector3 const& end = path.GetActualEndPosition();
+    G3D::Vector3 const& end = path.actualEnd;
     if (std::hypot(end.x - x, end.y - y) > tolerance)
         return -1.0f;
 
-    Movement::PointsArray const& points = path.GetPath();
+    Movement::PointsArray const& points = path.points;
     float length = 0.0f;
     for (size_t i = 1; i < points.size(); ++i)
         length += std::hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);

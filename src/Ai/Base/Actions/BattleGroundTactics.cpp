@@ -5,6 +5,7 @@
  */
 
 #include "BattleGroundTactics.h"
+#include "BotPath.h"  // [lead109]
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
 #include "BattleGroundJoinAction.h"
@@ -1751,10 +1752,10 @@ bool BGTactics::Execute(Event /*event*/)
 
         switch (bot->GetMotionMaster()->GetCurrentMovementGeneratorType())
         {
-            // TODO: should ESCORT_MOTION_TYPE be here seeing as bots use it by default?
             case IDLE_MOTION_TYPE:
             case CHASE_MOTION_TYPE:
             case POINT_MOTION_TYPE:
+            case ESCORT_MOTION_TYPE:  // [lead109] a bot's walk along the leader's route (BotPath.h)
                 break;
             default:
                 return true;
@@ -2008,6 +2009,7 @@ bool BGTactics::ExecuteWsgRoute()
         case IDLE_MOTION_TYPE:
         case POINT_MOTION_TYPE:
         case CHASE_MOTION_TYPE:
+        case ESCORT_MOTION_TYPE:  // [lead109] a bot's walk along the leader's route (BotPath.h)
             break;
         default:
             _wsgState._wsgRouteBlocked = true;
@@ -3960,10 +3962,9 @@ bool BGTactics::IsUnsafeWsgCliffApproach(float x, float y, float z) const
             cliffPathData = data;
         }
         PerfMonitorScope cliffPath(cliffPathData);
-        PathGenerator path(bot);
-        path.CalculatePath(x, y, z);
-        return !(path.GetPathType() & PATHFIND_NORMAL) ||
-               (path.GetPathType() & (PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH));
+        BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+        return !(path.type & PATHFIND_NORMAL) ||
+               (path.type & (PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH));
     }
     return false;
 }
@@ -5253,10 +5254,10 @@ bool ArenaTactics::Execute(Event /*event*/)
 
         if (losBlocked)
         {
-            PathGenerator path(bot);
-            path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
+            BotPath const path =  // [lead109]
+                FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
 
-            if (path.GetPathType() != PATHFIND_NOPATH)
+            if (path.type != PATHFIND_NOPATH)
             {
                 bot->CastStop();
 

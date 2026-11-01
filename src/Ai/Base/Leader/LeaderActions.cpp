@@ -5,6 +5,7 @@
  */
 
 #include "LeaderActions.h"
+#include "BotPath.h"  // [lead109]
 
 #include "Event.h"
 #include "Group.h"
@@ -623,7 +624,8 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             Leader::Events::Ack(bot->GetGUID(), events.seq, "follow", "member_refusal: " + refusal + ", stays");
             return true;
         }
-        bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
+        if (!WalkBotRoute(bot, x, y, z))  // [lead109] the leader's route (BotPath.h)
+            bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
         return true;
     }
     // [lead81] the leader's stand / hold: an old walk that leads off the spot stops at once
@@ -683,7 +685,9 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // [lead29] a member never refuses a leader command: the leader validated the spot, the member walks the plain
         // path to it; the refusal is a blocker (member_refusal) - the leader's model and the member's disagree
         // honest play: never through a closed door (that one stays refused - the leader's check missed it)
-        if (refusal.rfind("closed door", 0) != 0)
+        if (refusal.rfind("closed door", 0) != 0 &&
+            !WalkBotRoute(bot, events.spot.GetPositionX(), events.spot.GetPositionY(),
+                          events.spot.GetPositionZ()))  // [lead109] the leader's route (BotPath.h)
             bot->GetMotionMaster()->MovePoint(0, events.spot.GetPositionX(), events.spot.GetPositionY(),
                                               events.spot.GetPositionZ(), FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
     }

@@ -16,6 +16,7 @@
 // the bot's height), ground under every step, navmesh under both ends. Nothing is clipped through.
 
 #include "BotMoveEvents.h"
+#include "BotPath.h"  // [lead109]
 #include "MovementActions.h"
 
 #include "CellImpl.h"
@@ -318,10 +319,10 @@ namespace
     {
         float tx = gx;
         float ty = gy;
-        PathGenerator path(bot);
-        if (path.CalculatePath(gx, gy, gz, false))
+        BotPath const path = FindBotPath(bot, gx, gy, gz);  // [lead109]
+        if (path.valid)
         {
-            for (G3D::Vector3 const& point : path.GetPath())
+            for (G3D::Vector3 const& point : path.points)
             {
                 if (Dist2d(point.x, point.y, bot->GetPositionX(), bot->GetPositionY()) >= 1.0f)
                 {

@@ -5,6 +5,7 @@
  */
 
 #include "ClassicActions.h"
+#include "BotPath.h"  // [lead109]
 #include "ClassicShared.h"
 #include "DungeonInteract.h"
 #include "EscortProtect.h"  // [b36_ohb] EscortGossipHeld
@@ -82,12 +83,12 @@ bool DoanEscapeDetonationAction::ChooseSpot(Unit* doan)
         if (++paths > ESCAPE_MAX_PATHS || (found && candidate.first >= bestLength))
             break;
 
-        PathGenerator path(bot);
-        path.CalculatePath(candidate.second[0], candidate.second[1], candidate.second[2], false);
-        if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, candidate.second[0], candidate.second[1], candidate.second[2]);
+        if (path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
             continue;
 
-        float const length = PathLength(path.GetPath());
+        float const length = PathLength(path.points);
         if (!found || length < bestLength)
         {
             found = true;
@@ -797,15 +798,15 @@ bool DungeonEventStepAction::Execute(Event /*event*/)
         // step off the wall for minutes): another one first, this one again later.
         if (_pathChecked != target->GetGUID() || getMSTimeDiff(_pathCheckedMs, now) > PATH_CHECK_MS)
         {
-            PathGenerator path(bot);
-            path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
-            float const endLeft = target->GetExactDist(path.GetActualEndPosition().x, path.GetActualEndPosition().y,
-                                                       path.GetActualEndPosition().z);
+            BotPath const path =  // [lead109]
+                FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+            float const endLeft = target->GetExactDist(path.actualEnd.x, path.actualEnd.y,
+                                                       path.actualEnd.z);
             // A path cut short (PATHFIND_SHORT: over the point limit, OHB wave 15: every barrel 27-79 yd away) or
             // incomplete is no proof of a walk: its end may be a dead end (ohb-h 2026-10-25). The complete navmesh
             // route decides then, and the walk follows it; a path that ends where the bot stands is the wall case.
             bool const complete =
-                !(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT)) || endLeft <= reach;
+                !(path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE | PATHFIND_SHORT)) || endLeft <= reach;
             G3D::Vector3 leg;
             _routeWalk = !complete && SelfTravel::NextRouteLeg(bot, _route,
                                                               G3D::Vector3(target->GetPositionX(),

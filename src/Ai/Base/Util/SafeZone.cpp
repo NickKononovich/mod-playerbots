@@ -7,6 +7,7 @@
 // [lead9] The fight's safe zone (SafeZone.h, C:/WoW/LEADER_REFACTOR_PLAN.md step 9).
 
 #include "SafeZone.h"
+#include "BotPath.h"  // [lead109]
 
 #include "BotMoveEvents.h"
 #include "Creature.h"
@@ -74,10 +75,9 @@ namespace
         if ((end - from).length() > Leader::SAFE_ZONE_SHORT_HOP && !walker->IsFlying())
         {
             searched = true;
-            PathGenerator path(walker);
-            path.CalculatePath(end.x, end.y, end.z, false);
-            if (!(path.GetPathType() & PATHFIND_NOPATH) && path.GetPath().size() >= 2)
-                return path.GetPath();
+            BotPath const path = FindBotPath(walker, end.x, end.y, end.z);  // [lead109]
+            if (!(path.type & PATHFIND_NOPATH) && path.points.size() >= 2)
+                return path.points;
         }
 
         return Movement::PointsArray{from, end};

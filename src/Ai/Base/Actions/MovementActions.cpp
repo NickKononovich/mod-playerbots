@@ -5,6 +5,7 @@
  */
 
 #include "MovementActions.h"
+#include "BotPath.h"  // [lead109]
 #include "AttackerCountValues.h"
 #include "BotMoveEvents.h"  // [b33_sp] water_drop
 #include "MoveConflict.h"
@@ -156,11 +157,10 @@ namespace
         G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         float const hereLeft = std::hypot(x - here.x, y - here.y);
         float endLeft = hereLeft;
-        PathGenerator path(bot);
-        path.CalculatePath(x, y, z, false);
-        if (!(path.GetPathType() & PATHFIND_NOPATH))
+        BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+        if (!(path.type & PATHFIND_NOPATH))
         {
-            G3D::Vector3 const& end = path.GetActualEndPosition();
+            G3D::Vector3 const& end = path.actualEnd;
             if (end.z <= ledge.landZ + LEDGE_DROP_DZ)
                 return WaterDrop::Walk;  // the walk goes down by itself
             endLeft = std::hypot(x - end.x, y - end.y);
@@ -190,9 +190,9 @@ namespace
                         here.z - floor <= LEDGE_DROP_DZ || here.z - floor > LEDGE_FALL_SAFE ||
                         !bot->IsWithinLOS(sx, sy, floor + lift))
                         continue;
-                    PathGenerator onward(bot);
-                    onward.CalculatePath(sx, sy, floor, ledge.landX, ledge.landY, ledge.landZ, false);
-                    PathType const type = onward.GetPathType();
+                    BotPath const onward =  // [lead109]
+                        FindBotPath(bot, sx, sy, floor, ledge.landX, ledge.landY, ledge.landZ);
+                    PathType const type = onward.type;
                     if (!(type & PATHFIND_NORMAL) || (type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
                         continue;
                     jump = G3D::Vector3(sx, sy, floor);
@@ -1119,10 +1119,9 @@ namespace
         G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         if (!straight)
         {
-            PathGenerator path(bot);
-            path.CalculatePath(x, y, z, false);
-            if (!(path.GetPathType() & PATHFIND_NOPATH) && path.GetPath().size() >= 2)
-                return path.GetPath();
+            BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+            if (!(path.type & PATHFIND_NOPATH) && path.points.size() >= 2)
+                return path.points;
         }
 
         return Movement::PointsArray{ from, G3D::Vector3(x, y, z) };
@@ -1261,9 +1260,8 @@ bool MovementAction::MoveToLOS(WorldObject* target, bool ranged)
     float z = target->GetPositionZ();
 
     // Use standard PathGenerator to find a route.
-    PathGenerator path(bot);
-    path.CalculatePath(x, y, z, false);
-    PathType type = path.GetPathType();
+    BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+    PathType type = path.type;
     if (type != PATHFIND_NORMAL && type != PATHFIND_INCOMPLETE)
         return false;
 
@@ -1273,9 +1271,9 @@ bool MovementAction::MoveToLOS(WorldObject* target, bool ranged)
     float dist = FLT_MAX;
     PositionInfo dest;
 
-    if (!path.GetPath().empty())
+    if (!path.points.empty())
     {
-        for (auto& point : path.GetPath())
+        for (auto& point : path.points)
         {
             if (botAI->HasStrategy("debug move", BOT_STATE_NON_COMBAT))
                 CreateWp(bot, point.x, point.y, point.z, 0.0, 2334);
@@ -1345,9 +1343,8 @@ MovementAction::HealerLeashStep MovementAction::HealerLeash(float& x, float& y, 
     bool found = false;
     if (healerToBot < leash)
     {
-        PathGenerator path(bot);
-        path.CalculatePath(x, y, z, false);
-        std::vector<G3D::Vector3> const& points = path.GetPath();
+        BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+        std::vector<G3D::Vector3> const& points = path.points;
         bool out = false;
         for (size_t i = 1; i < points.size() && !out; ++i)
         {
@@ -1558,16 +1555,25 @@ namespace
 }
 
 thread_local bool MovementAction::s_dryRun = false;
+thread_local std::string MovementAction::s_moveRefusal;
+
+std::string const& LastMoveRefusal() { return MovementAction::s_moveRefusal; }
 
 bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle*/, bool /*react*/, bool normal_only,
                             bool exact_waypoint, MovementPriority priority, bool lessDelay, bool backwards)
 {
     bool const dry = s_dryRun;  // [lead70]
+    s_moveRefusal.clear();
+    auto const refuse = [](char const* guard)
+    {
+        s_moveRefusal = guard;
+        return false;
+    };
     if (!dry)
         UpdateMovementState();
     if (!IsMovingAllowed())
     {
-        return false;
+        return refuse("IsMovingAllowed (a hold, root, cast or dead state)");
     }
     // [b35_z0] A destination z that is the map grid's fallback (0.0 on a WMO-only instance tile, from
     // UpdateAllowedPositionZ or a path end's NormalizePath when the vmap ray found no floor) far from the bot is no
@@ -1577,11 +1583,11 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         SnapGridFallbackZ(bot, x, y, z, getName().c_str());
     if (!dry && IsDuplicateMove(x, y, z))
     {
-        return false;
+        return refuse("IsDuplicateMove (the same walk is on)");
     }
     if (!dry && IsWaitingForLastMove(priority))
     {
-        return false;
+        return refuse("IsWaitingForLastMove (the last walk is not done)");
     }
 
     // [waypoint_lane] Out of a fight, a dungeon strategy's walk keeps to the harness waypoint's lane; [move_conflict]
@@ -1597,12 +1603,12 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             float const askedY = y;
             if (!FollowSpotOutOfGroundEffect(bot, getName(), x, y, z) ||
                 ((askedX != x || askedY != y) && IsDuplicateMove(x, y, z)))
-                return false;
+                return refuse("FollowSpotOutOfGroundEffect");
         }
 
         if (MoveConflict::LaneApplies(bot, getName()) &&
             MoveConflict::VetoesOffWaypoint(bot, getName(), x, y, z, AI_VALUE(bool, "encounter in progress")))
-            return false;
+            return refuse("MoveConflict::VetoesOffWaypoint (the waypoint's lane)");
         if (!dry)
             MoveConflict::NoteOrder(bot, getName(), x, y, z);
     }
@@ -1621,12 +1627,12 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         Leader::SafeZone zone;
         bool zoned = false;
         if (!ClampToFightZone(x, y, z, zone, zoned))
-            return false;
+            return refuse("ClampToFightZone (the leader's safe zone)");
 
         // [drift_fight_hold] a trash fight's chase stays at the tank's fight spot (before the path guard: the walk
         // it judges is the shortened one)
         if (!zoned && bot->IsInCombat() && !HoldFightSpot(x, y, z))
-            return false;
+            return refuse("HoldFightSpot (the tank's fight spot)");
         float const zonedX = x;
         float const zonedY = y;
         float const zonedZ = z;
@@ -1634,10 +1640,10 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         // [hazard_melee_spot] a melee walk into a ground effect the bot just left: a spot round the target outside
         // it, or stand in a light one, or wait at its edge (no out-in-out-in)
         if (bot->IsInCombat() && !HazardMeleeSpot(x, y, z))
-            return false;
+            return refuse("HazardMeleeSpot (a ground effect)");
 
         if (IsPathGuarded() && !GuardIdleMobPath(x, y, z, bot->IsFlying() || bot->isSwimming()))
-            return false;
+            return refuse("GuardIdleMobPath (the walk wakes an idle mob: see the [follow path] / [combat path] lines)");
 
         // [lead9] a guard above picked another destination (a melee spot out of a ground effect, a ring spot, a trail
         // leg, a spot by the tank): it stays inside the zone too, or the bot stays
@@ -1651,7 +1657,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
                 !zone.PathInside(bot, alt, role, &why))
             {
                 Leader::FightZone::NoteClamp(bot, getName(), alt, nullptr, "a guard's other spot: " + why);
-                return false;
+                return refuse("the leader's safe zone (a guard's other spot)");
             }
         }
     }
@@ -1660,12 +1666,12 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     if (Map* exitMap = bot->GetMap(); exitMap && exitMap->IsDungeon() && mapId == bot->GetMapId() &&
                                       Leader::LedBot(bot) &&
                                       InInstanceExit(mapId, x, y, z, bot->GetCombatReach()))
-        return false;
+        return refuse("InInstanceExit (the instance's exit)");
 
     // No walk through a closed door, grouped or not, tank included (the forge walls of flame, Utgarde Keep).
     if (Map* map = bot->GetMap(); map && map->IsDungeon() && mapId == bot->GetMapId() && !bot->GetVehicle() &&
                                   !bot->GetTransport() && !bot->IsFlying() && !GuardClosedDoor(x, y, z))
-        return false;
+        return refuse("GuardClosedDoor (see the [closed door] lines)");
 
     // [ledge_drop] plan29 follow-up 3: no walk off a ledge (nor the straight line PointMovementGenerator takes when
     // the navmesh has no path) to a spot below unless the drop is a justified shortcut (JudgeLedgeDrop: the landing
@@ -1678,13 +1684,13 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     {
         LedgeDropVerdict const ledge = JudgeLedgeDrop(bot, x, y, z, getName().c_str());
         if (!ledge.allowed)
-            return false;
+            return refuse("JudgeLedgeDrop (see the [ledge drop] lines)");
         // [lead77] b120 rfc-h 470-560 s: the led tank dropped 6.8 yd onto an island the group could not follow and
         // walked on alone - the group moves as one: a led tank takes no ledge drop (its members refuse it too)
         // [lead81] b124 rfc-h 112-182 s: the tank stood at (-90,-40,-24) for 70 s - every walk to a mob more than
         // LEDGE_DROP_DZ below was refused although JudgeLedgeDrop found no drop on it (RFC's slope down): only a drop
         if (ledge.drop && PlayerbotAI::IsTank(bot) && Leader::Orders::IsTracked(bot->GetGUID()))
-            return false;
+            return refuse("a led tank's ledge drop");
 
         // [b33_sp] an allowed water drop no ground path carries: from the brink, a jump into the water, together
         // (JudgeWaterDrop)
@@ -1730,7 +1736,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             }
         }
         if (drop == WaterDrop::Hold)
-            return false;
+            return refuse("JudgeWaterDrop (hold)");
         if (drop == WaterDrop::Jump)
             return dry || JumpTo(mapId, jump.x, jump.y, jump.z, priority);
     }
@@ -1759,7 +1765,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         Unit* vehicleBase = vehicle->GetBase();
         generatePath = !vehicleBase || !vehicleBase->CanFly();
         if (!vehicleBase || !seat || !seat->CanControl())  // is passenger and cant move anyway
-            return false;
+            return refuse("a vehicle seat that cannot steer");
 
         float distance = vehicleBase->GetExactDist(x, y, z);  // use vehicle distance, not bot
         if (distance > 0.01f)
@@ -1809,7 +1815,8 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         Movement::PointsArray path =
             SearchForBestPath(x, y, z, modifiedZ, sPlayerbotAIConfig.MaxMovementSearchTime, normal_only);
         if (modifiedZ == INVALID_HEIGHT)
-            return false;
+            return refuse(path.empty() && UsesLeaderRoute(bot) ? "no route (the leader's route search)"
+                                                               : "SearchForBestPath (no floor at the destination)");
         float distance = bot->GetExactDist(x, y, modifiedZ);
         if (distance > 0.01f)
         {
@@ -1820,7 +1827,9 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
 
             // bot->CastStop();
 
-            DoMovePoint(bot, x, y, modifiedZ, generatePath, backwards);
+            // [lead109] the route SearchForBestPath took is the walk (no second search)
+            if (backwards || !UsesLeaderRoute(bot) || !WalkBotPoints(bot, path))
+                DoMovePoint(bot, x, y, modifiedZ, generatePath, backwards);
             float delay = IN_MILLISECONDS * MoveDelay(distance, backwards);
             if (lessDelay)
             {
@@ -1834,7 +1843,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         }
     }
 
-    return false;
+    return refuse("the walk ends where the bot stands");
     //
     // // LOG_DEBUG("playerbots", "IsMovingAllowed {}", IsMovingAllowed());
     // bot->AddUnitMovementFlag()
@@ -2427,9 +2436,8 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     G3D::Vector3 endPos = swimEnd;
     if (!SwimsTo(bot, swimEnd.x, swimEnd.y, swimEnd.z))
     {
-        PathGenerator path(bot);
-        path.CalculatePath(tx, ty, tz, false);
-        PathType type = path.GetPathType();
+        BotPath path = FindBotPath(bot, tx, ty, tz);  // [lead109]
+        PathType type = path.type;
         int typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT;
         if (!(type & typeOk))
             return LosRestoreWalk(target, std::max(NOMINAL_MELEE_RANGE, combatDistance + 4.0f / 3.0f) - 0.5f);
@@ -2444,7 +2452,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
                                       !bot->GetVehicle() && !bot->GetTransport() &&
                                       (type & (PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT)) &&
                                       ((type & PATHFIND_SHORTCUT) ? bot->GetPositionZ()
-                                                                   : path.GetActualEndPosition().z) -
+                                                                   : path.actualEnd.z) -
                                               tz >
                                           CHASE_DROP_DZ)
         {
@@ -2495,7 +2503,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
                                       !bot->GetTransport() &&
                                       ClosedDoorNear(bot, bot->GetPositionX(), bot->GetPositionY(), tx, ty,
                                                      CLOSED_DOOR_SEARCH))
-            if (ClosedDoorHit const hit = PathThroughClosedDoor(bot, path.GetPath());
+            if (ClosedDoorHit const hit = PathThroughClosedDoor(bot, path.points);
                 hit.Found() && !DoorOpensByUse(hit.door))  // a click door: MoveTo's guard walks up and opens it
             {
                 RefuseChase(target, Acore::StringFormat("the way runs through the closed door {} {}",
@@ -2507,7 +2515,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         //     return false;
 
         path.ShortenPathUntilDist(G3D::Vector3(tx, ty, tz), shortenTo);
-        endPos = path.GetPath().back();
+        endPos = path.points.back();
     }
 
     // The path guard may pick another spot on the ring of `distance` round the target.
@@ -4298,10 +4306,9 @@ bool MovementAction::MoveAway(Unit* target, float distance, bool backwards)
         float dy = botY + sin(angle) * distance;
         float dz = botZ;
 
-        PathGenerator path(bot);
-        path.CalculatePath(dx, dy, botZ, false);
-        uint32 const type = path.GetPathType();
-        Movement::PointsArray const& points = path.GetPath();
+        BotPath const path = FindBotPath(bot, dx, dy, botZ);  // [lead109]
+        uint32 const type = path.type;
+        Movement::PointsArray const& points = path.points;
         if (!(type & PATHFIND_NOT_USING_PATH))
         {
             if (!(type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) || (type & PATHFIND_NOPATH) || points.empty())
@@ -4311,7 +4318,7 @@ bool MovementAction::MoveAway(Unit* target, float distance, bool backwards)
             float const travel = bot->GetExactDist2d(end.x, end.y);
             if (std::fabs(end.z - botZ) > MOVE_AWAY_MAX_DZ || travel < 0.5f ||
                 target->GetExactDist2d(end.x, end.y) <= fromTarget ||
-                path.getPathLength() > travel + MOVE_AWAY_MAX_DETOUR_YD)
+                path.length > travel + MOVE_AWAY_MAX_DETOUR_YD)
                 return false;
 
             return MoveToStep(target->GetMapId(), end.x, end.y, end.z, true, backwards);
@@ -4509,26 +4516,24 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
     float const waterZ = WaterDestinationZ(bot, x, y, z, tempZ);
     if (waterZ != INVALID_HEIGHT)
     {
-        PathGenerator waterGen(bot);
-        waterGen.CalculatePath(x, y, waterZ);
-        if (waterGen.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE))
+        BotPath const waterGen = FindBotPath(bot, x, y, waterZ);  // [lead109]
+        if (waterGen.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE))
         {
             modified_z = waterZ;
-            return waterGen.GetPath();
+            return waterGen.points;
         }
     }
-    PathGenerator gen(bot);
-    gen.CalculatePath(x, y, tempZ);
-    Movement::PointsArray result = gen.GetPath();
-    float min_length = gen.getPathLength();
+    BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
+    Movement::PointsArray result = gen.points;
+    float min_length = gen.length;
     int typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE;
-    if ((gen.GetPathType() & typeOk) && abs(tempZ - z) < 0.5f)
+    if ((gen.type & typeOk) && abs(tempZ - z) < 0.5f)
     {
         modified_z = tempZ;
         return result;
     }
     // Start searching
-    if (gen.GetPathType() & typeOk)
+    if (gen.type & typeOk)
     {
         modified_z = tempZ;
         found = true;
@@ -4541,13 +4546,12 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
         {
             continue;
         }
-        PathGenerator gen(bot);
-        gen.CalculatePath(x, y, tempZ);
-        if ((gen.GetPathType() & typeOk) && gen.getPathLength() < min_length)
+        BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
+        if ((gen.type & typeOk) && gen.length < min_length)
         {
             found = true;
-            min_length = gen.getPathLength();
-            result = gen.GetPath();
+            min_length = gen.length;
+            result = gen.points;
             modified_z = tempZ;
         }
     }
@@ -4558,13 +4562,12 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
         {
             continue;
         }
-        PathGenerator gen(bot);
-        gen.CalculatePath(x, y, tempZ);
-        if ((gen.GetPathType() & typeOk) && gen.getPathLength() < min_length)
+        BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
+        if ((gen.type & typeOk) && gen.length < min_length)
         {
             found = true;
-            min_length = gen.getPathLength();
-            result = gen.GetPath();
+            min_length = gen.length;
+            result = gen.points;
             modified_z = tempZ;
         }
     }
@@ -4784,6 +4787,10 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
         float gZ = unit->GetMapWaterOrGroundLevel(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ());
         unit->UpdatePosition(unit->GetPositionX(), unit->GetPositionY(), gZ, false);
     }
+
+    // [lead109] a player bot walks the leader's route (BotPath.h); no route found: the core's own path as before
+    if (unit == bot && generatePath && !backwards && WalkBotRoute(bot, x, y, z))
+        return;
 
     mm->Clear();
     if (backwards)
@@ -6068,12 +6075,10 @@ bool MovementAction::LosRestoreWalk(Unit* target, float meleeDistance)
             if (paths++ >= LOS_RESTORE_MAX_PATHS)
                 return false;
 
-            PathGenerator path(bot);
-            path.CalculatePath(spot.x, spot.y, spot.z, false);
-            PathType const type = path.GetPathType();
-            if ((type & PATHFIND_NOPATH) || path.GetPath().empty() ||
-                (!(type & PATHFIND_NORMAL) &&
-                 (path.GetActualEndPosition() - spot).length() > LOS_RESTORE_PATH_END))
+            BotPath const path = FindBotPath(bot, spot.x, spot.y, spot.z);  // [lead109]
+            uint32 const type = path.type;
+            if ((type & PATHFIND_NOPATH) || path.points.empty() ||
+                (!(type & PATHFIND_NORMAL) && (path.actualEnd - spot).length() > LOS_RESTORE_PATH_END))
                 continue;
 
             LOG_INFO("playerbots", "[los restore] {}: no member has seen {} for {:.1f} s: walks {:.1f} yd to "

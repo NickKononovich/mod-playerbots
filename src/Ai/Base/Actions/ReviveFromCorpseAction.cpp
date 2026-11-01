@@ -5,6 +5,7 @@
  */
 
 #include "ReviveFromCorpseAction.h"
+#include "BotPath.h"  // [lead109]
 #include "Corpse.h"
 #include "Creature.h"
 #include "Event.h"
@@ -320,9 +321,8 @@ bool FindCorpseAction::SafeSpot(Corpse* corpse, GuidVector const& hostiles, floa
     {
         if (++tries > SPOT_PATH_TRIES)
             break;
-        PathGenerator path(bot);
-        path.CalculatePath(candidate.point.x, candidate.point.y, candidate.point.z, false);
-        if (path.GetPathType() != PATHFIND_NORMAL)
+        BotPath const path = FindBotPath(bot, candidate.point.x, candidate.point.y, candidate.point.z);  // [lead109]
+        if (path.type != PATHFIND_NORMAL)
             continue;
         _spot = candidate.point;
         _spotFound = true;

@@ -5,6 +5,7 @@
  */
 
 #include "OCTriggers.h"
+#include "BotPath.h"  // [lead109]
 #include "AiObject.h"
 #include "AiObjectContext.h"
 #include "DungeonInteract.h"
@@ -274,13 +275,13 @@ bool PackReachableFromLanding(Player* pilot, size_t pack)
     }();
     if (reachable[pack] < 0)
     {
-        PathGenerator path(pilot);
-        path.CalculatePath(def.landing.GetPositionX(), def.landing.GetPositionY(), def.landing.GetPositionZ(),
-                           def.pack.GetPositionX(), def.pack.GetPositionY(), def.pack.GetPositionZ(), false);
-        PathType const type = path.GetPathType();
+        BotPath const path =  // [lead109]
+            FindBotPath(pilot, def.landing.GetPositionX(), def.landing.GetPositionY(), def.landing.GetPositionZ(),
+                        def.pack.GetPositionX(), def.pack.GetPositionY(), def.pack.GetPositionZ());
+        PathType const type = path.type;
         // [b34_occ] also no detour round the ring, and the length is logged (build 34 had only "path type 1")
         float const straight = def.landing.GetExactDist(&def.pack);
-        float const length = path.getPathLength();
+        float const length = path.length;
         bool const ground =
             (type & PATHFIND_NORMAL) &&
             !(type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOT_USING_PATH |
@@ -641,9 +642,9 @@ Position GetLandingSpot(PlayerbotAI* botAI, LegTarget const& leg)
     // generator does not build (NOT_USING_PATH: no navmesh answer) does not reject the spot.
     auto const walksToPack = [&](float x, float y, float z)
     {
-        PathGenerator path(bot);
-        path.CalculatePath(x, y, z, leg.pack.GetPositionX(), leg.pack.GetPositionY(), leg.pack.GetPositionZ(), false);
-        PathType const type = path.GetPathType();
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, x, y, z, leg.pack.GetPositionX(), leg.pack.GetPositionY(), leg.pack.GetPositionZ());
+        PathType const type = path.type;
         if (type & PATHFIND_NOT_USING_PATH)
             return true;
 
@@ -651,7 +652,7 @@ Position GetLandingSpot(PlayerbotAI* botAI, LegTarget const& leg)
         return (type & PATHFIND_NORMAL) &&
                !(type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_SHORT |
                          PATHFIND_FARFROMPOLY)) &&
-               path.getPathLength() <= PACK_LANDING_MAX_DETOUR * straight + LANDING_EDGE_CLEARANCE;
+               path.length <= PACK_LANDING_MAX_DETOUR * straight + LANDING_EDGE_CLEARANCE;
     };
     auto const fitsPackLeg = [&](float x, float y, float floor)
     { return !packLeg || (solidRound(x, y, floor) && walksToPack(x, y, floor)); };

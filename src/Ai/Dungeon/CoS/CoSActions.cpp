@@ -5,6 +5,7 @@
  */
 
 #include "CoSActions.h"
+#include "BotPath.h"  // [lead109]
 #include "DungeonInteract.h"
 #include "GameObject.h"
 #include "GossipDef.h"
@@ -81,9 +82,8 @@ bool RerouteAroundFestivalGate(Player* bot, char const* by, float& x, float& y, 
     if (gate->GetGoState() == GO_STATE_ACTIVE || bot->GetExactDist2d(gate) > FESTIVAL_GATE_SEARCH)
         return false;
 
-    PathGenerator path(bot);
-    path.CalculatePath(x, y, z, false);
-    std::vector<G3D::Vector3> const& points = path.GetPath();
+    BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+    std::vector<G3D::Vector3> const& points = path.points;
     bool crosses = false;
     for (size_t i = 1; i < points.size() && !crosses; ++i)
     {
@@ -224,11 +224,10 @@ bool EpochStackAction::FindStackSpot(Unit* boss, Unit* tank, float& outX, float&
                                       VMAP::ModelIgnoreFlags::Nothing))
                 continue;
 
-            PathGenerator path(bot);
-            path.CalculatePath(x, y, z, false);
-            if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+            BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+            if (path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
                 continue;
-            Movement::PointsArray const& points = path.GetPath();
+            Movement::PointsArray const& points = path.points;
             if (points.empty())
                 continue;
             G3D::Vector3 const& end = points.back();

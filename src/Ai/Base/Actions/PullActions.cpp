@@ -12,6 +12,7 @@
  */
 
 #include "PullActions.h"
+#include "BotPath.h"  // [lead109]
 #include "AggressiveTargetValue.h"
 #include "CellImpl.h"        // [lead86] the corner pack's assist search
 #include "GridNotifiers.h"
@@ -922,12 +923,12 @@ bool ReachPullAction::Execute(Event event)
             if (_slopeTarget != target->GetGUID() || !_slopeCheckMs ||
                 getMSTimeDiff(_slopeCheckMs, now) >= PULL_SLOPE_RECHECK_MS)
             {
-                PathGenerator path(bot);
-                path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
+                BotPath const path =  // [lead109]
+                    FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
                 _slopeTarget = target->GetGUID();
                 _slopeCheckMs = now ? now : 1;
-                _slopeWalk = path.getPathLength();
-                _slopeOk = path.GetPathType() == PATHFIND_NORMAL &&
+                _slopeWalk = path.length;
+                _slopeOk = path.type == PATHFIND_NORMAL &&
                            _slopeWalk <= straight * PULL_SLOPE_DETOUR + PULL_SLOPE_SLACK;
             }
             bool const logDue = !_floorLogMs || getMSTimeDiff(_floorLogMs, now) >= PULL_FLOOR_LOG_MS;
@@ -1028,13 +1029,12 @@ bool ReachPullAction::Execute(Event event)
             bool offPath = false;
             if (drop <= CAST_SPOT_DROP_DZ)
             {
-                PathGenerator toSpot(bot);
-                toSpot.CalculatePath(groundX, groundY, groundZ, false);
-                PathGenerator toMob(bot);
-                toMob.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
-                spotWalk = toSpot.getPathLength();
-                mobWalk = toMob.getPathLength();
-                offPath = toSpot.GetPathType() == PATHFIND_NORMAL && toMob.GetPathType() == PATHFIND_NORMAL &&
+                BotPath const toSpot = FindBotPath(bot, groundX, groundY, groundZ);  // [lead109]
+                BotPath const toMob =  // [lead109]
+                    FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+                spotWalk = toSpot.length;
+                mobWalk = toMob.length;
+                offPath = toSpot.type == PATHFIND_NORMAL && toMob.type == PATHFIND_NORMAL &&
                           spotWalk > mobWalk + CAST_SPOT_WALK_SLACK;
             }
             _castCheckBad = drop > CAST_SPOT_DROP_DZ || offPath;
@@ -1104,15 +1104,15 @@ bool ReachPullAction::Execute(Event event)
     {
         constexpr float PULL_SIGHT_WALK_SLACK = 5.0f;
         float const combatDistance = bot->GetCombatReach() + target->GetCombatReach();
-        PathGenerator probe(bot);
-        probe.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
-        if (probe.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT))
+        BotPath probe =  // [lead109]
+            FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        if (probe.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT))
         {
             G3D::Vector3 const mob(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
             probe.ShortenPathUntilDist(mob, reachDistance + combatDistance);
-            if (!probe.GetPath().empty())
+            if (!probe.points.empty())
             {
-                float const endToMob = (probe.GetPath().back() - mob).length();
+                float const endToMob = (probe.points.back() - mob).length();
                 if (endToMob + PULL_SIGHT_WALK_SLACK < reachDistance)
                 {
                     LOG_INFO("playerbots", "[b38_scholo] pull_sight_walk_abort: {}: {} at {:.1f} yd out of sight: the "

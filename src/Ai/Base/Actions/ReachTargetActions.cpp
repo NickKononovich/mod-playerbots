@@ -17,6 +17,7 @@
 #include "LastMovementValue.h"
 #include "Log.h"
 #include "Map.h"
+#include "BotPath.h"  // [lead109]
 #include "PathGenerator.h"
 #include "PlayerbotAIConfig.h"
 #include "LeaderOrders.h"  // [lead29] the planned pull's mobs
@@ -434,12 +435,11 @@ bool ReachMeleeAction::BreakShooterSight(Unit* target)
         if (paths++ >= SHOOTER_SIGHT_BREAK_PATHS)
             break;
 
-        PathGenerator path(bot);
-        path.CalculatePath(x, y, z, false);
-        PathType const type = path.GetPathType();
-        if ((type & PATHFIND_NOPATH) || path.GetPath().empty() ||
+        BotPath const path = FindBotPath(bot, x, y, z);  // [lead109]
+        PathType const type = path.type;
+        if ((type & PATHFIND_NOPATH) || path.points.empty() ||
             (!(type & PATHFIND_NORMAL) &&
-             (path.GetActualEndPosition() - G3D::Vector3(x, y, z)).length() > SHOOTER_SIGHT_PATH_END))
+             (path.actualEnd - G3D::Vector3(x, y, z)).length() > SHOOTER_SIGHT_PATH_END))
         {
             refused = member->GetName() + "'s spot: no path";
             continue;
@@ -1021,9 +1021,8 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
     Creature* blocker = nullptr;
 
     // The path toward the corpse: its first point that sees the corpse in range, the farthest from it.
-    PathGenerator path(bot);
-    path.CalculatePath(corpsePos.x, corpsePos.y, corpsePos.z, false);
-    Movement::PointsArray const& points = path.GetPath();
+    BotPath const path = FindBotPath(bot, corpsePos.x, corpsePos.y, corpsePos.z);  // [lead109]
+    Movement::PointsArray const& points = path.points;
     // [b47_plan] A spot past a closed door is no spot: the bot's own walk stops 2 yd before the door ([closed door]
     // -> stay) and the cast then fails on the door's model. strat-h 20261026-104908-strat-h-5B-2: the tank died on
     // the far side of the Service Entrance Gate 175368 (161 s); paladin, priest and shaman "resurrect Rtwaraa from
@@ -1041,7 +1040,7 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
             doorWalk = hit.walked;
         }
     }
-    if ((path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && points.size() >= 2)
+    if ((path.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && points.size() >= 2)
     {
         float walkedTotal = 0.0f;
         bool done = false;
@@ -1136,10 +1135,10 @@ ReachPartyMemberToResurrectAction::SpotSearch ReachPartyMemberToResurrectAction:
         if (++paths > RES_RING_PATHS)
             break;
 
-        PathGenerator ringPath(bot);
-        ringPath.CalculatePath(candidate.point.x, candidate.point.y, candidate.point.z, false);
-        Movement::PointsArray const& walk = ringPath.GetPath();
-        if (ringPath.GetPathType() != PATHFIND_NORMAL || walk.size() < 2 ||
+        BotPath const ringPath =  // [lead109]
+            FindBotPath(bot, candidate.point.x, candidate.point.y, candidate.point.z);
+        Movement::PointsArray const& walk = ringPath.points;
+        if (ringPath.type != PATHFIND_NORMAL || walk.size() < 2 ||
             (walk.back() - candidate.point).length() > RES_PATH_END)
             continue;
 
@@ -1398,12 +1397,13 @@ bool MovementAction::MoveToSight(Unit* target, float range, std::string const& r
         target->GetExactDist(last.lastMoveToX, last.lastMoveToY, last.lastMoveToZ) <= range)
         return true;
 
-    PathGenerator path(bot);
-    path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
-    if (!(path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT)))
-        return sightFail(Acore::StringFormat("no path to the target (path type {})", uint32(path.GetPathType())));
+    // [lead109] a led bot's way is the leader's route (BotPath.h)
+    BotPath const path = FindBotPath(bot, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+    if (!(path.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT)))
+        return sightFail(Acore::StringFormat("no path to the target (path type {}{})", uint32(path.type),
+                                             path.leaderRoute ? ", the leader's route" : ""));
 
-    Movement::PointsArray const& points = path.GetPath();
+    Movement::PointsArray const& points = path.points;
     if (points.size() < 2)
         return sightFail("the path to the target has no points");
 
@@ -1503,13 +1503,12 @@ bool MovementAction::MoveToSight(Unit* target, float range, std::string const& r
                     continue;
 
                 ++paths;
-                PathGenerator stepPath(bot);
-                stepPath.CalculatePath(x, y, z, false);
-                Movement::PointsArray const& stepPoints = stepPath.GetPath();
+                BotPath const stepPath = FindBotPath(bot, x, y, z);  // [lead109]
+                Movement::PointsArray const& stepPoints = stepPath.points;
                 float const straight = bot->GetExactDist(x, y, z);
-                if (!(stepPath.GetPathType() & PATHFIND_NORMAL) || stepPoints.size() < 2 ||
+                if (!(stepPath.type & PATHFIND_NORMAL) || stepPoints.size() < 2 ||
                     (stepPoints.back() - at).length() > SIGHT_STEP ||
-                    stepPath.getPathLength() > SIDE_STEP_DETOUR * straight + SIGHT_STEP ||
+                    stepPath.length > SIDE_STEP_DETOUR * straight + SIGHT_STEP ||
                     !UnsafeSpotReason(botAI, x, y, z, target).empty() ||
                     !IdleWakeOnWalk(stepPoints, target->GetGUID()).empty())
                     continue;
@@ -1741,14 +1740,13 @@ bool MovementAction::MoveToSight(Unit* target, float range, std::string const& r
 
             ++searched;
             G3D::Vector3 const& at = candidate.at;
-            PathGenerator arcPath(bot);
-            arcPath.CalculatePath(at.x, at.y, at.z, false);
-            Movement::PointsArray const& arcPoints = arcPath.GetPath();
-            if (!(arcPath.GetPathType() & PATHFIND_NORMAL) || arcPoints.size() < 2 ||
+            BotPath const arcPath = FindBotPath(bot, at.x, at.y, at.z);  // [lead109]
+            Movement::PointsArray const& arcPoints = arcPath.points;
+            if (!(arcPath.type & PATHFIND_NORMAL) || arcPoints.size() < 2 ||
                 (arcPoints.back() - at).length() > ARC_PATH_END)
                 continue;
 
-            float const walk = arcPath.getPathLength();
+            float const walk = arcPath.length;
             if (arcFound && walk >= arcWalk)
                 continue;
 
@@ -1811,10 +1809,8 @@ bool MovementAction::MoveToSight(Unit* target, float range, std::string const& r
     G3D::Vector3 const chosen = takeArc ? arcSpot : pathSpot;
     if (!MoveTo(target->GetMapId(), chosen.x, chosen.y, chosen.z, false, false, false, false,
                 MovementPriority::MOVEMENT_COMBAT, true))
-        return sightFail(Acore::StringFormat("the walk to the sight spot ({:.1f},{:.1f},{:.1f}) was refused (a closed "
-                                             "door, a ledge or a path guard: see the [closed door] / [ledge drop] "
-                                             "lines)",
-                                             chosen.x, chosen.y, chosen.z));
+        return sightFail(Acore::StringFormat("the walk to the sight spot ({:.1f},{:.1f},{:.1f}) was refused by {}",
+                                             chosen.x, chosen.y, chosen.z, LastMoveRefusal()));
 
     std::string note = reason;
     if (takeArc)

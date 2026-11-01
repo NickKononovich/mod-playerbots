@@ -5,6 +5,7 @@
  */
 
 #include "RangedPositionActions.h"
+#include "BotPath.h"  // [lead109]
 
 #include <algorithm>
 #include <array>
@@ -369,14 +370,14 @@ std::string UnsafeSpotReason(PlayerbotAI* botAI, float x, float y, float z, Worl
     // The way back down to the fight: a walkable path from the spot to it, not a long detour.
     if (fight && fight->GetMap() == bot->GetMap())
     {
-        PathGenerator back(bot);
-        back.CalculatePath(x, y, z, fight->GetPositionX(), fight->GetPositionY(), fight->GetPositionZ(), false);
-        uint32 const type = back.GetPathType();
-        G3D::Vector3 const& end = back.GetActualEndPosition();
+        BotPath const back =  // [lead109]
+            FindBotPath(bot, x, y, z, fight->GetPositionX(), fight->GetPositionY(), fight->GetPositionZ());
+        uint32 const type = back.type;
+        G3D::Vector3 const& end = back.actualEnd;
         float const straight = fight->GetExactDist(x, y, z);
         if ((type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT)) || !(type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) ||
             fight->GetExactDist(end.x, end.y, end.z) > WAY_BACK_END ||
-            back.getPathLength() > WAY_BACK_DETOUR * straight + WAY_BACK_SLACK)
+            back.length > WAY_BACK_DETOUR * straight + WAY_BACK_SLACK)
             return "no walk back to the fight";
     }
 

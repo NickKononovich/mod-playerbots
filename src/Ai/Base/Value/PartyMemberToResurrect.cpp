@@ -5,6 +5,7 @@
  */
 
 #include "PartyMemberToResurrect.h"
+#include "BotPath.h"  // [lead109]
 
 #include "Battleground.h"
 #include "Group.h"
@@ -89,9 +90,9 @@ bool PartyMemberToResurrect::Check(Unit* player)
         bot->GetDistance(player) >= RESURRECT_WALK_RANGE)
         return false;
 
-    PathGenerator path(bot);
-    path.CalculatePath(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), false);
-    return path.GetPathType() == PATHFIND_NORMAL;
+    BotPath const path =  // [lead109]
+        FindBotPath(bot, player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
+    return path.type == PATHFIND_NORMAL;
 }
 
 // After a wipe: healers who can resurrect first, then other resurrecters, tanks, the leader, and the rest.

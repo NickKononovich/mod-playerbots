@@ -5,6 +5,7 @@
  */
 
 #include "TerrainHazardActions.h"
+#include "BotPath.h"  // [lead109]
 
 #include "ChooseTargetActions.h"
 #include "Group.h"
@@ -83,11 +84,11 @@ namespace
 
     bool PathFits(Player* tank, Position const& spot)
     {
-        PathGenerator path(tank);
-        path.CalculatePath(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), spot.GetPositionX(),
-                           spot.GetPositionY(), spot.GetPositionZ(), false);
-        return path.GetPathType() == PATHFIND_NORMAL &&
-               path.getPathLength() <= tank->GetExactDist(spot) * FIGHT_HAZARD_PATH_DETOUR + FIGHT_HAZARD_PATH_SLACK;
+        BotPath const path =  // [lead109]
+            FindBotPath(tank, tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(), spot.GetPositionX(),
+                        spot.GetPositionY(), spot.GetPositionZ());
+        return path.type == PATHFIND_NORMAL &&
+               path.length <= tank->GetExactDist(spot) * FIGHT_HAZARD_PATH_DETOUR + FIGHT_HAZARD_PATH_SLACK;
     }
 
     // Open floor a few yards from the tank, first away from the hazard, then towards the healer, then towards the

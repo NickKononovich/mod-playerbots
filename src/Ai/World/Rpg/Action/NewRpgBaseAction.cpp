@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgBaseAction.h"
+#include "BotPath.h"  // [lead109]
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "Creature.h"
@@ -925,13 +926,13 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // subsequent ticks early-out via IsWaitingForLastMove and no
     // further PathGenerator calls fire until the bot arrives.
     {
-        PathGenerator path(bot);
-        path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
-        PathType type = path.GetPathType();
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        PathType type = path.type;
         bool canReach = !(type & (~typeOk));
         if (canReach)
         {
-            G3D::Vector3 const& endPos = path.GetActualEndPosition();
+            G3D::Vector3 const& endPos = path.actualEnd;
             // Only commit if the mmap endpoint actually makes progress
             // toward the destination. For pathological INCOMPLETE
             // results (e.g. disconnected polys that still report
@@ -965,15 +966,14 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         float dx = x + cos(angle) * sampleDis;
         float dy = y + sin(angle) * sampleDis;
         float dz = z + 0.5f;
-        PathGenerator path(bot);
-        path.CalculatePath(dx, dy, dz);
-        PathType type = path.GetPathType();
+        BotPath const path = FindBotPath(bot, dx, dy, dz);  // [lead109]
+        PathType type = path.type;
         bool canReach = !(type & (~typeOk));
 
         if (canReach && fabs(delta) <= minDelta)
         {
             found = true;
-            G3D::Vector3 const& endPos = path.GetActualEndPosition();
+            G3D::Vector3 const& endPos = path.actualEnd;
             rx = endPos.x;
             ry = endPos.y;
             rz = endPos.z;
@@ -1052,9 +1052,8 @@ bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority,
         float dy = y + distance * sin(angle);
         float dz = z;
 
-        PathGenerator path(bot);
-        path.CalculatePath(dx, dy, dz);
-        PathType type = path.GetPathType();
+        BotPath const path = FindBotPath(bot, dx, dy, dz);  // [lead109]
+        PathType type = path.type;
         uint32 typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
         bool canReach = !(type & (~typeOk));
 

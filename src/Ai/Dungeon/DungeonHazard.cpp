@@ -5,6 +5,7 @@
  */
 
 #include "DungeonHazard.h"
+#include "BotPath.h"  // [lead109]
 #include "BossKiteRooms.h"
 #include "Cell.h"
 #include "CellImpl.h"
@@ -1040,10 +1041,10 @@ bool AvoidDungeonHazardAction::Execute(Event /*event*/)
         if (++memberPaths > DungeonHazard::EXIT_MAX_MEMBER_PATHS)
             break;
 
-        PathGenerator path(bot);
-        if (!path.CalculatePath(member->GetPositionX(), member->GetPositionY(), member->GetPositionZ(), false) ||
-            (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) ||
-            path.getPathLength() > DungeonHazard::MEMBER_PATH_MAX_LENGTH)
+        BotPath const path =  // [lead109]
+            FindBotPath(bot, member->GetPositionX(), member->GetPositionY(), member->GetPositionZ());
+        if (!path.valid || (path.type & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) ||
+            path.length > DungeonHazard::MEMBER_PATH_MAX_LENGTH)
             continue;
 
         if (stopCast)

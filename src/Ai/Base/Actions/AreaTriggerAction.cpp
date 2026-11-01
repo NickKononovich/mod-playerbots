@@ -5,6 +5,7 @@
  */
 
 #include "AreaTriggerAction.h"
+#include "BotPath.h"  // [lead109]
 #include "Event.h"
 #include "LastMovementValue.h"
 #include "PlayerbotTextMgr.h"
@@ -42,14 +43,15 @@ bool ReachAreaTriggerAction::Execute(Event event)
         return true;
     }
 
-    bot->GetMotionMaster()->MovePoint(
-        /*id*/ at->map,
-        /*coords*/ at->x, at->y, at->z,
-        /*forcedMovement*/ FORCED_MOVEMENT_NONE,
-        /*speed*/ 0.0f,             // default speed (not handled here)
-        /*orientation*/ 0.0f,       // keep current orientation of bot
-        /*generatePath*/ true,      // true => terrain path (2d mmap); false => straight spline (3d vmap)
-        /*forceDestination*/ false);
+    if (!WalkBotRoute(bot, at->x, at->y, at->z))  // [lead109] the leader's route (BotPath.h)
+        bot->GetMotionMaster()->MovePoint(
+            /*id*/ at->map,
+            /*coords*/ at->x, at->y, at->z,
+            /*forcedMovement*/ FORCED_MOVEMENT_NONE,
+            /*speed*/ 0.0f,             // default speed (not handled here)
+            /*orientation*/ 0.0f,       // keep current orientation of bot
+            /*generatePath*/ true,      // true => terrain path (2d mmap); false => straight spline (3d vmap)
+            /*forceDestination*/ false);
 
     float distance = bot->GetDistance(at->x, at->y, at->z);
     float delay = IN_MILLISECONDS * distance / bot->GetSpeed(MOVE_RUN) + sPlayerbotAIConfig.ReactDelay;
