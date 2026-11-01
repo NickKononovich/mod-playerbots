@@ -12115,6 +12115,16 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     }
     OverloadTerms terms;
     CarefulOverload(bot, estimate, strength, support, kit, true, &terms);
+    // [lead207] b182 rfc-h 5G 507 s: Taragaman with two Cultists judged "overload 1.18" by the drain term - the tank's
+    // 90th percentile health drop modelled on trash pulls (DropP90 of the cost: 0.7 of its health). The b181 facts of
+    // the same fights (32 boss fights, 8 comps): the tank's lowest health 73-100 % (one 18 %), 1-65k damage taken over
+    // 39-103 s - the healers heal a boss fight as it goes. A boss is judged by the healers' mana and healing rate and
+    // by the mobs the tank holds, not by the trash pulls' drop model
+    if (estimate.boss)
+    {
+        terms.drain = 0.0f;
+        terms.comfort = 0.0f;
+    }
     if (estimate.boss && estimate.mobs == 1)  // a lone boss: CarefulOverload's peak term is a pack's (mobs > 1)
     {
         float const healing = PlanTankHealth(bot) * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
