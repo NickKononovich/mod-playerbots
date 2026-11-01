@@ -8,6 +8,52 @@
 #include "Playerbots.h"
 #include "RezzedTankHoldMultiplier.h"
 
+namespace
+{
+// [rot11] wowsims protection_paladin__default: Shield of Righteousness only while Hammer of the Righteous is ready
+// within 3 s and the other way round; a GCD free with either of them back within 350 ms waits for it
+// (Consecration, Holy Shield, Judgement and the Avenger's Shield filler hold). The 9-6-9 grid stays aligned.
+constexpr uint32 PROT_969_PAIR_WINDOW_MS = 3 * IN_MILLISECONDS;
+constexpr uint32 PROT_969_WAIT_MS = 350;
+
+class Prot969Multiplier : public Multiplier
+{
+public:
+    Prot969Multiplier(PlayerbotAI* botAI) : Multiplier(botAI, "prot 969") {}
+
+    float GetValue(Action* action) override
+    {
+        if (!action)
+            return 1.0f;
+
+        std::string const name = action->getName();
+        bool const shield = name == "shield of righteousness";
+        bool const hammer = name == "hammer of the righteous";
+        bool const filler = name == "consecration" || name == "holy shield" || name == "judgement of wisdom" ||
+                            name == "avenger's shield";
+        if (!shield && !hammer && !filler)
+            return 1.0f;
+
+        Player* bot = botAI->GetBot();
+        AiObjectContext* context = botAI->GetAiObjectContext();
+        uint32 const shieldId = AI_VALUE2(uint32, "spell id", "shield of righteousness");
+        uint32 const hammerId = AI_VALUE2(uint32, "spell id", "hammer of the righteous");
+        if (!shieldId || !hammerId)
+            return 1.0f;
+
+        uint32 const shieldMs = bot->HasSpellCooldown(shieldId) ? bot->GetSpellCooldownDelay(shieldId) : 0;
+        uint32 const hammerMs = bot->HasSpellCooldown(hammerId) ? bot->GetSpellCooldownDelay(hammerId) : 0;
+        if (shield)
+            return hammerMs <= PROT_969_PAIR_WINDOW_MS ? 1.0f : 0.0f;
+        if (hammer)
+            return shieldMs <= PROT_969_PAIR_WINDOW_MS ? 1.0f : 0.0f;
+
+        bool const waits = shieldMs && hammerMs && std::min(shieldMs, hammerMs) <= PROT_969_WAIT_MS;
+        return waits ? 0.0f : 1.0f;
+    }
+};
+}  // namespace
+
 class TankPaladinStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
 {
 public:
@@ -91,6 +137,7 @@ void TankPaladinStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     GenericPaladinStrategy::InitMultipliers(multipliers);
     multipliers.push_back(new RezzedTankHoldMultiplier(botAI));
+    multipliers.push_back(new Prot969Multiplier(botAI));
 }
 
 void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
@@ -272,14 +319,8 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "holy shield",
-            {
-                NextAction("holy shield", ACTION_HIGH + 6.5f)
-            }
-        )
-    );
+    // [rot11] wowsims order: Holy Shield after Consecration, before Judgement
+    triggers.push_back(new TriggerNode("holy shield", {NextAction("holy shield", ACTION_HIGH + 5.72f)}));
     // [b31_pal] 969: the 6 s Shield of Righteousness / Hammer of the Righteous and the 9 s Judgement / Consecration on
     // their cooldowns, Avenger's Shield as the filler on a boss, all in one band under Holy Shield's upkeep (above)
     // and the taunts (ACTION_HIGH + 7), above Avenging Wrath, Divine Plea and the Judgement debuff upkeep. The peel,
@@ -339,13 +380,9 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
     triggers.push_back(
-        new TriggerNode(
-            "tank hammer of wrath",  // [lead87] only while its cost leaves the tank at its own line
-            {
-                NextAction("hammer of wrath", ACTION_CRITICAL_HEAL)
-            }
-        )
-    );
+        new TriggerNode("tank hammer of wrath",  // [lead87] only while its cost leaves the tank at its own line
+                        {                        // [rot11] wowsims order: under the 6 s pair, above Consecration
+                         NextAction("hammer of wrath", ACTION_HIGH + 5.77f)}));
     triggers.push_back(
         new TriggerNode(
             "righteous fury",
