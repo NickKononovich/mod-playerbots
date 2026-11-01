@@ -87,9 +87,20 @@ namespace Leader::Fight
     bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs)
     {
         for (ObjectGuid const& guid : fightMobs)
-            if (Unit* mob = ObjectAccessor::GetUnit(*bot, guid);
-                mob && mob->IsAlive() && mob->GetExactDist(at) < LeaderRangedMinGap(bot, mob))
+        {
+            Unit* mob = ObjectAccessor::GetUnit(*bot, guid);
+            if (!mob || !mob->IsAlive())
+                continue;
+            // [lead214] b184 rfc-h: 48-87 "inside a fight mob's melee reach" re-spots a run, half of them within 3 s of
+            // the last. A mob on the member itself follows it to every spot (the aggro-loss walk owns that member); a
+            // mob on the move is judged where it runs to - its victim - not at each step it takes
+            Unit* const victim = mob->GetVictim();
+            if (victim == bot)
+                continue;
+            Position const stands = mob->isMoving() && victim ? victim->GetPosition() : mob->GetPosition();
+            if (stands.GetExactDist(at) < LeaderRangedMinGap(bot, mob))
                 return false;
+        }
         return true;
     }
 
@@ -516,7 +527,7 @@ namespace Leader::Fight
     // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
     bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                           std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
-                          Position& out)
+                          Position& out, std::vector<ObjectGuid> const* fightMobs)
     {
         std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
         static constexpr float TURNS[] = {0.0f,  0.35f, -0.35f, 0.7f,  -0.7f, 1.05f, -1.05f, 1.4f,
@@ -540,6 +551,10 @@ namespace Leader::Fight
                 continue;
             Position const spot(x, y, z);
             if (!LeaderCombatSpotValid(bot, botAI, target, spot, melee, zones, keeps, true))
+                continue;
+            // [lead214] a fresh ranged / healer spot is out of every fight mob's melee reach too (lead210), else it
+            // breaks on the next look
+            if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
                 continue;
             if (LeaderCandidate(bot, spot, fallback) != 2)
                 continue;

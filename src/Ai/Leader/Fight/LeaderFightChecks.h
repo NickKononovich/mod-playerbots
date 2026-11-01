@@ -132,7 +132,8 @@ namespace Leader::Fight
     // a member in its melee reach at 110 % of the victim's threat, at range only at 130 %: ThreatManager)
     bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at,
                          std::vector<ObjectGuid> const* fightMobs = nullptr);
-    // [lead210] `at` is out of the melee reach (LeaderRangedMinGap) of every living mob of `fightMobs`
+    // [lead210] `at` is out of the melee reach (LeaderRangedMinGap) of every living mob of `fightMobs` ([lead214] a
+    // mob on `bot` itself left out, a moving one judged at its victim)
     bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs);
 
     // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
@@ -211,7 +212,7 @@ namespace Leader::Fight
     // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
     bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                           std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
-                          Position& out);
+                          Position& out, std::vector<ObjectGuid> const* fightMobs = nullptr);
 
     // [lead21] a mob of the fight: a hostile creature the tank may attack, never a player's summon or guardian
     // (slabs-h 20261026-195203: the tank was told to take back the mage's Mirror Image 1187 times)

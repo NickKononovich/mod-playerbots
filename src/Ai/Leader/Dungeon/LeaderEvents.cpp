@@ -2469,7 +2469,8 @@ namespace Leader::Dungeon
                                              SpotAcquire const acquire;  // [lead36]
                                              return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(),
                                                                             melee, zones, keeps, spot, &killOrder) ||
-                                                    LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot);
+                                                    LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot,
+                                                                     &killOrder);  // [lead214]
                                          });
                         if (got)
                         {
@@ -3107,7 +3108,8 @@ namespace Leader::Dungeon
                                     SpotAcquire const acquire;
                                     return LeaderNearestCombatSpot(bot, botAI, judgedOn, bot->GetPosition(), false,
                                                                    zones, keeps, spot, &killOrder) ||
-                                           LeaderCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot);
+                                           LeaderCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot,
+                                                            &killOrder);  // [lead214]
                                 });
                             if (got && shootsFrom(spot))
                             {
