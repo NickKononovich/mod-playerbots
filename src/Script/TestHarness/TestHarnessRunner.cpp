@@ -22569,7 +22569,7 @@ namespace TestHarness
                         lead.commit ? (lead.spotsWaiting ? "pull: the spots wait" : "pull committed")
                         : !lead.groupBlockedBy.empty() ? "a member's walk blocked"
                         : !lead.trailing.empty()       ? "a member trails"
-                        : anySitting                   ? "rest"
+                        : anySitting || tank->IsSitState() ? "rest"
                         : party.needBuff || rebuff     ? "buffs"
                         : !lead.routeFirstFor.IsEmpty() ? "route first"
                         : !TestRunner::GetWaypoint(tank->GetGUID(), routePoint) ? "no route point"
@@ -25205,7 +25205,9 @@ namespace TestHarness
                 Leader::MemberEvents tankWalk;
                 // [lead98] a boss too: "boss pulled where it stands" with "the tank's walk in for sight refused"
                 // (b138 328.5 s, Taragaman) - the route walk takes the group there first
-                if (mob && decision.kind == "engage" && !tank->IsWithinLOSInMap(mob) &&
+                // [lead100] b139: route_first held 34 s (b136: 1 s) - not when the route already walks the tank to
+                // this same mob (the route target): only a mob the route leads past or toward first
+                if (mob && decision.kind == "engage" && mobGuid != party.target && !tank->IsWithinLOSInMap(mob) &&
                     Leader::Events::Get(tank->GetGUID(), tankWalk) && tankWalk.move == Leader::MoveEvent::MoveTo &&
                     tankWalk.moveWhy == "route walk" &&
                     tank->GetExactDist2d(tankWalk.spot.GetPositionX(), tankWalk.spot.GetPositionY()) >

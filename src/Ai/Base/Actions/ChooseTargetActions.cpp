@@ -391,8 +391,16 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
     for (Unit* mob : fight)
     {
         if (!mob || !mob->IsAlive() || !mob->ToCreature() || !bot->IsValidAttackTarget(mob) ||
-            mob->GetThreatMgr().GetThreat(bot) > 0.0f || bot->IsWithinMeleeRange(mob) ||
             !bot->IsWithinLOSInMap(mob) || mob->HasBreakableByDamageCrowdControlAura())
+            continue;
+        // [lead100] b139 rfc-h 271.4-295.2 s: a Ragefire Shaman hit the healer for 24 s, 23 yd from the tank, in its
+        // sight, the tank's threat equal to the healer's (lead96 took only mobs with no tank threat). The tank owns
+        // the threat fight: a mob on another member is taken back with what is ready, wherever it stands; a mob
+        // with no tank threat yet is opened on beyond the tank's melee
+        Unit* victim = mob->GetVictim();
+        bool const onOther = victim && victim != bot && victim->GetTypeId() == TYPEID_PLAYER;
+        bool const untouched = mob->GetThreatMgr().GetThreat(bot) <= 0.0f && !bot->IsWithinMeleeRange(mob);
+        if (!onOther && !untouched)
             continue;
         for (char const* name : TANK_OPENERS)
             if (botAI->CanCastSpell(name, mob))
@@ -401,6 +409,13 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
                     *opener = name;
                 return mob;
             }
+        // the victim's own rescue: Righteous Defense (cast on the attacked friend)
+        if (onOther && botAI->CanCastSpell("righteous defense", victim))
+        {
+            if (opener)
+                *opener = "righteous defense";
+            return mob;
+        }
     }
     return nullptr;
 }
@@ -411,7 +426,11 @@ bool TankOpenIncomingAction::Execute(Event /*event*/)
 {
     char const* opener = nullptr;
     Unit* mob = TankIncomingMob(botAI, bot, &opener);
-    if (!mob || !opener || !botAI->CastSpell(opener, mob))
+    if (!mob || !opener)
+        return false;
+    // Righteous Defense goes on the attacked friend, every other one on the mob
+    Unit* on = strcmp(opener, "righteous defense") == 0 && mob->GetVictim() ? mob->GetVictim() : mob;
+    if (!botAI->CastSpell(opener, on))
         return false;
     LOG_INFO("playerbots", "[lead96] {}: opens on incoming {} with {} ({:.1f} yd)", bot->GetName(), mob->GetName(),
              opener, bot->GetExactDist(mob));
