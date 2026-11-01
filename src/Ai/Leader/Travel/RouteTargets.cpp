@@ -3742,6 +3742,28 @@ namespace Leader::Travel
         ObjectGuid planNext;
         if (planApplies)
         {
+            // [lead216] b184 rfc-h 5B: the plan to Oggleflint walked the Ragefire Troggs at (-262,-6) / (-241,-8),
+            // the Earthborers 23 yd from them (-272.5,8.7) / (-296.6,7.6) were off the route to that boss and the
+            // plan to Taragaman came back for them from Oggleflint (431-466 s, 233 yd); the dungeon's optimum takes
+            // them with the Troggs. The plan's walk goes to its stops: an idle mob off the route within its aggro
+            // reach of an on-path mob, in its sight, is on that walk too (once: not the mobs beside it in turn)
+            std::vector<std::pair<float, Creature*>> beside;
+            for (auto const& [distance, creature] : offRouteHostiles)
+            {
+                if (creature->IsInCombat() || group.BossOrder(creature) >= 0 || deferred.count(creature->GetGUID()))
+                    continue;
+                float const reach = AggroReach(creature, leader);
+                for (auto const& [onDistance, on] : hostiles)
+                    if (on != nextBoss && !on->IsInCombat() && on->GetExactDist(creature) <= reach &&
+                        on->IsWithinLOSInMap(creature))
+                    {
+                        beside.emplace_back(distance, creature);
+                        group.Route().pathVerdicts[creature->GetGUID()] = {
+                            true, "beside the plan's stop " + on->GetName(), on->GetExactDist(creature), reach};
+                        break;
+                    }
+            }
+            hostiles.insert(hostiles.end(), beside.begin(), beside.end());
             std::vector<Creature*> planMobs;
             for (auto const& [distance, creature] : hostiles)
                 if (creature != nextBoss && !creature->IsInCombat() && !creature->IsDungeonBoss() &&
