@@ -6909,11 +6909,11 @@ bool SetFacingTargetAction::Execute(Event /*event*/)
         return false;
 
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
-        return true;
+        return false;
 
+    // A free action: the turn is instant, so the rotation still casts in this tick (one action per tick).
     ServerFacade::instance().SetFacingTo(bot, target);
-    botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
-    return true;
+    return false;
 }
 
 bool SetFacingTargetAction::isUseful() { return !AI_VALUE2(bool, "facing", "current target"); }
