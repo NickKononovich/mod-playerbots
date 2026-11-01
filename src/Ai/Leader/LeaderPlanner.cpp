@@ -497,19 +497,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr uint32 MEASURED_DPS_TTL_MS = 15 * MINUTE * IN_MILLISECONDS;
     constexpr float MEASURED_DPS_TRUST = 0.8f;   // the share of the measured damage the planner counts on
     constexpr float MEASURED_DPS_WEIGHT = 0.5f;  // the newest fight's weight in the running value
-    // The same for the damage the tank really takes against what the plan expected of it (TakenCost of the planned
-    // cost): the pack's landed damage is scaled down to it, never up. zf-n wave 8: landed 129-247/s planned, 40-50/s
-    // taken. Only fights whose mob count came as planned (+1), after LANDED_CALIBRATION_MIN_FIGHTS of them; the
-    // measured ratio times LANDED_CALIBRATION_SAFETY, at least LANDED_CALIBRATION_FLOOR. The hard cap of the lone
-    // mob (CAREFUL_LAST_RESORT_HARD_CAP) judges a cost scaled by at least LANDED_HARD_CAP_FLOOR.
-    constexpr float LANDED_CALIBRATION_MIN_COST = 0.05f;
+    // The same for the damage the tank really takes against the template of what came (LandedMeleeDps): the pack's
+    // landed damage is scaled down to it, never up. zf-n wave 8: landed 129-247/s planned, 40-50/s taken. [lead209]
+    // the ratios of this dungeon's fights, after LANDED_CALIBRATION_MIN_FIGHTS of them (NoteMeasuredTaken); no
+    // floor, no safety factor, no seed from another dungeon. The hard cap of the lone mob
+    // (CAREFUL_LAST_RESORT_HARD_CAP) judges a cost scaled by at least LANDED_HARD_CAP_FLOOR.
     constexpr uint32 LANDED_CALIBRATION_MIN_FIGHTS = 2;
-    constexpr float LANDED_CALIBRATION_SAFETY = 1.5f;
-    constexpr float LANDED_CALIBRATION_FLOOR = 0.4f;
     constexpr float LANDED_HARD_CAP_FLOOR = 0.6f;
-    // A tank's calibration from its last instance (the model's error, not the place's) seeds the next one halfway
-    // to 1 and counts as one fight there less, if it is at most this old.
-    constexpr uint32 LANDED_SEED_TTL_MS = 60 * MINUTE * IN_MILLISECONDS;
     // Side pulls (user rule: from one side a pack brings fewer mobs than from the other): cast spots around the pull
     // target at the pull's range, reached by a walk that enters no other idle mob's aggro reach (the test of the
     // harness approach: aggro range or attack distance, combat distance and a margin, and the mob sees the point).
@@ -4086,6 +4080,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool measured = false;
         bool rescaledSpells = false;
         float landedScale = 1.0f;  // the tank's measured calibration (LandedCalibration), at most 1
+        // [lead209] the measured ratio of a mob entry measured on its own in this dungeon (else landedScale)
+        std::unordered_map<uint32, float> const* landedByEntry = nullptr;
         float aoeTargetDps = 0.0f;  // [b44_packs] the group's AoE damage per second on each stacked mob (0: none)
         bool withBoss = false;      // [lead201] a boss's own health and damage are in the estimate (the boss judge)
     };
@@ -4131,10 +4127,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             }
 
             float spell = 0.0f;
+            float scale = mode.landedScale;  // [lead209] the mob's own entry when measured, else the dungeon's trash
+            if (mode.landedByEntry)
+                if (auto const own = mode.landedByEntry->find(mob->GetEntry()); own != mode.landedByEntry->end())
+                    scale = own->second;
             float const landed = LandedMeleeDps(mob, tank, mode.measured ? &mitigation : nullptr,
                                                 mode.measured && losPull, mode.rescaledSpells, &spell) *
-                                 mode.landedScale;
-            spell *= mode.landedScale;
+                                 scale;
+            spell *= scale;
             if (spell > 0.0f)
                 ++estimate.casters;
 
@@ -6338,62 +6338,106 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     };
     std::unordered_map<uint64, MeasuredDps> measuredDps;  // by tank, under pullCheckLock
 
+    // [lead209] user (approved, "only by facts"): the landed estimate is the template (LandedMeleeDps) times the
+    // ratio real / template measured in this dungeon - per mob entry where a fight of that entry alone measured it,
+    // else the dungeon's trash ratio - and its spread is the upper quantile of the same measured ratios (no fixed
+    // floor or safety factor). Nothing measured: the template.
+    constexpr float LANDED_RATIO_QUANTILE = 0.9f;  // the upper quantile of the measured ratios (user-approved spread)
+
     struct MeasuredTaken
     {
-        float ratio = 1.0f;  // damage taken against TakenCost of the plan
-        uint32 fights = 0;
+        std::vector<float> trash;                              // every fight without a boss: real / template
+        std::unordered_map<uint32, std::vector<float>> entry;  // fights of one mob entry alone
         uint32 ms = 0;
         uint32 instanceId = 0;
     };
     std::unordered_map<uint64, MeasuredTaken> measuredTaken;  // by tank, under pullCheckLock
 
-    // The fight is over: what the tank took against what the plan expected it to take. Under pullCheckLock.
-    void NoteMeasuredTaken(Player* tank, PullRecord const& record, uint32 now)
+    // the upper quantile (nearest rank) of measured ratios
+    float UpperRatio(std::vector<float> ratios)
+    {
+        std::sort(ratios.begin(), ratios.end());
+        size_t const rank = size_t(std::ceil(LANDED_RATIO_QUANTILE * float(ratios.size())));
+        return ratios[std::clamp<size_t>(rank, 1, ratios.size()) - 1];
+    }
+
+    // The fight is over: what the tank took against the template of what came (each mob's LandedMeleeDps over its
+    // life in the planner's model: its own kill time plus half the others', at the fight's real kill rate). Under
+    // pullCheckLock.
+    void NoteMeasuredTaken(PlayerbotAI* botAI, Player* tank, PullRecord const& record, uint32 now)
     {
         uint32 const fightMs = record.startMs ? getMSTimeDiff(record.startMs, now) : 0;
-        if (fightMs < MEASURED_DPS_MIN_FIGHT_MS || record.deaths || record.cost < LANDED_CALIBRATION_MIN_COST ||
-            record.came.empty() || record.came.size() + 1 < record.mobs || record.came.size() > record.mobs + 1 ||
-            !tank->GetMaxHealth())
+        if (fightMs < MEASURED_DPS_MIN_FIGHT_MS || record.deaths || record.came.empty() ||
+            record.cameHealth.size() != record.came.size())
             return;
 
-        PackEstimate planned;
-        planned.cost = record.cost;
-        float const expected = TakenCost(planned);
         uint64 const total = DamageTaken::Total(tank->GetGUID());
-        if (expected <= 0.0f || total < record.takenAtStart)
+        if (total < record.takenAtStart)
             return;
 
-        float const taken = float(total - record.takenAtStart) / float(tank->GetMaxHealth());
-        float const ratio = taken / expected;
-        MeasuredTaken& entry = measuredTaken[tank->GetGUID().GetRawValue()];
-        bool const fresh = entry.ms && entry.instanceId == tank->GetInstanceId() &&
-                           getMSTimeDiff(entry.ms, now) < MEASURED_DPS_TTL_MS;
-        bool const seeded = !fresh && entry.ms && entry.instanceId != tank->GetInstanceId() &&
-                            getMSTimeDiff(entry.ms, now) < LANDED_SEED_TTL_MS;
-        if (fresh || seeded)
-        {
-            float const prior = fresh ? entry.ratio : (entry.ratio + 1.0f) / 2.0f;
-            entry.ratio = prior * (1.0f - MEASURED_DPS_WEIGHT) + ratio * MEASURED_DPS_WEIGHT;
-        }
-        else
-            entry.ratio = ratio;
+        float totalHealth = 0.0f;
+        for (uint32 health : record.cameHealth)
+            totalHealth += float(health);
+        if (totalHealth <= 0.0f)
+            return;
 
-        entry.fights = fresh ? entry.fights + 1 : (seeded ? LANDED_CALIBRATION_MIN_FIGHTS : 1);
+        TankMitigation const mitigation = GetTankMitigation(tank);
+        float const fightSec = float(fightMs) / float(IN_MILLISECONDS);
+        float templateDamage = 0.0f;
+        bool boss = false;
+        uint32 oneEntry = 0;
+        bool singleEntry = true;
+        for (size_t i = 0; i < record.came.size(); ++i)
+        {
+            Unit* mob = botAI->GetUnit(record.came[i]);
+            if (!mob || !mob->ToCreature())
+                return;  // a mob the template cannot read: no measurement
+            boss = boss || IsBossMob(mob);
+            if (!oneEntry)
+                oneEntry = mob->GetEntry();
+            singleEntry = singleEntry && mob->GetEntry() == oneEntry;
+            float const health = float(record.cameHealth[i]);
+            float const life = (health + (totalHealth - health) / 2.0f) / totalHealth * fightSec;
+            templateDamage += LandedMeleeDps(mob, tank, &mitigation) * life;
+        }
+        if (templateDamage <= 0.0f)
+            return;
+
+        float const ratio = float(total - record.takenAtStart) / templateDamage;
+        MeasuredTaken& entry = measuredTaken[tank->GetGUID().GetRawValue()];
+        if (entry.instanceId != tank->GetInstanceId())
+            entry = MeasuredTaken();  // [lead209] this dungeon's fights only
+        if (!boss)
+            entry.trash.push_back(ratio);
+        if (singleEntry)
+            entry.entry[oneEntry].push_back(ratio);
         entry.ms = now;
         entry.instanceId = tank->GetInstanceId();
     }
 
-    // The scale of the pack's landed damage on this tank in this instance: 1 until measured, never above 1.
-    float LandedCalibration(Player* tank)
+    // [lead209] the landed scales of this tank in this dungeon: the trash ratio and the entries measured alone (the
+    // upper quantile of each one's measured ratios), never above 1; nothing measured: 1 (the template)
+    struct LandedRatios
     {
+        float trash = 1.0f;
+        std::unordered_map<uint32, float> byEntry;
+    };
+
+    LandedRatios LandedCalibration(Player* tank)
+    {
+        LandedRatios out;
         std::lock_guard<std::mutex> guard(pullCheckLock);
         auto const found = measuredTaken.find(tank->GetGUID().GetRawValue());
         if (found == measuredTaken.end() || found->second.instanceId != tank->GetInstanceId() ||
-            found->second.fights < LANDED_CALIBRATION_MIN_FIGHTS ||
             getMSTimeDiff(found->second.ms, getMSTime()) >= MEASURED_DPS_TTL_MS)
-            return 1.0f;
+            return out;
 
-        return std::clamp(found->second.ratio * LANDED_CALIBRATION_SAFETY, LANDED_CALIBRATION_FLOOR, 1.0f);
+        if (found->second.trash.size() >= LANDED_CALIBRATION_MIN_FIGHTS)
+            out.trash = std::min(UpperRatio(found->second.trash), 1.0f);
+        for (auto const& [mobEntry, ratios] : found->second.entry)
+            if (ratios.size() >= LANDED_CALIBRATION_MIN_FIGHTS)
+                out.byEntry[mobEntry] = std::min(UpperRatio(ratios), 1.0f);
+        return out;
     }
 
     // The fight is over: the health of what it killed over its length (corpses still in the world), kept as the
@@ -6851,7 +6895,7 @@ namespace PullCheck
 
         LogPullCheck(bot, record, now);
         NoteMeasuredDps(botAI, bot, record, now);
-        NoteMeasuredTaken(bot, record, now);
+        NoteMeasuredTaken(botAI, bot, record, now);
         pullChecks.erase(found);
     }
 
@@ -7923,7 +7967,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     EstimateMode estimateMode;
     estimateMode.measured = measured;
     estimateMode.rescaledSpells = measured && rescaled;
-    estimateMode.landedScale = LandedCalibration(bot);
+    LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
+    estimateMode.landedScale = landedRatios.trash;
+    estimateMode.landedByEntry = &landedRatios.byEntry;
     // [b44_packs] the group's AoE on a stack (WEAK_PACK_AOE_TARGET_SHARE): a tank with AoE threat and at least one
     // AoE damage dealer here, else no AoE estimate at all
     uint32 weakAoeDealers = 0;
@@ -12256,7 +12302,9 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});
     EstimateMode mode;
     mode.measured = true;
-    mode.landedScale = LandedCalibration(bot);
+    LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
+    mode.landedScale = landedRatios.trash;
+    mode.landedByEntry = &landedRatios.byEntry;
     PackEstimate estimate = EstimatePack(mobs, bot, groupDps, mode);
     // [lead201] a boss is judged on his own facts: his health over the group's measured damage, what he (and the adds
     // his script brings) lands on the tank meanwhile against the healers' mana and their healing per second
