@@ -471,6 +471,14 @@ namespace TestHarness
             std::string lingeringSig;          // [lead84] the lingering combat's mob set (lingering_combat logged)
             ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
             bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
+            // [lead94] the travel of the current route leg (travel_leg)
+            ObjectGuid travelTarget;
+            Position travelFrom;
+            uint32 travelTickMs = 0;
+            float travelSec = 0.0f;
+            float travelMoving = 0.0f;
+            float travelFight = 0.0f;
+            std::map<std::string, float> travelStops;
             struct MeleeMeet
             {
                 ObjectGuid target;  // the mob the point is for

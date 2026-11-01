@@ -331,6 +331,24 @@ bool AggressiveTargetAction::Execute(Event event)
                     opened = true;
                     break;
                 }
+            // [lead94] b135: 23 of 46 pulls opened without a hit - the opener's decision per engage, logged
+            if (!opened)
+            {
+                std::string tried;
+                for (char const* opener : TANK_OPENERS)
+                {
+                    uint32 const spell = AI_VALUE2(uint32, "spell id", opener);
+                    if (!spell || !bot->HasSpell(spell))
+                        continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+                    tried += Acore::StringFormat("{}{}: {}, {:.0f} of {:.0f} yd, {}", tried.empty() ? "" : "; ",
+                                                 opener, bot->HasSpellCooldown(spell) ? "cooldown" : "ready",
+                                                 bot->GetExactDist(target), info ? info->GetMaxRange(false) : 0.0f,
+                                                 bot->IsWithinLOSInMap(target) ? "in sight" : "out of sight");
+                }
+                LOG_INFO("playerbots", "[lead94] opener_miss: {}: engage on {} without an opener ({})",
+                         bot->GetName(), target->GetName(), tried.empty() ? "none known" : tried);
+            }
             // [lead85] in sight but beyond the opener's range: the walk ends at its range (the next look opens),
             // not in the mob's reach (a body pull)
             float const range = opened ? 0.0f : OpenerRange();

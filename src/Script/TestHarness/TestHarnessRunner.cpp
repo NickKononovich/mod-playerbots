@@ -22690,6 +22690,53 @@ namespace TestHarness
                 it = lead.groupBlockedBy.erase(it);
             }
         }
+        // [lead94] travel per route leg (the route target): its real seconds, the tank's moving seconds and every stop
+        // by its cause, logged when the leg ends (travel_leg)
+        {
+            float const dt = lead.travelTickMs ? getMSTimeDiff(lead.travelTickMs, now) / 1000.0f : 0.0f;
+            lead.travelTickMs = now;
+            if (party.target != lead.travelTarget)
+            {
+                if (!lead.travelTarget.IsEmpty() && lead.travelSec > 0.0f)
+                {
+                    JsonObject stops;
+                    for (auto const& [cause, sec] : lead.travelStops)
+                        stops.Real(cause.c_str(), sec);
+                    DecisionLog::Instance().Write(run, "leader", "travel_leg", lead.travelTarget, tank->GetName(),
+                                                  false,
+                                                  JsonObject().Real("straight",
+                                                                    lead.travelFrom.GetExactDist(tank->GetPosition()))
+                                                      .Real("sec", lead.travelSec).Real("moving", lead.travelMoving)
+                                                      .Real("fights", lead.travelFight).Raw("stops", stops.Build()));
+                }
+                lead.travelTarget = party.target;
+                lead.travelFrom = tank->GetPosition();
+                lead.travelSec = lead.travelMoving = lead.travelFight = 0.0f;
+                lead.travelStops.clear();
+            }
+            else if (dt > 0.0f && dt < 5.0f && !party.target.IsEmpty())
+            {
+                lead.travelSec += dt;
+                if (fighting)
+                    lead.travelFight += dt;
+                else if (tank->isMoving())
+                    lead.travelMoving += dt;
+                else
+                {
+                    TestRunner::Waypoint routePoint;
+                    std::string const cause =
+                        lead.commit ? (lead.spotsWaiting ? "pull: the spots wait" : "pull committed")
+                        : !lead.groupBlockedBy.empty() ? "a member's walk blocked"
+                        : !lead.trailing.empty()       ? "a member trails"
+                        : anySitting                   ? "rest"
+                        : party.needBuff || rebuff     ? "buffs"
+                        : !lead.routeFirstFor.IsEmpty() ? "route first"
+                        : !TestRunner::GetWaypoint(tank->GetGUID(), routePoint) ? "no route point"
+                                                                                : "other";
+                    lead.travelStops[cause] += dt;
+                }
+            }
+        }
         // [lead91] a fight or a pull moves the tank: the kept route point is judged afresh after it
         if (fighting || lead.commit)
             lead.routeWalkPoint.reset();
@@ -22706,12 +22753,21 @@ namespace TestHarness
                 // tank walked and stepped back (-165.5 -> -173.3: command_repeat). One command per route point:
                 // the point the tank walks to is kept until it reaches it, a new one is taken when it lies further
                 // along (nearer the route target) or the route itself changes (a new target) - never a step back
-                Unit* routeTarget = party.target.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, party.target);
-                if (lead.routeWalkPoint && lead.routeWalkTarget == party.target && routeTarget &&
+                // [lead94] b135: the straight-line "nearer the target" test held the kept point on a winding route
+                // until the tank reached it - a stop every few yards. The test is the walk's own direction: a new
+                // point on the kept point's side of the tank is ahead (taken at once, the walk goes on); one behind
+                // the tank waits until the kept point is reached
+                if (lead.routeWalkPoint && lead.routeWalkTarget == party.target &&
                     tank->GetExactDist2d(lead.routeWalkPoint->GetPositionX(), lead.routeWalkPoint->GetPositionY()) >
-                        1.5f &&
-                    routeTarget->GetExactDist(point) >= routeTarget->GetExactDist(*lead.routeWalkPoint))
-                    point = *lead.routeWalkPoint;
+                        1.5f)
+                {
+                    float const keptX = lead.routeWalkPoint->GetPositionX() - tank->GetPositionX();
+                    float const keptY = lead.routeWalkPoint->GetPositionY() - tank->GetPositionY();
+                    float const newX = point.GetPositionX() - tank->GetPositionX();
+                    float const newY = point.GetPositionY() - tank->GetPositionY();
+                    if (keptX * newX + keptY * newY <= 0.0f)
+                        point = *lead.routeWalkPoint;
+                }
                 lead.routeWalkPoint = point;
                 lead.routeWalkTarget = party.target;
                 // [lead73] b117 271.4 s: the route walk woke a Trogg ("would wake ..., walked anyway") - it goes
