@@ -1698,14 +1698,14 @@ namespace Leader::Travel
                 spots.insert(spots.begin() + at + 1, stop.spot);
             }
 
-            JsonArray order;
+            JsonArray planOrder;
             float walked = 0.0f;
             for (size_t i = 0; i < route.routePlan.size(); ++i)
             {
                 PlannedStop const& stop = route.routePlan[i];
                 float const leg = spots[i].GetExactDist(spots[i + 1]);
                 walked += leg;
-                order.Raw(JsonObject()
+                planOrder.Raw(JsonObject()
                               .Str("stop", PlanStopName(map, stop))
                               .Bool("walker", stop.patrol)
                               .Real("x", stop.spot.GetPositionX())
@@ -1719,7 +1719,7 @@ namespace Leader::Travel
                                              .Real("length", route.routePlanLength)
                                              .Real("straight", walked)
                                              .Num("stops", int64(route.routePlan.size()))
-                                             .Raw("order", order.Build())
+                                             .Raw("order", planOrder.Build())
                                              .Raw("meets", meets.Build())
                                              .Raw("noWalk", unreachable.Build()));
             LOG_INFO("playerbots", "[lead204] {}: route plan ({}): {} stops to {}, {:.0f} yd", group.Run().runId, why,
