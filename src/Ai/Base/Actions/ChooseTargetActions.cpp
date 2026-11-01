@@ -390,6 +390,14 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
             if (Player* member = gref->GetSource(); member && member != bot && member->GetMap() == bot->GetMap())
                 for (Unit* attacker : member->getAttackers())
                     fight.push_back(attacker);
+    // [lead115] b149 rfc-h 12.8-17.4 s: the engage on Earthborer 3 walked the tank on with no target and the mob
+    // reached the group first - the open engage order's mob is opened on (the untouched pass below: no tank threat,
+    // beyond its melee) as soon as an opener reaches it in sight, before the walk goes into its own reach
+    Leader::PullOrder order;
+    if (Leader::Orders::GetOpen(bot->GetGUID(), order) && order.method == Leader::PullMethod::Engage &&
+        order.state != Leader::OrderState::Fighting)
+        if (Unit* engaged = botAI->GetUnit(order.target))
+            fight.push_back(engaged);
     // [lead106] b140 rfc-h 262.7-286.7 s: a Ragefire Shaman on the mage for 24 s while Hand of Reckoning went to
     // mobs that only came at the tank (the first match in the list) - two passes: every mob on another member first
     // (Righteous Defense on the attacked friend first: it takes up to three), then the untouched incoming ones

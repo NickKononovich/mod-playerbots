@@ -198,6 +198,15 @@ namespace Leader::Dungeon
         std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
         pullMobs.insert(pullMobs.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());  // [lead76]
         g_leaderExempt = &pullMobs;
+        // [lead115] the pull walks: the engage order open (not fighting yet) and the tank without threat on its mob
+        bool pullWalk = false;
+        {
+            Leader::PullOrder walkOrder;
+            if (lead.commit && lead.commitIssued && Leader::Orders::GetOpen(group.LeaderGuid(), walkOrder) &&
+                walkOrder.method == Leader::PullMethod::Engage && walkOrder.state != Leader::OrderState::Fighting)
+                if (Unit* walkMob = ObjectAccessor::GetUnit(*tank, lead.commitMob); walkMob && walkMob->IsAlive())
+                    pullWalk = !walkMob->IsInCombat() || walkMob->GetThreatMgr().GetThreat(tank) <= 0.0f;
+        }
         struct GuardReset
         {
             ~GuardReset()
@@ -2215,6 +2224,52 @@ namespace Leader::Dungeon
                     logEvent(bot, "Hold", JsonObject().Str("why", lead.waitPatrol.IsEmpty() ? "stay (regroup)"
                                                                                           : "patrol wait"));
                 moved = true;
+            }
+            // [lead115] user: on a pull the healer and the damage dealers do not walk with the tank. b149 rfc-h
+            // 14.1-17.4 s: "Follow - along with the tank, gap 1.3" on the engage walk, Earthborer 3 took the shaman
+            // 3 yd from the tank. While the pull walks (the engage order open, the tank without threat on its mob)
+            // every member holds where it stands, outside the reach of the pull's mobs and of every idle mob, else
+            // steps back from the pull's mob out of its reach; it comes in on the leader's commands once the tank
+            // has the mob
+            if (!moved && !combat && pullWalk && Leader::ExecutorMember(bot) && !bot->IsSitState())
+            {
+                Position holdAt = bot->GetPosition();
+                Unit* reaching = nullptr;
+                for (ObjectGuid const& mobGuid : pullMobs)
+                    if (Creature* pullMob = map->GetCreature(mobGuid);
+                        pullMob && pullMob->IsAlive() && IdleMobReachesSpot(bot, pullMob, holdAt))
+                        reaching = pullMob;
+                if (!reaching)
+                    reaching = LeaderAggroAt(bot, holdAt);
+                if (reaching)
+                {
+                    float const dx = bot->GetPositionX() - reaching->GetPositionX();
+                    float const dy = bot->GetPositionY() - reaching->GetPositionY();
+                    float const length = std::max(0.1f, std::hypot(dx, dy));
+                    float const away = reaching->ToCreature()
+                                           ? reaching->ToCreature()->GetAggroRange(bot) +
+                                                 reaching->ToCreature()->m_CombatDistance + LEADER_FOLLOW_START_YD
+                                           : LEADER_FOLLOW_START_YD;
+                    float x = reaching->GetPositionX() + dx / length * away;
+                    float y = reaching->GetPositionY() + dy / length * away;
+                    float z = bot->GetPositionZ();
+                    if (map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
+                                                             bot->GetPositionZ(), x, y, z) &&
+                        checkedMove(guid, Leader::MoveEvent::MoveTo, Position(x, y, z), LEADER_FOLLOW_TOLERANCE,
+                                    "the pull walks: out of its reach"))
+                    {
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "the pull walks: out of its reach")
+                                     .Str("mob", reaching->GetName()));
+                        moved = true;
+                    }
+                }
+                if (!moved)
+                {
+                    if (checkedMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "the pull walks"))
+                        logEvent(bot, "Hold", JsonObject().Str("why", "the pull walks: the tank takes the mob first"));
+                    moved = true;
+                }
             }
             if (!moved && !combat && Leader::LEADER_NO_OWN_FOLLOW && Leader::ExecutorMember(bot) &&
                 !bot->IsSitState() && !botAI->HasStrategy("stay", BOT_STATE_NON_COMBAT))
