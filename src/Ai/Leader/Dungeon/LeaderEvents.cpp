@@ -2894,7 +2894,13 @@ namespace Leader::Dungeon
                         };
                         auto const kept = lead.combatSpots.find(guid);
                         bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second);
-                        if (!shootsFrom(bot->GetPosition()) && !spotShoots)
+                        // [lead174] b179 rfc-h 5A: 122 re-spots "out of its reach / sight of the tank its Attack target
+                        // runs to" - judged against the tank while the tank itself still walks (a pull back, the walk
+                        // to its fight spot), every step of it was a new spot. Where the fight is held is a fact once
+                        // the tank stands: the spot kept for this target holds while the tank walks
+                        bool const tankSettling = runningIn && tank->isMoving() && kept != lead.combatSpots.end() &&
+                                                  kept->second.first == attackOn->GetGUID();
+                        if (!tankSettling && !shootsFrom(bot->GetPosition()) && !spotShoots)
                         {
                             std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                             // [lead137] never back to the spot it just left for this target
