@@ -478,7 +478,9 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "high unholy rune",
             {
-                NextAction("death strike", ACTION_HIGH + 1)
+                // [rot33] wowsims tank_deathknight__blood_aggro: Death Strike after Heart Strike (5.5); it sat at
+                // ACTION_HIGH + 1, above Heart Strike, Rune Strike and Dancing Rune Weapon
+                NextAction("death strike", ACTION_DEFAULT + 0.45f)
             }
         )
     );
