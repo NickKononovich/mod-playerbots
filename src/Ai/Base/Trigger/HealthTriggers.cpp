@@ -566,6 +566,14 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
     float const fixedLine = healer ? HEALER_REST_MANA_PCT : REST_MANA_PCT;
     float line = fixedLine;
     std::string fightNote;
+    // [lead194] b181 rfc-h 5E: the holy priest's Rests "mana 33 % < 60 %" - no next fight known, the fixed line. In
+    // a led group the line is the next fight's only (below); with none known the leader's planner judges it when it
+    // looks (its healer gate holds and Rests at the computed line): here only the low line
+    if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot))
+    {
+        line = float(sPlayerbotAIConfig.LowMana);
+        fightNote = Acore::StringFormat("the low line {:.0f} % (no next fight known)", line);
+    }
 
     // The next fight decides the line when it is known: what it costs this bot plus a reserve, never below the low
     // line (DrinkAction drinks there anyway), and a full top-up before a boss.
