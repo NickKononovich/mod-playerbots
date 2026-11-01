@@ -387,8 +387,15 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
     if (Group* group = bot->GetGroup())
         for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
             if (Player* member = gref->GetSource(); member && member != bot && member->GetMap() == bot->GetMap())
+            {
                 for (Unit* attacker : member->getAttackers())
                     fight.push_back(attacker);
+                // [lead138] b162: casters standing back (Searing Blade Cultist / Warlock) in combat with a member
+                // and with no tank threat took 3 members - every mob in combat with the group is the tank's to open on
+                for (auto const& [guid, ref] : member->GetCombatManager().GetPvECombatRefs())
+                    if (Unit* other = ref ? ref->GetOther(member) : nullptr)
+                        fight.push_back(other);
+            }
     // [lead115] b149 rfc-h 12.8-17.4 s: the engage on Earthborer 3 walked the tank on with no target and the mob
     // reached the group first - the open engage order's mob is opened on (the untouched pass below: no tank threat,
     // beyond its melee) as soon as an opener reaches it in sight, before the walk goes into its own reach

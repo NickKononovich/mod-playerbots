@@ -458,6 +458,23 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
             return 0.0f;
     }
 
+    // [lead138] b162 20261101-121409: 8 pulls the leader did not order ("unplanned (tank's reach melee)",
+    // "(tank's return to pull position)", ...). Only the leader starts a pull: out of a fight with no open pull order,
+    // the led tank's own fight starters on a mob that is not fighting are off (the leader's planner orders the pull)
+    if (!bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
+        !Leader::Orders::IsOpen(bot->GetGUID()))
+    {
+        static constexpr std::string_view starters[] = {"reach melee", "return to pull position", "attack anything",
+                                                        "dps assist", "tank assist", "melee", "pull action"};
+        for (std::string_view starter : starters)
+            if (action->getName() == starter)
+            {
+                Unit* startOn = action->GetTarget();
+                if (!startOn || !startOn->IsInCombat())
+                    return 0.0f;
+            }
+    }
+
     // [lead17] LEADER_TANK_OWN_PICKS_OFF: the led tank's own next pack and own hazard step are off in every state
     if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
         (action->getName() == "chain pull" ||
