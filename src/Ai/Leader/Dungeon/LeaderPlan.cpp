@@ -995,7 +995,6 @@ namespace Leader::Dungeon
             // mobs, the walkers taken along and the woken mob's pack judged as one fight (PullPlanner::JudgePack, the
             // planner's estimate): it fits, the pull goes with them (taken along: PullPack, the walk guards let them
             // come); it does not, the woken pack is the pull first (as before)
-            std::string wakesWait;  // [lead167] the woken mob cannot be pulled first: the pull waits
             if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && committed.kind == "engage")
             {
                 std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
@@ -1039,6 +1038,21 @@ namespace Leader::Dungeon
                         fits = true;
                         judged += "; the boss plan takes it into his fight";
                     }
+                    // [lead208] b182 rfc-h 5G 507-717 s: Taragaman released for the Searing Blade Cultist "the
+                    // pull first", the Cultist refused (no safe pull), Taragaman held "not pullable first" - the run
+                    // stalled. The same release again means the woken pack cannot be pulled first: the one option
+                    // left, the pull with it taken along, goes (the cheapest of the options there are), no wait
+                    if (!fits && lead.walkWakesFirst == woken->GetGUID() && lead.walkWakesReleased == mob->GetGUID())
+                    {
+                        auto const refused = lead.refusedPicks.find(woken->GetGUID());
+                        auto const unreachable = lead.unreachable.find(woken->GetGUID());
+                        fits = true;
+                        judged += "; every option over the budget, the cheapest: taken along (not pullable first: " +
+                                  (refused != lead.refusedPicks.end()      ? refused->second
+                                   : unreachable != lead.unreachable.end() ? unreachable->second.why
+                                                                           : std::string("not picked")) +
+                                  ")";
+                    }
                     bool const sameFact = !fits && lead.walkWakesFirst == woken->GetGUID() &&
                                           lead.walkWakesReleased == mob->GetGUID();  // logged once
                     if (!sameFact)
@@ -1065,17 +1079,7 @@ namespace Leader::Dungeon
                     // [lead167] b179 rfc-h 5F: 99 releases of Oggleflint for "wakes Earthborer: it is the pull first"
                     // and Earthborer never pulled (its pick was skipped: off the route / refused). The woken mob is the
                     // next pick (on the path: the walk in crosses it); one release per fact - the same release again
-                    // means it cannot be the pull first (refused / unreachable): the pull waits, no new release
-                    else if (lead.walkWakesFirst == woken->GetGUID() && lead.walkWakesReleased == mob->GetGUID())
-                    {
-                        auto const refused = lead.refusedPicks.find(woken->GetGUID());
-                        auto const unreachable = lead.unreachable.find(woken->GetGUID());
-                        wakesWait = "the walk in wakes " + woken->GetName() + ", not pullable first (" +
-                                    (refused != lead.refusedPicks.end()      ? refused->second
-                                     : unreachable != lead.unreachable.end() ? unreachable->second.why
-                                                                             : std::string("not picked")) +
-                                    ")";
-                    }
+                    // means it cannot be the pull first: [lead208] taken along above
                     else
                     {
                         lead.walkWakesFirst = woken->GetGUID();
@@ -1113,8 +1117,6 @@ namespace Leader::Dungeon
                 // [lead77] pull readiness includes positions: no order while a member trails or is blocked
                 if (waitFor.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
                     waitFor = "a member cannot follow (trailing / its walk blocked)";
-                if (waitFor.empty())
-                    waitFor = wakesWait;
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);

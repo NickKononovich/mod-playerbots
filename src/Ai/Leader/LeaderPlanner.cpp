@@ -9803,6 +9803,16 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // chain of the core's call for assistance) is judged by the leader's estimate (JudgeMobs, the plans' danger
     // model): it fits, it is pulled now as one planned pull, at range when the tank has a pull, else walked in (the
     // woken packs are part of the pull); it does not, no safe pull here (the split below, the route round it)
+    // [lead208] the pull as it comes of a pack the leader must clear (its whole-pack request) that is over the
+    // budget: kept as the cheapest option left, taken when no split below carries the pack (never a dead end)
+    struct CheapestOption
+    {
+        std::vector<Unit*> pack;
+        bool back = false;
+        float overload = 0.0f;
+        std::string judged;
+        std::string woken;
+    } cheapest;
     if (!found && toppedUp && !boss && !targetPackBoss)
     {
         std::vector<ObjectGuid> packGuids = {target->GetGUID()};
@@ -9899,6 +9909,14 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             float overload = 0.0f;
             std::string judged;
             bool const fits = !wokenBoss && JudgeMobs(guaranteed, overload, judged);
+            if (!fits && !wokenBoss && requested)
+            {
+                cheapest.pack = guaranteed;
+                cheapest.back = back;
+                cheapest.overload = overload;
+                cheapest.judged = judged;
+                cheapest.woken = firstWoken ? firstWoken->GetName() : std::string();
+            }
             if (!fits)
             {
                 _planVerdictHopeless = true;
@@ -10750,6 +10768,33 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                          tankAoe ? "yes" : "no", aoeDps);
             }
         }
+    }
+
+    // [lead208] b182 rfc-h 5G 500-717 s: the Searing Blade room's pack was refused (overload 1.16, no split), every
+    // pull on the path woke it, the run stalled. A pack the leader must clear with every option over the budget is
+    // pulled the cheapest way left - the pull as it comes, the group topped up - not held for good
+    if (!found && !cheapest.pack.empty())
+    {
+        chosenPack = cheapest.pack;
+        chosen = EstimatePack(chosenPack, bot, groupDps, estimateMode);
+        chosenOverlaps.clear();
+        _planCached = target->GetGUID();
+        _planPullBack = cheapest.back;
+        _planLos = false;
+        _planSingle = false;
+        _planKillFor.Clear();
+        _planFightFor.Clear();
+        _planFightNote.clear();
+        _planGuaranteed = true;
+        _planVerdictHopeless = false;
+        _planVerdictWhy.clear();
+        fallback = lastResort = found = true;
+        _planReason = Acore::StringFormat(
+            "every option over the budget, the cheapest: the pull as it comes{} (overload {:.2f}): {}",
+            cheapest.woken.empty() ? std::string() : " with what the way in wakes (" + cheapest.woken + ")",
+            cheapest.overload, cheapest.judged);
+        LOG_INFO("playerbots", "[lead208] {}: {} ({} mobs): {}", bot->GetName(), target->GetName(), chosenPack.size(),
+                 _planReason);
     }
 
     if (!found)
