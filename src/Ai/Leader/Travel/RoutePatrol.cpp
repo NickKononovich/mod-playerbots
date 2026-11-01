@@ -493,10 +493,24 @@ using namespace Leader::Fight;
         Creature* holdMob = nullptr;   // [b48_scholo] the hold's patrol, whatever its kind
         bool laneHold = false;         // [b48_scholo]
         G3D::Vector3 laneTo;
+        // [lead213] the walk goes to a boss
+        Creature* const routeTarget =
+            routeState.target.IsEmpty() ? nullptr : leader->GetMap()->GetCreature(routeState.target);
+        bool const routeBoss = routeTarget && routeTarget->IsAlive() &&
+                               (routeState.bossCreatures.count(routeTarget->GetGUID()) || routeTarget->IsDungeonBoss());
         for (Creature* mob : idle)
         {
             if (routeState.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
                 continue;
+            // [lead213] b184 rfc-h 5D 703-776 s: the planner refused the patrol Searing Blade Enforcer as "brings a
+            // boss, pulled as his fight", the walk to Taragaman held for its lane - 70 s, nobody pulled. With that
+            // boss as the route target the patrol is his fight's (the boss plan takes it along or waits its window,
+            // lead167): no hold of its own
+            if (routeBoss)
+                if (auto const refused = group.State().refusedPicks.find(mob->GetGUID());
+                    refused != group.State().refusedPicks.end() &&
+                    refused->second.find("brings a boss") != std::string::npos)
+                    continue;
             if (!leaderOwns && PatrolHandedOver(group.InstanceId(), mob->GetGUID(), now))
                 continue;  // [b47_patrol] the tank's planner has it (PATROL_WAIT_BUDGET)
             if (!cooling)
