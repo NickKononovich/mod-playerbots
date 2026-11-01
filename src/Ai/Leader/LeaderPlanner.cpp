@@ -9203,17 +9203,23 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             fallbackCost = false;
         }
 
+        // [lead90] b131 rfc-h: 25 s of "the pack does not fit (a boss pull: no fallback plan)" - the walk to the boss
+        // woke a mob no plan took, and the boss waited for the group topped up. The woken mob is its own pull at the
+        // fallback's measured overload whatever the top-up (the leader's readiness lines hold the pull)
+        if (!found)
+        {
+            fallbackCost = true;
+            fallback = found = tryPlan(bossWalkWakes, false, CAREFUL_FALLBACK_OVERLOAD, false, false);
+            fallbackCost = false;
+        }
         if (found)
             _planReason = Acore::StringFormat("the walk to {} wakes {}, taken first; ", target->GetName(),
                                               bossWalkWakes->GetName()) +
                           _planReason;
-        else
-            _planNotReadyWhy = Acore::StringFormat("the walk to {} wakes {} ({:.0f} yd), and no plan takes it",
-                                                   target->GetName(), bossWalkWakes->GetName(),
-                                                   bot->GetExactDist(bossWalkWakes));
     }
 
-    if (!found && boss && !bossWalkWakes)
+    // [lead90] ... and with no plan at all for it the boss is pulled: the woken mob joins his fight
+    if (!found && boss)
     {
         float danger = 0.0f;
         bool const manageable = IsPackManageable(botAI, bot, target, strength, danger);
@@ -9233,6 +9239,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         _planReason = manageable ? std::string("boss pulled where it stands")
                                  : Acore::StringFormat("boss pulled where it stands: over the capacity estimate "
                                                        "(danger {:.2f}), the boss is the route's goal", danger);
+        if (bossWalkWakes)
+            _planReason += Acore::StringFormat("; the walk wakes {}: it joins his fight", bossWalkWakes->GetName());
     }
 
     // The mob of the pack that brings the fewest when pulled at range to where the tank stands with a pull spell

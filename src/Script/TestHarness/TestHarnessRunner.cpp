@@ -20494,6 +20494,15 @@ namespace TestHarness
                                               target->GetExactDist(unit));
                     return Leader::AoeRule::Forbidden;
                 }
+                // [lead90] b131 rfc-h 941.9-943.7 s: "allowed-on-pack" while a Searing Blade Warlock of the pulled
+                // pack ran round the corner with no tank threat (not attacking anyone yet, so outside the kill
+                // order's headroom check) - the mage's AoE took it (84 threat against the tank's 0)
+                if (unit->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                {
+                    why = Acore::StringFormat("{} has no tank threat yet, {:.0f} yd from the target", unit->GetName(),
+                                              target->GetExactDist(unit));
+                    return Leader::AoeRule::Forbidden;
+                }
             }
             why = "the pack only";
             return Leader::AoeRule::AllowedOnPack;
@@ -22661,6 +22670,9 @@ namespace TestHarness
                 it = lead.groupBlockedBy.erase(it);
             }
         }
+        // [lead91] a fight or a pull moves the tank: the kept route point is judged afresh after it
+        if (fighting || lead.commit)
+            lead.routeWalkPoint.reset();
         // [lead77] the tank walks on only where the group follows: no route walk while a member is blocked
         if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader) &&
             lead.groupBlockedBy.empty() && !lingeringWalk)
@@ -22669,7 +22681,19 @@ namespace TestHarness
             if (TestRunner::GetWaypoint(tank->GetGUID(), waypoint) && waypoint.mapId == tank->GetMapId() &&
                 !waypoint.jump && !waypoint.straight && !waypoint.gatePass)
             {
-                Position const point(waypoint.x, waypoint.y, waypoint.z);
+                Position point(waypoint.x, waypoint.y, waypoint.z);
+                // [lead91] b133 rfc-h 304.4-308.5 s: the route point was recomputed every second from where the
+                // tank walked and stepped back (-165.5 -> -173.3: command_repeat). One command per route point:
+                // the point the tank walks to is kept until it reaches it, a new one is taken when it lies further
+                // along (nearer the route target) or the route itself changes (a new target) - never a step back
+                Unit* routeTarget = party.target.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, party.target);
+                if (lead.routeWalkPoint && lead.routeWalkTarget == party.target && routeTarget &&
+                    tank->GetExactDist2d(lead.routeWalkPoint->GetPositionX(), lead.routeWalkPoint->GetPositionY()) >
+                        1.5f &&
+                    routeTarget->GetExactDist(point) >= routeTarget->GetExactDist(*lead.routeWalkPoint))
+                    point = *lead.routeWalkPoint;
+                lead.routeWalkPoint = point;
+                lead.routeWalkTarget = party.target;
                 // [lead73] b117 271.4 s: the route walk woke a Trogg ("would wake ..., walked anyway") - it goes
                 // through the leader's checks and the tank's own guards run dry (checkedMove); refused, the tank
                 // stays and the mob on the path is the next pull
@@ -23888,8 +23912,11 @@ namespace TestHarness
                 {
                     if (kicker)
                         break;
+                    // [lead90] b131 946.1 s: Rtmagaa's Counterspell on a Searing Blade Warlock the tank had no threat
+                    // on - a kicker only while it has threat headroom on the caster (its threat below the tank's)
                     if (bot != healer && !busy.count(bot->GetGUID()) && LeaderReadyInterrupt(bot) &&
-                        bot->GetExactDist(caster) <= 30.0f)
+                        bot->GetExactDist(caster) <= 30.0f &&
+                        caster->GetThreatMgr().GetThreat(bot) < caster->GetThreatMgr().GetThreat(tank))
                         kicker = bot;
                 }
                 if (!kicker || busy.count(kicker->GetGUID()))
