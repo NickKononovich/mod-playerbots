@@ -179,7 +179,10 @@ void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     FeralDruidStrategy::InitTriggers(triggers);
     // [lead96] a mob coming at the group with no tank threat: the ranged opener on it (TankOpenIncomingAction)
-    triggers.push_back(new TriggerNode("tank incoming mob", { NextAction("tank open incoming", ACTION_HIGH + 6.5f) }));
+    // [lead106] above the tank's own target / facing / marks actions (tank assist 40, set facing 37): taking a
+    // mob back from another member is the most urgent thing a tank does
+    triggers.push_back(
+        new TriggerNode("tank incoming mob", { NextAction("tank open incoming", ACTION_INTERRUPT + 1.0f) }));
 
     triggers.push_back(
         new TriggerNode(
