@@ -91,6 +91,7 @@ public:
         creators["killing spree"] = &RogueTriggerFactoryInternal::killing_spree;
         creators["shadow dance"] = &RogueTriggerFactoryInternal::shadow_dance;
         creators["mutilate combo points"] = &RogueTriggerFactoryInternal::mutilate_combo_points;  // [rot27]
+        creators["combat eviscerate"] = &RogueTriggerFactoryInternal::combat_eviscerate;          // [rot28]
         creators["vanish for overkill"] = &RogueTriggerFactoryInternal::vanish_for_overkill;      // [rot27]
         creators["in shadow dance"] = &RogueTriggerFactoryInternal::in_shadow_dance;
         creators["hemorrhage"] = &RogueTriggerFactoryInternal::hemorrhage;  // [b31_wr]
@@ -149,6 +150,7 @@ private:
     static Trigger* killing_spree(PlayerbotAI* botAI) { return new KillingSpreeTrigger(botAI); }
     static Trigger* shadow_dance(PlayerbotAI* botAI) { return new ShadowDanceTrigger(botAI); }
     static Trigger* mutilate_combo_points(PlayerbotAI* botAI) { return new MutilateComboPointsTrigger(botAI); }
+    static Trigger* combat_eviscerate(PlayerbotAI* botAI) { return new CombatEviscerateTrigger(botAI); }
     static Trigger* vanish_for_overkill(PlayerbotAI* botAI) { return new VanishForOverkillTrigger(botAI); }
     static Trigger* in_shadow_dance(PlayerbotAI* botAI) { return new InShadowDanceTrigger(botAI); }
     static Trigger* hemorrhage(PlayerbotAI* botAI) { return new HemorrhageDebuffTrigger(botAI); }

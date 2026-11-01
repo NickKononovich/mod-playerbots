@@ -284,6 +284,21 @@ bool PremeditationTrigger::IsActive()
            AI_VALUE2(uint8, "combo", "current target") <= PREMEDITATION_MAX_COMBO_POINTS;
 }
 
+// [rot28]
+bool CombatEviscerateTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || AI_VALUE2(uint8, "combo", "current target") < EVISCERATE_MIN_COMBO_POINTS)
+        return false;
+
+    Aura* snd = botAI->GetAura("slice and dice", bot);
+    if (!snd || snd->GetDuration() < EVISCERATE_SND_MS)
+        return false;
+
+    Aura* rupture = botAI->GetAura("rupture", target, true);
+    return rupture && rupture->GetDuration() >= EVISCERATE_RUPTURE_MS;
+}
+
 // [rot27]
 bool MutilateComboPointsTrigger::IsActive()
 {

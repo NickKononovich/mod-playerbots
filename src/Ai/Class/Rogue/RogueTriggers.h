@@ -103,6 +103,19 @@ public:
     bool IsActive() override;
 };
 
+// [rot28] wowsims rogue__combat: Eviscerate at 4+ combo points while Slice and Dice has >= 4 s and the own Rupture
+// on the target >= 10 s
+class CombatEviscerateTrigger : public Trigger
+{
+public:
+    static constexpr uint8 EVISCERATE_MIN_COMBO_POINTS = 4;
+    static constexpr int32 EVISCERATE_SND_MS = 4000;
+    static constexpr int32 EVISCERATE_RUPTURE_MS = 10000;
+
+    CombatEviscerateTrigger(PlayerbotAI* botAI) : Trigger(botAI, "combat eviscerate") {}
+    bool IsActive() override;
+};
+
 // [rot27] wowsims rogue__mutilate: Mutilate at <= 3 combo points (4+ wait for Envenom)
 class MutilateComboPointsTrigger : public Trigger
 {

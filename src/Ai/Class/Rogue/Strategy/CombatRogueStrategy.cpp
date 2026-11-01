@@ -128,6 +128,8 @@ void CombatRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot28] wowsims rogue__combat: a 4-point Eviscerate while Slice and Dice (>= 4 s) and Rupture (>= 10 s) hold
+    triggers.push_back(new TriggerNode("combat eviscerate", {NextAction("eviscerate", ACTION_HIGH)}));
 
     triggers.push_back(
         new TriggerNode(
