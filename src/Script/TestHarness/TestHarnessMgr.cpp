@@ -1371,8 +1371,6 @@ namespace TestHarness
     namespace
     {
         constexpr uint32 AGGRO_LOSS_MS = 2 * IN_MILLISECONDS;
-        using Leader::Fight::PHANTOM_COMBAT_MS;  // [lead107] LeaderCombatEnd.h
-        using Leader::Fight::PHANTOM_COMBAT_END_MS;  // [lead107] LeaderCombatEnd.h
         using Leader::Fight::PHANTOM_HUNT_MAX_TRIES;  // [lead107] LeaderCombatEnd.h
         using Leader::Fight::PHANTOM_HUNT_MS;  // [lead107] LeaderCombatEnd.h
         // [b33_sh2] for [b33_brd] (brd-n 20261026-000434-brd-n-5F-6): the core flags a pet's owner only with

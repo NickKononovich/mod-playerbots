@@ -849,7 +849,6 @@ namespace TestHarness
         void NoteActivity(Activity activity) override;
         void SetApartIgnore(ObjectGuid member, uint32 untilMs) override;
         bool StrandedReenter(ObjectGuid member, Player* bot, Player* leader) override;
-        uint64 CombatActivity() const override;
         void BuffPassSetup(std::vector<Player*> const& players) override;
         bool UseConsumables(Player* bot, bool food) override;
         std::string MemberBuffJson(Player* bot) override;

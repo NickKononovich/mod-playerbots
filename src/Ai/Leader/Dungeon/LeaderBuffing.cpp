@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "LeaderBuffing.h"
+#include "LeaderRest.h"  // CountRestItems
 
 #include "LeaderReports.h"
 #include "LeaderEvents.h"
@@ -139,18 +140,12 @@ namespace Leader::Dungeon
         constexpr uint32 FLASK_GCD_MS = 1600;                       // a flask used: its global cooldown before food
         constexpr uint32 FOOD_STEP_MIN_MS = IN_MILLISECONDS;        // the food just used shows its aura
         constexpr uint32 FOOD_STEP_MAX_MS = 12 * IN_MILLISECONDS;
-        constexpr uint32 READY_STEP_MIN_MS = 1500;  // the ready check reaches the bots on their next ticks
-        constexpr uint32 READY_STEP_MAX_MS = 10 * IN_MILLISECONDS;
-        // [ready_reply_now] mirrors ReadyCheckAction: the bots answer a ready check when it reaches them, so the
-        // harness waits READY_STEP_MIN_MS for the packet only (the 10 s "no answer from ..." of DOWNTIME_AUDIT).
+        // [ready_reply_now] mirrors ReadyCheckAction: the bots answer a ready check when it reaches them.
         constexpr bool READY_REPLY_ON_RECEIPT = true;
         // [single_ready_check] User rule 2026-10-25: one ready check per boss. With the bots' raid leader layer
         // running the boss's own ready check (RaidLeader "pull hold"), the harness skips its step-4 check before a
         // boss (brd-n Gerstahn: buffing 30 s, then the leader's pull hold 22 s more with everyone at 100 %).
         constexpr bool HARNESS_SINGLE_READY_CHECK = true;
-        // A whole buffing pass at most (the step caps add up to ~39 s; Stockade heroic 2026-10-25 counted 125 s idle
-        // ending in buffing): past it the ready check ends the pass now.
-        constexpr uint32 BUFF_TOTAL_MAX_MS = 30 * IN_MILLISECONDS;
         constexpr float BUFF_GROUP_RANGE = 40.0f;   // members farther from the leader neither give nor wait for buffs
 
         enum class BuffTargets : uint8
@@ -185,12 +180,28 @@ namespace Leader::Dungeon
              "Horn of Winter"},
         };
 
-        bool KnowsAnyRank(Player* caster, std::vector<uint32> const& firstRanks)
+        // [lead107 stage 5 timers] the caster can give the buff now: it knows a rank of one of `firstRanks` and has
+        // the reagents of its highest known rank (or casts without reagents)
+        bool CanGive(Player* caster, std::vector<uint32> const& firstRanks)
         {
             for (uint32 const first : firstRanks)
+            {
+                uint32 known = 0;
                 for (uint32 spell = first; spell; spell = sSpellMgr->GetNextSpellInChain(spell))
                     if (caster->HasSpell(spell))
-                        return true;
+                        known = spell;
+                SpellInfo const* info = known ? sSpellMgr->GetSpellInfo(known) : nullptr;
+                if (!info)
+                    continue;
+                if (caster->CanNoReagentCast(info))
+                    return true;
+                bool reagents = true;
+                for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+                    if (info->Reagent[i] > 0 && !caster->HasItemCount(uint32(info->Reagent[i]), info->ReagentCount[i]))
+                        reagents = false;
+                if (reagents)
+                    return true;
+            }
             return false;
         }
 
@@ -200,7 +211,8 @@ namespace Leader::Dungeon
                    bot->GetDistance(leader) <= BUFF_GROUP_RANGE;
         }
 
-        // "<member> <buff>, ..." for every buff the group can give that a member lacks; empty: all present.
+        // "<member> <buff>, ..." for every buff the group can give that a member lacks; empty: all present. A buff
+        // nobody can give (no caster of its class, the casters out of range, no reagent) is not missing.
         std::string MissingGivableBuffs(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
         {
             std::vector<LeaderGroup::MemberInfo> const members = group.Members();
@@ -210,7 +222,7 @@ namespace Leader::Dungeon
                 bool givable = false;
                 for (Player* caster : players)
                     if (!givable && caster->getClass() == def.casterClass && InBuffRange(caster, leader) &&
-                        KnowsAnyRank(caster, def.spells))
+                        CanGive(caster, def.spells))
                         givable = true;
                 if (!givable)
                     continue;
@@ -303,13 +315,8 @@ namespace Leader::Dungeon
         // food): nothing missing takes about 4 s.
         for (uint32 pass = 0; pass < 4 && route.needBuff; ++pass)
         {
-            if (route.buffStep > 0 && route.buffStep < 4 && getMSTimeDiff(route.buffSinceMs, now) > BUFF_TOTAL_MAX_MS)
-            {
-                LOG_INFO("playerbots", "[buffing] {}: pass over {} s at step {}: to the ready check end", group.Run().runId,
-                         BUFF_TOTAL_MAX_MS / IN_MILLISECONDS, uint32(route.buffStep));
-                route.buffStep = 4;
-                route.buffStepMs = now - READY_STEP_MAX_MS - 1;
-            }
+            // [lead107 stage 5 timers] user: no elapsed-time rule decides (BUFF_TOTAL_MAX_MS: a whole pass over 30 s
+            // jumped to the ready check's end) - every step ends on its own facts
             uint8 const stepBefore = route.buffStep;
             uint32 const stepMs = getMSTimeDiff(route.buffStepMs, now);
             BuffWait& wait = buffWaits[group.InstanceId()];
@@ -436,23 +443,28 @@ namespace Leader::Dungeon
                     if (HARNESS_SINGLE_READY_CHECK && route.buffReason.rfind("before ", 0) == 0 &&
                         RaidLeader::FindCoordinator(leader))
                         why = "the raid leader runs the boss's ready check (single_ready_check)";
-                    else if (stepMs >= READY_STEP_MAX_MS)
-                        why = "upper bound " + std::to_string(READY_STEP_MAX_MS / IN_MILLISECONDS) + " s" +
-                              (unanswered.empty() ? std::string() : ", no answer from " + unanswered);
-                    // [ready_instant] the check is a check, not a pause: the bots answer on receipt
-                    // (READY_REPLY_ON_RECEIPT), so with every member in range and nobody below its own rest line the
-                    // group goes on in the same tick (else the READY_STEP_MIN_MS end below, as before)
-                    else if (READY_REPLY_ON_RECEIPT && unanswered.empty() &&
-                             std::none_of(players.begin(), players.end(),
-                                          [leader](Player* bot)
-                                          {
-                                              return bot != leader &&
-                                                     (!bot->IsAlive() || !InBuffRange(bot, leader) ||
-                                                      RestState::WantsDrink(bot) || RestState::WantsFood(bot));
-                                          }))
-                        why = "nothing missing: buffs present, everyone in range and above its rest line";
-                    else if (stepMs >= READY_STEP_MIN_MS && unanswered.empty())
-                        why = "every member answered the ready check";
+                    // [lead107 stage 5 timers] user: the group is ready when every buff it can give is on (step 1) and
+                    // every member is at its rest line - above it, or with nothing to rest with (no drink / food in
+                    // its bags); a member out of the group's buff range is the far wait's (RestWait), not the check's.
+                    // No elapsed-time end (READY_STEP_MAX_MS 10 s / READY_STEP_MIN_MS 1.5 s were the old clocks)
+                    else if (unanswered.empty())
+                    {
+                        std::string belowLine;
+                        for (Player* bot : players)
+                        {
+                            if (!bot->IsAlive() || !InBuffRange(bot, leader))
+                                continue;
+                            bool const drinks = RestState::WantsDrink(bot) && CountRestItems(bot, 59) > 0;
+                            bool const eats = RestState::WantsFood(bot) && CountRestItems(bot, 11) > 0;
+                            if (drinks || eats)
+                                belowLine += (belowLine.empty() ? "" : ", ") + bot->GetName() +
+                                             (drinks ? " mana" : " health");
+                        }
+                        if (belowLine.empty())
+                            why = "ready: buffs present, everyone at its rest line";
+                        else
+                            waitingFor("below its rest line: " + belowLine);
+                    }
                     if (why.empty())
                         break;
                     stepDone(0, why);

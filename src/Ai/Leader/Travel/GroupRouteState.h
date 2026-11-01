@@ -402,16 +402,15 @@ namespace Leader
         bool hasDryPos = false;
         std::map<ObjectGuid, MemberWater> water;
         // [lead107 stage 5] moved with the phantom-combat / rest / buffing stage.
-        // Combat with nothing happening: no damage done or taken and no healing by anybody of the party since
-        // phantomCombatSinceMs (an unreachable mob on a ledge keeps everybody flagged, Ragefire Chasm 18 minutes).
-        uint64 combatActivity = 0;
+        // Phantom combat (TickPhantomCombat): flagged in combat while nothing in the combat refs attacks - the episode
+        // logged (and since when, for the logs), the refs ended, when and how often, and the set of refs last ended
+        // (a new set after the end is ended again: sh-n 5B-89, the tank flagged again after the one end)
         uint32 phantomCombatSinceMs = 0;
         bool phantomCombatLogged = false;
         bool phantomCombatEnded = false;
-        // [b33_sh2] when the stale refs were last ended and how often in this phantom episode: the end repeats every
-        // PHANTOM_COMBAT_END_MS while the flag stays (sh-n 5B-89: one end at 1421 s, the tank flagged again, 90 s idle)
         uint32 phantomCombatEndedMs = 0;
         uint32 phantomCombatEnds = 0;
+        std::set<ObjectGuid> phantomEndedRefs;
         // [phantom_mob_hunt] the live, reachable mob of a phantom combat the group was sent to, and how often
         ObjectGuid phantomHunt;
         uint32 phantomHuntTries = 0;
@@ -419,7 +418,7 @@ namespace Leader
         bool needBuff = true;
         uint8 buffStep = 0;
         uint32 buffStepMs = 0;
-        uint32 buffSinceMs = 0;  // the buffing pass started (BUFF_TOTAL_MAX_MS)
+        uint32 buffSinceMs = 0;  // the buffing pass started (for the logs)
         std::string buffReason = "run start";
         // waits
         uint32 waitSinceMs = 0;

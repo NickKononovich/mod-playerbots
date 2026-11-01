@@ -114,216 +114,244 @@
 
 namespace Leader::Fight
 {
-    void TickPhantomCombat(LeaderGroup& group, std::vector<Player*> const& players, Player* leader,
-                           uint32 now, bool activeBoss, bool& anyInCombat)
+    // [lead107 stage 5 timers] what a unit of the group's combat does: it attacks (its victim in its melee reach, a
+    // cast, or a complete walk to its victim), the leader can walk to it (a complete path, a valid target on its
+    // map), or neither (dead, evading, unreachable)
+    enum class RefFight : uint8
+    {
+        None,
+        Reachable,
+        Attacks
+    };
+
+    RefFight JudgeRef(Player* leader, Unit* other, float& pathDistance, std::string& pathNote)
+    {
+        Creature* creature = other->ToCreature();
+        if (!other->IsAlive() || (creature && creature->IsInEvadeMode()))
+            return RefFight::None;
+        if (Unit* victim = other->GetVictim())
+        {
+            if (other->IsWithinMeleeRange(victim) || other->HasUnitState(UNIT_STATE_CASTING))
+                return RefFight::Attacks;
+            if (victim->GetMap() == other->GetMap())
+            {
+                PathGenerator path(other);
+                path.CalculatePath(victim->GetPositionX(), victim->GetPositionY(), victim->GetPositionZ());
+                if (!(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+                    return RefFight::Attacks;
+            }
+        }
+        if (!leader->IsValidAttackTarget(other) || other->GetMap() != leader->GetMap())
+            return RefFight::None;
+        PathGenerator path(leader);
+        path.CalculatePath(other->GetPositionX(), other->GetPositionY(), other->GetPositionZ());
+        if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+            return RefFight::None;
+        pathDistance = leader->GetExactDist(other);
+        pathNote = Acore::StringFormat("path type {}, {} points", uint32(path.GetPathType()), path.GetPath().size());
+        return RefFight::Reachable;
+    }
+
+    void TickPhantomCombat(LeaderGroup& group, std::vector<Player*> const& players, Player* leader, uint32 now,
+                           bool activeBoss, bool& anyInCombat)
     {
         GroupRouteState& route = group.Route();
-        // Phantom combat: somebody stays flagged in combat while nobody of the party deals, takes or heals anything
-        // (a mob stuck on a ledge, a fish below the surface). It held Ragefire Chasm in "clearing trash" for 18
-        // minutes: no stall detection, no resurrection (the paladin's Redemption is a non-combat action). After
-        // PHANTOM_COMBAT_MS the run treats the party as out of combat; after PHANTOM_COMBAT_END_MS the stale combat
-        // references are ended, as an evading mob would. Not during a boss attempt (phases without damage).
+        // Phantom combat: somebody stays flagged in combat while nothing of the fight fights (a mob stuck on a ledge,
+        // a fish below the surface). It held Ragefire Chasm in "clearing trash" for 18 minutes: no stall detection,
+        // no resurrection (the paladin's Redemption is a non-combat action). Not during a boss attempt (phases
+        // without damage).
+        // [lead107 stage 5 timers] user: no elapsed-time rule decides (PHANTOM_COMBAT_MS / PHANTOM_COMBAT_END_MS were
+        // the old clocks). The facts of every unit in the group's combat refs (members, their pets and guardians):
+        // one that attacks keeps the fight on; none attacks but one the leader can walk to: the group is sent to it
+        // (the phantom mob hunt) and travels; none attacks and none can be reached (dead, evading, unreachable):
+        // the run counts the group out of combat and the refs are ended - once per set of refs (a new ref after
+        // the end is a new fact, ended again).
         if (anyInCombat && !activeBoss)
         {
-            uint64 activity = group.CombatActivity();
-
-            if (!route.phantomCombatSinceMs || activity != route.combatActivity)
+            bool attacks = false;
+            Creature* hunt = nullptr;
+            float huntDistance = 0.0f;
+            std::string huntPath;
+            std::set<ObjectGuid> others;
+            auto const judge = [&](Unit* owner)
             {
-                route.combatActivity = activity;
-                route.phantomCombatSinceMs = now;
+                for (auto const& [guid, ref] : owner->GetCombatManager().GetPvECombatRefs())
+                {
+                    Unit* other = ref ? ref->GetOther(owner) : nullptr;
+                    if (!other)
+                        continue;
+                    others.insert(other->GetGUID());
+                    if (attacks)
+                        continue;
+                    float distance = 0.0f;
+                    std::string note;
+                    RefFight const fight = JudgeRef(leader, other, distance, note);
+                    if (fight == RefFight::Attacks)
+                        attacks = true;
+                    else if (fight == RefFight::Reachable && other->IsCreature() && (!hunt || distance < huntDistance))
+                    {
+                        hunt = other->ToCreature();
+                        huntDistance = distance;
+                        huntPath = note;
+                    }
+                }
+            };
+            for (Player* bot : players)
+            {
+                if (!bot->IsAlive())
+                    continue;
+                judge(bot);
+                for (Unit* controlled : bot->m_Controlled)
+                    if (controlled && controlled->IsInWorld())
+                        judge(controlled);
+            }
+
+            if (attacks)
+            {
+                // a real fight: the next phantom episode starts from nothing
                 route.phantomCombatLogged = false;
                 route.phantomCombatEnded = false;
-                route.phantomCombatEndedMs = 0;  // [b33_sh2]
-                route.phantomCombatEnds = 0;
+                route.phantomEndedRefs.clear();
+                return;
             }
-            else if (getMSTimeDiff(route.phantomCombatSinceMs, now) > PHANTOM_COMBAT_MS)
+
+            if (!route.phantomCombatLogged)
             {
-                if (!route.phantomCombatLogged)
+                route.phantomCombatLogged = true;
+                route.phantomCombatSinceMs = now ? now : 1;  // the episode's start, for the logs only
+                route.phantomCombatEnds = 0;
+                JsonArray refs;
+                for (Player* bot : players)
                 {
-                    route.phantomCombatLogged = true;
-                    JsonArray refs;
-                    for (Player* bot : players)
+                    if (!bot->IsAlive() || !bot->IsInCombat())
+                        continue;
+                    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
                     {
-                        if (!bot->IsAlive() || !bot->IsInCombat())
+                        Unit* other = ref ? ref->GetOther(bot) : nullptr;
+                        if (!other)
                             continue;
-                        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
-                        {
-                            Unit* other = ref ? ref->GetOther(bot) : nullptr;
-                            if (!other)
-                                continue;
-                            Unit* victim = other->GetVictim();
-                            refs.Raw(JsonObject().Str("member", bot->GetName()).Str("with", other->GetName())
-                                         .Num("entry", other->IsCreature() ? other->GetEntry() : 0)
-                                         .Bool("alive", other->IsAlive())
-                                         .Bool("evading", other->IsCreature() && other->ToCreature()->IsInEvadeMode())
-                                         .Bool("underWater", other->IsUnderWater())
-                                         .Real("dist", bot->GetExactDist(other))
-                                         .Real("dz", other->GetPositionZ() - bot->GetPositionZ())
-                                         .Str("victim", victim ? victim->GetName() : "").Build());
-                        }
-                    }
-                    group.LogEvent("phantom_combat",
-                             JsonObject().Num("sec", getMSTimeDiff(route.phantomCombatSinceMs, now) / IN_MILLISECONDS)
-                                 .Raw("refs", refs.Build()));
-
-                    // [phantom_mob_hunt] User 2026-10-25: «стоит моб, а группа просто стоит... почему группа не бежит
-                    // и не бьет». strat-h 20261025-163739-strat-h-5A-11 pulls 52-55: a Crimson Initiate 10420 alive,
-                    // not evading, 97-133 yd off on the hunter's Raptor kept every pull 45 s in phantom combat. A live
-                    // hostile the leader can walk to (a complete path) is made the group's target; only an
-                    // unreachable one has its combat ended below.
-                    if (route.phantomHuntTries < PHANTOM_HUNT_MAX_TRIES)
-                    {
-                        Creature* hunt = nullptr;
-                        float huntDistance = 0.0f;
-                        std::string huntPath;
-                        auto const consider = [&](Unit* owner)
-                        {
-                            for (auto const& [guid, ref] : owner->GetCombatManager().GetPvECombatRefs())
-                            {
-                                Unit* other = ref ? ref->GetOther(owner) : nullptr;
-                                Creature* creature = other ? other->ToCreature() : nullptr;
-                                if (!creature || !creature->IsAlive() || creature->IsInEvadeMode() ||
-                                    !leader->IsValidAttackTarget(creature) || creature->GetMap() != leader->GetMap())
-                                    continue;
-
-                                float const distance = leader->GetExactDist(creature);
-                                if (hunt && distance >= huntDistance)
-                                    continue;
-
-                                PathGenerator path(leader);
-                                path.CalculatePath(creature->GetPositionX(), creature->GetPositionY(),
-                                                   creature->GetPositionZ());
-                                if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
-                                    continue;
-
-                                hunt = creature;
-                                huntDistance = distance;
-                                huntPath = Acore::StringFormat("path type {}, {} points", uint32(path.GetPathType()),
-                                                               path.GetPath().size());
-                            }
-                        };
-                        for (Player* bot : players)
-                        {
-                            if (!bot->IsAlive())
-                                continue;
-                            consider(bot);
-                            for (Unit* controlled : bot->m_Controlled)
-                                if (controlled && controlled->IsInWorld())
-                                    consider(controlled);
-                        }
-
-                        if (hunt)
-                        {
-                            ++route.phantomHuntTries;
-                            route.phantomHunt = hunt->GetGUID();
-                            route.neighbourTarget = hunt->GetGUID();
-                            route.neighbourTargetUntilMs = now + PHANTOM_HUNT_MS;
-                            route.target = hunt->GetGUID();
-                            route.targetIsBoss = false;
-                            route.targetIsStarter = false;
-                            route.targetRouteRule = "phantom mob hunt";
-                            route.targetSinceMs = now;
-                            route.guaranteeHolding = false;
-                            route.arrivedMs = 0;
-                            route.approach = 0;
-                            route.approachBlocker.Clear();
-                            route.stopSinceMs = 0;
-                            Unit* victim = hunt->GetVictim();
-                            LOG_INFO("playerbots", "[phantom_mob_hunt] {}: {} {} alive, {:.0f} % health, {:.1f} yd "
-                                     "(dz {:.1f}), on {}: reachable ({}), the group's target (try {} of {})",
-                                     leader->GetName(), hunt->GetName(), hunt->GetEntry(), hunt->GetHealthPct(),
-                                     huntDistance, hunt->GetPositionZ() - leader->GetPositionZ(),
-                                     victim ? victim->GetName() : "nobody", huntPath, route.phantomHuntTries,
-                                     PHANTOM_HUNT_MAX_TRIES);
-                            group.LogEvent("phantom_mob_hunt",
-                                     JsonObject().Str("mob", hunt->GetName()).Num("entry", hunt->GetEntry())
-                                         .Real("hpPct", hunt->GetHealthPct()).Real("dist", huntDistance)
-                                         .Real("dz", hunt->GetPositionZ() - leader->GetPositionZ())
-                                         .Str("victim", victim ? victim->GetName() : "").Str("path", huntPath)
-                                         .Num("try", route.phantomHuntTries));
-                        }
+                        Unit* victim = other->GetVictim();
+                        refs.Raw(JsonObject().Str("member", bot->GetName()).Str("with", other->GetName())
+                                     .Num("entry", other->IsCreature() ? other->GetEntry() : 0)
+                                     .Bool("alive", other->IsAlive())
+                                     .Bool("evading", other->IsCreature() && other->ToCreature()->IsInEvadeMode())
+                                     .Bool("underWater", other->IsUnderWater())
+                                     .Real("dist", bot->GetExactDist(other))
+                                     .Real("dz", other->GetPositionZ() - bot->GetPositionZ())
+                                     .Str("victim", victim ? victim->GetName() : "").Build());
                     }
                 }
-
-                // [phantom_mob_hunt] while the group walks to a hunted mob its combat stays: no end, the clock again
-                Creature* hunted = route.phantomHunt ? leader->GetMap()->GetCreature(route.phantomHunt) : nullptr;
-                bool const hunting = hunted && hunted->IsAlive() && route.target == route.phantomHunt &&
-                                     int32(now - route.neighbourTargetUntilMs) < 0;
-                if (!hunting)
-                    route.phantomHunt.Clear();
-
-                // [b33_sh2] sh-n 20261026-003732-sh-n-5B-89: the one end at 1421 s left the tank Rlwaraj flagged in
-                // combat (0 attackers, a stealthed Shattered Hand Assassin 17695 19 yd off that the hunt cannot see);
-                // nobody left combat, so the episode never reset and never ended again, and Steer held every walk
-                // on leader->IsInCombat() for 90 s. The end repeats every PHANTOM_COMBAT_END_MS while it lasts.
-                bool const endAgain = route.phantomCombatEnded && route.phantomCombatEndedMs &&
-                                      getMSTimeDiff(route.phantomCombatEndedMs, now) > PHANTOM_COMBAT_END_MS;
-                if ((!route.phantomCombatEnded || endAgain) && !hunting &&
-                    getMSTimeDiff(route.phantomCombatSinceMs, now) > PHANTOM_COMBAT_END_MS)
-                {
-                    route.phantomCombatEnded = true;
-                    route.phantomCombatEndedMs = now ? now : 1;
-                    ++route.phantomCombatEnds;
-                    // the pets and guardians too: a pet's ref put its owner back in combat after every pull
-                    // (strat-h 5A-11: the Crimson Initiate on the hunter's Raptor, 45 s after pulls 52-55)
-                    uint32 controlledEnded = 0;
-                    for (Player* bot : players)
-                    {
-                        if (!bot->IsAlive())
-                            continue;
-                        bot->GetCombatManager().EndAllPvECombat();
-                        for (Unit* controlled : bot->m_Controlled)
-                        {
-                            if (controlled && controlled->IsInWorld() && controlled->IsInCombat())
-                            {
-                                controlled->GetCombatManager().EndAllPvECombat();
-                                ++controlledEnded;
-                            }
-                        }
-                    }
-                    // [b33_sh2] who is still flagged right after the end, and with what (the ref that comes back)
-                    JsonArray stillFlagged;
-                    for (Player* bot : players)
-                    {
-                        if (!bot->IsAlive() || !bot->IsInCombat())
-                            continue;
-                        std::string with;
-                        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
-                            if (Unit* other = ref ? ref->GetOther(bot) : nullptr)
-                                with += (with.empty() ? "" : ", ") + std::string(other->GetName());
-                        stillFlagged.Raw(JsonObject().Str("member", bot->GetName()).Str("with", with)
-                                             .Num("attackers", bot->getAttackers().size())
-                                             .Bool("pvp", bot->GetCombatManager().HasPvPCombat()).Build());
-                    }
-                    group.LogEvent("phantom_combat_end",
-                             JsonObject().Num("sec", getMSTimeDiff(route.phantomCombatSinceMs, now) / IN_MILLISECONDS)
-                                 .Num("petsEnded", controlledEnded).Num("huntTries", route.phantomHuntTries)
-                                 .Num("end", route.phantomCombatEnds).Raw("stillFlagged", stillFlagged.Build()));
-                }
-                anyInCombat = false;
+                group.LogEvent("phantom_combat", JsonObject().Str("why", hunt ? "nothing attacks, a mob reachable"
+                                                                               : "nothing attacks or can be reached")
+                                                     .Raw("refs", refs.Build()));
             }
+
+            // [phantom_mob_hunt] User 2026-10-25: the group stood while a mob stood. strat-h
+            // 20261025-163739-strat-h-5A-11 pulls 52-55: a Crimson Initiate 10420 alive, not evading, 97-133 yd off on
+            // the hunter's Raptor kept every pull 45 s in phantom combat. A live hostile the leader can walk to (a
+            // complete path) is made the group's target, once per mob; only an unreachable one has its combat ended.
+            Creature* hunted = route.phantomHunt ? leader->GetMap()->GetCreature(route.phantomHunt) : nullptr;
+            bool hunting = hunted && hunted->IsAlive() && route.target == route.phantomHunt &&
+                           int32(now - route.neighbourTargetUntilMs) < 0;
+            if (!hunting)
+                route.phantomHunt.Clear();
+            if (!hunting && hunt && route.phantomHuntTries < PHANTOM_HUNT_MAX_TRIES)
+            {
+                ++route.phantomHuntTries;
+                route.phantomHunt = hunt->GetGUID();
+                route.neighbourTarget = hunt->GetGUID();
+                route.neighbourTargetUntilMs = now + PHANTOM_HUNT_MS;
+                route.target = hunt->GetGUID();
+                route.targetIsBoss = false;
+                route.targetIsStarter = false;
+                route.targetRouteRule = "phantom mob hunt";
+                route.targetSinceMs = now;
+                route.guaranteeHolding = false;
+                route.arrivedMs = 0;
+                route.approach = 0;
+                route.approachBlocker.Clear();
+                route.stopSinceMs = 0;
+                hunting = true;
+                Unit* victim = hunt->GetVictim();
+                LOG_INFO("playerbots", "[phantom_mob_hunt] {}: {} {} alive, {:.0f} % health, {:.1f} yd "
+                         "(dz {:.1f}), on {}: reachable ({}), the group's target (try {} of {})",
+                         leader->GetName(), hunt->GetName(), hunt->GetEntry(), hunt->GetHealthPct(),
+                         huntDistance, hunt->GetPositionZ() - leader->GetPositionZ(),
+                         victim ? victim->GetName() : "nobody", huntPath, route.phantomHuntTries,
+                         PHANTOM_HUNT_MAX_TRIES);
+                group.LogEvent("phantom_mob_hunt",
+                               JsonObject().Str("mob", hunt->GetName()).Num("entry", hunt->GetEntry())
+                                   .Real("hpPct", hunt->GetHealthPct()).Real("dist", huntDistance)
+                                   .Real("dz", hunt->GetPositionZ() - leader->GetPositionZ())
+                                   .Str("victim", victim ? victim->GetName() : "").Str("path", huntPath)
+                                   .Num("try", route.phantomHuntTries));
+            }
+
+            // nothing attacks and no hunt runs: the refs are ended, once per set ([b33_sh2] sh-n 5B-89: a ref that
+            // came back after the end - a new set - is ended again)
+            if (!hunting && others != route.phantomEndedRefs)
+            {
+                route.phantomEndedRefs = others;
+                route.phantomCombatEnded = true;
+                route.phantomCombatEndedMs = now ? now : 1;
+                ++route.phantomCombatEnds;
+                // the pets and guardians too: a pet's ref put its owner back in combat after every pull
+                // (strat-h 5A-11: the Crimson Initiate on the hunter's Raptor, 45 s after pulls 52-55)
+                uint32 controlledEnded = 0;
+                for (Player* bot : players)
+                {
+                    if (!bot->IsAlive())
+                        continue;
+                    bot->GetCombatManager().EndAllPvECombat();
+                    for (Unit* controlled : bot->m_Controlled)
+                    {
+                        if (controlled && controlled->IsInWorld() && controlled->IsInCombat())
+                        {
+                            controlled->GetCombatManager().EndAllPvECombat();
+                            ++controlledEnded;
+                        }
+                    }
+                }
+                // [b33_sh2] who is still flagged right after the end, and with what (the ref that comes back)
+                JsonArray stillFlagged;
+                for (Player* bot : players)
+                {
+                    if (!bot->IsAlive() || !bot->IsInCombat())
+                        continue;
+                    std::string with;
+                    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+                        if (Unit* other = ref ? ref->GetOther(bot) : nullptr)
+                            with += (with.empty() ? "" : ", ") + std::string(other->GetName());
+                    stillFlagged.Raw(JsonObject().Str("member", bot->GetName()).Str("with", with)
+                                         .Num("attackers", bot->getAttackers().size())
+                                         .Bool("pvp", bot->GetCombatManager().HasPvPCombat()).Build());
+                }
+                group.LogEvent("phantom_combat_end",
+                               JsonObject().Num("refs", uint32(others.size())).Num("petsEnded", controlledEnded)
+                                   .Num("huntTries", route.phantomHuntTries).Num("end", route.phantomCombatEnds)
+                                   .Raw("stillFlagged", stillFlagged.Build()));
+            }
+            anyInCombat = false;
         }
         else if (!anyInCombat)
         {
             route.phantomCombatSinceMs = 0;
+            route.phantomCombatLogged = false;
+            route.phantomEndedRefs.clear();
             route.phantomHuntTries = 0;  // [phantom_mob_hunt] a real fight end: the next phantom gets its tries
             route.phantomHunt.Clear();
         }
     }
 
-
     void TickStaleVictim(LeaderGroup& group, Player* leader, uint32 now, bool anyInCombat, bool activeBoss)
     {
         GroupRouteState& route = group.Route();
-        // [queue-stale-idle-victim] build 27 (ac-n 20261025-150737-ac-n-5A-55, ub-n 150737-ub-n-5A-29, strat-h
-        // 150737-strat-h-5A-10): the tank's own target pick took an idle boss (Shirrak / Hungarfen / Hearthsinger)
-        // into its swing and the combat engine, out of any fight (no attacker, not in combat), while
-        // [reach_idle_waits_ready] (ReachMeleeAction::isUseful) refuses the walk until the group is ready - the tank
-        // at 0-67 % mana. In the combat engine it neither drinks nor walks the harness waypoint ("melee (5.00) ->
-        // Shirrak 24.8 yd" every tick, 219 s / 240 s / 181 s without a fight). A swing / target on an idle mob out of
-        // melee range for STALE_VICTIM_MS outside any fight is dropped: AttackStop, no current target, the non-combat
-        // engine - the rest triggers run, and the tank's own pick takes the mob again once the group is ready.
-        constexpr uint32 STALE_VICTIM_MS = 15 * IN_MILLISECONDS;
+        // [queue-stale-idle-victim] the leader's swing / target on a mob that is no fight any more, outside any fight
+        // (no attacker, not in combat), is dropped: AttackStop, no current target, the non-combat engine - the rest
+        // triggers run, and the tank's own pick takes a target again.
+        // [lead107 stage 5 timers] user: no elapsed-time rule decides (STALE_VICTIM_MS: 15 s on an idle mob out of
+        // melee range was the old clock). The victim's own facts decide: dead, gone (its guid resolves to nothing),
+        // evading, or off the leader's map / out of the world; once per victim (one command per change of facts).
         if (!anyInCombat && !activeBoss && leader->IsAlive() && !leader->IsInCombat() &&
             leader->getAttackers().empty())
         {
@@ -332,34 +360,49 @@ namespace Leader::Fight
             Unit* current = leaderAI ? leaderAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get()
                                      : nullptr;
             Unit* stale = victim ? victim : current;
-            bool const idleOut = stale && stale->IsCreature() && stale->IsAlive() && !stale->IsInCombat() &&
-                                 !leader->IsWithinMeleeRange(stale);
-            if (!idleOut)
+            ObjectGuid staleGuid;
+            std::string why;
+            if (stale)
+            {
+                staleGuid = stale->GetGUID();
+                if (!stale->IsInWorld() || stale->GetMap() != leader->GetMap())
+                    why = "out of the map";
+                else if (!stale->IsAlive())
+                    why = "dead";
+                else if (stale->IsCreature() && stale->ToCreature()->IsInEvadeMode())
+                    why = "evading";
+            }
+            else if (ObjectGuid const selected = leader->GetTarget();
+                     !selected.IsEmpty() && !ObjectAccessor::GetUnit(*leader, selected))
+            {
+                staleGuid = selected;
+                why = "gone";
+            }
+            if (why.empty())
             {
                 route.staleVictim.Clear();
                 route.staleVictimSinceMs = 0;
             }
-            else if (route.staleVictim != stale->GetGUID())
+            else if (route.staleVictim != staleGuid)
             {
-                route.staleVictim = stale->GetGUID();
+                route.staleVictim = staleGuid;
                 route.staleVictimSinceMs = now ? now : 1;
-            }
-            else if (getMSTimeDiff(route.staleVictimSinceMs, now) > STALE_VICTIM_MS)
-            {
                 ++route.staleVictimReleases;
                 group.LogEvent("stale_idle_victim_release",
-                         JsonObject().Str("name", stale->GetName()).Num("entry", stale->GetEntry())
-                             .Bool("boss", stale->ToCreature()->IsDungeonBoss())
-                             .Real("distance", leader->GetExactDist(stale))
-                             .Num("sec", getMSTimeDiff(route.staleVictimSinceMs, now) / IN_MILLISECONDS)
-                             .Real("leaderMana",
-                                   leader->GetMaxPower(POWER_MANA) ? leader->GetPowerPct(POWER_MANA) : 100.0f)
-                             .Num("releases", route.staleVictimReleases));
+                               JsonObject().Str("name", stale ? stale->GetName() : "").Str("why", why)
+                                   .Num("entry", stale ? stale->GetEntry() : 0)
+                                   .Bool("boss", stale && stale->IsCreature() && stale->ToCreature()->IsDungeonBoss())
+                                   .Real("distance", stale && stale->IsInWorld() && stale->GetMap() == leader->GetMap()
+                                                         ? leader->GetExactDist(stale)
+                                                         : -1.0f)
+                                   .Real("leaderMana",
+                                         leader->GetMaxPower(POWER_MANA) ? leader->GetPowerPct(POWER_MANA) : 100.0f)
+                                   .Num("releases", route.staleVictimReleases));
                 LOG_INFO("playerbots",
-                         "[queue-stale-idle-victim] {}: {} held idle {} ({:.1f} yd) as its target outside a fight for "
-                         "{} s - dropped (release {})",
-                         group.Run().runId, leader->GetName(), stale->GetName(), leader->GetExactDist(stale),
-                         getMSTimeDiff(route.staleVictimSinceMs, now) / IN_MILLISECONDS, route.staleVictimReleases);
+                         "[queue-stale-idle-victim] {}: {} held {} as its target outside a fight, the victim {} - "
+                         "dropped (release {})",
+                         group.Run().runId, leader->GetName(), stale ? stale->GetName() : staleGuid.ToString(), why,
+                         route.staleVictimReleases);
                 leader->AttackStop();
                 leader->SetTarget(ObjectGuid::Empty);
                 if (leaderAI)
@@ -367,8 +410,6 @@ namespace Leader::Fight
                     leaderAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
                     leaderAI->ChangeEngine(BOT_STATE_NON_COMBAT);
                 }
-                route.staleVictim.Clear();
-                route.staleVictimSinceMs = 0;
             }
         }
     }

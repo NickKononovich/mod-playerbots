@@ -20,8 +20,6 @@ class Player;
 
 namespace Leader::Fight
 {
-    constexpr uint32 PHANTOM_COMBAT_MS = 15 * IN_MILLISECONDS;      // in combat, nothing dealt / taken / healed
-    constexpr uint32 PHANTOM_COMBAT_END_MS = 45 * IN_MILLISECONDS;  // then the stale combat references are ended
     // [phantom_mob_hunt] a live mob of the phantom combat that the leader can walk to is hunted this many times
     // (the target for PHANTOM_HUNT_MS each) before its combat is ended as an unreachable one's
     constexpr uint32 PHANTOM_HUNT_MAX_TRIES = 3;

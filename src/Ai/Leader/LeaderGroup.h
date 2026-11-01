@@ -217,8 +217,6 @@ namespace Leader
         // a member with no walk back to the group is put in again at the entrance by the group's owner (true: it was,
         // counted as a death)
         virtual bool StrandedReenter(ObjectGuid member, Player* bot, Player* leader) = 0;
-        // the damage done and taken and the healing done by the members so far (the owner's counters)
-        virtual uint64 CombatActivity() const = 0;
         // the owner's test setup of a buffing pass, a member's consumables (true: it used a flask / food) and a
         // member's buff state for the log
         virtual void BuffPassSetup(std::vector<Player*> const& players) = 0;

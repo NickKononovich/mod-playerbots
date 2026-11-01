@@ -5018,17 +5018,6 @@ namespace TestHarness
         return false;
     }
 
-    uint64 PartyLeaderGroup::CombatActivity() const
-    {
-        uint64 activity = 0;
-        for (Member const& member : _party.members)
-        {
-            MemberCounters const counters = StatsRegistry::Instance().Snapshot(member.guid);
-            activity += counters.damageDone + counters.damageTaken + counters.healingDone;
-        }
-        return activity;
-    }
-
     void PartyLeaderGroup::BuffPassSetup(std::vector<Player*> const& players) { _mgr.BuffPassSetup(_party, players); }
 
     bool PartyLeaderGroup::UseConsumables(Player* bot, bool food) { return _mgr.UseConsumables(_party, bot, food); }
@@ -6078,7 +6067,7 @@ namespace TestHarness
             return;
         }
 
-        // Buffing is no idle time (BUFF_TOTAL_MAX_MS caps it). A rest counts at the event-wait limit (wave 8 nex-h:
+        // Buffing is no idle time (its steps end on their facts). A rest counts at the event-wait limit (wave 8 nex-h:
         // 138 s of regen_stall without an [idle] line).
         if (party.phase == Phase::Buffing || party.phase == Phase::ReadyCheck)
             return;
