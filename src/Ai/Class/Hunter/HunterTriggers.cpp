@@ -23,8 +23,7 @@
 #include "TargetValue.h"
 
 constexpr uint8 ASPECT_OF_THE_VIPER_MANA_PCT = 10;
-// [b31_deep] wowsims hunter default: back from Viper at 30 % mana (was 60: Viper halves shot damage, 10 -> 60 %
-// spent twice as long in it as 10 -> 30 %)
+// [b31_deep] wowsims hunter APLs: Viper below 10 % mana, back to Dragonhawk above 30 %
 constexpr uint8 ASPECT_OF_THE_DRAGONHAWK_MANA_PCT = 30;
 // [b31_deep] Misdirection window: the opening of a pull, or our threat closing on the tank's
 constexpr uint32 MISDIRECTION_PULL_WINDOW_SECONDS = 10;
@@ -85,17 +84,6 @@ bool BlackArrowTrigger::IsActive()
     return DebuffTrigger::IsActive();
 }
 
-// [lead140] the mana (%) the rest of this fight takes at the hunter's measured spend: the current target's health
-// over the group's damage, against FightManaLine (the run's measured rate)
-float HunterFightManaLeft(PlayerbotAI* botAI, Player* bot)
-{
-    AiObjectContext* context = botAI->GetAiObjectContext();
-    Unit* fought = AI_VALUE(Unit*, "current target");
-    float const groupDps = AI_VALUE(float, "estimated group dps");
-    float const left = fought && groupDps > 0.0f ? float(fought->GetHealth()) / groupDps : 0.0f;
-    return std::max(0.0f, RestState::FightManaLine(bot, left, 0.0f) - RestState::FightManaLine(bot, 0.0f, 0.0f));
-}
-
 bool HunterAspectOfTheDragonhawkTrigger::IsActive()
 {
     Unit* target = GetTarget();
@@ -112,17 +100,10 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
     if (botAI->HasAura("aspect of the viper", target))
     {
         uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
-        if (mana < ASPECT_OF_THE_DRAGONHAWK_MANA_PCT)
-            return false;
-        // [lead85] a led group's fight: back once the mana covers its own line after the rest of this fight (the
-        // measured spend over the target's remaining seconds), else it would drink after the fight
-        // [lead140] b164: back to Dragonhawk once the mana lasts the rest of this fight (its measured spend over
-        // the target's remaining seconds) - the top-up after the fight is the leader's rest, not Viper's
-        // [lead150] ... and the next planned fight (the same need as the Viper trigger's)
-        if (Leader::LedGroup(bot))
-            return float(mana) >= (bot->IsInCombat() ? HunterFightManaLeft(botAI, bot) : 0.0f) +
-                                      RestState::OwnManaLine(bot);
-        return true;
+        // [rot8] out of a led group's fight the leader's rest line (the regen in Viper costs no damage)
+        if (Leader::LedGroup(bot) && !bot->IsInCombat())
+            return float(mana) >= RestState::OwnManaLine(bot);
+        return mana > ASPECT_OF_THE_DRAGONHAWK_MANA_PCT;
     }
 
     return true;
@@ -220,15 +201,11 @@ bool HunterAspectOfTheViperTrigger::IsActive()
     if (!BuffTrigger::IsActive())
         return false;
     uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
-    // [lead140] b164 20261101-125734: the hunter did 44-69 % of its sim - Viper (half the ranged damage) for the
-    // next fight's line. In a led group: Viper only while the mana does not last the rest of this fight (the
-    // measured spend over the target's remaining seconds); out of a fight never (the rest is the leader's)
-    // [lead150] b170 20261101-142639 356-428 s: the hunter at 1-7 % mana every pack (lead140 left Viper as soon as the
-    // rest of this fight was covered, the next fight never). Viper while the mana does not last the rest of this
-    // fight plus the next planned one (its computed line, RestState::OwnManaLine); out of a fight while it is below
-    // that line (the regen costs no damage)
-    if (Leader::LedGroup(bot))
-        return float(mana) < (bot->IsInCombat() ? HunterFightManaLeft(botAI, bot) : 0.0f) + RestState::OwnManaLine(bot);
+    // [rot8] in a fight wowsims' line (Viper below 10 %, Dragonhawk again above 30 %): Viper halves the shots, the
+    // next fight's mana is the leader's rest. Out of a led group's fight while below the leader's rest line (the
+    // regen costs no damage).
+    if (Leader::LedGroup(bot) && !bot->IsInCombat())
+        return float(mana) < RestState::OwnManaLine(bot);
     return mana < ASPECT_OF_THE_VIPER_MANA_PCT;
 }
 
