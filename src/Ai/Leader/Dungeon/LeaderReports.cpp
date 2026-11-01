@@ -386,7 +386,8 @@ namespace Leader::Dungeon
         // [lead109] an open order on a mob the leader judged unreachable (the tank's walk refused it) while that
         // verdict's facts hold - the tank and the mob where they were judged - is closed: the tank does not sit in it
         if (order.state != Leader::OrderState::Fighting)
-            if (auto const judged = group.State().unreachable.find(order.target); judged != group.State().unreachable.end())
+            if (auto const judged = group.State().unreachable.find(order.target);
+                judged != group.State().unreachable.end())
                 if (Creature* mob = leader->GetMap()->GetCreature(order.target);
                     mob && leader->GetExactDist(judged->second.tankAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
                     mob->GetExactDist(judged->second.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD)
