@@ -2052,19 +2052,46 @@ namespace Leader::Dungeon
                     bot->GetMaxPower(POWER_MANA) && tank->GetMaxHealth())
                 {
                     float missing = 0.0f;
+                    uint32 hurt = 0;
                     std::vector<Player*> all = seats;
                     all.push_back(tank);
                     for (Player* member : all)
-                        if (member->IsAlive())
+                        if (member->IsAlive() && member->GetHealth() < member->GetMaxHealth())
+                        {
                             missing += float(member->GetMaxHealth() - member->GetHealth());
+                            ++hurt;
+                        }
                     if (missing > 0.0f)
                     {
                         Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
                         float const line = waitBoss && waitBoss->IsAlive()
                                                ? PullReadiness::MemberBossManaLine(bot, waitBoss)
                                                : RestState::OwnManaLine(bot);
+                        // [lead194] b181 rfc-h 5C 327-337 s: the disc stood 0.5 s above its 15 % line, its TopUp Renew
+                        // on the druid (a few % of health) cost more than the health share and it sat again 7 times -
+                        // each top-up is at least one cast of the healer's cheapest heal (its known top rank's cost)
+                        float healPct = 0.0f;
+                        // Flash Heal, Lesser Heal, Renew, Lesser / Healing Wave, Flash of Light, Holy Light,
+                        // Regrowth, Rejuvenation, Healing Touch, Nourish (first ranks: the chains' top known rank)
+                        static constexpr uint32 TOP_UP_HEALS[] = {2061, 2050, 139,  8004, 331,  19750,
+                                                                  635,  8936, 774, 5185, 50464};
+                        for (uint32 first : TOP_UP_HEALS)
+                            for (uint32 rank = sSpellMgr->GetLastSpellInChain(first); rank;
+                                 rank = sSpellMgr->GetPrevSpellInChain(rank))
+                                if (bot->HasSpell(rank))
+                                {
+                                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(rank))
+                                    {
+                                        float const pct = 100.0f *
+                                                          float(info->CalcPowerCost(bot, info->GetSchoolMask())) /
+                                                          float(bot->GetMaxPower(POWER_MANA));
+                                        healPct = healPct > 0.0f ? std::min(healPct, pct) : pct;
+                                    }
+                                    break;
+                                }
                         float const topUp =
-                            RestState::HEALER_PCT_PER_TANK_HEALTH * missing / float(tank->GetMaxHealth());
+                            std::max(RestState::HEALER_PCT_PER_TANK_HEALTH * missing / float(tank->GetMaxHealth()),
+                                     float(hurt) * healPct);
                         if (bot->GetPowerPct(POWER_MANA) < line + topUp)
                         {
                             needsRest = true;
