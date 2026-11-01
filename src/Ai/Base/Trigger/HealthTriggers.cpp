@@ -13,6 +13,8 @@
 #include <unordered_map>
 
 #include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
+#include "Bag.h"          // [lead177] the drinks in the bags
+#include "BuyAction.h"    // [lead177] RESTOCK_SPELL_CATEGORY_DRINK
 #include "ANTriggers.h"   // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
 #include "CoSTriggers.h"  // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
 #include "CreatureGroups.h"   // [b46_patrol]
@@ -373,6 +375,65 @@ void NoteFightLengthError(ObjectGuid group, float errorSec)
     ++error.fights;
 }
 
+namespace
+{
+    // [lead177] the mana per second (% of max mana) the best drink in the bags gives (its SPELL_AURA_MOD_POWER_REGEN
+    // amount is mana per 5 s); 0 without one. Cached per bot for a few seconds: the bags do not change in a fight
+    float DrinkPctPerSec(Player* bot)
+    {
+        uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
+        if (!maxMana)
+            return 0.0f;
+        constexpr uint32 DRINK_CACHE_MS = 5 * IN_MILLISECONDS;  // a lookup cache only, no decision clock
+        struct Cached
+        {
+            uint32 ms = 0;
+            float pct = 0.0f;
+        };
+        thread_local std::unordered_map<uint64, Cached> cache;
+        uint32 const now = getMSTime();
+        Cached& cached = cache[bot->GetGUID().GetRawValue()];
+        if (cached.ms && getMSTimeDiff(cached.ms, now) < DRINK_CACHE_MS)
+            return cached.pct;
+        float best = 0.0f;
+        auto const consider = [&](Item* item)
+        {
+            ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+            if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+                proto->Spells[0].SpellCategory != RESTOCK_SPELL_CATEGORY_DRINK ||
+                bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                return;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
+            if (!info)
+                return;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && effect.MiscValue == POWER_MANA)
+                    best = std::max(best, 100.0f * float(effect.CalcValue(bot)) / 5.0f / float(maxMana));
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = bot->GetBagByPos(bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    consider(bag->GetItemByPos(static_cast<uint8>(slot)));
+        cached = {now ? now : 1, best};
+        return best;
+    }
+
+    // [lead177] the group's damage dealers present (the tank too): one of them casting no damage costs the fight
+    // 1 / this share of its damage
+    uint32 DamageDealers(Player* bot)
+    {
+        uint32 count = 0;
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member->IsAlive() && member->GetMap() == bot->GetMap() && !PlayerbotAI::IsHeal(member))
+                    ++count;
+        return std::max<uint32>(count, 1);
+    }
+}
+
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
 {
     float rate = RoleManaRate(bot);
@@ -409,19 +470,41 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
     // the mana its own ready cooldowns return in the fight (spell effects: Evocation 60 %, Divine Plea 25 %)
     constexpr uint32 SPELL_EVOCATION = 12051;
     constexpr uint32 SPELL_DIVINE_PLEA = 54428;
+    // [lead177] a cooldown's mana counts only when using it in the fight costs less time than drinking that mana before
+    // the pull: its cast (a channel's duration, else the global cooldown) takes this member's share of the group's
+    // damage out of the fight (cast x 1 / damage dealers, a healer's the whole cast), the drink costs the group the
+    // mana over the best drink's rate (no drink in the bags: the cooldown it is)
     float returned = 0.0f;
-    if (bot->HasSpell(SPELL_EVOCATION) && !bot->HasSpellCooldown(SPELL_EVOCATION))
-        returned += 60.0f;
-    if (bot->HasSpell(SPELL_DIVINE_PLEA) && !bot->HasSpellCooldown(SPELL_DIVINE_PLEA))
-        returned += 25.0f;
+    std::string pick;
+    float const drinkRate = DrinkPctPerSec(bot);
+    auto const credit = [&](uint32 spell, float pct, char const* name)
+    {
+        if (!bot->HasSpell(spell) || bot->HasSpellCooldown(spell))
+            return;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+        if (!info)
+            return;
+        float const castSec = info->IsChanneled() ? std::max(info->GetDuration(), 0) / 1000.0f
+                                                  : std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(bot)) /
+                                                        1000.0f;
+        float const fightCost = PlayerbotAI::IsHeal(bot) ? castSec : castSec / float(DamageDealers(bot));
+        float const drinkSec = drinkRate > 0.0f ? pct / drinkRate : -1.0f;
+        bool const inFight = drinkSec < 0.0f || fightCost <= drinkSec;
+        if (inFight)
+            returned += pct;
+        pick += Acore::StringFormat("{}{} {}: {:.1f} s in the fight vs {:.1f} s drinking", pick.empty() ? "" : "; ",
+                                    name, inFight ? "in the fight" : "drunk before", fightCost, drinkSec);
+    };
+    credit(SPELL_EVOCATION, 60.0f, "Evocation");
+    credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
     float const line = std::clamp(need + reserve - returned, float(sPlayerbotAIConfig.LowMana), 100.0f);
     if (why)
-        *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns",
+        *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? "measured" : "role", fightSec, reserve,
                                    uncertainSec >= 0.0f && measured
                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
                                        : std::string("flat"),
-                                   returned);
+                                   returned, pick.empty() ? std::string() : " (" + pick + ")");
     return line;
 }
 
