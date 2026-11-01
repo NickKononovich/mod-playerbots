@@ -84,12 +84,22 @@ namespace Leader::Fight
                                                  VMAP::ModelIgnoreFlags::Nothing);
     }
 
-    bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at)
+    bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs)
+    {
+        for (ObjectGuid const& guid : fightMobs)
+            if (Unit* mob = ObjectAccessor::GetUnit(*bot, guid);
+                mob && mob->IsAlive() && mob->GetExactDist(at) < LeaderRangedMinGap(bot, mob))
+                return false;
+        return true;
+    }
+
+    bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at, std::vector<ObjectGuid> const* fightMobs)
     {
         float const gap = at.GetExactDist(target->GetPosition());
         float const reach = std::max(LeaderShootReach(bot), LeaderSpellReach(bot));
         float const minGap = bot->getClass() == CLASS_HUNTER ? LeaderRangedMinGap(bot, target) : 0.0f;
-        return reach > 0.0f && gap <= reach && gap >= minGap && LeaderSeesFrom(bot, target, at);
+        return reach > 0.0f && gap <= reach && gap >= minGap && LeaderSeesFrom(bot, target, at) &&
+               (!fightMobs || LeaderOutOfMobsMelee(bot, at, *fightMobs));
     }
 
     bool HealReaches(Player* tank, Position const& from, Position const& to)
@@ -812,7 +822,8 @@ namespace Leader::Fight
     // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
     std::string LeaderCombatSpotBreaks(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot,
                                        bool melee, std::vector<HazardZone> const& zones,
-                                       std::function<bool(Position const&)> const& keeps, bool sight)
+                                       std::function<bool(Position const&)> const& keeps, bool sight,
+                                       std::vector<ObjectGuid> const* fightMobs)
     {
         float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
         if (melee && gap > target->GetCombatReach() + bot->GetCombatReach() + 1.5f)
@@ -827,6 +838,11 @@ namespace Leader::Fight
         if (!melee && !PlayerbotAI::IsHeal(bot) && bot->getClass() == CLASS_HUNTER &&
             castGap < LeaderRangedMinGap(bot, target))  // [lead157]
             return "inside its minimum range of the target";
+        // [lead210] b182 rfc-h: ranged members within 10 yd of the tank in 33 % of the fight samples (b181 22 %), mobs
+        // lost off the tank 5C 28 (b181 8). In a mob's melee reach the game moves it to a member at 110 % of its
+        // victim's threat, not 130 % (ThreatManager): a ranged or healer spot there is no spot
+        if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
+            return "inside a fight mob's melee reach";
         if (LeaderZoneAt(zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), LEADER_HAZARD_EDGE))
             return "a hazard covers it";
         if (NearHazard(bot->GetMap(), bot->GetPhaseMask(), spot.GetPositionX(), spot.GetPositionY(),
@@ -846,7 +862,8 @@ namespace Leader::Fight
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
                                  std::vector<HazardZone> const& zones,
-                                 std::function<bool(Position const&)> const& keeps, Position& out)
+                                 std::function<bool(Position const&)> const& keeps, Position& out,
+                                 std::vector<ObjectGuid> const* fightMobs)
     {
         std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
         constexpr float RINGS[] = {0.0f, 3.0f, 6.0f, 9.0f, 12.0f};
@@ -867,7 +884,7 @@ namespace Leader::Fight
                 Position const spot(x, y, z);
                 if (!melee && target->GetExactDist2d(x, y) < std::max(8.0f, LeaderRangedMinGap(bot, target)))
                     continue;
-                if (!LeaderCombatSpotBreaks(bot, botAI, target, spot, melee, zones, keeps, true).empty())
+                if (!LeaderCombatSpotBreaks(bot, botAI, target, spot, melee, zones, keeps, true, fightMobs).empty())
                     continue;
                 if (LeaderCandidate(bot, spot, fallback) != 2)
                     continue;

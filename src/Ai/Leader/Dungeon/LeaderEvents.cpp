@@ -2421,7 +2421,7 @@ namespace Leader::Dungeon
                         // (melee: out of melee reach), or a hazard / cleave / drop-off covers it - not because the
                         // fight's anchor or the target moved a little, nor for the heal reach (its own rule)
                         breaks = LeaderCombatSpotBreaks(bot, botAI, target, found->second.second, melee, zones,
-                                                        keeps, sight);
+                                                        keeps, sight, &killOrder);  // [lead210]
                         if (breaks == "heal reach")
                             breaks.clear();
                         lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
@@ -2468,7 +2468,7 @@ namespace Leader::Dungeon
                                          {
                                              SpotAcquire const acquire;  // [lead36]
                                              return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(),
-                                                                            melee, zones, keeps, spot) ||
+                                                                            melee, zones, keeps, spot, &killOrder) ||
                                                     LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot);
                                          });
                         if (got)
@@ -3077,8 +3077,10 @@ namespace Leader::Dungeon
                         // Attack target", ~7 yd each, of members that cast from where they stood. One fact for every
                         // spot rule (LeaderCastsFrom): no re-spot while the member casts on its Attack target from
                         // where it stands; a new spot only when it cannot
-                        auto const shootsFrom = [&](Position const& at) { return LeaderCastsFrom(bot, judgedOn, at); };
-                        bool const castsNow = LeaderCastsFrom(bot, attackOn, bot->GetPosition());
+                        // [lead210] and out of every fight mob's melee reach (the game's 110 % aggro rule there)
+                        auto const shootsFrom = [&](Position const& at)
+                        { return LeaderCastsFrom(bot, judgedOn, at, &killOrder); };
+                        bool const castsNow = LeaderCastsFrom(bot, attackOn, bot->GetPosition(), &killOrder);
                         auto const kept = lead.combatSpots.find(guid);
                         bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second);
                         // [lead174] b179 rfc-h 5A: 122 re-spots "out of its reach / sight of the tank its Attack target
@@ -3104,7 +3106,7 @@ namespace Leader::Dungeon
                                 {
                                     SpotAcquire const acquire;
                                     return LeaderNearestCombatSpot(bot, botAI, judgedOn, bot->GetPosition(), false,
-                                                                   zones, keeps, spot) ||
+                                                                   zones, keeps, spot, &killOrder) ||
                                            LeaderCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot);
                                 });
                             if (got && shootsFrom(spot))

@@ -128,7 +128,12 @@ namespace Leader::Fight
     // [lead203] a ranged member standing at `at` casts on `target`: within its spells' range (the larger of its
     // positioning reach and LeaderSpellReach), out of Auto Shot's dead zone (a hunter), in sight. The one fact both
     // combat spot rules leave a spot by
-    bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at);
+    // [lead210] `fightMobs`: and out of the melee reach of every one of them (the game takes a mob off its victim for
+    // a member in its melee reach at 110 % of the victim's threat, at range only at 130 %: ThreatManager)
+    bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at,
+                         std::vector<ObjectGuid> const* fightMobs = nullptr);
+    // [lead210] `at` is out of the melee reach (LeaderRangedMinGap) of every living mob of `fightMobs`
+    bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs);
 
     // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
     // unpulled pack) stands within the AoE radius (plus a margin) of it
@@ -265,12 +270,14 @@ namespace Leader::Fight
     // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
     std::string LeaderCombatSpotBreaks(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot,
                                        bool melee, std::vector<HazardZone> const& zones,
-                                       std::function<bool(Position const&)> const& keeps, bool sight);
+                                       std::function<bool(Position const&)> const& keeps, bool sight,
+                                       std::vector<ObjectGuid> const* fightMobs = nullptr);
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
                                  std::vector<HazardZone> const& zones,
-                                 std::function<bool(Position const&)> const& keeps, Position& out);
+                                 std::function<bool(Position const&)> const& keeps, Position& out,
+                                 std::vector<ObjectGuid> const* fightMobs = nullptr);
 
     // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack
     // reaching it, a walk to it.
