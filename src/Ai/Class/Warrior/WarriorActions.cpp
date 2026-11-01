@@ -25,7 +25,8 @@ constexpr uint32 STRIKE_SOON_MS = 1500;                    // one global cooldow
 // rage of a strike that came off cooldown a moment later (Fury build 30: Sunder 5.6 a minute, above Whirlwind).
 int32 RageForStrikeSoon(PlayerbotAI* botAI, Player* bot)
 {
-    static char const* const strikes[] = { "mortal strike", "bloodthirst", "whirlwind" };
+    // [rot36] Shield Slam is the prot warrior's main strike (wowsims prot: above Revenge / Devastate)
+    static char const* const strikes[] = { "mortal strike", "bloodthirst", "whirlwind", "shield slam" };
     AiObjectContext* context = botAI->GetAiObjectContext();
     int32 reserve = 0;
     for (char const* name : strikes)

@@ -601,7 +601,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
     return false;
 }
 
-float OwnManaLine(Player* bot)
+float OwnManaLine(Player* bot, std::string* why)
 {
     NextFight fight;
     if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) && PredictNextFight(bot, fight) &&
@@ -609,9 +609,12 @@ float OwnManaLine(Player* bot)
     {
         float const fightSec =
             fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
-        return PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight) : FightManaLine(bot, fightSec, fight.cost);
+        return PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, why) : FightManaLine(bot, fightSec, fight.cost, why);
     }
-    return PlayerbotAI::IsHeal(bot) ? HEALER_REST_MANA_PCT : REST_MANA_PCT;
+    float const line = PlayerbotAI::IsHeal(bot) ? HEALER_REST_MANA_PCT : REST_MANA_PCT;
+    if (why)
+        *why = Acore::StringFormat("{:.0f} % (no next fight known)", line);
+    return line;
 }
 
 bool BelowOwnLine(Player* bot, std::string* why)

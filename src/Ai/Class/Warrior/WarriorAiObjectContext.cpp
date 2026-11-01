@@ -160,10 +160,11 @@ private:
     static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
     static Trigger* shield_bash(PlayerbotAI* botAI) { return new ShieldBashInterruptSpellTrigger(botAI); }
     static Trigger* tank_bloodrage(PlayerbotAI* botAI) { return new BloodrageTankTrigger(botAI); }
-    // wowsims protection_warrior__default: Heroic Strike at 30+ rage
+    // wowsims protection_warrior__default: Heroic Strike at 30+ rage. [rot36] keeping the rage of a Shield Slam due
+    // within a GCD (WarriorLeavesRageForStrike)
     static Trigger* prot_heroic_strike_rage(PlayerbotAI* botAI)
     {
-        return new WarriorRageAvailableTrigger(botAI, "prot heroic strike rage", 30);
+        return new FuryHeroicStrikeRageTrigger(botAI, "prot heroic strike rage", 30);
     }
     static Trigger* concussion_blow(PlayerbotAI* botAI) { return new ConcussionBlowTrigger(botAI); }
     static Trigger* SwordAndBoard(PlayerbotAI* botAI) { return new SwordAndBoardTrigger(botAI); }

@@ -243,22 +243,9 @@ void TankWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "shockwave ready",
-            {
-                NextAction("shockwave", ACTION_HIGH + 3.6f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "concussion blow ready",
-            {
-                NextAction("concussion blow", ACTION_HIGH + 3.4f)
-            }
-        )
-    );
+    // [rot36] no single-target Shockwave / Concussion Blow (wowsims protection_warrior__default never casts them):
+    // their GCDs and rage went to Shield Slam / Devastate / Heroic Strike. Shockwave stays on 2+ mobs ("light aoe
+    // shockwave", the aoe strategy), Concussion Blow as an interrupt
     triggers.push_back(
         new TriggerNode(
             "medium rage available",

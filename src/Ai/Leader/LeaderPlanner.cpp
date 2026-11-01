@@ -7641,13 +7641,46 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
     // Nor with a healer still drinking up from the last fight (wave 10 Stratholme: the next pack 24 s after a
     // 133 s chain, the healer healed nobody and the group died in 21 s).
-    float const minHealerMana = sPlayerbotAIConfig.CarefulPullMinHealerMana;
-    float const healerMana = LowestHealerMana(bot);
-    if (minHealerMana > 0.0f && healerMana >= 0.0f && healerMana < minHealerMana)
+    // [lead166] b179 rfc-h 5H 459-512 s: "healer mana 15 %, needs 50 %" (the fixed CarefulPullMinHealerMana) held
+    // Oggleflint after the leader's Rest had stood the healer up at its computed line (15 %), and the hold named no
+    // member, so no Rest came: 53 s of spirit regen. A led group: each healer's own computed line for this pull (a
+    // boss: the boss gate's FightManaLine, else its rest line OwnManaLine), named "<healer> at N % mana" so the
+    // leader's Rest (lead50) drinks it up to exactly that line
+    if (Leader::LedGroup(bot))
     {
-        _planNotReadyWhy =
-            Acore::StringFormat("healer mana {:.0f} %, needs {:.0f} %", healerMana, minHealerMana);
-        return false;
+        Creature const* targetCreature = target->ToCreature();
+        bool const bossPull = targetCreature && (targetCreature->IsDungeonBoss() || targetCreature->isWorldBoss());
+        std::vector<Player*> healers{bot};
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot &&
+                                                       member->GetMapId() == bot->GetMapId() &&
+                                                       !ToppedUpWatch::Stranded(bot, member))
+                    healers.push_back(member);
+        for (Player* healer : healers)
+        {
+            if (!healer->IsAlive() || !PlayerbotAI::IsHeal(healer) || healer->getPowerType() != POWER_MANA)
+                continue;
+            std::string terms;
+            float const line = bossPull ? RestState::FightManaLine(healer, NextPullSec(healer, target), 0.0f, &terms)
+                                        : RestState::OwnManaLine(healer, &terms);
+            if (healer->GetPowerPct(POWER_MANA) < line)
+            {
+                _planNotReadyWhy = Acore::StringFormat("{} at {:.0f} % mana (needs {})", healer->GetName(),
+                                                       healer->GetPowerPct(POWER_MANA), terms);
+                return false;
+            }
+        }
+    }
+    else
+    {
+        float const minHealerMana = sPlayerbotAIConfig.CarefulPullMinHealerMana;
+        float const healerMana = LowestHealerMana(bot);
+        if (minHealerMana > 0.0f && healerMana >= 0.0f && healerMana < minHealerMana)
+        {
+            _planNotReadyWhy = Acore::StringFormat("healer mana {:.0f} %, needs {:.0f} %", healerMana, minHealerMana);
+            return false;
+        }
     }
 
     PartyStrength const strength = PlanStrength();  // [lead7] the look's snapshot
