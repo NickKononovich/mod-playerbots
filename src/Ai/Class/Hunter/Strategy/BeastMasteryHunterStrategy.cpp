@@ -35,6 +35,7 @@ std::vector<NextAction> BeastMasteryHunterStrategy::getDefaultActions()
 void BeastMasteryHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericHunterStrategy::InitTriggers(triggers);
+    triggers.push_back(new TriggerNode("enemy within melee", { NextAction("mongoose bite", 22.0f) }));  // [lead105]
     triggers.push_back(
         new TriggerNode(
             "bestial wrath",

@@ -312,6 +312,9 @@ bool TankHammerOfWrathTrigger::IsActive()
     Unit* target = AI_VALUE(Unit*, "current target");
     if (!target || !target->IsAlive() || target->GetHealthPct() >= 20.0f)  // the spell's own 20 % rule
         return false;
+    // [lead105] b139 simpct: never cast on the bosses - on a boss the fight IS the next fight: its execute is cast
+    if (Creature* boss = target->ToCreature(); boss && boss->IsDungeonBoss())
+        return true;
     uint32 const spell = AI_VALUE2(uint32, "spell id", "hammer of wrath");
     uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
     SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
@@ -324,12 +327,13 @@ bool TankHammerOfWrathTrigger::IsActive()
 bool TankDivinePleaTrigger::IsActive()
 {
     constexpr uint32 SPELL_DIVINE_PLEA = 54428;
-    constexpr float DIVINE_PLEA_RETURN_PCT = 25.0f;  // the spell: 25 % of max mana over 15 s (FightManaLine's term)
-    if (!bot->IsInCombat() || !bot->HasSpell(SPELL_DIVINE_PLEA) || bot->HasSpellCooldown(SPELL_DIVINE_PLEA) ||
+    // [lead105] b140 rfc-h: Divine Plea 8 times in 1355 s (60 s cooldown, ~20 possible), the tank rested 100 s -
+    // wowsims prot APL: on cooldown whenever mana is not full, in and out of a fight (a tank's halved healing done
+    // costs nothing)
+    if (!PlayerbotAI::IsTank(bot) || !bot->HasSpell(SPELL_DIVINE_PLEA) || bot->HasSpellCooldown(SPELL_DIVINE_PLEA) ||
         !bot->GetMaxPower(POWER_MANA) || botAI->HasAura("divine plea", bot))
         return false;
-    float const mana = bot->GetPowerPct(POWER_MANA);
-    return mana + DIVINE_PLEA_RETURN_PCT <= 100.0f || mana < RestState::OwnManaLine(bot);
+    return bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA);
 }
 
 bool TankSealOfWisdomTrigger::IsActive()

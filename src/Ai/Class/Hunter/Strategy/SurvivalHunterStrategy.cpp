@@ -71,6 +71,7 @@ std::vector<NextAction> SurvivalHunterStrategy::getDefaultActions()
 void SurvivalHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericHunterStrategy::InitTriggers(triggers);
+    triggers.push_back(new TriggerNode("enemy within melee", { NextAction("mongoose bite", 22.0f) }));  // [lead105]
 
     triggers.push_back(
         new TriggerNode(

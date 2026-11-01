@@ -20259,6 +20259,8 @@ namespace TestHarness
         constexpr uint32 SPELL_HAND_OF_PROTECTION_3 = 10278;
         constexpr uint32 SPELL_INNERVATE = 29166;
         constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
+        constexpr uint32 SPELL_HEROISM = 32182;    // [lead105]
+        constexpr uint32 SPELL_BLOODLUST = 2825;
         constexpr uint32 SPELL_DIVINE_HYMN = 64843;
         constexpr uint32 SPELL_POWER_INFUSION = 10060;
 
@@ -23998,6 +24000,12 @@ namespace TestHarness
             if (hurt >= 3)
                 if (auto const [bot, spell] = withSpell({SPELL_DIVINE_HYMN}, nullptr); bot)
                     tell(bot, spell, nullptr, "three members under half health");
+            // [lead105] Heroism / Bloodlust is the group's cooldown: the leader's command at a boss fight's burn (one
+            // shaman, the group as the target); the shaman's own trigger is off in a led group
+            if (intensity == Leader::Intensity::Burn && target && target->ToCreature() &&
+                target->ToCreature()->IsDungeonBoss())
+                if (auto const [bot, spell] = withSpell({SPELL_HEROISM, SPELL_BLOODLUST}, nullptr); bot)
+                    tell(bot, spell, nullptr, "the boss burn: the group's haste");
             if (intensity == Leader::Intensity::Burn)
                 for (Player* member : seats)
                     if (member != healer && member->getPowerType() == POWER_MANA && !PlayerbotAI::IsTank(member))

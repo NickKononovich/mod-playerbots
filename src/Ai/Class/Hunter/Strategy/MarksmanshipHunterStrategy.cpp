@@ -26,7 +26,7 @@ std::vector<NextAction> MarksmanshipHunterStrategy::getDefaultActions()
         // [b31_deep] Multi-Shot fills the shared Aimed/Multi 10 s cooldown (category 85) while Aimed Shot is not
         // castable (wowsims mm.apl: Aimed > Multi > Steady); with Aimed known the shared cooldown keeps it second
         NextAction("multi-shot", 5.35f),
-        NextAction("arcane shot", 5.3f),
+        // [lead105] wowsims 3.3.5 MM APL: Arcane Shot is not cast (hidden); Steady Shot is the filler
         // Silencing Shot is held for enemy casts (the "silencing shot" trigger and the group interrupt
         // rotation); spent as a filler it was on cooldown whenever a caster started a cast.
         NextAction("steady shot", 5.2f),
@@ -90,12 +90,10 @@ void MarksmanshipHunterStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
 
     // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
     triggers.push_back(new TriggerNode("set bonus ascendant execution", { NextAction("kill shot", 18.4f) }));
-    triggers.push_back(new TriggerNode("set bonus lock and load", { NextAction("arcane shot", 17.96f) }));
     triggers.push_back(new TriggerNode("set bonus titan's focus",
         { NextAction("chimera shot", 17.95f),
           NextAction("aimed shot", 17.85f) }));
     triggers.push_back(new TriggerNode("set bonus improved steady shot",
         { NextAction("chimera shot", 17.9f),
-          NextAction("aimed shot", 17.8f),
-          NextAction("arcane shot", 17.7f) }));
+          NextAction("aimed shot", 17.8f) }));
 }

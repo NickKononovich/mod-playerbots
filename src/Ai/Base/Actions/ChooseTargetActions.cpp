@@ -388,6 +388,10 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
             if (Player* member = gref->GetSource(); member && member != bot && member->GetMap() == bot->GetMap())
                 for (Unit* attacker : member->getAttackers())
                     fight.push_back(attacker);
+    // [lead106] b140 rfc-h 262.7-286.7 s: a Ragefire Shaman on the mage for 24 s while Hand of Reckoning went to
+    // mobs that only came at the tank (the first match in the list) - two passes: every mob on another member first
+    // (Righteous Defense on the attacked friend first: it takes up to three), then the untouched incoming ones
+    for (bool const takeBack : {true, false})
     for (Unit* mob : fight)
     {
         if (!mob || !mob->IsAlive() || !mob->ToCreature() || !bot->IsValidAttackTarget(mob) ||
@@ -400,8 +404,14 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         Unit* victim = mob->GetVictim();
         bool const onOther = victim && victim != bot && victim->GetTypeId() == TYPEID_PLAYER;
         bool const untouched = mob->GetThreatMgr().GetThreat(bot) <= 0.0f && !bot->IsWithinMeleeRange(mob);
-        if (!onOther && !untouched)
+        if (takeBack ? !onOther : (onOther || !untouched))
             continue;
+        if (onOther && botAI->CanCastSpell("righteous defense", victim))
+        {
+            if (opener)
+                *opener = "righteous defense";
+            return mob;
+        }
         for (char const* name : TANK_OPENERS)
             if (botAI->CanCastSpell(name, mob))
             {
@@ -409,13 +419,6 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
                     *opener = name;
                 return mob;
             }
-        // the victim's own rescue: Righteous Defense (cast on the attacked friend)
-        if (onOther && botAI->CanCastSpell("righteous defense", victim))
-        {
-            if (opener)
-                *opener = "righteous defense";
-            return mob;
-        }
     }
     return nullptr;
 }

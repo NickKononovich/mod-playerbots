@@ -248,6 +248,9 @@ namespace
         // the burn cooldowns run only under the leader's Intensity burn
         // [lead80] b123 141.6 s: Feral Spirit went out of combat (the gate held only in a fight) - the one list
         // (Leader::IsBurnCooldown), in and out of a fight
+        // [lead105] Heroism / Bloodlust only as the leader's command (its external order), never the shaman's own
+        if (name == "heroism" || name == "bloodlust")
+            return true;
         if (events.intensity != Leader::Intensity::Burn && Leader::IsBurnCooldown(name))
             return true;
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank

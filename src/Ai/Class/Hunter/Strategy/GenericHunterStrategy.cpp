@@ -82,8 +82,8 @@ void GenericHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("tranquilizing shot magic", { NextAction("tranquilizing shot", 61.0f) }));
 
     // Ranged-based Triggers
+    // [lead105] the melee bites only for Beast Mastery / Survival (their strategies add them): never Marksmanship
     triggers.push_back(new TriggerNode("enemy within melee", { NextAction("explosive trap", 37.0f),
-                                                               NextAction("mongoose bite", 22.0f),
                                                                NextAction("wing clip", 21.0f) }));
 
     triggers.push_back(new TriggerNode("enemy too close for auto shot", { NextAction("disengage", 35.0f),

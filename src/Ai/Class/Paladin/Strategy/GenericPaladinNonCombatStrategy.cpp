@@ -65,6 +65,8 @@ GenericPaladinNonCombatStrategy::GenericPaladinNonCombatStrategy(PlayerbotAI* bo
 void GenericPaladinNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     NonCombatStrategy::InitTriggers(triggers);
+    // [lead105] the tank's Divine Plea out of a fight too (TankDivinePleaTrigger: a tank, mana not full)
+    triggers.push_back(new TriggerNode("tank divine plea", { NextAction("divine plea", 21.0f) }));
 
     triggers.push_back(new TriggerNode("party member dead", { NextAction("redemption", ACTION_CRITICAL_HEAL + 10) }));
     triggers.push_back(new TriggerNode("party member almost full health", { NextAction("flash of light on party", ACTION_MEDIUM_HEAL + 5.0f) }));
