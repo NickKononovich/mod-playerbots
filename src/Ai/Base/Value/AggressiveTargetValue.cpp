@@ -429,12 +429,36 @@ namespace CarefulPlanVerdict
             combatMs = now;
     }
 
+    // [lead182b] the planner's look held before any verdict (a readiness gate): the pack it looks at
+    struct LookEntry
+    {
+        uint32 mobs = 0;
+        uint32 ms = 0;
+    };
+    std::unordered_map<uint64, LookEntry> looks;  // by tank, under verdictLock
+
+    void NoteLook(Player* tank, uint32 mobs)
+    {
+        std::lock_guard<std::mutex> guard(verdictLock);
+        uint32 const now = getMSTime();
+        looks[tank->GetGUID().GetRawValue()] = {mobs, now ? now : 1};
+    }
+
     bool GetNextFight(ObjectGuid tank, Fight& out)
     {
         std::lock_guard<std::mutex> guard(verdictLock);
         auto const found = verdicts.find(tank.GetRawValue());
         if (found == verdicts.end())
-            return false;
+        {
+            // [lead182b] no verdict yet: the pack the planner's held look is about, while that look is fresh
+            auto const look = looks.find(tank.GetRawValue());
+            if (look == looks.end() || !look->second.mobs ||
+                getMSTimeDiff(look->second.ms, getMSTime()) > CAREFUL_VERDICT_TTL_MS)
+                return false;
+            out = Fight();
+            out.mobs = look->second.mobs;
+            return true;
+        }
 
         if (!IsKept(found->second, getMSTime()))
         {

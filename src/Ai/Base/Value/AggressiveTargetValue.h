@@ -136,6 +136,9 @@ namespace CarefulPlanVerdict
     // [rest_after_boss_fight] an accepted verdict the tank has fought since (NoteCombat) names no boss any more: that
     // boss fight is over, the rest after it is no top-up for him (st-n-92: 95 % "before a boss" after Morphaz).
     bool GetNextFight(ObjectGuid tank, Fight& out);
+    // [lead182b] the planner's look held at a readiness gate before any verdict: the pack it looks at (its mob count)
+    // is the next fight until a verdict comes (GetNextFight's fallback, fresh as a verdict)
+    void NoteLook(Player* tank, uint32 mobs);
     // As above, filling the rest logic's struct (RestState::NextFight, HealthTriggers.h).
     bool GetNextFight(ObjectGuid tank, RestState::NextFight& out);
 }

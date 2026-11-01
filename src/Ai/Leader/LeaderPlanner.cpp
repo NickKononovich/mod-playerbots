@@ -7638,7 +7638,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         std::string terms;
         // no published plan: the pack this look is about (its mobs, the fight seconds from them), no fixed %
         if (!RestState::PredictNextFight(bot, next))
+        {
             next.mobs = std::max<uint32>(1, uint32(_planLookPack.size()));
+            // [lead182b] the members' own rest lines read the same pack (PredictNextFight) - no fixed rest line
+            CarefulPlanVerdict::NoteLook(bot, next.mobs);
+        }
         float const tankLine = bot->GetMaxPower(POWER_MANA) ? RestState::TankManaLine(bot, next, &terms) : 0.0f;
         if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < tankLine)
         {
