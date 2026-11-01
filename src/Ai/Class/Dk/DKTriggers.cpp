@@ -249,7 +249,7 @@ bool IsGargoyleFight(PlayerbotAI* botAI)
     if (target->ToPlayer() || ai::raidutil::IsBurstWindow(botAI))
         return true;
 
-    // a boss pull waits the few seconds a shaman of the group needs for Bloodlust (the Gargoyle keeps its haste)
+    // a boss pull waits while the group's shaman can cast Bloodlust now (the Gargoyle keeps its haste)
     if (ai::raidutil::ShouldHoldBurstForLust(botAI))
         return false;
 

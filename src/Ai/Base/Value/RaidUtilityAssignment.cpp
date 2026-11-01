@@ -334,6 +334,7 @@ namespace
             // First alive shaman (by GUID) with the spell ready is the only one who casts it.
             out.lustAvailable = true;
             out.lustOwner = member.player == bot;
+            out.lustOwnerGuid = member.player->GetGUID();
             return;
         }
     }
@@ -1162,7 +1163,24 @@ bool ShouldHoldBurstForLust(PlayerbotAI* botAI)
         return false;
 
     RaidUtilityAssignment const& assignment = GetAssignment(botAI);
-    return assignment.valid && assignment.lustAvailable && GetCombatSeconds(botAI) < BURST_HOLD_FOR_LUST_SECONDS;
+    if (!assignment.valid || !assignment.lustAvailable)
+        return false;
+
+    // [rot9] no clock: the hold lasts only while the shaman who casts the lust can cast it now (alive in this fight,
+    // on a boss, neither stunned nor silenced, the mana for it)
+    Player* owner = ObjectAccessor::FindPlayer(assignment.lustOwnerGuid);
+    if (!owner || !owner->IsInWorld() || owner->GetMap() != bot->GetMap() || !owner->IsAlive() || !owner->IsInCombat())
+        return false;
+    if (owner->HasUnitState(UNIT_STATE_STUNNED) || owner->HasAuraType(SPELL_AURA_MOD_SILENCE) ||
+        owner->HasAuraType(SPELL_AURA_MOD_PACIFY_SILENCE))
+        return false;
+    PlayerbotAI* ownerAI = GET_PLAYERBOT_AI(owner);
+    if (!ownerAI || !IsBossUnit(ownerAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get()))
+        return false;
+
+    SpellInfo const* lust = sSpellMgr->GetSpellInfo(KnownLustSpell(owner));
+    return lust &&
+           owner->GetPower(POWER_MANA) >= uint32(std::max(0, lust->CalcPowerCost(owner, lust->GetSchoolMask())));
 }
 
 std::string CurseSpellName(AssignedCurse curse)

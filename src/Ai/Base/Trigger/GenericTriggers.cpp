@@ -515,12 +515,16 @@ bool BoostTrigger::IsActive()
     if (target && target->ToPlayer())
         return true;
 
-    // Offensive cooldowns line up with Bloodlust/Heroism (or a boss pull with no lust coming), and wait a few
-    // seconds on a boss pull while a shaman of the group can still cast it.
+    // Offensive cooldowns line up with Bloodlust/Heroism (or a boss pull with no lust coming), and wait on a boss
+    // pull while the group's shaman can cast it now.
     if (ai::raidutil::IsBurstWindow(botAI))
         return true;
     if (ai::raidutil::ShouldHoldBurstForLust(botAI))
         return false;
+
+    // [rot9] wowsims: offensive cooldowns on cooldown, trash too (instances); outdoors the losing-fight rule
+    if (ai::raidutil::IsInstanceMap(bot))
+        return true;
 
     return AI_VALUE(uint8, "balance") <= balance;
 }
@@ -535,6 +539,9 @@ bool GenericBoostTrigger::IsActive()
         return true;
     if (ai::raidutil::ShouldHoldBurstForLust(botAI))
         return false;
+
+    if (ai::raidutil::IsInstanceMap(bot))  // [rot9] as BoostTrigger
+        return true;
 
     return AI_VALUE(uint8, "balance") <= balance;
 }

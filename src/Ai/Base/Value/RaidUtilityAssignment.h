@@ -62,6 +62,7 @@ namespace ai::raidutil
         bool lustCoordinated = false;  // at least one bot shaman with Bloodlust/Heroism is in the group
         bool lustOwner = false;        // this bot is the one shaman allowed to cast it
         bool lustAvailable = false;    // some bot shaman of the group has it off cooldown
+        ObjectGuid lustOwnerGuid;      // the shaman who casts it (with lustAvailable)
 
         ObjectGuid buffTarget;         // Power Infusion / Focus Magic / Hysteria target for this bot
 
@@ -80,9 +81,6 @@ namespace ai::raidutil
     constexpr uint32 SPELL_REBIRTH_RANK_1 = 20484;
     constexpr uint32 SPELL_RAISE_ALLY = 61999;
     constexpr uint32 SPELL_TOTEM_OF_WRATH_RANK_1 = 30706;
-
-    // Seconds into a boss fight during which offensive cooldowns wait for Bloodlust/Heroism.
-    constexpr uint32 BURST_HOLD_FOR_LUST_SECONDS = 12;
 
     bool IsBossUnit(Unit* unit);
     bool HasLustAura(Unit* unit);
