@@ -1630,8 +1630,11 @@ namespace Leader::Dungeon
                 auto const rejected = lead.spotRejectLogMs.find(guid);
                 bool const walkRejected = rejected != lead.spotRejectLogMs.end() && rejected->second &&
                                           getMSTimeDiff(rejected->second, now) < 5 * IN_MILLISECONDS;
+                // [lead119] b153 rfc-h 90.6-158 s: the four members the pull walk held (Hold "the tank takes the mob
+                // first") trailed at 36 yd as the tank walked in, the far gate held the tank for them: a deadlock. A
+                // member the pull walk holds stands where the leader put it - placed, not trailing
                 bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
-                                    lead.combatSpots.count(guid) || walkRejected;
+                                    lead.combatSpots.count(guid) || lead.pullWalkSpots.count(guid) || walkRejected;
                 float const gap = bot->GetExactDist(tank);
                 bool const was = lead.trailing.count(guid) > 0;
                 bool const trails = !fighting && !placed &&
