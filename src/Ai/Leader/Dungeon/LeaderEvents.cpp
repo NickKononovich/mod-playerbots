@@ -264,7 +264,10 @@ namespace Leader::Dungeon
                              (!blocker || !blocker->IsAlive() || blocker->GetExactDist(checked.mobAt) > 1.0f));
                 }
                 std::string reject;
-                Creature* mob = LeaderAggroAt(bot, spot);
+                // [lead151] the tank's own spot in a fight is no idle mob's reach: the tank stands there unwoken
+                bool const tankSpot = group.FightOn(tank) && tank->IsAlive() &&
+                                      spot.GetExactDist(tank->GetPosition()) <= 1.0f;
+                Creature* mob = tankSpot ? nullptr : LeaderAggroAt(bot, spot);
                 bool noPath = false;
                 if (!mob && again)
                     mob = LeaderAggroOnWalk(bot, spot, noPath);
@@ -2253,7 +2256,27 @@ namespace Leader::Dungeon
                         else if (found != lead.combatSpots.end() && breaks.rfind("the fight spot moved", 0) == 0)
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;  // keep it, nothing better
                         else
+                        {
                             lead.combatSpots.erase(guid);
+                            // [lead151] b171 20261101-144503 Oggleflint (396-480 s): the shaman and the hunter stood
+                            // 42-52 yd off on the level below, no spot of theirs fit (an idle Trogg's modelled reach
+                            // round the boss) and nothing moved them - 0 damage for 90 s. A damage dealer that does
+                            // not reach its target from where it stands goes to the tank's own spot: the tank stands
+                            // there in the fight, the same facts hold for it there
+                            bool const reaches = melee ? bot->IsWithinMeleeRange(target)
+                                                       : bot->GetExactDist(target) <= LeaderShootReach(bot) &&
+                                                             LeaderSeesFrom(bot, target, bot->GetPosition());
+                            if (bot != healer && !PlayerbotAI::IsHeal(bot) && bot != tank && tank->IsAlive() &&
+                                !reaches)
+                            {
+                                lead.combatSpots[guid] = {target->GetGUID(), tank->GetPosition()};
+                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                                      .Str("target", target->GetName())
+                                                      .Real("walk", bot->GetExactDist(tank)));
+                            }
+                        }
                         found = lead.combatSpots.find(guid);
                     }
                 }
@@ -2314,6 +2337,20 @@ namespace Leader::Dungeon
                 }
             }
 
+            // [lead151] diagnostic: a damage dealer in the fight left without a move this tick (once per member and
+            // fight target): why the combat-spot rule did not place it
+            if (combat && !moved && bot != healer && !PlayerbotAI::IsHeal(bot) && target)
+            {
+                thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> noSpotLogged;
+                if (noSpotLogged.size() > 4096)
+                    noSpotLogged.clear();
+                if (noSpotLogged.insert({guid, target->GetGUID()}).second)
+                    Decisions().Write(run, "leader", "fight_no_spot", guid, bot->GetName(), false,
+                                      JsonObject().Str("member", bot->GetName()).Str("target", target->GetName())
+                                          .Bool("combatSpots", Leader::LEADER_COMBAT_SPOTS)
+                                          .Real("distance", bot->GetExactDist(target))
+                                          .Bool("spotsHeld", spotsHeld));
+            }
             if (!moved && spotsHeld)
                 if (auto const spot = lead.spots.find(guid); spot != lead.spots.end())
                 {

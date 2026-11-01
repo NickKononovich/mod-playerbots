@@ -9,6 +9,7 @@
 #include "Creature.h"
 #include "FearCounterValues.h"
 #include "InstanceScript.h"
+#include "LeaderOrders.h"  // [lead151] AtCommandedSpot
 #include "ItemTemplate.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -34,7 +35,9 @@ namespace
 bool HoldsTotemsOutOfCombat(Player* bot)
 {
     Map* map = bot->GetMap();
-    return map && map->IsDungeon() && !bot->IsInCombat();
+    // [lead151] b171 20261101-144503 Oggleflint: the totem triggers fired while lead149's actions refused (a led
+    // member's totems only at its commanded spot) - true-and-impossible every tick. The trigger holds too
+    return map && map->IsDungeon() && (!bot->IsInCombat() || !Leader::Events::AtCommandedSpot(bot));
 }
 
 // [rot_b31_heal] The reach every totem trigger of this file already uses (bot to totem).
@@ -309,6 +312,8 @@ bool CallOfTheElementsTrigger::IsActive()
 {
     // [rot_b31_heal] The slot count first (four lookups), the spell check (cost, cooldown) only when it is met; the
     // count is shared with the single totem drops that wait for this spell (DefersToCallOfTheElements).
+    if (bot->IsInCombat() && !Leader::Events::AtCommandedSpot(bot))  // [lead151] as its action (lead149)
+        return false;
     return CountTotemSlotsToDrop(bot) >= 2 && botAI->CanCastSpell(SPELL_CALL_OF_THE_ELEMENTS, bot, true);
 }
 
