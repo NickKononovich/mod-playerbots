@@ -8199,6 +8199,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         if (EncounterOrder::IsLocked(candidate))
             return false;
 
+        // [lead182] b180 rfc-h 5E 1305-1475 s: the los pull / lone-mob plans alternated between Voidwalker Minion 142
+        // and 133 of the look's pack every 2 s, each aborted by the tank "out of sight on another floor" and capped
+        // out of reach (b34_wc) - which only the look target was checked against. A candidate the tank gave up as out
+        // of its reach from here is no pull mob either
+        if (candidate != target && CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))
+            return false;
+
         // Several casters in the pack: round a corner first, if the pack that comes is one the group takes.
         PackEstimate losEstimate;
         std::vector<Unit*> losSeen;
@@ -9359,7 +9366,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 PrePullCc::IsClaimed(bot, candidate->GetGUID()) ||
                 (candidate->GetGUID() == _lastPullBack &&
                  getMSTimeDiff(_lastPullBackMs, now) < CAREFUL_PULL_RETRY_MS) ||
-                CarefulPlanVerdict::EngageOnly(bot->GetGUID(), candidate->GetGUID()))  // [b37_sv]
+                CarefulPlanVerdict::EngageOnly(bot->GetGUID(), candidate->GetGUID()) ||    // [b37_sv]
+                CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))  // [lead182]
                 continue;
 
             // [b39_occ] No lone-mob pull back of a flier high over a walking tank: occ-h 20261026-054314-occ-h-5A-16
