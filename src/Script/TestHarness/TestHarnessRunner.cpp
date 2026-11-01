@@ -21838,6 +21838,17 @@ namespace TestHarness
                                                   .Str("was", why));
             return stays;
         };
+        // [lead83] b126 rfc-h 598.5-603.7 s: Rtshaab's "to the meeting point" was re-derived from where it stood every
+        // tick (LeaderMeleeWait) and flipped between two points (command_repeat). Like the range spot (lead68): the
+        // melee place is computed once from the leader's meeting point and kept until a fact changes - a new order or
+        // fight start (the meeting point moves) or another target
+        auto const meleeMeetAt = [&](Player* bot, ObjectGuid target) -> Position
+        {
+            auto& kept = lead.meleeMeet[bot->GetGUID()];
+            if (kept.target != target || kept.meet.GetExactDist(lead.meetPoint) > 1.0f)
+                kept = {target, lead.meetPoint, LeaderMeleeWait(bot, lead.meetPoint)};
+            return kept.point;
+        };
         // a slow-layer call, timed
         auto const slow = [&](auto&& call, std::source_location where = std::source_location::current())
         {
@@ -23283,7 +23294,7 @@ namespace TestHarness
                         // [lead64] user: «одной командой» - melee go to the meeting point once (the leader's
                         // predicted meeting of the tank and the mob) and adjust once the mob stands on the tank
                         if (melee && !bot->IsWithinMeleeRange(target) &&
-                            moveOrStay(bot, LeaderMeleeWait(bot, lead.meetPoint), 3.0f,
+                            moveOrStay(bot, meleeMeetAt(bot, target->GetGUID()), 3.0f,
                                        "along with the tank: to the meeting point"))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                      JsonObject().Str("why", "along with the tank: to the meeting point"));
@@ -23424,7 +23435,7 @@ namespace TestHarness
                 if (melee && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
                     Leader::Orders::GetOpen(party.leader, engage))
                 {
-                    Position const meetAt = LeaderMeleeWait(bot, lead.meetPoint);
+                    Position const meetAt = meleeMeetAt(bot, lead.commitMob);  // [lead83]
                     if (aheadOfTank(meetAt))
                         aheadHolds = true;
                     else

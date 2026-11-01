@@ -466,6 +466,13 @@ namespace TestHarness
             std::map<ObjectGuid, uint32> spotRejectLogMs;
             std::map<ObjectGuid, std::string> spotRejectLogged;  // [lead81] the last logged rejection (walk|reason)
             ObjectGuid routeFirstFor;  // [lead82] the engage the route walk leads to first (route_first logged)
+            struct MeleeMeet
+            {
+                ObjectGuid target;  // the mob the point is for
+                Position meet;      // the leader's meeting point it was computed from
+                Position point;     // the member's place at it
+            };
+            std::map<ObjectGuid, MeleeMeet> meleeMeet;  // [lead83] the melee meeting place, once per order / fight
             std::map<std::string, uint32> vetoedEvals;  // "<member>|<what>" -> count (vetoed_eval)
             // [lead18] the issued pull's whole plan for the red view (latched at the issue)
             Position issuedFrom;
