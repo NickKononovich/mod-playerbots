@@ -15,6 +15,7 @@
 #include "LeaderKnowledge.h"
 #include "ObjectGuid.h"
 #include "Position.h"
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -72,6 +73,20 @@ namespace Leader
         uint32 fires = 0;
         uint32 lastFireMs = 0;
         bool entrance = false;  // instance portal outside the map (ghosts walking back in)
+    };
+
+    // [lead107] the facts of a boss of the run the leader reads (the harness's BossTrack is one)
+    struct BossFacts
+    {
+        uint32 bossId = 0;
+        uint8 lastState = 0;      // its encounter state (InstanceScript), last read
+        bool killed = false;
+        bool failed = false;
+        Position homePos;         // where the boss stood when the attempt started (blacklist zone after a FAIL)
+        uint32 entry = 0;         // boss creature entry once known
+        ObjectGuid creature;      // boss creature once known
+        int32 order = -1;         // DungeonEncounter.dbc encounterIndex, -1 unknown
+        std::vector<uint32> credits;  // instance_encounters kill-credit creature entries (dbc tracks)
     };
 
     struct GroupRouteState
@@ -306,6 +321,19 @@ namespace Leader
         // the armed trap point; no retarget and no leader waypoint until then (refreshed every tick while it holds).
         uint32 trapHoldUntilMs = 0;
         bool doorGatherHeld = false;  // [b51_strat] the last DoorGatherHolds held the use (no progress)
+        // [lead107] moved with the route target stage: the instance's entrances (the wing walk's), the boss rush,
+        // the target counts and deaths (a reviving / respawning mob), the careful refusals, the endless summons,
+        // the detour fallback, the wing walk
+        std::vector<Position> entrances;
+        size_t entranceIdx = 0;
+        uint32 bossRushUntilMs = 0;
+        std::map<ObjectGuid, uint32> targetCounts;
+        std::set<ObjectGuid> targetDied;
+        std::map<ObjectGuid, uint32> carefulRefused;
+        std::set<uint32> endlessSummons;  // summoned entries no longer route targets (logged once each)
+        uint32 detourFallbackUntilMs = 0;  // the last event_start (an event the group works through: CoS crates)
+        bool wingWalk = false;
+        uint32 wingWalkSinceMs = 0;
     };
 }
 

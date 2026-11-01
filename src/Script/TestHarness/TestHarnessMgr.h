@@ -167,16 +167,12 @@ namespace TestHarness
         uint32 seatedSinceMs = 0;           // [queue-rest-sit-grace] when this member sat down to eat / drink
     };
 
-    struct BossTrack
+    struct BossTrack : Leader::BossFacts  // [lead107] the facts the leader reads
     {
-        uint32 bossId = 0;
-        uint8 lastState = 0;
         bool stateChanged = false;  // the state moved at least once during the run (IsPhantomSlot)
         std::string name;
         uint32 attempts = 0;
         uint32 wipes = 0;
-        bool killed = false;
-        bool failed = false;
         std::string failReason;  // [hleft-script-slot-names] a failed slot's own reason (ScriptSlotDef::failNote)
         uint32 attemptStartMs = 0;
         std::map<ObjectGuid, MemberCounters> attemptStart;
@@ -196,15 +192,10 @@ namespace TestHarness
         uint32 phantomHp = 0;
         uint32 phantomSinceMs = 0;
         bool phantomLogged = false;
-        Position homePos;  // where the boss stood when the attempt started (blacklist zone after a FAIL)
         std::map<ObjectGuid, uint32> attemptStartAggro;
 
         // Identity and route order (DungeonEncounter.dbc / instance_encounters / the InstanceScript's own guids)
-        uint32 entry = 0;         // boss creature entry once known
-        ObjectGuid creature;      // boss creature once known
-        int32 order = -1;         // DungeonEncounter.dbc encounterIndex, -1 unknown
         bool dbc = false;         // tracked from DungeonEncounter.dbc: the InstanceScript keeps no boss states
-        std::vector<uint32> credits;  // instance_encounters kill-credit creature entries (dbc tracks)
         bool engaged = false;     // a party member fought it during the current IN_PROGRESS
         uint32 npcResets = 0;     // IN_PROGRESS -> reset without the party (script NPCs engaging the boss)
         uint32 scriptedResets = 0;  // [b35_urom] IN_PROGRESS -> NOT_STARTED by the boss's own script (no wipe)
@@ -265,8 +256,6 @@ namespace TestHarness
         uint32 instanceId = 0;
         // [hleft-daily-reset] when the server's global reset of this map / difficulty comes (InstanceSaveMgr), 0: none
         time_t instanceResetAt = 0;
-        std::vector<Position> entrances;
-        size_t entranceIdx = 0;
         uint32 teleportTries = 0;
         // Members found inside an earlier run's instance of the content map: ported out first, then unbound from it.
         std::map<ObjectGuid, uint32> staleInstances;
@@ -341,20 +330,15 @@ namespace TestHarness
         // the loopSinceMs it was counted for)
         uint32 loopAliveAtStart = 0;
         uint32 loopAliveSinceMs = 0;
-        uint32 bossRushUntilMs = 0;
         uint32 releasedIdleSinceMs = 0;  // Violet Hold: since when a released prisoner stands unfought
         // How often each creature came back as the target after it had died (a reviving / respawning mob), and the
         // chosen creatures seen dead since (Retarget). Choices of a mob that never died do not count: dme-n
         // 2026-10-25 skipped a living Imp / Fel Lash / Whip Lasher as "respawning trash" after four refusals.
-        std::map<ObjectGuid, uint32> targetCounts;
-        std::set<ObjectGuid> targetDied;
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
-        std::map<ObjectGuid, uint32> carefulRefused;
         // The last skipped neighbour pack that stopped an approach (ROUTE_SKIP_BEHIND_SKIPPED), for the idle guard.
         std::string behindSkipped;
         ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
         ObjectGuid meeting;    // the member the leader walks back to (MeetMember), logged once per episode
-        std::set<uint32> endlessSummons;  // summoned entries no longer route targets (logged once each)
         // Combat with nothing happening: no damage done or taken and no healing by anybody of the party since
         // phantomCombatSinceMs (an unreachable mob on a ledge keeps everybody flagged, Ragefire Chasm 18 minutes).
         uint64 combatActivity = 0;
@@ -398,7 +382,6 @@ namespace TestHarness
         // outside rest / buffing (idleMs) and in genuine event waits (eventWaitMs), each logged once per episode.
         uint32 idleTickMs = 0;
         // ROUTE_DETOUR_FALLBACK: until then detours are targets too (everything left was a detour: the long way).
-        uint32 detourFallbackUntilMs = 0;  // the last event_start (an event the group works through: CoS crates)
         uint32 rearmCheckLogMs = 0;  // ReopenKeyDoorHeld: the last "rearm_check" line (a failed re-key, its reason)
         // trash_phantom (build 18): the health of the mobs the party fights (no boss attempt), and since when no mob
         // lost any (or the set changed).
@@ -433,8 +416,6 @@ namespace TestHarness
         uint32 ghostPosMs = 0;  // last "ghost_pos" event
         // A wing change walked (Scarlet Monastery, Dire Maul, Maraudon): out through the exit, in through the next
         // entrance, every member on its own (SelfTravel portal goal).
-        bool wingWalk = false;
-        uint32 wingWalkSinceMs = 0;
         bool gapsLogged = false;
 
         // Results that cannot be trusted (a boss far below the group's level, killed much faster than its health
@@ -878,6 +859,17 @@ namespace TestHarness
         bool BossKilledFor(uint32 entry) const override;
         void GiveWaypoint(Player* bot, float x, float y, float z, bool jump, bool straight) override;
         void MarkGateWaypoint(Player* bot) override;
+        std::vector<std::reference_wrapper<Leader::BossFacts const>> Bosses() const override;
+        uint8 Difficulty() const override { return _party.content ? _party.content->difficulty : 0; }
+        bool IsRaid() const override { return _party.content && _party.content->raid; }
+        uint8 ContentSize() const override { return _party.content ? _party.content->size : 0; }
+        std::vector<uint32> const& ContentBossEntries() const override;
+        int32 BossOrder(Creature const* creature) const override { return _mgr.BossOrder(_party, creature); }
+        void ShortcutReenter(std::vector<Player*> const& movers, size_t entrance, char const* why, float walk,
+                             float entranceWalk, std::string const& goal) override
+        {
+            _mgr.ShortcutReenter(_party, movers, entrance, why, walk, entranceWalk, goal);
+        }
         ::InstanceScript* InstanceScript() const override;
         bool BossesOpen() const override;
         void SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z) override;

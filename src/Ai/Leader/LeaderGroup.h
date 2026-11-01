@@ -171,6 +171,17 @@ namespace Leader
         virtual ::InstanceScript* InstanceScript() const = 0;
         // the bot's walk point is an auto-closing gate's pass (cleared with the pass)
         virtual void MarkGateWaypoint(Player* bot) = 0;
+        // the run's bosses (their facts), the content's difficulty / raid flag / size / wing bosses, a creature's
+        // boss order (-1: none)
+        virtual std::vector<std::reference_wrapper<BossFacts const>> Bosses() const = 0;
+        virtual uint8 Difficulty() const = 0;
+        virtual bool IsRaid() const = 0;
+        virtual uint8 ContentSize() const = 0;
+        virtual std::vector<uint32> const& ContentBossEntries() const = 0;
+        virtual int32 BossOrder(Creature const* creature) const = 0;
+        // members out of the instance and in again through `entrance` (a shortcut / wing change)
+        virtual void ShortcutReenter(std::vector<Player*> const& movers, size_t entrance, char const* why, float walk,
+                                     float entranceWalk, std::string const& goal) = 0;
         // a member's own movement could not do it (bot_cannot_move)
         virtual void LogCannotMove(Player* bot, std::string const& capability, std::string const& reason, float toX,
                                    float toY, float toZ) = 0;
