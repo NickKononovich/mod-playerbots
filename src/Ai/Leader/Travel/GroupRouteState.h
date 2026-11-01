@@ -22,6 +22,13 @@
 
 namespace Leader
 {
+    // User rule (2026-10-24): bots walk by themselves. false: the harness never moves, teleports or holds a bot
+    // during a run (no MovePoint / MoveJump / TeleportTo / SetNextCheckDelay for a walk); it gives the group intent
+    // (the leader's waypoint, a portal to go through, a spot to come to) and the bots' own actions walk. What a bot
+    // cannot do is logged as bot_cannot_move. true restores the harness-driven moves of waves 1-10 (each counted in
+    // run_end.harnessMoves). Setup before the run (the teleport to the entrance) is not affected.
+    constexpr bool HARNESS_MOVES_BOTS = false;
+
     struct StarterTrack
     {
         Knowledge::EventStarterDef const* def = nullptr;

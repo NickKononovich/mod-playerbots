@@ -169,6 +169,8 @@ namespace Leader
         // group's instance script
         virtual void GiveWaypoint(Player* bot, float x, float y, float z, bool jump = false, bool straight = false) = 0;
         virtual ::InstanceScript* InstanceScript() const = 0;
+        // the bot's walk point is an auto-closing gate's pass (cleared with the pass)
+        virtual void MarkGateWaypoint(Player* bot) = 0;
         // a member's own movement could not do it (bot_cannot_move)
         virtual void LogCannotMove(Player* bot, std::string const& capability, std::string const& reason, float toX,
                                    float toY, float toZ) = 0;

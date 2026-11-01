@@ -49,12 +49,7 @@ namespace TestHarness
     // Character names: "Rt<class><aa..zz>" for the level-80 pool, "Rl<class><aa..zz>" for the levelling pool
     // ("test setup <n> leveling"), which is only ever used by normal dungeons below level 80.
     constexpr char const* NAME_PREFIX_MAX_LEVEL = "Rt";
-    // User rule (2026-10-24): bots walk by themselves. false: the harness never moves, teleports or holds a bot
-    // during a run (no MovePoint / MoveJump / TeleportTo / SetNextCheckDelay for a walk); it gives the group intent
-    // (the leader's waypoint, a portal to go through, a spot to come to) and the bots' own actions walk. What a bot
-    // cannot do is logged as bot_cannot_move. true restores the harness-driven moves of waves 1-10 (each counted in
-    // run_end.harnessMoves). Setup before the run (the teleport to the entrance) is not affected.
-    constexpr bool HARNESS_MOVES_BOTS = false;
+    using Leader::HARNESS_MOVES_BOTS;  // [lead107] GroupRouteState.h
     constexpr char const* NAME_PREFIX_LEVELING = "Rl";
 
     enum class Phase : uint8
@@ -882,6 +877,7 @@ namespace TestHarness
         void SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight) override;
         bool BossKilledFor(uint32 entry) const override;
         void GiveWaypoint(Player* bot, float x, float y, float z, bool jump, bool straight) override;
+        void MarkGateWaypoint(Player* bot) override;
         ::InstanceScript* InstanceScript() const override;
         bool BossesOpen() const override;
         void SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z) override;

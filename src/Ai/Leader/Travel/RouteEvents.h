@@ -21,6 +21,7 @@
 #include "PathGenerator.h"
 #include "Player.h"
 #include "Position.h"
+#include "LeaderGroup.h"
 #include "LeaderKnowledge.h"
 #include "RouteLegs.h"
 #include "RouteSearch.h"
@@ -304,6 +305,84 @@ namespace Leader::Travel
     // A jump link lands as a fall does (a client's MSG_MOVE_FALL_LAND): Player::HandleFall from the start's
     // height. MoveJump is a controlled move, PlayerbotAI::UpdateFall never sees it. No damage in water.
     void LandLinkJump(Player* bot, float fromZ);
+
+    bool LeaderOwnWalkStalled(LeaderGroup& group, Player* leader, G3D::Vector3 const& goal);
+
+    bool PartyRefusal(LeaderGroup& group, ObjectGuid mob, bool& hopeless, uint32& waitMs, std::string& why);
+
+    // [b32_pos] A progress step (EventSpotDef::progressData) that was reached (eventSpotState 1, not 2 "no path")
+    // and whose instance progress is still below progressMin: the group stays and its trigger re-fires.
+    bool ProgressStepPending(LeaderGroup& group, EventSpotDef const& spot);
+
+    // [brd_ring_hold] A spot that holds the group now: a hold spot, or a step whose event runs
+    // (EventSpotDef::eventData IN_PROGRESS) or waits for its retry after a FAIL (Party::eventSpotRetry,
+    // WatchEventState).
+    bool SpotHolds(LeaderGroup& group, EventSpotDef const& spot);
+
+    // Over the link as a player walks it: a straight walk (no navmesh on a game-object bridge). Bots walk by
+    // themselves: the far end is the bot's waypoint, its own "test runner move" walks straight where the navmesh
+    // ends (MovementAction::MoveStraight). HARNESS_MOVES_BOTS: the harness walks it, the bot AI held.
+    void StartLinkCross(LeaderGroup& group, Player* bot, RouteLinkDef const& link);
+
+    // The leader's waypoint is withheld for its own running pull (GiveWaypoint's ROUTE_NO_WALK_IN_PULL rule).
+    // [lead2] LEADER_ONE_TANK_MOVER (C:/WoW/LEADER_REFACTOR_PLAN.md step 2): the tank's open pull order (Leader::
+    // Orders) is the one owner of its movement, a boss target's too; the leader gets the tank back on the order's
+    // events only (the tank's Aborted, the order's fight over, the tank gone, order_orphan). TankPullRunning's
+    // clocks (GetMaxPullTime, the RecentlyAborted window) and the PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS
+    // release are the A/B's old path. Violet Hold's released prisoners stay the harness's walk in both.
+    bool WaypointHeldForPull(LeaderGroup& group, Player* bot);
+
+    bool CanOpenLock(LeaderGroup& group, GameObject const* go);
+
+    bool EntriesDead(LeaderGroup& group, std::vector<uint32> const& entries);
+
+    Creature* ActiveEscort(LeaderGroup& group, Map* map);
+
+    bool StayWithEscort(LeaderGroup& group, Player* leader);
+
+    int32 EventSpotIndex(LeaderGroup& group);
+
+    bool WalkToEventSpot(LeaderGroup& group, Player* leader);
+
+    bool LinkUsable(LeaderGroup& group, Map* map, RouteLinkDef const& link);
+
+    int32 LinkTo(LeaderGroup& group, Player* leader, WorldObject* target);
+
+    void EndLink(LeaderGroup& group, char const* reason);
+
+    bool WalkToLink(LeaderGroup& group, Player* leader);
+
+    void CrossLinks(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
+
+    // [b51_strat] User 2026-10-26: «Ключ есть - открыл ворота, пустил»; before the door is opened the WHOLE group
+    // stands right next to the opener («совсем рядом», ~3-4 yd), out of combat, and passes in the same opening. Every
+    // door that closes again by itself: GameObjectTemplate::GetAutoCloseTime() on a DOOR / BUTTON (world DB, 5-man
+    // maps: Stratholme 175368 / 175352 / 175353 / 175369, Dire Maul 177211-177215 Doors, BRD 170555-170557 / 170572 /
+    // 161461, UBRS 175185, Deadmines / SFK / Gnomeregan / SM levers and buttons, ...) or a KeyDoorPassDef gate. No cap
+    // (user correction 2026-10-26: "never open early"): a member who cannot come is a stall for the stall recovery; the
+    // wait is logged every DOOR_GATHER_LOG_MS. A member whose walk to the opener runs through this closed door is on
+    // its far side (it is the one the door is opened for) and the door-cut member of this door too: not waited for.
+    // Dead members do not count.
+    bool DoorGatherHolds(LeaderGroup& group, Player* opener, GameObject* door);
+
+    bool UseStarter(LeaderGroup& group, Player* leader, StarterTrack& starter, WorldObject* object);
+
+    bool UseStarterItem(LeaderGroup& group, Player* leader, StarterTrack& starter, GameObject* go);
+
+    // [brd_bar_buy] [brd_bar_turnin] A vendor or quest step at its creature, as the client does it: CMSG_BUY_ITEM's
+    // Player::BuyItemFromVendorSlot (money, reputation, the vendor's stock and reach are checked by the core), or
+    // CMSG_QUESTGIVER_ACCEPT_QUEST + CMSG_QUESTGIVER_CHOOSE_REWARD (the creature AI's sQuestReward runs from the reward
+    // handler: Blackrock Depths' npc_rocknot counts the ale, TYPE_BAR SPECIAL at three). A step counts only if it
+    // changed the bags (bought items in, quest items out).
+    bool UseStarterAtNpc(LeaderGroup& group, Player* leader, StarterTrack& starter, Creature* creature);
+
+    bool StartersUsed(LeaderGroup& group, std::vector<uint32> const& entries);
+
+    void MarkStartersDoneByGroup(LeaderGroup& group, Player* leader);
+
+    bool WalkToEventGather(LeaderGroup& group, Player* leader);
+
+    bool EventGatherApplies(LeaderGroup& group);
 }
 
 #endif

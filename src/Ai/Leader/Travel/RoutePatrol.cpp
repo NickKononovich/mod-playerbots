@@ -469,9 +469,10 @@ using namespace Leader::Fight;
     // The patrol that holds the walk, with why ("planner pulls it" / "<yd> from <member>"); empty: no hold.
     std::string PatrolHoldWhy(Leader::LeaderGroup& group, Player* leader)
     {
+        GroupRouteState& routeState = group.Route();
         bool const leaderOwns = LeaderOwnsPatrols(group);  // [lead4]
         if (!ROUTE_PATROL_HOLD || !leader->IsAlive() || leader->IsInCombat() || group.InCombat() ||
-            !group.Route().escort.IsEmpty())
+            !routeState.escort.IsEmpty())
             return std::string();
         uint32 const now = getMSTime();
         PatrolHold& hold = patrolHolds[group.InstanceId()];
@@ -499,7 +500,7 @@ using namespace Leader::Fight;
         G3D::Vector3 laneTo;
         for (Creature* mob : idle)
         {
-            if (group.Route().bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
+            if (routeState.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
                 continue;
             if (!leaderOwns && PatrolHandedOver(group.InstanceId(), mob->GetGUID(), now))
                 continue;  // [b47_patrol] the tank's planner has it (PATROL_WAIT_BUDGET)
@@ -537,7 +538,7 @@ using namespace Leader::Fight;
             {
                 bool haveTo = walking;
                 G3D::Vector3 to(walk.x, walk.y, walk.z);
-                if (!haveTo && hold.lane && hold.patrol == mob->GetGUID() && hold.laneTarget == group.Route().target)
+                if (!haveTo && hold.lane && hold.patrol == mob->GetGUID() && hold.laneTarget == routeState.target)
                 {
                     haveTo = true;
                     to = hold.laneTo;
@@ -608,10 +609,10 @@ using namespace Leader::Fight;
             hold.lane = laneHold;
             if (laneHold)
             {
-                if (!hold.laneTo.fuzzyEq(laneTo) || hold.laneTarget != group.Route().target)
+                if (!hold.laneTo.fuzzyEq(laneTo) || hold.laneTarget != routeState.target)
                     LOG_INFO("playerbots", "[b48_scholo] patrol_lane_hold {}: {}", leader->GetName(), why);
                 hold.laneTo = laneTo;
-                hold.laneTarget = group.Route().target;
+                hold.laneTarget = routeState.target;
             }
         }
         hold.why = why;
@@ -622,20 +623,21 @@ using namespace Leader::Fight;
     // there (no other walk this tick); called by Steer before the rest hold and by the regen wait (TestHarnessMgr).
     bool PatrolStepBack(Leader::LeaderGroup& group, Player* leader)
     {
+        GroupRouteState& routeState = group.Route();
         Map* map = leader->GetMap();
         if (!PATROL_STEP_BACK || !map || !map->IsNonRaidDungeon() || !leader->IsAlive() ||
-            !group.Route().escort.IsEmpty())
+            !routeState.escort.IsEmpty())
             return false;
 
         uint32 const now = getMSTime();
         PatrolStepBackState& state = patrolStepBacks[group.InstanceId()];
         auto const holdClocks = [&]()
         {
-            group.Route().steerSinceMs = now;
-            group.Route().steerAnchor = leader->GetPosition();
-            group.Route().steerNoNearerMs = 0;
-            group.Route().driveSinceMs = now;
-            group.Route().driveAnchor = leader->GetPosition();
+            routeState.steerSinceMs = now;
+            routeState.steerAnchor = leader->GetPosition();
+            routeState.steerNoNearerMs = 0;
+            routeState.driveSinceMs = now;
+            routeState.driveAnchor = leader->GetPosition();
         };
 
         // [b47_patrol] No step back where something else owns the group's spot. mgt-n 20261026-104908-mgt-n-5H-13
@@ -651,8 +653,8 @@ using namespace Leader::Fight;
             char const* owned = nullptr;
             if (group.BossEncounterInProgress())
                 owned = "a boss encounter is in progress";
-            if (!owned && group.Route().lastStarterUseMs &&
-                getMSTimeDiff(group.Route().lastStarterUseMs, now) < PATROL_STEP_BACK_EVENT_MS)
+            if (!owned && routeState.lastStarterUseMs &&
+                getMSTimeDiff(routeState.lastStarterUseMs, now) < PATROL_STEP_BACK_EVENT_MS)
                 owned = "an event was started";
             if (!owned)
                 if (PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader))
@@ -675,7 +677,7 @@ using namespace Leader::Fight;
                 Acore::CreatureListSearcher<ShadowMobCheck> bossSearcher(leader, nearBy, bossCheck);
                 Cell::VisitObjects(leader, bossSearcher, PATROL_STEP_BACK_BOSS_RANGE);
                 for (Creature* mob : nearBy)
-                    if (mob->IsDungeonBoss() || group.Route().bossCreatures.count(mob->GetGUID()))
+                    if (mob->IsDungeonBoss() || routeState.bossCreatures.count(mob->GetGUID()))
                     {
                         owned = "a live boss is near (its room)";
                         break;
@@ -705,7 +707,7 @@ using namespace Leader::Fight;
             patrolHandOvers.erase(pending);
             Creature* patrol = map->GetCreature(handed);
             if (patrol && patrol->IsAlive() && !patrol->IsInCombat() && !leader->IsInCombat() && !group.InCombat() &&
-                !group.Route().skipUntil.count(handed))
+                !routeState.skipUntil.count(handed))
             {
                 if (!state.patrol.IsEmpty())
                 {
@@ -719,20 +721,20 @@ using namespace Leader::Fight;
                 group.LogEvent("patrol_handover",
                          JsonObject().Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
                              .Real("distance", leader->GetExactDist(patrol))
-                             .Str("previousTarget", group.Route().target.IsEmpty() ? std::string()
-                                                                                   : group.Route().target.ToString()));
-                group.Route().neighbourTarget = handed;
-                group.Route().neighbourTargetUntilMs = now + PATROL_HANDOVER_MS;
-                group.Route().target = handed;
-                group.Route().targetIsBoss = false;
-                group.Route().targetIsStarter = false;
-                group.Route().targetRouteRule.clear();
-                group.Route().targetSinceMs = now;
-                group.Route().guaranteeHolding = false;
-                group.Route().arrivedMs = 0;
-                group.Route().approach = 0;
-                group.Route().approachBlocker.Clear();
-                group.Route().stopSinceMs = 0;
+                             .Str("previousTarget", routeState.target.IsEmpty() ? std::string()
+                                                                                   : routeState.target.ToString()));
+                routeState.neighbourTarget = handed;
+                routeState.neighbourTargetUntilMs = now + PATROL_HANDOVER_MS;
+                routeState.target = handed;
+                routeState.targetIsBoss = false;
+                routeState.targetIsStarter = false;
+                routeState.targetRouteRule.clear();
+                routeState.targetSinceMs = now;
+                routeState.guaranteeHolding = false;
+                routeState.arrivedMs = 0;
+                routeState.approach = 0;
+                routeState.approachBlocker.Clear();
+                routeState.stopSinceMs = 0;
                 if (!LeaderPicksFor(group))  // [lead5]
                     RouteTarget::Set(group.LeaderGuid(), handed);
                 TestRunner::ClearWaypoint(group.LeaderGuid());
@@ -799,8 +801,8 @@ using namespace Leader::Fight;
             return false;
         // [b48_patrol] a patrol handed to the tank's planner is the route target now (ohb-h-5C-16: the Tracking Hound's
         // handover at 652 s, then a step back from the Sentry at 653 s walked the other way): no step back meanwhile
-        if (!group.Route().target.IsEmpty() && group.Route().target == group.Route().neighbourTarget &&
-            PatrolHandedOver(group.InstanceId(), group.Route().target, now))
+        if (!routeState.target.IsEmpty() && routeState.target == routeState.neighbourTarget &&
+            PatrolHandedOver(group.InstanceId(), routeState.target, now))
             return false;
 
         // The patrol that walks in (PatrolHoldWhy's second test); one the tank's planner pulls now is its pull.
@@ -813,7 +815,7 @@ using namespace Leader::Fight;
         float nearGap = 0.0f;
         for (Creature* mob : idle)
         {
-            if (group.Route().bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob) ||
+            if (routeState.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob) ||
                 PatrolHandedOver(group.InstanceId(), mob->GetGUID(), now))  // [b47_patrol]
                 continue;
             bool accepted = false;
@@ -925,6 +927,7 @@ using namespace Leader::Fight;
     // while its forecast shows a window (mayHoldFor, ChooseTargetActions.cpp).
     bool LeaderPatrolTick(Leader::LeaderGroup& group, Player* leader)
     {
+        GroupRouteState& routeState = group.Route();
         auto& lead = group.State();
         // [lead18] LEADER_COMMIT_PULL: a committed pull owns its patrol timing (its window, runCommit); no wait by
         // forecast meanwhile
@@ -952,7 +955,7 @@ using namespace Leader::Fight;
             step.patrol.Clear();
             step.arrived = false;
         };
-        if (!map || !leader->IsAlive() || leader->IsInCombat() || group.InCombat() || !group.Route().escort.IsEmpty())
+        if (!map || !leader->IsAlive() || leader->IsInCombat() || group.InCombat() || !routeState.escort.IsEmpty())
         {
             endWait("fight or escort");
             return false;
@@ -965,11 +968,11 @@ using namespace Leader::Fight;
             endWait(why.empty() ? "no patrol holds the group" : "the patrol is gone or fights");
             return false;
         }
-        group.Route().steerSinceMs = now;
-        group.Route().steerAnchor = leader->GetPosition();
-        group.Route().steerNoNearerMs = 0;
-        group.Route().driveSinceMs = now;
-        group.Route().driveAnchor = leader->GetPosition();
+        routeState.steerSinceMs = now;
+        routeState.steerAnchor = leader->GetPosition();
+        routeState.steerNoNearerMs = 0;
+        routeState.driveSinceMs = now;
+        routeState.driveAnchor = leader->GetPosition();
         float const reach = AggroReach(patrol, leader) + PATROL_HOLD_MARGIN;
         bool accepted = false;
         uint32 mobs = 0;
@@ -1128,7 +1131,7 @@ using namespace Leader::Fight;
             lead.waitPatrol = patrol->GetGUID();
             lead.waitSinceMs = resumed && lead.waitSinceMs ? lead.waitSinceMs : now;
             lead.waitWhy = why;
-            group.Route().lastEvent = "patrol wait: " + why;
+            routeState.lastEvent = "patrol wait: " + why;
             if (!resumed)
                 group.LogEvent("leader_patrol_wait",
                      JsonObject().Str("state", "start").Str("patrol", patrol->GetName())
