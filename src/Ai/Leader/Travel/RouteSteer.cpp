@@ -129,15 +129,11 @@ namespace Leader::Travel
 
     std::unordered_map<ObjectGuid, PlannerAsk> aoePullAsks;  // by leader
 
-    bool AoePullAskRuns(ObjectGuid leaderGuid, ObjectGuid blocker, uint32 now)
+    bool AoePullAskRuns(LeaderGroup& group, ObjectGuid blocker)
         {
-            PlannerAsk& ask = aoePullAsks[leaderGuid];
-            if (ask.target != blocker || !ask.sinceMs || getMSTimeDiff(ask.sinceMs, now) > AOE_PULL_ASK_RESET_MS)
-            {
-                ask.target = blocker;
-                ask.sinceMs = now ? now : 1;
-            }
-            return getMSTimeDiff(ask.sinceMs, now) < AOE_PULL_ASK_MS;
+            // [lead134] the planner weighed the aoe pull when it answered: its aoe_pull_plan for the blocker holds the
+            // leader, none is the dead end (AOE_PULL_ASK_MS 15 s / AOE_PULL_ASK_RESET_MS 5 min were the old clocks)
+            return PartyAoePlanned(group, blocker, nullptr);
         }
 
     std::map<std::pair<uint32, ObjectGuid>, uint32> guardRefusals;
@@ -1403,7 +1399,7 @@ namespace Leader::Travel
                 group.MarkRequired(blocker->GetGUID());  // [lead5]
         }
         if (refused && hopeless && requiredBlocker &&
-            AoePullAskRuns(group.LeaderGuid(), blocker->GetGUID(), getMSTime()))
+            AoePullAskRuns(group, blocker->GetGUID()))
         {
             hold = true;  // the planner weighs its aoe_pull_plan first; the dead end after AOE_PULL_ASK_MS
             return "held: the planner weighs an aoe_pull_plan of the required blocker (" + refusalWhy + ")";
@@ -1635,9 +1631,8 @@ namespace Leader::Travel
         }
 
         // [b33_aoepull] the planner's issued aoe_pull_plan is the pull: the tank takes the chain to its stack spot,
-        // the leader is not walked in while the plan is fresh and younger than AOE_PULL_WALK_MS
-        if (uint32 aoeSinceMs = 0; PartyAoePlanned(group, target->GetGUID(), &aoeSinceMs) &&  // [lead5]
-                                   getMSTimeDiff(aoeSinceMs, getMSTime()) < AOE_PULL_WALK_MS)
+        // the leader is not walked in while the plan stands (lead134: not AOE_PULL_WALK_MS 30 s)
+        if (PartyAoePlanned(group, target->GetGUID(), nullptr))  // [lead5]
         {
             group.ClearWaypoint(group.LeaderGuid());
             uint32 const nowMs = getMSTime();
@@ -3564,7 +3559,7 @@ namespace Leader::Travel
             routeState.steerNoNearerMs = 0;
             starterNearestPath.erase(group.InstanceId());
         }
-        else if (getMSTimeDiff(routeState.steerLastMs, now) <= STEER_GAP_MS)
+        else if (routeState.steerLookPull == group.PullSeq())
             routeState.steerNoNearerMs += getMSTimeDiff(routeState.steerLastMs, now);
         if (routeState.steerNearest < 0.0f || distance + STEER_PROGRESS_RANGE < routeState.steerNearest)
         {
@@ -3597,7 +3592,11 @@ namespace Leader::Travel
                 swingStuck = false;
             }
         }
-        if (routeState.steerTarget != routeState.target || getMSTimeDiff(routeState.steerLastMs, now) > STEER_GAP_MS ||
+        // [lead134] the measurement starts anew after a fight between the looks (the pull serial moved), not after
+        // STEER_GAP_MS 2 s without a look
+        bool const fightBetween = routeState.steerLookPull != group.PullSeq();
+        routeState.steerLookPull = group.PullSeq();
+        if (routeState.steerTarget != routeState.target || fightBetween ||
             leader->GetExactDist(&routeState.steerAnchor) > STEER_PROGRESS_RANGE)
         {
             // [w24b-steer-twin-keep] The 4 s retarget flipping between the wanderers of one pack (Botanica bot-n
@@ -3609,7 +3608,7 @@ namespace Leader::Travel
             Creature const* after = object ? object->ToCreature() : nullptr;
             bool const twinFlip = before && after && before->IsAlive() && before->GetEntry() == after->GetEntry() &&
                                   before->GetExactDist(after) <= STEER_TWIN_RANGE &&
-                                  getMSTimeDiff(routeState.steerLastMs, now) <= STEER_GAP_MS &&
+                                  !fightBetween &&
                                   leader->GetExactDist(&routeState.steerAnchor) <= STEER_PROGRESS_RANGE;
             if (twinFlip)
             {
@@ -3654,24 +3653,14 @@ namespace Leader::Travel
         // Anvilrage Overseer was skipped as a route end for 300 s, every mob behind it "behind skipped", and the route
         // went to the Shadowforge Gate 170559, whose key starter waits for Roccor (afterDead): 2+ min idle. Bounded by
         // PREPARING_NOT_STUCK_MAX_MS per stand, so a member whose window never closes still ends in the old skip.
+        // [lead134] while a member prepares (its fact), no lack of progress - no PREPARING_NOT_STUCK_MAX_MS bound
+        if (!arrived && !leader->IsInCombat() && PullReadiness::GroupPreparing(leader))
         {
-            constexpr uint32 PREPARING_NOT_STUCK_MAX_MS = 45 * IN_MILLISECONDS;
-            static std::unordered_map<uint32, std::pair<uint32, uint32>> preparingSince;  // seq -> since, seen
-            std::pair<uint32, uint32>& prep = preparingSince[group.Run().runSeq];
-            if (!arrived && !leader->IsInCombat() && PullReadiness::GroupPreparing(leader))
-            {
-                if (!prep.first || getMSTimeDiff(prep.second, now) > STEER_GAP_MS + 3 * IN_MILLISECONDS)
-                    prep.first = now ? now : 1;
-                prep.second = now ? now : 1;
-                if (getMSTimeDiff(prep.first, now) < PREPARING_NOT_STUCK_MAX_MS)
-                {
-                    routeState.steerSinceMs = now;
-                    routeState.steerAnchor = leader->GetPosition();
-                    routeState.steerNoNearerMs = 0;
-                    routeState.driveSinceMs = now;
-                    routeState.driveAnchor = leader->GetPosition();
-                }
-            }
+            routeState.steerSinceMs = now;
+            routeState.steerAnchor = leader->GetPosition();
+            routeState.steerNoNearerMs = 0;
+            routeState.driveSinceMs = now;
+            routeState.driveAnchor = leader->GetPosition();
         }
         // [lead2] LEADER_ONE_TANK_MOVER: the tank's open pull order owns its movement - no route stall while it is
         // open, and no clock hands the tank back (PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS are the A/B's old path):

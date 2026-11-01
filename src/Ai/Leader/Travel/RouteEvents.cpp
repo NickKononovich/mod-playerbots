@@ -477,8 +477,10 @@ namespace Leader::Travel
         uint32 const now = getMSTime();
         G3D::Vector3 const lastGoal(routeState.driveGoal.GetPositionX(), routeState.driveGoal.GetPositionY(),
                                     routeState.driveGoal.GetPositionZ());
-        if (!routeState.driveLastMs || (lastGoal - goal).length() > DRIVE_SAME_GOAL ||
-            getMSTimeDiff(routeState.driveLastMs, now) > STEER_GAP_MS)
+        // [lead134] anew after a fight between the looks (not STEER_GAP_MS)
+        bool const fightBetween = routeState.driveLookPull != group.PullSeq();
+        routeState.driveLookPull = group.PullSeq();
+        if (!routeState.driveLastMs || (lastGoal - goal).length() > DRIVE_SAME_GOAL || fightBetween)
         {
             routeState.driveGoal.Relocate(goal.x, goal.y, goal.z);
             routeState.driveAnchor = leader->GetPosition();

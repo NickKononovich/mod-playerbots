@@ -50,11 +50,8 @@ namespace Leader::Travel
     // refused on both sides - the planner's hopeless verdict and the harness's refused walk - until stopped. While
     // the planner's issued aoe_pull_plan is fresh the route's walk-in holds AOE_PULL_WALK_MS (the tank pulls to its
     // stack spot itself); only an issued plan the tank has not started by then is walked in (via the planner ask).
-    constexpr uint32 AOE_PULL_ASK_MS = 10 * IN_MILLISECONDS;
 
-    constexpr uint32 AOE_PULL_ASK_RESET_MS = 5 * MINUTE * IN_MILLISECONDS;
 
-    constexpr uint32 AOE_PULL_WALK_MS = 30 * IN_MILLISECONDS;
 
     constexpr float BODY_PULL_RANGE = 5.0f;
 
@@ -558,7 +555,7 @@ namespace Leader::Travel
 
     extern std::unordered_map<ObjectGuid, PlannerAsk> aoePullAsks;  // by leader
 
-    bool AoePullAskRuns(ObjectGuid leaderGuid, ObjectGuid blocker, uint32 now);
+    bool AoePullAskRuns(LeaderGroup& group, ObjectGuid blocker);
 
     // True while the planner still has its time (the caller holds the leader); `first`: the ask began now.
     bool AskPlannerFirst(ObjectGuid leaderGuid, Creature* target, uint32 now, bool& first);

@@ -61,7 +61,6 @@ namespace Leader::Travel
     // Steering without progress (Party::steerAnchor): a walk covers 3 yd in well under a second.
     constexpr float STEER_PROGRESS_RANGE = 3.0f;
 
-    constexpr uint32 STEER_GAP_MS = 2 * IN_MILLISECONDS;  // Steer not called that long (rest, fight): anew
 
     constexpr float KEY_DOOR_CAST_RANGE = 3.0f;  // a key door cast without line of sight: from here, in front of it
 

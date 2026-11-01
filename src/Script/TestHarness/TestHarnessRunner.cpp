@@ -287,7 +287,6 @@ namespace TestHarness
         using Leader::Travel::STEER_PROGRESS_RANGE;  // [lead107] RouteEvents.h
         using Leader::Travel::STEER_REST_NOT_STUCK;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_TWIN_RANGE;  // [lead107] RouteSteer.h
-        using Leader::Travel::STEER_GAP_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::DOOR_REARM_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::KEY_DOOR_CAST_RANGE;  // [lead107] RouteEvents.h
         using Leader::Travel::KEY_DOOR_HOLD_FRESH_MS;  // [lead107] RouteTargets.h
@@ -1005,9 +1004,6 @@ namespace TestHarness
         using Leader::Travel::PlannerAsk;  // [lead107] RouteSteer.h
         using Leader::Travel::plannerAsks;  // [lead107] RouteSteer.h
 
-        using Leader::Travel::AOE_PULL_ASK_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::AOE_PULL_ASK_RESET_MS;  // [lead107] RouteSteer.h
-        using Leader::Travel::AOE_PULL_WALK_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::aoePullAsks;  // [lead107] RouteSteer.h
 
         using Leader::Travel::AoePullAskRuns;  // [lead107] RouteSteer.h

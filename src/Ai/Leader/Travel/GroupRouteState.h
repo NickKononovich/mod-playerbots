@@ -163,6 +163,9 @@ namespace Leader
         uint32 steerStandSerial = 0;
         Position driveStandAt;
         uint32 driveStandSerial = 0;
+        // [lead134] the pull serial at the last steer / drive look (a fight between the looks restarts them)
+        uint32 steerLookPull = 0;
+        uint32 driveLookPull = 0;
         uint32 nextRetargetMs = 0;  // [lead129] a retarget asked for at this time (0: none); RetargetDue
         uint32 retargetKills = 0;     // the kills (deadEntries) and the last pull end at the last retarget
         uint32 retargetPullEndMs = 0;
