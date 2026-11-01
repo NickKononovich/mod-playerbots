@@ -53,6 +53,7 @@
 #include "RoutePatrol.h"  // [lead107] the leader's patrol decision
 #include "RouteEvents.h"  // [lead107] the leader's event route steps
 #include "RouteTargets.h"  // [lead107] the leader's route target choice
+#include "RouteSteer.h"    // [lead107] the leader's route walk
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderEvents.h"       // [lead107] the leader's event tick
@@ -172,62 +173,43 @@ namespace TestHarness
         using Leader::Travel::MAX_PATH_CANDIDATES;  // [lead107] RouteTargets.h
         using Leader::Travel::WAYPOINT_STEP;  // [lead107] RouteEvents.h
         using Leader::Travel::STEEP_WAYPOINT_STEP;  // [lead107] RouteEvents.h
-        constexpr float PULL_RANGE = 20.0f;
-        constexpr float BODY_PULL_RANGE = 5.0f;
-        constexpr float BODY_PULL_MELEE_SLACK = 1.0f;  // [b32_bm] a walk-in arrives this far past the melee range
-        // [b32_bm] a walk-in this far past the melee range (in sight) is no "route end": the tank stands beside it
-        constexpr float BODY_PULL_STUCK_REACH = 3.0f;
-        constexpr float STARTER_RANGE = 4.0f;
+        using Leader::Travel::PULL_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::BODY_PULL_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::BODY_PULL_MELEE_SLACK;  // [lead107] RouteSteer.h
+        using Leader::Travel::BODY_PULL_STUCK_REACH;  // [lead107] RouteSteer.h
+        using Leader::Travel::STARTER_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::FAILED_BOSS_RADIUS;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_ROUTE_WEIGHT;  // [lead107] RouteTargets.h
         using Leader::Travel::LATER_BOSS_TRASH_RADIUS;  // [lead107] RouteTargets.h
         using Leader::Travel::DEFERRED_TRASH_PENALTY;  // [lead107] RouteTargets.h
-        constexpr float BOSS_BUFF_DISTANCE = 70.0f;
+        using Leader::Travel::BOSS_BUFF_DISTANCE;  // [lead107] RouteSteer.h
         constexpr float BOSS_PREPOT_DISTANCE = 35.0f;
         using Leader::Travel::UNREACHABLE_SKIP_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::UNREACHABLE_RECHECK_DISTANCE;  // [lead107] RouteTargets.h
         using Leader::Travel::UNREACHABLE_RECHECK_HEIGHT;  // [lead107] RouteTargets.h
         using Leader::Travel::ORDER_HOLD_MS;  // [lead107] RouteTargets.h
-        constexpr uint32 NOT_PULLED_SKIP_MS = 10 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 PULL_WAIT_MS = 45 * IN_MILLISECONDS;
-        constexpr uint32 EVENT_WAIT_FOR_SPAWNS_MS = 5 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 BODY_PULL_WAIT_MS = 10 * IN_MILLISECONDS;
+        using Leader::Travel::NOT_PULLED_SKIP_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_WAIT_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::EVENT_WAIT_FOR_SPAWNS_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::BODY_PULL_WAIT_MS;  // [lead107] RouteSteer.h
         using Leader::Dungeon::CAREFUL_REFUSED_SKIP_MS;  // [lead107] LeaderPlan.h (3 min)
         using Leader::Travel::ROUTE_ADOPT_GROUP_ESCORT;  // [lead107] RouteTargets.h
-        // ROUTE_CAREFUL_GUARANTEE_HOLD (build 11): a pack the planner refused but will take once its stand guarantee is
-        // due (CarefulPlanVerdict::GetRefusal, not hopeless) is not skipped: the group holds at it while the guarantee
-        // runs, GUARANTEE_EXECUTE_MS more for the pull itself, GUARANTEE_HOLD_TOTAL_MS from the arrival at most
-        // (build 14: the planner's 1.5x maxMobs tier comes after 180 s, waitMs up to ~200 s). A hopeless refusal (a
-        // real dead end) is skipped at once, the planner's `why` in the skip reason, and the route goes round it.
-        constexpr bool ROUTE_CAREFUL_GUARANTEE_HOLD = true;
-        constexpr uint32 GUARANTEE_EXECUTE_MS = 30 * IN_MILLISECONDS;
-        // [guarantee_hold_trim] 150 s (was 240): the planner's guarantee now comes after 30 s within the cap and 90 s
-        // over it (ChooseTargetActions.cpp careful_guarantee_trim), plus GUARANTEE_EXECUTE_MS for the pull.
-        constexpr uint32 GUARANTEE_HOLD_TOTAL_MS = 150 * IN_MILLISECONDS;
-        constexpr uint32 GUARANTEE_UNKNOWN_HOLD_MS = 120 * IN_MILLISECONDS;
-        constexpr uint32 PATROL_WAIT_HOLD_MS = 30 * IN_MILLISECONDS;  // [patrol_wait_spot] the stand there at most
-        // [held_for_now_cap] a "held for now" with the group fully ready this long is a refusal (under the 120 s idle
-        // stall watchdog)
-        constexpr uint32 HELD_FOR_NOW_MAX_MS = 75 * IN_MILLISECONDS;
+        using Leader::Travel::ROUTE_CAREFUL_GUARANTEE_HOLD;  // [lead107] RouteSteer.h
+        using Leader::Travel::GUARANTEE_EXECUTE_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::GUARANTEE_HOLD_TOTAL_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::GUARANTEE_UNKNOWN_HOLD_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PATROL_WAIT_HOLD_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::HELD_FOR_NOW_MAX_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_LIFT_REFUSED_SKIP;  // [lead107] RouteTargets.h
         using Leader::Travel::LIFT_REFUSALS_MAX;  // [lead107] RouteTargets.h
-        // The bots' own boss hold (RaidLeader "pull hold": its ready check, PULL_HOLD_MAX_MS 150 s) is waited out
-        // before a boss counts as "not pulled" (Oculus heroic 2026-10-25: Drakos, who never aggroes by sight, was
-        // skipped after 10 s while the tank was held).
-        constexpr uint32 BOSS_PULL_HOLD_WAIT_MS = 150 * IN_MILLISECONDS;
+        using Leader::Travel::BOSS_PULL_HOLD_WAIT_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SAME_ENTRANCE_RANGE;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_WING_DONE_CHANGE;  // [lead107] RouteTargets.h
-        constexpr uint32 WING_DONE_NO_TARGET_MS = 3 * IN_MILLISECONDS;
-        // [st-guard-approach] the approach point counts as reached within this; on the guard's floor (SAME_FLOOR_DZ)
-        // and no farther from it than the point + slack, the point is skipped.
-        constexpr float GUARD_APPROACH_ARRIVE = 5.0f;
-        constexpr float GUARD_APPROACH_SLACK = 8.0f;
-        // [dmw-guard-body-pull] a pending door guard refused this often by the careful planner is body-pulled (user
-        // decision 2026-10-25: approved, tag guard_body_pull).
-        constexpr uint32 GUARD_REFUSALS_BEFORE_BODY_PULL = 2;
-        // [ulda-ritual-hold] a summoning ritual (GAMEOBJECT_TYPE_SUMMONING_RITUAL) casts its spell 5 s after the
-        // click (GameObject::Use m_cooldownTime) and only while the user still channels the anim spell.
-        constexpr uint32 RITUAL_CHANNEL_HOLD_MS = 6500;
+        using Leader::Travel::WING_DONE_NO_TARGET_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::GUARD_APPROACH_ARRIVE;  // [lead107] RouteSteer.h
+        using Leader::Travel::GUARD_APPROACH_SLACK;  // [lead107] RouteSteer.h
+        using Leader::Travel::GUARD_REFUSALS_BEFORE_BODY_PULL;  // [lead107] RouteSteer.h
+        using Leader::Travel::RITUAL_CHANNEL_HOLD_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::STARTER_DOOR_CHECK_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::STARTER_DOOR_REARM_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::EVENT_GATHER_ARRIVE;  // [lead107] RouteEvents.h
@@ -253,37 +235,24 @@ namespace TestHarness
         using Leader::Travel::TRAP_GATE_DOORS;  // [lead107] RouteTargets.h
         using Leader::Travel::TRAP_GATE_LOG_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::IsTrapGate;  // [lead107] RouteTargets.h
-        constexpr uint32 NEIGHBOUR_TARGET_MS = 4 * MINUTE * IN_MILLISECONDS;  // the guarantee hold's 240 s
-        // [unseen-blocker-pull] an unseen neighbour pack this small that holds an approach becomes the target
-        constexpr size_t UNSEEN_BLOCKER_PACK_MAX = 4;
-        // [route_blocker_body_pull] User decision 2026-10-25 (overrides "the harness never walks the group into a pack
-        // the tank refused" for this case): a pack the route's walk has to pass (ApproachStop: the leg to the target
-        // enters its reach) is never skipped - neither it nor the targets behind it. It becomes the target, the tank
-        // pulls it by sight when it can (its planner, the guarantee), else the group gets ready (GroupFullyReady:
-        // health, healer mana, everyone here) and the leader walks into it (body pull, navmesh walk, no door
-        // clipping). Only a pack that is not on the way (a side pack the route picked as a target) may be skipped.
-        // st-n 2026-10-25 081744 08:56-08:57: a 5-mob Atal'ai Slave pack at the balcony stairs held the edge, then
-        // Hukku, Loro, Mijan, Zul'Lor were skipped "no sight point" and Gasher, Zolo and the Witch Doctors "behind
-        // skipped Atal'ai Slave"; the group stood.
-        constexpr bool ROUTE_BLOCKER_BODY_PULL = true;
-        constexpr uint32 ROUTE_BLOCKER_MAX_TRIES = 3;      // made the target this often per blocker, then as before
-        constexpr uint32 ROUTE_BLOCKER_PREP_MS = 30 * IN_MILLISECONDS;   // the planner's chance before the walk in
-        constexpr uint32 ROUTE_BLOCKER_SIGHT_HOLD_MS = 8 * IN_MILLISECONDS;  // the edge hold for a route blocker
-        // [route_blocker_walk_through] an idle pack this close to the route blocker is part of its body pull
-        constexpr float ROUTE_BLOCKER_THROUGH_RANGE = 30.0f;
-        constexpr uint32 NEIGHBOUR_HOLD_MAX = 2;          // boss approach holds at one neighbour before it passes
-        constexpr size_t NEIGHBOUR_PASS_PACK_MAX = 3;     // a neighbour pack this small no longer stops it
+        using Leader::Travel::NEIGHBOUR_TARGET_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::UNSEEN_BLOCKER_PACK_MAX;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_BLOCKER_BODY_PULL;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_BLOCKER_MAX_TRIES;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_BLOCKER_PREP_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_BLOCKER_SIGHT_HOLD_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_BLOCKER_THROUGH_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::NEIGHBOUR_HOLD_MAX;  // [lead107] RouteSteer.h
+        using Leader::Travel::NEIGHBOUR_PASS_PACK_MAX;  // [lead107] RouteSteer.h
         constexpr size_t MEET_PASS_PACK_MAX = 2;  // the walk back goes on into at most this many idle mobs
-        constexpr float BEHIND_SHADOW_RANGE = 60.0f;  // ROUTE_SKIP_BEHIND_SKIPPED: the shadow skipped with a target
-        constexpr float BEHIND_CONE_COS = 0.82f;      // ~35 degrees either side of the leader -> blocker line
+        using Leader::Travel::BEHIND_SHADOW_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::BEHIND_CONE_COS;  // [lead107] RouteSteer.h
         constexpr uint32 OUTSIDE_GIVE_UP_STUCKS = 3;  // alive outside: 3 x GHOST_STUCK_MS without progress
         constexpr float ENTRY_REFUSAL_RANGE = 20.0f;                           // 2D, a member on its entrance
         constexpr uint32 ENTRY_REFUSED_MAX_MS = 5 * MINUTE * IN_MILLISECONDS;  // then the run ends with the cause
-        constexpr uint32 HOR_MAP = 668;
+        using Leader::Travel::HOR_MAP;  // [lead107] RouteSteer.h
         constexpr uint32 HOR_DATA_WAVE_NUMBER = 8;  // halls_of_reflection.h DATA_WAVE_NUMBER
-        // A script slot IN_PROGRESS with nothing to fight is an event between its waves (Halls of Stone: the Tribunal
-        // of Ages, three 100 s phases with dialogue): no end of the run meanwhile, at most this long.
-        constexpr uint32 SCRIPT_EVENT_MAX_MS = 10 * MINUTE * IN_MILLISECONDS;
+        using Leader::Travel::SCRIPT_EVENT_MAX_MS;  // [lead107] RouteSteer.h
         constexpr float GHOST_DIRECT_RANGE = 40.0f;  // no usable path this close to the portal: straight to it
         constexpr float GHOST_ARRIVED_RANGE = 8.0f;  // standing on the portal, not worth a log line
         constexpr float GHOST_CORNER_STEP = 150.0f;  // one move along a corner path (corpse runs over 590 yd)
@@ -298,12 +267,10 @@ namespace TestHarness
         constexpr uint32 SURFACE_HOLD_MS = 2 * IN_MILLISECONDS;          // bot AI paused while it swims up
         using Leader::Travel::DEEP_TARGET_DEPTH;  // [lead107] RouteTargets.h
         using Leader::Travel::DRY_SPOT_SPREAD;  // [lead107] RouteEvents.h
-        // A target whose approach a skipped neighbour pack stops is skipped at once (Steer, approach stop).
-        constexpr bool ROUTE_SKIP_BEHIND_SKIPPED = true;
-        // The pull wait (PULL_WAIT_MS) runs per stop, not per target: a new target at the same stop keeps it.
-        constexpr bool ROUTE_STOP_KEEPS_WAIT = true;
-        constexpr float STOP_SAME_RANGE = 5.0f;
-        constexpr uint32 STOP_KEEP_GAP_MS = 15 * IN_MILLISECONDS;
+        using Leader::Travel::ROUTE_SKIP_BEHIND_SKIPPED;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_STOP_KEEPS_WAIT;  // [lead107] RouteSteer.h
+        using Leader::Travel::STOP_SAME_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::STOP_KEEP_GAP_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SAME_TARGET_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::RESPAWNING_SKIP_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::ESCORT_FIGHT_RADIUS;  // [lead107] RouteTargets.h
@@ -326,16 +293,12 @@ namespace TestHarness
         constexpr uint32 GHOST_POS_MS = 30 * IN_MILLISECONDS;  // "ghost_pos" while members are outside
         constexpr size_t GHOST_POS_TRAIL = 300;
         using Leader::Travel::STEER_PROGRESS_RANGE;  // [lead107] RouteEvents.h
-        constexpr uint32 STEER_STUCK_MS = 20 * IN_MILLISECONDS;
-        // [steer_rest_not_stuck] The leader seated with food / drink (RestState: the aura by its spell specific) out of
-        // combat is no lack of progress: st-n build 23 (103125 / 103436 -2 / -3) - all 7 "route end" skips of the
-        // Sunken Temple defenders were the paladin tank drinking at 29-34 % mana for 20 s (phase "traveling", the
-        // group not waited for above its line), and each skip sent the walk to the next defender and back.
-        constexpr bool STEER_REST_NOT_STUCK = true;
-        constexpr float STEER_TWIN_RANGE = 30.0f;  // same-entry mobs skipped with an unreachable one (a ledge of them)
+        using Leader::Travel::STEER_STUCK_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::STEER_REST_NOT_STUCK;  // [lead107] RouteSteer.h
+        using Leader::Travel::STEER_TWIN_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::STEER_GAP_MS;  // [lead107] RouteEvents.h
-        constexpr uint32 STARTER_STUCK_RETRY_MS = 2 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 STARTER_NO_NEARER_MS = 90 * IN_MILLISECONDS;
+        using Leader::Travel::STARTER_STUCK_RETRY_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::STARTER_NO_NEARER_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::DOOR_REARM_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::KEY_DOOR_CAST_RANGE;  // [lead107] RouteEvents.h
         using Leader::Travel::KEY_DOOR_HOLD_FRESH_MS;  // [lead107] RouteTargets.h
@@ -349,10 +312,9 @@ namespace TestHarness
         constexpr uint32 DOOR_REARM_COMBAT_MAX = 1000;
         constexpr uint32 DOOR_REARM_COMBAT_GAP_MS = 6 * IN_MILLISECONDS;
         using Leader::Travel::DOOR_REARM_GAP_MS;  // [lead107] RouteTargets.h
-        constexpr uint32 STARTER_OBJECT_STUCK_SKIP_MS = 10 * MINUTE * IN_MILLISECONDS;  // StarterTrack::stuckUntilMs
-        // A target on another navmesh part next to the route's end (a ramp without polygons): walked over straight.
-        constexpr float GAP_CROSS_MAX_DISTANCE = 45.0f;
-        constexpr uint32 GAP_CROSS_TRIES = 3;
+        using Leader::Travel::STARTER_OBJECT_STUCK_SKIP_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::GAP_CROSS_MAX_DISTANCE;  // [lead107] RouteSteer.h
+        using Leader::Travel::GAP_CROSS_TRIES;  // [lead107] RouteSteer.h
         using Leader::Travel::GAP_REACHABLE_LEFT;  // [lead107] RouteLegs.h
         using Leader::Travel::GAP_REACHABLE_DZ;  // [lead107] RouteLegs.h
         using Leader::Travel::GAP_SWIM_ABOVE;  // [lead107] RouteLegs.h
@@ -397,7 +359,7 @@ namespace TestHarness
         constexpr float SHORTCUT_REENTER_MEMBER_FAR = 100.0f;  // a member this far from the leader re-enters alone
         using Leader::Travel::ENDLESS_SUMMON_KILLS;  // [lead107] RouteTargets.h
         using Leader::Travel::DRIVE_AFTER_MS;  // [lead107] RouteEvents.h
-        constexpr float DRIVE_STEP = 8.0f;
+        using Leader::Travel::DRIVE_STEP;  // [lead107] RouteSteer.h
         using Leader::Travel::DRIVE_SAME_GOAL;  // [lead107] RouteEvents.h
         using Leader::Travel::EVENT_CHAIN_TRASH_RADIUS;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_CHAIN_NARROW;  // [lead107] RouteTargets.h
@@ -406,19 +368,13 @@ namespace TestHarness
         using Leader::Travel::LEAD_SPOT_AHEAD_MARGIN;  // [lead107] RouteTargets.h
         using Leader::Travel::LEAD_SPOT_NEAR_RANGE;  // [lead107] RouteTargets.h
         using Leader::Travel::INTRO_WAIT_MAX_MS;  // [lead107] RouteTargets.h
-        // Farther than this from the intro's boss the leader first walks on to the event spot (Svala picks her first
-        // target within 100 yd).
-        constexpr float INTRO_WAIT_RANGE = 80.0f;
+        using Leader::Travel::INTRO_WAIT_RANGE;  // [lead107] RouteSteer.h
         using Leader::Travel::introWaitSinceMs;  // [lead107] RouteTargets.h
         using Leader::Travel::ritualHoldUntilMs;  // [lead107] RouteTargets.h
-        // [dmw-guard-body-pull] (party seq, guard guid) -> careful refusals of a pending door guard.
-        std::map<std::pair<uint32, ObjectGuid>, uint32> guardRefusals;
-        // once-per-target / once-per-boss log keys (party seq, guid)
-        std::set<std::pair<uint32, ObjectGuid>> guardApproachLogged;
-        // [guard_approach_arrived] (party seq, guard guid) -> when its "walking" line was logged; erased on arrival
-        std::map<std::pair<uint32, ObjectGuid>, uint32> guardApproachSinceMs;
-        // [steer_rest_not_stuck] (party seq, target guid): the leader's own rest during that walk, logged once
-        std::set<std::pair<uint32, ObjectGuid>> steerRestLogged;
+        using Leader::Travel::guardRefusals;  // [lead107] RouteSteer.h
+        using Leader::Travel::guardApproachLogged;  // [lead107] RouteSteer.h
+        using Leader::Travel::guardApproachSinceMs;  // [lead107] RouteSteer.h
+        using Leader::Travel::steerRestLogged;  // [lead107] RouteSteer.h
         using Leader::Travel::guardKeepLogged;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_TARGET_COMMIT;  // [lead107] RouteTargets.h
         using Leader::Travel::TARGET_COMMIT_MARGIN;  // [lead107] RouteTargets.h
@@ -476,9 +432,7 @@ namespace TestHarness
         }
         using Leader::Travel::STARTER_WALKING_RETRY_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::FORGE_STATION_RADIUS;  // [lead107] RouteTargets.h
-        // A boss whose body pull brought no fight: tried again after this (Oculus wave 9/10: Drakos "not pulled" at
-        // 372 / 415 s; the 10 minute skip left nothing to do before him on foot).
-        constexpr uint32 BOSS_NOT_PULLED_SKIP_MS = 2 * MINUTE * IN_MILLISECONDS;
+        using Leader::Travel::BOSS_NOT_PULLED_SKIP_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::STARTER_ITEM_MIN_RANGE;  // [lead107] RouteEvents.h
         using Leader::Travel::STARTER_ITEM_STEP_OUT;  // [lead107] RouteEvents.h
         using Leader::Travel::STARTER_ITEM_MAX_FAILS;  // [lead107] RouteEvents.h
@@ -556,55 +510,42 @@ namespace TestHarness
         // - a mob the tank rejects (TankRejects) is logged when it would have held the approach.
         using Leader::Travel::ROUTE_LONG_REVERSE;  // [lead99] RouteSearch.h
         using Leader::Travel::ROUTE_BACKBONE_COMPLETE_ONLY;  // [lead107] RouteTargets.h
-        constexpr bool ROUTE_APPROACH_TO_SIGHT = true;
-        constexpr bool ROUTE_LOG_TANK_REJECTS = true;
-        // Refused-walk pass (2026-10-24, *.bak_refusedwalk), false restores the behaviour before it of that piece:
-        // - approach to sight never walks into the aggro reach (AggroReach, the margin included) of an idle mob of the
-        //   target's or the blocker's pack that sees the point, unless the tank's careful planner accepted a plan for
-        //   that pack (TankPlanVerdict); the leader holds at the edge instead. RFC 20:08 (user: "the tank aggroed one
-        //   mob, then two more - why?"): the planner refused the 3-trogg pack, the sight point 10 yd on lay inside
-        //   the trogg's real aggro range, the walk there body-pulled the pack;
-        // - a boss the group stands ready for is body-pulled after BOSS_PULL_READY_MS, not after PULL_WAIT_MS (RFC
-        //   20:10: Oggleflint, the tank's planner never picks a boss, 45 s stood for nothing).
-        constexpr bool ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED = true;
-        constexpr bool ROUTE_BOSS_PULL_IMMEDIATE = true;
-        // Harness walks that are no approach to their target (a body pull past its own pack, MeetMember's walk back)
-        // stop at the aggro edge of every other idle pack (wave 7 scholo-h / mt-h / mt-n / lbrs-n mega-pulls: the
-        // tank's last intent "test runner move", no [pull plan], refused 20-mob packs pulled by the walk).
-        constexpr bool ROUTE_HARNESS_WALK_GUARD = true;
-        constexpr uint32 HARNESS_HOLD_LOG_MS = 15 * IN_MILLISECONDS;
+        using Leader::Travel::ROUTE_APPROACH_TO_SIGHT;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_LOG_TANK_REJECTS;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_BOSS_PULL_IMMEDIATE;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_HARNESS_WALK_GUARD;  // [lead107] RouteSteer.h
+        using Leader::Travel::HARNESS_HOLD_LOG_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_BOSS_ROOM_FIRST;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_SWIM_UP;  // [lead107] RouteLegs.h
-        // [hleft-hor-reentry-hold] halls_of_reflection.h: DATA_MARWYN 1, CenterPos; areatrigger_teleport 5636.
-        constexpr uint32 HOR_FALRIC_ENTRY = 38112;
-        constexpr uint32 HOR_MARWYN_ENTRY = 38113;
-        constexpr uint32 HOR_MARWYN_SLOT = 1;
-        constexpr float HOR_CENTRE_X = 5309.46f;
-        constexpr float HOR_CENTRE_Y = 2006.48f;
-        constexpr float HOR_ENTRANCE_X = 5239.01f;
-        constexpr float HOR_ENTRANCE_Y = 1932.64f;
-        constexpr float HOR_ENTRANCE_Z = 707.70f;
-        constexpr float HOR_HOLD_FROM_CENTRE = 60.0f;  // the script's 40 yd start range plus a margin
-        constexpr uint32 HOR_HOLD_LOG_MS = 30 * IN_MILLISECONDS;
+        using Leader::Travel::HOR_FALRIC_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_MARWYN_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_MARWYN_SLOT;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_CENTRE_X;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_CENTRE_Y;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_ENTRANCE_X;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_ENTRANCE_Y;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_ENTRANCE_Z;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_HOLD_FROM_CENTRE;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_HOLD_LOG_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::MECHANAR_MAP_ID;  // [lead107] RouteTargets.h
-        constexpr uint32 HOR_LICH_KING_ENTRY = 36954;  // [hleft-never-pulled]
-        constexpr uint32 HOR_LICH_KING_ESCAPE_ENTRY = 37226;
-        constexpr uint32 AN_HADRONOX_ENTRY = 28921;
-        constexpr uint32 AK_TWILIGHT_INITIATE_ENTRY = 30114;  // [hleft-ak-jedoga-owns]
-        constexpr uint32 AK_JEDOGA_ENTRY = 29310;
-        // [hleft-swim-back] the swim trail (TestHarnessMgr::Steer)
-        constexpr bool ROUTE_SWIM_BACK = true;
-        constexpr float SWIM_TRAIL_STEP = 5.0f;
-        constexpr size_t SWIM_TRAIL_MAX = 200;
-        constexpr float SWIM_CLIMB_DZ = 2.0f;  // a target this far above the swimmer is no climb out of the water
-        constexpr float WAYPOINT_REACHED_SWIM = 3.0f;
-        constexpr uint32 SWIM_BACK_MAX_MS = 2 * MINUTE * IN_MILLISECONDS;
+        using Leader::Travel::HOR_LICH_KING_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::HOR_LICH_KING_ESCAPE_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::AN_HADRONOX_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::AK_TWILIGHT_INITIATE_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::AK_JEDOGA_ENTRY;  // [lead107] RouteSteer.h
+        using Leader::Travel::ROUTE_SWIM_BACK;  // [lead107] RouteSteer.h
+        using Leader::Travel::SWIM_TRAIL_STEP;  // [lead107] RouteSteer.h
+        using Leader::Travel::SWIM_TRAIL_MAX;  // [lead107] RouteSteer.h
+        using Leader::Travel::SWIM_CLIMB_DZ;  // [lead107] RouteSteer.h
+        using Leader::Travel::WAYPOINT_REACHED_SWIM;  // [lead107] RouteSteer.h
+        using Leader::Travel::SWIM_BACK_MAX_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_STARTER_REARM;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_GATHER_MEMBERS;  // [lead107] RouteEvents.h
         // - FlyToPortal descends beside the portal (FLY_SIDE_DISTANCE out on its axis), not onto it.
         constexpr bool ROUTE_FLY_SIDE_APPROACH = true;
         using Leader::Travel::ROUTE_CHAIN_GUARD;  // [lead107] RouteTargets.h
-        constexpr bool ROUTE_TWIN_SKIP = true;
+        using Leader::Travel::ROUTE_TWIN_SKIP;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_OCULUS_DRAKE_ONLY;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_HOLD_SPOT_FIGHT;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_STARTER_ITEM_CHECK;  // [lead107] RouteEvents.h
@@ -623,7 +564,7 @@ namespace TestHarness
         using Leader::Travel::fallbackFloorLogMs;  // [lead107] RouteTargets.h
         using Leader::Travel::eventWaveFlipMs;  // [lead107] RouteTargets.h
         using Leader::Travel::EventWaveFresh;  // [lead107] RouteTargets.h
-        std::unordered_map<uint32, float> starterNearestPath;   // instance id -> shortest remaining walk to the starter
+        using Leader::Travel::starterNearestPath;  // [lead107] RouteSteer.h
         using Leader::Travel::starterGatherMs;  // [lead107] RouteEvents.h
         using Leader::Travel::passageDetourLogMs;  // [lead107] RouteTargets.h
         using Leader::Travel::PASSAGE_DETOUR_LOG_MS;  // [lead107] RouteTargets.h
@@ -645,70 +586,30 @@ namespace TestHarness
 
         using Leader::Travel::ROUTE_SURFACE_START;  // [lead107] RouteLegs.h
         using Leader::Travel::SURFACE_START_MIN_DEPTH;  // [lead107] RouteLegs.h
-        constexpr bool ROUTE_REFUSE_DEAD_END = true;
-        // A partial leg is judged only while the target is farther than GAP_CROSS_MAX_DISTANCE: nearer, the gap cross,
-        // the own move and the "pull from here" of steer_stuck keep their say.
-        // Below a cliff: the target stands this much above the end (above the water surface there, a swimmer rises)
-        // and the rise is this share of the horizontal gap or more. Measured (route_backbone, 2026-10-24/25 logs):
-        // Maraudon Earth Song Falls rise 71 over 95 / 113 yd (0.74 / 0.63) - dead ends; the Mechanar stairs to
-        // Sepethrea 28 over 83 (0.34), Gundrak's Gal'darah altar 23 over 36 (0.64, killed in every run) and
-        // Ahn'kahet's ramps (7.8 over 20.8) - walked on by the core's own move, kept by the 40 yd minimum.
-        constexpr float DEAD_END_CLIFF_MIN_RISE = 40.0f;
-        constexpr float DEAD_END_CLIFF_RATIO = 0.6f;
-        // Ends no nearer: the end must gain this much on the walker's own distance (yd, or that share of it).
-        constexpr float DEAD_END_MIN_GAIN = 5.0f;
-        constexpr float DEAD_END_MIN_GAIN_SHARE = 0.1f;
-        // Only when the walk to the end is this long: a leader next to the end walks it (Underbog build 30: 11.6 yd
-        // from the root's foot 222.4,-154.1 Musel'ek was refused "ends no nearer", the own move there is the climb).
-        constexpr float DEAD_END_WALK_MIN = 25.0f;
-        // The same end of the same target where a "route end" skip (steer_stuck) already left it: no walk back to it.
-        // Recorded by SkipTarget only - not every end the leader stood at (Underbog build 30: the steep knob
-        // 232.3,-194.4,12.4 under the root, where the own move climbs, was refused "same dead end again" 11 times).
-        constexpr float DEAD_END_SAME_END = 5.0f;
-        constexpr float DEAD_END_SAME_GOAL = 10.0f;
-        constexpr float DEAD_END_PROGRESS = 10.0f;
-        constexpr uint32 DEAD_END_MEMORY_MS = 10 * MINUTE * IN_MILLISECONDS;
-        // A known way on: an end (or goal) this near a route link's start or far end (RouteLinkDef: the Underbog root
-        // to Musel'ek's terrace) is never refused.
-        constexpr float DEAD_END_LINK_RANGE = 30.0f;
-        // Never a stall: DEAD_END_FALLBACK_REFUSALS refusals within DEAD_END_FALLBACK_WINDOW_MS put the leader back on
-        // the old walk (the partial route, the own move at its end, steer_stuck) for DEAD_END_FALLBACK_MS.
-        constexpr uint32 DEAD_END_FALLBACK_REFUSALS = 3;
-        constexpr uint32 DEAD_END_FALLBACK_WINDOW_MS = 3 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 DEAD_END_FALLBACK_MS = 10 * MINUTE * IN_MILLISECONDS;
+        using Leader::Travel::ROUTE_REFUSE_DEAD_END;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_CLIFF_MIN_RISE;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_CLIFF_RATIO;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_MIN_GAIN;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_MIN_GAIN_SHARE;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_WALK_MIN;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_SAME_END;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_SAME_GOAL;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_PROGRESS;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_MEMORY_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_LINK_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_FALLBACK_REFUSALS;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_FALLBACK_WINDOW_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::DEAD_END_FALLBACK_MS;  // [lead107] RouteSteer.h
 
-        struct DeadEndVisit
-        {
-            G3D::Vector3 end;
-            G3D::Vector3 goal;
-            float distance = 0.0f;  // walker to goal while it stood at the end
-            uint32 ms = 0;
-            ObjectGuid target;
-        };
-        std::unordered_map<ObjectGuid, std::vector<DeadEndVisit>> deadEndVisits;  // per walker, world thread only
+        using Leader::Travel::DeadEndVisit;  // [lead107] RouteSteer.h
+        using Leader::Travel::deadEndVisits;  // [lead107] RouteSteer.h
 
-        struct DeadEndRefusals
-        {
-            std::vector<uint32> ms;      // recent refusals
-            uint32 fallbackUntilMs = 0;  // the old walk until then
-        };
-        std::unordered_map<ObjectGuid, DeadEndRefusals> deadEndRefusals;  // per leader, world thread only
+        using Leader::Travel::DeadEndRefusals;  // [lead107] RouteSteer.h
+        using Leader::Travel::deadEndRefusals;  // [lead107] RouteSteer.h
 
-        struct DeadEndVerdict
-        {
-            std::string why;  // empty: walking to the end is progress (or not judged here)
-            float distance = 0.0f;
-            float left = 0.0f;
-            float hgap = 0.0f;
-            float dz = 0.0f;
-            float rise = 0.0f;
-            float surface = INVALID_HEIGHT;
-            bool underwater = false;
-            uint32 visitSec = 0;
-        };
+        using Leader::Travel::DeadEndVerdict;  // [lead107] RouteSteer.h
 
-        DeadEndVerdict JudgeIncompleteEnd(Player* walker, G3D::Vector3 const& end, G3D::Vector3 const& goal,
-                                          uint32 pathType, ObjectGuid target);
+        using Leader::Travel::JudgeIncompleteEnd;  // [lead107] RouteSteer.h
 
         using Leader::Travel::RoutePath;  // [lead107] RouteLegs.h
 
@@ -740,90 +641,8 @@ namespace TestHarness
 
         using Leader::Travel::SteerLeg;  // [lead107] RouteLegs.h
 
-        // [incomplete_route_deadend] Is walking to the end of a partial leg progress towards goal? The why of a no
-        // (Steer then skips the target as "route end", rechecked once the leader stands elsewhere), empty for a yes or
-        // when the target is near enough for the gap cross / own move / "pull from here". Records the ends the walker
-        // stood at (DeadEndVisit) and forgets one once the walker got nearer to the goal than it was there.
-        // Every Steer tick, whatever the leg: an end the walker got past (nearer to the goal by DEAD_END_PROGRESS than
-        // it stood there - the Mechanar stairs climbed by the core's own move) was no dead end.
-        void ForgetPassedDeadEnds(Player* walker, G3D::Vector3 const& goal)
-        {
-            auto const found = deadEndVisits.find(walker->GetGUID());
-            if (found == deadEndVisits.end() || found->second.empty())
-                return;
-            G3D::Vector3 const here(walker->GetPositionX(), walker->GetPositionY(), walker->GetPositionZ());
-            float const distance = (goal - here).length();
-            uint32 const now = getMSTime();
-            std::vector<DeadEndVisit>& visits = found->second;
-            visits.erase(std::remove_if(visits.begin(), visits.end(),
-                                        [&](DeadEndVisit const& visit)
-                                        {
-                                            return getMSTimeDiff(visit.ms, now) > DEAD_END_MEMORY_MS ||
-                                                   ((visit.goal - goal).length() <= DEAD_END_SAME_GOAL &&
-                                                    distance + DEAD_END_PROGRESS < visit.distance);
-                                        }),
-                         visits.end());
-        }
+        using Leader::Travel::ForgetPassedDeadEnds;  // [lead107] RouteSteer.h
 
-        DeadEndVerdict JudgeIncompleteEnd(Player* walker, G3D::Vector3 const& end, G3D::Vector3 const& goal,
-                                          uint32 pathType, ObjectGuid target)
-        {
-            DeadEndVerdict verdict;
-            G3D::Vector3 const here(walker->GetPositionX(), walker->GetPositionY(), walker->GetPositionZ());
-            verdict.distance = (goal - here).length();
-            verdict.left = (goal - end).length();
-            verdict.hgap = std::sqrt((goal.x - end.x) * (goal.x - end.x) + (goal.y - end.y) * (goal.y - end.y));
-            verdict.dz = goal.z - end.z;
-            verdict.surface = WaterSurfaceAt(walker, end);
-            verdict.underwater = verdict.surface > INVALID_HEIGHT && verdict.surface > end.z + 1.0f;
-            // A swimmer rises to the surface by itself: the climb counts from there.
-            verdict.rise = goal.z - (verdict.surface > INVALID_HEIGHT ? std::max(end.z, verdict.surface) : end.z);
-            float const walk = (end - here).length();
-            uint32 const now = getMSTime();
-
-            if (verdict.distance <= GAP_CROSS_MAX_DISTANCE)
-                return verdict;
-            // A known way on: the end or the goal at a route link (the link walk / the own move there carry on).
-            for (RouteLinkDef const* link : RouteLinks(walker->GetMapId()))
-            {
-                G3D::Vector3 const linkFrom(link->fromX, link->fromY, link->fromZ);
-                G3D::Vector3 const linkTo(link->toX, link->toY, link->toZ);
-                if ((linkFrom - end).length() <= DEAD_END_LINK_RANGE ||
-                    (linkTo - end).length() <= DEAD_END_LINK_RANGE ||
-                    (linkFrom - goal).length() <= DEAD_END_LINK_RANGE ||
-                    (linkTo - goal).length() <= DEAD_END_LINK_RANGE)
-                    return verdict;
-            }
-
-            ForgetPassedDeadEnds(walker, goal);
-            DeadEndVisit const* visited = nullptr;
-            if (auto const found = deadEndVisits.find(walker->GetGUID()); found != deadEndVisits.end())
-                for (DeadEndVisit const& visit : found->second)
-                    if ((visit.end - end).length() <= DEAD_END_SAME_END &&
-                        (visit.target == target || (visit.goal - goal).length() <= DEAD_END_SAME_GOAL))
-                        visited = &visit;
-
-            // A target off the navmesh (FARFROMPOLY_END: hovering, on a model without polygons) says nothing about
-            // the climb.
-            bool const cliff = !(pathType & PATHFIND_FARFROMPOLY_END) && verdict.left > GAP_REACHABLE_LEFT &&
-                               verdict.rise > DEAD_END_CLIFF_MIN_RISE &&
-                               verdict.rise > DEAD_END_CLIFF_RATIO * verdict.hgap;
-            // An end in water: a swim (the Ghaz'an lake shortcut, the swim to the Black Stalker) goes on in 3D - only
-            // the cliff test.
-            bool const water = verdict.surface > INVALID_HEIGHT;
-            if (cliff)
-                verdict.why = verdict.underwater ? "ends in water below a cliff" : "ends below a cliff";
-            else if (!water && visited && walk > DEAD_END_SAME_END * 2.0f)
-            {
-                verdict.why = "same dead end again";
-                verdict.visitSec = getMSTimeDiff(visited->ms, now) / IN_MILLISECONDS;
-            }
-            else if (!water && walk > DEAD_END_WALK_MIN &&
-                     verdict.left + std::max(DEAD_END_MIN_GAIN, DEAD_END_MIN_GAIN_SHARE * verdict.distance) >=
-                         verdict.distance)
-                verdict.why = "ends no nearer";
-            return verdict;
-        }
 
         // [incomplete_route_deadend] SkipTarget's "route end" (steer_stuck: the leader stood at the end, no way on):
         // that end is a dead end for this target.
@@ -837,31 +656,7 @@ namespace TestHarness
             visits.push_back(DeadEndVisit{here, goal, (goal - here).length(), now ? now : 1, target});
         }
 
-        // [incomplete_route_deadend] The never-a-stall fallback: true while the leader walks partial routes the old
-        // way. A refusal counts; the DEAD_END_FALLBACK_REFUSALS-th within the window starts it (started: this call).
-        bool DeadEndFallback(Player* leader, bool refusal, bool& started)
-        {
-            started = false;
-            uint32 const now = getMSTime();
-            DeadEndRefusals& refusals = deadEndRefusals[leader->GetGUID()];
-            if (refusals.fallbackUntilMs && int32(refusals.fallbackUntilMs - now) > 0)
-                return true;
-            refusals.fallbackUntilMs = 0;
-            refusals.ms.erase(std::remove_if(refusals.ms.begin(), refusals.ms.end(),
-                                             [now](uint32 ms)
-                                             { return getMSTimeDiff(ms, now) > DEAD_END_FALLBACK_WINDOW_MS; }),
-                              refusals.ms.end());
-            if (!refusal)
-                return false;
-            refusals.ms.push_back(now);
-            if (refusals.ms.size() < DEAD_END_FALLBACK_REFUSALS)
-                return false;
-            refusals.ms.clear();
-            uint32 const until = now + DEAD_END_FALLBACK_MS;
-            refusals.fallbackUntilMs = until ? until : 1;
-            started = true;
-            return true;
-        }
+        using Leader::Travel::DeadEndFallback;  // [lead107] RouteSteer.h
 
         using Leader::Travel::RouteWaypoint;  // [lead107] RouteLegs.h
 
@@ -961,8 +756,8 @@ namespace TestHarness
         using Leader::Travel::RouteCreatures;  // [lead107] RouteTargets.h
 
         using Leader::Travel::PACK_RADIUS;  // [lead107] RouteLegs.h
-        constexpr float AGGRO_EDGE_MARGIN = 8.0f;  // one harness tick of walking (7 yd/s) stays outside aggro
-        constexpr float SAME_FLOOR_DZ = 3.0f;
+        using Leader::Travel::AGGRO_EDGE_MARGIN;  // [lead107] RouteSteer.h
+        using Leader::Travel::SAME_FLOOR_DZ;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ShadowMobCheck;  // [lead107] RoutePatrol.h
 
@@ -995,57 +790,25 @@ namespace TestHarness
 
         using Leader::Travel::RouteHeldByHopelessPack;  // [lead107] RouteTargets.h
 
-        // The leader stands at the aggro edge of an unengaged mob of the target's pack: on its floor, in line of
-        // sight, no farther than its aggro range plus the margin. The pull logic takes over from here.
-        bool AtPackAggroEdge(Player* leader, Creature* target)
-        {
-            std::list<Creature*> pack;
-            PackMobCheck check{leader, target};
-            Acore::CreatureListSearcher<PackMobCheck> searcher(target, pack, check);
-            Cell::VisitObjects(target, searcher, PACK_RADIUS);
-            for (Creature* mob : pack)
-                if (leader->GetExactDist(mob) <= mob->GetAggroRange(leader) + AGGRO_EDGE_MARGIN &&
-                    std::fabs(leader->GetPositionZ() - mob->GetPositionZ()) <= SAME_FLOOR_DZ &&
-                    leader->IsWithinLOSInMap(mob))
-                    return true;
-            return false;
-        }
+        using Leader::Travel::AtPackAggroEdge;  // [lead107] RouteSteer.h
 
-        // Approach stop (route pass 4): the leader's waypoint never lies inside the aggro reach of an idle hostile
-        // around the target (SV-n wave 11: the waypoint 30 yd ahead lay in a refused pack; arriving at its edge only
-        // dropped the waypoint, the walk under way went on and pulled 10 mobs). A player stops outside the aggro
-        // range of every idle mob, plus a margin, and pulls or skips from there.
-        constexpr float APPROACH_SCAN_RADIUS = 45.0f;  // around the target: its pack and the neighbours on the way
+        using Leader::Travel::APPROACH_SCAN_RADIUS;  // [lead107] RouteSteer.h
         using Leader::Travel::APPROACH_AGGRO_MARGIN;  // [lead107] RoutePatrol.h
-        constexpr float APPROACH_SAMPLE_STEP = 1.0f;
-        constexpr float APPROACH_ARRIVED = 3.0f;
-        // AggressiveTargetValue MAX_PULL_HEIGHT_DIFF (12 yd), less a margin.
-        constexpr float TANK_PULL_HEIGHT = 11.5f;
-        // AggressiveTargetValue's MAX_PULL_HEIGHT_DIFF today (18 yd): beyond it the tank lists a mob as rejected
-        // (TankRejects) for its height. Only for the "approach ignores" line; the registry itself decides.
-        constexpr float TANK_REJECT_HEIGHT = 18.0f;
-        constexpr uint32 TANK_REJECT_LOG_MS = 10 * IN_MILLISECONDS;
-        std::unordered_map<uint64, uint32> tankRejectLogMs;  // mob -> last "approach ignores" line, world thread only
-        // Approach to sight (ROUTE_APPROACH_TO_SIGHT): from a stop that does not see its blocker, the route ahead is
-        // sampled every APPROACH_SAMPLE_STEP up to APPROACH_SIGHT_PATH yd for the first point that sees it, at most
-        // APPROACH_SIGHT_TRIES line-of-sight tests.
-        constexpr float APPROACH_SIGHT_PATH = 15.0f;
-        constexpr uint32 APPROACH_SIGHT_TRIES = 25;
-        // The keep-out tests of approach to sight (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED): line-of-sight tests from the
-        // route points inside a pack mob's aggro reach, a budget of their own.
-        constexpr uint32 APPROACH_SIGHT_KEEP_OUT_TRIES = 40;
+        using Leader::Travel::APPROACH_SAMPLE_STEP;  // [lead107] RouteSteer.h
+        using Leader::Travel::APPROACH_ARRIVED;  // [lead107] RouteSteer.h
+        using Leader::Travel::TANK_PULL_HEIGHT;  // [lead107] RouteSteer.h
+        using Leader::Travel::TANK_REJECT_HEIGHT;  // [lead107] RouteSteer.h
+        using Leader::Travel::TANK_REJECT_LOG_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::tankRejectLogMs;  // [lead107] RouteSteer.h
+        using Leader::Travel::APPROACH_SIGHT_PATH;  // [lead107] RouteSteer.h
+        using Leader::Travel::APPROACH_SIGHT_TRIES;  // [lead107] RouteSteer.h
+        using Leader::Travel::APPROACH_SIGHT_KEEP_OUT_TRIES;  // [lead107] RouteSteer.h
 
         using Leader::Fight::IdleAggroCheck;  // [lead107] the leader's idle-mob test
 
-        // The route's own stretch is searched too, not only the target's surroundings: around the leader, the walked
-        // length plus this (the largest aggro reach of a dungeon mob). Stratholme wave of 2026-10-24 09:27 / 09:48:
-        // the route to a Ravaged Cadaver 108 yd away was checked only against the mobs within 45 yd of it.
-        constexpr float APPROACH_ROUTE_SCAN_MARGIN = 40.0f;
+        using Leader::Travel::APPROACH_ROUTE_SCAN_MARGIN;  // [lead107] RouteSteer.h
         using Leader::Travel::APPROACH_WANDER_MAX;  // [lead107] RoutePatrol.h
-        // A mob more than this above or below the tank stands on another floor (a ledge, a gallery over the hall):
-        // it stops the walk only where the route reaches its floor. RFC wave 37: a trogg 23-25 yd from the group,
-        // the targets on the ledges 13-23 yd above it, held every route at (-173.4, 1.8, -52.4) and the run stalled.
-        constexpr float APPROACH_OTHER_FLOOR_DZ = 5.0f;
+        using Leader::Travel::APPROACH_OTHER_FLOOR_DZ;  // [lead107] RouteSteer.h
         using Leader::Travel::APPROACH_FOLLOW_SPREAD;  // [lead107] RoutePatrol.h
 
         using Leader::Travel::RealAggroRange;  // [lead107] RouteTargets.h
@@ -1054,66 +817,11 @@ namespace TestHarness
 
         using Leader::Travel::PATROL_WAIT_SCAN;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_WAIT_ASSIST;  // [lead107] RoutePatrol.h
-        constexpr float PATROL_WAIT_STEP = 5.0f;
-        constexpr float PATROL_WAIT_STEP_MAX = 40.0f;
+        using Leader::Travel::PATROL_WAIT_STEP;  // [lead107] RouteSteer.h
+        using Leader::Travel::PATROL_WAIT_STEP_MAX;  // [lead107] RouteSteer.h
         using Leader::Travel::PATROL_WAIT_TRAIL_MAX;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_WAIT_TRAIL_FLOOR;  // [lead107] RoutePatrol.h
-        bool PatrolWaitSpot(Player* leader, G3D::Vector3& spot, Creature*& nearMob)
-        {
-            std::list<Creature*> idle;
-            ShadowMobCheck check{leader};
-            Acore::CreatureListSearcher<ShadowMobCheck> searcher(leader, idle, check);
-            Cell::VisitObjects(leader, searcher, PATROL_WAIT_SCAN);
-            auto const reaches = [&](float x, float y, float z) -> Creature*
-            {
-                for (Creature* mob : idle)
-                    if (mob->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE &&
-                        mob->GetExactDist(x, y, z) <= AggroReach(mob, leader) + PATROL_WAIT_ASSIST)
-                        return mob;
-                return nullptr;
-            };
-            nearMob = reaches(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
-            if (!nearMob)
-                return false;
-            float const away = nearMob->GetAngle(leader);
-            for (float step = PATROL_WAIT_STEP; step <= PATROL_WAIT_STEP_MAX; step += PATROL_WAIT_STEP)
-                for (float turn : {0.0f, 0.5f, -0.5f, 1.0f, -1.0f})
-                {
-                    float const x = leader->GetPositionX() + std::cos(away + turn) * step;
-                    float const y = leader->GetPositionY() + std::sin(away + turn) * step;
-                    float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), x, y,
-                                                                     leader->GetPositionZ() + 3.0f, true, 10.0f);
-                    if (ground <= INVALID_HEIGHT || !DirectLineOverGround(leader, x, y, ground) ||
-                        reaches(x, y, ground))
-                        continue;
-                    spot = G3D::Vector3(x, y, ground);
-                    return true;
-                }
-
-            // [patrol_wait_trail_back] No clear spot straight away from the nearest idle mob (a room full of packs,
-            // a corridor whose sides are walls): the group steps back along the way it came, the tank's own trail
-            // (MovementAction::TankTrailPoints, every 2 yd), to the first point out of every idle mob's reach and
-            // assistance. Walked already, the way back pulls nothing new. scholo-h w24 (115805-scholo-h-5A-34,
-            // pull 11), scholo-n w23 and brd-n w24 logged "no clear spot" and waited in the patrol's path next to the
-            // neighbour pack; the patrol fight called it in (wipe analysis w24-25, cause C).
-            std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(leader);
-            G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
-            float walkedBack = 0.0f;
-            G3D::Vector3 previous = here;
-            for (auto point = trail.rbegin(); point != trail.rend(); ++point)
-            {
-                walkedBack += (*point - previous).length();
-                previous = *point;
-                if (walkedBack > PATROL_WAIT_TRAIL_MAX)
-                    break;
-                if (walkedBack < PATROL_WAIT_STEP || std::fabs(point->z - here.z) > PATROL_WAIT_TRAIL_FLOOR ||
-                    reaches(point->x, point->y, point->z))
-                    continue;
-                spot = *point;
-                return true;
-            }
-            return false;
-        }
+        using Leader::Travel::PatrolWaitSpot;  // [lead107] RouteSteer.h
 
         using Leader::Travel::SeesFromPoint;  // [lead107] RoutePatrol.h
 
@@ -1163,126 +871,34 @@ namespace TestHarness
             return false;
         }
 
-        // ROUTE_UNSEEN_ROUTE_END_PASS (wave 21, *.bak_w21idle): a mob skipped as "route end" while the leader could
-        // not see it (no walk to its sight point) stops no walk by the follower-spread rule any more (unseenStop): the
-        // spread stop held the boss approach at the edge of what nobody can see nor reach. sm-h wave 21: Scarlet
-        // Monk / Diviner behind the Library shelves, "route end", then Arcanist Doan's approach stopped by them
-        // (unseenStop) 64 s, the run idle 138 s. A mob that sees the route point still stops it (line of sight).
-        constexpr bool ROUTE_UNSEEN_ROUTE_END_PASS = true;
-        std::unordered_map<uint64, uint32> unseenRouteEndUntilMs;  // creature guid -> until (world thread)
-        std::unordered_map<uint64, uint32> unseenRouteEndLogMs;
+        using Leader::Travel::ROUTE_UNSEEN_ROUTE_END_PASS;  // [lead107] RouteSteer.h
+        using Leader::Travel::unseenRouteEndUntilMs;  // [lead107] RouteSteer.h
+        using Leader::Travel::unseenRouteEndLogMs;  // [lead107] RouteSteer.h
 
-        void MarkUnseenRouteEnd(Creature* mob, uint32 untilMs)
-        {
-            if (ROUTE_UNSEEN_ROUTE_END_PASS && mob)
-                unseenRouteEndUntilMs[mob->GetGUID().GetRawValue()] = untilMs ? untilMs : 1;
-        }
+        using Leader::Travel::MarkUnseenRouteEnd;  // [lead107] RouteSteer.h
 
-        bool UnseenRouteEnd(Player* leader, Creature* mob)
-        {
-            if (!ROUTE_UNSEEN_ROUTE_END_PASS)
-                return false;
-            auto const found = unseenRouteEndUntilMs.find(mob->GetGUID().GetRawValue());
-            if (found == unseenRouteEndUntilMs.end())
-                return false;
-            uint32 const now = getMSTime();
-            if (int32(now - found->second) >= 0)
-            {
-                unseenRouteEndUntilMs.erase(found);
-                return false;
-            }
-            uint32& loggedMs = unseenRouteEndLogMs[mob->GetGUID().GetRawValue()];
-            if (!loggedMs || getMSTimeDiff(loggedMs, now) > 30 * IN_MILLISECONDS)
-            {
-                loggedMs = now ? now : 1;
-                LOG_INFO("playerbots",
-                         "[approach] {}: unseen_route_end_pass: {} ({:.1f} yd) stops no walk unseen - skipped as "
-                         "route end out of the leader's sight",
-                         leader->GetName(), mob->GetName(), leader->GetExactDist(mob));
-            }
-            return true;
-        }
+        using Leader::Travel::UnseenRouteEnd;  // [lead107] RouteSteer.h
 
         using Leader::Travel::JoinsBossFight;  // [lead107] RouteTargets.h
 
-        // [hleft-boss-own-pack] A mob that comes into `boss`'s fight by itself when he is pulled - his formation or a
-        // script call for help (JoinsBossFight "formation" / "script") - is his encounter, not a neighbour pack: the
-        // careful planner refuses such a pack as "brings a boss, pulled as his fight" (ChooseTargetActions), so a
-        // harness that stops the boss's walk at it waits for a pull nobody makes. Razorfen Downs heroic 2026-10-25
-        // (20261025-070358-rfd-h-5A-78): the Splinterbone Skeleton pack "joins boss: script" refused for Mordresh,
-        // Mordresh's approach stopped at it as a neighbour ("harness_hold_refused_pack" boss approach) until the stall
-        // skipped him.
-        constexpr bool ROUTE_BOSS_OWN_ENCOUNTER_PACK = true;
+        using Leader::Travel::ROUTE_BOSS_OWN_ENCOUNTER_PACK;  // [lead107] RouteSteer.h
 
-        bool BossEncounterMob(Player* leader, Creature* boss, Creature* mob)
-        {
-            if (!ROUTE_BOSS_OWN_ENCOUNTER_PACK || !leader || !boss || !mob || boss == mob)
-                return false;
-            char const* joins = JoinsBossFight(leader, boss, mob);
-            return joins && (std::strcmp(joins, "joins boss: formation") == 0 ||
-                             std::strcmp(joins, "joins boss: script") == 0);
-        }
+        using Leader::Travel::BossEncounterMob;  // [lead107] RouteSteer.h
 
-        // [b33_dme] A boss whose wander or aggro reach covers `mob`'s stand (the careful planner's "wanders to the
-        // spot" / "aggro reaches spot" for an idle boss): pulling `mob` is his fight, the planner refuses its pack as
-        // "brings a boss, pulled as his fight once the group is ready for him". Dire Maul East 5H (bear tank)
-        // 20261026-000434-dme-n-5H-40: the Wildspawn Hellcaller (a caster, no lone-mob pull) 25 yd from Hydrospawn's
-        // pool stopped every walk to Zevrim; boss_on_the_way_first fired only for a blocker that IS a boss, the body
-        // pull was held at the refused Hellcaller ("harness_hold_refused_pack" body pull) every 10 s, 0/4 at 24 min.
-        constexpr bool ROUTE_BOSS_BROUGHT_BY_PACK = true;  // [b33_dme] false: the build-32 behaviour
+        using Leader::Travel::ROUTE_BOSS_BROUGHT_BY_PACK;  // [lead107] RouteSteer.h
 
-        bool BossBroughtBy(Player* leader, Creature* boss, Creature* mob)
-        {
-            if (!ROUTE_BOSS_BROUGHT_BY_PACK || !leader || !boss || !mob || boss == mob || !boss->IsAlive() ||
-                !mob->IsAlive() || boss->IsInCombat() || boss->IsImmuneToPC() || !boss->IsHostileTo(leader))
-                return false;
-            if (BossEncounterMob(leader, boss, mob))
-                return true;
-            if (std::fabs(boss->GetPositionZ() - mob->GetPositionZ()) > APPROACH_OTHER_FLOOR_DZ)
-                return false;
-            float const reach = AggroReach(boss, leader);
-            float const apart = std::min(boss->GetExactDist2d(mob), boss->GetHomePosition().GetExactDist2d(
-                                                                        mob->GetPositionX(), mob->GetPositionY()));
-            return apart <= reach && boss->IsWithinLOSInMap(mob);
-        }
+        using Leader::Travel::BossBroughtBy;  // [lead107] RouteSteer.h
 
-        // [b33_harn] The boss's own room pack: an idle mob on the boss's floor within BOSS_ROOM_TRASH_RADIUS of him
-        // that he sees but the leader does not (no pull of its own from here: the planner never sees it, verdict
-        // "none", 0 mobs) is part of the boss pull - the walk to the boss does not stop at it. scholo-h
-        // 20261026-000434-scholo-h-5A-3 (2453-2572 s): every body pull of Vectus held at a Scholomance Student 31.8 yd
-        // off ("harness_hold_refused_pack", verdict none, realPack 3-4, no line of sight from the tank), then
-        // pull_after_hold targeted the unseen Student, "route end", Vectus skipped 300 s. A footprint mob the leader
-        // DOES see stays a stop: it is pulled first when cheap (TickBossAreaFirst / boss-area trash).
-        constexpr bool ROUTE_BOSS_ROOM_PACK = true;  // false: the build-33 behaviour
+        using Leader::Travel::ROUTE_BOSS_ROOM_PACK;  // [lead107] RouteSteer.h
 
-        bool BossRoomPack(Player* leader, Creature* boss, Creature* mob)
-        {
-            if (!ROUTE_BOSS_ROOM_PACK || !leader || !boss || !mob || boss == mob || !boss->IsAlive() ||
-                !mob->IsAlive() || boss->IsInCombat() || mob->IsInCombat() ||
-                !(boss->IsDungeonBoss() || boss->isWorldBoss()))
-                return false;
-            if (std::fabs(boss->GetPositionZ() - mob->GetPositionZ()) > APPROACH_OTHER_FLOOR_DZ ||
-                boss->GetExactDist(mob) > BOSS_ROOM_TRASH_RADIUS)
-                return false;
-            return boss->IsWithinLOSInMap(mob) && !leader->IsWithinLOSInMap(mob);
-        }
+        using Leader::Travel::BossRoomPack;  // [lead107] RouteSteer.h
 
-        constexpr bool ROUTE_STOP_ONLY_REAL_AGGRO = true;  // [stop_only_real_aggro] false: the margin stops too
-        constexpr float STOP_REAL_SLACK = 1.5f;
+        using Leader::Travel::ROUTE_STOP_ONLY_REAL_AGGRO;  // [lead107] RouteSteer.h
+        using Leader::Travel::STOP_REAL_SLACK;  // [lead107] RouteSteer.h
 
-        // [b34_petramp] The Z gate (Creature::CanStartAttack: no proximity aggro on a unit more than
-        // CREATURE_Z_ATTACK_RANGE + m_CombatDistance above / below the mob, object sizes off) keeps the TANK idle on a
-        // ramp, never the group: the followers and pets stand lower or further ahead, and a flier has no gate at all.
-        // scholo-h 20261026-014521-scholo-h-5H-3 (116-133 s): the stop on the Reliquary ramp at (221.1,51.6,122.1)
-        // stood 6.3 yd above the hall floor, 20.8 yd from a Scholomance Neophyte (real aggro 21.0, approach_stop
-        // insideRealAggro true) - the gated ramp points counted as out of reach, so the stop lay where the gate first
-        // let the mob see the leader; the hunter's Cat by the tank opened the 33-mob pull 5 (wipe). A point inside the
-        // real 3D range of a mob that sees it is no stop whatever the Z gate says: the stop goes back up the stairs,
-        // out of the floor's sight (a line-of-sight pull from there), or back along the tank's trail when the leader
-        // stands inside already (STOP_TRAIL_BACK_MAX).
-        constexpr bool ROUTE_STOP_IGNORES_Z_GATE = true;  // [b34_petramp] false: the build-33 gated stop
-        constexpr float STOP_TRAIL_BACK_MAX = 30.0f;
-        constexpr float STOP_TRAIL_FLOOR = 8.0f;  // a trail point this far above / below the leader is another floor
+        using Leader::Travel::ROUTE_STOP_IGNORES_Z_GATE;  // [lead107] RouteSteer.h
+        using Leader::Travel::STOP_TRAIL_BACK_MAX;  // [lead107] RouteSteer.h
+        using Leader::Travel::STOP_TRAIL_FLOOR;  // [lead107] RouteSteer.h
 
         // [lead3] C:/WoW/LEADER_REFACTOR_PLAN.md section 9: the leader decides this party's pulls (its planner runs
         // on the world thread, LEADER_PLANNER_IN_LEADER): a tracked 5-man tank. Raids keep the old harness pulls.
@@ -1325,15 +941,9 @@ namespace TestHarness
         // marks it hands the planner (LeaderInputs::required), else the AoePull registry
         bool PartyAoePlanned(Party const& party, ObjectGuid mob, uint32* sinceMs = nullptr)
         {
-            if (!LeaderPicksFor(party))
-                return AoePull::Planned(party.leader, mob, sinceMs);
-            auto const& lead = party.lead;
-            if (!lead.aoePlanMs || getMSTimeDiff(lead.aoePlanMs, getMSTime()) > LEADER_VERDICT_TTL_MS ||
-                std::find(lead.aoePlan.begin(), lead.aoePlan.end(), mob) == lead.aoePlan.end())
-                return false;
-            if (sinceMs)
-                *sinceMs = lead.aoePlanSinceMs;
-            return true;
+            // [lead107] the leader's (RouteSteer.h)
+            PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(party));
+            return Leader::Travel::PartyAoePlanned(group, mob, sinceMs);
         }
 
         void PartyMarkRequired(Party& party, ObjectGuid mob)
@@ -1350,10 +960,9 @@ namespace TestHarness
         // [lead5] the tank's view of `unit` (AggressiveTargetValue::Explain) with the leader's own route target
         std::string PartyTankView(Party const& party, Player* leader, Unit* unit)
         {
-            if (!LeaderPicksFor(party))
-                return AggressiveTargetValue::Explain(leader, unit);
-            return AggressiveTargetValue::Explain(leader, unit,
-                                                  party.targetIsStarter ? ObjectGuid::Empty : party.target);
+            // [lead107] the leader's (RouteSteer.h)
+            PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(party));
+            return Leader::Travel::PartyTankView(group, leader, unit);
         }
 
         // [lead5] LEADER_ONE_PICKER: EncounterOrder::IsLocked is the one encounter-order rule (the planner's and the
@@ -1375,312 +984,34 @@ namespace TestHarness
             return Leader::Travel::LeaderOwnsPatrols(group);
         }
 
+        using Leader::Travel::ApproachStop;  // [lead107] RouteSteer.h
+
+        // [lead107] the harness's Party form of the leader's ApproachStop (through the group view)
         bool ApproachStop(Player* leader, WorldObject* target, Movement::PointsArray const& points, float length,
-                          G3D::Vector3& stop, Creature*& blocker, bool& unseenStop, Creature* exemptPack = nullptr,
-                          Party const* party = nullptr)
+                          G3D::Vector3& stop, Creature*& blocker, bool& unseenStop, Creature* exemptPack,
+                          Party const* party)
         {
-            unseenStop = false;
-            std::list<Creature*> mobs;
-            IdleAggroCheck check{leader};
-            Acore::CreatureListSearcher<IdleAggroCheck> searcher(target, mobs, check);
-            Cell::VisitObjects(target, searcher, APPROACH_SCAN_RADIUS);
-            std::list<Creature*> routeMobs;
-            Acore::CreatureListSearcher<IdleAggroCheck> routeSearcher(leader, routeMobs, check);
-            Cell::VisitObjects(leader, routeSearcher, length + APPROACH_ROUTE_SCAN_MARGIN);
-            for (Creature* mob : routeMobs)
-                if (std::find(mobs.begin(), mobs.end(), mob) == mobs.end())
-                    mobs.push_back(mob);
-            // A mob the tank rejected (another floor, no path) holds nothing: nobody would pull it (Gundrak wave 32:
-            // the walk stopped at a Drakkari Lancer the tank listed as unreachable). Thread-safe registry.
-            // The tank's reject list holds its height rejects too (AggressiveTargetValue: more than
-            // TANK_REJECT_HEIGHT above or below it); "approach ignores" names each mob it kept from holding the walk,
-            // once per TANK_REJECT_LOG_MS. (RFC 18:19, the trogg on the ledge was not one: the tank's "1 height" was
-            // another mob, the trogg was out of its line of sight - approach to sight in Steer.)
-            // [b30_mech_pos] ...except the walk's own target and its pack: the harness walks to it anyway, so a
-            // reject (no full path: pos-n 20261025-184229, the ambush Ymirjar Wrathbringer summoned on a rock at
-            // 911.9,63.4,547.7, the path ending 7.7 yd from it at 904.2,62.2,542.9) let the walk run into its pack
-            // instead of stopping at the edge, and the tank pulled 7 mobs mounted. The edge is the pull's place.
-            Creature* const walkTarget = target ? target->ToCreature() : nullptr;
-            mobs.remove_if(
-                [leader, walkTarget, party](Creature* mob)
-                {
-                    if (!TankRejects::IsRejected(leader->GetGUID(), mob->GetGUID()))
-                        return false;
-                    if (walkTarget && (mob == walkTarget || mob->GetExactDist(walkTarget) <= PACK_RADIUS))
-                        return false;
-                    // A pack the tank's careful planner refused keeps stopping the walk even when the tank rejects it
-                    // as unseen: walked through, it is the mega-pull (wave 7 scholo-h / mt-h / mt-n / lbrs-n: the
-                    // harness walk into a refused 20-mob pack, no [pull plan] before the pull).
-                    bool accepted = true;
-                    uint32 planMobs = 0;
-                    // [lead5] the leader planner's own memory with LEADER_ONE_PICKER (PartyVerdict)
-                    if ((party ? PartyVerdict(*party, mob->GetGUID(), accepted, planMobs)
-                               : CarefulPlanVerdict::Get(leader->GetGUID(), mob->GetGUID(), accepted, planMobs)) &&
-                        !accepted)
-                        return false;
-                    if (ROUTE_LOG_TANK_REJECTS && leader->GetExactDist(mob) < AggroReach(mob, leader))
-                    {
-                        uint32 const now = getMSTime();
-                        uint32& loggedMs = tankRejectLogMs[mob->GetGUID().GetRawValue()];
-                        if (!loggedMs || getMSTimeDiff(loggedMs, now) > TANK_REJECT_LOG_MS)
-                        {
-                            loggedMs = now;
-                            bool const height =
-                                std::fabs(mob->GetPositionZ() - leader->GetPositionZ()) > TANK_REJECT_HEIGHT;
-                            LOG_INFO("playerbots",
-                                     "[approach] {}: approach ignores {}: tank rejects ({}) {:.1f} yd, dz {:.1f}",
-                                     leader->GetName(), mob->GetName(),
-                                     height ? "height" : "unseen / unreachable", leader->GetExactDist(mob),
-                                     mob->GetPositionZ() - leader->GetPositionZ());
-                        }
-                    }
-                    return true;
-                });
-            // A locked Forge Master (UKIds::IsForgeMasterLocked) stops no walk: engaged he only evades home, and
-            // standing at his edge the tank's nearest pull is him (Utgarde Keep 10:44: the leader stopped 1 yd from
-            // master 3 on the way to forge 2 and never left). Retarget keeps the route out of his reach instead.
-            if (ROUTE_FORGE_ORDER)
-                if (InstanceScript const* instance = leader->GetInstanceScript())
-                    mobs.remove_if([instance](Creature* mob) { return UKIds::IsForgeMasterLocked(mob, instance); });
-            // Fast respawners (ROUTE_FAST_RESPAWN_PASS) are walked past.
-            mobs.remove_if([](Creature* mob) { return FastRespawner(mob); });
-            // exemptPack (a body pull's target): its own pack - the mobs within PACK_RADIUS of it and its formation -
-            // is the pull and stops nothing; every other idle mob stops the walk.
-            // [hleft-boss-own-pack] ... and a boss's encounter mobs (BossEncounterMob) with him.
-            if (exemptPack)
-                mobs.remove_if(
-                    [exemptPack, leader](Creature* mob)
-                    {
-                        return mob == exemptPack || mob->GetExactDist(exemptPack) <= PACK_RADIUS ||
-                               (exemptPack->GetFormation() && mob->GetFormation() == exemptPack->GetFormation()) ||
-                               ((exemptPack->IsDungeonBoss() || exemptPack->isWorldBoss() ||
-                                 mob->GetExactDist(exemptPack) <= BOSS_ROOM_TRASH_RADIUS) &&
-                                BossEncounterMob(leader, exemptPack, mob)) ||
-                               // [b33_dme] a boss's walk: the mob his wander / aggro reach brings is his fight
-                               ((exemptPack->IsDungeonBoss() || exemptPack->isWorldBoss()) &&
-                                BossBroughtBy(leader, exemptPack, mob)) ||
-                               BossRoomPack(leader, exemptPack, mob);  // [b33_harn]
-                    });
-            if (mobs.empty())
-                return false;
-
-            // reach: AggroReach (real aggro plus the margin). holds: the distance inside which the mob stops the
-            // walk - its reach, or the leader's own distance when it stands in the margin already: from there only a
-            // step closer to the mob stops it. DM wave 37: the leader stood 22.4 yd from a refused Miner (reach 23),
-            // and every route, also the ones leading away from it, stopped at its first sample - the leader's own
-            // position - until the 4-minute stall. otherFloor: more than APPROACH_OTHER_FLOOR_DZ above or below the
-            // leader (the tank).
-            // unseenHolds: the same for the follower spread (APPROACH_FOLLOW_SPREAD, real aggro plus the spread, no
-            // line of sight), only at route points on the mob's floor (SAME_FLOOR_DZ).
-            struct MobReach
-            {
-                Creature* mob;
-                float reach;
-                float holds;
-                float unseenHolds;
-                bool otherFloor;
-            };
-            std::vector<MobReach> reaches;
-            reaches.reserve(mobs.size());
-            for (Creature* mob : mobs)
-            {
-                float const reach = AggroReach(mob, leader);
-                float const distance = leader->GetExactDist(mob);
-                reaches.push_back({mob, reach, std::min(reach, distance),
-                                   std::min(RealAggroRange(mob, leader) + APPROACH_FOLLOW_SPREAD, distance),
-                                   std::fabs(mob->GetPositionZ() - leader->GetPositionZ()) > APPROACH_OTHER_FLOOR_DZ});
-            }
-
-            // Only a mob that sees the point stops the walk: a creature aggroes in line of sight only
-            // (Creature::MoveInLineOfSight), and the tank chooses its pull among the mobs it sees ("possible targets").
-            // Wave 12: the leader stopped behind corners and doors at the reach of mobs it could not see, the tank had
-            // no target and every levelling normal stalled at its entrance. A mob on another floor than the tank
-            // counts only at the points of the route on its own floor.
-            // The followers are not on the leader's eye line, though: a mob on the point's floor (SAME_FLOOR_DZ) stops
-            // the walk at its real aggro range plus APPROACH_FOLLOW_SPREAD without the line of sight (Stockade wave
-            // 40: a cell wall hid the Captive from the leader's point, its open door did not hide the shaman). A
-            // mob the tank stood at and did not see is marked as not seen (TankRejects, tank_view) and stops no
-            // later walk, as before. `unseen` tells which rule stopped it.
-            auto inside = [&reaches, leader](G3D::Vector3 const& point, bool& unseen) -> Creature*
-            {
-                for (MobReach const& entry : reaches)
-                {
-                    if ((!entry.otherFloor ||
-                         std::fabs(point.z - entry.mob->GetPositionZ()) <= APPROACH_OTHER_FLOOR_DZ) &&
-                        AggroesAtPoint(entry.mob, leader, point, entry.holds, true))
-                    {
-                        unseen = false;
-                        return entry.mob;
-                    }
-                    if (std::fabs(point.z - entry.mob->GetPositionZ()) <= SAME_FLOOR_DZ &&
-                        AggroesAtPoint(entry.mob, leader, point, entry.unseenHolds, false) &&
-                        !UnseenRouteEnd(leader, entry.mob))
-                    {
-                        unseen = true;
-                        return entry.mob;
-                    }
-                }
-                return nullptr;
-            };
-
-            // The route sampled every APPROACH_SAMPLE_STEP yd up to `length`, from the leader's own position.
-            std::vector<G3D::Vector3> samples;
-            samples.emplace_back(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
-            float walked = 0.0f;
-            for (size_t index = 1; index < points.size() && walked < length; ++index)
-            {
-                G3D::Vector3 const from = index == 1 ? samples.front() : points[index - 1];
-                G3D::Vector3 const segment = points[index] - from;
-                float const segmentLength = segment.length();
-                if (segmentLength <= 0.0f)
-                    continue;
-
-                float along = 0.0f;
-                while (along < segmentLength && walked + along < length)
-                {
-                    along = std::min(along + APPROACH_SAMPLE_STEP, segmentLength);
-                    samples.push_back(from + segment * (along / segmentLength));
-                }
-                walked += segmentLength;
-            }
-
-            // [stop_only_real_aggro] User 2026-10-25 (scholo-h 153805, 15:56:04: approach_stop on a Necromancer pack
-            // at 28.8 yd, insideRealAggro false, the tank stood with nothing to do): a mob whose real aggro range
-            // (RealAggroRange plus STOP_REAL_SLACK; on its floor without line of sight, the follower rule, else seen)
-            // this stretch of the route never enters stops no walk - its margin is only passed. The followers keep
-            // to the tank's distance from an idle mob (MovementActions CollectIdleReaches [melee_behind_tank]) and
-            // the pets out of every reach ([pet_idle_reach]). A route that enters the real range later stops there
-            // on a later tick, at the margin point it stands in then.
-            if (ROUTE_STOP_ONLY_REAL_AGGRO)
-            {
-                reaches.erase(std::remove_if(reaches.begin(), reaches.end(),
-                                             [&samples, leader](MobReach const& entry)
-                                             {
-                                                 float const real = RealAggroRange(entry.mob, leader) + STOP_REAL_SLACK;
-                                                 for (G3D::Vector3 const& point : samples)
-                                                 {
-                                                     float const dz = std::fabs(point.z - entry.mob->GetPositionZ());
-                                                     if (dz <= SAME_FLOOR_DZ &&
-                                                         AggroesAtPoint(entry.mob, leader, point, real, false))
-                                                         return false;
-                                                     if ((!entry.otherFloor || dz <= APPROACH_OTHER_FLOOR_DZ) &&
-                                                         AggroesAtPoint(entry.mob, leader, point, real, true))
-                                                         return false;
-                                                 }
-                                                 return true;
-                                             }),
-                              reaches.end());
-                if (reaches.empty())
-                    return false;
-            }
-
-            for (size_t index = 0; index < samples.size(); ++index)
-            {
-                bool unseen = false;
-                blocker = inside(samples[index], unseen);
-                if (!blocker)
-                    continue;
-
-                // The spread stop is the last point before the spread reach (nothing to see from there anyway).
-                unseenStop = unseen;
-                size_t stopIndex =
-                    index > 0 && (unseen || SeesFromPoint(leader, blocker, samples[index - 1])) ? index - 1 : index;
-                // The tank chooses no pull farther above or below it than AggressiveTargetValue's height limit: on a
-                // ramp the stop moves on down within the margin, still outside every mob's real aggro range (ST
-                // wave 15: stopped 12.3 yd above the Witch Doctor, the tank never saw it, the run stalled there).
-                if (std::fabs(samples[stopIndex].z - blocker->GetPositionZ()) > TANK_PULL_HEIGHT)
-                    for (size_t next = stopIndex + 1; next < samples.size(); ++next)
-                    {
-                        G3D::Vector3 const& point = samples[next];
-                        bool aggroes = false;
-                        for (MobReach const& entry : reaches)
-                        {
-                            bool zGated = false;  // [b34_petramp] the gate keeps only the tank idle there
-                            aggroes |= AggroesAtPoint(entry.mob, leader, point, entry.reach - APPROACH_AGGRO_MARGIN,
-                                                      false, &zGated) ||
-                                       (ROUTE_STOP_IGNORES_Z_GATE && zGated);
-                        }
-                        if (aggroes)
-                            break;
-                        if (std::fabs(point.z - blocker->GetPositionZ()) <= TANK_PULL_HEIGHT &&
-                            SeesFromPoint(leader, blocker, point))
-                        {
-                            stopIndex = next;
-                            break;
-                        }
-                    }
-                // A corner that shows the mob only from inside its real aggro range (no margin) is no place to stop:
-                // the mob sees the leader there and comes (Stratholme 09:36: the street corner at 3644.9,-3538.5 was
-                // the stop with the cadaver it showed 15.6-18.9 yd away, inside its 18-19 yd real reach). The stop
-                // goes back to the last point no idle mob both reaches and sees; the tank pulls from there or
-                // the target is skipped as not seen (tank_view).
-                auto const aggroesSeen = [&reaches, leader](G3D::Vector3 const& point)
-                {
-                    for (MobReach const& entry : reaches)
-                    {
-                        bool zGated = false;
-                        if (AggroesAtPoint(entry.mob, leader, point, entry.reach - APPROACH_AGGRO_MARGIN, true,
-                                           &zGated))
-                            return true;
-                        // [b34_petramp] inside the real 3D range, kept idle by the Z gate only: the mob sees the point
-                        if (ROUTE_STOP_IGNORES_Z_GATE && zGated && SeesFromPoint(leader, entry.mob, point))
-                            return true;
-                    }
-                    return false;
-                };
-                while (stopIndex > 0 && aggroesSeen(samples[stopIndex]))
-                    --stopIndex;
-                stop = samples[stopIndex];
-                // [b34_petramp] the leader stands inside such a reach already: back along its own trail (walked, it
-                // pulls nothing new) to the first point no idle mob reaches and sees, on its floor
-                if (ROUTE_STOP_IGNORES_Z_GATE && stopIndex == 0 && aggroesSeen(samples[0]))
-                {
-                    std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(leader);
-                    G3D::Vector3 previous = samples[0];
-                    float walkedBack = 0.0f;
-                    for (auto point = trail.rbegin(); point != trail.rend(); ++point)
-                    {
-                        walkedBack += (*point - previous).length();
-                        previous = *point;
-                        if (walkedBack > STOP_TRAIL_BACK_MAX)
-                            break;
-                        if (std::fabs(point->z - samples[0].z) > STOP_TRAIL_FLOOR || aggroesSeen(*point))
-                            continue;
-                        LOG_INFO("playerbots",
-                                 "[approach] {}: stop_out_of_real_reach: the leader stands where an idle mob reaches "
-                                 "and sees it (blocker {}, {:.1f} yd) - back {:.1f} yd along its trail to ({:.1f},"
-                                 "{:.1f},{:.1f}) [b34_petramp]",
-                                 leader->GetName(), blocker->GetName(), leader->GetExactDist(blocker), walkedBack,
-                                 point->x, point->y, point->z);
-                        stop = *point;
-                        break;
-                    }
-                }
-                return true;
-            }
-            return false;
+            if (!party)
+                return Leader::Travel::ApproachStop(leader, target, points, length, stop, blocker, unseenStop,
+                                                    exemptPack);
+            PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(*party));
+            return Leader::Travel::ApproachStop(leader, target, points, length, stop, blocker, unseenStop, exemptPack,
+                                                &group);
         }
 
-        // ROUTE_HARNESS_WALK_GUARD: the stop of a harness walk before the aggro reach of the idle mobs on its route
-        // (ApproachStop around the leader, or around exemptPack, whose own pack is exempt). True: `point` is the stop,
-        // `held`: the leader stands there already.
+        using Leader::Travel::HarnessWalkStop;  // [lead107] RouteSteer.h
+
+        // [lead107] the harness's Party form of the leader's HarnessWalkStop (through the group view)
         bool HarnessWalkStop(Player* leader, Movement::PointsArray const& points, float length, Creature* exemptPack,
-                             G3D::Vector3& point, Creature*& blocker, bool& held, Party const* party = nullptr)
+                             G3D::Vector3& point, Creature*& blocker, bool& held, Party const* party)
         {
-            G3D::Vector3 stop;
-            bool unseenStop = false;
-            blocker = nullptr;
-            held = false;
-            WorldObject* const centre = exemptPack ? static_cast<WorldObject*>(exemptPack) : leader;
-            if (!ApproachStop(leader, centre, points, length, stop, blocker, unseenStop, exemptPack, party) || !blocker)
-                return false;
-            G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
-            held = (stop - here).length() <= APPROACH_ARRIVED;
-            point = stop;
-            return true;
+            if (!party)
+                return Leader::Travel::HarnessWalkStop(leader, points, length, exemptPack, point, blocker, held);
+            PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(*party));
+            return Leader::Travel::HarnessWalkStop(leader, points, length, exemptPack, point, blocker, held, &group);
         }
 
-        std::unordered_map<uint64, uint32> harnessHoldLogMs;  // blocker -> last harness_hold_refused_pack, world thread
+        using Leader::Travel::harnessHoldLogMs;  // [lead107] RouteSteer.h
 
         using Leader::Travel::MechBridgeLifts;  // [lead107] RouteTargets.h
         using Leader::Travel::mechBridgeLifts;  // [lead107] RouteTargets.h
@@ -1688,329 +1019,80 @@ namespace TestHarness
         using Leader::Travel::SightStop;  // [lead107] RouteTargets.h
         using Leader::Travel::sightStops;  // [lead107] RouteTargets.h
 
-        // [pull_after_hold] User 2026-10-25 (scholo-h 153805, «тупят, излишне ждут»): every approach stop, guarantee
-        // hold and careful-pull refusal of a pack on the way or on the required route ends PULL_AFTER_HOLD_MS after
-        // the group stands fully ready (GroupFullyReady) at it: the deliberate pull - the blocker behind an openable
-        // closed door has its door opened first (a lattice Iron Gate, 15:42-15:44: no line of sight, nobody opened it,
-        // the 120 s idle event ended the stand), then the route blocker target (its sight pull, else its walk in) or
-        // the body pull - instead of the 45 s wait, the planner's stand guarantee or a skip. A patrol / overlap wait
-        // of the planner keeps its own short clock. Per leader, world thread.
-        constexpr bool PULL_AFTER_HOLD = true;
-        constexpr uint32 PULL_AFTER_HOLD_MS = 10 * IN_MILLISECONDS;
-        constexpr uint32 PULL_AFTER_HOLD_GATE_MS = 20 * IN_MILLISECONDS;  // the body pull's gate lets it through
+        using Leader::Travel::PULL_AFTER_HOLD;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_AFTER_HOLD_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_AFTER_HOLD_GATE_MS;  // [lead107] RouteSteer.h
         using Leader::Dungeon::DOOR_WALK_MS;  // [lead107] LeaderPlan.h (15 s)
 
-        struct HoldReady
-        {
-            ObjectGuid target;
-            uint32 sinceMs = 0;  // since when the group stands ready at this target (0: not ready)
-            Position at;         // where the leader stood when the clock began (a new target there keeps it)
-        };
-        std::unordered_map<ObjectGuid, HoldReady> holdReady;
+        using Leader::Travel::HoldReady;  // [lead107] RouteSteer.h
+        using Leader::Travel::holdReady;  // [lead107] RouteSteer.h
 
-        struct PullAfterHoldGate
-        {
-            ObjectGuid blocker;
-            uint32 untilMs = 0;
-        };
-        std::unordered_map<ObjectGuid, PullAfterHoldGate> pullAfterHoldGates;  // by leader
+        using Leader::Travel::PullAfterHoldGate;  // [lead107] RouteSteer.h
+        using Leader::Travel::pullAfterHoldGates;  // [lead107] RouteSteer.h
 
-        bool PullAfterHoldPasses(ObjectGuid leader, ObjectGuid blocker)
-        {
-            auto const found = pullAfterHoldGates.find(leader);
-            return found != pullAfterHoldGates.end() && found->second.blocker == blocker &&
-                   int32(found->second.untilMs - getMSTime()) > 0;
-        }
+        using Leader::Travel::PullAfterHoldPasses;  // [lead107] RouteSteer.h
 
-        // [b33_bodypull] The classes of a planner refusal (CarefulPlanVerdict's why, ChooseTargetActions.cpp) the
-        // harness reads before a walk-in. A READINESS refusal (the healer not with the tank / the group, a member
-        // missing, dead, sitting below its line or buffing, not topped up) is a wait the walk-in can never end: no
-        // pull_after_hold clock nor the planner's time-out overrides it, the group holds. An OVER-CAP refusal (the
-        // pack does not fit, over the cap, a split search still running) is the planner's own [b32_smpull] split /
-        // guarantee to take: the harness never walks the whole group into it (strat-h 20261026-000434-5D-1: a 4-6 mob
-        // Ravaged Cadaver blocker the planner held as "does not fit" chained to 17 on the walk-in). Only the rest -
-        // the stuck route / no plan from range class ("no pull of X from range ... the route's body pull decides",
-        // "given up for range", a within-cap pack the stand's guarantee takes) - is the harness's walk-in to make.
-        bool RefusalIsReadiness(std::string const& why)
-        {
-            static char const* const READINESS[] = {
-                "not topped up", "not all here", "not with the group", "not with the tank", "from the tank",
-                "rests below its line", " buffing", "the group rests or gathers", "group not ready",
-                "a group member still fights", "the tank rests", "waits for ", "resurrection sickness", " dead",
-                "no dps with the group", "% mana", "% health"};
-            for (char const* const part : READINESS)
-                if (why.find(part) != std::string::npos)
-                    return true;
-            return false;
-        }
+        using Leader::Travel::RefusalIsReadiness;  // [lead107] RouteSteer.h
 
         using Leader::Travel::RefusalIsOverCap;  // [lead107] RouteEvents.h
 
-        // [pull_after_hold] (4) the walk to a closed door that opens by use, between the leader and a blocker it
-        // cannot see: kept over the ticks until it is open (the stop would walk the leader back).
-        struct DoorWalk
-        {
-            ObjectGuid door;
-            ObjectGuid blocker;
-            G3D::Vector3 point;
-            uint32 untilMs = 0;
-        };
-        std::unordered_map<ObjectGuid, DoorWalk> doorWalks;  // by leader
+        using Leader::Travel::DoorWalk;  // [lead107] RouteSteer.h
+        using Leader::Travel::doorWalks;  // [lead107] RouteSteer.h
 
-        // [body_pull_via_planner] plan29 follow-up 4 (build 29: harness body pulls / walks were 13 % of all pulls,
-        // and the unplanned rest died five times as often as the planned pulls): before the harness walks the
-        // leader into a trash pack, the tank's planner is asked to take it (GuaranteeRequest: its guarantee pull of
-        // the pack as it stands, at range when it has a pull, with its readiness check) for BODY_PULL_PLANNER_MS;
-        // only then the walk in. Bosses keep their body pull (the planner never picks a boss). Per leader.
-        constexpr bool BODY_PULL_VIA_PLANNER = true;
-        constexpr uint32 BODY_PULL_PLANNER_MS = 8 * IN_MILLISECONDS;
-        struct PlannerAsk
-        {
-            ObjectGuid target;
-            uint32 sinceMs = 0;
-        };
-        std::unordered_map<ObjectGuid, PlannerAsk> plannerAsks;
+        using Leader::Travel::BODY_PULL_VIA_PLANNER;  // [lead107] RouteSteer.h
+        using Leader::Travel::BODY_PULL_PLANNER_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PlannerAsk;  // [lead107] RouteSteer.h
+        using Leader::Travel::plannerAsks;  // [lead107] RouteSteer.h
 
-        // [b33_aoepull] A required route blocker the planner called hopeless (its split search exhausted) is held
-        // AOE_PULL_ASK_MS for the planner's aoe_pull_plan (AoePull::MarkRequired / Planned, ChooseTargetActions.cpp)
-        // before the dead end: mgt-h 20261026-000434-mgt-h-5G-16 (Sunblade Mage Guard before Delrissa, "with it 21
-        // mobs, over 18 (no split in 19 searches)") and strat-n 20261026-000434-strat-n-5A-2 (King's Square) stood
-        // refused on both sides - the planner's hopeless verdict and the harness's refused walk - until stopped. While
-        // the planner's issued aoe_pull_plan is fresh the route's walk-in holds AOE_PULL_WALK_MS (the tank pulls to its
-        // stack spot itself); only an issued plan the tank has not started by then is walked in (via the planner ask).
-        constexpr uint32 AOE_PULL_ASK_MS = 10 * IN_MILLISECONDS;
-        constexpr uint32 AOE_PULL_ASK_RESET_MS = 5 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 AOE_PULL_WALK_MS = 30 * IN_MILLISECONDS;
-        std::unordered_map<ObjectGuid, PlannerAsk> aoePullAsks;  // by leader
+        using Leader::Travel::AOE_PULL_ASK_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::AOE_PULL_ASK_RESET_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::AOE_PULL_WALK_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::aoePullAsks;  // [lead107] RouteSteer.h
 
-        bool AoePullAskRuns(ObjectGuid leaderGuid, ObjectGuid blocker, uint32 now)
-        {
-            PlannerAsk& ask = aoePullAsks[leaderGuid];
-            if (ask.target != blocker || !ask.sinceMs || getMSTimeDiff(ask.sinceMs, now) > AOE_PULL_ASK_RESET_MS)
-            {
-                ask.target = blocker;
-                ask.sinceMs = now ? now : 1;
-            }
-            return getMSTimeDiff(ask.sinceMs, now) < AOE_PULL_ASK_MS;
-        }
+        using Leader::Travel::AoePullAskRuns;  // [lead107] RouteSteer.h
 
-        // True while the planner still has its time (the caller holds the leader); `first`: the ask began now.
-        bool AskPlannerFirst(ObjectGuid leaderGuid, Creature* target, uint32 now, bool& first)
-        {
-            first = false;
-            PlannerAsk& ask = plannerAsks[leaderGuid];
-            if (ask.target != target->GetGUID() || !ask.sinceMs ||
-                getMSTimeDiff(ask.sinceMs, now) > 4 * BODY_PULL_PLANNER_MS)
-            {
-                ask.target = target->GetGUID();
-                ask.sinceMs = now ? now : 1;
-                first = true;
-            }
-            if (getMSTimeDiff(ask.sinceMs, now) >= BODY_PULL_PLANNER_MS)
-                return false;
-            GuaranteeRequest::Set(leaderGuid, target->GetGUID(), false);
-            return true;
-        }
+        using Leader::Travel::AskPlannerFirst;  // [lead107] RouteSteer.h
 
-        // [behind_root_pull] the skipped pack a walk stopped at is retargeted at most this often (world thread)
-        constexpr bool BEHIND_ROOT_PULL = true;
-        constexpr uint32 BEHIND_ROOT_TRIES = 2;
-        constexpr uint32 BEHIND_ROOT_WINDOW_MS = 5 * MINUTE * IN_MILLISECONDS;
-        struct BehindRootTry
-        {
-            uint32 firstMs = 0;
-            uint32 count = 0;
-        };
-        std::unordered_map<ObjectGuid, BehindRootTry> behindRootTries;
+        using Leader::Travel::BEHIND_ROOT_PULL;  // [lead107] RouteSteer.h
+        using Leader::Travel::BEHIND_ROOT_TRIES;  // [lead107] RouteSteer.h
+        using Leader::Travel::BEHIND_ROOT_WINDOW_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::BehindRootTry;  // [lead107] RouteSteer.h
+        using Leader::Travel::behindRootTries;  // [lead107] RouteSteer.h
 
-        // [pull_estimate_vs_actual] the last PullEstimate result the leader's JSONL has
-        std::unordered_map<ObjectGuid, uint32> pullEstimateSeen;
+        using Leader::Travel::pullEstimateSeen;  // [lead107] RouteSteer.h
 
-        // The first point of the route ahead (from the leader, up to APPROACH_SIGHT_PATH yd) from which the tank's eye
-        // line reaches the blocker on a pullable height (TANK_PULL_HEIGHT) - the corner the stop lay before. A point
-        // inside the real aggro range of the blocker is fine only for a pack the tank's planner accepted (keepOut
-        // empty): walking into its sight is the pull. keepOut (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED): the idle mobs of the
-        // target's and the blocker's packs while no plan for them is accepted - a point inside the aggro reach
-        // (AggroReach, the margin included) of one that sees it is a body pull of a pack the planner did not take:
-        // the search ends there, heldAtEdge (the route only goes deeper from there). For a blocker outside the
-        // target's pack, no point from which the target sees the leader inside its real aggro range (one pack at a
-        // time). At most APPROACH_SIGHT_TRIES line-of-sight tests.
-        bool FindSightPoint(Player* leader, Creature* blocker, Creature* target, bool ownPack,
-                            Movement::PointsArray const& points, std::vector<Creature*> const& keepOut,
-                            G3D::Vector3& sight, bool& heldAtEdge)
-        {
-            heldAtEdge = false;
-            G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
-            float const targetAggro = RealAggroRange(target, leader);
-            uint32 tries = 0;
-            uint32 keepOutTries = 0;
-            float walked = 0.0f;
-            for (size_t index = 1; index < points.size() && walked < APPROACH_SIGHT_PATH; ++index)
-            {
-                G3D::Vector3 const from = index == 1 ? here : points[index - 1];
-                G3D::Vector3 const segment = points[index] - from;
-                float const segmentLength = segment.length();
-                if (segmentLength <= 0.0f)
-                    continue;
+        using Leader::Travel::FindSightPoint;  // [lead107] RouteSteer.h
 
-                float along = 0.0f;
-                while (along < segmentLength && walked + along < APPROACH_SIGHT_PATH)
-                {
-                    along = std::min(along + APPROACH_SAMPLE_STEP, segmentLength);
-                    G3D::Vector3 const point = from + segment * (along / segmentLength);
-                    // Every point of the walk, not only the one that shows the blocker: the way there passes them. As
-                    // in ApproachStop, a leader standing in a mob's margin already is held only by a step closer to
-                    // it (or one into its real aggro range).
-                    for (Creature* mob : keepOut)
-                    {
-                        // [sight-arc] the real aggro distance + the shared small margin (was AggroReach: +5 yd)
-                        float const real = RealAggroRange(mob, leader);
-                        float const holds = std::max(
-                            std::min(real + MovementAction::SIGHT_IDLE_AGGRO_MARGIN, leader->GetExactDist(mob)), real);
-                        bool zGated = false;  // [b34_petramp] the Z gate keeps only the tank idle there
-                        if (!AggroesAtPoint(mob, leader, point, holds, false, &zGated) &&
-                            !(ROUTE_STOP_IGNORES_Z_GATE && zGated))
-                            continue;
-                        // Out of tests: not shown to be safe, the leader holds.
-                        if (keepOutTries++ >= APPROACH_SIGHT_KEEP_OUT_TRIES || SeesFromPoint(leader, mob, point))
-                        {
-                            heldAtEdge = true;
-                            return false;
-                        }
-                    }
-                    if (std::fabs(point.z - blocker->GetPositionZ()) > TANK_PULL_HEIGHT)
-                        continue;
-                    if (tries++ >= APPROACH_SIGHT_TRIES)
-                        return false;
-                    if (!SeesFromPoint(leader, blocker, point))
-                        continue;
-                    if (!ownPack && AggroesAtPoint(target, leader, point, targetAggro, false))
-                    {
-                        if (tries++ >= APPROACH_SIGHT_TRIES)
-                            return false;
-                        if (SeesFromPoint(leader, target, point))
-                            return false;  // the target's sight comes first: no way to the blocker alone
-                    }
-                    sight = point;
-                    return true;
-                }
-                walked += segmentLength;
-            }
-            return false;
-        }
-
-        // What the tank's careful planner said about a pack, as far as the harness reads it without the bot's AI
-        // context (no cross-thread GetValue): the group's pre-pull crowd control plan (PrePullCc, behind its lock)
-        // names the tank's planned pack - accepted, or refused as it stands (`heavy`, also a fallback plan: no
-        // accepted one) - and the harness's own count of the pack's careful refusals (the PULL_WAIT_MS skips).
-        // The planner's published verdict (CarefulPlanVerdict) is read first. Unknown otherwise: approach to sight
-        // treats it as "not accepted" and keeps out of the pack's reach.
-        enum class PlanVerdict
-        {
-            Unknown,
-            Accepted,
-            Refused
-        };
+        using Leader::Travel::PlanVerdict;  // [lead107] RouteSteer.h
 
         PlanVerdict TankPlanVerdict(Party const& party, Player* leader, std::vector<Creature*> const& pack)
         {
-            // The planner's own published verdict (CarefulPlanVerdict, fresh for a few seconds) on any mob of the
-            // pack comes first; a refusal of one of them is a refusal of the pack.
-            bool anyAccepted = false;
-            for (Creature* mob : pack)
-            {
-                bool accepted = false;
-                uint32 mobs = 0;
-                if (!PartyVerdict(party, mob->GetGUID(), accepted, mobs))  // [lead5]
-                    continue;
-                if (!accepted)
-                    return PlanVerdict::Refused;
-                anyAccepted = true;
-            }
-            if (anyAccepted)
-                return PlanVerdict::Accepted;
-
-            for (Creature* mob : pack)
-            {
-                auto const refused = party.carefulRefused.find(mob->GetGUID());
-                if (refused != party.carefulRefused.end() && refused->second > 0)
-                    return PlanVerdict::Refused;
-            }
-            PrePullCc::Plan plan;
-            if (!PrePullCc::Get(leader, plan) || plan.tank != leader->GetGUID() || plan.pulledMs)
-                return PlanVerdict::Unknown;
-            for (Creature* mob : pack)
-                if (plan.pullTarget == mob->GetGUID() ||
-                    std::find(plan.pack.begin(), plan.pack.end(), mob->GetGUID()) != plan.pack.end())
-                    return plan.heavy ? PlanVerdict::Refused : PlanVerdict::Accepted;
-            return PlanVerdict::Unknown;
+            // [lead107] the leader's (RouteSteer.h)
+            PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(party));
+            return Leader::Travel::TankPlanVerdict(group, leader, pack);
         }
 
         // The idle mobs of the target's pack and of the blocker's (PackMobCheck, PACK_RADIUS around each), bosses
         // left out (their body pull is the boss pull): what approach to sight keeps out of while no plan is accepted.
         std::vector<Creature*> SightKeepOutPack(Party const& party, Player* leader, Creature* target, Creature* blocker)
         {
-            std::vector<Creature*> result;
-            for (Creature* center : {target, blocker})
-            {
-                std::list<Creature*> pack;
-                PackMobCheck check{leader, center};
-                Acore::CreatureListSearcher<PackMobCheck> searcher(center, pack, check);
-                Cell::VisitObjects(center, searcher, PACK_RADIUS);
-                if (center->IsAlive() && !center->IsInCombat() &&
-                    std::find(pack.begin(), pack.end(), center) == pack.end())
-                    pack.push_back(center);
-                for (Creature* mob : pack)
-                    if (!party.bossCreatures.count(mob->GetGUID()) && !mob->IsDungeonBoss() &&
-                        std::find(result.begin(), result.end(), mob) == result.end())
-                        result.push_back(mob);
-            }
-            return result;
+            // [lead107] the leader's (RouteSteer.h)
+            PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(party));
+            return Leader::Travel::SightKeepOutPack(group, leader, target, blocker);
         }
 
-        // The edge hold's give-way (SIGHT_UNKNOWN_HOLD_MS): the target's own pack may be walked into sight of now, no
-        // other one. BRS heroic 22:10:30: the give-way cleared the whole keep-out, the sight point 15 yd on lay in the
-        // Smolderthorn and Firebrand packs' aggro - 26 attackers, wipe. The idle hostiles within
-        // SIGHT_GIVE_WAY_SCAN of the leader outside the target's pack (PACK_RADIUS around it), bosses included (a
-        // neighbour boss is a boss pull nobody chose); FindSightPoint keeps every point out of their aggro
-        // (IdleAggroBlocker) as it does for a refused pack.
-        constexpr float SIGHT_GIVE_WAY_SCAN = 50.0f;  // APPROACH_SIGHT_PATH plus the widest idle aggro reach
+        using Leader::Travel::SIGHT_GIVE_WAY_SCAN;  // [lead107] RouteSteer.h
 
-        struct OtherPackMobCheck
-        {
-            Player* leader;
-            Creature* target;
-            bool operator()(Creature* creature) const
-            {
-                return creature->IsAlive() && !creature->IsInCombat() && !creature->IsCritter() &&
-                       !creature->IsCivilian() && creature->IsHostileTo(leader) &&
-                       creature->GetExactDist(target) > PACK_RADIUS;
-            }
-        };
+        using Leader::Travel::OtherPackMobCheck;  // [lead107] RouteSteer.h
 
-        std::vector<Creature*> SightKeepOutOthers(Player* leader, Creature* target)
-        {
-            std::list<Creature*> mobs;
-            OtherPackMobCheck check{leader, target};
-            Acore::CreatureListSearcher<OtherPackMobCheck> searcher(leader, mobs, check);
-            Cell::VisitObjects(leader, searcher, SIGHT_GIVE_WAY_SCAN);
-            return std::vector<Creature*>(mobs.begin(), mobs.end());
-        }
+        using Leader::Travel::SightKeepOutOthers;  // [lead107] RouteSteer.h
 
-        // A leader held at the edge by approach to sight: the search is not run again for SIGHT_HOLD_RECHECK_MS (it
-        // costs up to APPROACH_SIGHT_TRIES + APPROACH_SIGHT_KEEP_OUT_TRIES line-of-sight tests), the line is logged
-        // once per SIGHT_HOLD_LOG_MS. Per leader, for one target and blocker. The search runs only with the leader at
-        // its stop; 2.5 s, not 5 s: Utgarde Keep heroic 22:26:01 held at the edge, 22:26:11 skip at once, the pull at
-        // 22:26:16 - two rechecks of idling the user noticed (*.bak_doorgate: 5 s).
-        constexpr uint32 SIGHT_HOLD_RECHECK_MS = 2500;
-        constexpr uint32 SIGHT_HOLD_LOG_MS = 10 * IN_MILLISECONDS;
+        using Leader::Travel::SIGHT_HOLD_RECHECK_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::SIGHT_HOLD_LOG_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::SightHold;  // [lead107] RouteTargets.h
         using Leader::Travel::sightHolds;  // [lead107] RouteTargets.h
 
-        // ROUTE_BOSS_PULL_IMMEDIATE: a boss the group stands ready for (GroupFullyReady, the boss buffs done, no
-        // crowd control hold of the tank's) is body-pulled after this, not after PULL_WAIT_MS: the tank's careful
-        // planner never picks a boss ("[pull hold] no aggressive target"), the wait was always spent for nothing.
-        constexpr uint32 BOSS_PULL_READY_MS = 3 * IN_MILLISECONDS;
+        using Leader::Travel::BOSS_PULL_READY_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::BossReady;  // [lead107] RouteTargets.h
         using Leader::Travel::bossReady;  // [lead107] RouteTargets.h
 
@@ -2116,360 +1198,39 @@ namespace TestHarness
         using Leader::Travel::SmartCallForHelpRange;  // [lead107] RouteTargets.h
 
 
-        // [pull_option] The tank's two ways to pull a pack, cheapest first (user 2026-10-25, MgT heroic Selin room):
-        // (1) the sight pull - a spot on the arc round the pack (MovementAction::SightArcCandidates, the sight-arc
-        // search the ranged / healers use) that sees it within the pull spell's range and stands outside every idle
-        // mob's real aggro distance (GetAggroRange + combat distance + SIGHT_IDLE_AGGRO_MARGIN), with a walk there
-        // that stays out of them too; (2) the body pull - the walk into the pack. For both the mobs they touch are
-        // counted: every idle mob whose real aggro distance the walk or the spot enters (and that sees it), the pack
-        // itself, and their links (formation, the core's call for assistance: same faction within the assistance
-        // radius, in sight) - a boss among them is a boss pull nobody chose (Selin and her Wretched on AzerothCore).
-        constexpr float PULL_SIGHT_RANGE = 30.0f;          // Hand of Reckoning, Avenger's Shield, Shoot / Throw
-        constexpr float PULL_SIGHT_RANGE_SLACK = 1.5f;     // the spot stands this far inside it
-        constexpr uint32 PULL_SIGHT_MAX_LOS = 120;         // target sight tests of the arc candidates
-        constexpr uint32 PULL_SIGHT_MAX_PATHS = 8;         // candidates that get a path
-        constexpr float PULL_SIGHT_WALK_RATIO = 2.5f;      // a walk longer than this x straight + extra is a detour
-        constexpr float PULL_SIGHT_WALK_EXTRA = 25.0f;
-        constexpr float PULL_SIGHT_PATH_END = 2.0f;        // the walk ends this close to its spot
-        constexpr float PULL_TOUCH_STEP = 1.5f;            // the walk is tested every this many yards
-        constexpr float PULL_IDLE_SCAN = 60.0f;            // idle mobs looked at, round the leader and the pack
-        constexpr uint32 PULL_OPTION_MOB_CAP = 6;          // a pull that touches more is "over the cap"
+        using Leader::Travel::PULL_SIGHT_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_RANGE_SLACK;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_MAX_LOS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_MAX_PATHS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_WALK_RATIO;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_WALK_EXTRA;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_PATH_END;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_TOUCH_STEP;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_IDLE_SCAN;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_OPTION_MOB_CAP;  // [lead107] RouteSteer.h
 
-        struct PullTouch
-        {
-            std::vector<Creature*> mobs;  // every mob the option brings
-            uint32 extra = 0;             // of them, outside the intended pack (and its links)
-            bool boss = false;            // a boss among them
-            std::string bossName;
-            std::string firstExtra;       // the first one outside the intended pack (for the log)
-        };
+        using Leader::Travel::PullTouch;  // [lead107] RouteSteer.h
 
-        // The idle hostiles (IdleAggroCheck) within PULL_IDLE_SCAN of the leader or of the pack's mob.
-        std::vector<Creature*> PullIdleMobs(Player* leader, Creature* target)
-        {
-            std::vector<Creature*> result;
-            IdleAggroCheck check{leader};
-            for (WorldObject* centre : {static_cast<WorldObject*>(leader), static_cast<WorldObject*>(target)})
-            {
-                std::list<Creature*> found;
-                Acore::CreatureListSearcher<IdleAggroCheck> searcher(centre, found, check);
-                Cell::VisitObjects(centre, searcher, PULL_IDLE_SCAN);
-                for (Creature* mob : found)
-                    if (std::find(result.begin(), result.end(), mob) == result.end())
-                        result.push_back(mob);
-            }
-            if (check(target) && std::find(result.begin(), result.end(), target) == result.end())
-                result.push_back(target);
-            return result;
-        }
+        using Leader::Travel::PullIdleMobs;  // [lead107] RouteSteer.h
 
-        // The pack itself and its links: the target's pack (PACK_RADIUS), its formation, and what answers their
-        // call for assistance (CanAnswerAssist with the faction test, within the assistance radius of a touched mob
-        // plus ASSIST_LINK_MARGIN, in its sight), grown until nothing new comes.
-        // build 27 (20261025-150737-mgt-h-5A-14): the assistance test had ASSIST_LINK_MARGIN on top (13 yd + both
-        // sizes) and linked Selin's side packs to the centre pair (15.1 yd apart; the core's 10 yd + sizes = 13.3 does
-        // not), so the "own pack" grew to the pair and every arc spot was "inside the pack's aggro". The core's own
-        // radius now (AnyAssistCreatureInRangeCheck: IsWithinDistInMap, sizes included), and the own pack (`assist`
-        // false: pack radius and formation) is told apart from the links it may call (`assist` true).
-        void PullTouchClosure(Player* leader, std::vector<Creature*> const& idle, std::vector<Creature*>& touched,
-                              bool withAssist = true)
-        {
-            float const assist =
-                withAssist ? sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS) : 0.0f;
-            for (size_t index = 0; index < touched.size() && touched.size() < 60; ++index)
-            {
-                Creature* source = touched[index];
-                for (Creature* other : idle)
-                {
-                    if (other == source || std::find(touched.begin(), touched.end(), other) != touched.end())
-                        continue;
-                    bool const formation = source->GetFormation() && other->GetFormation() == source->GetFormation();
-                    bool const pack = other->GetExactDist(source) <= PACK_RADIUS && other->IsHostileTo(leader);
-                    bool const assists = assist > 0.0f && CanAnswerAssist(other, source, leader, true) &&
-                                         source->IsWithinDistInMap(other, assist) &&
-                                         source->IsWithinLOSInMap(other);
-                    if (formation || pack || assists)
-                        touched.push_back(other);
-                }
-            }
-        }
+        using Leader::Travel::PullTouchClosure;  // [lead107] RouteSteer.h
 
-        // The mobs a pull of `target` brings when the leader walks `walk` (the spot at its end): the target and its
-        // links, every idle mob whose real aggro distance (+ SIGHT_IDLE_AGGRO_MARGIN) a walk point enters and that
-        // sees the point (AggroesAtPoint: the core's Z gate, 3D range, the eye line), and their links. `intended`
-        // gets the target with its links alone; `isBoss` tells a boss.
-        PullTouch PullTouches(Player* leader, Creature* target, Movement::PointsArray const& walk,
-                              std::vector<Creature*> const& idle, std::function<bool(Creature*)> const& isBoss,
-                              std::vector<Creature*>& intended)
-        {
-            intended.clear();
-            intended.push_back(target);
-            PullTouchClosure(leader, idle, intended, false);
+        using Leader::Travel::PullTouches;  // [lead107] RouteSteer.h
 
-            PullTouch result;
-            result.mobs = intended;
-            PullTouchClosure(leader, idle, result.mobs);  // what the pack itself calls
-            std::vector<Creature*> woken;
-            for (size_t i = 1; i < walk.size(); ++i)
-            {
-                G3D::Vector3 const from = walk[i - 1];
-                G3D::Vector3 const segment = walk[i] - from;
-                float const length = segment.length();
-                uint32 const steps = std::max<uint32>(1, uint32(std::ceil(length / PULL_TOUCH_STEP)));
-                for (uint32 step = 0; step <= steps; ++step)
-                {
-                    G3D::Vector3 const point = from + segment * (float(step) / float(steps));
-                    for (Creature* mob : idle)
-                    {
-                        if (std::find(result.mobs.begin(), result.mobs.end(), mob) != result.mobs.end() ||
-                            std::find(woken.begin(), woken.end(), mob) != woken.end())
-                            continue;
-                        if (AggroesAtPoint(mob, leader, point,
-                                           RealAggroRange(mob, leader) + MovementAction::SIGHT_IDLE_AGGRO_MARGIN,
-                                           true))
-                            woken.push_back(mob);
-                    }
-                }
-            }
-            if (!woken.empty())
-            {
-                PullTouchClosure(leader, idle, woken);
-                for (Creature* mob : woken)
-                    if (std::find(result.mobs.begin(), result.mobs.end(), mob) == result.mobs.end())
-                        result.mobs.push_back(mob);
-            }
-            for (Creature* mob : result.mobs)
-            {
-                if (std::find(intended.begin(), intended.end(), mob) == intended.end())
-                {
-                    if (!result.extra)
-                        result.firstExtra = mob->GetName();
-                    ++result.extra;
-                }
-                if (!result.boss && isBoss(mob))
-                {
-                    result.boss = true;
-                    result.bossName = mob->GetName();
-                }
-            }
-            return result;
-        }
+        using Leader::Travel::PullSightCandidate;  // [lead107] RouteSteer.h
 
-        struct PullSightCandidate
-        {
-            G3D::Vector3 at;
-            float straight = 0.0f;
-            float radius = 0.0f;
-            float angleOffDeg = 0.0f;
-            float walk = -1.0f;  // the path's length (-1: no path searched / none)
-            std::string verdict;  // "ok" or why not
-            PullTouch touch;
-        };
+        using Leader::Travel::PullSightSearch;  // [lead107] RouteSteer.h
 
-        struct PullSightSearch
-        {
-            bool found = false;
-            PullSightCandidate best;           // the chosen sight spot (found)
-            bool hasFallback = false;          // a pathable spot that sees the pack but touches more
-            PullSightCandidate fallback;       // the least dangerous of them (no boss first, then the fewest mobs)
-            uint32 candidates = 0;             // arc spots on the floor that see the pack
-            uint32 inOtherAggro = 0;
-            uint32 inOwnAggro = 0;
-            uint32 noPath = 0;
-            uint32 touchesMore = 0;
-            uint32 touchesBoss = 0;
-            float minRadius = 0.0f;
-            float maxRadius = 0.0f;
-            float margin = 0.0f;
-            std::vector<PullSightCandidate> top;  // the first three looked at, with their verdicts
-        };
+        using Leader::Travel::PullTouchBetter;  // [lead107] RouteSteer.h
 
-        bool PullTouchBetter(PullTouch const& a, PullTouch const& b)
-        {
-            if (a.boss != b.boss)
-                return !a.boss;
-            return a.mobs.size() < b.mobs.size();
-        }
+        using Leader::Travel::PULL_SIGHT_TIGHT_MARGIN;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_SIGHT_MAX_CENTRES;  // [lead107] RouteSteer.h
 
-        // [pull_option] (1) the sight pull spot for `target` (see above). The candidates nearest to the leader first;
-        // of the clean ones (the spot and the walk touch the intended pack alone, no boss) the shortest walk.
-        // A tight second pass: the core's aggro test is an exact 3D distance (Creature::CanStartAttack), so half a yard
-        // is still safe; Selin's room on heroic (real aggro 21) has its side-pack spots only there (PATCH_selin.md).
-        constexpr float PULL_SIGHT_TIGHT_MARGIN = 0.5f;
-        constexpr size_t PULL_SIGHT_MAX_CENTRES = 6;  // pack members the arc is searched round
+        using Leader::Travel::FindPullSightSpotWith;  // [lead107] RouteSteer.h
 
-        void FindPullSightSpotWith(Player* leader, Creature* target, std::vector<Creature*> const& idle,
-                                   std::function<bool(Creature*)> const& isBoss, float margin, PullSightSearch& out)
-        {
-            out = PullSightSearch();
-            out.margin = margin;
-            out.minRadius = RealAggroRange(target, leader) + margin;
-            out.maxRadius = PULL_SIGHT_RANGE - PULL_SIGHT_RANGE_SLACK;
-            if (out.minRadius > out.maxRadius)
-                out.minRadius = out.maxRadius;
+        using Leader::Travel::FindPullSightSpot;  // [lead107] RouteSteer.h
 
-            // The own pack: the target, its pack radius and formation - not the packs its call may bring (those are
-            // touched mobs, counted by PullTouches).
-            std::vector<Creature*> intended;
-            intended.push_back(target);
-            PullTouchClosure(leader, idle, intended, false);
-
-            // The arc round every member of the pack (the nearest to the leader first): a spot must stay outside
-            // the aggro of all of them, and any member it sees within the pull range is the one to pull. Round the
-            // target alone, every ring lay inside a neighbour member's aggro (build 27: 16-27 of 16-27 "inOwnAggro").
-            std::vector<Creature*> centres = intended;
-            std::sort(centres.begin(), centres.end(), [leader](Creature* a, Creature* b)
-                      { return leader->GetExactDist(a) < leader->GetExactDist(b); });
-            if (centres.size() > PULL_SIGHT_MAX_CENTRES)
-                centres.resize(PULL_SIGHT_MAX_CENTRES);
-            uint32 const losPerCentre = std::max<uint32>(12, PULL_SIGHT_MAX_LOS / uint32(centres.size()));
-            std::vector<MovementAction::SightArcCandidate> spots;
-            for (Creature* centre : centres)
-            {
-                float const minRadius = std::min(RealAggroRange(centre, leader) + margin, out.maxRadius);
-                for (MovementAction::SightArcCandidate const& spot : MovementAction::SightArcCandidates(
-                         leader, centre, minRadius, out.maxRadius, TANK_PULL_HEIGHT, losPerCentre))
-                {
-                    bool const duplicate = std::any_of(spots.begin(), spots.end(), [&spot](auto const& other)
-                                                       { return std::fabs(other.x - spot.x) < 0.5f &&
-                                                                std::fabs(other.y - spot.y) < 0.5f; });
-                    if (!duplicate)
-                        spots.push_back(spot);
-                }
-            }
-            std::sort(spots.begin(), spots.end(),
-                      [](auto const& a, auto const& b) { return a.straight < b.straight; });
-            out.candidates = uint32(spots.size());
-            uint32 paths = 0;
-            auto const note = [&out](PullSightCandidate const& candidate)
-            {
-                if (out.top.size() < 3)
-                    out.top.push_back(candidate);
-            };
-            for (MovementAction::SightArcCandidate const& spot : spots)
-            {
-                PullSightCandidate candidate;
-                candidate.at = G3D::Vector3(spot.x, spot.y, spot.z);
-                candidate.straight = spot.straight;
-                candidate.radius = spot.radius;
-                candidate.angleOffDeg = spot.angleOffDeg;
-                // A walk is never shorter than the straight line: nothing farther beats the best one.
-                if (out.found && candidate.straight >= out.best.walk)
-                    break;
-
-                // The spot itself: inside the pack's own aggro distance it is a body pull, not a sight pull;
-                // inside another idle mob's (that sees it) it pulls that one.
-                Creature* own = nullptr;
-                for (Creature* mob : intended)
-                    if (AggroesAtPoint(mob, leader, candidate.at, RealAggroRange(mob, leader) + margin, false))
-                    {
-                        own = mob;
-                        break;
-                    }
-                if (own)
-                {
-                    ++out.inOwnAggro;
-                    candidate.verdict = "inside the pack's aggro (" + own->GetName() + ")";
-                    note(candidate);
-                    continue;
-                }
-                Creature* other = nullptr;
-                for (Creature* mob : idle)
-                    if (std::find(intended.begin(), intended.end(), mob) == intended.end() &&
-                        AggroesAtPoint(mob, leader, candidate.at, RealAggroRange(mob, leader) + margin, true))
-                    {
-                        other = mob;
-                        break;
-                    }
-                if (other)
-                {
-                    ++out.inOtherAggro;
-                    candidate.verdict = Acore::StringFormat("in the aggro of idle {} ({:.1f} yd of {:.1f})",
-                                                            other->GetName(),
-                                                            other->GetExactDist(candidate.at.x, candidate.at.y,
-                                                                                candidate.at.z),
-                                                            RealAggroRange(other, leader) + margin);
-                    note(candidate);
-                    continue;
-                }
-
-                if (paths >= PULL_SIGHT_MAX_PATHS)
-                    break;
-                ++paths;
-                PathResult const path = RoutePath(leader, candidate.at.x, candidate.at.y, candidate.at.z);
-                if (!path.reachable || path.points.size() < 2 ||
-                    (path.end - candidate.at).length() > PULL_SIGHT_PATH_END ||
-                    path.length > std::max(PULL_SIGHT_WALK_RATIO * candidate.straight,
-                                           candidate.straight + PULL_SIGHT_WALK_EXTRA))
-                {
-                    ++out.noPath;
-                    candidate.verdict = path.reachable ? Acore::StringFormat("detour ({:.0f} yd walk)", path.length)
-                                                       : std::string("no path");
-                    note(candidate);
-                    continue;
-                }
-                candidate.walk = path.length;
-                Movement::PointsArray walk = path.points;
-                walk.push_back(candidate.at);
-                std::vector<Creature*> intendedHere;
-                candidate.touch = PullTouches(leader, target, walk, idle, isBoss, intendedHere);
-                if (candidate.touch.boss || candidate.touch.extra)
-                {
-                    if (candidate.touch.boss)
-                        ++out.touchesBoss;
-                    else
-                        ++out.touchesMore;
-                    candidate.verdict =
-                        candidate.touch.boss
-                            ? "touches boss " + candidate.touch.bossName
-                            : Acore::StringFormat("the walk touches {} more ({})", candidate.touch.extra,
-                                                  candidate.touch.firstExtra);
-                    if (!out.hasFallback || PullTouchBetter(candidate.touch, out.fallback.touch))
-                    {
-                        out.hasFallback = true;
-                        out.fallback = candidate;
-                    }
-                    note(candidate);
-                    continue;
-                }
-
-                candidate.verdict = "ok";
-                note(candidate);
-                if (!out.found || candidate.walk < out.best.walk)
-                {
-                    out.found = true;
-                    out.best = candidate;
-                }
-            }
-        }
-
-        // The usual margin first, then the tight one; the fallback (a spot that touches more) of either pass.
-        void FindPullSightSpot(Player* leader, Creature* target, std::vector<Creature*> const& idle,
-                               std::function<bool(Creature*)> const& isBoss, PullSightSearch& out)
-        {
-            FindPullSightSpotWith(leader, target, idle, isBoss, MovementAction::SIGHT_IDLE_AGGRO_MARGIN, out);
-            if (out.found)
-                return;
-            PullSightSearch tight;
-            FindPullSightSpotWith(leader, target, idle, isBoss, PULL_SIGHT_TIGHT_MARGIN, tight);
-            if (tight.found || (tight.hasFallback && !out.hasFallback))
-                out = tight;
-        }
-
-        // The JSON of a search's candidates (sight_point_search / pull_option events).
-        std::string PullCandidatesJson(std::vector<PullSightCandidate> const& top)
-        {
-            JsonArray array;
-            for (PullSightCandidate const& candidate : top)
-                array.Raw(JsonObject()
-                              .Real("x", candidate.at.x).Real("y", candidate.at.y).Real("z", candidate.at.z)
-                              .Real("straight", candidate.straight).Real("radius", candidate.radius)
-                              .Real("angleOff", candidate.angleOffDeg).Real("walk", candidate.walk)
-                              .Num("mobs", int64(candidate.touch.mobs.size())).Bool("boss", candidate.touch.boss)
-                              .Str("verdict", candidate.verdict)
-                              .Build());
-            return array.Build();
-        }
+        using Leader::Travel::PullCandidatesJson;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ROUTE_BOSS_AREA_CLEAR;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_AREA_ENCOUNTER_ADDS;  // [lead107] RouteTargets.h
@@ -2480,10 +1241,8 @@ namespace TestHarness
         using Leader::Travel::bossAreaUnskips;  // [lead107] RouteTargets.h
         using Leader::Travel::bossAreaHoldLogMs;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_AREA_SCAN_RANGE;  // [lead107] RouteTargets.h
-        // [b33_mech2] A boss's body pull waits for his killable area trash (BossAreaBodyPullHold) at most this long in
-        // all, from its first hold; then it goes, logged "body pull: given up" (no deadlock on trash nothing pulls).
-        constexpr uint32 BOSS_AREA_BODY_PULL_HOLD_MS = 4 * MINUTE * IN_MILLISECONDS;
-        std::map<std::pair<uint32, ObjectGuid>, uint32> bossAreaBodyPullHoldMs;  // {party seq, boss} -> first hold
+        using Leader::Travel::BOSS_AREA_BODY_PULL_HOLD_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::bossAreaBodyPullHoldMs;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ROUTE_BOSS_FOOTPRINT;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_FOOTPRINT_PACK_MAX;  // [lead107] RouteTargets.h
@@ -2494,15 +1253,7 @@ namespace TestHarness
 
         using Leader::Travel::BossAreaTrashOf;  // [lead107] RouteTargets.h
 
-        // The next boss of the party's last route (Retarget's RouteSnapshot), nullptr when none is alive.
-        Creature* RouteNextBoss(uint32 seq, Map* map)
-        {
-            auto const found = routeSnapshots.find(seq);
-            if (!map || found == routeSnapshots.end() || found->second.nextBoss.IsEmpty())
-                return nullptr;
-            Creature* boss = map->GetCreature(found->second.nextBoss);
-            return boss && boss->IsAlive() ? boss : nullptr;
-        }
+        using Leader::Travel::RouteNextBoss;  // [lead107] RouteSteer.h
 
         using Leader::Travel::PatrolCrossesRoute;  // [lead107] RouteTargets.h
 
@@ -2534,10 +1285,8 @@ namespace TestHarness
         using Leader::Travel::ShutForGoodDoorDef;  // [lead107] RouteLegs.h
         using Leader::Travel::SHUT_FOR_GOOD_DOORS;  // [lead107] RouteLegs.h
 
-        // [b31_ubrs_door] Party::seq -> since when the leader's walk out of a closed area (AreaGateDef exit) holds at a
-        // door that stays shut for good (world thread only).
-        std::unordered_map<uint32, uint32> lockedInSince;
-        constexpr uint32 LOCKED_IN_FAIL_MS = 2 * MINUTE * IN_MILLISECONDS;
+        using Leader::Travel::lockedInSince;  // [lead107] RouteSteer.h
+        using Leader::Travel::LOCKED_IN_FAIL_MS;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ShutForGoodDoorSlot;  // [lead107] RouteLegs.h
 
@@ -2569,26 +1318,7 @@ namespace TestHarness
 
         using Leader::Travel::PendingGuardApproach;  // [lead107] RouteTargets.h
 
-        // [dmw-guard-body-pull] A living guard of a guarded door that is still closed (PendingDoorGuards).
-        bool IsPendingDoorGuard(Map* map, Creature const* creature)
-        {
-            if (!map || !creature)
-                return false;
-            for (GuardedDoorDef const* def : GuardedDoors(map->GetId()))
-            {
-                if (std::find(def->guardEntries.begin(), def->guardEntries.end(), creature->GetEntry()) ==
-                    def->guardEntries.end())
-                    continue;
-                for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
-                    if (go && go->isSpawned() && go->GetEntry() == def->doorEntry)
-                    {
-                        std::vector<Creature*> const guards = PendingDoorGuards(map, go);
-                        if (std::find(guards.begin(), guards.end(), creature) != guards.end())
-                            return true;
-                    }
-            }
-            return false;
-        }
+        using Leader::Travel::IsPendingDoorGuard;  // [lead107] RouteSteer.h
 
         using Leader::Travel::ChestOpeningSpell;  // [lead107] RouteEvents.h
 
@@ -2613,45 +1343,12 @@ namespace TestHarness
         using Leader::Travel::doorStopMemos;  // [lead107] RouteLegs.h
 
 
-        // The tank picks its next pull itself (AggressiveTargetValue: the nearest hostile in sight within 40 yd). A
-        // mob of a closed part is no pull for it either: such mobs near the tank are marked as careful-pull skips
-        // every tick (CarefulPullSkip keeps an entry 60 s, at most 32 per tank). Blackrock Spire, LBRS waves
-        // 2026-10-24: every target was LBRS trash, yet the tank walked from the Legionnaires' room into the UBRS
-        // Dragonspire Hall after a Blackhand niche it saw through the open Dragonspine Door.
-        constexpr float CLOSED_AREA_SKIP_RANGE = 60.0f;
-        constexpr size_t CLOSED_AREA_SKIP_MAX = 16;
+        using Leader::Travel::CLOSED_AREA_SKIP_RANGE;  // [lead107] RouteSteer.h
+        using Leader::Travel::CLOSED_AREA_SKIP_MAX;  // [lead107] RouteSteer.h
 
-        struct ClosedAreaMobCheck
-        {
-            Player* tank;
-            std::vector<AreaGateDef const*> const& gates;
+        using Leader::Travel::ClosedAreaMobCheck;  // [lead107] RouteSteer.h
 
-            bool operator()(Creature* creature) const
-            {
-                return creature->IsAlive() && !creature->IsInCombat() && creature->IsHostileTo(tank) &&
-                       InAnyAreaGate(gates, creature->GetPositionX(), creature->GetPositionY(),
-                                     creature->GetPositionZ());
-            }
-        };
-
-        void KeepTankOutOfClosedAreas(Player* tank, std::vector<AreaGateDef const*> const& gates)
-        {
-            if (gates.empty() || !tank->IsInWorld())
-                return;
-            std::list<Creature*> mobs;
-            ClosedAreaMobCheck check{tank, gates};
-            Acore::CreatureListSearcher<ClosedAreaMobCheck> searcher(tank, mobs, check);
-            Cell::VisitObjects(tank, searcher, CLOSED_AREA_SKIP_RANGE);
-            if (mobs.empty())
-                return;
-            std::vector<Creature*> nearest(mobs.begin(), mobs.end());
-            std::sort(nearest.begin(), nearest.end(), [tank](Creature* left, Creature* right)
-                      { return tank->GetExactDistSq(left) < tank->GetExactDistSq(right); });
-            if (nearest.size() > CLOSED_AREA_SKIP_MAX)
-                nearest.resize(CLOSED_AREA_SKIP_MAX);
-            for (Creature* mob : nearest)
-                CarefulPullSkip::Mark(tank, mob->GetGUID());
-        }
+        using Leader::Travel::KeepTankOutOfClosedAreas;  // [lead107] RouteSteer.h
 
         using Leader::Travel::RouteCrossesSkipped;  // [lead107] RouteTargets.h
 
@@ -2783,18 +1480,8 @@ namespace TestHarness
 
         using Leader::Travel::TankPullRunning;  // [lead107] RouteEvents.h
 
-        // [queue-pull-hold-not-stuck] ROUTE_NO_WALK_IN_PULL withholds the leader's waypoint while its own pull runs;
-        // the steering / drive watchdogs then saw "own walk made no progress" although the harness itself gave no
-        // walk: bot_cannot_move "route" every ~40 s and a steer_stuck "route end" skip of the target every 20 s
-        // (brs-h 20261025-115805-brs-h-5A-32: the tank at (64.2, -441.6) from 303 s to 527 s, "pull start" 106
-        // executed every tick, 83 line-of-sight pull plans on the Spellbinder / Warlock packs never cast, 10 route
-        // targets skipped as "route end" from a spot it never left; fos-n 123018-fos-n-5A-84: "Soul Horror out of pull
-        // range" 310 times, 3x bot_cannot_move at (5138.4, 2129.0); bfd-h 115805-bfd-h-5A-23 Rtpalad 2880 s). A
-        // pull hold is no route stall for PULL_HOLD_STALL_MS; past it the hold is the pull planner's deadlock: logged
-        // once (pull_hold_stall, with the pull's state), the waypoint is no longer withheld for PULL_HOLD_RELEASE_MS
-        // and the steer clock runs again.
-        constexpr uint32 PULL_HOLD_STALL_MS = 60 * IN_MILLISECONDS;
-        constexpr uint32 PULL_HOLD_RELEASE_MS = 30 * IN_MILLISECONDS;
+        using Leader::Travel::PULL_HOLD_STALL_MS;  // [lead107] RouteSteer.h
+        using Leader::Travel::PULL_HOLD_RELEASE_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::PullHoldTrack;  // [lead107] RouteEvents.h
         using Leader::Travel::pullHolds;  // [lead107] RouteEvents.h
 
@@ -2891,14 +1578,7 @@ namespace TestHarness
 
         using Leader::Travel::LandLinkJump;  // [lead107] RouteEvents.h
 
-        // The bots' own raid-leader pull hold (LeaderValues PullHoldValue) holds the leader now.
-        bool LeaderPullHeld(Player* leader)
-        {
-            PlayerbotAI* botAI = GET_PLAYERBOT_AI(leader);
-            Value<bool>* hold =
-                botAI ? dynamic_cast<Value<bool>*>(botAI->GetAiObjectContext()->GetUntypedValue("pull hold")) : nullptr;
-            return hold && hold->Get();
-        }
+        using Leader::Travel::LeaderPullHeld;  // [lead107] RouteSteer.h
 
         // [boss_dead_encounter_open] the script slot of a boss creature, as the boss_state event knows it (BossTrack:
         // its bound creature, else its entry); -1 when the run tracks no slot for it.
@@ -3136,536 +1816,40 @@ namespace TestHarness
 
     bool TestHarnessMgr::IsRouteBlocker(Party const& party, ObjectGuid guid) const
     {
-        return ROUTE_BLOCKER_BODY_PULL && !guid.IsEmpty() && party.routeBlockerUntilMs &&
-               int32(getMSTime() - party.routeBlockerUntilMs) < 0 &&
-               std::find(party.routeBlockerPack.begin(), party.routeBlockerPack.end(), guid) !=
-                   party.routeBlockerPack.end();
+        // [lead107] the leader's (RouteSteer.h)
+        PartyLeaderGroup group(const_cast<TestHarnessMgr&>(*this), const_cast<Party&>(party));
+        return Leader::Travel::IsRouteBlocker(group, guid);
     }
 
     bool TestHarnessMgr::RouteBlockerBehindRequired(Party const& party, Map* map, WorldObject const* behind,
                                                     std::string& why) const
     {
-        if (!behind)
-        {
-            why = "nothing behind";
-            return false;
-        }
-        Creature const* creature = behind->ToCreature();
-        // a gate, a key object, an event's object: the run cannot go on without it
-        if (!creature)
-        {
-            why = "object";
-            return true;
-        }
-        if (behind->GetGUID() == party.target && (party.targetIsBoss || party.targetIsStarter))
-        {
-            why = party.targetIsBoss ? "boss" : "event starter";
-            return true;
-        }
-        if (creature->IsDungeonBoss() || creature->isWorldBoss() || party.bossCreatures.count(creature->GetGUID()) ||
-            BossOrder(party, creature) >= 0)
-        {
-            why = "boss";
-            return true;
-        }
-        if (IsPendingDoorGuard(map, creature))
-        {
-            why = "door guard";
-            return true;
-        }
-        // [banished_boss_gate] the mobs by a boss immune to players (his banish keepers: Hellmaw's Cabal Ritualists)
-        // open his fight: never "optional"
-        {
-            std::list<Creature*> nearMobs;
-            PackMobCheck check{ObjectAccessor::FindPlayer(party.leader), const_cast<Creature*>(creature)};
-            if (check.leader)
-            {
-                Acore::CreatureListSearcher<PackMobCheck> searcher(creature, nearMobs, check);
-                Cell::VisitObjects(creature, searcher, PACK_RADIUS);
-                for (Creature* mob : nearMobs)
-                    if (mob != creature && (mob->IsDungeonBoss() || party.bossCreatures.count(mob->GetGUID())) &&
-                        mob->IsImmuneToPC())
-                    {
-                        why = "banish keeper";
-                        return true;
-                    }
-            }
-        }
-        // [boss_area_clear] trash round the next boss is cleared before him: never skipped as "optional"
-        if (ROUTE_BOSS_AREA_CLEAR)
-            if (Player* leader = ObjectAccessor::FindPlayer(party.leader))
-                if (Creature* areaBoss = RouteNextBoss(party.seq, map))
-                    if (char const* area = BossAreaTrashOf(leader, areaBoss, const_cast<Creature*>(creature),
-                                                           party.bossCreatures.count(creature->GetGUID()) != 0))
-                    {
-                        why = area;
-                        return true;
-                    }
-        if (int32 const spotIdx = EventSpotIndex(party); spotIdx >= 0)
-            if (EventSpotDef const* spot = EventSpots(party.content->mapId)[size_t(spotIdx)]; spot && spot->hold &&
-                std::find(spot->holdAlways.begin(), spot->holdAlways.end(), creature->GetEntry()) !=
-                    spot->holdAlways.end())
-            {
-                why = "event keeper";
-                return true;
-            }
-        // the route rule that chose it (Retarget): an objective's key, the boss's own fight, the event's way
-        if (behind->GetGUID() == party.target)
-        {
-            std::string const& rule = party.targetRouteRule;
-            if (rule == "required" || rule == "boss" || rule == "event starter" || rule == "event chain" ||
-                rule == "encounter" || rule == "fled survivor" || rule == "phantom mob hunt" ||
-                rule.rfind("joins boss", 0) == 0 || rule.rfind("hold guard", 0) == 0)
-            {
-                why = rule;
-                return true;
-            }
-            why = rule.empty() ? std::string("trash (no route rule)") : "trash (" + rule + ")";
-            return false;
-        }
-        why = "trash (not the target)";
-        return false;
+        // [lead107] the leader's (RouteSteer.h)
+        PartyLeaderGroup group(const_cast<TestHarnessMgr&>(*this), const_cast<Party&>(party));
+        return Leader::Travel::RouteBlockerBehindRequired(group, map, behind, why);
     }
 
-    // [queue-blocker-pull-gate] WIPE_ANALYSIS_w24_25: scholo-n w24 walked the tank to 17 yd of a 20 yd aggro radius
-    // into a pack the planner had REFUSED ("refused, 97 mobs") once the edge hold "gave way" after 8 s; the body pull
-    // and the blocker retarget had their own, different checks. One gate now:
-    // - the planner's chain count did not refuse the pack as hopeless (CarefulPlanVerdict::GetRefusal: its smallest
-    //   pull is over the over-cap scale - "no safe pull: X brings N mobs, over M");
-    // - the group is ready (GroupFullyReady: everyone here, health and healer mana up) - else hold, no skip;
-    // - a body pull only for a blocker on the only way to a boss / event / required target (IsRouteBlocker, or
-    //   RouteBlockerBehindRequired - [boss_area_clear] trash included).
-    // The sight pull ([pull_option] (1), FindPullSightSpot) runs before any of these and is not gated here.
     std::string TestHarnessMgr::BlockerPullGate(Party& party, Player* leader, Creature* blocker,
                                                 WorldObject const* behind, bool bodyPull, bool& hold) const
     {
-        hold = false;
-        if (!blocker)
-            return "no blocker";
-        // [cos-event-trash] the idle citizens outside Arthas' event are walked past while the Guardian of Time runs
-        if (leader->GetMapId() == CoSIds::MAP_CULLING_OF_STRATHOLME &&
-            CoSHelpers::IsSkippableEventTrash(leader, blocker))
-            return "idle event trash (Culling heroic, Guardian of Time running)";
-        bool hopeless = false;
-        uint32 waitMs = 0;
-        std::string refusalWhy;
-        bool refused =
-            PartyRefusal(party, blocker->GetGUID(), hopeless, waitMs, refusalWhy);  // [lead5]
-        // [b34_strat] the tank keeps ONE verdict, about the mob it planned: strat-h 20261026-014521-strat-h-5E-1
-        // (299 s) refused the target BEHIND ("Skeletal Guardian: no safe pull: Ravaged Cadaver brings 20 mobs, over
-        // 18"), the lookup by the blocker's own guid found nothing and the Ravaged Cadaver became the route target
-        // (302 s, "packMobs": 1 by PACK_RADIUS). The behind's over-cap refusal that names the blocker is its refusal.
-        if (!refused && behind && behind != blocker && behind->ToCreature())
-        {
-            bool behindHopeless = false;
-            uint32 behindWaitMs = 0;
-            std::string behindWhy;
-            if (PartyRefusal(party, behind->GetGUID(), behindHopeless, behindWaitMs,  // [lead5]
-                                               behindWhy) &&
-                RefusalIsOverCap(behindWhy) && behindWhy.find(blocker->GetName()) != std::string::npos)
-            {
-                refused = true;
-                hopeless = behindHopeless;
-                waitMs = behindWaitMs;
-                refusalWhy = behindWhy;
-            }
-        }
-        // [banished_boss_gate] the pack's only "boss" is banished / immune to players (its keepers' channel): the
-        // planner's "brings a boss" refusal waits for a fight that only this pull can start (slabs-n 153805). Not a
-        // refusal, for [drift_body_pull_planner_hold] below either: that hold stays for every real fresh refusal.
-        if (refused && refusalWhy.find("brings a boss") != std::string::npos)
-        {
-            std::list<Creature*> pack;
-            PackMobCheck check{leader, blocker};
-            Acore::CreatureListSearcher<PackMobCheck> searcher(blocker, pack, check);
-            Cell::VisitObjects(blocker, searcher, PACK_RADIUS);
-            bool anyBoss = false;
-            bool banishedOnly = true;
-            for (Creature* mob : pack)
-                if (mob->IsDungeonBoss() || party.bossCreatures.count(mob->GetGUID()))
-                {
-                    anyBoss = true;
-                    banishedOnly = banishedOnly && mob->IsImmuneToPC();
-                }
-            if (anyBoss && banishedOnly)
-                refused = false;
-        }
-        // [b35_bfd] the planner's boss hold ("the pack does not fit (a boss pull: no fallback plan)": its target was
-        // the boss, which it never pulls, ChooseTargetActions.cpp [b30_topped_up]) is no over-cap verdict on this
-        // trash: the boss's pull is the harness's (the body-pull walk stops at him, boss_on_the_way_first
-        // [b30_stalls] makes him the target with his buffs and ready check). bfd-n 20261026-024524-bfd-n-5B-29: the
-        // last Blindlight Muckdweller of Gelihast's room (40 yd, Gelihast 25 yd on the way) was held "over the
-        // planner's cap (its split / guarantee)" by [b33_bodypull] every 10 s from 2041 s, stalled 2/7 at 2283 s
-        // (build 31/33 bfd runs took this same walk into boss_on_the_way_first). Readiness stays checked below.
-        if (refused && refusalWhy.find("(a boss pull: no fallback plan)") != std::string::npos && leader->GetMap())
-            for (ObjectGuid const& bossGuid : party.bossCreatures)
-                if (Creature* boss = leader->GetMap()->GetCreature(bossGuid);
-                    boss && boss != blocker && boss->IsAlive() && !boss->IsInCombat() &&
-                    (BossBroughtBy(leader, boss, blocker) || JoinsBossFight(leader, boss, blocker)))
-                {
-                    refused = false;
-                    break;
-                }
-        // [b33_aoepull] a refused (or aoe-planned) pack on the only way to a required target is marked for the
-        // planner's aoe_pull_plan; TargetRouteBlocker (bodyPull false) checked the required way before the gate
-        bool const aoePlanned = PartyAoePlanned(party, blocker->GetGUID());  // [lead5]
-        bool requiredBlocker = false;
-        if ((refused || aoePlanned) && !blocker->IsDungeonBoss() && !party.bossCreatures.count(blocker->GetGUID()))
-        {
-            std::string requiredWhy;
-            requiredBlocker = !bodyPull || IsRouteBlocker(party, blocker->GetGUID()) ||
-                              RouteBlockerBehindRequired(party, leader->GetMap(), behind ? behind : blocker,
-                                                         requiredWhy);
-            if (requiredBlocker)
-                PartyMarkRequired(party, blocker->GetGUID());  // [lead5]
-        }
-        if (refused && hopeless && requiredBlocker && AoePullAskRuns(party.leader, blocker->GetGUID(), getMSTime()))
-        {
-            hold = true;  // the planner weighs its aoe_pull_plan first; the dead end after AOE_PULL_ASK_MS
-            return "held: the planner weighs an aoe_pull_plan of the required blocker (" + refusalWhy + ")";
-        }
-        if (refused && hopeless)
-        {
-            NoteHopelessPack(leader, blocker);  // [b32_brs] the walks go round it (HopelessDetourLeg)
-            return "refused by the chain count (" + refusalWhy + ")";
-        }
-        // [drift_body_pull_planner_hold] scholo-n 20261025-150737-7 pull 12 (437 s): the planner held the Necromancer
-        // pack "for now" (an overlap wait: the Risen Protector patrol crossed it, the planner waits to take the pack
-        // without it), the gate let the body pull through because the refusal was not hopeless, the tank walked in
-        // and ~15 mobs came (patrol, Adepts, Tutors), wipe at 517 s. A body pull never goes against a fresh planner
-        // refusal: while the planner's own wait runs (its split, its stand's guarantee) the group holds; a refusal
-        // still standing once that wait is over is refused here too (skipped, the route comes back to it).
-        // [pull_after_hold] the group stood ready PULL_AFTER_HOLD_MS at this pack: the planner's wait is over
-        // [b33_bodypull] ...but never over a readiness refusal (the healer not with the tank, sitters, not topped up)
-        // nor an over-cap one (the planner's split / guarantee takes it, or calls it hopeless after its split search
-        // and the detour above takes over): the walk-in of the whole group into a pack the planner says does not fit
-        // is the strat-h 20261026-000434-5D-1 wipe (4-6 mobs at the walk-in, 17 in the fight)
-        bool const readinessRefusal = refused && RefusalIsReadiness(refusalWhy);
-        bool const overCapRefusal = refused && !readinessRefusal && RefusalIsOverCap(refusalWhy);
-        if (refused && bodyPull && !readinessRefusal && !overCapRefusal &&
-            PullAfterHoldPasses(party.leader, blocker->GetGUID()))
-            refused = false;
-        // [b34_strat] ...and the over-cap hold for the route TARGET too (TargetRouteBlocker, bodyPull false): it
-        // cleared the pack's skips and walked the leader to the edge of a refused 17-26 mob chain (strat-h
-        // 20261026-014521-5E-1, 302 s). The group holds where it stands while the planner splits or calls it
-        // hopeless (then the chain-count branch above: the aoe ask, then the dead end and the skip).
-        if (refused && !bodyPull && overCapRefusal)
-        {
-            hold = true;
-            return "held: over the planner's cap, no route target (" + refusalWhy + ")";
-        }
-        if (refused && bodyPull && (readinessRefusal || overCapRefusal))
-        {
-            hold = true;  // nothing skipped: the group gets ready / the planner plans where it stands
-            return Acore::StringFormat("{} ({})",
-                                       readinessRefusal ? "held: the planner waits for the group"
-                                                        : "held: over the planner's cap (its split / guarantee)",
-                                       refusalWhy);
-        }
-        if (refused && bodyPull)
-        {
-            if (waitMs > 0)
-            {
-                hold = true;
-                return Acore::StringFormat("held by the planner for {} s ({})", waitMs / IN_MILLISECONDS, refusalWhy);
-            }
-            return "refused by the planner (" + refusalWhy + ")";
-        }
-        if (!GroupFullyReady(party, leader))
-        {
-            hold = true;
-            return "the group is not ready";
-        }
-        // [b33_bodypull] the planner's sitter gate for the walk-in too: nobody eats / drinks when the pack comes
-        if (bodyPull)
-            for (Member const& member : party.members)
-                if (Player* bot = ObjectAccessor::FindPlayer(member.guid); bot && bot->IsAlive() && bot->IsSitState())
-                {
-                    hold = true;
-                    return "the group is not ready: " + bot->GetName() + " sits";
-                }
-        if (bodyPull && !IsRouteBlocker(party, blocker->GetGUID()))
-        {
-            std::string requiredWhy;
-            if (!RouteBlockerBehindRequired(party, leader->GetMap(), behind ? behind : blocker, requiredWhy))
-                return "not on the only way to a boss or event (" + requiredWhy + ")";
-        }
-        return std::string();
+        // [lead107] the leader's (RouteSteer.h)
+        PartyLeaderGroup group(const_cast<TestHarnessMgr&>(*this), const_cast<Party&>(party));
+        return Leader::Travel::BlockerPullGate(group, leader, blocker, behind, bodyPull, hold);
     }
 
     bool TestHarnessMgr::TargetRouteBlocker(Party& party, Player* leader, Creature* blocker, WorldObject const* behind,
                                             std::string const& why)
     {
-        if (!ROUTE_BLOCKER_BODY_PULL || !blocker || !blocker->IsAlive() || blocker->IsInCombat() ||
-            blocker->IsDungeonBoss() || party.bossCreatures.count(blocker->GetGUID()) || BossOrder(party, blocker) >= 0)
-            return false;
-
-        // [route_blocker_required_only] User rule 2026-10-25: a pack on the only way to the next REQUIRED target
-        // (boss, event, gate, key) is never skipped; a side / optional trash target never triggers it - the target
-        // behind is skipped as before and the route takes another one. scholo-n wave 23 (112011, 473-529 s): a
-        // 3-mob Scholomance Necromancer pack (the planner: 8 mobs at cost 2.38) was body-pulled for the trash target
-        // Risen Aberration ("blocks route") and the group wiped.
-        if (std::string requiredWhy; !RouteBlockerBehindRequired(party, leader->GetMap(), behind, requiredWhy))
-        {
-            LOG_INFO("playerbots", "[route_blocker_required_only] {}: {} stands on the way to {} - {}: no body pull, "
-                     "the target is skipped as before", leader->GetName(), blocker->GetName(),
-                     behind ? behind->GetName() : std::string("?"), requiredWhy);
-            LogEvent(party, "route_blocker_required_only",
-                     JsonObject().Str("action", "not required, skipped as before").Str("blocker", blocker->GetName())
-                         .Num("blockerEntry", blocker->GetEntry())
-                         .Str("behind", behind ? behind->GetName() : std::string()).Str("behindRule", requiredWhy)
-                         .Str("why", why));
-            return false;
-        }
-
-        // [queue-blocker-pull-gate]
-        bool gateHold = false;
-        if (std::string const gate = BlockerPullGate(party, leader, blocker, behind, false, gateHold); !gate.empty())
-        {
-            LogEvent(party, "blocker_pull_gate", JsonObject().Str("pull", "route blocker target")
-                                                     .Str("blocker", blocker->GetName())
-                                                     .Num("blockerEntry", blocker->GetEntry())
-                                                     .Str("behind", behind ? behind->GetName() : std::string())
-                                                     .Str("why", gate).Bool("hold", gateHold));
-            if (gateHold)
-            {
-                TestRunner::ClearWaypoint(party.leader);
-                return true;  // the group gets ready where it stands, nothing skipped
-            }
-            return false;
-        }
-
-        std::list<Creature*> pack;
-        PackMobCheck check{leader, blocker};
-        Acore::CreatureListSearcher<PackMobCheck> searcher(blocker, pack, check);
-        Cell::VisitObjects(blocker, searcher, PACK_RADIUS);
-        if (std::find(pack.begin(), pack.end(), blocker) == pack.end())
-            pack.push_back(blocker);
-        // a boss in the pack is the boss's pull (the boss logic), not a trash blocker's
-        for (Creature* mob : pack)
-            if (mob->IsDungeonBoss() || party.bossCreatures.count(mob->GetGUID()) || BossOrder(party, mob) >= 0)
-                return false;
-
-        // [b32_pull] ... and so is a pack that comes into a boss's fight by itself (his formation, a script call):
-        // the walk to it is the boss's pull without the boss's preparation. dmn-n 20261025-221216-dmn-n-5H-48: a
-        // 2-mob Gordok Mastiff pack ("required: joins boss: script") became the target at 190 s, the leader walked to
-        // it while the hunter still drank, Guard Mol'dar came at 200 s and his room chained 1 -> 9 -> 15.
-        if (Map* map = leader->GetMap())
-            for (ObjectGuid const& guid : party.bossCreatures)
-            {
-                Creature* boss = map->GetCreature(guid);
-                if (!boss || !boss->IsAlive() || boss->IsInCombat())
-                    continue;
-                for (Creature* mob : pack)
-                {
-                    if (!BossEncounterMob(leader, boss, mob))
-                        continue;
-                    LOG_INFO("playerbots", "[route_blocker_body_pull] {}: {} joins {}'s fight: his pull, not a route "
-                             "blocker's", leader->GetName(), mob->GetName(), boss->GetName());
-                    LogEvent(party, "route_blocker_boss_encounter",
-                             JsonObject().Str("blocker", blocker->GetName()).Num("blockerEntry", blocker->GetEntry())
-                                 .Str("mob", mob->GetName()).Str("boss", boss->GetName())
-                                 .Str("behind", behind ? behind->GetName() : std::string()).Str("why", why));
-                    return false;
-                }
-            }
-
-        uint32& tries = party.routeBlockerTries[blocker->GetGUID()];
-        if (tries >= ROUTE_BLOCKER_MAX_TRIES)
-            return false;
-        ++tries;
-
-        uint32 const now = getMSTime();
-        party.routeBlockerPack.clear();
-        for (Creature* mob : pack)
-        {
-            party.routeBlockerPack.push_back(mob->GetGUID());
-            party.skipUntil.erase(mob->GetGUID());
-            party.skipReason.erase(mob->GetGUID());
-        }
-        party.routeBlockerUntilMs = now + NEIGHBOUR_TARGET_MS;
-        LOG_INFO("playerbots", "[route_blocker_body_pull] {}: {} ({} mobs, {:.1f} yd) stands on the way to {}: the "
-                 "target, pulled by sight or walked in ({}, try {})", leader->GetName(), blocker->GetName(),
-                 pack.size(), leader->GetExactDist(blocker), behind ? behind->GetName() : std::string("?"), why,
-                 tries);
-        LogEvent(party, "route_blocker_body_pull",
-                 JsonObject().Str("action", "target").Str("blocker", blocker->GetName())
-                     .Num("blockerEntry", blocker->GetEntry()).Num("packMobs", uint32(pack.size()))
-                     .Str("behind", behind ? behind->GetName() : std::string()).Str("why", why).Num("try", tries)
-                     .Real("blockerDistance", leader->GetExactDist(blocker)));
-        sightStops.erase(party.leader);
-        sightHolds.erase(party.leader);
-        party.neighbourTarget = blocker->GetGUID();
-        party.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
-        party.target = blocker->GetGUID();
-        party.targetIsBoss = false;
-        party.targetIsStarter = false;
-        party.targetRouteRule.clear();
-        party.targetSinceMs = now;
-        party.guaranteeHolding = false;
-        party.arrivedMs = 0;
-        party.approach = 0;
-        party.approachBlocker.Clear();
-        party.stopSinceMs = 0;
-        return true;
+        // [lead107] the leader's (RouteSteer.h)
+        PartyLeaderGroup group(*this, party);
+        return Leader::Travel::TargetRouteBlocker(group, leader, blocker, behind, why);
     }
 
     void TestHarnessMgr::RouteBlockerBodyPull(Party& party, Player* leader, Creature* target, std::string const& why)
     {
-        // [lead3] LEADER_NO_BODY_FALLBACK: no harness walk-in. The route blocker is the leader's to clear: asked of
-        // its planner whole (the walk-in priced by the planner's own count, the aoe_pull_plan allowed: required), a
-        // boss's pack as the boss pull. Its answer is the leader's (TickLeaderPlanner).
-        if (Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && LeaderDecidesFor(party) && target)
-        {
-            party.approach = 0;
-            if (target->IsDungeonBoss() || party.bossCreatures.count(target->GetGUID()))
-                LeaderBossPull(party, leader, target, "route blocker: " + why);
-            else
-                LeaderWholePack(party, leader, target, "route blocker: " + why, true, true);
-            return;
-        }
-        // the group gets ready first (the user rule: full health and mana, everyone here), then the walk in; the
-        // leader holds where it stands meanwhile (TestHarnessMgr's regen wait tops the group up)
-        // [queue-blocker-pull-gate] and never into a pack the chain count refused, nor off the required way
-        bool gateHold = false;
-        if (std::string const gate = BlockerPullGate(party, leader, target, nullptr, true, gateHold); !gate.empty())
-        {
-            TestRunner::ClearWaypoint(party.leader);
-            uint32 const nowMs = getMSTime();
-            // [b33_bodypull] a hold is logged too (it was silent: the trace showed no reason for the stand)
-            if (!party.blockerGateLogMs || getMSTimeDiff(party.blockerGateLogMs, nowMs) > 10 * IN_MILLISECONDS)
-            {
-                party.blockerGateLogMs = nowMs ? nowMs : 1;
-                LogEvent(party, "blocker_pull_gate", JsonObject().Str("pull", "body pull")
-                                                         .Str("blocker", target->GetName())
-                                                         .Num("blockerEntry", target->GetEntry()).Str("why", gate)
-                                                         .Str("was", why).Bool("hold", gateHold));
-            }
-            if (gateHold)
-                return;
-            party.approach = 0;
-            SkipTarget(party, target->GetGUID(), CAREFUL_REFUSED_SKIP_MS, "body pull refused: " + gate);
-            return;
-        }
-
-        // [b33_aoepull] the planner's issued aoe_pull_plan is the pull: the tank takes the chain to its stack spot,
-        // the leader is not walked in while the plan is fresh and younger than AOE_PULL_WALK_MS
-        if (uint32 aoeSinceMs = 0; PartyAoePlanned(party, target->GetGUID(), &aoeSinceMs) &&  // [lead5]
-                                   getMSTimeDiff(aoeSinceMs, getMSTime()) < AOE_PULL_WALK_MS)
-        {
-            TestRunner::ClearWaypoint(party.leader);
-            uint32 const nowMs = getMSTime();
-            if (!party.blockerGateLogMs || getMSTimeDiff(party.blockerGateLogMs, nowMs) > 10 * IN_MILLISECONDS)
-            {
-                party.blockerGateLogMs = nowMs ? nowMs : 1;
-                LogEvent(party, "aoe_pull_plan_accepted",
-                         JsonObject().Str("blocker", target->GetName()).Num("blockerEntry", target->GetEntry())
-                             .Num("planSec", getMSTimeDiff(aoeSinceMs, nowMs) / IN_MILLISECONDS).Str("was", why));
-            }
-            return;
-        }
-
-        std::list<Creature*> pack;
-        PackMobCheck check{leader, target};
-        Acore::CreatureListSearcher<PackMobCheck> searcher(target, pack, check);
-        Cell::VisitObjects(target, searcher, PACK_RADIUS);
-        if (std::find(pack.begin(), pack.end(), target) == pack.end())
-            pack.push_back(target);
-        // [body_pull_via_planner] the planner first
-        if (BODY_PULL_VIA_PLANNER && !target->IsDungeonBoss() && !party.bossCreatures.count(target->GetGUID()))
-        {
-            bool askBegan = false;
-            if (AskPlannerFirst(party.leader, target, getMSTime(), askBegan))
-            {
-                if (askBegan)
-                    LogEvent(party, "body_pull_planner_request",
-                             JsonObject().Str("name", target->GetName()).Num("entry", target->GetEntry())
-                                 .Num("packMobs", uint32(pack.size())).Str("why", why)
-                                 .Num("waitSec", BODY_PULL_PLANNER_MS / IN_MILLISECONDS));
-                TestRunner::ClearWaypoint(party.leader);
-                return;
-            }
-            LogEvent(party, "body_pull_planner_timeout",
-                     JsonObject().Str("name", target->GetName()).Num("entry", target->GetEntry())
-                         .Num("packMobs", uint32(pack.size())));
-        }
-        // [b49_voone] No walk-in to a pack an idle boss's own aggro reach covers (BossBroughtBy): the walk is his pull,
-        // and the planner did not price it (refused, or no answer in time). brs-h 20261026-111724-brs-h-5A-10
-        // (build 47): the planner refused the Smolderthorn Mystic pack at (-4,-462) ("refused for now: no pull of
-        // Smolderthorn Mystic from range"), the body pull walked in at 1342-1346 s ("unplanned (harness body pull)"),
-        // War Master Voone 13 yd from it came at 1353 s with his room (Berserkers, Shadow Priests, Headhunters), 3
-        // deaths 1437-1444 s. The pack is skipped; the boss logic pulls him as his fight. Not when the planner's own
-        // verdict was the boss's pull ("(a boss pull: no fallback plan)", [b35_bfd]): that walk is meant to stop at
-        // him.
-        bool const bossPullVerdict = why.find("(a boss pull: no fallback plan)") != std::string::npos;
-        Map* const bossMap = bossPullVerdict ? nullptr : leader->GetMap();
-        if (Map* map = bossMap)
-            for (ObjectGuid const& guid : party.bossCreatures)
-            {
-                Creature* boss = map->GetCreature(guid);
-                if (!boss || !boss->IsAlive() || boss->IsInCombat())
-                    continue;
-                for (Creature* mob : pack)
-                {
-                    if (!BossBroughtBy(leader, boss, mob))
-                        continue;
-                    LOG_INFO("playerbots", "[b49_voone] {}: no body pull of {} ({} mobs): {} ({:.1f} yd from {}) "
-                             "comes with it, the planner did not price it ({})", leader->GetName(),
-                             target->GetName(), pack.size(), boss->GetName(), boss->GetExactDist(mob),
-                             mob->GetName(), why);
-                    LogEvent(party, "blocker_pull_gate",
-                             JsonObject().Str("pull", "body pull").Str("blocker", target->GetName())
-                                 .Num("blockerEntry", target->GetEntry())
-                                 .Str("why", "[b49_voone] brings boss " + boss->GetName() + " (unpriced)")
-                                 .Str("was", why).Bool("hold", false));
-                    // [b51_dme] User rule 2026-10-26 (open the way, no detours): a pack that is the way on and stands
-                    // in an idle boss's reach is no skip - the boss is pulled deliberately first, as his own fight (the
-                    // boss logic: his buffs, ready check and the planner's boss pull, which prices him with what he
-                    // brings). dme-h 20261026-130307-5E-11 stalled 0/16: "body pull refused: brings boss Hydrospawn"
-                    // x3, "behind skipped Wildspawn Hellcaller" x8. The Voone intent stays: no blind walk-in to the
-                    // pack; a class-gated boss keeps the old skip.
-                    if (!ClassGatedBoss(party.content->mapId, party.content->difficulty, boss->GetEntry()) &&
-                        boss->GetGUID() != party.target)
-                    {
-                        LogEvent(party, "boss_on_the_way_first",
-                                 JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
-                                     .Real("firstDistance", leader->GetExactDist(boss)).Str("via", target->GetName())
-                                     .Num("viaEntry", target->GetEntry())
-                                     .Str("why", "[b51_dme] the pack on the way brings this boss: he is pulled first"));
-                        LOG_INFO("playerbots", "[b51_dme] {}: {} brings boss {}: the boss is the next pull (his "
-                                 "fight), no skip",
-                                 leader->GetName(), target->GetName(), boss->GetName());
-                        party.target = boss->GetGUID();
-                        party.targetIsBoss = true;
-                        party.targetIsStarter = false;
-                        party.targetRouteRule = "boss on the way";
-                        party.targetSinceMs = getMSTime();
-                        party.approach = 0;
-                        party.arrivedMs = 0;
-                        party.stopSinceMs = 0;
-                        party.approachBlocker.Clear();
-                        party.orderHoldSinceMs.erase(boss->GetGUID());
-                        TestRunner::ClearWaypoint(party.leader);
-                        return;
-                    }
-                    TestRunner::ClearWaypoint(party.leader);
-                    party.approach = 0;
-                    SkipTarget(party, target->GetGUID(), CAREFUL_REFUSED_SKIP_MS,
-                               "body pull refused: brings boss " + boss->GetName());
-                    return;
-                }
-            }
-        sightStops.erase(party.leader);
-        sightHolds.erase(party.leader);
-        party.approach = 1;
-        party.arrivedMs = 0;
-        party.guaranteeHolding = false;
-        LOG_INFO("playerbots", "[route_blocker_body_pull] {}: walks into {} ({} mobs, {:.1f} yd): {}",
-                 leader->GetName(), target->GetName(), pack.size(), leader->GetExactDist(target), why);
-        LogEvent(party, "route_blocker_body_pull",
-                 JsonObject().Str("action", "body pull").Str("blocker", target->GetName())
-                     .Num("blockerEntry", target->GetEntry()).Num("packMobs", uint32(pack.size())).Str("why", why)
-                     .Real("blockerDistance", leader->GetExactDist(target)));
+        // [lead107] the leader's (RouteSteer.h)
+        PartyLeaderGroup group(*this, party);
+        Leader::Travel::RouteBlockerBodyPull(group, leader, target, why);
     }
 
     void TestHarnessMgr::Retarget(Party& party, Player* leader)
@@ -9203,33 +7387,9 @@ namespace TestHarness
     void TestHarnessMgr::LogHarnessHold(Party& party, Player* leader, Creature* blocker, char const* walk, float x,
                                         float y, float z)
     {
-        if (!leader || !blocker)
-            return;
-        uint32 const now = getMSTime();
-        uint32& loggedMs = harnessHoldLogMs[blocker->GetGUID().GetRawValue()];
-        if (loggedMs && getMSTimeDiff(loggedMs, now) < HARNESS_HOLD_LOG_MS)
-            return;
-        loggedMs = now ? now : 1;
-        bool accepted = true;
-        uint32 mobs = 0;
-        bool const known = PartyVerdict(party, blocker->GetGUID(), accepted, mobs);
-        char const* verdict = !known ? "none" : accepted ? "accepted" : "refused";
-        // [b30_mech_pos] packMobs was the planner's count only: 0 with no verdict (zf-h 20261025-184229: "Sandfury
-        // Blood Drinker, none, 0 mobs" with ~20 Sandfury round the pool). The idle pack round the blocker is counted
-        // too (realPack, PackMobCheck within PACK_RADIUS, the blocker included).
-        std::list<Creature*> pack;
-        PackMobCheck packCheck{leader, blocker};
-        Acore::CreatureListSearcher<PackMobCheck> packSearcher(blocker, pack, packCheck);
-        Cell::VisitObjects(blocker, packSearcher, PACK_RADIUS);
-        uint32 const realPack =
-            uint32(pack.size()) + (std::find(pack.begin(), pack.end(), blocker) == pack.end() ? 1u : 0u);
-        LOG_INFO("playerbots",
-                 "[approach] {}: harness_hold_refused_pack: {} stops at {} ({}, {} mobs, {} idle round it) {:.1f} yd",
-                 leader->GetName(), walk, blocker->GetName(), verdict, mobs, realPack, leader->GetExactDist(blocker));
-        LogEvent(party, "harness_hold_refused_pack",
-                 JsonObject().Str("walk", walk).Str("blocker", blocker->GetName()).Num("entry", blocker->GetEntry())
-                     .Str("verdict", verdict).Num("packMobs", mobs).Num("realPack", realPack)
-                     .Real("distance", leader->GetExactDist(blocker)).Real("x", x).Real("y", y).Real("z", z));
+        // [lead107] the leader's (RouteSteer.h)
+        PartyLeaderGroup group(*this, party);
+        Leader::Travel::LogHarnessHold(group, leader, blocker, walk, x, y, z);
     }
 
     void TestHarnessMgr::PrepareEventItems(Party& party, Player* leader, bool atStart)
@@ -11078,6 +9238,15 @@ namespace TestHarness
     ::InstanceScript* PartyLeaderGroup::InstanceScript() const { return PartyInstanceScript(_party); }
 
     void PartyLeaderGroup::MarkGateWaypoint(Player* bot) { TestHarness::MarkGateWaypoint(bot); }
+
+    bool PartyLeaderGroup::GroupFullyReady(Player* leader) const
+    {
+        return TestHarness::GroupFullyReady(_party, leader);
+    }
+
+    bool PartyLeaderGroup::ScriptEventRunning() const { return TestHarness::ScriptEventRunning(_party); }
+
+    bool PartyLeaderGroup::IsNormalDungeon() const { return TestHarness::IsNormalDungeon(*_party.content); }
 
     std::vector<std::reference_wrapper<Leader::BossFacts const>> PartyLeaderGroup::Bosses() const
     {

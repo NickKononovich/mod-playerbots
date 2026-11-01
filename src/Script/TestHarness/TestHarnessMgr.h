@@ -335,8 +335,6 @@ namespace TestHarness
         // chosen creatures seen dead since (Retarget). Choices of a mob that never died do not count: dme-n
         // 2026-10-25 skipped a living Imp / Fel Lash / Whip Lasher as "respawning trash" after four refusals.
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
-        // The last skipped neighbour pack that stopped an approach (ROUTE_SKIP_BEHIND_SKIPPED), for the idle guard.
-        std::string behindSkipped;
         ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
         ObjectGuid meeting;    // the member the leader walks back to (MeetMember), logged once per episode
         // Combat with nothing happening: no damage done or taken and no healing by anybody of the party since
@@ -349,9 +347,6 @@ namespace TestHarness
         // PHANTOM_COMBAT_END_MS while the flag stays (sh-n 5B-89: one end at 1421 s, the tank flagged again, 90 s idle)
         uint32 phantomCombatEndedMs = 0;
         uint32 phantomCombatEnds = 0;
-        // [b33_sh2] the last harness_hold event (Steer holds the walk with a target set), its reason, throttled
-        uint32 harnessHoldLogMs = 0;
-        std::string harnessHoldWhy;
         uint32 noWalkSinceMs = 0;     // [b33_sh2] target set, traveling, no waypoint and the leader standing since
         uint32 noWalkLogMs = 0;       // [b33_sh2] the last harness_hold "no walk" event
         // [phantom_mob_hunt] the live, reachable mob of a phantom combat the group was sent to, and how often
@@ -387,25 +382,8 @@ namespace TestHarness
         // lost any (or the set changed).
         uint64 trashHp = 0;
         uint32 trashMobs = 0;
-        // Boss approach held at a neighbour pack (neighbourStop): the boss and how often in a row.
-        ObjectGuid neighbourHoldBoss;
-        uint32 neighbourHolds = 0;
-        // route_blocker_body_pull: the pack that stands on the way to the route's target (its walk enters the pack's
-        // reach) is the target, and pulled - by sight, else walked in - never skipped while it is on the way.
-        std::vector<ObjectGuid> routeBlockerPack;
-        uint32 routeBlockerUntilMs = 0;
-        std::map<ObjectGuid, uint32> routeBlockerTries;  // by blocker: how often it was made the target
         uint32 trashFlatSinceMs = 0;
         bool trashPhantomLogged = false;
-        uint32 idleMs = 0;
-        uint32 eventWaitMs = 0;
-        // ROUTE_CAREFUL_GUARANTEE_HOLD: the pack the tank refused (not hopeless) the group holds at for the planner's
-        // stand guarantee (CarefulPlanVerdict::GetRefusal), and when that guarantee came due (0: not yet).
-        ObjectGuid guaranteeTarget;
-        uint32 guaranteeDueMs = 0;
-        // [held_for_now_cap] the target the planner answers "held for now" for, and since when (0: none)
-        ObjectGuid heldForNowTarget;
-        uint32 heldForNowSinceMs = 0;
         bool idleLogged = false;
         bool eventWaitLogged = false;
         // Bots walk by themselves (HARNESS_MOVES_BOTS): moves the harness still made (0 when off), and what the
@@ -872,6 +850,14 @@ namespace TestHarness
         }
         ::InstanceScript* InstanceScript() const override;
         bool BossesOpen() const override;
+        bool GroupFullyReady(Player* leader) const override;
+        bool ScriptEventRunning() const override;
+        bool MeetMember(std::vector<Player*> const& players, Player* leader) override
+        {
+            return _mgr.MeetMember(_party, players, leader);
+        }
+        uint8 Level() const override { return _party.level; }
+        bool IsNormalDungeon() const override;
         void SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z) override;
         void ClearMemberWaypoint(ObjectGuid member) override;
         bool MemberHasWaypoint(ObjectGuid member) const override;

@@ -334,6 +334,30 @@ namespace Leader
         uint32 detourFallbackUntilMs = 0;  // the last event_start (an event the group works through: CoS crates)
         bool wingWalk = false;
         uint32 wingWalkSinceMs = 0;
+        // [lead107] moved with the steer stage: the skipped neighbour behind a stop, the harness-hold log, the
+        // neighbour holds and the route blocker, the idle / event-wait time, the guarantee hold, the held-for-now
+        // The last skipped neighbour pack that stopped an approach (ROUTE_SKIP_BEHIND_SKIPPED), for the idle guard.
+        std::string behindSkipped;
+        // [b33_sh2] the last harness_hold event (Steer holds the walk with a target set), its reason, throttled
+        uint32 harnessHoldLogMs = 0;
+        std::string harnessHoldWhy;
+        // Boss approach held at a neighbour pack (neighbourStop): the boss and how often in a row.
+        ObjectGuid neighbourHoldBoss;
+        uint32 neighbourHolds = 0;
+        // route_blocker_body_pull: the pack that stands on the way to the route's target (its walk enters the pack's
+        // reach) is the target, and pulled - by sight, else walked in - never skipped while it is on the way.
+        std::vector<ObjectGuid> routeBlockerPack;
+        uint32 routeBlockerUntilMs = 0;
+        std::map<ObjectGuid, uint32> routeBlockerTries;  // by blocker: how often it was made the target
+        uint32 idleMs = 0;
+        uint32 eventWaitMs = 0;
+        // ROUTE_CAREFUL_GUARANTEE_HOLD: the pack the tank refused (not hopeless) the group holds at for the planner's
+        // stand guarantee (CarefulPlanVerdict::GetRefusal), and when that guarantee came due (0: not yet).
+        ObjectGuid guaranteeTarget;
+        uint32 guaranteeDueMs = 0;
+        // [held_for_now_cap] the target the planner answers "held for now" for, and since when (0: none)
+        ObjectGuid heldForNowTarget;
+        uint32 heldForNowSinceMs = 0;
     };
 }
 
