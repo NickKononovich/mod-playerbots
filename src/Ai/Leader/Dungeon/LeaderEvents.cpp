@@ -2825,7 +2825,53 @@ namespace Leader::Dungeon
                                            heldEvents.move == Leader::MoveEvent::StandAt &&
                                            heldEvents.moveWhy.find(": stays (") != std::string::npos &&
                                            heldEvents.spot.GetExactDist(attackOn->GetPosition()) > meleeReach;
-                    if (meleeHeld &&
+                    // [lead125] b158 20261101-111229 806.5-807.4 s: the walk to the target was issued past the follow
+                    // rule's own aggro check (Rtshaab to a Searing Blade Warlock through a Searing Blade Enforcer's
+                    // reach), the next tick's follow stay overruled it, back and forth. The walk to the target is
+                    // judged first by the same checks (the target's spot and the whole walk out of every unpulled
+                    // mob's reach, a walk at all); refused, there is no move - the member stays, and the decision is
+                    // kept until a fact changes (another target, the target moves, the mob pulled or dead): the
+                    // target is the tank's to bring
+                    bool meleeBlockedNow = false;
+                    if (meleeHeld)
+                    {
+                        auto kept = lead.meleeBlocked.find(guid);
+                        Creature* keptMob = kept != lead.meleeBlocked.end() && !kept->second.mob.IsEmpty()
+                                                ? map->GetCreature(kept->second.mob)
+                                                : nullptr;
+                        bool const factsHold =
+                            kept != lead.meleeBlocked.end() && kept->second.target == attackOn->GetGUID() &&
+                            kept->second.targetAt.GetExactDist(attackOn->GetPosition()) <= NOMINAL_MELEE_RANGE &&
+                            (kept->second.mob.IsEmpty() ||
+                             (keptMob && keptMob->IsAlive() && !keptMob->IsInCombat()));
+                        if (factsHold)
+                            meleeBlockedNow = true;
+                        else
+                        {
+                            bool noPath = false;
+                            Creature* inWay = LeaderAggroAt(bot, attackOn->GetPosition());
+                            if (!inWay)
+                                inWay = LeaderAggroOnWalk(bot, attackOn->GetPosition(), noPath);
+                            if (inWay || noPath)
+                            {
+                                meleeBlockedNow = true;
+                                lead.meleeBlocked[guid] = {attackOn->GetGUID(), attackOn->GetPosition(),
+                                                           inWay ? inWay->GetGUID() : ObjectGuid::Empty};
+                                Decisions().Write(run, "leader", "melee_walk_refused", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName())
+                                                      .Str("target", attackOn->GetName())
+                                                      .Str("reject", inWay ? "the walk is in the reach of " +
+                                                                                 inWay->GetName()
+                                                                           : std::string("no walk to the target"))
+                                                      .Str("decision", "stays: the target is the tank's to bring"));
+                            }
+                            else
+                                lead.meleeBlocked.erase(guid);
+                        }
+                    }
+                    else
+                        lead.meleeBlocked.erase(guid);
+                    if (meleeHeld && !meleeBlockedNow &&
                         checkedMove(guid, Leader::MoveEvent::MoveTo, attackOn->GetPosition(), NOMINAL_MELEE_RANGE,
                                     "in reach of its target"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),

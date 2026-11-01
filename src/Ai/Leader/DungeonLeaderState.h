@@ -217,6 +217,15 @@ namespace Leader
             Position point;     // the member's place at it
         };
         std::map<ObjectGuid, MeleeMeet> meleeMeet;  // [lead83] the melee meeting place, once per order / fight
+        // [lead125] a melee member's walk to its target refused by an unpulled mob's reach (or no walk): the member
+        // stays, the decision kept until a fact changes (another target, the target moves, the mob pulled / dead)
+        struct MeleeBlock
+        {
+            ObjectGuid target;
+            Position targetAt;  // where the target stood when the walk was judged
+            ObjectGuid mob;     // the unpulled mob in the way (empty: no walk)
+        };
+        std::map<ObjectGuid, MeleeBlock> meleeBlocked;
         std::map<std::string, uint32> vetoedEvals;  // "<member>|<what>" -> count (vetoed_eval)
         // [lead18] the issued pull's whole plan for the red view (latched at the issue)
         Position issuedFrom;
