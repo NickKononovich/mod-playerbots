@@ -27,6 +27,7 @@
 #include "Unit.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "ObjectMgr.h"  // [lead93] the exit areatriggers
 #include "G3D/AABox.h"
 #include "G3D/Ray.h"
 
@@ -381,6 +382,50 @@ namespace
                 closed.push_back(go);
         }
     }
+}
+
+uint32 InInstanceExit(uint32 mapId, float x, float y, float z, float margin)
+{
+    static std::mutex lock;
+    static std::unordered_map<uint32, std::vector<AreaTrigger const*>> exits;
+    std::vector<AreaTrigger const*> const* list = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto [itr, fresh] = exits.try_emplace(mapId);
+        if (fresh)
+        {
+            constexpr uint32 AREATRIGGER_MAX_ID = 8000;  // AreaTrigger.dbc ids of 3.3.5 stay below it
+            for (uint32 id = 1; id < AREATRIGGER_MAX_ID; ++id)
+                if (AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(id); trigger && trigger->map == mapId)
+                    if (AreaTriggerTeleport const* teleport = sObjectMgr->GetAreaTriggerTeleport(id);
+                        teleport && teleport->target_mapId != mapId)
+                        itr->second.push_back(trigger);
+        }
+        list = &itr->second;
+    }
+    for (AreaTrigger const* trigger : *list)
+    {
+        if (trigger->radius > 0.0f)
+        {
+            float const dx = x - trigger->x;
+            float const dy = y - trigger->y;
+            float const dz = z - trigger->z;
+            if (std::sqrt(dx * dx + dy * dy + dz * dz) <= trigger->radius + margin)
+                return trigger->entry;
+            continue;
+        }
+        // a box: the point in the box's own frame (its orientation)
+        float const c = std::cos(-trigger->orientation);
+        float const s = std::sin(-trigger->orientation);
+        float const dx = x - trigger->x;
+        float const dy = y - trigger->y;
+        float const along = dx * c - dy * s;
+        float const across = dx * s + dy * c;
+        if (std::fabs(along) <= trigger->length / 2.0f + margin && std::fabs(across) <= trigger->width / 2.0f + margin &&
+            std::fabs(z - trigger->z) <= trigger->height / 2.0f + margin)
+            return trigger->entry;
+    }
+    return 0;
 }
 
 bool ClosedDoorNear(Unit* mover, float fromX, float fromY, float toX, float toY, float radius)

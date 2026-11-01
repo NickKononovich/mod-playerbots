@@ -21588,6 +21588,22 @@ namespace TestHarness
         // [lead15] the cadence (user: «чем быстрее у него реакция, тем лучше»): the FAST layer runs on every update
         // while the group fights, a pull waits for its spots or a hazard is active; calm, every LEADER_CALM_TICK_MS.
         // The SLOW layer (exit / re-spot searches, the AoE rule's grid visit) runs only on a change (cached).
+        // [lead93] b134 rfc-h 1206 s: the whole group was ported to the entrance (map 1) and the leader went on with
+        // in-instance moves ("refused a straight move over open air on map 1 ... to (-330.8,243.0,-11.7)"). Outside
+        // the instance the leader issues nothing (logged once); the harness's own re-entry walk brings them back
+        if (tank->GetMapId() != party.content->mapId)
+        {
+            if (!lead.outsideLogged)
+            {
+                lead.outsideLogged = true;
+                DecisionLog::Instance().Write(DecisionRun{party.id, party.seq, party.runStartMs}, "leader",
+                                              "leader_outside", tank->GetGUID(), tank->GetName(), true,
+                                              JsonObject().Num("map", tank->GetMapId())
+                                                  .Num("instanceMap", party.content->mapId));
+            }
+            return;
+        }
+        lead.outsideLogged = false;
         bool anyCombat = party.FightOn(tank);  // [lead84] the one definition
         for (Member const& member : party.members)
             if (!anyCombat)
@@ -21672,6 +21688,10 @@ namespace TestHarness
                     reject = "the spot or its walk is in the reach of " + mob->GetName();
                 else if (noPath)
                     reject = "no walk to the spot";
+                // [lead93] no spot in the instance's exit areatrigger (it ports the member out)
+                else if (uint32 const exit = InInstanceExit(bot->GetMapId(), spot.GetPositionX(), spot.GetPositionY(),
+                                                            spot.GetPositionZ(), bot->GetCombatReach()))
+                    reject = Acore::StringFormat("the spot is in the instance's exit (areatrigger {})", exit);
                 // [lead19] the stricter model: the member's own guard (its idle-wake rule, a closed door) agrees too
                 if (reject.empty() && again)
                     if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot))

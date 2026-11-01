@@ -470,6 +470,7 @@ namespace TestHarness
             ObjectGuid routeFirstFor;  // [lead82] the engage the route walk leads to first (route_first logged)
             std::string lingeringSig;          // [lead84] the lingering combat's mob set (lingering_combat logged)
             ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
+            bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
             struct MeleeMeet
             {
                 ObjectGuid target;  // the mob the point is for

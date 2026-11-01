@@ -98,6 +98,10 @@ struct ClosedDoorHit
 // Any closed door whose bounds come within `radius` (2d) of the segment from (fromX, fromY) to (toX, toY): the cheap
 // gate before a path is built for PathThroughClosedDoor.
 bool ClosedDoorNear(Unit* mover, float fromX, float fromY, float toX, float toY, float radius);
+// [lead93] the map's exit areatriggers (AreaTrigger.dbc entries on `mapId` whose areatrigger_teleport leads to another
+// map): a point within one (its sphere radius or its box, plus `margin`) ports whoever stands there out of the
+// instance. Returns the trigger's id, 0 when none. Cached per map (built once from the DBC)
+uint32 InInstanceExit(uint32 mapId, float x, float y, float z, float margin);
 
 // [b44_gerst] A door (GAMEOBJECT_TYPE_DOOR with a collision model, open or closed) whose centre stands within `radius`
 // (2d) of (x, y) on that floor (DOOR_NEAR_DZ): no fight spot in a doorway (a boss dragged there fights in the gap

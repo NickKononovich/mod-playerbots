@@ -1656,6 +1656,12 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         }
     }
 
+    // [lead93] a led bot never walks into the instance's exit areatrigger (it would port the bot out mid-run)
+    if (Map* exitMap = bot->GetMap(); exitMap && exitMap->IsDungeon() && mapId == bot->GetMapId() &&
+                                      Leader::LedBot(bot) &&
+                                      InInstanceExit(mapId, x, y, z, bot->GetCombatReach()))
+        return false;
+
     // No walk through a closed door, grouped or not, tank included (the forge walls of flame, Utgarde Keep).
     if (Map* map = bot->GetMap(); map && map->IsDungeon() && mapId == bot->GetMapId() && !bot->GetVehicle() &&
                                   !bot->GetTransport() && !bot->IsFlying() && !GuardClosedDoor(x, y, z))
