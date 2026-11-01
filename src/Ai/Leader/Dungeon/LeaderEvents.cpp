@@ -2369,7 +2369,16 @@ namespace Leader::Dungeon
                 // 225 - the chase while the mob walked, the StandAt behind it once it stood, again on its next step. One
                 // decision per fact: a melee member on a mob the tank holds keeps the one Follow behind that mob,
                 // walking or standing (the Follow walks only out of melee reach, lead160); a new target is the next
-                bool const chases = melee && target->GetVictim() == tank && tank->IsWithinMeleeRange(target);
+                // [lead192] b181 (8 runs): 318 overrides chase -> "combat spot: behind the target" and 2103 chase
+                // Follows - the chase ended whenever the mob stepped out of the tank's melee reach for a moment and
+                // a StandAt came, then the chase again. The chase of a mob on the tank holds while it stays on the
+                // tank (the fact it began with); a new target or the mob off the tank ends it
+                Leader::MemberEvents chaseNow;
+                bool const chasing = melee && Leader::Events::Get(guid, chaseNow) &&
+                                     chaseNow.move == Leader::MoveEvent::Follow &&
+                                     chaseNow.followTarget == target->GetGUID();
+                bool const chases =
+                    melee && target->GetVictim() == tank && (chasing || tank->IsWithinMeleeRange(target));
                 if (chases)
                 {
                     if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
