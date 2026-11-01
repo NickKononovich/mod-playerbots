@@ -145,6 +145,23 @@ namespace
                target.find("enemy") != std::string::npos || target.find("aoe") != std::string::npos;
     }
 
+    // [lead170] [lead181] the healer's fight: its own combat flag, or the leader's Heal while a group member still
+    // fights (b180 5B / 5G: the Heal outlived the fight and the holy paladin's blessings on others went out after it,
+    // without Prepare - 16 / 13 own_decision)
+    bool HealerFights(Player* self, Leader::MemberEvents const& events)
+    {
+        if (self->IsInCombat())
+            return true;
+        if (events.attack != Leader::AttackEvent::Heal)
+            return false;
+        if (Group* group = self->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member != self && member->GetMap() == self->GetMap() && member->IsInCombat())
+                    return true;
+        return false;
+    }
+
     bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
                         bool combat, bool gate = false)
     {
@@ -333,7 +350,7 @@ bool RaidLeader::GateVetoes(PlayerbotAI* botAI, Leader::MemberEvents const& even
     if (handlers.empty())
         return false;
     Player* bot = botAI->GetBot();
-    bool const combat = bot->IsInCombat() || events.attack == Leader::AttackEvent::Heal;  // [lead170]
+    bool const combat = HealerFights(bot, events);  // [lead170] [lead181]
     for (NextAction handler : handlers)  // getName is not const
     {
         Action* action = botAI->GetAiObjectContext()->GetAction(handler.getName());
@@ -511,7 +528,7 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
         // own (the tank held every mob, nobody needed a heal yet): "power word: shield / prayer of mending on main
         // tank" were vetoed as buffs on another member without Prepare. Under the leader's Heal the group's fight is
         // its fight
-        bool const fight = bot->IsInCombat() || events.attack == Leader::AttackEvent::Heal;
+        bool const fight = HealerFights(bot, events);  // [lead181] the Heal only while the group fights
         if (OwnDecisionOff(bot, action, action->getName(), events, fight))
         {
             // [lead18] a vetoed action reached the multiplier: its trigger / chain was evaluated (vetoed_eval)
