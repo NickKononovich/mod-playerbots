@@ -7772,6 +7772,12 @@ uint32 PlayerbotAI::GetReactDelay()
         }
     }
 
+    // [lead171] a led tank with an open pull order runs its steps fast (the walk in, the opener at range, the tag):
+    // b180 pull_trace, every step of an order waited for the idle 10-30 x base
+    if (Leader::LEADER_FAST_REACT && Leader::Orders::IsTracked(bot->GetGUID()) &&
+        Leader::Orders::IsOpen(bot->GetGUID()))
+        return base * 2;
+
     // When not resting, return 10-30 times the base
     if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
         return base * urand(10, 30);

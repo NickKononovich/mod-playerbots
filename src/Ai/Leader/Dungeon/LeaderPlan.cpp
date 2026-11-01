@@ -662,6 +662,12 @@ namespace Leader::Dungeon
         auto const issue = [&](PullPlanner::Decision const& decision, std::string const& pickWhy)
         {
             PullPlanner::Issue(group.LeaderGuid(), decision);
+            // [lead171] b180 pull_trace (523 orders): the tank's engine first looked at an issued order 1.5 s median
+            // (p90 2.5 s) after it - out of combat a led tank kept the idle 10-30 x react delay (GetReactDelay; only
+            // executor members are woken by their events). The order wakes it like a member's event
+            if (Leader::LEADER_FAST_REACT)
+                if (PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank))
+                    tankAI->SetNextCheckDelay(0);
             // [lead14] the route view's red line: the issued pull's mob and the spot the tank pulls from
             {
                 ObjectGuid const mob = !decision.planTarget.IsEmpty()
