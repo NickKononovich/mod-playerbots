@@ -390,6 +390,38 @@ namespace Leader::Fight
         constexpr float STEPS[] = {3.0f, 5.0f, 7.0f, 10.0f, 13.0f, 16.0f};
         constexpr uint32 DIRECTIONS = 16;
         Map* map = bot->GetMap();
+        // [lead155] b174 20261101-155639 669.5 s: "no safe spot out of area cast of Taragaman the Hungerer keeps the
+        // heal reach" - the rings round the member end at 16 yd, the cast's circle (its spell radius) reaches farther.
+        // First the spots just outside each circle the member stands in (its radius + the edge, along the member's
+        // way out and round it), then the rings
+        for (HazardZone const& zone : zones)
+        {
+            float const fromCentre = zone.centre.GetExactDist2d(bot->GetPositionX(), bot->GetPositionY());
+            if (fromCentre > zone.radius)
+                continue;
+            float const away = std::atan2(bot->GetPositionY() - zone.centre.GetPositionY(),
+                                          bot->GetPositionX() - zone.centre.GetPositionX());
+            for (uint32 i = 0; i < DIRECTIONS; ++i)
+            {
+                float const turn = float((i + 1) / 2) * 2.0f * float(M_PI) / float(DIRECTIONS) * (i % 2 ? 1.0f : -1.0f);
+                float const angle = away + turn;
+                float const ring = zone.radius + LEADER_HAZARD_EDGE + 0.5f;
+                float x = zone.centre.GetPositionX() + std::cos(angle) * ring;
+                float y = zone.centre.GetPositionY() + std::sin(angle) * ring;
+                float z = bot->GetPositionZ();
+                if (!map->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
+                                                          bot->GetPositionZ(), x, y, z) ||
+                    std::fabs(z - bot->GetPositionZ()) > 4.0f || !LeaderSpotSafe(bot, botAI, zones, x, y, z))
+                    continue;
+                Position const spot(x, y, z);
+                if (!keeps(spot))
+                    continue;
+                if (LeaderCandidate(bot, spot, fallback) != 2)
+                    continue;
+                out = spot;
+                return true;
+            }
+        }
         for (float step : STEPS)
             for (uint32 i = 0; i < DIRECTIONS; ++i)
             {

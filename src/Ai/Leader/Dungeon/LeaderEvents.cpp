@@ -2053,17 +2053,22 @@ namespace Leader::Dungeon
                                   : LeaderZoneAt(zones, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
                                                  0.5f);
                 auto const held = lead.hazardSpots.find(guid);
-                bool const keepHeld =
-                    !in && held != lead.hazardSpots.end() && !zones.empty() &&
-                    LeaderZoneAt(zones, held->second.GetPositionX(), held->second.GetPositionY(),
-                                 held->second.GetPositionZ(), LEADER_HAZARD_EDGE + 6.0f) &&
+                // [lead155] b174 20261101-155639 669.2-670.4 s: Rtshaab's escape from Taragaman's area cast was
+                // computed again every tick from where it walked (-204.5 -> -203.4 -> -204.4), a new MoveTo each time
+                // (command_repeat). The escape spot is decided once per hazard and kept while it stays safe, also
+                // while the member still walks out (it is in the circle)
+                bool const heldSafe =
+                    held != lead.hazardSpots.end() && !zones.empty() &&
                     LeaderSpotSafe(bot, botAI, zones, held->second.GetPositionX(), held->second.GetPositionY(),
                                    held->second.GetPositionZ());
+                bool const keepHeld =
+                    heldSafe && (in || LeaderZoneAt(zones, held->second.GetPositionX(), held->second.GetPositionY(),
+                                                    held->second.GetPositionZ(), LEADER_HAZARD_EDGE + 6.0f));
                 if (in || keepHeld)
                 {
                     hazardSeen = true;
                     Position spot;
-                    bool const found =
+                    bool found =
                         keepHeld ? (spot = held->second, true)
                                  : slow([&]
                                         {
@@ -2073,10 +2078,27 @@ namespace Leader::Dungeon
                                                               : std::function<bool(Position const&)>(keepsHealer),
                                                 spot);
                                         });
+                    // [lead155] out of the damage first: no spot keeps the heal reach - the nearest safe one (logged
+                    // as the heal-reach gap below), never a stay in the circle
+                    bool healReachLost = false;
+                    if (!found && in)
+                    {
+                        std::function<bool(Position const&)> const anySpot = [](Position const&) { return true; };
+                        found = slow([&] { return LeaderSafeSpot(bot, botAI, zones, anySpot, spot); });
+                        healReachLost = found;
+                    }
+                    if (healReachLost && Leader::LEADER_HEAL_REACH && healer)
+                        LogHealReach(group, bot, bot == healer ? tank : healer,
+                                     "no safe spot out of " + in->what + " keeps the heal reach", "the nearest safe");
                     if (found)
                     {
                         lead.hazardSpots[guid] = spot;
-                        std::string const why = std::string("hazard: ") + (in ? in->what : "held out of it");
+                        std::string why = std::string("hazard: ") + (in ? in->what : "held out of it");
+                        // [lead155] the held escape keeps its command's text (no new command for a new label)
+                        if (Leader::MemberEvents current; keepHeld && Leader::Events::Get(guid, current) &&
+                                                          current.moveWhy.rfind("hazard: ", 0) == 0 &&
+                                                          current.spot.GetExactDist(spot) <= 0.5f)
+                            why = current.moveWhy;
                         if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.0f, why))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                      JsonObject().Str("why", why).Real("x", spot.GetPositionX())
@@ -2085,9 +2107,13 @@ namespace Leader::Dungeon
                             healerAt = spot;
                         moved = true;
                     }
-                    else if (in && Leader::LEADER_HEAL_REACH && healer)
-                        LogHealReach(group, bot, bot == healer ? tank : healer,
-                                     "no safe spot out of " + in->what + " keeps the heal reach", "none");
+                    else if (in)
+                    {
+                        if (Leader::LEADER_HEAL_REACH && healer)
+                            LogHealReach(group, bot, bot == healer ? tank : healer,
+                                         "no safe spot out of " + in->what + " keeps the heal reach", "none");
+                        moved = true;  // [lead155] the hazard owns the member: no fight-spot walk in the circle
+                    }
                 }
                 else
                     lead.hazardSpots.erase(guid);
@@ -2303,6 +2329,11 @@ namespace Leader::Dungeon
                                                   : shoot > 0.0f && gap <= shoot && gap >= minGap &&
                                                         LeaderSeesFrom(bot, target, at);
                                         float const walk = bot->GetExactDist(at);
+                                        // [lead155] never a point a hazard covers (b174 669.5 s: "a hazard covers
+                                        // it" went straight to the fallback)
+                                        if (fits && !LeaderSpotSafe(bot, botAI, zones, at.GetPositionX(),
+                                                                    at.GetPositionY(), at.GetPositionZ()))
+                                            continue;
                                         if (fits && (best < 0.0f || walk < best))
                                         {
                                             best = walk;
@@ -2311,7 +2342,10 @@ namespace Leader::Dungeon
                                         }
                                     }
                                 }
-                                if (!melee && best < 0.0f)
+                                Position const tankAt = tank->GetPosition();
+                                bool const tankSafe = LeaderSpotSafe(bot, botAI, zones, tankAt.GetPositionX(),
+                                                                     tankAt.GetPositionY(), tankAt.GetPositionZ());
+                                if ((!melee || !tankSafe) && best < 0.0f)
                                 {
                                     thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> noneLogged;
                                     if (noneLogged.size() > 4096)
