@@ -117,6 +117,8 @@ namespace Leader::Travel
     using namespace Leader::Knowledge;
     using Leader::Dungeon::PULL_ABORT_HOLD_MS;
     using Leader::Dungeon::CAREFUL_REFUSED_SKIP_MS;
+    using Leader::Dungeon::DOOR_WALK_MS;
+    using Leader::Dungeon::TankPullState;
 
     bool PullAfterHoldPasses(ObjectGuid leader, ObjectGuid blocker)
         {
@@ -1861,5 +1863,3345 @@ namespace Leader::Travel
         if (sinceMs)
             *sinceMs = lead.aoePlanSinceMs;
         return true;
+    }
+
+    void Steer(LeaderGroup& group, Player* leader)
+    {
+        GroupRouteState& routeState = group.Route();
+        // The tank's trail for the guarded follows of its members: the harness walks (MovePoint, its waypoint) are no
+        // MoveTo of the tank's own (MovementAction::RecordTankTrail samples it every 2 yd).
+        MovementAction::RecordTankTrail(leader);
+
+        // [lead27] rfc-h 20261031-122130: the engage order was issued at 69.8 s and the route's approach stop kept
+        // stepping the tank back ("stop_out_of_real_reach", its waypoint) - the tank never took the order, the run
+        // stood. An issued leader order (or its committed pull) wins: no route walk of the tank meanwhile
+        // [lead33] ... and for any committed pull (its gate, window and order are the leader's), the route target
+        // being the commitment's mob (one target)
+        if (group.LeaderDecides() && (Leader::Orders::IsOpen(group.LeaderGuid()) || group.State().commit))
+        {
+            if (group.State().commit && !group.State().commitMob.IsEmpty())
+                routeState.target = group.State().commitMob;
+            TestRunner::ClearWaypoint(group.LeaderGuid());
+            return;
+        }
+
+        // [ledge_drop_link] plan29 follow-up 5: while the group crosses a route link (the leader over it, the members
+        // following), its step down is the route - the ledge guard (JudgeLedgeDrop) lets the drops pass.
+        // [link_stale_end] a link chosen and never walked (WalkToLink runs only with no target: dmw-n 20261025-
+        // 163739-4 kept "walking to it, 1527 s, 0 crossed" for Immol'thar long after his kill from the ledge) ends
+        // after LINK_STALE_MS.
+        constexpr uint32 LINK_DROP_ALLOW_MS = 5 * IN_MILLISECONDS;
+        constexpr uint32 LINK_STALE_MS = 10 * MINUTE * IN_MILLISECONDS;
+        if (routeState.linkIdx >= 0)
+        {
+            if (routeState.linkLeaderCrossed)
+                for (LeaderGroup::MemberInfo const& member : group.Members())
+                    AllowLedgeDrop(member.guid, LINK_DROP_ALLOW_MS);
+            else if (routeState.linkSinceMs && getMSTimeDiff(routeState.linkSinceMs, getMSTime()) > LINK_STALE_MS)
+                EndLink(group, "stale (never walked)");
+        }
+
+        // [pull_estimate_vs_actual] each planned pull, once over: the planner's estimate against what engaged
+        {
+            PullEstimate::Result result;
+            uint32& seen = pullEstimateSeen[group.LeaderGuid()];
+            if (PullEstimate::Take(group.LeaderGuid(), seen, result))
+            {
+                seen = result.id;
+                Creature* pulled = leader->GetMap() ? leader->GetMap()->GetCreature(result.target) : nullptr;
+                group.LogEvent("pull_estimate_vs_actual",
+                         JsonObject().Num("pull", group.PullSeq())
+                             .Str("target", pulled ? pulled->GetName() : std::string())
+                             .Num("targetEntry", result.target.GetEntry()).Str("kind", result.kind)
+                             .Str("via", result.via).Num("estimated", result.estimated).Real("cost", result.cost)
+                             .Num("engaged", result.engaged)
+                             .Num("diff", int64(result.engaged) - int64(result.estimated))
+                             .Num("deaths", result.deaths).Num("durationSec", result.durationSec)
+                             .Bool("fought", result.fought).Str("plan", result.reason));
+            }
+        }
+
+        // [pull_after_hold] (4) the walk to the door that hides the blocker: on until it is open
+        if (auto walk = doorWalks.find(group.LeaderGuid()); walk != doorWalks.end())
+        {
+            Map* doorMap = leader->GetMap();
+            GameObject* door = doorMap ? doorMap->GetGameObject(walk->second.door) : nullptr;
+            Creature* behind = doorMap ? doorMap->GetCreature(walk->second.blocker) : nullptr;
+            uint32 const nowMs = getMSTime();
+            if (!door || door->GetGoState() != GO_STATE_READY || !behind || !behind->IsAlive() ||
+                behind->IsInCombat() || leader->IsInCombat() || int32(walk->second.untilMs - nowMs) <= 0)
+                doorWalks.erase(walk);
+            else
+            {
+                // [lead11] a door that closes again by itself: the whole group at the opener first, no cap
+                if (leader->GetExactDist(door) <= door->GetInteractionDistance() &&
+                    DoorGatherHolds(group, leader, door))
+                {
+                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    return;
+                }
+                if (OpenDoorByUse(leader, door))
+                {
+                    group.LogEvent("pull_after_hold",
+                             JsonObject().Str("action", "opened the door").Str("door", door->GetName())
+                                 .Num("doorEntry", door->GetEntry()).Str("blocker", behind->GetName())
+                                 .Num("blockerEntry", behind->GetEntry())
+                                 .Real("blockerDistance", leader->GetExactDist(behind)));
+                    doorWalks.erase(walk);
+                }
+                else
+                    group.SetLeaderWaypoint(leader, walk->second.point.x, walk->second.point.y,
+                                      walk->second.point.z);
+                return;
+            }
+        }
+
+        // [hleft-hor-reentry-hold] Halls of Reflection: after a Falric / Marwyn wave wipe the waves resume once every
+        // player INSIDE stands alive within 40 yd of the hall centre (instance_halls_of_reflection.cpp
+        // MAX_DIST_FROM_CENTER_TO_START), and nobody else gets in while they run (TRANSFER_ABORT_ZONE_IN_COMBAT).
+        // hor-h 2026-10-25 (20261025-065720-hor-h-5A-73): the first member back walked to the centre, the waves
+        // restarted for one or two, they died, the others bounced off areatrigger 5636 for ten minutes. The leader
+        // holds at the entrance until every member is inside and alive.
+        if (leader->GetMapId() == HOR_MAP && leader->IsAlive() && !leader->IsInCombat())
+        {
+            InstanceScript const* horScript = leader->GetInstanceScript();
+            bool waveWiped = false;
+            for (BossFacts const& boss : group.Bosses())
+                waveWiped |= (boss.entry == HOR_FALRIC_ENTRY || boss.entry == HOR_MARWYN_ENTRY) && boss.wipes > 0;
+            if (horScript && waveWiped && horScript->GetBossState(HOR_MARWYN_SLOT) != DONE)
+            {
+                std::string away;
+                for (LeaderGroup::MemberInfo const& member : group.Members())
+                {
+                    Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                    if (!bot || !bot->IsAlive() || bot->GetMap() != leader->GetMap())
+                        away += (away.empty() ? "" : ", ") + member.name;
+                }
+                if (!away.empty())
+                {
+                    float const fromCentre = leader->GetExactDist2d(HOR_CENTRE_X, HOR_CENTRE_Y);
+                    uint32 const nowMs = getMSTime();
+                    if (!routeState.horHoldLogMs || getMSTimeDiff(routeState.horHoldLogMs, nowMs) > HOR_HOLD_LOG_MS)
+                    {
+                        routeState.horHoldLogMs = nowMs ? nowMs : 1;
+                        group.LogEvent("hor_entrance_hold", JsonObject().Str("waitingFor", away)
+                                                                 .Real("fromCentre", fromCentre));
+                    }
+                    routeState.target.Clear();
+                    group.NoteProgress(nowMs);
+                    if (fromCentre < HOR_HOLD_FROM_CENTRE)
+                        group.SetLeaderWaypoint(leader, HOR_ENTRANCE_X, HOR_ENTRANCE_Y, HOR_ENTRANCE_Z);
+                    else
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                    return;
+                }
+            }
+        }
+
+        // [hleft-swim-back] Blackfathom Deeps heroic 2026-10-25 (20261025-062726-bfd-h-5A-19): after Old Serra'kis the
+        // group surfaced in the moat round Twilight Lord Kelris's platform (-787,-196,-31.4); the moat is a navmesh
+        // part of its own (tools/navmesh_probe.py 48 -787.3 -195.6 -31.4 -797.2 -223.8 -25.6: NOT CONNECTED, the
+        // ledge 6.7 yd above the water), the route "ended beside a gap" under the platform and the leader stood
+        // "own path makes no progress, no straight walk over ground" for 8 minutes. A swimmer leaves the water the
+        // way it came in: the trail of its swim back to the last dry ground, straight swims point to point.
+        if (ROUTE_SWIM_BACK && leader->IsAlive())
+        {
+            uint32 const nowMs = getMSTime();
+            bool const inWater = leader->IsInWater();
+            if (!inWater && !leader->IsFalling() && !leader->IsFlying())
+            {
+                routeState.swimDry = leader->GetPosition();
+                routeState.swimDryKnown = true;
+                routeState.swimTrail.clear();
+                if (routeState.swimBack)
+                    group.LogEvent("swim_back", JsonObject().Str("action", "on dry ground")
+                                                     .Real("x", leader->GetPositionX())
+                                                     .Real("y", leader->GetPositionY())
+                                                     .Real("z", leader->GetPositionZ()));
+                routeState.swimBack = false;
+            }
+            else if (inWater)
+            {
+                if (routeState.swimTrail.empty() && routeState.swimDryKnown)
+                    routeState.swimTrail.push_back(routeState.swimDry);
+                if (routeState.swimTrail.empty() ||
+                    leader->GetExactDist(&routeState.swimTrail.back()) >= SWIM_TRAIL_STEP)
+                {
+                    if (routeState.swimTrail.size() >= SWIM_TRAIL_MAX)
+                        routeState.swimTrail.erase(routeState.swimTrail.begin() + 1);  // the dry spot stays first
+                    routeState.swimTrail.push_back(leader->GetPosition());
+                }
+            }
+            if (routeState.swimBack && getMSTimeDiff(routeState.swimBackSinceMs, nowMs) > SWIM_BACK_MAX_MS)
+            {
+                group.LogEvent("swim_back",
+                         JsonObject().Str("action", "given up").Num("trail", uint32(routeState.swimTrail.size())));
+                routeState.swimBack = false;
+            }
+            if (routeState.swimBack && inWater && !leader->IsInCombat())
+            {
+                // The point nearest the dry spot the swimmer sees from here (a shortcut over the trail).
+                for (Position const& point : routeState.swimTrail)
+                {
+                    if (leader->GetExactDist(&point) <= WAYPOINT_REACHED_SWIM)
+                        continue;
+                    if (!leader->IsWithinLOS(point.GetPositionX(), point.GetPositionY(), point.GetPositionZ() + 1.0f))
+                        continue;
+                    group.SetLeaderWaypoint(leader, point.GetPositionX(), point.GetPositionY(),
+                                      point.GetPositionZ(), true);
+                    routeState.steerSinceMs = nowMs;
+                    group.NoteProgress(nowMs);
+                    return;
+                }
+            }
+        }
+
+        // A regroup after a revive goes on past the far-member wait (its 60 s wait_timeout): the group stays on
+        // "stay" until the returning side is with it, the route waits; MeetMember ends it when everybody is together.
+        if (group.Regrouping())
+        {
+            std::vector<Player*> players;
+            for (LeaderGroup::MemberInfo const& member : group.Members())
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
+                    if (bot->IsInWorld())
+                        players.push_back(bot);
+            if (group.MeetMember(players, leader))
+                return;
+        }
+
+        // A wing closed to this run (AreaGateDef::onlyContent): the tank's own pull choice stays out of it
+        // (KeepTankOutOfClosedAreas) and the walk never leads through it (below).
+        std::vector<AreaGateDef const*> steerClosedAreas;
+        for (AreaGateDef const* gate : AreaGates(group.MapId()))
+            if (AreaGateForContent(*gate, group.ContentKey().c_str()) &&
+                (gate->afterDead.empty() || !EntriesDead(group, gate->afterDead)))
+                steerClosedAreas.push_back(gate);
+        steerClosedAreas = KeepOutAreas(steerClosedAreas);
+        KeepTankOutOfClosedAreas(leader, steerClosedAreas);
+
+        // Inside such a wing out of combat (a fight ran in, a chase): out through its exit before the route goes on.
+        // The routes from in there pass its packs (LBRS run 13:04: 6 minutes in the UBRS hall, as deep as x 225).
+        for (AreaGateDef const* gate : steerClosedAreas)
+        {
+            if (gate->exitZ <= -100000.0f || !leader->IsAlive() || leader->IsInCombat() ||
+                !InAreaGate(*gate, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()))
+                continue;
+            G3D::Vector3 const goal(gate->exitX, gate->exitY, gate->exitZ);
+            PathResult leg;
+            SteerLeg(leader, goal, leg);
+            if (leg.type & PATHFIND_NOPATH)
+                break;
+            G3D::Vector3 const waypoint =
+                FloorWaypoint(leader, leg, RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
+            if (routeState.lastEvent.rfind("closed area exit", 0) != 0)
+            {
+                routeState.lastEvent = std::string("closed area exit: ") + gate->note;
+                group.LogEvent("closed_area_exit", JsonObject().Str("note", gate->note)
+                                                        .Real("x", leader->GetPositionX())
+                                                        .Real("y", leader->GetPositionY())
+                                                        .Real("z", leader->GetPositionZ()));
+            }
+            group.SetLeaderWaypoint(leader, waypoint.x, waypoint.y, waypoint.z);
+            if (leader->isMoving())
+                group.NoteProgress(getMSTime());
+            // [b31_ubrs_door] The way out holds at a door that stays shut for good now (ShutForGoodDoorSlot: UBRS'
+            // wave portcullis 175185 after Rend): the group is locked in. ubrs-n 20261025-184229-10B-43 stood 45 min
+            // in the drake pen until "no boss progress"; the verdict says what happened, LOCKED_IN_FAIL_MS after.
+            uint32 const lockNow = getMSTime();
+            GameObject* lockDoor =
+                routeState.doorHoldMs && getMSTimeDiff(routeState.doorHoldMs, lockNow) < IN_MILLISECONDS
+                    ? leader->GetMap()->GetGameObject(routeState.doorHold)
+                    : nullptr;
+            InstanceScript const* lockScript = leader->GetInstanceScript();
+            if (lockDoor && lockScript && ShutForGoodDoorSlot(lockScript, lockDoor) >= 0)
+            {
+                uint32& since = lockedInSince[group.Run().runSeq];
+                if (!since)
+                {
+                    since = lockNow ? lockNow : 1;
+                    LOG_INFO("playerbots", "[b31_ubrs_door] {}: the leader is locked in ({}): the way out runs through "
+                                           "{} {}, shut for good",
+                             group.Run().runId, gate->note, lockDoor->GetName(), lockDoor->GetEntry());
+                    group.LogEvent("locked_in", JsonObject().Str("note", gate->note).Str("door", lockDoor->GetName())
+                                                     .Num("doorEntry", lockDoor->GetEntry())
+                                                     .Real("x", leader->GetPositionX())
+                                                     .Real("y", leader->GetPositionY())
+                                                     .Real("z", leader->GetPositionZ()));
+                }
+                else if (getMSTimeDiff(since, lockNow) >= LOCKED_IN_FAIL_MS)
+                {
+                    lockedInSince.erase(group.Run().runSeq);
+                    group.FinishRun("failed",
+                                    std::string("group locked in: ") + gate->note + " - the way out runs through " +
+                                        lockDoor->GetName() + " " + std::to_string(lockDoor->GetEntry()) +
+                                        ", which nothing opens any more");
+                }
+            }
+            else
+                lockedInSince.erase(group.Run().runSeq);
+            return;
+        }
+
+        // [b46_patrol] PATROL_STEP_BACK: out of a patrol's way first; the rest hold then holds at the step-back spot.
+        // [lead4] LEADER_ONE_PATROL_OWNER: one patrol decision (LeaderPatrolTick: wait or pull the patrol), the step
+        // back only as its wait's spot; the old independent step back and patrol hold below are off
+        if (LeaderOwnsPatrols(group) ? LeaderPatrolTick(group, leader) : PatrolStepBack(group, leader))
+            return;
+
+        // ROUTE_REST_HOLD: no walk while a member sits eating / drinking or is about to; the leader stands.
+        {
+            std::string const resting = RestHoldMembers(group, leader);
+            RestHold& hold = restHolds[group.InstanceId()];
+            if (!resting.empty())
+            {
+                if (!hold.logged)
+                {
+                    hold.logged = true;
+                    routeState.lastEvent = "rest hold: " + resting;
+                    std::string const target =
+                        routeState.target.IsEmpty() ? std::string() : routeState.target.ToString();
+                    group.LogEvent("rest_hold", JsonObject().Str("state", "waiting").Str("members", resting)
+                                                     .Str("target", target)
+                                                     .Real("x", leader->GetPositionX())
+                                                     .Real("y", leader->GetPositionY())
+                                                     .Real("z", leader->GetPositionZ()));
+                }
+                // [b48_scholo] the walk under way stops too (HaltLeaderWalk)
+                if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
+                    group.LogEvent("harness_walk_halt", JsonObject().Str("hold", "rest").Str("why", resting)
+                                                             .Real("x", leader->GetPositionX())
+                                                             .Real("y", leader->GetPositionY())
+                                                             .Real("z", leader->GetPositionZ())
+                                                             .Real("toX", haltedTo.x).Real("toY", haltedTo.y)
+                                                             .Real("toZ", haltedTo.z));
+                TestRunner::ClearWaypoint(group.LeaderGuid());
+                return;
+            }
+            if (hold.logged)
+            {
+                hold.logged = false;
+                // Retarget skipped its 4 s turns during the hold (RestHoldMembers): the next target at once.
+                routeState.nextRetargetMs = getMSTime();
+                group.LogEvent("rest_hold", JsonObject().Str("state", hold.timedOut ? "timeout" : "done")
+                                                 .Str("members", hold.members));
+            }
+            hold.timedOut = false;
+        }
+
+        // [b43_harn] ROUTE_PATROL_HOLD (PatrolHoldWhy): no walk while a patrol comes to the group or the tank's planner
+        // pulls one; the leader stands, the planner meets it where the group is. A running patrol wait spot walk
+        // ([patrol_wait_spot]) is the planner's own patrol answer and keeps its waypoint.
+        if (!LeaderOwnsPatrols(group) &&  // [lead4] the leader's patrol decision ran above (LeaderPatrolTick)
+            !(routeState.patrolWaitUntilMs && routeState.patrolWaitTarget == routeState.target &&
+              int32(routeState.patrolWaitUntilMs - getMSTime()) > 0))
+        {
+            std::string const patrolWhy = PatrolHoldWhy(group, leader);
+            PatrolHold& hold = patrolHolds[group.InstanceId()];
+            if (!patrolWhy.empty())
+            {
+                uint32 const holdNow = getMSTime();
+                if (!hold.logged)
+                {
+                    hold.logged = true;
+                    routeState.lastEvent = "patrol hold: " + patrolWhy;
+                    LOG_INFO("playerbots", "[b43_harn] patrol_hold {}: {}", leader->GetName(), patrolWhy);
+                    group.LogEvent("patrol_hold", JsonObject().Str("state", "waiting").Str("why", patrolWhy)
+                                                       .Real("x", leader->GetPositionX())
+                                                       .Real("y", leader->GetPositionY())
+                                                       .Real("z", leader->GetPositionZ()));
+                }
+                // The tank keeps planning the route target meanwhile; the hold is no route stall.
+                if (!routeState.target.IsEmpty() && !routeState.targetIsStarter && !LeaderPicksFor(group))  // [lead5]
+                    RouteTarget::Set(group.LeaderGuid(), routeState.target);
+                routeState.steerSinceMs = holdNow;
+                routeState.steerAnchor = leader->GetPosition();
+                routeState.steerNoNearerMs = 0;
+                routeState.driveSinceMs = holdNow;
+                routeState.driveAnchor = leader->GetPosition();
+                // [b48_scholo] the walk under way stops too (scholo-h 111724-5C-4: 12 yd on into the patrol's walk)
+                if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
+                {
+                    LOG_INFO("playerbots", "[b48_scholo] halt_walk {}: patrol hold stops the walk to ({:.1f},{:.1f},"
+                             "{:.1f}) at ({:.1f},{:.1f},{:.1f}): {}", leader->GetName(), haltedTo.x, haltedTo.y,
+                             haltedTo.z, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(),
+                             patrolWhy);
+                    group.LogEvent("harness_walk_halt", JsonObject().Str("hold", "patrol").Str("why", patrolWhy)
+                                                             .Real("x", leader->GetPositionX())
+                                                             .Real("y", leader->GetPositionY())
+                                                             .Real("z", leader->GetPositionZ())
+                                                             .Real("toX", haltedTo.x).Real("toY", haltedTo.y)
+                                                             .Real("toZ", haltedTo.z));
+                }
+                TestRunner::ClearWaypoint(group.LeaderGuid());
+                return;
+            }
+            if (hold.logged)
+            {
+                hold.logged = false;
+                group.LogEvent("patrol_hold", JsonObject().Str("state", hold.timedOut ? "timeout" : "done")
+                                                   .Str("why", hold.why));
+            }
+            hold.timedOut = false;
+        }
+
+        // [b33_sh2] sh-n 20261026-003732-sh-n-5B-89, 1370-1512 s: the target Shattered Hand Champion set, the phantom
+        // combat already declared and ended (the harness out of combat, phase traveling), yet the tank Rlwaraj stayed
+        // flagged in combat with 0 attackers; this gate cleared its waypoint and the route target every tick without a
+        // word ("pull action: no target", "test runner move -> 0.0 yd" for 140 s, then the stall skipped the target).
+        // Steer runs only while the harness counts the party out of combat, so a leader flagged here with nobody on
+        // it is that phantom flag: the walk goes on (the route target too, the tank's pull gets its target). A leader
+        // somebody attacks still holds. Either way a held walk is logged (harness_hold).
+        bool const leaderFlagOnly = !routeState.target.IsEmpty() && leader->IsInCombat() && !group.FightOn(leader);
+        if (!routeState.target.IsEmpty() && leader->IsInCombat())
+        {
+            uint32 const holdNow = getMSTime();
+            std::string const why = leaderFlagOnly
+                                        ? "leader flagged in combat, nobody on it (phantom): the walk goes on"
+                                        : "leader in combat with attackers: no walk, no pull";
+            if (why != routeState.harnessHoldWhy || !routeState.harnessHoldLogMs ||
+                getMSTimeDiff(routeState.harnessHoldLogMs, holdNow) > 15 * IN_MILLISECONDS)
+            {
+                routeState.harnessHoldWhy = why;
+                routeState.harnessHoldLogMs = holdNow ? holdNow : 1;
+                std::string refs;
+                for (auto const& [guid, ref] : leader->GetCombatManager().GetPvECombatRefs())
+                    if (Unit* other = ref ? ref->GetOther(leader) : nullptr)
+                        refs += (refs.empty() ? "" : ", ") + std::string(other->GetName()) +
+                                Acore::StringFormat(" {:.1f} yd", leader->GetExactDist(other));
+                Unit const* holdTarget = leader->GetMap() ? leader->GetMap()->GetCreature(routeState.target) : nullptr;
+                LOG_INFO("playerbots", "[b33_sh2] harness_hold {}: {} (attackers {}, refs: {})", leader->GetName(), why,
+                         leader->getAttackers().size(), refs.empty() ? "none" : refs);
+                group.LogEvent("harness_hold",
+                         JsonObject().Str("why", why).Str("target", holdTarget ? holdTarget->GetName() : "")
+                             .Real("distance", holdTarget ? leader->GetExactDist(holdTarget) : -1.0f)
+                             .Num("attackers", int64(leader->getAttackers().size())).Str("combatRefs", refs)
+                             .Bool("walks", leaderFlagOnly));
+            }
+        }
+
+        if (routeState.target.IsEmpty() || (leader->IsInCombat() && !leaderFlagOnly))
+        {
+            RouteTarget::Clear(group.LeaderGuid());  // no route target to plan (or a fight on)
+            // [ulda-ritual-hold] no event-spot / link / escort walk while the ritual channel runs
+            if (auto const hold = ritualHoldUntilMs.find(group.InstanceId());
+                hold != ritualHoldUntilMs.end() && int32(hold->second - getMSTime()) > 0 && !leader->IsInCombat())
+            {
+                TestRunner::ClearWaypoint(group.LeaderGuid());
+                return;
+            }
+            bool const idle = routeState.noTargets && !leader->IsInCombat() && !group.InCombat();
+            // A scripted intro keeps its boss immune (ROUTE_INTRO_WAIT, RunningIntroBoss: Svala's Arthas talk, 72 s
+            // from areatrigger 5140): the group waits where it stands - within her 100 yd target pick - instead of
+            // pulling elsewhere, buffing and drinking meanwhile; neither the "no targets" end nor a wing change
+            // comes from that wait. At most INTRO_WAIT_MAX_MS.
+            if (idle && ROUTE_INTRO_WAIT)
+            {
+                Creature* intro = RunningIntroBoss(leader);
+                uint32 const now = getMSTime();
+                auto const since = introWaitSinceMs.find(group.InstanceId());
+                if (!intro)
+                    introWaitSinceMs.erase(group.InstanceId());
+                else if (since == introWaitSinceMs.end() || getMSTimeDiff(since->second, now) < INTRO_WAIT_MAX_MS)
+                {
+                    // A member started it (the UP strategy's "svala start event" walks in from 70 yd) while the
+                    // leader was still on the way: the walk to the spot goes on first.
+                    if (leader->GetExactDist(intro) > INTRO_WAIT_RANGE && WalkToEventSpot(group, leader))
+                        return;
+                    if (since == introWaitSinceMs.end())
+                    {
+                        introWaitSinceMs[group.InstanceId()] = now;
+                        routeState.lastEvent = std::string("intro wait: ") + intro->GetName();
+                        group.LogEvent("intro_wait", JsonObject().Str("state", "waiting").Str("boss", intro->GetName())
+                                                          .Num("entry", intro->GetEntry())
+                                                          .Real("distance", leader->GetExactDist(intro))
+                                                          .Real("x", leader->GetPositionX())
+                                                          .Real("y", leader->GetPositionY())
+                                                          .Real("z", leader->GetPositionZ()));
+                    }
+                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    routeState.noTargetsSinceMs = now;
+                    return;
+                }
+            }
+            if (idle && (StayWithEscort(group, leader) || WalkToEventGather(group, leader) ||
+                         WalkToEventSpot(group, leader) || WalkToLink(group, leader)))
+                return;
+            // A starter step-out the leader walks on its own (UseStarterItem) keeps its waypoint.
+            if (!routeState.waypointHoldUntilMs || int32(getMSTime() - routeState.waypointHoldUntilMs) >= 0)
+                TestRunner::ClearWaypoint(group.LeaderGuid());
+            // An escort still walking (or waiting for its next wave) is no reason to end the run or change wings,
+            // nor the Oculus drake flow between the rings (the OC strategy mounts and flies the group).
+            if (idle && (!routeState.escort.IsEmpty() || OculusDrakePhase(leader) || group.ScriptEventRunning()))
+            {
+                routeState.noTargetsSinceMs = getMSTime();
+                return;
+            }
+            // [sm-wing-done] an empty wing waits WING_DONE_NO_TARGET_MS, not 30 s (one-run contents only)
+            int32 doneWingNext = -1;
+            bool const wingDone = ROUTE_WING_DONE_CHANGE && routeState.noTargets &&
+                                  group.ContentBossEntries().empty() && routeState.entrances.size() > 1 &&
+                                  routeState.entranceIdx < routeState.entrances.size() &&
+                                  !WingBossesLeft(group, leader->GetMap(), leader, doneWingNext);
+            if (routeState.noTargets && !leader->IsInCombat() && !group.InCombat() &&
+                getMSTimeDiff(routeState.noTargetsSinceMs, getMSTime()) >
+                    (wingDone ? WING_DONE_NO_TARGET_MS : 30 * IN_MILLISECONDS))
+            {
+                // Entrances on the same spot (Halls of Reflection: from Icecrown and from Pit of Saron) are one.
+                size_t next = routeState.entranceIdx + 1;
+                while (next < routeState.entrances.size() && routeState.entranceIdx < routeState.entrances.size() &&
+                       routeState.entrances[next].GetExactDist(&routeState.entrances[routeState.entranceIdx]) <
+                           SAME_ENTRANCE_RANGE)
+                    ++next;
+
+                // Another wing of the same instance (Scarlet Monastery, Dire Maul, Maraudon): the group walks
+                // out and in through the next portal. Bots walk by themselves: every member gets the portal goal
+                // (the leader's "we go in over there") and its own "instance portal" walks out through the exit and
+                // in through that entrance (TickWingWalk watches). HARNESS_MOVES_BOTS: the old teleport to it. Not
+                // while an event the group started waits for its next wave.
+                // A next boss behind a closed door that does not open for him: another wing does not open it
+                // (Gnomeregan heroic 2026-10-25: Thermaplugg behind The Final Chamber 142207; the walk to the Train
+                // Depot entrance, the same caves, paced between two exits 4 minutes without a fight).
+                bool doorBlocked = false;
+                for (auto const& [guid, reason] : routeState.skipReason)
+                    doorBlocked |=
+                        routeState.skipUntil.count(guid) && reason.rfind("next boss behind a closed door", 0) == 0;
+                // Only when the next entrance's arrival is walkable from here anyway (the same caves): a wing reached
+                // only from outside (Stratholme's service entrance) is the way round the door.
+                bool const sameCaves =
+                    doorBlocked && next < routeState.entrances.size() &&
+                    RoutePath(leader, routeState.entrances[next].GetPositionX(),
+                              routeState.entrances[next].GetPositionY(), routeState.entrances[next].GetPositionZ())
+                        .complete;
+                // [queue-door-skip-lift] not right after a starter was used (a key on a gate: strat-n
+                // 20261025-115805-strat-n-5A-6, Gauntlet Gate keyed at 962 s, wing change at 999 s): what it opened
+                // is the way on, the route is built again first.
+                constexpr uint32 WING_CHANGE_AFTER_STARTER_MS = 60 * IN_MILLISECONDS;
+                bool const starterJustUsed = routeState.lastStarterUseMs &&
+                                             getMSTimeDiff(routeState.lastStarterUseMs, getMSTime()) <
+                                                 WING_CHANGE_AFTER_STARTER_MS;
+                if (starterJustUsed && !sameCaves && next < routeState.entrances.size())
+                {
+                    // waits: the "no targets" clock goes on, the change comes once the window is over
+                }
+                else if (!sameCaves && next < routeState.entrances.size() && !EventGatherApplies(group) &&
+                         EventSpotIndex(group) < 0)
+                {
+                    StartWingChange(group, next, "no targets");
+                }
+                else
+                {
+                    // Event dungeons (ToC5, Violet Hold, Halls of Reflection, Culling) spawn their next wave or
+                    // boss after a pause: with bosses still open the group waits before the run is called partial.
+                    bool bossesOpen = false;
+                    for (BossFacts const& boss : group.Bosses())
+                        bossesOpen |= !boss.killed && !boss.failed;
+                    // A boss behind a closed door changes only the reason, never the timing: the order hold
+                    // (ORDER_HOLD_MS) keeps the later bosses out of the route while the next one is unreachable, so
+                    // "no targets" for 30 s says nothing about them (wave 7 build 7: strat-n / strat-h / brs-h ended
+                    // "partial: next boss behind a closed door" with most bosses alive and reachable).
+                    // [hleft-mech-bridge] The Mechanar: Pathaleon comes only after the bridge pack (MechanarBridge,
+                    // Mech strategy): never "no reachable targets" while he is dormant.
+                    bool const pathaleonDormant =
+                        leader->GetMapId() == MECHANAR_MAP_ID && MechanarBridge::PathaleonDormant(leader);
+                    // [hor-hollow-waves] Halls of Reflection after a wave wipe: spirits removed from the map are not
+                    // respawned by HandleWaveWipe, the waves come with 0-2 spirits and end only on their 150 s timer
+                    // (hor-h 20261025-153805: waves 6-9 from 876 s, Marwyn due ~1476 s, run ended 1456 s).
+                    // (PATCH_hor_gd.md 1.4 (a), applied by plan29)
+                    constexpr uint32 HOR_WAVE_WAIT_MS = 11 * MINUTE * IN_MILLISECONDS;  // 4 x 150 s + call + margin
+                    InstanceScript* horInstance =
+                        leader->GetMapId() == HoRIds::HOR_MAP_ID ? HoRHelpers::GetInstance(leader) : nullptr;
+                    bool const horWaves = horInstance && HoRHelpers::IsWaveEventActive(leader) &&
+                                          horInstance->GetData(HoRIds::DATA_WAVE_NUMBER) != 0;
+                    uint32 const spawnWaitMs = horWaves ? HOR_WAVE_WAIT_MS : EVENT_WAIT_FOR_SPAWNS_MS;
+                    if (!pathaleonDormant && (!bossesOpen ||
+                        getMSTimeDiff(routeState.noTargetsSinceMs, getMSTime()) > spawnWaitMs))
+                        group.FinishRun("partial",
+                                        doorBlocked ? "no reachable targets left: next boss behind a closed door"
+                                                    : "no reachable targets left");
+                }
+            }
+            return;
+        }
+
+        Map* map = leader->GetMap();
+        WorldObject* object = nullptr;
+        if (routeState.targetIsStarter)
+        {
+            object = map->GetCreature(routeState.target);
+            if (!object)
+                object = map->GetGameObject(routeState.target);
+        }
+        else
+        {
+            Creature* creature = map->GetCreature(routeState.target);
+            if (creature && creature->IsAlive())
+                object = creature;
+        }
+
+        if (!object)
+        {
+            RouteTarget::Clear(group.LeaderGuid());
+            routeState.target.Clear();
+            routeState.nextRetargetMs = getMSTime();
+            TestRunner::ClearWaypoint(group.LeaderGuid());
+            return;
+        }
+
+        // The tank plans the harness's route target out to 70 yd (AggressiveTargetValue RouteTarget, TTL 10 s,
+        // refreshed every steer tick), not only its own 40 yd pick; a starter is no pull.
+        // [lead5] LEADER_ONE_PICKER: no registry - the leader picks with its own route target (TickLeaderPlanner)
+        if (!routeState.targetIsStarter && object->ToCreature() && !LeaderPicksFor(group))
+            RouteTarget::Set(group.LeaderGuid(), routeState.target);
+        else
+            RouteTarget::Clear(group.LeaderGuid());
+
+        uint32 const now = getMSTime();
+        float const distance = leader->GetExactDist(object);
+        float range = routeState.targetIsStarter ? STARTER_RANGE : routeState.approach ? BODY_PULL_RANGE : PULL_RANGE;
+        // [b32_bm] a walk-in arrives beside a big model too: BODY_PULL_RANGE (exact distance) is inside the two
+        // combat reaches of Aeonus (3) and a bear (1.5) - the tank stood at 6.0 yd, never "arrived", steer_stuck.
+        if (!routeState.targetIsStarter && routeState.approach)
+            if (Unit const* walkedTo = object->ToUnit())
+                range = std::max(range, leader->GetMeleeRange(walkedTo) + BODY_PULL_MELEE_SLACK);
+
+        // A game object starter is used from within reach, as a client clicks it: no line of sight to its centre (UBRS
+        // wave 8: the leader stood on the Blackrock Altar 175706 for 8 minutes, the ray to the object's own origin
+        // runs into its model, the altar was never used and the run stalled "traveling").
+        bool const starterObject = routeState.targetIsStarter && object->ToGameObject();
+        // A creature starter counts as the core's gossip check does (object sizes included): CoS-n wave 11 stood 4.9
+        // yd from Chromie, in her talk range, never "arrived" at 4.0 and never used her.
+        bool const inRange = distance <= range || (routeState.targetIsStarter && object->ToCreature() &&
+                                                   leader->IsWithinDistInMap(object, STARTER_RANGE));
+        bool arrived = inRange && (starterObject || leader->IsWithinLOSInMap(object));
+        if (!routeState.targetIsStarter && !routeState.approach)
+        {
+            // Same floor as the target (a stairwell under its room is "in range" but sees nothing): keep walking the
+            // path until the height matches; a body pull stands next to it anyway.
+            if (arrived && std::fabs(leader->GetPositionZ() - object->GetPositionZ()) > SAME_FLOOR_DZ)
+                arrived = false;
+            // Never into the aggro radius of the nearest mob of the pack: the pull logic decides from its edge.
+            if (!arrived)
+                if (Creature* mob = object->ToCreature())
+                    arrived = AtPackAggroEdge(leader, mob);
+        }
+
+        // [patrol_wait_spot] standing at the patrol wait spot: the tank's own planner pulls once the patrol is alone or
+        // past; the walk back to the target waits until then (PATROL_WAIT_HOLD_MS at most).
+        if (routeState.patrolWaitUntilMs && routeState.patrolWaitTarget == routeState.target &&
+            int32(routeState.patrolWaitUntilMs - now) > 0 && !leader->IsInCombat())
+            return;
+        // The route of this tick, and where it enters the aggro reach of an idle mob around the target (ApproachStop):
+        // the waypoint stops there, and standing there is the arrival.
+        G3D::Vector3 goal(object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
+        // [st-guard-approach] A guard of a closed guarded door with an approach point (Sunken Temple's defenders on the
+        // z -67 balconies): the walk goes to the point on the guard's floor first - from the pit / the z -91 ring every
+        // stop was "no sight point" or "tank does not see it" (st-h 062726: 16 skips, Jammal'an never reached).
+        if (!routeState.targetIsStarter && !routeState.approach)
+            if (Creature* guard = object->ToCreature())
+                if (GuardApproachDef const* point = PendingGuardApproach(map, guard))
+                {
+                    float const toPoint = leader->GetExactDist(point->x, point->y, point->z);
+                    bool const onGuardFloor =
+                        std::fabs(leader->GetPositionZ() - guard->GetPositionZ()) <= SAME_FLOOR_DZ &&
+                        distance <= guard->GetExactDist(point->x, point->y, point->z) + GUARD_APPROACH_SLACK;
+                    std::pair<uint32, ObjectGuid> const approachKey{group.Run().runSeq, guard->GetGUID()};
+                    if (toPoint > GUARD_APPROACH_ARRIVE && !onGuardFloor)
+                    {
+                        goal = G3D::Vector3(point->x, point->y, point->z);
+                        arrived = false;
+                        if (guardApproachLogged.insert(approachKey).second)
+                        {
+                            guardApproachSinceMs[approachKey] = now ? now : 1;
+                            group.LogEvent("guard_approach",
+                                     JsonObject().Str("name", guard->GetName()).Num("entry", guard->GetEntry())
+                                         .Str("state", "walking").Real("toPoint", toPoint).Real("distance", distance)
+                                         .Real("x", point->x).Real("y", point->y).Real("z", point->z));
+                        }
+                    }
+                    // [guard_approach_arrived] The walk's end, once: st-n build 23 logged only "walking" (toPoint
+                    // 80-140 yd) and the log could not tell a reached point from an aborted walk.
+                    else if (auto const since = guardApproachSinceMs.find(approachKey);
+                             since != guardApproachSinceMs.end())
+                    {
+                        group.LogEvent("guard_approach",
+                                 JsonObject().Str("name", guard->GetName()).Num("entry", guard->GetEntry())
+                                     .Str("state", "arrived").Str("by", onGuardFloor ? "guard floor" : "point")
+                                     .Real("toPoint", toPoint).Real("distance", distance)
+                                     .Num("sec", getMSTimeDiff(since->second, now) / IN_MILLISECONDS)
+                                     .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
+                                     .Real("z", leader->GetPositionZ()));
+                        guardApproachSinceMs.erase(since);
+                    }
+                }
+        // [selin_room_owns_steer] Magisters' Terrace: while Selin's room tactic holds the group (her Wretched idle, no
+        // room fight) the harness walks the leader to none of her room's mobs: the room tactic picks the pack, the
+        // cast spot out of the other packs' reach and the moment. Build 27 (20261025-150737-mgt-h-5A-14, 264-267 s):
+        // the harness's approach to sight walked the tank to (212.0,-6.6), 20.3 yd from a south-pack Bruiser (real
+        // aggro 21); the pack came by the pair (the core's call for assistance) and Selin 2 s later, the door shut on
+        // the hunter and the shaman.
+        if (leader->GetMapId() == MagistersTerrace::MAP_MAGISTERS_TERRACE)
+            if (Creature const* roomMob = object->ToCreature())
+            {
+                uint32 const entry = roomMob->GetEntry();
+                bool const selinRoomMob =
+                    entry == 24688 || entry == 24689 || entry == 24690 || entry == 24723;  // Wretched x3, Selin
+                PlayerbotAI* leaderAI = selinRoomMob ? GET_PLAYERBOT_AI(leader) : nullptr;
+                // At most SELIN_ROOM_OWNS_MAX_MS in a row (a room tactic that never pulls is the harness's again).
+                // The room tactic's spot search runs in 800-ray slices and waits for the group's regen (build 29:
+                // 137 s from the first look to the pull): 4 minutes.
+                constexpr uint32 SELIN_ROOM_OWNS_MAX_MS = 240 * IN_MILLISECONDS;
+                struct RoomOwns
+                {
+                    uint32 sinceMs = 0;
+                    uint32 seenMs = 0;
+                };
+                static std::unordered_map<uint32, RoomOwns> roomOwns;  // party seq (world thread)
+                // ... and the entry walk of a clear room (EntryHolds): the members' "mgt out of room" walks them to
+                // (221, +-9); the harness's approach stop (216.1,-4.0) held the leader outside (build 29, stall).
+                bool owns = leaderAI && ((MagistersTerrace::SelinRoom::Get(leaderAI).active &&
+                                          !MagistersTerrace::SelinRoom::InRoomFight(leaderAI)) ||
+                                         (entry == 24723 && MagistersTerrace::SelinRoom::EntryHolds(leader)));
+                if (owns)
+                {
+                    RoomOwns& held = roomOwns[group.Run().runSeq];
+                    if (!held.sinceMs || getMSTimeDiff(held.seenMs, now) > 15 * IN_MILLISECONDS)
+                        held.sinceMs = now ? now : 1;
+                    held.seenMs = now ? now : 1;
+                    owns = getMSTimeDiff(held.sinceMs, now) < SELIN_ROOM_OWNS_MAX_MS;
+                    // [b35_mgt] ... and only while the group fought less than SELIN_ROOM_OWNS_IDLE_MS ago: a room
+                    // tactic that holds its pull that long (20261026-024524-mgt-h-5E-15, 337-498 s: "holds the pull
+                    // at the rally (Rtrogab: not at the rally)", the rogue parked by its walk guard 10 yd short) gives
+                    // the pull back to the harness. The fight's start resets the idle clock (CheckIdle).
+                    constexpr uint32 SELIN_ROOM_OWNS_IDLE_MS = 90 * IN_MILLISECONDS;
+                    if (owns && routeState.idleMs + routeState.eventWaitMs >= SELIN_ROOM_OWNS_IDLE_MS)
+                    {
+                        owns = false;
+                        static std::unordered_map<uint32, uint32> releaseLogMs;  // party seq (world thread)
+                        uint32& logged = releaseLogMs[group.Run().runSeq];
+                        if (!logged || getMSTimeDiff(logged, now) >= 30 * IN_MILLISECONDS)
+                        {
+                            logged = now ? now : 1;
+                            group.LogEvent("boss_area_clear",
+                                     JsonObject().Str("boss", "Selin Fireheart").Str("mob", roomMob->GetName())
+                                         .Num("entry", entry).Str("action", "room tactic idle: the harness pulls")
+                                         .Num("idleSec",
+                                              (routeState.idleMs + routeState.eventWaitMs) / IN_MILLISECONDS));
+                        }
+                    }
+                }
+                if (owns)
+                {
+                    static std::unordered_map<uint32, uint32> roomOwnsLogMs;  // party seq (world thread)
+                    uint32& logged = roomOwnsLogMs[group.Run().runSeq];
+                    if (!logged || getMSTimeDiff(logged, now) >= 10 * IN_MILLISECONDS)
+                    {
+                        logged = now ? now : 1;
+                        group.LogEvent("boss_area_clear",
+                                 JsonObject().Str("boss", "Selin Fireheart").Str("mob", roomMob->GetName())
+                                     .Num("entry", entry).Str("action", "room tactic owns the pull")
+                                     .Num("idle", int64(MagistersTerrace::SelinRoom::Get(leaderAI).idle.size())));
+                    }
+                    routeState.steerSinceMs = now;
+                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    return;
+                }
+            }
+        PathResult leg;
+        bool legBuilt = false;
+        bool approachStopped = false;
+        G3D::Vector3 approachStop;
+        // [combat_no_damage_release] the group fights and nobody has hit anything for a while: no approach hold
+        if (!arrived && !routeState.targetIsStarter && !routeState.approach && !GroupDamage::NoDamageRelease(leader))
+            if (Creature* mob = object->ToCreature())
+            {
+                SteerLeg(leader, goal, leg);
+                legBuilt = true;
+                Creature* blocker = nullptr;
+                bool unseenStop = false;
+                float const walk = leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP;
+                if (!(leg.type & PATHFIND_NOPATH) &&
+                    ApproachStop(leader, mob, leg.points, walk, approachStop, blocker, unseenStop, nullptr, &group) &&
+                    blocker)
+                {
+                    G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+                    approachStopped = true;
+                    G3D::Vector3 const edgeStop = approachStop;
+                    // Approach to sight: a stop that hid the blocker from the tank was replaced by a point of the
+                    // route that shows it (below); that point stays the stop while target and blocker are the same.
+                    auto sightStop = sightStops.find(group.LeaderGuid());
+                    if (sightStop != sightStops.end() && sightStop->second.target != routeState.target)
+                    {
+                        sightStops.erase(sightStop);
+                        sightStop = sightStops.end();
+                    }
+                    auto sightHold = sightHolds.find(group.LeaderGuid());
+                    if (sightHold != sightHolds.end() && (sightHold->second.target != routeState.target ||
+                                                          sightHold->second.blocker != blocker->GetGUID()))
+                    {
+                        sightHolds.erase(sightHold);
+                        sightHold = sightHolds.end();
+                    }
+                    bool sightTried = sightStop != sightStops.end() && sightStop->second.blocker == blocker->GetGUID();
+                    // The held line (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED): "[approach] <leader>: holds at the edge:
+                    // planner refused <target> (<n> mobs)", or "no accepted plan for" while the planner said nothing
+                    // the harness can read. Once per SIGHT_HOLD_LOG_MS per target and blocker.
+                    auto const logHold = [&](PlanVerdict verdict, std::vector<Creature*> const& pack, char const* how)
+                    {
+                        SightHold& hold = sightHolds[group.LeaderGuid()];
+                        // [queue-blocker-pull-gate] the give-way clock counts an unknown verdict only: a refusal
+                        // restarts it (scholo-n w24: "refused, 97 mobs" gave way after 8 s)
+                        if (hold.blocker != blocker->GetGUID() || verdict == PlanVerdict::Refused)
+                            hold.unknownSinceMs = 0;
+                        if (!hold.unknownSinceMs)
+                            hold.unknownSinceMs = now;
+                        hold.target = routeState.target;
+                        hold.blocker = blocker->GetGUID();
+                        hold.checkedMs = now;
+                        hold.pack.clear();
+                        for (Creature* packMob : pack)
+                            hold.pack.push_back(packMob->GetGUID());
+                        if (hold.loggedMs && getMSTimeDiff(hold.loggedMs, now) < SIGHT_HOLD_LOG_MS)
+                            return;
+                        hold.loggedMs = now;
+                        bool const refused = verdict == PlanVerdict::Refused;
+                        LOG_INFO("playerbots", "[approach] {}: holds at the edge: {} {} ({} mobs){}", leader->GetName(),
+                                 refused ? "planner refused" : "no accepted plan for", mob->GetName(), pack.size(),
+                                 how);
+                        group.LogEvent("approach_sight",
+                                 JsonObject().Str("action", "holds at the edge").Str("name", object->GetName())
+                                     .Num("entry", object->GetEntry()).Str("blocker", blocker->GetName())
+                                     .Num("blockerEntry", blocker->GetEntry())
+                                     .Str("verdict", refused ? "refused" : "not accepted")
+                                     .Num("packMobs", uint32(pack.size()))
+                                     .Real("blockerDistance", leader->GetExactDist(blocker))
+                                     .Real("blockerRealAggro", RealAggroRange(blocker, leader))
+                                     .Real("x", here.x).Real("y", here.y).Real("z", here.z)
+                                     .Real("edgeX", edgeStop.x).Real("edgeY", edgeStop.y).Real("edgeZ", edgeStop.z));
+                    };
+                    // A sight point that lay in a pack's reach was taken while the planner had accepted its plan:
+                    // no longer accepted (refused since, or the plan expired), the leader goes back to the edge (RFC
+                    // 20:08: refused while walking to the sight point, the pack came on the walk).
+                    if (sightTried && sightStop->second.intoReach && ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED)
+                    {
+                        std::vector<Creature*> const pack = SightKeepOutPack(group, leader, mob, blocker);
+                        PlanVerdict const verdict = TankPlanVerdict(group, leader, pack);
+                        if (verdict != PlanVerdict::Accepted)
+                        {
+                            sightStops.erase(sightStop);
+                            sightStop = sightStops.end();
+                            sightTried = false;
+                            logHold(verdict, pack, ", back from the sight point");
+                        }
+                    }
+                    if (sightTried)
+                        approachStop = sightStop->second.point;
+                    bool const atStop = (approachStop - here).length() <= APPROACH_ARRIVED;
+                    // RFC 18:22-18:24 (user: "why does it stand a minute?"): the stop lay before a corner on a rising
+                    // slope, the Earthborer round it out of the tank's sight; the group stood PULL_WAIT_MS, tank_view
+                    // found no line of sight and the target was skipped - three times. Checked when the leader
+                    // stands at the stop, not after the wait: no line of sight from the tank (its possible-targets
+                    // test) - it walks on along the route to the first point that sees the blocker (the corner) and
+                    // the pull comes from there (walking into its sight is the pull); no such point within
+                    // APPROACH_SIGHT_PATH - the target (its own pack) is skipped at once, a neighbour that stopped
+                    // the walk is marked as not seen (TankRejects) and holds no walk. Bosses keep the wait and the
+                    // body pull.
+                    // [hleft-boss-own-pack] a boss's encounter mob (his formation, his script's call for help) is his
+                    // own pack: the boss pull brings it, as the planner says.
+                    // [b33_dme] ... and the mob his wander / aggro reach brings (BossBroughtBy)
+                    bool const ownPackHere = blocker == mob || blocker->GetExactDist(mob) <= PACK_RADIUS ||
+                                             (routeState.targetIsBoss && BossEncounterMob(leader, mob, blocker)) ||
+                                             (routeState.targetIsBoss && BossBroughtBy(leader, mob, blocker));
+                    bool const bossInvolved = routeState.targetIsBoss ||
+                                              routeState.bossCreatures.count(blocker->GetGUID()) ||
+                                              blocker->IsDungeonBoss() || group.BossOrder(blocker) >= 0;
+                    // ROUTE_SKIP_BEHIND_SKIPPED: a neighbour pack the route skipped already (the tank refused it or
+                    // did not see it) stops the walk to every target behind it. Drak'Tharon heroic / Mana-Tombs
+                    // 2026-10-25: the refused Scourge Brute / Ethereal Spellbinder stopped each next target, the
+                    // targets flipped every ~20 s (the 45 s tank view never came) until the 4-minute stall. The target
+                    // is skipped at once with the blocker named: the idle guard shows the refusal, not a walk.
+                    // An event objective (a hold spot's holdAlways entry: Black Morass' rift keepers) is never
+                    // skipped behind a skipped pack: its own walk and body pull decide.
+                    std::vector<uint32> keeperEntries;
+                    if (int32 const spotIdx = EventSpotIndex(group); spotIdx >= 0)
+                        if (EventSpotDef const* spot = EventSpots(group.MapId())[size_t(spotIdx)]; spot->hold)
+                            keeperEntries = spot->holdAlways;
+                    bool const keeperTarget = std::find(keeperEntries.begin(), keeperEntries.end(), mob->GetEntry()) !=
+                                              keeperEntries.end();
+                    // [dmw-guard-behind-exempt] a door's pending guard keeps its own walk and pull, as a keeper
+                    bool const guardTarget = IsPendingDoorGuard(map, mob);
+                    // [lead108] b141 rfc-h 119.2 s on: the route target the leader refused (its routeSkips) skipped
+                    // Trogg 56, Earthborer 4 ... "behind" it - the leader's refusal of one mob is no refusal of the
+                    // walkable mobs behind it (the route walks on to the next, lead96)
+                    bool const leaderSkipOnly = group.State().routeSkips.count(blocker->GetGUID()) &&
+                                                Leader::Fight::TankHasWalk(leader, mob);
+                    if (ROUTE_SKIP_BEHIND_SKIPPED && !ownPackHere && !bossInvolved && !keeperTarget && !guardTarget &&
+                        !leaderSkipOnly && routeState.skipUntil.count(blocker->GetGUID()))
+                    {
+                        auto const why = routeState.skipReason.find(blocker->GetGUID());
+                        std::string const blockerWhy = why != routeState.skipReason.end() ? why->second : "skipped";
+                        // [route_blocker_body_pull] the skipped pack is on the way to this target: it is pulled, not
+                        // the target skipped behind it - unless its skip is final (unreachable, a door, a body pull
+                        // that brought no fight)
+                        bool const finalSkip = blockerWhy == "not pulled" ||
+                                               blockerWhy.find("unreachable") != std::string::npos ||
+                                               blockerWhy.find("door") != std::string::npos ||
+                                               blockerWhy.rfind("route end", 0) == 0 || blockerWhy == "path lost";
+                        if (!finalSkip && TargetRouteBlocker(group, leader, blocker, object, "skipped " + blockerWhy))
+                            return;
+                        // [behind_root_pull] plan29 follow-up 2 (scholo-n 20261025-163739-8: "behind skipped
+                        // Necrofiend (behind skipped Adept (behind skipped Adept (behind skipped Necrolyte (careful
+                        // pull refused (pack)))))", PULL_ESTIMATE_AUDIT: 473 packs skipped only for standing behind a
+                        // refused one): the skipped pack on the way is the target again once the group is ready - its
+                        // skip and its pack's are cleared, the planner plans it afresh (the adaptive cap, the 12 s
+                        // guarantee, a split or los pull) and pull_after_hold ends its hold. A blocker skipped behind
+                        // another stops the walk to it the same way, so the chain is walked back to its root. At most
+                        // BEHIND_ROOT_TRIES per blocker in BEHIND_ROOT_WINDOW_MS; then the skip stands as before.
+                        if (!finalSkip && BEHIND_ROOT_PULL && group.GroupFullyReady(leader) && !group.NeedBuff())
+                        {
+                            BehindRootTry& tried = behindRootTries[blocker->GetGUID()];
+                            if (!tried.firstMs || getMSTimeDiff(tried.firstMs, now) > BEHIND_ROOT_WINDOW_MS)
+                            {
+                                tried.firstMs = now ? now : 1;
+                                tried.count = 0;
+                            }
+                            if (tried.count < BEHIND_ROOT_TRIES)
+                            {
+                                ++tried.count;
+                                std::list<Creature*> rootPack;
+                                PackMobCheck rootCheck{leader, blocker};
+                                Acore::CreatureListSearcher<PackMobCheck> rootSearcher(blocker, rootPack, rootCheck);
+                                Cell::VisitObjects(blocker, rootSearcher, PACK_RADIUS);
+                                routeState.skipUntil.erase(blocker->GetGUID());
+                                routeState.skipReason.erase(blocker->GetGUID());
+                                for (Creature* packMob : rootPack)
+                                {
+                                    routeState.skipUntil.erase(packMob->GetGUID());
+                                    routeState.skipReason.erase(packMob->GetGUID());
+                                }
+                                group.LogEvent("behind_root_pull",
+                                         JsonObject().Str("name", mob->GetName()).Num("entry", mob->GetEntry())
+                                             .Str("blocker", blocker->GetName())
+                                             .Num("blockerEntry", blocker->GetEntry())
+                                             .Str("blockerSkip", blockerWhy).Num("try", tried.count)
+                                             .Num("packMobs", uint32(rootPack.size()))
+                                             .Real("blockerDistance", leader->GetExactDist(blocker)));
+                                sightStops.erase(group.LeaderGuid());
+                                sightHolds.erase(group.LeaderGuid());
+                                routeState.neighbourTarget = blocker->GetGUID();
+                                routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
+                                routeState.target = blocker->GetGUID();
+                                routeState.targetIsBoss = false;
+                                routeState.targetIsStarter = false;
+                                routeState.targetRouteRule.clear();
+                                routeState.targetSinceMs = now;
+                                routeState.guaranteeHolding = false;
+                                routeState.arrivedMs = 0;
+                                routeState.approach = 0;
+                                routeState.approachBlocker.Clear();
+                                routeState.stopSinceMs = 0;
+                                return;
+                            }
+                        }
+                        LOG_INFO("playerbots", "[approach] {}: {} lies behind skipped {} ({:.1f} yd, {}): skip",
+                                 leader->GetName(), mob->GetName(), blocker->GetName(), leader->GetExactDist(blocker),
+                                 blockerWhy);
+                        routeState.behindSkipped = blocker->GetName() + " (" + blockerWhy + ")";
+                        std::string const behindWhy = "behind skipped " + blocker->GetName() + " (" + blockerWhy + ")";
+                        // The whole shadow at once (scholo-n wave 11: 78 targets behind one hopeless Necrolyte pack,
+                        // one per tick, 78 s without a fight): every idle non-boss mob farther than the blocker in a
+                        // BEHIND_CONE_COS cone from the leader through it, within BEHIND_SHADOW_RANGE of it.
+                        G3D::Vector3 const toBlocker = G3D::Vector3(blocker->GetPositionX(), blocker->GetPositionY(),
+                                                                    blocker->GetPositionZ()) - here;
+                        float const blockerDist = toBlocker.length();
+                        if (blockerDist > 0.0f)
+                        {
+                            std::list<Creature*> shadow;
+                            ShadowMobCheck shadowCheck{leader};
+                            Acore::CreatureListSearcher<ShadowMobCheck> shadowSearcher(blocker, shadow, shadowCheck);
+                            Cell::VisitObjects(blocker, shadowSearcher, BEHIND_SHADOW_RANGE);
+                            for (Creature* other : shadow)
+                            {
+                                if (other->GetGUID() == routeState.target ||
+                                    routeState.skipUntil.count(other->GetGUID()) ||
+                                    routeState.bossCreatures.count(other->GetGUID()) || other->IsDungeonBoss() ||
+                                    group.BossOrder(other) >= 0 || IsPendingDoorGuard(map, other) ||
+                                    std::find(keeperEntries.begin(), keeperEntries.end(), other->GetEntry()) !=
+                                        keeperEntries.end())
+                                    continue;
+                                G3D::Vector3 const toOther = G3D::Vector3(other->GetPositionX(), other->GetPositionY(),
+                                                                          other->GetPositionZ()) - here;
+                                float const otherDist = toOther.length();
+                                if (otherDist <= blockerDist ||
+                                    toOther.dot(toBlocker) < BEHIND_CONE_COS * otherDist * blockerDist)
+                                    continue;
+                                routeState.skipUntil[other->GetGUID()] = now + CAREFUL_REFUSED_SKIP_MS;
+                                routeState.skipReason[other->GetGUID()] = behindWhy;
+                            }
+                        }
+                        group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS, behindWhy);
+                        // [b30_overpull] door spin guard (CountDoorSpin): a chain rooted in a closed door that still
+                        // stands closed counts as a skip behind that door
+                        constexpr char const* doorPrefix = "leader held at a closed door (";
+                        if (size_t const at = behindWhy.find(doorPrefix); at != std::string::npos)
+                        {
+                            size_t const close = behindWhy.find(')', at);
+                            size_t const space = close == std::string::npos ? close : behindWhy.rfind(' ', close);
+                            uint32 const doorEntry =
+                                space != std::string::npos && space > at
+                                    ? uint32(std::strtoul(behindWhy.substr(space + 1, close - space - 1).c_str(),
+                                                          nullptr, 10))
+                                    : 0;
+                            for (GameObject* door : ClosedDoors(map, leader))
+                            {
+                                if (!doorEntry || door->GetEntry() != doorEntry)
+                                    continue;
+                                bool spinLog = false;
+                                uint32 spinSkips = 0;
+                                uint32 spinWindowMs = 0;
+                                if (CountDoorSpin(group.Run().runSeq, door->GetGUID(), now, spinLog, spinSkips,
+                                                  spinWindowMs))
+                                {
+                                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                                    if (spinLog)
+                                    {
+                                        std::string opener;
+                                        JsonObject fields = DoorSpinFields(group, leader, door, spinSkips,
+                                                                           spinWindowMs, "behind a skip it rooted",
+                                                                           opener);
+                                        LOG_INFO("playerbots", "[door spin] {}: {} skips behind closed {} {} in {} s: "
+                                                 "retarget holds {} s (opener: {})", group.Run().runId, spinSkips,
+                                                 door->GetName(), door->GetEntry(), spinWindowMs / IN_MILLISECONDS,
+                                                 DOOR_SPIN_HOLD_MS / IN_MILLISECONDS, opener);
+                                        group.LogEvent("door_spin_hold", std::move(fields));
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        return;
+                    }
+                    // [b30_overpull] no walk to sight while the tank's planner holds this pull (a patrol / overlap
+                    // wait, "held for now") or the group waits out a patrol here (patrol_wait_spot): scholo-n
+                    // 20261025-184229-scholo-n-5D-8 147 s "patrol wait: Risen Guard comes to the group (eta 13 s)",
+                    // 150 s "approach to sight of Risen Guard ... 16.8 yd on" past a Spectral Researcher (the
+                    // pull_option spot's walk is not checked), 152 s the unplanned pull, the patrol joined it, 11
+                    // attackers, the wipe. The hold stands at the edge stop; the planner's wait decides.
+                    bool plannerHoldsHere = false;
+                    {
+                        bool holdHopeless = false;
+                        uint32 holdWaitMs = 0;
+                        std::string holdWhy;
+                        bool const targetHeld =
+                            PartyRefusal(group, routeState.target, holdHopeless, holdWaitMs,
+                                                           holdWhy) &&
+                            holdWhy.rfind("held for now", 0) == 0;
+                        holdWhy.clear();
+                        bool const blockerHeld =
+                            PartyRefusal(group, blocker->GetGUID(), holdHopeless,
+                                                           holdWaitMs, holdWhy) &&
+                            holdWhy.rfind("held for now", 0) == 0;
+                        bool const patrolWait = routeState.patrolWaitMs &&
+                                                routeState.patrolWaitTarget == routeState.target &&
+                                                getMSTimeDiff(routeState.patrolWaitMs, now) <= PATROL_WAIT_HOLD_MS;
+                        plannerHoldsHere = !leader->IsInCombat() && (targetHeld || blockerHeld || patrolWait) &&
+                                           !bossInvolved;
+                        // a sight point taken before the hold is left: back to the edge stop
+                        if (plannerHoldsHere && sightTried)
+                        {
+                            sightStops.erase(group.LeaderGuid());
+                            sightTried = false;
+                            approachStop = edgeStop;
+                        }
+                        if (plannerHoldsHere && ROUTE_APPROACH_TO_SIGHT && atStop &&
+                            !leader->IsWithinLOSInMap(blocker))
+                        {
+                            static std::unordered_map<uint32, uint32> sightHeldLogMs;  // party seq (world thread)
+                            uint32& logged = sightHeldLogMs[group.Run().runSeq];
+                            if (!logged || getMSTimeDiff(logged, now) >= SIGHT_HOLD_LOG_MS)
+                            {
+                                logged = now ? now : 1;
+                                group.LogEvent("approach_sight",
+                                         JsonObject().Str("action", "held: the planner waits")
+                                             .Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                             .Str("blocker", blocker->GetName())
+                                             .Num("blockerEntry", blocker->GetEntry())
+                                             .Bool("patrolWait", patrolWait).Bool("targetHeld", targetHeld)
+                                             .Bool("blockerHeld", blockerHeld)
+                                             .Real("x", here.x).Real("y", here.y).Real("z", here.z));
+                            }
+                        }
+                    }
+                    if (ROUTE_APPROACH_TO_SIGHT && atStop && !bossInvolved && !plannerHoldsHere &&
+                        !leader->IsWithinLOSInMap(blocker))
+                    {
+                        // ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED: the walk to the sight point stays out of the reach of the
+                        // target's and the blocker's packs unless the tank's planner accepted their plan; a point
+                        // only inside it holds the leader at the edge (the stop ApproachStop chose), where the
+                        // planner's hard minimum / pull back or the wait's skip decide. A hold is searched again
+                        // after SIGHT_HOLD_RECHECK_MS.
+                        // A fresh look-up: logHold above may have inserted into sightHolds (iterators invalidated).
+                        auto const held = sightHolds.find(group.LeaderGuid());
+                        bool const recentHold = held != sightHolds.end() &&
+                                                getMSTimeDiff(held->second.checkedMs, now) < SIGHT_HOLD_RECHECK_MS;
+                        std::vector<Creature*> keepOut;
+                        PlanVerdict verdict = PlanVerdict::Unknown;
+                        bool gaveWay = false;    // the edge hold timed out (SIGHT_UNKNOWN_HOLD_MS) without a plan
+                        bool intoReach = false;  // the sight point may lie in the target's (accepted) pack's reach
+                        if (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED && !sightTried && !recentHold)
+                        {
+                            keepOut = SightKeepOutPack(group, leader, mob, blocker);
+                            verdict = TankPlanVerdict(group, leader, keepOut);
+                            // Sweep batch3 (SM Library 21:47): "holds at the edge: no accepted plan" for minutes
+                            // while the tank had "no aggressive target" - it cannot plan a pack it does not see, so
+                            // the hold waited for a verdict that never came. An unknown verdict holds at most
+                            // SIGHT_UNKNOWN_HOLD_MS, then walking into sight is the pull again (a refusal still holds).
+                            constexpr uint32 SIGHT_UNKNOWN_HOLD_MS = 20 * IN_MILLISECONDS;
+                            // Uldaman heroic (same wave): a stale refusal (the harness's carefulRefused count)
+                            // held a tank with "no aggressive target" just as long - after the same time out of
+                            // combat the hold gives way to the planner, which then sees the pack (hard minimum,
+                            // pull back or "[pull blocked]"; user rule: always pull at least one mob when ready).
+                            uint32 const unknownHoldMs =
+                                IsRouteBlocker(group, routeState.target) || IsRouteBlocker(group, blocker->GetGUID())
+                                    ? ROUTE_BLOCKER_SIGHT_HOLD_MS
+                                    : SIGHT_UNKNOWN_HOLD_MS;
+                            if (!leader->IsInCombat() && held != sightHolds.end() &&
+                                held->second.blocker == blocker->GetGUID() && held->second.unknownSinceMs &&
+                                getMSTimeDiff(held->second.unknownSinceMs, now) >= unknownHoldMs)
+                                gaveWay = verdict == PlanVerdict::Unknown &&  // [queue-blocker-pull-gate]
+                                          !(Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) &&
+                                            group.LeaderDecides());  // [lead3] the leader never gives way
+                            // Accepted (or given way): walking into sight of the pack is the pull - but of that pack
+                            // only. Every other idle pack stays kept out (SightKeepOutOthers; BRS heroic 22:10:30). A
+                            // give-way approaches the target's own pack alone, a neighbour blocker's pack included in
+                            // the keep-out; an accepted plan covers the target's and the blocker's packs it was asked
+                            // about.
+                            if (verdict == PlanVerdict::Accepted || gaveWay)
+                            {
+                                std::vector<Creature*> const accepted = keepOut;
+                                keepOut = SightKeepOutOthers(leader, mob);
+                                if (!gaveWay)
+                                    keepOut.erase(std::remove_if(keepOut.begin(), keepOut.end(),
+                                                                 [&accepted](Creature* other)
+                                                                 {
+                                                                     return std::find(accepted.begin(), accepted.end(),
+                                                                                      other) != accepted.end();
+                                                                 }),
+                                                  keepOut.end());
+                                intoReach = true;
+                            }
+                        }
+                        G3D::Vector3 sight;
+                        bool heldAtEdge = recentHold;
+                        bool found = !sightTried && !recentHold &&
+                                     FindSightPoint(leader, blocker, mob, ownPackHere, leg.points, keepOut, sight,
+                                                    heldAtEdge);
+                        // [pull_option] (1) the sight pull: the route ahead showed no spot, so the arc round the
+                        // pack (FindPullSightSpot: side steps that open a corner, real aggro distances). The spot
+                        // stands outside every idle mob's aggro, so it needs no accepted plan: from there the tank's
+                        // own pull (planner, 30 yd skill) takes the pack.
+                        PullSightSearch pullSearch;
+                        std::vector<Creature*> pullIdle;
+                        auto const isBossMob = [&group, &routeState](Creature* unit)
+                        {
+                            return unit->IsDungeonBoss() || unit->isWorldBoss() ||
+                                   routeState.bossCreatures.count(unit->GetGUID()) != 0 || group.BossOrder(unit) >= 0;
+                        };
+                        if (!found && !sightTried && !recentHold)
+                        {
+                            pullIdle = PullIdleMobs(leader, blocker);
+                            FindPullSightSpot(leader, blocker, pullIdle, isBossMob, pullSearch);
+                            group.LogEvent("sight_point_search",
+                                     JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                         .Str("blocker", blocker->GetName()).Num("blockerEntry", blocker->GetEntry())
+                                         .Bool("found", pullSearch.found).Num("candidates", pullSearch.candidates)
+                                         .Num("inOtherAggro", pullSearch.inOtherAggro)
+                                         .Num("inOwnAggro", pullSearch.inOwnAggro).Num("noPath", pullSearch.noPath)
+                                         .Num("touchesMore", pullSearch.touchesMore)
+                                         .Num("touchesBoss", pullSearch.touchesBoss)
+                                         .Real("margin", pullSearch.margin)
+                                         .Real("minRadius", pullSearch.minRadius)
+                                         .Real("maxRadius", pullSearch.maxRadius)
+                                         .Real("x", here.x).Real("y", here.y).Real("z", here.z)
+                                         .Real("toX", pullSearch.found ? pullSearch.best.at.x : 0.0f)
+                                         .Real("toY", pullSearch.found ? pullSearch.best.at.y : 0.0f)
+                                         .Real("toZ", pullSearch.found ? pullSearch.best.at.z : 0.0f)
+                                         .Raw("top", PullCandidatesJson(pullSearch.top)));
+                            if (pullSearch.found)
+                            {
+                                found = true;
+                                heldAtEdge = false;
+                                sight = pullSearch.best.at;
+                                LOG_INFO("playerbots",
+                                         "[pull_option] {}: sight pull of {} ({} mobs, boss no): arc spot "
+                                         "({:.1f},{:.1f},{:.1f}) {:.1f} yd from it, {:.0f} deg off, {:.1f} yd walk",
+                                         leader->GetName(), blocker->GetName(), pullSearch.best.touch.mobs.size(),
+                                         sight.x, sight.y, sight.z, pullSearch.best.radius,
+                                         pullSearch.best.angleOffDeg, pullSearch.best.walk);
+                            }
+                        }
+                        std::string const view = PartyTankView(group, leader, blocker);
+                        // The tank takes it as it stands (its view "accepted ..."): no skip, the normal wait at the
+                        // stop decides, as for "skip at once: no LoS" below (lbrs-n build 10: the Scarshield Worg
+                        // skipped "accepted", 21 targets behind it skipped with it, 0/9 in 12 minutes).
+                        if (!found && gaveWay && view.rfind("accepted", 0) != 0)
+                        {
+                            // [unseen-blocker-pull] A small neighbour pack that holds the approach and that the tank
+                            // does not see (no line of sight, so the planner never plans it) becomes the target
+                            // itself: its own walk then steps into its sight - inside its own reach when nothing else
+                            // stands there (the give-way keeps only the other packs out) - and that is its pull.
+                            // Without this every target behind it was skipped in turn (st-n 2026-10-25 081744: Mijan,
+                            // Zul'Lor and Hukku each "holds at the edge" behind the same unseen 3-mob Atal'ai Witch
+                            // Doctor pack, then "no sight point outside other packs' aggro", the tank ping-ponged).
+                            // [route_blocker_body_pull] a neighbour pack on the way, whatever its size, is the target
+                            if (!ownPackHere && TargetRouteBlocker(group, leader, blocker, object,
+                                                                   "holds the approach, no sight point (" + view +
+                                                                       ")"))
+                                return;
+                            // ... and the route blocker that is the target is walked into
+                            if (ownPackHere && IsRouteBlocker(group, routeState.target))
+                            {
+                                RouteBlockerBodyPull(group, leader, mob,
+                                                     "no sight point outside other packs' aggro (" + view + ")");
+                                return;
+                            }
+                            if (!ownPackHere && !routeState.skipUntil.count(blocker->GetGUID()) &&
+                                routeState.neighbourTarget != blocker->GetGUID())
+                            {
+                                std::list<Creature*> blockerPack;
+                                PackMobCheck blockerCheck{leader, blocker};
+                                Acore::CreatureListSearcher<PackMobCheck> blockerSearcher(blocker, blockerPack,
+                                                                                          blockerCheck);
+                                Cell::VisitObjects(blocker, blockerSearcher, PACK_RADIUS);
+                                if (std::find(blockerPack.begin(), blockerPack.end(), blocker) == blockerPack.end())
+                                    blockerPack.push_back(blocker);
+                                // [unseen_blocker_any_size] this blocker holds the approach (ApproachStop: the leg to
+                                // the target enters its reach), so it stands on the way: no size cap (user rule, a
+                                // pack on the only way is never skipped; st-n-92: a 5-mob Atal'ai Slave pack)
+                                // [route_blocker_required_only] ... when the target behind it is a required one
+                                std::string requiredWhy;
+                                bool unseenHold = false;
+                                std::string const unseenGate =
+                                    BlockerPullGate(group, leader, blocker, object, false, unseenHold);
+                                if (!unseenGate.empty() && unseenHold)
+                                {
+                                    TestRunner::ClearWaypoint(group.LeaderGuid());  // ready first, nothing skipped
+                                    return;
+                                }
+                                if (unseenGate.empty() &&
+                                    (blockerPack.size() <= UNSEEN_BLOCKER_PACK_MAX ||
+                                     (ROUTE_BLOCKER_BODY_PULL &&
+                                      RouteBlockerBehindRequired(group, map, object, requiredWhy))))
+                                {
+                                    if (blockerPack.size() > UNSEEN_BLOCKER_PACK_MAX)
+                                        LOG_INFO("playerbots", "[unseen_blocker_any_size] {}: {} ({} mobs) holds the "
+                                                 "approach to {}: the target despite its size", leader->GetName(),
+                                                 blocker->GetName(), blockerPack.size(), object->GetName());
+                                    group.LogEvent("approach_sight",
+                                             JsonObject().Str("action", "pull the unseen blocker")
+                                                 .Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                                 .Str("blocker", blocker->GetName())
+                                                 .Num("blockerEntry", blocker->GetEntry())
+                                                 .Num("packMobs", uint32(blockerPack.size())).Str("tankView", view)
+                                                 .Real("blockerDistance", leader->GetExactDist(blocker)));
+                                    sightStops.erase(group.LeaderGuid());
+                                    sightHolds.erase(group.LeaderGuid());
+                                    routeState.neighbourTarget = blocker->GetGUID();
+                                    routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
+                                    routeState.target = blocker->GetGUID();
+                                    routeState.targetIsBoss = false;
+                                    routeState.targetIsStarter = false;
+                                    routeState.targetRouteRule.clear();
+                                    routeState.targetSinceMs = now;
+                                    routeState.guaranteeHolding = false;
+                                    routeState.arrivedMs = 0;
+                                    routeState.approach = 0;
+                                    routeState.approachBlocker.Clear();
+                                    routeState.stopSinceMs = 0;
+                                    return;
+                                }
+                            }
+                            // [pull_option] (2) / [boss_area_clear] No sight spot touches the pack alone. Trash round
+                            // the next boss (BossAreaTrashOf) or a route blocker is never skipped: the group gets
+                            // ready (RouteBlockerBodyPull: full health and mana, everyone here) and the tank takes
+                            // the least dangerous option - the body pull, or a sight spot that touches more but
+                            // less than the walk in (no boss first, then the fewest mobs). Never stand.
+                            if (ROUTE_BOSS_AREA_CLEAR)
+                            {
+                                Creature* const areaBoss = RouteNextBoss(group.Run().runSeq, map);
+                                char const* const area =
+                                    areaBoss ? BossAreaTrashOf(leader, areaBoss, mob,
+                                                               routeState.bossCreatures.count(mob->GetGUID()) != 0)
+                                             : nullptr;
+                                if ((area || IsRouteBlocker(group, routeState.target)) &&
+                                    Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && group.LeaderDecides())
+                                {
+                                    // [lead3] no sight fallback walk into more mobs, no body pull: the planner whole
+                                    Leader::Dungeon::LeaderWholePack(group, leader, mob,
+                                                    Acore::StringFormat("{}: no clean sight spot ({})",
+                                                                        area ? area : "route blocker", view),
+                                                    true, true);
+                                    return;
+                                }
+                                if (area || IsRouteBlocker(group, routeState.target))
+                                {
+                                    if (pullIdle.empty())
+                                        pullIdle = PullIdleMobs(leader, mob);
+                                    std::vector<Creature*> intended;
+                                    PullTouch const body = PullTouches(leader, mob, leg.points, pullIdle, isBossMob,
+                                                                       intended);
+                                    bool const sightFallback =
+                                        pullSearch.hasFallback && PullTouchBetter(pullSearch.fallback.touch, body);
+                                    PullTouch const& chosen = sightFallback ? pullSearch.fallback.touch : body;
+                                    LOG_INFO("playerbots",
+                                             "[pull_option] {}: {} ({}): no clean sight spot; body pull touches {} "
+                                             "mobs (boss {}), best sight spot {} -> {}{}",
+                                             leader->GetName(), mob->GetName(), area ? area : "route blocker",
+                                             body.mobs.size(), body.boss ? body.bossName : std::string("no"),
+                                             pullSearch.hasFallback
+                                                 ? Acore::StringFormat("touches {} (boss {})",
+                                                                       pullSearch.fallback.touch.mobs.size(),
+                                                                       pullSearch.fallback.touch.boss
+                                                                           ? pullSearch.fallback.touch.bossName
+                                                                           : std::string("no"))
+                                                 : std::string("none"),
+                                             sightFallback ? "sight spot" : "body pull",
+                                             chosen.mobs.size() > PULL_OPTION_MOB_CAP || chosen.boss
+                                                 ? " (over the cap / boss: the least dangerous, group ready first)"
+                                                 : "");
+                                    group.LogEvent("pull_option",
+                                             JsonObject().Str("name", mob->GetName()).Num("entry", mob->GetEntry())
+                                                 .Str("choice", sightFallback ? "sight fallback" : "body pull")
+                                                 .Num("bodyMobs", int64(body.mobs.size())).Bool("bodyBoss", body.boss)
+                                                 .Num("bodyExtra", body.extra)
+                                                 .Num("sightMobs", pullSearch.hasFallback
+                                                                       ? int64(pullSearch.fallback.touch.mobs.size())
+                                                                       : -1)
+                                                 .Bool("sightBoss", pullSearch.hasFallback &&
+                                                                        pullSearch.fallback.touch.boss)
+                                                 .Num("intended", int64(intended.size()))
+                                                 .Num("cap", PULL_OPTION_MOB_CAP)
+                                                 .Bool("overCap", chosen.mobs.size() > PULL_OPTION_MOB_CAP)
+                                                 .Bool("bossTouched", chosen.boss));
+                                    if (area)
+                                        group.LogEvent("boss_area_clear",
+                                                 JsonObject().Str("boss", areaBoss->GetName())
+                                                     .Num("bossEntry", areaBoss->GetEntry())
+                                                     .Str("mob", mob->GetName()).Num("entry", mob->GetEntry())
+                                                     .Str("why", area)
+                                                     .Str("action", sightFallback ? "sight fallback" : "body pull"));
+                                    if (sightFallback)
+                                    {
+                                        if (!group.GroupFullyReady(leader))
+                                        {
+                                            TestRunner::ClearWaypoint(group.LeaderGuid());
+                                            return;
+                                        }
+                                        sightStops[group.LeaderGuid()] = {routeState.target, blocker->GetGUID(),
+                                                                    pullSearch.fallback.at, true};
+                                        sightHolds.erase(group.LeaderGuid());
+                                        return;
+                                    }
+                                    RouteBlockerBodyPull(group, leader, mob,
+                                                         Acore::StringFormat("{}: no sight spot outside other packs' "
+                                                                             "aggro ({})",
+                                                                             area ? area : "route blocker", view));
+                                    return;
+                                }
+                            }
+                            // The hold gave way and still no point shows the target without another pack's aggro: no
+                            // walk in, the target is skipped as not seen (its pack marked unseen, as below).
+                            LOG_INFO("playerbots",
+                                     "[approach] {}: skip: no sight of {} ({:.1f} yd, {}) outside other packs' aggro "
+                                     "({} kept out) after the edge hold",
+                                     leader->GetName(), blocker->GetName(), leader->GetExactDist(blocker), view,
+                                     keepOut.size());
+                            group.LogEvent("approach_sight",
+                                     JsonObject().Str("action", "skip: no sight outside other packs")
+                                         .Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                         .Str("blocker", blocker->GetName()).Num("blockerEntry", blocker->GetEntry())
+                                         .Bool("ownPack", ownPackHere).Bool("heldAtEdge", heldAtEdge)
+                                         .Num("keptOut", uint32(keepOut.size())).Str("tankView", view)
+                                         .Real("x", here.x).Real("y", here.y).Real("z", here.z));
+                            sightStops.erase(group.LeaderGuid());
+                            sightHolds.erase(group.LeaderGuid());
+                            std::list<Creature*> pack;
+                            PackMobCheck packCheck{leader, mob};
+                            Acore::CreatureListSearcher<PackMobCheck> packSearcher(mob, pack, packCheck);
+                            Cell::VisitObjects(mob, packSearcher, PACK_RADIUS);
+                            if (std::find(pack.begin(), pack.end(), mob) == pack.end())
+                                pack.push_back(mob);
+                            for (Creature* packMob : pack)
+                                if (!routeState.bossCreatures.count(packMob->GetGUID()) && !packMob->IsDungeonBoss() &&
+                                    !leader->IsWithinLOSInMap(packMob))
+                                    TankRejects::MarkUnseen(leader->GetGUID(), packMob->GetGUID());
+                            group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
+                                       "skip: no sight point outside other packs' aggro after the edge hold (" + view +
+                                           ")");
+                            return;
+                        }
+                        if (!found && heldAtEdge)
+                        {
+                            if (!recentHold)
+                                logHold(verdict, keepOut, "");
+                        }
+                        else if (found)
+                        {
+                            sightStops[group.LeaderGuid()] = {routeState.target, blocker->GetGUID(), sight,
+                                                     intoReach && !gaveWay};
+                            sightHolds.erase(group.LeaderGuid());
+                            approachStop = sight;
+                            LOG_INFO("playerbots",
+                                     "[approach] {}: approach to sight of {} ({:.1f} yd, {}): stop ({:.1f},{:.1f},"
+                                     "{:.1f}) -> ({:.1f},{:.1f},{:.1f}) {:.1f} yd on",
+                                     leader->GetName(), blocker->GetName(), leader->GetExactDist(blocker), view,
+                                     here.x, here.y, here.z, sight.x, sight.y, sight.z, (sight - here).length());
+                            group.LogEvent("approach_sight",
+                                     JsonObject().Str("action", "approach to sight").Str("name", object->GetName())
+                                         .Num("entry", object->GetEntry()).Str("blocker", blocker->GetName())
+                                         .Num("blockerEntry", blocker->GetEntry()).Bool("ownPack", ownPackHere)
+                                         .Real("blockerDistance", leader->GetExactDist(blocker)).Str("tankView", view)
+                                         .Real("sightDistance", blocker->GetExactDist(sight.x, sight.y, sight.z))
+                                         .Real("blockerRealAggro", RealAggroRange(blocker, leader))
+                                         .Real("x", here.x).Real("y", here.y).Real("z", here.z)
+                                         .Real("toX", sight.x).Real("toY", sight.y).Real("toZ", sight.z));
+                        }
+                        // The tank takes it without line of sight (its possible targets accept it: the planner's
+                        // build-8 rule for route targets): no skip, the normal wait at the stop decides (wave 8
+                        // ubrs-n: "skip at once: no LoS" with the tank view "accepted").
+                        else if (view.rfind("accepted", 0) != 0 && ownPackHere &&
+                                 IsRouteBlocker(group, routeState.target))
+                        {
+                            // [route_blocker_body_pull] no sight of the route blocker: walked into
+                            RouteBlockerBodyPull(group, leader, mob, "no line of sight (" + view + ")");
+                            return;
+                        }
+                        else if (view.rfind("accepted", 0) != 0 && !ownPackHere &&
+                                 TargetRouteBlocker(group, leader, blocker, object, "no line of sight (" + view + ")"))
+                            return;
+                        else if (view.rfind("accepted", 0) != 0)
+                        {
+                            LOG_INFO("playerbots", "[approach] {}: skip at once: no LoS to {} ({:.1f} yd, {}){}",
+                                     leader->GetName(), blocker->GetName(), leader->GetExactDist(blocker), view,
+                                     sightTried ? " from the sight point" : ", no sight point on the route ahead");
+                            group.LogEvent("approach_sight",
+                                     JsonObject().Str("action", "skip at once: no LoS").Str("name", object->GetName())
+                                         .Num("entry", object->GetEntry()).Str("blocker", blocker->GetName())
+                                         .Num("blockerEntry", blocker->GetEntry()).Bool("ownPack", ownPackHere)
+                                         .Real("blockerDistance", leader->GetExactDist(blocker)).Str("tankView", view)
+                                         .Bool("fromSightPoint", sightTried)
+                                         .Real("x", here.x).Real("y", here.y).Real("z", here.z));
+                            sightStops.erase(group.LeaderGuid());
+                            // The blocker's pack, what the tank does not see of it from here, holds no later walk.
+                            std::list<Creature*> pack;
+                            PackMobCheck packCheck{leader, blocker};
+                            Acore::CreatureListSearcher<PackMobCheck> packSearcher(blocker, pack, packCheck);
+                            Cell::VisitObjects(blocker, packSearcher, PACK_RADIUS);
+                            if (std::find(pack.begin(), pack.end(), blocker) == pack.end())
+                                pack.push_back(blocker);
+                            for (Creature* packMob : pack)
+                                if (!routeState.bossCreatures.count(packMob->GetGUID()) && !packMob->IsDungeonBoss() &&
+                                    (packMob == blocker || !leader->IsWithinLOSInMap(packMob)))
+                                    TankRejects::MarkUnseen(leader->GetGUID(), packMob->GetGUID());
+                            if (ownPackHere)
+                            {
+                                group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
+                                           "skip at once: no LoS (not pulled, tank does not see it: " + view + ")");
+                                return;
+                            }
+                            // A neighbour: the next tick's stop no longer counts it, the walk goes on.
+                            approachStopped = false;
+                        }
+                    }
+                    if (approachStopped && (approachStop - here).length() <= APPROACH_ARRIVED)
+                    {
+                        arrived = true;
+                        // A mob outside the target's pack (a neighbour on the way) ended the walk: a refusal from
+                        // here skips its pack too.
+                        bool const ownPack = ownPackHere;
+                        ObjectGuid const blockerGuid = ownPack ? ObjectGuid::Empty : blocker->GetGUID();
+                        // A stop that came late (DM wave 38: 16 yd from a static Goblin Woodcarver, inside its real
+                        // aggro range, the lumber yard aggroed the next second, Sneed's Shredder walked in, wipe):
+                        // the real range of the blocker and of the target (no margin) and the leader's own line of
+                        // sight to them (the arrival test) against the eye-line test the stop used.
+                        float const blockerAggro = blocker->GetAggroRange(leader) + blocker->m_CombatDistance;
+                        float const targetAggro = mob->GetAggroRange(leader) + mob->m_CombatDistance;
+                        if (routeState.approachBlocker != blockerGuid || !routeState.arrivedMs)
+                            group.LogEvent("approach_stop",
+                                     JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                         .Str("blocker", blocker->GetName()).Num("blockerEntry", blocker->GetEntry())
+                                         .Bool("ownPack", ownPack).Real("distance", distance)
+                                         .Real("blockerDistance", leader->GetExactDist(blocker))
+                                         .Real("blockerRealAggro", blockerAggro)
+                                         .Real("targetRealAggro", targetAggro)
+                                         .Bool("insideRealAggro", leader->GetExactDist(blocker) < blockerAggro ||
+                                                                      distance < targetAggro)
+                                         .Bool("blockerLos", leader->IsWithinLOSInMap(blocker))
+                                         .Bool("targetLos", leader->IsWithinLOSInMap(mob))
+                                         .Real("aggroReach", AggroReach(blocker, leader))
+                                         .Bool("unseenStop", unseenStop)
+                                         .Real("spreadReach", blockerAggro + APPROACH_FOLLOW_SPREAD)
+                                         .Real("blockerDz", blocker->GetPositionZ() - here.z)
+                                         .Real("x", here.x).Real("y", here.y).Real("z", here.z));
+                        routeState.approachBlocker = blockerGuid;
+                    }
+                }
+            }
+
+        // [b47_plan] The walk to an event starter (a key door, a lever) had no idle-mob guard at all: the approach stop
+        // above skips starters, and so does the walk guard below. scholo-h 20261026-093620-scholo-h-5G-4 (2359 s):
+        // the walk to the Viewing Room Door 175167 (256 yd, through the Aberration / Ghoul rooms) sent the tank to
+        // (192.0,99.3,104.7), 5 yd from the wandering Diseased Ghoul 48768 - pull 42 "unplanned (no planner pull)",
+        // the Risen Aberrations with it, three deaths in 9 s; scholo-n 093620-5E-5 the same at ~2849 s. An idle mob
+        // whose reach the next stretch of that walk enters becomes the target (TargetRouteBlocker): the tank's
+        // planner pulls it like any route blocker, then the walk goes on.
+        if (!arrived && routeState.targetIsStarter && !leader->IsInCombat() && !GroupDamage::NoDamageRelease(leader))
+        {
+            if (!legBuilt)
+            {
+                SteerLeg(leader, goal, leg);
+                legBuilt = true;
+            }
+            Creature* blocker = nullptr;
+            bool unseen = false;
+            G3D::Vector3 stop;
+            if (!(leg.type & PATHFIND_NOPATH) &&
+                ApproachStop(leader, object, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, stop, blocker,
+                             unseen, nullptr, &group) &&
+                blocker && !blocker->IsInCombat())
+            {
+                static std::set<std::pair<uint32, ObjectGuid>> starterBlockerLogged;  // world thread
+                if (starterBlockerLogged.insert({group.Run().runSeq, blocker->GetGUID()}).second)
+                    group.LogEvent("starter_walk_blocker",
+                             JsonObject().Str("starter", object->GetName()).Num("starterEntry", object->GetEntry())
+                                 .Str("blocker", blocker->GetName()).Num("blockerEntry", blocker->GetEntry())
+                                 .Real("blockerDistance", leader->GetExactDist(blocker)).Real("x", stop.x)
+                                 .Real("y", stop.y).Real("z", stop.z));
+                if (TargetRouteBlocker(group, leader, blocker, object,
+                                       "[b47_plan] stands on the walk to the event starter"))
+                    return;
+            }
+        }
+        // ROUTE_HARNESS_WALK_GUARD: a body pull walks into its own pack only. The approach stop above skips a body
+        // pull, and its 30-yd waypoint ran through every pack on the boss's route (wave 7: scholo-h pulls 9-12 on the
+        // 325-yd route to Jandice, the refused Dark Summoner pack, the Adepts behind the opened Iron Gate; mt-h / mt-n
+        // on the 215-yd walk to Shaffar). Another idle pack ends the body pull at its edge.
+        if (ROUTE_HARNESS_WALK_GUARD && !arrived && routeState.approach && !routeState.targetIsStarter)
+            if (Creature* mob = object->ToCreature())
+            {
+                SteerLeg(leader, goal, leg);
+                legBuilt = true;
+                Creature* blocker = nullptr;
+                bool held = false;
+                G3D::Vector3 stop;
+                bool const walkStopped =
+                    !(leg.type & PATHFIND_NOPATH) &&
+                    HarnessWalkStop(leader, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, mob, stop,
+                                    blocker, held, &group);
+                // [route_blocker_walk_through] The walk into a route blocker (IsRouteBlocker: the user's body pull of
+                // a pack on the only way) is not ended by the next idle pack of the same crowd: it is part of that
+                // pull, it joins the route blocker's pack and the walk goes on. st-h 2026-10-25 2705-2823 s: the
+                // body pull of the Mummified Atal'ai (Jammal'an's room, the planner: 19 mobs come either way)
+                // stopped every 16 s at the Atal'ai Deathwalker 14 yd beside it ("harness_hold_refused_pack",
+                // walk "body pull"), approach reset, the body pull logged again - 2 minutes, then the 4-minute stall.
+                if (walkStopped && blocker && IsRouteBlocker(group, routeState.target) && !blocker->IsDungeonBoss() &&
+                    !routeState.bossCreatures.count(blocker->GetGUID()) && group.BossOrder(blocker) < 0 &&
+                    blocker->GetExactDist(mob) <= ROUTE_BLOCKER_THROUGH_RANGE)
+                {
+                    if (std::find(routeState.routeBlockerPack.begin(), routeState.routeBlockerPack.end(),
+                                  blocker->GetGUID()) == routeState.routeBlockerPack.end())
+                    {
+                        routeState.routeBlockerPack.push_back(blocker->GetGUID());
+                        routeState.skipUntil.erase(blocker->GetGUID());
+                        routeState.skipReason.erase(blocker->GetGUID());
+                        group.LogEvent("route_blocker_walk_through",
+                                 JsonObject().Str("target", mob->GetName()).Num("targetEntry", mob->GetEntry())
+                                     .Str("joins", blocker->GetName()).Num("joinsEntry", blocker->GetEntry())
+                                     .Real("apart", blocker->GetExactDist(mob))
+                                     .Real("blockerDistance", leader->GetExactDist(blocker)));
+                    }
+                }
+                else if (walkStopped)
+                {
+                    // [boss_on_the_way_first] another boss of the run stops the body-pull walk to this boss (dme-h
+                    // 20261025-153805-dme-h-5A-22: Hydrospawn in the pool between the tank and Zevrim 20 yd above,
+                    // body_pull <-> approach_stop every 2 s for 2 minutes, waves 12 / 17 the same): the boss on the
+                    // way is fought first - a player clears what stands on the only way up.
+                    bool const blockerIsRunBoss =
+                        blocker && blocker->IsAlive() && !blocker->IsInCombat() && !blocker->IsImmuneToPC() &&
+                        (blocker->IsDungeonBoss() || routeState.bossCreatures.count(blocker->GetGUID())) &&
+                        blocker->GetGUID() != routeState.target &&
+                        !ClassGatedBoss(group.MapId(), group.Difficulty(), blocker->GetEntry());
+                    if (blockerIsRunBoss && routeState.targetIsBoss)
+                    {
+                        group.LogEvent("boss_on_the_way_first",
+                                 JsonObject().Str("boss", mob->GetName()).Num("bossEntry", mob->GetEntry())
+                                     .Str("first", blocker->GetName()).Num("firstEntry", blocker->GetEntry())
+                                     .Real("firstDistance", leader->GetExactDist(blocker))
+                                     .Real("bossDz", mob->GetPositionZ() - leader->GetPositionZ()));
+                        routeState.target = blocker->GetGUID();
+                        routeState.targetIsBoss = true;
+                        routeState.targetIsStarter = false;
+                        routeState.targetRouteRule = "boss on the way";
+                        routeState.targetSinceMs = now;
+                        routeState.approach = 0;
+                        routeState.arrivedMs = 0;
+                        routeState.stopSinceMs = 0;
+                        routeState.approachBlocker.Clear();
+                        routeState.orderHoldSinceMs.erase(blocker->GetGUID());
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        return;
+                    }
+                    // [b33_dme] the blocker is no boss, but its pack brings one of the run (BossBroughtBy: Hydrospawn's
+                    // wander reaches the Wildspawn Hellcaller's stand, dme-n 20261026-000434-5H-40): the planner
+                    // refuses it as that boss's fight, so that boss is fought first, as when he stood on the way.
+                    Creature* broughtBoss = nullptr;
+                    if (ROUTE_BOSS_BROUGHT_BY_PACK && blocker && !blockerIsRunBoss && routeState.targetIsBoss &&
+                        !blocker->IsInCombat())
+                        if (Map* walkMap = leader->GetMap())
+                            for (ObjectGuid const& guid : routeState.bossCreatures)
+                            {
+                                Creature* boss = walkMap->GetCreature(guid);
+                                if (!boss || guid == routeState.target || boss == blocker ||
+                                    ClassGatedBoss(group.MapId(), group.Difficulty(), boss->GetEntry()) ||
+                                    !BossBroughtBy(leader, boss, blocker))
+                                    continue;
+                                if (!broughtBoss || leader->GetExactDist(boss) < leader->GetExactDist(broughtBoss))
+                                    broughtBoss = boss;
+                            }
+                    if (broughtBoss)
+                    {
+                        group.LogEvent("boss_on_the_way_first",
+                                 JsonObject().Str("boss", mob->GetName()).Num("bossEntry", mob->GetEntry())
+                                     .Str("first", broughtBoss->GetName()).Num("firstEntry", broughtBoss->GetEntry())
+                                     .Real("firstDistance", leader->GetExactDist(broughtBoss))
+                                     .Str("via", blocker->GetName()).Num("viaEntry", blocker->GetEntry())
+                                     .Real("viaDistance", leader->GetExactDist(blocker))
+                                     .Str("why", "the blocker's pack brings this boss [b33_dme]")
+                                     .Real("bossDz", mob->GetPositionZ() - leader->GetPositionZ()));
+                        routeState.target = broughtBoss->GetGUID();
+                        routeState.targetIsBoss = true;
+                        routeState.targetIsStarter = false;
+                        routeState.targetRouteRule = "boss on the way";
+                        routeState.targetSinceMs = now;
+                        routeState.approach = 0;
+                        routeState.arrivedMs = 0;
+                        routeState.stopSinceMs = 0;
+                        routeState.approachBlocker.Clear();
+                        routeState.orderHoldSinceMs.erase(broughtBoss->GetGUID());
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        return;
+                    }
+                    // [b30_stalls] trash of a boss's area whose only walk runs through that boss (it joins his fight,
+                    // JoinsBossFight): it is no pull before him - the planner refuses its pack ("brings a boss"), the
+                    // boss_area_clear hold keeps the boss back, deadlock. brd-h 20261025-184229-brd-h-5H-9: Anvilrage
+                    // Warden / Bloodhound below Gerstahn, body pull stopped at Gerstahn every 10 s, stalled 0/19
+                    // (build 29 broke out only by an accidental edge-walk aggro). The trash stays skipped (a
+                    // ReachabilitySkip reason, never unskipped by boss_area_clear) and the boss is the pull.
+                    if (blockerIsRunBoss && !routeState.targetIsBoss && JoinsBossFight(leader, blocker, mob))
+                    {
+                        group.LogEvent("boss_on_the_way_first",
+                                 JsonObject().Str("boss", blocker->GetName()).Num("bossEntry", blocker->GetEntry())
+                                     .Str("trash", mob->GetName()).Num("trashEntry", mob->GetEntry())
+                                     .Str("why", "trash reached only through its boss [b30_stalls]")
+                                     .Real("bossDistance", leader->GetExactDist(blocker)));
+                        std::list<Creature*> walled;
+                        PackMobCheck wallCheck{leader, mob};
+                        Acore::CreatureListSearcher<PackMobCheck> wallSearcher(mob, walled, wallCheck);
+                        Cell::VisitObjects(mob, wallSearcher, PACK_RADIUS);
+                        walled.push_back(mob);
+                        for (Creature* trash : walled)
+                            if (trash != blocker && !trash->IsDungeonBoss() &&
+                                !routeState.bossCreatures.count(trash->GetGUID()) &&
+                                JoinsBossFight(leader, blocker, trash))
+                            {
+                                routeState.skipUntil[trash->GetGUID()] = now + UNREACHABLE_SKIP_MS;
+                                routeState.skipReason[trash->GetGUID()] =
+                                    "boss area: given up (reached only through the boss)";
+                            }
+                        routeState.target = blocker->GetGUID();
+                        routeState.targetIsBoss = true;
+                        routeState.targetIsStarter = false;
+                        routeState.targetRouteRule = "boss on the way";
+                        routeState.targetSinceMs = now;
+                        routeState.approach = 0;
+                        routeState.arrivedMs = 0;
+                        routeState.stopSinceMs = 0;
+                        routeState.approachBlocker.Clear();
+                        routeState.orderHoldSinceMs.erase(blocker->GetGUID());
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        return;
+                    }
+                    LogHarnessHold(group, leader, blocker, "body pull", stop.x, stop.y, stop.z);
+                    routeState.approach = 0;  // back to the wait at the stop: the neighbour hold decides
+                    routeState.arrivedMs = 0;
+                    routeState.stopSinceMs = 0;
+                    routeState.approachBlocker = blocker->GetGUID();
+                    approachStopped = true;
+                    approachStop = stop;
+                }
+            }
+
+        // Progress of the walk to this target. Utgarde Pinnacle wave 8 (and wave 9 at the entrance): a Mindless
+        // Servant on a ledge 8 yd above the hall floor - the route ends under it, the same-floor rule never lets the
+        // leader "arrive", the waypoint is where it stands (or the leader's own move refuses it), and the group stood
+        // there 21 minutes; servants walking in kept the stall detector quiet. A player pulls it from below when it
+        // is in range and sight, and else goes elsewhere.
+        // A walk that swings back and forth (ohb-h wave 8: the harness route against the bots' own event step,
+        // 2144,256 <-> 2167,275 every 30 s, 4 minutes) resets the 3-yd anchor on every swing: an item starter's object
+        // the leader comes no nearer to in STARTER_NO_NEARER_MS of steering is stuck as well.
+        if (routeState.steerTarget != routeState.target)
+        {
+            routeState.steerNearest = -1.0f;
+            routeState.steerNoNearerMs = 0;
+            starterNearestPath.erase(group.InstanceId());
+        }
+        else if (getMSTimeDiff(routeState.steerLastMs, now) <= STEER_GAP_MS)
+            routeState.steerNoNearerMs += getMSTimeDiff(routeState.steerLastMs, now);
+        if (routeState.steerNearest < 0.0f || distance + STEER_PROGRESS_RANGE < routeState.steerNearest)
+        {
+            routeState.steerNearest = distance;
+            routeState.steerNoNearerMs = 0;
+        }
+        bool swingStuck = routeState.targetIsStarter && routeState.steerNoNearerMs > STARTER_NO_NEARER_MS &&
+                          routeState.starterIdx < routeState.starters.size() &&
+                          routeState.starters[routeState.starterIdx].def->kind == StarterKind::UseItem;
+        // [starter_route_progress] A walk that has to go round: progress is the remaining walk, not the straight
+        // distance (LBRS: Urok's Tribute Pile is ~1100 yd of path for 95 yd straight, over the z -18.9 floor; brs-h
+        // 02:56 / 06:58 and lbrs-n 05:33 were steer_stuck 75-81 yd under it, dz 67.4, on the right route). Measured
+        // only when the straight metric fires; a swing (Old Hillsbrad) shortens no path and stays stuck.
+        if (swingStuck)
+        {
+            PathResult const togo = EvaluatePath(leader, object);
+            float& nearestPath = starterNearestPath[group.InstanceId()];
+            if (togo.reachable && togo.length > 0.0f &&
+                (nearestPath <= 0.0f || togo.length + STEER_PROGRESS_RANGE < nearestPath))
+            {
+                group.LogEvent("starter_route_progress",
+                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                             .Real("straight", distance).Real("route", togo.length).Real("routeBefore", nearestPath));
+                nearestPath = togo.length;
+                routeState.steerNoNearerMs = 0;
+                swingStuck = false;
+            }
+        }
+        if (routeState.steerTarget != routeState.target || getMSTimeDiff(routeState.steerLastMs, now) > STEER_GAP_MS ||
+            leader->GetExactDist(&routeState.steerAnchor) > STEER_PROGRESS_RANGE)
+        {
+            // [w24b-steer-twin-keep] The 4 s retarget flipping between the wanderers of one pack (Botanica bot-n
+            // 2026-10-25: Frayer Wildlings, 8 flips from 1538 s to the stop, the leader stood 95 s, no steer_stuck)
+            // keeps the clock: a new target of the old one's entry within STEER_TWIN_RANGE of it, the leader not
+            // moved, is the same stop.
+            Creature const* before =
+                routeState.steerTarget != routeState.target ? map->GetCreature(routeState.steerTarget) : nullptr;
+            Creature const* after = object ? object->ToCreature() : nullptr;
+            bool const twinFlip = before && after && before->IsAlive() && before->GetEntry() == after->GetEntry() &&
+                                  before->GetExactDist(after) <= STEER_TWIN_RANGE &&
+                                  getMSTimeDiff(routeState.steerLastMs, now) <= STEER_GAP_MS &&
+                                  leader->GetExactDist(&routeState.steerAnchor) <= STEER_PROGRESS_RANGE;
+            if (twinFlip)
+            {
+                LOG_INFO("playerbots", "[w24b-steer-twin-keep] {}: {} -> a twin, the steer clock keeps {} s",
+                         group.Run().runId, after->GetName(),
+                         getMSTimeDiff(routeState.steerSinceMs, now) / IN_MILLISECONDS);
+                routeState.steerTarget = routeState.target;
+            }
+            else
+            {
+                if (routeState.steerTarget != routeState.target)
+                    routeState.steerReachWaived = false;
+                routeState.steerTarget = routeState.target;
+                routeState.steerAnchor = leader->GetPosition();
+                routeState.steerSinceMs = now;
+            }
+        }
+        routeState.steerLastMs = now;
+        if (STEER_REST_NOT_STUCK && !arrived && !leader->IsInCombat() &&
+            (RestState::IsDrinking(leader) || RestState::IsEating(leader)))
+        {
+            routeState.steerSinceMs = now;
+            routeState.steerAnchor = leader->GetPosition();
+            routeState.steerNoNearerMs = 0;
+            // [queue-pull-hold-not-stuck] nor the drive watchdog's "own walk made no progress" (brd-n
+            // 20261025-115805-brd-n-5A-2: Rlpalbx drinking at (610.4, -184.4) at 1146-1157 s, bot_cannot_move "route").
+            routeState.driveSinceMs = now;
+            routeState.driveAnchor = leader->GetPosition();
+            if (steerRestLogged.insert({group.Run().runSeq, routeState.target}).second)
+                group.LogEvent("steer_rest_not_stuck",
+                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                             .Str("rest", RestState::IsDrinking(leader) ? "drinking" : "eating")
+                             .Real("mana", leader->GetMaxPower(POWER_MANA) ? leader->GetPowerPct(POWER_MANA) : 100.0f)
+                             .Real("hp", leader->GetHealthPct()).Real("distance", distance)
+                             .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
+                             .Real("z", leader->GetPositionZ()));
+        }
+        // [b47_door] A member still preparing (its rebuff round open: a warlock's Create Spellstone / Soulstone casts
+        // after the run-start buffing step closed at its 15 s bound; or sitting below its line) holds the tank's pull
+        // and its walk (PullReadiness::GroupPreparing) - no lack of progress either. brd-h 20261026-104908-brd-h-5D-6:
+        // the bear stood 27-48 s at the entrance while Rtlocaa made its stones, "own walk made no progress", the
+        // Anvilrage Overseer was skipped as a route end for 300 s, every mob behind it "behind skipped", and the route
+        // went to the Shadowforge Gate 170559, whose key starter waits for Roccor (afterDead): 2+ min idle. Bounded by
+        // PREPARING_NOT_STUCK_MAX_MS per stand, so a member whose window never closes still ends in the old skip.
+        {
+            constexpr uint32 PREPARING_NOT_STUCK_MAX_MS = 45 * IN_MILLISECONDS;
+            static std::unordered_map<uint32, std::pair<uint32, uint32>> preparingSince;  // seq -> since, seen
+            std::pair<uint32, uint32>& prep = preparingSince[group.Run().runSeq];
+            if (!arrived && !leader->IsInCombat() && PullReadiness::GroupPreparing(leader))
+            {
+                if (!prep.first || getMSTimeDiff(prep.second, now) > STEER_GAP_MS + 3 * IN_MILLISECONDS)
+                    prep.first = now ? now : 1;
+                prep.second = now ? now : 1;
+                if (getMSTimeDiff(prep.first, now) < PREPARING_NOT_STUCK_MAX_MS)
+                {
+                    routeState.steerSinceMs = now;
+                    routeState.steerAnchor = leader->GetPosition();
+                    routeState.steerNoNearerMs = 0;
+                    routeState.driveSinceMs = now;
+                    routeState.driveAnchor = leader->GetPosition();
+                }
+            }
+        }
+        // [lead2] LEADER_ONE_TANK_MOVER: the tank's open pull order owns its movement - no route stall while it is
+        // open, and no clock hands the tank back (PULL_HOLD_STALL_MS / PULL_HOLD_RELEASE_MS are the A/B's old path):
+        // the order's own events do (DrainOrderReports; a lost report is order_orphan, a bug event).
+        if (Leader::LEADER_ONE_TANK_MOVER)
+        {
+            if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(group, leader))
+            {
+                routeState.steerSinceMs = now;
+                routeState.steerAnchor = leader->GetPosition();
+                routeState.steerNoNearerMs = 0;
+                routeState.driveSinceMs = now;
+                routeState.driveAnchor = leader->GetPosition();
+                Leader::PullOrder order;
+                PullHoldTrack& hold = pullHolds[group.LeaderGuid()];
+                if (Leader::Orders::GetOpen(group.LeaderGuid(), order) && hold.orderId != order.id)
+                {
+                    hold.orderId = order.id;
+                    group.LogEvent("pull_hold", JsonObject().Str("name", object->GetName())
+                                                     .Num("entry", object->GetEntry()).Real("distance", distance)
+                                                     .Str("pull", TankPullState(leader)).Num("order", order.id)
+                                                     .Str("orderState", Leader::StateName(order.state))
+                                                     .Str("orderMethod", Leader::MethodName(order.method))
+                                                     .Str("orderTarget", order.targetName)
+                                                     .Real("x", leader->GetPositionX())
+                                                     .Real("y", leader->GetPositionY())
+                                                     .Real("z", leader->GetPositionZ()));
+                }
+            }
+        }
+        // [queue-pull-hold-not-stuck] the harness withholds the waypoint for the tank's own pull (GiveWaypoint): no
+        // route stall, up to PULL_HOLD_STALL_MS in place; then pull_hold_stall, the waypoint released.
+        else if (!arrived && !leader->IsInCombat() && WaypointHeldForPull(group, leader))
+        {
+            PullHoldTrack& hold = pullHolds[group.LeaderGuid()];
+            if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > STEER_GAP_MS ||
+                leader->GetExactDist(&hold.anchor) > STEER_PROGRESS_RANGE)
+            {
+                hold.sinceMs = now ? now : 1;
+                hold.anchor = leader->GetPosition();
+                hold.logged = false;
+                hold.stallLogged = false;
+            }
+            hold.seenMs = now ? now : 1;
+            uint32 const heldMs = getMSTimeDiff(hold.sinceMs, now);
+            if (heldMs < PULL_HOLD_STALL_MS)
+            {
+                routeState.steerSinceMs = now;
+                routeState.steerAnchor = leader->GetPosition();
+                routeState.steerNoNearerMs = 0;
+                routeState.driveSinceMs = now;
+                routeState.driveAnchor = leader->GetPosition();
+                if (!hold.logged)
+                {
+                    hold.logged = true;
+                    group.LogEvent("pull_hold", JsonObject().Str("name", object->GetName())
+                                                     .Num("entry", object->GetEntry()).Real("distance", distance)
+                                                     .Str("pull", TankPullState(leader))
+                                                     .Real("x", leader->GetPositionX())
+                                                     .Real("y", leader->GetPositionY())
+                                                     .Real("z", leader->GetPositionZ()));
+                }
+            }
+            else if (!hold.stallLogged)
+            {
+                hold.stallLogged = true;
+                hold.releaseUntilMs = now + PULL_HOLD_RELEASE_MS;
+                routeState.steerSinceMs = now;  // the released walk gets its own STEER_STUCK_MS
+                routeState.steerAnchor = leader->GetPosition();
+                group.LogEvent("pull_hold_stall",
+                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                             .Real("distance", distance).Num("heldSec", heldMs / IN_MILLISECONDS)
+                             .Str("pull", TankPullState(leader))
+                             .Num("releaseSec", PULL_HOLD_RELEASE_MS / IN_MILLISECONDS)
+                             .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
+                             .Real("z", leader->GetPositionZ()));
+                LOG_INFO("playerbots",
+                         "[queue-pull-hold-not-stuck] {}: {} held {} s in place by its own pull ({}) - the waypoint "
+                         "to {} is no longer withheld for {} s",
+                         group.Run().runId, leader->GetName(), heldMs / IN_MILLISECONDS, TankPullState(leader),
+                         object->GetName(), PULL_HOLD_RELEASE_MS / IN_MILLISECONDS);
+            }
+        }
+        if (!arrived && routeState.steerReachWaived && distance <= PULL_RANGE)
+            arrived = true;
+        if (!arrived && (getMSTimeDiff(routeState.steerSinceMs, now) > STEER_STUCK_MS || swingStuck))
+        {
+            // A released Violet Hold prisoner is the objective, never "route end" (vh-h wave 9: Zuramat skipped at
+            // 7 yd): the bots' own "vh engage" walks to him from here.
+            Creature const* stuckOn = object->ToCreature();
+            bool const releasedPrisoner = stuckOn && leader->GetMapId() == VIOLET_HOLD_MAP_ID &&
+                                          routeState.bossCreatures.count(stuckOn->GetGUID()) &&
+                                          !stuckOn->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+            // [b32_bm] a walk-in (routeState.approach) that stopped beside the target is in reach too: bm-h
+            // 20261025-223301-bm-h-5H-72 skipped Aeonus at 6.0 yd as "route end" for 300 s (melee range 5.8).
+            bool const walkInBeside = !routeState.targetIsStarter && routeState.approach && stuckOn &&
+                                      distance <= leader->GetMeleeRange(stuckOn) + BODY_PULL_STUCK_REACH &&
+                                      leader->IsWithinLOSInMap(object);
+            bool const inReach = releasedPrisoner || walkInBeside ||
+                                 (!routeState.targetIsStarter && !routeState.approach && distance <= PULL_RANGE &&
+                                  leader->IsWithinLOSInMap(object));
+            // [hleft-ak-jedoga-owns] Ahn'kahet: a Twilight Initiate 30114 is never "route end" while Jedoga lives or
+            // her room owns the pull (AKJedogaRoom::OwnsPull): the AK strategy brings them, she comes only after.
+            if (object->GetEntry() == AK_TWILIGHT_INITIATE_ENTRY)
+            {
+                PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+                bool jedogaAlive = false;
+                for (ObjectGuid const& guid : routeState.bossCreatures)
+                    if (Creature* boss = map->GetCreature(guid))
+                        jedogaAlive |= boss->IsAlive() && boss->GetEntry() == AK_JEDOGA_ENTRY;
+                if ((leaderAI && AKJedogaRoom::OwnsPull(leaderAI)) || jedogaAlive)
+                {
+                    routeState.steerSinceMs = now;
+                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    return;
+                }
+            }
+            // [selin_entry_no_route_end] A live, idle Selin is never "route end" while her room tactic holds the
+            // entry (MagistersTerrace::SelinRoom::EntryHolds: nobody pulls her until every member stands inside):
+            // the steer stands still by design. mgt-n 2026-10-25 (20261025-115805-mgt-n-5A-15, 627 s): she was
+            // skipped for 300 s while the members swayed at x 206-218, everything else lay behind passage gate
+            // 187979, 215 s idle.
+            // At most SELIN_ENTRY_HOLD_MAX_MS in a row (a member that never walks in is the stall watchdog's).
+            constexpr uint32 SELIN_ENTRY_HOLD_MAX_MS = 180 * IN_MILLISECONDS;
+            struct SelinEntryHold
+            {
+                uint32 sinceMs = 0;
+                uint32 seenMs = 0;
+                uint32 logMs = 0;
+            };
+            static std::unordered_map<uint32, SelinEntryHold> selinEntryHolds;  // instance id (world thread)
+            if (Creature const* boss = object->ToCreature();
+                boss && boss->GetEntry() == 24723 /* Selin Fireheart */ && boss->IsAlive() && !boss->IsInCombat() &&
+                leader->GetMapId() == MagistersTerrace::MAP_MAGISTERS_TERRACE &&
+                MagistersTerrace::SelinRoom::EntryHolds(leader))
+            {
+                SelinEntryHold& hold = selinEntryHolds[group.InstanceId()];
+                if (!hold.sinceMs || getMSTimeDiff(hold.seenMs, now) > STEER_STUCK_MS + 10 * IN_MILLISECONDS)
+                    hold.sinceMs = now ? now : 1;
+                hold.seenMs = now ? now : 1;
+                if (getMSTimeDiff(hold.sinceMs, now) < SELIN_ENTRY_HOLD_MAX_MS)
+                {
+                    routeState.steerSinceMs = now;
+                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    if (!hold.logMs || getMSTimeDiff(hold.logMs, now) >= 10 * IN_MILLISECONDS)
+                    {
+                        hold.logMs = now ? now : 1;
+                        LOG_INFO("playerbots", "[selin_entry_no_route_end] {}: Selin is no route end while her room "
+                                 "entry holds ({:.1f} yd, {} s)", group.Run().runId, distance,
+                                 getMSTimeDiff(hold.sinceMs, now) / IN_MILLISECONDS);
+                    }
+                    return;
+                }
+            }
+            // [hleft-swim-back] held in the water below the target (a ledge the swimmer cannot climb): back the way
+            // it swam in, before any skip.
+            if (ROUTE_SWIM_BACK && !routeState.swimBack && !releasedPrisoner && leader->IsInWater() &&
+                routeState.swimTrail.size() >= 2 && object->GetPositionZ() > leader->GetPositionZ() + SWIM_CLIMB_DZ)
+            {
+                routeState.swimBack = true;
+                routeState.swimBackSinceMs = now;
+                routeState.steerSinceMs = now;
+                group.LogEvent("swim_back", JsonObject().Str("action", "back along the swim")
+                                                 .Str("target", object->GetName())
+                                                 .Real("dz", object->GetPositionZ() - leader->GetPositionZ())
+                                                 .Num("trail", uint32(routeState.swimTrail.size()))
+                                                 .Real("dryX", routeState.swimTrail.front().GetPositionX())
+                                                 .Real("dryY", routeState.swimTrail.front().GetPositionY())
+                                                 .Real("dryZ", routeState.swimTrail.front().GetPositionZ()));
+                return;
+            }
+            group.LogEvent("steer_stuck", JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                               .Bool("eventStarter", routeState.targetIsStarter)
+                                               .Bool("bodyPull", routeState.approach != 0).Real("distance", distance)
+                                               .Real("dz", object->GetPositionZ() - leader->GetPositionZ())
+                                               .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
+                                               .Real("z", leader->GetPositionZ())
+                                               .Str("action", inReach ? "pull from here" : "skip"));
+            if (inReach)
+            {
+                routeState.steerReachWaived = true;
+                arrived = true;
+            }
+            else if (routeState.targetIsStarter)
+            {
+                StarterTrack& starter = routeState.starters[routeState.starterIdx];
+                // One of several objects that take the item (Old Hillsbrad wave 34: the walk to the barrel at
+                // 2119,42 ended 11 yd above it on the Durnholde wall, steer_stuck; the starter waited 2 minutes and
+                // chose the same nearest barrel again, four times, 0 of 5 planted in 25 minutes): that object is
+                // passed over, the next nearest one comes at once - a player goes to another barrel.
+                if (starter.def->kind == StarterKind::UseItem)
+                {
+                    starter.stuckUntilMs[routeState.target] = now + STARTER_OBJECT_STUCK_SKIP_MS;
+                    starter.nextAllowedMs = now;
+                }
+                else
+                    starter.nextAllowedMs = now + STARTER_STUCK_RETRY_MS;
+                routeState.target.Clear();
+                routeState.nextRetargetMs = now;
+                TestRunner::ClearWaypoint(group.LeaderGuid());
+                return;
+            }
+            else
+            {
+                // A boss holds the later ones as "next boss unreachable" does (order hold).
+                if (routeState.targetIsBoss)
+                    routeState.orderHoldSinceMs.emplace(routeState.target, now);
+                // A boss in another wing (Scarlet Monastery heroic 2026-10-25: Graveyard cleared, Loksey / Doan
+                // walked to the Graveyard exit 5 times, 1959 yd short, 4 minutes without a fight - the wing change
+                // waited for "no targets", which the boss itself never let come): the group changes to the
+                // entrance nearest to him.
+                if (routeState.targetIsBoss && routeState.entrances.size() > 1 &&
+                    routeState.entranceIdx < routeState.entrances.size() && !routeState.wingWalk &&
+                    !EventGatherApplies(group) && EventSpotIndex(group) < 0)
+                    if (int32 const wing = NearestEntrance(group, object);
+                        wing >= 0 && size_t(wing) != routeState.entranceIdx &&
+                        routeState.entrances[size_t(wing)].GetExactDist(
+                            &routeState.entrances[routeState.entranceIdx]) >= SAME_ENTRANCE_RANGE)
+                    {
+                        StartWingChange(group, size_t(wing), "boss route end in another wing");
+                        return;
+                    }
+                // Ahn'kahet wave 9/10: a ledge of Swarmers 7 yd above the leader - skipping them one at a time
+                // retargets the next one 20 s later, for 4 minutes. Skip the same-entry mobs around it with it, as
+                // "route end" from here (unreachableFrom: checked again once the leader stands elsewhere); never a
+                // boss or an encounter creature.
+                uint32 twinsSkipped = 0;
+                // Never for the Twilight Initiates 30114 (Ahn'kahet): Jedoga's gate, she comes only once they are
+                // dead (wotlk tactic audit, wave 21) - skipped by the dozen they kept her away ("twin_skip_exempt").
+                bool const twinExempt = object->GetEntry() == 30114;
+                if (twinExempt)
+                    LOG_INFO("playerbots", "[route] {}: twin_skip_exempt: {} {} - only this one skipped",
+                             group.Run().runId, object->GetName(), object->GetEntry());
+                if (!routeState.targetIsBoss && ROUTE_TWIN_SKIP && !twinExempt)
+                    if (Creature* mob = object->ToCreature())
+                    {
+                        std::list<Creature*> twins;
+                        Acore::AllCreaturesOfEntryInRange check(mob, mob->GetEntry(), STEER_TWIN_RANGE);
+                        Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange> searcher(mob, twins, check);
+                        Cell::VisitObjects(mob, searcher, STEER_TWIN_RANGE);
+                        for (Creature* twin : twins)
+                            if (twin != mob && twin->IsAlive() && !twin->IsInCombat() && !twin->IsDungeonBoss() &&
+                                !twin->isWorldBoss() && !routeState.bossCreatures.count(twin->GetGUID()) &&
+                                group.BossOrder(twin) < 0)
+                            {
+                                routeState.skipUntil[twin->GetGUID()] = now + UNREACHABLE_SKIP_MS;
+                                routeState.skipReason[twin->GetGUID()] = "route end (same entry)";
+                                routeState.unreachableFrom[twin->GetGUID()] = leader->GetPosition();
+                                if (!leader->IsWithinLOSInMap(twin))
+                                    MarkUnseenRouteEnd(twin, now + UNREACHABLE_SKIP_MS);
+                                ++twinsSkipped;
+                            }
+                    }
+                if (!routeState.targetIsBoss)
+                    if (Creature* mob = object->ToCreature(); mob && !leader->IsWithinLOSInMap(mob))
+                    {
+                        MarkUnseenRouteEnd(mob, now + UNREACHABLE_SKIP_MS);
+                        // Its pack too, what of it the leader does not see (the route skips them "behind" it).
+                        std::list<Creature*> pack;
+                        PackMobCheck check{leader, mob};
+                        Acore::CreatureListSearcher<PackMobCheck> searcher(mob, pack, check);
+                        Cell::VisitObjects(mob, searcher, PACK_RADIUS);
+                        for (Creature* packMob : pack)
+                            if (packMob != mob && !packMob->IsDungeonBoss() &&
+                                !routeState.bossCreatures.count(packMob->GetGUID()) &&
+                                !leader->IsWithinLOSInMap(packMob))
+                                MarkUnseenRouteEnd(packMob, now + UNREACHABLE_SKIP_MS);
+                        group.LogEvent("unseen_route_end",
+                                 JsonObject().Str("name", mob->GetName()).Num("entry", mob->GetEntry())
+                                     .Real("distance", leader->GetExactDist(mob))
+                                     .Num("twins", twinsSkipped));
+                    }
+                group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS,
+                           twinsSkipped ? "route end (+" + std::to_string(twinsSkipped) + " same entry)"
+                                        : std::string("route end"));
+                return;
+            }
+        }
+
+        if (arrived)
+        {
+            routeState.steerSinceMs = now;  // waiting for the pull is no lack of progress
+            TestRunner::ClearWaypoint(group.LeaderGuid());
+            if (routeState.targetIsStarter)
+            {
+                StarterTrack& starter = routeState.starters[routeState.starterIdx];
+                // Used up meanwhile (MarkStartersDoneByGroup): nothing to click any more.
+                bool const used = starter.uses < starter.def->maxUses && UseStarter(group, leader, starter, object);
+                routeState.target.Clear();
+                routeState.nextRetargetMs = now + 3 * IN_MILLISECONDS;
+                // [ulda-ritual-hold] a summoning ritual casts its spell 5 s after the click, only while the user still
+                // channels (GameObject::Update CheckRitualList): no new target, no walk until then.
+                if (GameObject const* ritual = object->ToGameObject();
+                    used && ritual && ritual->GetGoType() == GAMEOBJECT_TYPE_SUMMONING_RITUAL)
+                {
+                    ritualHoldUntilMs[group.InstanceId()] = now + RITUAL_CHANNEL_HOLD_MS;
+                    routeState.nextRetargetMs = now + RITUAL_CHANNEL_HOLD_MS;
+                    group.LogEvent("ritual_hold", JsonObject().Str("note", starter.def->note)
+                                                       .Num("entry", ritual->GetEntry())
+                                                       .Num("holdMs", RITUAL_CHANNEL_HOLD_MS));
+                }
+                return;
+            }
+
+            if (!routeState.arrivedMs)
+            {
+                // ROUTE_STOP_KEEPS_WAIT: Stratholme / Uldaman / Drak'Tharon / Mana-Tombs 2026-10-25 - the 4 s retarget
+                // flipped between the mobs of one refused pack (or the targets behind one blocker) every 4-20 s, each
+                // flip reset this clock, the 45 s tank view never came and the group stood 3-4 minutes. The same
+                // stop keeps the clock; a boss and a body pull keep their own.
+                bool const sameStop = ROUTE_STOP_KEEPS_WAIT && routeState.stopSinceMs && !routeState.targetIsBoss &&
+                                      !routeState.approach &&
+                                      getMSTimeDiff(routeState.stopLastMs, now) <= STOP_KEEP_GAP_MS &&
+                                      leader->GetExactDist(&routeState.stopPos) <= STOP_SAME_RANGE;
+                routeState.arrivedMs = sameStop ? routeState.stopSinceMs : now;
+                routeState.stopSinceMs = routeState.arrivedMs;
+                routeState.stopPos = leader->GetPosition();
+            }
+            routeState.stopLastMs = now;
+
+            uint32 waited = getMSTimeDiff(routeState.arrivedMs, now);  // [held_for_now_cap] may be set waited out
+            // An event's waiting place (EventSpotDef::hold) while its event runs: what stands there attacks the event
+            // (Black Morass wave 10: a rift pack of 8 was "careful pull refused" for 3 minutes next to Medivh, broke
+            // his shield, the event failed and everything despawned). No deferral there, and a short wait only.
+            bool atEventHold = false;
+            if (ROUTE_HOLD_SPOT_FIGHT)
+                if (int32 const spotIdx = EventSpotIndex(group); spotIdx >= 0)
+                    if (EventSpotDef const* spot = EventSpots(group.MapId())[size_t(spotIdx)];
+                        SpotHolds(group, *spot))
+                        // The event's own objective (a rift keeper at its rift) is fought wherever it stands.
+                        atEventHold = object->GetExactDist(spot->x, spot->y, spot->z) <=
+                                          (spot->holdRadius > 0.0f ? spot->holdRadius : HOLD_TARGET_RADIUS) ||
+                                      std::find(spot->holdAlways.begin(), spot->holdAlways.end(),
+                                                object->GetEntry()) != spot->holdAlways.end();
+            uint32 const pullWaitMs = atEventHold ? BODY_PULL_WAIT_MS : PULL_WAIT_MS;
+            // [pull_after_hold] the group stands ready at this target PULL_AFTER_HOLD_MS: the hold ends (below)
+            bool holdForce = false;
+            // [lead24] LEADER_NO_FORCING_TIMERS: no ready-hold release for a led party (pull_after_hold off)
+            bool const ledNoForce = Leader::LEADER_NO_FORCING_TIMERS && group.LeaderDecides();
+            if (PULL_AFTER_HOLD && !ledNoForce && !routeState.approach && !atEventHold && !group.IsRaid() &&
+                !routeState.targetIsStarter)
+            {
+                bool const groupReady =
+                    group.GroupFullyReady(leader) && !group.NeedBuff() && !PrePullCc::IsHolding(leader);
+                HoldReady& ready = holdReady[group.LeaderGuid()];
+                // plan29 follow-up 2: the targets flip at one stop (the 4 s retarget between the mobs of a pack or
+                // the targets behind one blocker): the same stop keeps the clock, as ROUTE_STOP_KEEPS_WAIT does
+                bool const sameStop = ready.sinceMs && leader->GetExactDist(&ready.at) <= STOP_SAME_RANGE;
+                if ((ready.target != routeState.target && !sameStop) || !groupReady)
+                {
+                    ready.target = routeState.target;
+                    ready.sinceMs = groupReady ? (now ? now : 1) : 0;
+                    ready.at = leader->GetPosition();
+                }
+                else if (ready.target != routeState.target)
+                    ready.target = routeState.target;
+                else if (!ready.sinceMs)
+                {
+                    ready.sinceMs = now ? now : 1;
+                    ready.at = leader->GetPosition();
+                }
+                Creature* const stopper =
+                    routeState.approachBlocker.IsEmpty() ? nullptr : map->GetCreature(routeState.approachBlocker);
+                Creature* const holdBlocker =
+                    stopper && stopper->IsAlive() && !stopper->IsInCombat() ? stopper : object->ToCreature();
+                std::string requiredWhy;
+                bool const onWay = stopper && stopper->IsAlive() && !stopper->IsInCombat();
+                bool const required = routeState.targetIsBoss || IsRouteBlocker(group, routeState.target) ||
+                                      RouteBlockerBehindRequired(group, map, object, requiredWhy);
+                if (groupReady && ready.sinceMs && getMSTimeDiff(ready.sinceMs, now) >= PULL_AFTER_HOLD_MS &&
+                    holdBlocker && (onWay || required) && (!routeState.targetIsBoss || onWay))
+                {
+                    holdForce = true;
+                    // (4) a closed door that opens by use hides the blocker: the tank opens it, the pull follows
+                    if (!leader->IsWithinLOSInMap(holdBlocker) && !holdBlocker->IsDungeonBoss())
+                    {
+                        Movement::PointsArray doorPath;
+                        {
+                            PathGenerator path(leader);
+                            path.CalculatePath(holdBlocker->GetPositionX(), holdBlocker->GetPositionY(),
+                                               holdBlocker->GetPositionZ(), false);
+                            if (!(path.GetPathType() & PATHFIND_NOPATH))
+                                doorPath = path.GetPath();
+                        }
+                        if (doorPath.size() < 2)
+                            doorPath = {G3D::Vector3(leader->GetPositionX(), leader->GetPositionY(),
+                                                     leader->GetPositionZ()),
+                                        G3D::Vector3(holdBlocker->GetPositionX(), holdBlocker->GetPositionY(),
+                                                     holdBlocker->GetPositionZ())};
+                        ClosedDoorHit const hit = PathThroughClosedDoor(leader, doorPath);
+                        if (hit.Found() && !DoorEventOf(hit.door) && DoorOpensByUse(hit.door))
+                        {
+                            bool const opened = OpenDoorByUse(leader, hit.door);
+                            G3D::Vector3 const at = PointOnPath(doorPath, std::max(0.0f, hit.walked - DOOR_OPEN_BACK));
+                            if (!opened)
+                                doorWalks[group.LeaderGuid()] = {hit.door->GetGUID(), holdBlocker->GetGUID(), at,
+                                                           now + DOOR_WALK_MS};
+                            group.LogEvent("pull_after_hold",
+                                     JsonObject().Str("action", opened ? "opened the door" : "walks to the door")
+                                         .Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                         .Str("blocker", holdBlocker->GetName())
+                                         .Num("blockerEntry", holdBlocker->GetEntry())
+                                         .Str("door", hit.door->GetName()).Num("doorEntry", hit.door->GetEntry())
+                                         .Real("doorWalk", hit.walked)
+                                         .Num("readySec", getMSTimeDiff(ready.sinceMs, now) / IN_MILLISECONDS)
+                                         .Num("waitedSec", waited / IN_MILLISECONDS));
+                            ready.sinceMs = now ? now : 1;  // the pull through the open door gets its own clock
+                            if (!opened)
+                                group.SetLeaderWaypoint(leader, at.x, at.y, at.z);
+                            return;
+                        }
+                    }
+                    pullAfterHoldGates[group.LeaderGuid()] = {holdBlocker->GetGUID(), now + PULL_AFTER_HOLD_GATE_MS};
+                    group.LogEvent("pull_after_hold",
+                             JsonObject().Str("action", onWay && holdBlocker == stopper ? "pull the blocker on the way"
+                                                                                        : "pull the target")
+                                 .Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                 .Str("blocker", holdBlocker->GetName()).Num("blockerEntry", holdBlocker->GetEntry())
+                                 .Bool("boss", routeState.targetIsBoss).Str("required", requiredWhy)
+                                 .Real("blockerDistance", leader->GetExactDist(holdBlocker))
+                                 .Bool("blockerLos", leader->IsWithinLOSInMap(holdBlocker))
+                                 .Num("readySec", getMSTimeDiff(ready.sinceMs, now) / IN_MILLISECONDS)
+                                 .Num("waitedSec", waited / IN_MILLISECONDS));
+                    ready.sinceMs = now ? now : 1;  // one forced decision per PULL_AFTER_HOLD_MS
+                }
+            }
+            // ROUTE_BOSS_PULL_IMMEDIATE: a boss is body-pulled BOSS_PULL_READY_MS after the group stands ready for it
+            // (GroupFullyReady, its boss buffs done, the rest hold above passed), not after PULL_WAIT_MS. The tank's
+            // careful planner never picks a boss (RFC 20:10, Oggleflint: "[pull hold] no aggressive target" until
+            // the 45 s ran out). The long wait stays while the tank holds its pull for a known reason the harness
+            // can read: the group's pre-pull crowd control (PrePullCc::IsHolding). Not in raids (encounter set-ups).
+            // A stop a neighbour pack made (approachBlocker: not the boss's own pack) is no body-pull spot: the body
+            // pull would walk the whole route through it (wave 7 scholo-h 01:30:28, mt-h 01:44:09, mt-n 01:44:21).
+            Creature* const neighbour =
+                routeState.approachBlocker.IsEmpty() ? nullptr : map->GetCreature(routeState.approachBlocker);
+            bool neighbourStop = ROUTE_HARNESS_WALK_GUARD && routeState.targetIsBoss && neighbour &&
+                                 neighbour->IsAlive() && !neighbour->IsInCombat() && !neighbour->IsDungeonBoss() &&
+                                 !routeState.bossCreatures.count(neighbour->GetGUID()) &&
+                                 group.BossOrder(neighbour) < 0;
+            // [hleft-boss-own-pack] the boss's encounter mob is no neighbour (the planner pulls it as his fight).
+            if (neighbourStop)
+                if (Creature* bossTarget = object->ToCreature(); bossTarget && BossEncounterMob(leader, bossTarget,
+                                                                                               neighbour))
+                    neighbourStop = false;
+            if (neighbourStop && neighbour->GetFormation())
+                for (ObjectGuid const& bossGuid : routeState.bossCreatures)
+                    if (Creature* boss = map->GetCreature(bossGuid);
+                        boss && boss->IsAlive() && boss->GetFormation() == neighbour->GetFormation())
+                        neighbourStop = false;
+            bool bossPullNow = false;
+            if (ROUTE_BOSS_PULL_IMMEDIATE && routeState.targetIsBoss && !routeState.approach && !group.IsRaid() &&
+                !neighbourStop)
+            {
+                // [lead13] arc-n / arc-h b56 (Zereketh: "held for now: Rtpalbe at 70 % mana" for good): a member
+                // above its own rest line does not drink, so the 80 % lines alone never let the boss pull come. In
+                // leader mode the boss is pulled ready by the old gate, or - the RaidLeader's old [ready_hold_30s]
+                // rule - after PULL_HOLD_READY_MAX_MS with the leader ready and every member above its own lines.
+                bool levelsReady = group.GroupFullyReady(leader);
+                if (!levelsReady && group.LeaderDecides() && group.State().ready)
+                {
+                    bool atLines = true;
+                    for (LeaderGroup::MemberInfo const& member : group.Members())
+                        if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                            bot && bot->IsAlive() && GET_PLAYERBOT_AI(bot) &&
+                            (RestState::WantsDrink(bot) || RestState::WantsFood(bot) || RestState::IsDrinking(bot) ||
+                             RestState::IsEating(bot)))
+                            atLines = false;
+                    if (!atLines)
+                        group.State().atLinesSinceMs = 0;
+                    else if (!group.State().atLinesSinceMs)
+                        group.State().atLinesSinceMs = now ? now : 1;
+                    levelsReady = group.State().atLinesSinceMs && getMSTimeDiff(group.State().atLinesSinceMs, now) >=
+                                                                      RaidLeader::PULL_HOLD_READY_MAX_MS;
+                    if (levelsReady)
+                        LOG_INFO("playerbots",
+                                 "[lead13] boss_ready_at_lines {}: {} - every member above its own "
+                                 "rest lines {} s, the leader ready: the boss pull",
+                                 group.Run().runId, object->GetName(),
+                                 getMSTimeDiff(group.State().atLinesSinceMs, now) / IN_MILLISECONDS);
+                }
+                bool const ready = levelsReady && !group.NeedBuff() &&
+                                   (routeState.bossBuffed.count(routeState.target) || distance >= BOSS_BUFF_DISTANCE) &&
+                                   !PrePullCc::IsHolding(leader);
+                BossReady& boss = bossReady[group.LeaderGuid()];
+                if (boss.target != routeState.target || !ready)
+                {
+                    boss.target = routeState.target;
+                    boss.sinceMs = ready ? now : 0;
+                }
+                else if (!boss.sinceMs)
+                    boss.sinceMs = now;
+                bossPullNow = ready && boss.sinceMs && getMSTimeDiff(boss.sinceMs, now) >= BOSS_PULL_READY_MS &&
+                              waited <= pullWaitMs;
+                if (bossPullNow)
+                    LOG_INFO("playerbots", "[approach] {}: boss pull: immediate (group ready) - {} {:.1f} yd, "
+                             "waited {} s", leader->GetName(), object->GetName(), distance, waited / IN_MILLISECONDS);
+            }
+            // [route_blocker_body_pull] the target is a pack on the route's way: the planner and the guarantee get
+            // ROUTE_BLOCKER_PREP_MS, then the ready group walks in (no skip).
+            bool const routeBlocker = IsRouteBlocker(group, routeState.target);
+            // The planner's own refusal of this pack (or of the neighbour that stopped the walk), when fresh.
+            bool refusalHopeless = false;
+            uint32 refusalWaitMs = 0;
+            std::string refusalWhy;
+            // [lead43] no guarantee hold for a led party: the leader's refusal moved the route off the mob (Retarget)
+            bool const plannerRefused =
+                ROUTE_CAREFUL_GUARANTEE_HOLD && !group.LeaderDecides() && !routeState.approach &&
+                !routeState.targetIsBoss && !atEventHold && !group.IsRaid() && group.ContentSize() <= 5 &&
+                (PartyRefusal(group, routeState.target, refusalHopeless, refusalWaitMs, refusalWhy) ||
+                 (!routeState.approachBlocker.IsEmpty() &&
+                  PartyRefusal(group, routeState.approachBlocker, refusalHopeless, refusalWaitMs, refusalWhy)));
+            // No verdict at all (GetRefusal false: unknown) while the tank sees the target: held up to
+            // GUARANTEE_UNKNOWN_HOLD_MS before the careful-refused skip below, the planner may still take it.
+            if (ROUTE_CAREFUL_GUARANTEE_HOLD && !ledNoForce && !plannerRefused && !routeState.approach &&
+                !routeState.targetIsBoss && !atEventHold && !group.IsRaid() && group.ContentSize() <= 5 &&
+                waited > pullWaitMs && waited < GUARANTEE_UNKNOWN_HOLD_MS && !holdForce)
+                if (Unit* unit = object->ToUnit();
+                    unit && PartyTankView(group, leader, unit).rfind("accepted", 0) == 0)
+                {
+                    if (routeState.guaranteeTarget != routeState.target || !routeState.guaranteeHolding)
+                    {
+                        routeState.guaranteeTarget = routeState.target;
+                        routeState.guaranteeDueMs = 0;
+                        routeState.guaranteeHolding = true;
+                        group.LogEvent("guarantee_hold", JsonObject().Str("name", object->GetName())
+                                                              .Num("entry", object->GetEntry())
+                                                              .Num("waitSec", 0)
+                                                              .Num("waitedSec", waited / IN_MILLISECONDS)
+                                                              .Str("why", "no verdict (unknown)"));
+                    }
+                    return;
+                }
+            // "held for now" (the planner's honest pause: the group rests / tops up, a boss-ready hold): the group
+            // waits and the wait does not count - the arrival clock restarts, no guarantee skip timer runs.
+            // [held_for_now_cap] ... unless the group stands fully ready for HELD_FOR_NOW_MAX_MS and the planner still
+            // holds the same target: then no rest can change it, and it is a refusal - the guarantee branch below
+            // decides at once (its skip / route blocker / body pull rules). Wave 23 (build 24): gd-h, nex-h and
+            // scholo-h held "fallback plan costs 0.9x tank hp" / "overlap wait ... (0 s)" with the group at 100 %
+            // until the 4-minute stall.
+            bool heldForNowCapped = false;
+            // [lead3] LEADER_NO_BODY_FALLBACK: the leader never turns its planner's hold into a walk-in; a hold no rest
+            // can change is its planner_no_option report (TickLeaderPlanner, LEADER_HELD_READY_MAX_MS)
+            bool const leaderPulls = Leader::Leads(Leader::LEADER_NO_BODY_FALLBACK) && group.LeaderDecides();
+            // [held_for_now_cap] a route blocker keeps its clock: its walk-in comes after ROUTE_BLOCKER_PREP_MS
+            // whatever the planner holds (nex-h wave 23: the Horde Ranger route blocker held "fallback plan costs
+            // 0.92" from 593 s to the stall, the walk-in never came)
+            if (leaderPulls)
+                heldForNowCapped = false;
+            else if (routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS)
+                heldForNowCapped = true;
+            // [pull_after_hold] a ready group's "held for now" (not a patrol / overlap wait) is a refusal now
+            else if (!leaderPulls && holdForce && plannerRefused && !refusalHopeless &&
+                     refusalWhy.rfind("held for now", 0) == 0 &&
+                     refusalWhy.find("patrol wait") == std::string::npos &&
+                     refusalWhy.find("overlap wait") == std::string::npos)
+            {
+                heldForNowCapped = true;
+                routeState.heldForNowSinceMs = 0;
+                routeState.arrivedMs = now - GUARANTEE_HOLD_TOTAL_MS;
+                waited = GUARANTEE_HOLD_TOTAL_MS;
+                routeState.guaranteeTarget = routeState.target;
+                routeState.guaranteeDueMs = 0;
+                routeState.guaranteeHolding = false;
+            }
+            else if (!leaderPulls && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
+            {
+                if (routeState.heldForNowTarget != routeState.target || !routeState.heldForNowSinceMs)
+                {
+                    routeState.heldForNowTarget = routeState.target;
+                    routeState.heldForNowSinceMs = now ? now : 1;
+                }
+                if (!group.GroupFullyReady(leader))
+                    routeState.heldForNowSinceMs = now ? now : 1;
+                else if (getMSTimeDiff(routeState.heldForNowSinceMs, now) >= HELD_FOR_NOW_MAX_MS)
+                {
+                    heldForNowCapped = true;
+                    LOG_INFO("playerbots", "[held_for_now_cap] {}: {} held {} s with the group fully ready ({}): "
+                             "taken as a refusal", leader->GetName(), object->GetName(),
+                             getMSTimeDiff(routeState.heldForNowSinceMs, now) / IN_MILLISECONDS, refusalWhy);
+                    group.LogEvent("held_for_now_cap",
+                             JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                 .Num("heldSec", getMSTimeDiff(routeState.heldForNowSinceMs, now) / IN_MILLISECONDS)
+                                 .Str("why", refusalWhy));
+                    routeState.heldForNowSinceMs = 0;
+                    // the guarantee branch reads the hold as waited out
+                    routeState.arrivedMs = now - GUARANTEE_HOLD_TOTAL_MS;
+                    waited = GUARANTEE_HOLD_TOTAL_MS;
+                    routeState.guaranteeTarget = routeState.target;
+                    routeState.guaranteeDueMs = 0;
+                    routeState.guaranteeHolding = false;
+                }
+            }
+            if (!heldForNowCapped && plannerRefused && !refusalHopeless && refusalWhy.rfind("held for now", 0) == 0)
+            {
+                // [patrol_wait_spot] a patrol wait: the group waits out of every idle pack's reach (the patrol fight
+                // happens where the group stands).
+                if (!LeaderOwnsPatrols(group) &&  // [lead4] the leader's patrol decision owns the wait's spot
+                    refusalWhy.find("patrol wait") != std::string::npos &&
+                    (routeState.patrolWaitTarget != routeState.target || !routeState.patrolWaitMs ||
+                     getMSTimeDiff(routeState.patrolWaitMs, now) > PATROL_WAIT_HOLD_MS))
+                {
+                    routeState.patrolWaitMs = now ? now : 1;
+                    routeState.patrolWaitWhy = refusalWhy;
+                    routeState.patrolWaitTarget = routeState.target;
+                    G3D::Vector3 spot;
+                    Creature* nearMob = nullptr;
+                    if (PatrolWaitSpot(leader, spot, nearMob))
+                    {
+                        routeState.patrolWaitUntilMs = now + PATROL_WAIT_HOLD_MS;
+                        group.SetLeaderWaypoint(leader, spot.x, spot.y, spot.z);
+                        group.LogEvent("patrol_wait_spot",
+                                 JsonObject().Str("why", refusalWhy).Str("idleMob", nearMob->GetName())
+                                     .Num("idleEntry", nearMob->GetEntry())
+                                     .Real("idleDistance", leader->GetExactDist(nearMob)).Real("x", spot.x)
+                                     .Real("y", spot.y).Real("z", spot.z));
+                    }
+                    else if (nearMob)
+                        group.LogEvent("patrol_wait_spot",
+                                 JsonObject().Str("why", refusalWhy).Str("idleMob", nearMob->GetName())
+                                     .Num("idleEntry", nearMob->GetEntry()).Str("state", "no clear spot"));
+                }
+                if (!routeState.guaranteeHolding || routeState.guaranteeTarget != routeState.target)
+                {
+                    routeState.guaranteeTarget = routeState.target;
+                    routeState.guaranteeDueMs = 0;
+                    routeState.guaranteeHolding = true;
+                    group.LogEvent("guarantee_hold", JsonObject().Str("name", object->GetName())
+                                                          .Num("entry", object->GetEntry()).Num("waitSec", 0)
+                                                          .Num("waitedSec", waited / IN_MILLISECONDS)
+                                                          .Str("why", refusalWhy));
+                }
+                if (!routeBlocker)
+                {
+                    routeState.arrivedMs = now;
+                    routeState.stopSinceMs = now;
+                }
+                return;
+            }
+            if (plannerRefused && !refusalHopeless)
+            {
+                if (routeState.guaranteeTarget != routeState.target)
+                {
+                    routeState.guaranteeTarget = routeState.target;
+                    routeState.guaranteeDueMs = 0;
+                    routeState.guaranteeHolding = false;
+                }
+                if (!refusalWaitMs && !routeState.guaranteeDueMs)
+                    routeState.guaranteeDueMs = now;
+                // No remaining time and no reason from the planner (wave 11: waitSec 0, why "" while its guarantee
+                // needs ~90 s of block time; [pull guarantee] fired 0 times): held up to GUARANTEE_UNKNOWN_HOLD_MS.
+                bool const unknown = !refusalWaitMs && refusalWhy.empty();
+                bool const hold = !holdForce && waited < GUARANTEE_HOLD_TOTAL_MS &&
+                                  !(routeBlocker && waited >= ROUTE_BLOCKER_PREP_MS) &&
+                                  (refusalWaitMs || (unknown && waited < GUARANTEE_UNKNOWN_HOLD_MS) ||
+                                   getMSTimeDiff(routeState.guaranteeDueMs, now) < GUARANTEE_EXECUTE_MS);
+                if (hold)
+                {
+                    if (!routeState.guaranteeHolding)
+                    {
+                        routeState.guaranteeHolding = true;
+                        group.LogEvent("guarantee_hold", JsonObject().Str("name", object->GetName())
+                                                              .Num("entry", object->GetEntry())
+                                                              .Num("waitSec", refusalWaitMs / IN_MILLISECONDS)
+                                                              .Num("waitedSec", waited / IN_MILLISECONDS)
+                                                              .Str("why", refusalWhy));
+                        LOG_INFO("playerbots", "[approach] {}: holding at {} for the planner's guarantee ({} s, {})",
+                                 leader->GetName(), object->GetName(), refusalWaitMs / IN_MILLISECONDS, refusalWhy);
+                    }
+                    return;
+                }
+            }
+            // [hleft-never-pulled] no body pull of an encounter creature no tank pulls (AggressiveTargetValue's
+            // list): the Halls of Reflection Lich King, Hadronox before she webbed the doors.
+            if (Creature const* held = object->ToCreature();
+                held && (held->GetEntry() == HOR_LICH_KING_ENTRY || held->GetEntry() == HOR_LICH_KING_ESCAPE_ENTRY ||
+                         (held->GetEntry() == AN_HADRONOX_ENTRY && GET_PLAYERBOT_AI(leader) &&
+                          ANAdds::HadronoxHandsOff(GET_PLAYERBOT_AI(leader)))))
+            {
+                routeState.arrivedMs = now;
+                routeState.stopSinceMs = now;
+                return;
+            }
+            // [lead3] a boss pull the leader issued that brought no fight: "not pulled", as the old walk-in's was
+            if (leaderPulls && routeState.targetIsBoss && group.State().bossPullIssued == routeState.target &&
+                group.State().bossPullIssuedMs &&
+                getMSTimeDiff(group.State().bossPullIssuedMs, now) > BOSS_PULL_HOLD_WAIT_MS)
+            {
+                group.State().bossPullIssued.Clear();
+                group.State().bossPullIssuedMs = 0;
+                group.SkipTarget(routeState.target,
+                                 ROUTE_OCULUS_DRAKE_ONLY ? BOSS_NOT_PULLED_SKIP_MS : NOT_PULLED_SKIP_MS,
+                                 "not pulled (the leader's boss pull brought no fight)");
+                return;
+            }
+            // [lead6] the leader's one readiness verdict, not the body pull's own 80 % lines
+            bool const pullReady = leaderPulls && Leader::Leads(Leader::LEADER_ONE_READINESS)
+                                       ? group.State().ready
+                                       : group.GroupFullyReady(leader);
+            // [lead24] LEADER_NO_FORCING_TIMERS: a led party's stop resolves on evaluations only (a boss pull now, a
+            // hopeless refusal); the stop's wait / the route blocker's prep time only log waited_long
+            bool const timedOut = waited > pullWaitMs || (routeBlocker && waited > ROUTE_BLOCKER_PREP_MS) || holdForce;
+            if (ledNoForce && timedOut && !bossPullNow && !(plannerRefused && refusalHopeless))
+                Leader::Dungeon::WaitedLong(group, "stop_wait", waited,
+                                            object->GetName() + (plannerRefused ? ": " + refusalWhy : ""));
+            if (!routeState.approach &&
+                ((!ledNoForce && timedOut) || bossPullNow || (plannerRefused && refusalHopeless)) &&
+                pullReady)
+            {
+                // [b33_mech2] BossAreaBodyPullHold: no body pull of a boss while killable trash of his area stands
+                // (BossAreaTrashOf: what joins his fight, his room, BOSS_AREA_EXTRA) - it becomes the target first
+                // (unskipped, kept as boss_neighbour_target is). Honest exceptions are left: fast respawners
+                // (FastRespawner), a reachability skip (ReachabilitySkip: unreachable, closed, respawn, "boss area:
+                // given up"), what the leader cannot attack; and after BOSS_AREA_BODY_PULL_HOLD_MS from the first
+                // hold the pull goes anyway. mech-n 20261026-000434-mech-n-5D-17: Sepethrea body-pulled (immediate,
+                // 1180 s) with the listed Tempest-Forge Destroyer 138862 alive south of her room; it killed the tank.
+                if (ROUTE_BOSS_AREA_CLEAR && routeState.targetIsBoss)
+                    if (Creature* areaBoss = object->ToCreature(); areaBoss && areaBoss->IsAlive())
+                    {
+                        Creature* areaMob = nullptr;
+                        char const* areaWhy = nullptr;
+                        uint32 areaLeft = 0;
+                        for (auto const& [spawnId, mob] : map->GetCreatureBySpawnIdStore())
+                        {
+                            if (!mob || !mob->IsInWorld() || !mob->IsAlive() || mob->IsInCombat() || mob == areaBoss ||
+                                mob->GetExactDist(areaBoss) > BOSS_AREA_SCAN_RANGE || FastRespawner(mob) ||
+                                mob->IsImmuneToPC() || mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) ||
+                                mob->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) || !leader->IsValidAttackTarget(mob) ||
+                                !InThisWing(group, mob))
+                                continue;
+                            char const* const why = BossAreaTrashOf(
+                                leader, areaBoss, mob, routeState.bossCreatures.count(mob->GetGUID()) != 0);
+                            if (!why)
+                                continue;
+                            if (routeState.skipUntil.count(mob->GetGUID()))
+                                if (auto const reason = routeState.skipReason.find(mob->GetGUID());
+                                    reason != routeState.skipReason.end() && ReachabilitySkip(reason->second))
+                                    continue;
+                            ++areaLeft;
+                            if (!areaMob || leader->GetExactDist(mob) < leader->GetExactDist(areaMob))
+                            {
+                                areaMob = mob;
+                                areaWhy = why;
+                            }
+                        }
+                        std::pair<uint32, ObjectGuid> const holdKey{group.Run().runSeq, areaBoss->GetGUID()};
+                        if (!areaMob)
+                            bossAreaBodyPullHoldMs.erase(holdKey);
+                        else
+                        {
+                            uint32& firstHoldMs = bossAreaBodyPullHoldMs[holdKey];
+                            if (!firstHoldMs)
+                                firstHoldMs = now ? now : 1;
+                            uint32 const heldMs = getMSTimeDiff(firstHoldMs, now);
+                            if (heldMs < BOSS_AREA_BODY_PULL_HOLD_MS)
+                            {
+                                group.LogEvent("boss_area_clear",
+                                         JsonObject().Str("boss", areaBoss->GetName())
+                                             .Num("bossEntry", areaBoss->GetEntry()).Str("action", "body pull held")
+                                             .Str("mob", areaMob->GetName()).Num("entry", areaMob->GetEntry())
+                                             .Num("spawnId", uint32(areaMob->GetSpawnId())).Str("why", areaWhy)
+                                             .Num("remaining", areaLeft).Num("heldSec", heldMs / IN_MILLISECONDS)
+                                             .Bool("immediate", bossPullNow).Real("x", areaMob->GetPositionX())
+                                             .Real("y", areaMob->GetPositionY()).Real("z", areaMob->GetPositionZ()));
+                                routeState.skipUntil.erase(areaMob->GetGUID());
+                                routeState.skipReason.erase(areaMob->GetGUID());
+                                routeState.neighbourTarget = areaMob->GetGUID();
+                                routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
+                                routeState.target = areaMob->GetGUID();
+                                routeState.targetIsBoss = false;
+                                routeState.targetIsStarter = false;
+                                routeState.targetRouteRule = areaWhy;
+                                routeState.targetSinceMs = now;
+                                routeState.guaranteeHolding = false;
+                                routeState.arrivedMs = 0;
+                                routeState.approach = 0;
+                                routeState.approachBlocker.Clear();
+                                routeState.stopSinceMs = 0;
+                                TestRunner::ClearWaypoint(group.LeaderGuid());
+                                return;
+                            }
+                            group.LogEvent("boss_area_clear",
+                                     JsonObject().Str("boss", areaBoss->GetName())
+                                         .Num("bossEntry", areaBoss->GetEntry()).Str("action", "body pull: given up")
+                                         .Str("mob", areaMob->GetName()).Num("entry", areaMob->GetEntry())
+                                         .Num("remaining", areaLeft).Num("heldSec", heldMs / IN_MILLISECONDS));
+                        }
+                    }
+                // What the tank (the leader) sees of the target and of the mob that stopped the walk: the refusal
+                // below was assumed from the wait alone (wave 13: SM Armory's Guardsman was "careful pull refused"
+                // while it was not even in the tank's possible targets).
+                std::string tankView;
+                bool targetUnseen = false;
+                if (Unit* unit = object->ToUnit())
+                {
+                    std::string const targetView = PartyTankView(group, leader, unit);
+                    // [b36_scholo] "accepted (not in the cached possible targets)" is seen: in sight and accepted,
+                    // only the tank's cached list is stale. scholo-n 20261026-034959-scholo-n-5H-4: the entrance
+                    // Adepts at 22 yd were skipped as "tank does not see it" and their pack marked unseen.
+                    bool const accepted = targetView.rfind("accepted", 0) == 0;
+                    targetUnseen = !accepted;
+                    Creature* stopper = map->GetCreature(routeState.approachBlocker);
+                    std::string const blockerView =
+                        stopper ? PartyTankView(group, leader, stopper) : std::string();
+                    group.LogEvent("tank_view", JsonObject().Str("name", unit->GetName())
+                                                     .Num("entry", unit->GetEntry())
+                                                     .Real("distance", leader->GetExactDist(unit))
+                                                     .Str("target", targetView)
+                                                     .Bool("nonAttackable", unit->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE))
+                                                     .Bool("notSelectable", unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+                                                     .Bool("immuneToPc", unit->IsImmuneToPC())
+                                                     .Bool("validTarget", leader->IsValidAttackTarget(unit))
+                                                     .Str("blocker", stopper ? stopper->GetName() : "")
+                                                     .Real("blockerDistance",
+                                                           stopper ? leader->GetExactDist(stopper) : 0.0f)
+                                                     .Str("blockerView", blockerView));
+                    LOG_INFO("playerbots", "[tank view] {}: {} {:.1f} yd - {}{}{} (flags{}{}{}, {})",
+                             leader->GetName(),
+                             unit->GetName(), leader->GetExactDist(unit), targetView, stopper ? "; blocker " : "",
+                             stopper ? stopper->GetName() + " - " + blockerView : std::string(),
+                             unit->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) ? " non-attackable" : "",
+                             unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) ? " not-selectable" : "",
+                             unit->IsImmuneToPC() ? " immune-to-pc" : "",
+                             leader->IsValidAttackTarget(unit) ? "valid target" : "no valid target");
+                    if (!accepted && (!stopper || blockerView.rfind("accepted", 0) != 0))  // [b36_scholo]
+                        tankView = targetView;
+                }
+                // The boss's walk stopped at a neighbour: no body pull through it. What of its pack the tank does not
+                // see is marked unseen (the next walk passes it, as the trash refusal below does); a pack it sees
+                // holds the group here - the planner pulls it, or the hold shows its refusal (user rule).
+                // zf-h build 17: Gahz'rilla's walk stopped at a Sandfury Blood Drinker the planner never pulled, the
+                // hold came every 45 s (3 times) until the stall skip. After NEIGHBOUR_HOLD_MAX holds a small
+                // neighbour pack (NEIGHBOUR_PASS_PACK_MAX) no longer stops the boss's body pull; a bigger one stays.
+                std::list<Creature*> neighbourPack;
+                if (neighbourStop)
+                {
+                    PackMobCheck check{leader, neighbour};
+                    Acore::CreatureListSearcher<PackMobCheck> searcher(neighbour, neighbourPack, check);
+                    Cell::VisitObjects(neighbour, searcher, PACK_RADIUS);
+                    if (std::find(neighbourPack.begin(), neighbourPack.end(), neighbour) == neighbourPack.end())
+                        neighbourPack.push_back(neighbour);
+                    // [route_blocker_boss_neighbour] a neighbour pack on the boss's way is the target now (pulled by
+                    // sight, else walked into once the group is ready), not after NEIGHBOUR_HOLD_MAX holds. sv-n
+                    // wave 23 (112011, 1097-1172 s): the walk to Warlord Kalithresh stopped at a Coilfang Siren the
+                    // tank accepted 21.7 yd off, nothing made it the target until the stop.
+                    if (TargetRouteBlocker(group, leader, neighbour, object, "stopped the walk to the boss"))
+                        return;
+                    if (routeState.neighbourHoldBoss != routeState.target)
+                    {
+                        routeState.neighbourHoldBoss = routeState.target;
+                        routeState.neighbourHolds = 0;
+                    }
+                    if (routeState.neighbourHolds >= NEIGHBOUR_HOLD_MAX &&
+                        neighbourPack.size() <= NEIGHBOUR_PASS_PACK_MAX)
+                    {
+                        group.LogEvent("boss_neighbour_pass", JsonObject().Str("boss", object->GetName())
+                                                                   .Str("neighbour", neighbour->GetName())
+                                                                   .Num("packMobs", uint32(neighbourPack.size()))
+                                                                   .Num("holds", routeState.neighbourHolds));
+                        neighbourStop = false;
+                    }
+                    else if (routeState.neighbourHolds >= NEIGHBOUR_HOLD_MAX &&
+                             !routeState.skipUntil.count(neighbour->GetGUID()))
+                    {
+                        // A bigger neighbour pack (dme-h build 17: Zevrim held 119 s by the Wildspawn pack): it
+                        // becomes the route target, the careful pull / guarantee hold decides on it, hopeless or
+                        // refused it is skipped as any trash; the boss comes back after it.
+                        group.LogEvent("boss_neighbour_target", JsonObject().Str("boss", object->GetName())
+                                                                     .Str("neighbour", neighbour->GetName())
+                                                                     .Num("entry", neighbour->GetEntry())
+                                                                     .Num("packMobs", uint32(neighbourPack.size()))
+                                                                     .Num("holds", routeState.neighbourHolds));
+                        routeState.neighbourHolds = 0;
+                        routeState.neighbourTarget = neighbour->GetGUID();
+                        routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
+                        routeState.target = neighbour->GetGUID();
+                        routeState.targetIsBoss = false;
+                        routeState.targetIsStarter = false;
+                        routeState.targetRouteRule.clear();
+                        routeState.targetSinceMs = now;
+                        routeState.guaranteeHolding = false;
+                        routeState.arrivedMs = 0;
+                        routeState.approach = 0;
+                        routeState.approachBlocker.Clear();
+                        routeState.stopSinceMs = 0;
+                        return;
+                    }
+                    else
+                        ++routeState.neighbourHolds;
+                }
+                if (neighbourStop)
+                {
+                    std::list<Creature*>& pack = neighbourPack;
+                    G3D::Vector3 const tankAt(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+                    for (Creature* packMob : pack)
+                        if (!packMob->IsDungeonBoss() && !routeState.bossCreatures.count(packMob->GetGUID()) &&
+                            (std::fabs(packMob->GetPositionZ() - tankAt.z) > APPROACH_OTHER_FLOOR_DZ ||
+                             !SeesFromPoint(leader, packMob, tankAt)))
+                            TankRejects::MarkUnseen(leader->GetGUID(), packMob->GetGUID());
+                    LogHarnessHold(group, leader, neighbour, "boss approach", tankAt.x, tankAt.y, tankAt.z);
+                    routeState.approachBlocker.Clear();
+                    routeState.stopSinceMs = 0;
+                    routeState.arrivedMs = 0;
+                    return;
+                }
+                // Careful pulls (5-man, ChooseTargetActions.cpp; heroics and level 80 too since the careful-pull pass):
+                // the tank refused this pack as too big for the group, a body pull would bring all of it. The route
+                // goes on elsewhere and comes back later, when its neighbours are dead or the bot finds an edge mob to
+                // pull. Levelling normals always defer; heroic / level 80 at most twice per pack, the third time the
+                // group body-pulls as before, so the route never loops on a pack that cannot be split. Bosses and
+                // raids keep the body pull.
+                bool const levelling = group.Levelling();
+                // A boss's own formation (Blood Furnace: the Shadowmoon Channelers round Keli'dan) is his encounter:
+                // it never splits, and the tank's boss-readiness hold kept all five "careful pull refused" for 3
+                // minutes (2026-10-25, a regression of the planner's boss gate). It is body-pulled as the boss is.
+                bool bossFormation = false;
+                if (Creature* refused = object->ToCreature(); refused && refused->GetFormation())
+                    for (ObjectGuid const& bossGuid : routeState.bossCreatures)
+                        if (Creature* boss = map->GetCreature(bossGuid);
+                            boss && boss->IsAlive() && boss->GetFormation() == refused->GetFormation())
+                            bossFormation = true;
+                // [dmw-guard-body-pull] A pending guard of a closed guarded door (Dire Maul West's pylon guards, Sunken
+                // Temple's defenders) is the door's objective: refused GUARD_REFUSALS_BEFORE_BODY_PULL times, it is
+                // body-pulled as a boss formation is (dmw-n 062726: guarantee holds and "careful pull refused" on the
+                // ledge guards until the stop, Immol'thar 0/1). User decision 2026-10-25: approved.
+                bool guardBodyPull = false;
+                if (Creature* refused = object->ToCreature(); refused && IsPendingDoorGuard(map, refused))
+                {
+                    uint32& refusalsOfGuard = guardRefusals[{group.Run().runSeq, routeState.target}];
+                    guardBodyPull = ++refusalsOfGuard > GUARD_REFUSALS_BEFORE_BODY_PULL;
+                    if (guardBodyPull)
+                        group.LogEvent("guard_body_pull", JsonObject().Str("name", refused->GetName())
+                                                               .Num("entry", refused->GetEntry())
+                                                               .Num("refusals", refusalsOfGuard));
+                }
+                // [route_blocker_body_pull] the neighbour pack that stopped the walk to this target is on the way: it
+                // becomes the target instead of being skipped with it; the route blocker itself is walked into.
+                if (Creature* onWay = map->GetCreature(routeState.approachBlocker);
+                    !routeBlocker && onWay && object->ToCreature() &&
+                    onWay->GetExactDist(object) > PACK_RADIUS &&
+                    TargetRouteBlocker(group, leader, onWay, object, "stopped the walk to a refused target"))
+                    return;
+                // [pull_after_hold] the ready group's hold at a pack of the required route ends in its pull
+                if (holdForce && !routeBlocker && !routeState.targetIsBoss && object->ToCreature())
+                    if (std::string requiredWhy; RouteBlockerBehindRequired(group, map, object, requiredWhy))
+                    {
+                        RouteBlockerBodyPull(group, leader, object->ToCreature(),
+                                             "pull_after_hold (" + requiredWhy + ")");
+                        return;
+                    }
+                // [lead3] LEADER_NO_BODY_FALLBACK: no careful-refused skip of a pack the tank sees. A hopeless pack the
+                // way on does not need keeps the old skip (a route decision); any other is asked of the planner whole
+                // (walked in when the leader must clear it), and its answer is the leader's (TickLeaderPlanner: the
+                // plan, or planner_no_option: a stop for a pack it must clear, a skip for one it need not).
+                if (leaderPulls && !routeState.targetIsBoss && !atEventHold && !bossFormation && !guardBodyPull &&
+                    !routeBlocker && tankView.empty() && object->ToCreature())
+                {
+                    std::string needWhy;
+                    bool const needs = group.NeedsPack(map, object, needWhy);
+                    if (needs || !(plannerRefused && refusalHopeless))
+                    {
+                        Leader::Dungeon::LeaderWholePack(group, leader, object->ToCreature(),
+                                        Acore::StringFormat("the stop's wait ({} s{}{})", waited / IN_MILLISECONDS,
+                                                            plannerRefused ? ": " + refusalWhy : std::string(),
+                                                            needs ? ", " + needWhy : std::string()),
+                                        needs, needs);
+                        return;
+                    }
+                }
+                if (!group.IsRaid() && group.ContentSize() <= 5 && !routeState.targetIsBoss && !atEventHold &&
+                    !bossFormation && !guardBodyPull && !routeBlocker &&
+                    (levelling || ++routeState.carefulRefused[routeState.target] > 0))
+                {
+                    // User rule (bots act on their own): the harness never walks the group into a pack the tank
+                    // refused; a pack that is never split is a bot gap and shows as a stalled run.
+                    if (routeState.carefulRefused[routeState.target] == 3)
+                        group.LogEvent("pack_too_big",
+                                       JsonObject()
+                                           .Num("entry", object->GetEntry())
+                                           .Num("refusals", routeState.carefulRefused[routeState.target]));
+                    uint32 const refusals = routeState.carefulRefused[routeState.target];
+                    // [b43_harn] A target the planner never evaluated (no fresh verdict on its pack nor on the stop's
+                    // neighbour) is no "careful pull refused": scholo-h 20261026-054314-scholo-h-5A-3 skipped the lone
+                    // Spectral Researcher so while every refusal was of the nearer Neophyte chain, the planner's pick.
+                    std::string neverPlanned;
+                    {
+                        bool verdictAccepted = false;
+                        uint32 verdictMobs = 0;
+                        bool const anyVerdict =
+                            PartyVerdict(group, routeState.target, verdictAccepted, verdictMobs) ||
+                            (!routeState.approachBlocker.IsEmpty() &&
+                             PartyVerdict(group, routeState.approachBlocker, verdictAccepted,
+                                                     verdictMobs));
+                        if (!plannerRefused && !anyVerdict)
+                        {
+                            // The nearer pack the planner refused instead (its pick is the nearest candidate).
+                            float const targetDist = leader->GetExactDist(object);
+                            std::list<Creature*> nearer;
+                            IdleAggroCheck nearerCheck{leader};
+                            Acore::CreatureListSearcher<IdleAggroCheck> nearerSearcher(leader, nearer, nearerCheck);
+                            Cell::VisitObjects(leader, nearerSearcher, targetDist);
+                            Creature* refusedNearer = nullptr;
+                            for (Creature* mob : nearer)
+                            {
+                                bool nearHopeless = false;
+                                uint32 nearWaitMs = 0;
+                                std::string nearWhy;
+                                if (mob->GetGUID() != routeState.target && leader->GetExactDist(mob) < targetDist &&
+                                    PartyRefusal(group, mob->GetGUID(), nearHopeless,
+                                                                   nearWaitMs, nearWhy) &&
+                                    (!refusedNearer ||
+                                     leader->GetExactDist(mob) < leader->GetExactDist(refusedNearer)))
+                                    refusedNearer = mob;
+                            }
+                            if (refusedNearer)
+                                neverPlanned = Acore::StringFormat(
+                                    "planner never planned it (nearer refused pack: {} {:.1f} yd)",
+                                    refusedNearer->GetName(), leader->GetExactDist(refusedNearer));
+                            else
+                                neverPlanned = "planner never planned it (no verdict)";
+                        }
+                    }
+                    std::string const packSkipReason =
+                        neverPlanned.empty() ? std::string("careful pull refused (pack)")
+                                             : std::string("planner never planned it (pack)");
+                    // The tank does not take the target: a mob of its pack or of the blocker's that the tank cannot
+                    // see from where it stands (no line of sight from its eyes) or that stands on another floor is
+                    // marked as not seen (TankRejects TTL) and stops no later walk (RFC wave 37: the same unseen
+                    // trogg stopped the next approach after every skip). A mob the tank sees on its floor is not
+                    // marked: it still stops the walk, the tank pulls it first. Bosses are never marked.
+                    // A pack approach to sight held the leader at the edge of (ROUTE_SIGHT_KEEPS_OUT_OF_REFUSED) is
+                    // unseen only because the leader kept out of its reach: it is not marked, it keeps stopping the
+                    // walks (marked, the next route would walk through it).
+                    std::vector<ObjectGuid> heldPack;
+                    if (auto const hold = sightHolds.find(group.LeaderGuid());
+                        hold != sightHolds.end() && hold->second.target == routeState.target)
+                        heldPack = hold->second.pack;
+                    auto const isHeld = [&heldPack](Creature* mob)
+                    { return std::find(heldPack.begin(), heldPack.end(), mob->GetGUID()) != heldPack.end(); };
+                    G3D::Vector3 const tankAt(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+                    auto const markIfUnseen =
+                        [&group, &routeState, leader, &tankAt, targetUnseen, &isHeld](Creature* mob)
+                    {
+                        if (!targetUnseen || routeState.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() ||
+                            isHeld(mob))
+                            return;
+                        if (std::fabs(mob->GetPositionZ() - tankAt.z) > APPROACH_OTHER_FLOOR_DZ ||
+                            !SeesFromPoint(leader, mob, tankAt))
+                            TankRejects::MarkUnseen(leader->GetGUID(), mob->GetGUID());
+                    };
+                    // The whole pack, not only the mob the route chose: Shadow Labyrinth / Mechanar wave 9 refused a
+                    // pack, then chose its next member, waited 45 s again, and the stall detector fired.
+                    uint32 packSkipped = 0;
+                    if (Creature* refused = object->ToCreature())
+                    {
+                        std::list<Creature*> pack;
+                        PackMobCheck check{leader, refused};
+                        Acore::CreatureListSearcher<PackMobCheck> searcher(refused, pack, check);
+                        Cell::VisitObjects(refused, searcher, PACK_RADIUS);
+                        if (std::find(pack.begin(), pack.end(), refused) == pack.end())
+                            pack.push_back(refused);
+                        for (Creature* mob : pack)
+                        {
+                            markIfUnseen(mob);
+                            if (mob != refused && !routeState.bossCreatures.count(mob->GetGUID()) &&
+                                !mob->IsDungeonBoss() && group.BossOrder(mob) < 0)
+                            {
+                                routeState.skipUntil[mob->GetGUID()] = now + CAREFUL_REFUSED_SKIP_MS;
+                                routeState.skipReason[mob->GetGUID()] = packSkipReason;
+                                routeState.unreachableFrom.erase(mob->GetGUID());
+                                // The pack's count, whichever member the route picks next time.
+                                uint32& count = routeState.carefulRefused[mob->GetGUID()];
+                                count = std::max(count, refusals);
+                                ++packSkipped;
+                            }
+                        }
+                    }
+                    // The neighbour pack that stopped the approach on the way (ApproachStop) is the one in front of
+                    // the tank: it is skipped with the target, or the next route stops at it again.
+                    if (Creature* blocker = map->GetCreature(routeState.approachBlocker);
+                        blocker && blocker->IsAlive() && !blocker->IsInCombat() &&
+                        !routeState.bossCreatures.count(blocker->GetGUID()) && !blocker->IsDungeonBoss() &&
+                        group.BossOrder(blocker) < 0)
+                    {
+                        std::list<Creature*> pack;
+                        PackMobCheck check{leader, blocker};
+                        Acore::CreatureListSearcher<PackMobCheck> searcher(blocker, pack, check);
+                        Cell::VisitObjects(blocker, searcher, PACK_RADIUS);
+                        if (std::find(pack.begin(), pack.end(), blocker) == pack.end())
+                            pack.push_back(blocker);
+                        for (Creature* mob : pack)
+                        {
+                            // A blocker the tank does not see stops no walk any more (SM Library wave 32).
+                            if (!tankView.empty() && !isHeld(mob))
+                                TankRejects::MarkUnseen(leader->GetGUID(), mob->GetGUID());
+                            else
+                                markIfUnseen(mob);
+                            if (!routeState.bossCreatures.count(mob->GetGUID()) && !mob->IsDungeonBoss() &&
+                                group.BossOrder(mob) < 0 && !routeState.skipUntil.count(mob->GetGUID()))
+                            {
+                                routeState.skipUntil[mob->GetGUID()] = now + CAREFUL_REFUSED_SKIP_MS;
+                                routeState.skipReason[mob->GetGUID()] = packSkipReason;
+                                routeState.unreachableFrom.erase(mob->GetGUID());
+                                ++packSkipped;
+                            }
+                        }
+                    }
+                    routeState.approachBlocker.Clear();
+                    routeState.stopSinceMs = 0;  // the next pack at this stop gets its own wait
+                    std::string reason = tankView.empty() ? std::string("careful pull refused")
+                                                          : "not pulled, tank does not see it (" + tankView + ")";
+                    if (tankView.empty() && !neverPlanned.empty())
+                        reason = neverPlanned;  // [b43_harn]
+                    if (plannerRefused && refusalHopeless)
+                    {
+                        reason = "careful pull hopeless (" + refusalWhy + ")";
+                        // [b32_brs] the walks go round the hopeless pack while there is a way (HopelessDetourLeg)
+                        NoteHopelessPack(leader, object->ToCreature());
+                    }
+                    else if (plannerRefused && routeState.guaranteeHolding)
+                        reason = Acore::StringFormat("careful pull refused, guarantee not taken in {} s ({})",
+                                                     waited / IN_MILLISECONDS, refusalWhy);
+                    routeState.guaranteeHolding = false;
+                    if (packSkipped)
+                        reason += " (+" + std::to_string(packSkipped) + " pack)";
+                    group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS, reason);
+                    return;
+                }
+
+                if (routeBlocker)
+                {
+                    if (Creature* blockerPack = object->ToCreature())
+                        RouteBlockerBodyPull(group, leader, blockerPack,
+                                             plannerRefused ? "planner refused (" + refusalWhy + ")"
+                                                            : std::string("not pulled from the stop"));
+                    return;
+                }
+                Creature* pack = object->ToCreature();
+                // [lead3] LEADER_NO_BODY_FALLBACK: the leader's pull of what the harness body-pulled - a boss, his
+                // formation: the leader's BossPull order; a door guard, an event pack, a trash pack the stop's wait
+                // ended at: asked of its planner whole, walked in (priced by its count). The boss-on-the-way rule
+                // ([b51_dme]) still makes a boss the pack brings the next pull first.
+                if (leaderPulls && pack)
+                {
+                    for (ObjectGuid const& guid : routeState.bossCreatures)
+                    {
+                        Creature* boss = map->GetCreature(guid);
+                        if (!routeState.targetIsBoss && !pack->IsDungeonBoss() && boss && boss->IsAlive() &&
+                            !boss->IsInCombat() && boss->GetGUID() != routeState.target &&
+                            BossBroughtBy(leader, boss, pack) &&
+                            !ClassGatedBoss(group.MapId(), group.Difficulty(), boss->GetEntry()))
+                        {
+                            group.LogEvent("boss_on_the_way_first",
+                                     JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
+                                         .Real("firstDistance", leader->GetExactDist(boss))
+                                         .Str("via", pack->GetName()).Num("viaEntry", pack->GetEntry())
+                                         .Str("why", "[lead3] the pack on the way brings this boss: he is pulled "
+                                                     "first"));
+                            routeState.target = boss->GetGUID();
+                            routeState.targetIsBoss = true;
+                            routeState.targetIsStarter = false;
+                            routeState.targetRouteRule = "boss on the way";
+                            routeState.targetSinceMs = getMSTime();
+                            routeState.arrivedMs = 0;
+                            routeState.stopSinceMs = 0;
+                            routeState.approachBlocker.Clear();
+                            routeState.orderHoldSinceMs.erase(boss->GetGUID());
+                            TestRunner::ClearWaypoint(group.LeaderGuid());
+                            return;
+                        }
+                    }
+                    if (routeState.targetIsBoss || pack->IsDungeonBoss() || bossFormation)
+                        Leader::Dungeon::LeaderBossPull(group, leader, pack,
+                                       Acore::StringFormat("{}{} (waited {} s)", bossPullNow ? "ready" : "the wait",
+                                                           bossFormation ? ", his formation" : "",
+                                                           waited / IN_MILLISECONDS));
+                    else
+                        Leader::Dungeon::LeaderWholePack(group, leader, pack,
+                                        Acore::StringFormat("{} (waited {} s)",
+                                                            guardBodyPull ? "a pending door guard"
+                                                            : atEventHold ? "the event's pack"
+                                                            : holdForce   ? "the ready group's hold"
+                                                                          : "the stop's wait",
+                                                            waited / IN_MILLISECONDS),
+                                        true, true);
+                    return;
+                }
+                // [body_pull_via_planner] a trash pack: the planner first
+                if (BODY_PULL_VIA_PLANNER && pack && !routeState.targetIsBoss && !pack->IsDungeonBoss())
+                {
+                    bool askBegan = false;
+                    if (AskPlannerFirst(group.LeaderGuid(), pack, now, askBegan))
+                    {
+                        if (askBegan)
+                            group.LogEvent("body_pull_planner_request",
+                                     JsonObject().Str("name", pack->GetName()).Num("entry", pack->GetEntry())
+                                         .Str("why", "the stop's wait")
+                                         .Num("waitSec", BODY_PULL_PLANNER_MS / IN_MILLISECONDS));
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        return;
+                    }
+                    group.LogEvent("body_pull_planner_timeout",
+                             JsonObject().Str("name", pack->GetName()).Num("entry", pack->GetEntry()));
+                }
+                // [b33_bodypull] no harness walk-in (a boss, his formation, a door guard, an event's pack) against
+                // the planner's readiness refusal (the healer not with the tank, sitters, not topped up), nor with a
+                // member sitting: the group holds where it stands, nothing skipped
+                {
+                    std::string sitter;
+                    for (LeaderGroup::MemberInfo const& member : group.Members())
+                        if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                            bot && bot->IsAlive() && bot->IsSitState())
+                            sitter = bot->GetName();
+                    if ((plannerRefused && RefusalIsReadiness(refusalWhy)) || !sitter.empty())
+                    {
+                        if (!routeState.blockerGateLogMs ||
+                            getMSTimeDiff(routeState.blockerGateLogMs, now) > 10 * IN_MILLISECONDS)
+                        {
+                            routeState.blockerGateLogMs = now ? now : 1;
+                            group.LogEvent("blocker_pull_gate",
+                                     JsonObject().Str("pull", "harness body pull")
+                                         .Str("blocker", pack ? pack->GetName() : std::string("?"))
+                                         .Num("blockerEntry", pack ? pack->GetEntry() : 0)
+                                         .Str("why", sitter.empty() ? "held: the planner waits for the group (" +
+                                                                          refusalWhy + ")"
+                                                                    : "the group is not ready: " + sitter + " sits")
+                                         .Bool("hold", true));
+                        }
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        return;
+                    }
+                }
+                // [b49_voone] the same rule as RouteBlockerBodyPull: no walk-in to a trash pack an idle boss's own
+                // aggro reach covers (BossBroughtBy) while the planner did not price that pull
+                if (pack && !routeState.targetIsBoss && !pack->IsDungeonBoss() &&
+                    !(plannerRefused && refusalWhy.find("(a boss pull: no fallback plan)") != std::string::npos))
+                {
+                    std::list<Creature*> walkPack;
+                    PackMobCheck walkCheck{leader, pack};
+                    Acore::CreatureListSearcher<PackMobCheck> walkSearcher(pack, walkPack, walkCheck);
+                    Cell::VisitObjects(pack, walkSearcher, PACK_RADIUS);
+                    if (std::find(walkPack.begin(), walkPack.end(), pack) == walkPack.end())
+                        walkPack.push_back(pack);
+                    for (ObjectGuid const& guid : routeState.bossCreatures)
+                    {
+                        Creature* boss = leader->GetMap()->GetCreature(guid);
+                        if (!boss || !boss->IsAlive() || boss->IsInCombat())
+                            continue;
+                        auto const brings = [&](Creature* mob) { return BossBroughtBy(leader, boss, mob); };
+                        if (std::none_of(walkPack.begin(), walkPack.end(), brings))
+                            continue;
+                        LOG_INFO("playerbots", "[b49_voone] {}: no harness body pull of {}: it brings {}, the "
+                                 "planner did not price it", leader->GetName(), pack->GetName(), boss->GetName());
+                        group.LogEvent("blocker_pull_gate",
+                                 JsonObject().Str("pull", "harness body pull").Str("blocker", pack->GetName())
+                                     .Num("blockerEntry", pack->GetEntry())
+                                     .Str("why", "[b49_voone] brings boss " + boss->GetName() + " (unpriced)")
+                                     .Bool("hold", false));
+                        // [b51_dme] User rule 2026-10-26 (open the way, no detours): a pack that is the way on and
+                        // stands in an idle boss's reach is no skip - the boss is pulled deliberately first, as his own
+                        // fight (the boss logic: his buffs, ready check and the planner's boss pull, which prices him
+                        // with what he brings). dme-h 20261026-130307-5E-11 stalled 0/16: "body pull refused: brings
+                        // boss Hydrospawn" x3, "behind skipped Wildspawn Hellcaller" x8. The Voone intent stays: no
+                        // blind walk-in to the pack; a class-gated boss keeps the old skip.
+                        if (!ClassGatedBoss(group.MapId(), group.Difficulty(), boss->GetEntry()) &&
+                            boss->GetGUID() != routeState.target)
+                        {
+                            group.LogEvent("boss_on_the_way_first",
+                                     JsonObject().Str("first", boss->GetName()).Num("firstEntry", boss->GetEntry())
+                                         .Real("firstDistance", leader->GetExactDist(boss)).Str("via", pack->GetName())
+                                         .Num("viaEntry", pack->GetEntry())
+                                         .Str("why", "[b51_dme] the pack on the way brings this boss: he is "
+                                                     "pulled first"));
+                            LOG_INFO("playerbots", "[b51_dme] {}: {} brings boss {}: the boss is the next pull (his "
+                                     "fight), no skip",
+                                     leader->GetName(), pack->GetName(), boss->GetName());
+                            routeState.target = boss->GetGUID();
+                            routeState.targetIsBoss = true;
+                            routeState.targetIsStarter = false;
+                            routeState.targetRouteRule = "boss on the way";
+                            routeState.targetSinceMs = getMSTime();
+                            routeState.approach = 0;
+                            routeState.arrivedMs = 0;
+                            routeState.stopSinceMs = 0;
+                            routeState.approachBlocker.Clear();
+                            routeState.orderHoldSinceMs.erase(boss->GetGUID());
+                            TestRunner::ClearWaypoint(group.LeaderGuid());
+                            return;
+                        }
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
+                                   "body pull refused: brings boss " + boss->GetName());
+                        return;
+                    }
+                }
+                // [b32_bm] A creature that is not REACT_AGGRESSIVE (Aeonus and the Black Morass adds: REACT_DEFENSIVE)
+                // never aggroes on a walk-in: the walk only brings the tank beside it, the tank's own attack opens
+                // (tank open idle boss / pull / reach melee). Logged as attack_pull, not body_pull.
+                bool const attackPull = pack && !pack->HasReactState(REACT_AGGRESSIVE);
+                routeState.approach = 1;  // the pull logic held back: walk into the pack
+                routeState.arrivedMs = 0;
+                group.LogEvent(attackPull ? "attack_pull" : "body_pull",
+                         JsonObject().Str("name", pack ? pack->GetName() : "?")
+                             .Num("entry", pack ? pack->GetEntry() : 0)
+                             .Bool("boss", routeState.targetIsBoss)
+                             .Num("carefulRefusals", routeState.carefulRefused.count(routeState.target)
+                                                         ? routeState.carefulRefused[routeState.target]
+                                                         : 0)
+                             .Num("waitedSec", waited / IN_MILLISECONDS)
+                             .Bool("immediate", bossPullNow)
+                             .Num("react", pack ? uint32(pack->GetReactState()) : 0));
+            }
+            // [b32_bm] beside a non-aggressive boss the tank's own attack needs its idle-boss delay (10 s) and its
+            // tries: the walk-in's 10 s were gone before it (the boss hold's wait instead).
+            else if (routeState.approach &&
+                     waited > (routeState.targetIsBoss && object->ToCreature() &&
+                                       !object->ToCreature()->HasReactState(REACT_AGGRESSIVE)
+                                   ? BOSS_PULL_HOLD_WAIT_MS
+                                   : BODY_PULL_WAIT_MS) &&
+                     !(routeState.targetIsBoss && waited <= BOSS_PULL_HOLD_WAIT_MS && LeaderPullHeld(leader)))
+                group.SkipTarget(
+                    routeState.target,
+                    routeState.targetIsBoss && ROUTE_OCULUS_DRAKE_ONLY ? BOSS_NOT_PULLED_SKIP_MS : NOT_PULLED_SKIP_MS,
+                    "not pulled");
+            return;
+        }
+
+        // The first leg of the route (the corner path when the smooth one is over its point limit, RoutePath).
+        if (!legBuilt)
+            SteerLeg(leader, goal, leg);
+        if (leg.type & PATHFIND_NOPATH)
+        {
+            group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS, "path lost");
+            return;
+        }
+        // The walk of this tick never leads through a part closed to this run (AreaGateDef: an LBRS group and the
+        // UBRS hall); from inside one the way out is no crossing.
+        if (!InAnyAreaGate(steerClosedAreas, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()) &&
+            RouteCrossesClosedArea(leg.points, steerClosedAreas))
+        {
+            group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS, "route through a closed area");
+            return;
+        }
+
+        // [incomplete_route_deadend] (user 2026-10-25: "if the path is incomplete, why walk it?") A partial leg is
+        // walked only when its end is progress (JudgeIncompleteEnd): not below a cliff / in water under one, not an end
+        // no nearer to the goal, not an end the leader stood at already without getting nearer since. Maraudon heroic
+        // 20261025-163739-mara-h-5A-17 swam to the floor end under the Earth Song waterfall (124 / 140 yd short, 79 /
+        // 83 yd below Princess Theradras), low_breath 39 %, "own path refused". A complete way (the long search, from
+        // the water surface too) is no partial leg; without one the target is skipped as a "route end" from here
+        // (unreachableFrom: checked again once the leader stands elsewhere), as steer_stuck does after the walk.
+        ForgetPassedDeadEnds(leader, goal);
+        // Never a stall (Underbog heroic build 30, 20261025-184229-ub-h-5F-63: 13 refusals, 235 s idle): the third
+        // refusal within DEAD_END_FALLBACK_WINDOW_MS puts the leader back on the old walk for DEAD_END_FALLBACK_MS.
+        bool fallbackStarted = false;
+        if (ROUTE_REFUSE_DEAD_END && leg.partial && !approachStopped && !routeState.approach &&
+            !routeState.targetIsStarter && leg.points.size() >= 2 && !leader->IsFlying() && !leader->GetVehicle() &&
+            !DeadEndFallback(leader, false, fallbackStarted))
+        {
+            DeadEndVerdict const verdict = JudgeIncompleteEnd(leader, leg.end, goal, leg.type, routeState.target);
+            if (!verdict.why.empty() && DeadEndFallback(leader, true, fallbackStarted))
+            {
+                group.LogEvent("incomplete_route_fallback",
+                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                             .Str("why", verdict.why).Num("refusals", DEAD_END_FALLBACK_REFUSALS)
+                             .Num("windowSec", DEAD_END_FALLBACK_WINDOW_MS / IN_MILLISECONDS)
+                             .Num("fallbackSec", DEAD_END_FALLBACK_MS / IN_MILLISECONDS)
+                             .Real("endLeft", verdict.left).Real("x", leader->GetPositionX())
+                             .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ()));
+            }
+            else if (!verdict.why.empty())
+            {
+                LOG_INFO("playerbots",
+                         "[route] {}: incomplete_route_refused: {} {} ({}): end ({:.1f},{:.1f},{:.1f}) {:.1f} yd "
+                         "short (horizontal {:.1f}, dz {:.1f}, rise {:.1f}, under water {}), {:.1f} yd away now",
+                         group.Run().runId, object->GetName(), object->GetEntry(), verdict.why, leg.end.x, leg.end.y,
+                         leg.end.z, verdict.left, verdict.hgap, verdict.dz, verdict.rise, verdict.underwater,
+                         verdict.distance);
+                group.LogEvent("incomplete_route_refused",
+                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                             .Bool("boss", routeState.targetIsBoss).Str("why", verdict.why).Num("pathType", leg.type)
+                             .Bool("straightPath", leg.straightPath)
+                             .Real("distance", verdict.distance).Real("endLeft", verdict.left)
+                             .Real("horizontal", verdict.hgap).Real("dz", verdict.dz).Real("rise", verdict.rise)
+                             .Bool("underwater", verdict.underwater).Real("surface", verdict.surface)
+                             .Num("visitSec", verdict.visitSec).Real("endX", leg.end.x).Real("endY", leg.end.y)
+                             .Real("endZ", leg.end.z).Real("x", leader->GetPositionX())
+                             .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ())
+                             .Real("toX", goal.x).Real("toY", goal.y).Real("toZ", goal.z));
+                if (routeState.targetIsBoss)
+                    routeState.orderHoldSinceMs.emplace(routeState.target, now);  // as the steer_stuck "route end" does
+                group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS, "route end: incomplete route refused (" +
+                                                                         verdict.why + ")");
+                return;
+            }
+        }
+        // [incomplete_route_deadend] the long search ran from the water surface: logged once per target
+        if (leg.fromSurface)
+        {
+            static std::set<std::pair<ObjectGuid, ObjectGuid>> surfaceLogged;  // world thread only
+            if (surfaceLogged.insert({group.LeaderGuid(), routeState.target}).second)
+                group.LogEvent("route_surface_start",
+                         JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                             .Real("distance", distance).Real("x", leader->GetPositionX())
+                             .Real("y", leader->GetPositionY()).Real("z", leader->GetPositionZ())
+                             .Real("endX", leg.end.x).Real("endY", leg.end.y).Real("endZ", leg.end.z));
+        }
+
+        // A waypoint between two corners of a corner path / long route has an interpolated height: on stairs and
+        // slopes it floats above or sinks below the floor, and the leader's own MoveTo refuses it (SearchForBestPath
+        // finds no height: "test runner move - FAILED", the wave 9 freezes at Pit of Saron's entrance and others).
+        G3D::Vector3 const waypoint = FloorWaypoint(
+            leader, leg,
+            approachStopped ? approachStop
+                            : RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
+
+        // The navmesh ends here and the target stands on another part of it. Ahn'kahet wave 9: the entrance hall and
+        // the Swarmers' level above it are two parts (tools/navmesh_probe.py 619 505.4 -963.4 30.7 525.8 -963.4 37.9:
+        // gap 20.8 yd, dz 7.8), the ramp between has collision but no polygons; the leader stood at the end of the
+        // partial route, its own move refused the target and the run stalled in 5 minutes. A player walks up the
+        // ramp: straight, over ground the whole way (DirectLineOverGround), to the aggro edge of the target.
+        G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+        bool const atRouteEnd = (leg.type & PATHFIND_INCOMPLETE) && (waypoint - here).length() <= STEER_PROGRESS_RANGE;
+        G3D::Vector3 next = waypoint;
+        // In water the walk over the gap is a swim (ROUTE_SWIM_UP): no floor needed under the line, the swimmer
+        // rises to the target's edge (Slave Pens: the route to Rokmar ends on the lake floor below him).
+        bool const swimming = leader->Unit::IsInWater();
+        if (atRouteEnd && (!swimming || ROUTE_SWIM_UP) && distance <= GAP_CROSS_MAX_DISTANCE)
+        {
+            if (routeState.gapTarget != routeState.target)
+            {
+                routeState.gapTarget = routeState.target;
+                routeState.gapTries = 0;
+            }
+            if (leader->isMoving() &&
+                leader->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                return;  // on the way over already
+
+            Creature* mob = object->ToCreature();
+            float const stop = routeState.targetIsStarter || !mob
+                                   ? STARTER_RANGE - 1.0f
+                                   : std::min(PULL_RANGE - 2.0f, mob->GetAggroRange(leader) + 2.0f);
+            if (routeState.gapTries < GAP_CROSS_TRIES && distance > stop + 1.0f)
+            {
+                G3D::Vector3 dest = here + (goal - here) * ((distance - stop) / distance);
+                float const ground = map->GetHeight(leader->GetPhaseMask(), dest.x, dest.y, dest.z + 2.0f, true, 10.0f);
+                if (ground > INVALID_HEIGHT && (!swimming || ground > dest.z))
+                    dest.z = ground;
+                bool const lineOk = swimming ? ground > INVALID_HEIGHT || WaterSurfaceAt(leader, dest) > INVALID_HEIGHT
+                                             : ground > INVALID_HEIGHT &&
+                                                   DirectLineOverGround(leader, dest.x, dest.y, dest.z);
+                if (lineOk && leader->IsWithinLOS(dest.x, dest.y, dest.z + 2.0f))
+                {
+                    ++routeState.gapTries;
+                    if (!HARNESS_MOVES_BOTS)
+                    {
+                        // The aggro edge across the gap is the leader's waypoint: its own "test runner move" walks
+                        // straight where its path ends (MovementAction::MoveStraight, over ground, in sight).
+                        group.SetLeaderWaypoint(leader, dest.x, dest.y, dest.z);
+                    }
+                    else
+                    {
+                        group.CountHarnessMove();
+                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        leader->GetMotionMaster()->Clear();
+                        MovementAction::RecordTankTrail(leader);
+                        // A harness step never runs through a closed door either (ROUTE_CLOSED_DOORS_ALL).
+                        {
+                            ObjectGuid doorGuid;
+                            float doorWalked = 0.0f;
+                            LeaderDoorStop(leader, dest, doorGuid, doorWalked);
+                        }
+                        leader->GetMotionMaster()->MovePoint(0, dest.x, dest.y, dest.z, FORCED_MOVEMENT_NONE, 0.0f,
+                                                             0.0f, false, true);
+                        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(leader))
+                        {
+                            float const speed = std::max(1.0f, leader->GetSpeed(MOVE_RUN));
+                            botAI->SetNextCheckDelay(uint32((dest - here).length() / speed * IN_MILLISECONDS) +
+                                                     LINK_HOLD_MS);
+                        }
+                    }
+                    group.NoteProgress(now);
+                    group.LogEvent("gap_cross", JsonObject().Str("name", object->GetName())
+                                                     .Num("entry", object->GetEntry()).Num("try", routeState.gapTries)
+                                                     .Bool("swim", swimming).Bool("own", !HARNESS_MOVES_BOTS)
+                                                     .Real("distance", distance).Real("x", here.x).Real("y", here.y)
+                                                     .Real("z", here.z).Real("toX", dest.x).Real("toY", dest.y)
+                                                     .Real("toZ", dest.z));
+                    return;
+                }
+            }
+        }
+        // No straight walk over the gap: the leader's own move gets the target itself, as before the corner-path pass
+        // (the core's point movement walks a partial path and goes straight on where polygons are missing - the
+        // Mechanar stairs to Sepethrea in waves 6-7; wave 9 stood at their foot, 235.3,-30.2, for 4 minutes). When
+        // that move is refused too, the steering watchdog above ends it.
+        if (atRouteEnd)
+            next = goal;
+        else
+        {
+            // The leader's own move makes no progress on a route that goes on: logged as the bot's gap (bots walk by
+            // themselves). [lead2] the dead harness drive walk is gone.
+            if (LeaderOwnWalkStalled(group, leader, goal))
+                group.LogCannotMove(leader, "route", "own walk made no progress for 6 s on a route that goes on",
+                              waypoint.x, waypoint.y, waypoint.z);
+            // [b32_brs] Bots walk by themselves: once the leader's own walk stalled (routeState.driving), its waypoint is
+            // the leg's next corner, DRIVE_STEP yd at most and over ground the whole way, instead of the point
+            // WAYPOINT_STEP along the leg - the near corner the runner's own MoveStraight walks when its path is
+            // refused. brs-h 20261025-221216-brs-h-5F-9 (2421-2539 s): Rtwarac at (26.1,-551.5,-18.6) was sent to
+            // (27.9,-530.7) / (30.8,-525.7), 21-26 yd along the leg that goes east round a raised object (navmesh
+            // islands z -15..-12 at x 22-28, y -546..-549; navmesh_probe: connected via 30.9,-552.8 / 33.4,-546.9);
+            // its own path was refused and the straight line ran over the object: bot_cannot_move x13, 173 s idle.
+            if (routeState.driving && !HARNESS_MOVES_BOTS)
+                for (size_t index = 1; index < leg.points.size(); ++index)
+                {
+                    G3D::Vector3 const ahead = leg.points[index] - here;
+                    float const length = ahead.length();
+                    if (length < 1.0f)
+                        continue;
+                    G3D::Vector3 step = here + ahead * (std::min(length, DRIVE_STEP) / length);
+                    float const ground =
+                        map->GetHeight(leader->GetPhaseMask(), step.x, step.y, step.z + 3.0f, true, 10.0f);
+                    if (ground > INVALID_HEIGHT && std::fabs(ground - step.z) <= 3.0f &&
+                        DirectLineOverGround(leader, step.x, step.y, ground) && (step - next).length() > 2.0f)
+                    {
+                        step.z = ground;
+                        next = step;
+                        static std::unordered_map<uint32, uint32> shortStepLogMs;  // party seq -> last log (world)
+                        uint32 const logNow = getMSTime();
+                        uint32& loggedMs = shortStepLogMs[group.Run().runSeq];
+                        if (!loggedMs || getMSTimeDiff(loggedMs, logNow) >= 10 * IN_MILLISECONDS)
+                        {
+                            loggedMs = logNow ? logNow : 1;
+                            group.LogEvent("stall_short_step",
+                                     JsonObject().Str("name", object->GetName()).Num("entry", object->GetEntry())
+                                         .Real("x", here.x).Real("y", here.y).Real("z", here.z)
+                                         .Real("toX", step.x).Real("toY", step.y).Real("toZ", step.z)
+                                         .Real("was", (waypoint - here).length()));
+                        }
+                    }
+                    break;
+                }
+        }
+
+        group.SetLeaderWaypoint(leader, next.x, next.y, next.z);
     }
 }

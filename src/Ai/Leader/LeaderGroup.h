@@ -187,12 +187,15 @@ namespace Leader
                                      float entranceWalk, std::string const& goal) = 0;
         // the group stands fully ready for a pull the route makes (its one readiness verdict when the leader leads);
         // an instance script event runs (a boss IN_PROGRESS without its encounter); the leader walks back to a
-        // member left behind (false: no meet); the run's level; a normal (not heroic) dungeon
+        // member left behind (false: no meet); the run levels (a normal dungeon below the top level); a regroup after
+        // a revive runs
         virtual bool GroupFullyReady(Player* leader) const = 0;
         virtual bool ScriptEventRunning() const = 0;
         virtual bool MeetMember(std::vector<Player*> const& players, Player* leader) = 0;
-        virtual uint8 Level() const = 0;
-        virtual bool IsNormalDungeon() const = 0;
+        virtual bool Levelling() const = 0;
+        virtual bool Regrouping() const = 0;
+        // the run ends with `result` ("failed", "partial") for `reason`
+        virtual void FinishRun(std::string const& result, std::string const& reason) = 0;
         // a member's own movement could not do it (bot_cannot_move)
         virtual void LogCannotMove(Player* bot, std::string const& capability, std::string const& reason, float toX,
                                    float toY, float toZ) = 0;

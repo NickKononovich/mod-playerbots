@@ -867,6 +867,9 @@ namespace Leader::Travel
     // [lead5] the leader planner's aoe_pull_plan (its own memory, Decision::aoePlan) and the leader's required
     // marks it hands the planner (LeaderInputs::required), else the AoePull registry
     bool PartyAoePlanned(LeaderGroup& group, ObjectGuid mob, uint32* sinceMs = nullptr);
+
+    // the route walk of the group's tank: its stops, holds, pulls and skips, and the walk on to the route target
+    void Steer(LeaderGroup& group, Player* leader);
 }
 
 #endif

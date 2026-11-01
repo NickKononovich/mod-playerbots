@@ -172,7 +172,6 @@ namespace TestHarness
         bool stateChanged = false;  // the state moved at least once during the run (IsPhantomSlot)
         std::string name;
         uint32 attempts = 0;
-        uint32 wipes = 0;
         std::string failReason;  // [hleft-script-slot-names] a failed slot's own reason (ScriptSlotDef::failNote)
         uint32 attemptStartMs = 0;
         std::map<ObjectGuid, MemberCounters> attemptStart;
@@ -856,8 +855,12 @@ namespace TestHarness
         {
             return _mgr.MeetMember(_party, players, leader);
         }
-        uint8 Level() const override { return _party.level; }
-        bool IsNormalDungeon() const override;
+        bool Levelling() const override;
+        bool Regrouping() const override;
+        void FinishRun(std::string const& result, std::string const& reason) override
+        {
+            _mgr.Finish(_party, result, reason);
+        }
         void SetMemberWaypoint(ObjectGuid member, Player* bot, float x, float y, float z) override;
         void ClearMemberWaypoint(ObjectGuid member) override;
         bool MemberHasWaypoint(ObjectGuid member) const override;

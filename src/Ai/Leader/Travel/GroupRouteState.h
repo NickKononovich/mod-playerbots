@@ -87,6 +87,7 @@ namespace Leader
         ObjectGuid creature;      // boss creature once known
         int32 order = -1;         // DungeonEncounter.dbc encounterIndex, -1 unknown
         std::vector<uint32> credits;  // instance_encounters kill-credit creature entries (dbc tracks)
+        uint32 wipes = 0;             // [lead107] the group's wipes at it
     };
 
     struct GroupRouteState
