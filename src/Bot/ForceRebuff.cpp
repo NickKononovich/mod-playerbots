@@ -6,6 +6,8 @@
 #include "ForceRebuff.h"
 #include "Common.h"
 #include "GenericSpellActions.h"
+#include "HealthTriggers.h"  // [lead152] RestState::PredictNextFight
+#include "LeaderOrders.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -61,6 +63,12 @@ bool ForceRebuffState::BuffBelowRefreshTarget(int32 remaining, int32 maxDuration
         // needs the pass only when it runs out within the margin (the buff's own remaining time): the window closes
         // once every member has every buff it needs
         (void)maxDuration;
+        // [lead152] b171 20261101-144503 before Oggleflint: the healer's pass ("Rtdruaa buffing" 30 s) recast buffs
+        // with minutes left and drank after it. A led bot recasts only a buff that runs out before the next fight
+        // ends (the planner's estimate of its length, RestState::PredictNextFight)
+        RestState::NextFight fight;
+        if (Leader::LedBot(bot) && RestState::PredictNextFight(bot, fight) && fight.fightSec > 0.0f)
+            return float(remaining) < fight.fightSec * float(IN_MILLISECONDS);
         return uint32(remaining) < sPlayerbotAIConfig.ForceRebuffMarginSecs * IN_MILLISECONDS;
     }
 

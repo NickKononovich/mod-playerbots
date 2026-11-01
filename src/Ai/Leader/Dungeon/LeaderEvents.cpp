@@ -265,8 +265,12 @@ namespace Leader::Dungeon
                 }
                 std::string reject;
                 // [lead151] the tank's own spot in a fight is no idle mob's reach: the tank stands there unwoken
+                // [lead152] ... and the point of the tank's walk the fallback chose for this member
+                auto const ground = lead.tankGroundSpots.find(member);
                 bool const tankSpot = group.FightOn(tank) && tank->IsAlive() &&
-                                      spot.GetExactDist(tank->GetPosition()) <= 1.0f;
+                                      (spot.GetExactDist(tank->GetPosition()) <= 1.0f ||
+                                       (ground != lead.tankGroundSpots.end() &&
+                                        spot.GetExactDist(ground->second) <= 0.5f));
                 Creature* mob = tankSpot ? nullptr : LeaderAggroAt(bot, spot);
                 bool noPath = false;
                 if (!mob && again)
@@ -1646,6 +1650,7 @@ namespace Leader::Dungeon
         if (!fighting)
         {
             lead.combatSpots.clear();
+            lead.tankGroundSpots.clear();  // [lead152]
             lead.combatSpotAnchor.clear();
             lead.fightAnchorSerial = 0;
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
@@ -2269,12 +2274,39 @@ namespace Leader::Dungeon
                             if (bot != healer && !PlayerbotAI::IsHeal(bot) && bot != tank && tank->IsAlive() &&
                                 !reaches)
                             {
-                                lead.combatSpots[guid] = {target->GetGUID(), tank->GetPosition()};
+                                // [lead152] a point of the tank's own walk first (the ground it covered unwoken):
+                                // melee in the target's melee reach off its front, ranged within its reach and sight
+                                // and out of the target's melee; the nearest to the member. None: the tank's spot.
+                                // Kept as the member's combat spot until it no longer fits (no re-issue as the tank
+                                // shifts)
+                                Position chosen = tank->GetPosition();
+                                char const* from = "the tank's spot";
+                                float best = -1.0f;
+                                float const shoot = LeaderShootReach(bot);
+                                for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
+                                {
+                                    Position const at(point.x, point.y, point.z);
+                                    float const gap = target->GetExactDist2d(at.GetPositionX(), at.GetPositionY());
+                                    bool const fits =
+                                        melee ? gap <= target->GetCombatReach() + bot->GetCombatReach() + 1.0f &&
+                                                    !target->HasInArc(float(M_PI) / 2.0f, &at)
+                                              : shoot > 0.0f && gap <= shoot && gap >= shoot / 2.0f &&
+                                                    LeaderSeesFrom(bot, target, at);
+                                    float const walk = bot->GetExactDist(at);
+                                    if (fits && (best < 0.0f || walk < best))
+                                    {
+                                        best = walk;
+                                        chosen = at;
+                                        from = "the tank's trail";
+                                    }
+                                }
+                                lead.combatSpots[guid] = {target->GetGUID(), chosen};
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                lead.tankGroundSpots[guid] = chosen;
                                 Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(), true,
                                                   JsonObject().Str("member", bot->GetName()).Str("why", breaks)
-                                                      .Str("target", target->GetName())
-                                                      .Real("walk", bot->GetExactDist(tank)));
+                                                      .Str("target", target->GetName()).Str("from", from)
+                                                      .Real("walk", bot->GetExactDist(chosen)));
                             }
                         }
                         found = lead.combatSpots.find(guid);

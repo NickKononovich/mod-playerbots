@@ -144,6 +144,8 @@ namespace Leader
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpots;  // member -> {target, spot}
         // [lead137] the combat spot a member last left, for its target: not chosen again for it (A -> B -> A)
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpotLeft;
+        // [lead152] a fallback combat spot on the tank's own fight ground (its trail / its spot): no idle mob's reach
+        std::map<ObjectGuid, Position> tankGroundSpots;
         std::map<ObjectGuid, uint32> combatSpotLosMs;
         std::map<ObjectGuid, ObjectGuid> ccAssign;  // [lead16] mob -> the member that crowd-controls it
         ObjectGuid looter;          // [lead16] the member told to loot after the last fight, and since when
