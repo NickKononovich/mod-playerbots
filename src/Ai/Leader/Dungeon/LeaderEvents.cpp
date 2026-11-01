@@ -2868,11 +2868,18 @@ namespace Leader::Dungeon
                         // Clip / Disengage - "where it stands reaches and sees its target" took a spot in its dead
                         // zone (the mob came to the tank, the group 5-10 yd behind it). A ranged spot is also out of
                         // its minimum range (LeaderRangedMinGap)
+                        // [lead158] b177 20261101-165826 22.4-26.4 s: Rthunaa re-spotted every 0.3-0.6 s against an
+                        // Earthborer walking in to the tank, then "inside its minimum range", command_repeat. While
+                        // the target runs in (not yet held in the tank's melee) the spot is judged against where the
+                        // fight will be held - the tank - and against the mob only once the tank holds it
+                        bool const runningIn = attackOn->isMoving() && tank->IsAlive() &&
+                                               !(attackOn->GetVictim() == tank && tank->IsWithinMeleeRange(attackOn));
+                        Unit* const judgedOn = runningIn ? static_cast<Unit*>(tank) : attackOn;
                         auto const shootsFrom = [&](Position const& at)
                         {
-                            float const gap = at.GetExactDist(attackOn->GetPosition());
-                            return gap <= shootReach && gap >= LeaderRangedMinGap(bot, attackOn) &&
-                                   LeaderSeesFrom(bot, attackOn, at);
+                            float const gap = at.GetExactDist(judgedOn->GetPosition());
+                            return gap <= shootReach && gap >= LeaderRangedMinGap(bot, judgedOn) &&
+                                   LeaderSeesFrom(bot, judgedOn, at);
                         };
                         auto const kept = lead.combatSpots.find(guid);
                         bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second);
@@ -2892,9 +2899,9 @@ namespace Leader::Dungeon
                                 [&]
                                 {
                                     SpotAcquire const acquire;
-                                    return LeaderNearestCombatSpot(bot, botAI, attackOn, bot->GetPosition(), false,
+                                    return LeaderNearestCombatSpot(bot, botAI, judgedOn, bot->GetPosition(), false,
                                                                    zones, keeps, spot) ||
-                                           LeaderCombatSpot(bot, botAI, attackOn, false, zones, keeps, spot);
+                                           LeaderCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot);
                                 });
                             if (got && shootsFrom(spot))
                             {
@@ -2904,7 +2911,10 @@ namespace Leader::Dungeon
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,
                                                   JsonObject().Str("member", bot->GetName())
-                                                      .Str("why", "out of its reach / sight of its Attack target")
+                                                      .Str("why", runningIn ? "out of its reach / sight of the "
+                                                                              "tank its Attack target runs to"
+                                                                            : "out of its reach / sight of its "
+                                                                              "Attack target")
                                                       .Str("target", attackOn->GetName())
                                                       .Real("walk", bot->GetExactDist(spot)));
                             }
