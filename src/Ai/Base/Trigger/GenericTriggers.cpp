@@ -303,6 +303,8 @@ bool InvalidTargetTrigger::IsActive() { return AI_VALUE2(bool, "invalid target",
 
 bool NoTargetTrigger::IsActive() { return !AI_VALUE(Unit*, "current target"); }
 
+bool TankIncomingMobTrigger::IsActive() { return TankIncomingMob(botAI, bot) != nullptr; }
+
 bool LeaderPullIssuedTrigger::IsActive()
 {
     if (bot->IsInCombat() || !PlayerbotAI::IsTank(bot) || !Leader::Orders::IsTracked(bot->GetGUID()))

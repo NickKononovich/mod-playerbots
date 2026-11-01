@@ -77,8 +77,10 @@ namespace
     // [lead87] b130: no Judgement of Wisdom in the fights - with Avenger's Shield / Hand of Reckoning on cooldown the
     // opener walk (lead85) went to Judgement's 10 yd and spent its cooldown before the fight. Judgement is the
     // tank's mana (Judgement of Wisdom) in the rotation, no opener
+    // [lead96] the other tanks' ranged openers too: the warrior's Taunt, the bear's Growl, the death knight's Dark
+    // Command (after their damage openers)
     constexpr char const* TANK_OPENERS[] = {"avenger's shield", "hand of reckoning", "heroic throw", "death grip",
-                                            "icy touch", "faerie fire (feral)"};
+                                            "icy touch", "faerie fire (feral)", "taunt", "growl", "dark command"};
 }
 
 // [lead31a] C:/WoW/LEADER_REFACTOR_PLAN.md: the pull planner moved into the leader module (Ai/Leader); this file keeps
@@ -371,6 +373,49 @@ bool AggressiveTargetAction::Execute(Event event)
                             (commitReason.empty() ? std::string() : " (" + commitReason + ")");
     return PostCommit(bot, target, losPull ? StartLosPull(target) : PullBack(target, single), method, why,
                       commitMobs, commitCost, single);
+}
+
+Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
+{
+    if (!PlayerbotAI::IsTank(bot) || !bot->IsInCombat())
+        return nullptr;
+    std::vector<Unit*> fight;
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+        if (Unit* other = ref ? ref->GetOther(bot) : nullptr)
+            fight.push_back(other);
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
+            if (Player* member = gref->GetSource(); member && member != bot && member->GetMap() == bot->GetMap())
+                for (Unit* attacker : member->getAttackers())
+                    fight.push_back(attacker);
+    for (Unit* mob : fight)
+    {
+        if (!mob || !mob->IsAlive() || !mob->ToCreature() || !bot->IsValidAttackTarget(mob) ||
+            mob->GetThreatMgr().GetThreat(bot) > 0.0f || bot->IsWithinMeleeRange(mob) ||
+            !bot->IsWithinLOSInMap(mob) || mob->HasBreakableByDamageCrowdControlAura())
+            continue;
+        for (char const* name : TANK_OPENERS)
+            if (botAI->CanCastSpell(name, mob))
+            {
+                if (opener)
+                    *opener = name;
+                return mob;
+            }
+    }
+    return nullptr;
+}
+
+bool TankOpenIncomingAction::isUseful() { return TankIncomingMob(botAI, bot) != nullptr; }
+
+bool TankOpenIncomingAction::Execute(Event /*event*/)
+{
+    char const* opener = nullptr;
+    Unit* mob = TankIncomingMob(botAI, bot, &opener);
+    if (!mob || !opener || !botAI->CastSpell(opener, mob))
+        return false;
+    LOG_INFO("playerbots", "[lead96] {}: opens on incoming {} with {} ({:.1f} yd)", bot->GetName(), mob->GetName(),
+             opener, bot->GetExactDist(mob));
+    return true;
 }
 
 // [lead85] the range of the tank's first ready opener (TANK_OPENERS)

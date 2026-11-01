@@ -289,6 +289,10 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         { NextAction("shield of righteousness", ACTION_HIGH + 5.9f) }));
     triggers.push_back(new TriggerNode("hammer of the righteous ready",
         { NextAction("hammer of the righteous", ACTION_HIGH + 5.8f) }));
+    // [lead96] a mob coming at the group with no tank threat: the ranged opener on it first (above the 969 band,
+    // under the taunts)
+    triggers.push_back(new TriggerNode("tank incoming mob",
+        { NextAction("tank open incoming", ACTION_HIGH + 6.5f) }));
     triggers.push_back(new TriggerNode("judgement of wisdom ready",
         { NextAction("judgement of wisdom", ACTION_HIGH + 5.7f) }));
     triggers.push_back(new TriggerNode("consecration ready",

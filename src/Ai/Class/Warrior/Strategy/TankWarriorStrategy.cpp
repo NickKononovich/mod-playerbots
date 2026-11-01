@@ -148,6 +148,8 @@ void TankWarriorStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 void TankWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericWarriorStrategy::InitTriggers(triggers);
+    // [lead96] a mob coming at the group with no tank threat: the ranged opener on it (TankOpenIncomingAction)
+    triggers.push_back(new TriggerNode("tank incoming mob", { NextAction("tank open incoming", ACTION_HIGH + 6.5f) }));
 
     triggers.push_back(
         new TriggerNode(

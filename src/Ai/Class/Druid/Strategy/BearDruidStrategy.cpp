@@ -178,6 +178,8 @@ void BearDruidStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     FeralDruidStrategy::InitTriggers(triggers);
+    // [lead96] a mob coming at the group with no tank threat: the ranged opener on it (TankOpenIncomingAction)
+    triggers.push_back(new TriggerNode("tank incoming mob", { NextAction("tank open incoming", ACTION_HIGH + 6.5f) }));
 
     triggers.push_back(
         new TriggerNode(

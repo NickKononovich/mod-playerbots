@@ -9,6 +9,7 @@
 
 #include "ObjectGuid.h"
 #include "Position.h"
+#include "G3D/Vector3.h"  // [lead97] the route leg's path
 #include "TestHarnessData.h"
 #include "TestHarnessLog.h"
 #include "TestHarnessPrepare.h"
@@ -471,6 +472,10 @@ namespace TestHarness
             std::string lingeringSig;          // [lead84] the lingering combat's mob set (lingering_combat logged)
             ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
             bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
+            std::set<ObjectGuid> routeSkips;   // [lead96] route targets skipped while the leader refuses them
+            std::vector<G3D::Vector3> routePath;  // [lead97] the leg's path, taken once, walked by index
+            size_t routePathIndex = 0;
+            ObjectGuid routePathTarget;
             // [lead94] the travel of the current route leg (travel_leg)
             ObjectGuid travelTarget;
             Position travelFrom;

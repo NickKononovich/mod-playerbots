@@ -504,6 +504,15 @@ public:
 // [lead95] b136 rfc-h: 94 s between the leader's issued pull order and the tank taking it (the tank's "aggressive
 // target" ran at 4.0, after its blessings, buffs and the ready reply) - a led tank with an order issued and not taken
 // yet takes it first (the order is the leader's decision; the readiness was checked before it was issued)
+// [lead96] a mob comes at the group that the tank has no threat on yet, in an opener's range (TankIncomingMob)
+class TankIncomingMobTrigger : public Trigger
+{
+public:
+    TankIncomingMobTrigger(PlayerbotAI* botAI) : Trigger(botAI, "tank incoming mob") {}
+
+    bool IsActive() override;
+};
+
 class LeaderPullIssuedTrigger : public Trigger
 {
 public:

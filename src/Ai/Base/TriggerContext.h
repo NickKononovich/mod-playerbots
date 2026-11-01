@@ -127,6 +127,7 @@ public:
         creators["no attackers"] = &TriggerContext::NoAttackers;
         creators["no target"] = &TriggerContext::NoTarget;
         creators["leader pull issued"] = &TriggerContext::LeaderPullIssued;  // [lead95]
+        creators["tank incoming mob"] = &TriggerContext::TankIncomingMob;     // [lead96]
         creators["target in sight"] = &TriggerContext::TargetInSight;
         creators["not dps target active"] = &TriggerContext::not_dps_target_active;
         creators["not dps aoe target active"] = &TriggerContext::not_dps_aoe_target_active;
@@ -477,6 +478,7 @@ private:
     static Trigger* force_rebuff_pending(PlayerbotAI* botAI) { return new ForceRebuffPendingTrigger(botAI); }
     static Trigger* NoTarget(PlayerbotAI* botAI) { return new NoTargetTrigger(botAI); }
     static Trigger* LeaderPullIssued(PlayerbotAI* botAI) { return new LeaderPullIssuedTrigger(botAI); }
+    static Trigger* TankIncomingMob(PlayerbotAI* botAI) { return new TankIncomingMobTrigger(botAI); }
     static Trigger* TargetInSight(PlayerbotAI* botAI) { return new TargetInSightTrigger(botAI); }
     static Trigger* not_dps_target_active(PlayerbotAI* botAI) { return new NotDpsTargetActiveTrigger(botAI); }
     static Trigger* not_dps_aoe_target_active(PlayerbotAI* botAI) { return new NotDpsAoeTargetActiveTrigger(botAI); }

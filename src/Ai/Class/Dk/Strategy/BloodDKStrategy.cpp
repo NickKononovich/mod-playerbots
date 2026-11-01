@@ -221,6 +221,8 @@ float BloodDeathCoilMultiplier::GetValue(Action* action)
 void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericDKStrategy::InitTriggers(triggers);
+    // [lead96] a mob coming at the group with no tank threat: the ranged opener on it (TankOpenIncomingAction)
+    triggers.push_back(new TriggerNode("tank incoming mob", { NextAction("tank open incoming", ACTION_HIGH + 6.5f) }));
 
     // [b31_dk] Frost Presence, the 3.3.5 tank presence (armor, threat, less damage taken) the rotation's
     // prerequisites already ask for; above movement and peel, below interrupts.

@@ -22739,7 +22739,10 @@ namespace TestHarness
         }
         // [lead91] a fight or a pull moves the tank: the kept route point is judged afresh after it
         if (fighting || lead.commit)
+        {
             lead.routeWalkPoint.reset();
+            lead.routePath.clear();  // [lead97] the leg's path is taken again from where the tank stands after it
+        }
         // [lead77] the tank walks on only where the group follows: no route walk while a member is blocked
         if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader) &&
             lead.groupBlockedBy.empty() && !lingeringWalk)
@@ -22757,16 +22760,46 @@ namespace TestHarness
                 // until the tank reached it - a stop every few yards. The test is the walk's own direction: a new
                 // point on the kept point's side of the tank is ahead (taken at once, the walk goes on); one behind
                 // the tank waits until the kept point is reached
-                if (lead.routeWalkPoint && lead.routeWalkTarget == party.target &&
-                    tank->GetExactDist2d(lead.routeWalkPoint->GetPositionX(), lead.routeWalkPoint->GetPositionY()) >
-                        1.5f)
+                // [lead97] b137 rfc-h 297.9-300.9 s: the harness's per-second recompute went back again (-167.1 ->
+                // -174.2, still "ahead" of the tank) - command_repeat at b133's place. The leg's path is taken ONCE
+                // (the navmesh path to the route target) and walked by index: the next path point when the tank
+                // reaches the current one; a new path only when the leg's target changes, the path is walked to its
+                // end, or the tank stands off it by more than its arrival tolerance (a fight / a pull resets it too)
+                constexpr float ROUTE_ARRIVED_YD = 1.5f;  // the route walk's MoveTo tolerance
+                Unit* legTarget = party.target.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*tank, party.target);
+                if (!lead.routePath.empty() && lead.routePathIndex < lead.routePath.size() &&
+                    lead.routePathIndex > 0)
                 {
-                    float const keptX = lead.routeWalkPoint->GetPositionX() - tank->GetPositionX();
-                    float const keptY = lead.routeWalkPoint->GetPositionY() - tank->GetPositionY();
-                    float const newX = point.GetPositionX() - tank->GetPositionX();
-                    float const newY = point.GetPositionY() - tank->GetPositionY();
-                    if (keptX * newX + keptY * newY <= 0.0f)
-                        point = *lead.routeWalkPoint;
+                    // off the path: farther from the current segment than the arrival tolerance + the tank's reach
+                    G3D::Vector3 const& a = lead.routePath[lead.routePathIndex - 1];
+                    G3D::Vector3 const& b = lead.routePath[lead.routePathIndex];
+                    G3D::Vector3 const p(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ());
+                    G3D::Vector3 const ab = b - a;
+                    float const len2 = ab.squaredLength();
+                    float const k = len2 > 0.0f ? std::clamp((p - a).dot(ab) / len2, 0.0f, 1.0f) : 0.0f;
+                    if ((a + ab * k - p).length() > ROUTE_ARRIVED_YD + tank->GetCombatReach())
+                        lead.routePath.clear();
+                }
+                if (legTarget && (lead.routePathTarget != party.target || lead.routePath.empty() ||
+                                  lead.routePathIndex >= lead.routePath.size()))
+                {
+                    PathGenerator path(tank);
+                    path.CalculatePath(legTarget->GetPositionX(), legTarget->GetPositionY(),
+                                       legTarget->GetPositionZ(), false);
+                    lead.routePath.clear();
+                    if ((path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && path.GetPath().size() >= 2)
+                        lead.routePath.assign(path.GetPath().begin(), path.GetPath().end());
+                    lead.routePathIndex = 1;  // [0] is where the tank stands
+                    lead.routePathTarget = party.target;
+                }
+                while (!lead.routePath.empty() && lead.routePathIndex + 1 < lead.routePath.size() &&
+                       tank->GetExactDist2d(lead.routePath[lead.routePathIndex].x,
+                                            lead.routePath[lead.routePathIndex].y) <= ROUTE_ARRIVED_YD)
+                    ++lead.routePathIndex;
+                if (!lead.routePath.empty() && lead.routePathIndex < lead.routePath.size())
+                {
+                    G3D::Vector3 const& next = lead.routePath[lead.routePathIndex];
+                    point.Relocate(next.x, next.y, next.z);
                 }
                 lead.routeWalkPoint = point;
                 lead.routeWalkTarget = party.target;
@@ -24837,6 +24870,20 @@ namespace TestHarness
                     }
                     return true;
                 };
+                // [lead96] a route target the route skips because the leader refused it comes back the moment the
+                // refusal ends (the same facts as skipPick's)
+                for (auto skipped = lead.routeSkips.begin(); skipped != lead.routeSkips.end();)
+                {
+                    Creature const* mob = map->GetCreature(*skipped);
+                    if (!mob || !mob->IsAlive() || !skipPick(*skipped))
+                    {
+                        party.skipUntil.erase(*skipped);
+                        party.skipReason.erase(*skipped);
+                        skipped = lead.routeSkips.erase(skipped);
+                    }
+                    else
+                        ++skipped;
+                }
                 // [lead5] the leader's pick: a patrol it decided to pull, the pack it must clear, else the same
                 // choice the tank's own value makes (AggressiveTargetValue::PickFor) with the leader's route target
                 // [lead43] b92 rfc-h 387-485 s: the patrol pick (held for pre-pull cc, refused) shadowed every other
@@ -24989,6 +25036,21 @@ namespace TestHarness
                     if (Creature* routeMob = idleAlive(party.target))
                     {
                         lead.pickConflictFor = party.target;
+                        // [lead96] b136 rfc-h: 46 s of "the leader picks no mob (the route target out of the pick / no
+                        // route target)" with the tank at the route's stop ("no route point") - the leader refused the
+                        // route target (unreachable, off the path, refused) and the route stood waiting for its
+                        // planner. Not a boss (bosses are always walked to): the route skips it, the group walks on
+                        // to the next
+                        // [lead96] user: no elapsed-time rule - the skip has no time: it lasts until the leader's
+                        // refusal ends by a fact (released below with lead.unreachable / refusedPicks: the tank or
+                        // the mob moved, the fight changed the room, the leader picks it again)
+                        if (!IsBossLook(tank, party.target) && !routeMob->IsDungeonBoss())
+                        {
+                            constexpr uint32 ROUTE_SKIP_UNTIL_RELEASED = 0x3FFFFFFF;  // no time: released by facts
+                            lead.routeSkips.insert(party.target);
+                            SkipTarget(party, party.target, ROUTE_SKIP_UNTIL_RELEASED,
+                                       "the leader does not pick it (" + pickWhy + ")");
+                        }
                         auto const unreachable = lead.unreachable.find(party.target);
                         auto const refused = lead.refusedPicks.find(party.target);
                         std::string const store =

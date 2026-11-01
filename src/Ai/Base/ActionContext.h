@@ -178,6 +178,7 @@ public:
         creators["stay"] = &ActionContext::stay;
         creators["sit"] = &ActionContext::sit;
         creators["aggressive target"] = &ActionContext::aggressive_target;
+        creators["tank open incoming"] = &ActionContext::tank_open_incoming;  // [lead96]
         creators["attack anything"] = &ActionContext::attack_anything;
         creators["attack least hp target"] = &ActionContext::attack_least_hp_target;
         creators["attack enemy player"] = &ActionContext::attack_enemy_player;
@@ -418,6 +419,7 @@ private:
     static Action* suggest_trade(PlayerbotAI* botAI) { return new SuggestTradeAction(botAI); }
     static Action* suggest_dungeon(PlayerbotAI* botAI) { return new SuggestDungeonAction(botAI); }
     static Action* aggressive_target(PlayerbotAI* botAI) { return new AggressiveTargetAction(botAI); }
+    static Action* tank_open_incoming(PlayerbotAI* botAI) { return new TankOpenIncomingAction(botAI); }
     static Action* attack_anything(PlayerbotAI* botAI) { return new AttackAnythingAction(botAI); }
     static Action* attack_least_hp_target(PlayerbotAI* botAI) { return new AttackLeastHpTargetAction(botAI); }
     static Action* attack_enemy_player(PlayerbotAI* botAI) { return new AttackEnemyPlayerAction(botAI); }

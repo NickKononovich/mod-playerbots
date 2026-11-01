@@ -368,6 +368,20 @@ public:
     std::string const GetTargetName() override { return "tank target"; }
 };
 
+// [lead96] b136 rfc-h: 9 unplanned starts without a tank hit (a mob noticed the walking tank, ran at the group) - the
+// tank's own fight duty: a mob in the fight that the tank has no threat on yet, beyond its melee, in sight and in an
+// opener's range, gets the tank's first ready ranged opener (Avenger's Shield, Hand of Reckoning, ...) as it comes
+Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener = nullptr);
+
+class TankOpenIncomingAction : public Action
+{
+public:
+    TankOpenIncomingAction(PlayerbotAI* botAI) : Action(botAI, "tank open incoming") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
 class AggressiveTargetAction : public AttackAction
 {
 public:
