@@ -763,7 +763,11 @@ namespace Leader::Dungeon
                 lead.commitTickMs = now;
             }
             std::string broken;
-            if (group.FightOn(tank))
+            // [lead113] b147 rfc-h 60.9 s: the engage on Earthborer 6 was released "the fight is on" while only the
+            // healer fought (Earthborer 4 had jumped it); the tank, in no fight, stopped. The order ends with the
+            // tank's own fight (a mob on it or its victim); the mob on a member is the tank's take-back (lead112)
+            bool const tankFights = tank->IsInCombat() && (tank->GetVictim() || !tank->getAttackers().empty());
+            if (group.FightOn(tank) && tankFights)
             {
                 broken = "the fight is on";
                 // [lead25] user: «если лишние мобы сагрятся, то танк неправильно выбирает позицию» - an add outside

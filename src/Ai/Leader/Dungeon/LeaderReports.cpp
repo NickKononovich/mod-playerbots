@@ -372,7 +372,8 @@ namespace Leader::Dungeon
             closeOrder(Leader::OrderState::Aborted, "the tank is dead or gone", "order_close");
             return;
         }
-        if (group.InCombat() || leader->IsInCombat())
+        // [lead113] the order's fight is the tank's own (a mob on it or its victim), not a member's
+        if (leader->IsInCombat() && (leader->GetVictim() || !leader->getAttackers().empty()))
         {
             if (Leader::Orders::Advance(group.LeaderGuid(), Leader::OrderState::Fighting, "the fight is on", here))
                 Decisions().Write(run, "leader", "order_fighting", order.target, order.targetName, false,

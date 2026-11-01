@@ -9,6 +9,7 @@
 
 #include "AttackerCountValues.h"
 #include "Creature.h"
+#include "Group.h"
 #include "CreatureGroups.h"
 #include "GenericSpellActions.h"
 #include "LeaderActions.h"
@@ -30,12 +31,30 @@ namespace Leader::Fight
             dynamic_cast<LeaderMoveOrderAction*>(tankAI->GetAiObjectContext()->GetAction("leader move order"));
         if (!mover)
             return nullptr;
-        Unit* woken = mover->WalkWakes(target->GetPosition(), target->GetGUID());
-        if (!woken || !woken->ToCreature() ||
-            std::find(planMobs.begin(), planMobs.end(), woken->GetGUID()) != planMobs.end() ||
-            (creature->GetFormation() && woken->ToCreature()->GetFormation() == creature->GetFormation()))
-            return nullptr;
-        return woken;
+        auto const counts = [&](Unit* woken)
+        {
+            return woken && woken->ToCreature() &&
+                   std::find(planMobs.begin(), planMobs.end(), woken->GetGUID()) == planMobs.end() &&
+                   !(creature->GetFormation() && woken->ToCreature()->GetFormation() == creature->GetFormation());
+        };
+        if (Unit* woken = mover->WalkWakes(target->GetPosition(), target->GetGUID()); counts(woken))
+            return woken;
+        // [lead113] b147 rfc-h 59.9 s: the healer following the tank 12 yd behind woke Earthborer 4 (45 yd from the
+        // fight spot) - the followers walk in too: each member's own walk to the target (its route search against
+        // every idle pack's reach, its own aggro check) is judged the same way
+        if (Group* group = tank->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                PlayerbotAI* memberAI = member && member != tank ? GET_PLAYERBOT_AI(member) : nullptr;
+                if (!memberAI || !member->IsAlive() || member->GetMap() != tank->GetMap())
+                    continue;
+                if (auto* follower = dynamic_cast<LeaderMoveOrderAction*>(
+                        memberAI->GetAiObjectContext()->GetAction("leader move order")))
+                    if (Unit* woken = follower->WalkWakes(target->GetPosition(), target->GetGUID()); counts(woken))
+                        return woken;
+            }
+        return nullptr;
     }
 
     bool OrderMobStaysPick(Player* tank, Creature* own)
