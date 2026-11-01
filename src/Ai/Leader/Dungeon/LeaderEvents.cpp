@@ -2967,13 +2967,20 @@ namespace Leader::Dungeon
                                 return false;
                         return true;
                     };
-                    Unit* mine = headroom(target) ? target : nullptr;
+                    // [lead196] b181: the leader's Stop was the biggest damage loss (enh 5A ~300 held casts and its
+                    // white swings 1275 vs the sim's 1865, the frost DK's whole rotation in 5G): a melee member with
+                    // headroom on its target was stopped by a neighbour within LEADER_AOE_RADIUS the tank had not
+                    // hit yet (0 against 0). Its single-target attack lands on its target only; what splashes is
+                    // its area damage, which the AoE rule below forbids on such a neighbour. The pick and the Stop
+                    // read the member's headroom on the mob it attacks
+                    auto const pickable = [&](Unit* mob) { return headroomOn(mob); };
+                    Unit* mine = pickable(target) ? target : nullptr;
                     for (ObjectGuid const& next : killOrder)
                     {
                         if (mine)
                             break;
                         if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
-                            mob && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
+                            mob && mob->IsAlive() && mob->IsInCombat() && pickable(mob))
                             mine = mob;
                     }
                     // [lead136] b162 20261101-121409: the shaman moved 377 s, 48 % of its fight time not acting - 121
@@ -2993,7 +3000,7 @@ namespace Leader::Dungeon
                         float best = bot->GetExactDist(mine);
                         for (ObjectGuid const& next : killOrder)
                             if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
-                                mob && mob != mine && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
+                                mob && mob != mine && mob->IsAlive() && mob->IsInCombat() && pickable(mob))
                             {
                                 bool const at = atTank(mob);
                                 float const distance = bot->GetExactDist(mob);
