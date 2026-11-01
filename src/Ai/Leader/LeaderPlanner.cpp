@@ -5720,9 +5720,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // [lead206] user: a corner pull only when it is cheaper. Both ways in seconds of the group's time: the corner -
     // the tank's walk to the cast spot and on to the corner or the group's walk to its spot behind it (the longer),
-    // then the casters' walk round it, then the fight of the pack that comes; standing - the walk in, the fight of
-    // the pack where it stands, and the threat loss: every caster / shooter the tank's ranged tools do not hold from
-    // there (TankRangedHolds) fights off the tank until it dies (its health over the group's damage).
+    // then the casters' walk round it, then the fight of the pack that comes, then the walk back to the pack's spot
+    // (lead212); standing - the walk in, the fight of the pack where it stands, and the threat loss: every caster /
+    // shooter the tank's ranged tools do not hold from there (TankRangedHolds) fights off the tank until it dies (its
+    // health over the group's damage).
     struct CornerCost
     {
         float cornerSec = 0.0f;
@@ -5747,7 +5748,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (MobRoles::IsCaster(mob) || (creature && KeepsRange(creature)))
                 casterSec = std::max(casterSec, mob->GetExactDist(corner) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
         }
-        cost.cornerSec = std::max(tankCorner, GroupWalkTo(tank, gather)) / speed + casterSec + losFightSec;
+        // [lead212] ... and the walk back from the corner to where the pack stood: the route goes on from there, where
+        // the fight without the corner ends (b184 rfc-h 5F: the corner cost ended at the corner)
+        float const walkBack = corner.GetExactDist(candidate->GetPosition());
+        cost.cornerSec =
+            (std::max(tankCorner, GroupWalkTo(tank, gather)) + walkBack) / speed + casterSec + losFightSec;
 
         std::vector<Unit*> ranged;
         for (Unit* mob : standPack)
@@ -8963,7 +8968,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             PullBackSpot(candidate, castSpot);
             CornerCost const cost = CornerVsStand(botAI, bot, candidate, castSpot, corner, gather, losSeen,
                                                   losEstimate.fightSec, chosenPack, chosen.fightSec, groupDps);
-            bool const stand = cost.standSec < cost.cornerSec;
+            // [lead212] b184 rfc-h 5F 784 s: "corner 23 s vs where it stands 23 s (threat loss 0 s)": the corner. At
+            // the same cost the group stays where the route takes it
+            bool const stand = cost.standSec <= cost.cornerSec;
             cornerNote = Acore::StringFormat(
                 "corner {:.0f} s vs where it stands {:.0f} s (threat loss {:.0f} s, "
                 "ranged tools hold {} of {}): {}",
