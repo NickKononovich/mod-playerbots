@@ -1011,7 +1011,17 @@ namespace Leader::Dungeon
                     combined.insert(combined.end(), wokenPack.begin(), wokenPack.end());
                     float overload = 0.0f;
                     std::string judged;
-                    bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                    bool fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                    // [lead168] b179 rfc-h 5C 389-508 s / 5G 264-381 s: the planner refused the woken Trogg's pack as
+                    // "brings a boss, pulled as his fight", the walk in to that boss released him for it as "the pull
+                    // first" - two verdicts on one fight. The planner's own refusal says it is his fight: one pull
+                    if (auto const refused = lead.refusedPicks.find(woken->GetGUID());
+                        !fits && IsBossLook(tank, mob->GetGUID()) && refused != lead.refusedPicks.end() &&
+                        refused->second.find("brings a boss") != std::string::npos)
+                    {
+                        fits = true;
+                        judged += "; the planner pulls it as the boss's fight";
+                    }
                     Decisions().Write(run, "leader", "walk_in_wakes", mob->GetGUID(), mob->GetName(), true,
                                       JsonObject().Str("wakes", woken->GetName())
                                           .Num("wakesLow", woken->GetGUID().GetCounter())
