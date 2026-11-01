@@ -213,6 +213,21 @@ namespace Leader::Dungeon
             return false;
         }
 
+        // [lead165] the caster's highest known rank of one of `firstRanks` (0: none)
+        uint32 KnownRank(Player* caster, std::vector<uint32> const& firstRanks)
+        {
+            for (uint32 const first : firstRanks)
+            {
+                uint32 known = 0;
+                for (uint32 spell = first; spell; spell = sSpellMgr->GetNextSpellInChain(spell))
+                    if (caster->HasSpell(spell))
+                        known = spell;
+                if (known)
+                    return known;
+            }
+            return 0;
+        }
+
         bool InBuffRange(Player* bot, Player* leader)
         {
             return bot->IsAlive() && bot->IsInWorld() && bot->GetMap() == leader->GetMap() && !bot->IsInCombat() &&
@@ -221,7 +236,16 @@ namespace Leader::Dungeon
 
         // "<member> <buff>, ..." for every buff the group can give that a member lacks; empty: all present. A buff
         // nobody can give (no caster of its class, the casters out of range, no reagent) is not missing.
-        std::string MissingGivableBuffs(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
+        // [lead165] a buff the leader orders: `caster` casts `spell` on `target`
+        struct BuffOrder
+        {
+            ObjectGuid caster;
+            uint32 spell = 0;
+            ObjectGuid target;
+        };
+
+        std::string MissingGivableBuffs(LeaderGroup& group, std::vector<Player*> const& players, Player* leader,
+                                        std::vector<BuffOrder>* orders = nullptr)
         {
             std::vector<LeaderGroup::MemberInfo> const members = group.Members();
             // [lead136] a buff counts as present when it lasts the next fight: its remaining time against the
@@ -234,10 +258,14 @@ namespace Leader::Dungeon
             for (GroupBuffDef const& def : groupBuffs)
             {
                 bool givable = false;
+                Player* giver = nullptr;
                 for (Player* caster : players)
                     if (!givable && caster->getClass() == def.casterClass && InBuffRange(caster, leader) &&
                         CanGive(caster, def.spells))
+                    {
                         givable = true;
+                        giver = caster;
+                    }
                 if (!givable)
                     continue;
 
@@ -256,7 +284,17 @@ namespace Leader::Dungeon
                     for (char const* aura : def.auras)
                         has = has || HasAuraLasting(bot, aura, needMs);
                     if (!has)
+                    {
                         missing += (missing.empty() ? "" : ", ") + bot->GetName() + " " + def.label;
+                        if (orders && giver)
+                            if (uint32 const spell = KnownRank(giver, def.spells))
+                            {
+                                // a buff the caster spreads round itself (Horn of Winter) is cast on itself
+                                SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+                                bool const self = info && !info->NeedsExplicitUnitTarget();
+                                orders->push_back({giver->GetGUID(), spell, self ? giver->GetGUID() : bot->GetGUID()});
+                            }
+                    }
                 }
             }
             return missing;
@@ -306,6 +344,7 @@ namespace Leader::Dungeon
             std::string waitedFor;
             bool consumableUsed = false;  // step 1 -> 2: a flask was used; step 2 -> 3: food was used
             std::set<ObjectGuid> fed;     // step 2 -> 3: the members given food
+            std::set<std::pair<ObjectGuid, uint32>> ordered;  // [lead165] step 1: the buffs the leader ordered
         };
         std::unordered_map<uint32, BuffWait> buffWaits;  // per instance, world thread only
     }
@@ -371,8 +410,29 @@ namespace Leader::Dungeon
                     // buff target, no rebuff window open: Begin opens it at once and the bot's own pass closes it
                     // once no buff trigger fires), and every buff the group can give now is on every member it is
                     // for; a buff still missing when every caster's pass ended is one its casters do not give
-                    std::string const workers = BuffWorkers(players, leader);
-                    std::string const missing = MissingGivableBuffs(group, players, leader);
+                    std::string workers = BuffWorkers(players, leader);
+                    std::vector<BuffOrder> orders;
+                    std::string const missing = MissingGivableBuffs(group, players, leader, &orders);
+                    // [lead165] b178 rfc-h 5D (20261101-171156): the bear tank never gave Mark of the Wild to the DK
+                    // (run start and after its resurrection: "every caster's buff pass ended, missing: Rtdekab Mark
+                    // of the Wild") - the pass waited for the casters' own triggers. When every caster's own pass has
+                    // ended with a buff still missing that one of them can give, the leader orders it (its External:
+                    // the caster's highest known rank on the member), once per member and spell in this step; the
+                    // step waits while an order stands
+                    if (workers.empty() && !missing.empty())
+                        for (BuffOrder const& order : orders)
+                        {
+                            if (!wait.ordered.insert({order.target, order.spell}).second)
+                                continue;
+                            if (Leader::Events::SetExternal(order.caster, order.spell, order.target))
+                                LOG_INFO("playerbots", "[lead165] buff_order: {} casts {} on {} ({}, {})",
+                                         order.caster.ToString(), order.spell, order.target.ToString(),
+                                         group.Run().runId, route.buffReason);
+                        }
+                    for (BuffOrder const& order : orders)
+                        if (Leader::MemberEvents events;
+                            Leader::Events::Get(order.caster, events) && events.externalSpell == order.spell)
+                            workers += (workers.empty() ? "" : ", ") + std::string("a buff order");
                     waitingFor(workers.empty() ? missing : workers);
                     // [lead136] b162 20261101-121409 (271 s: 12 s "every buff the group can give is present",
                     // waited for "Rtdruaa rebuff window open"; 73 s over the run): every buff present (lasting the
@@ -387,6 +447,16 @@ namespace Leader::Dungeon
                         wait.waitedFor.clear();
                     if (why.empty())
                         break;
+                    // [lead165] the step's buff orders end with it (an External stands until replaced: no recast)
+                    for (Player* bot : players)
+                        if (Leader::MemberEvents events; Leader::Events::Get(bot->GetGUID(), events) &&
+                                                         events.externalSpell)
+                            for (auto const& ordered : wait.ordered)
+                                if (ordered.second == events.externalSpell)
+                                {
+                                    Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+                                    break;
+                                }
                     stepDone(2, why);
                     for (Player* bot : players)
                         wait.consumableUsed = group.UseConsumables(bot, false) || wait.consumableUsed;
