@@ -496,7 +496,10 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
                                     name, inFight ? "in the fight" : "drunk before", fightCost, drinkSec);
     };
     credit(SPELL_EVOCATION, 60.0f, "Evocation");
-    credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
+    // [lead224] a measured rate is the net use of fights the paladin keeps Divine Plea up in (rot48, Guarded by the
+    // Light): its mana is in that rate already, a credit on top counted it twice
+    if (!measured)
+        credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
     float const line = std::clamp(need + reserve - returned, float(sPlayerbotAIConfig.LowMana), 100.0f);
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
