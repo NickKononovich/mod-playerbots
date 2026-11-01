@@ -1971,10 +1971,13 @@ namespace Leader::Dungeon
                 {
                     if (spend.prev >= 0.0f)  // the fight just ended: its net use counts
                     {
-                        spend.spent += std::max(0.0f, spend.prev - pct);
+                        // [lead222] signed: a fight that ends with more mana than it began (Divine Plea, Judgement
+                        // of Wisdom, Spiritual Attunement, a potion in the fight) lowers the net use; the clamp at 0
+                        // per fight counted such fights as zero use and raised the rate
+                        spend.spent += spend.prev - pct;
                         spend.sec += spend.fightSec;
                         if (spend.sec > 0.0f)
-                            RestState::NoteManaRate(member->GetGUID(), spend.spent / spend.sec);
+                            RestState::NoteManaRate(member->GetGUID(), std::max(0.0f, spend.spent / spend.sec));
                     }
                     spend.prev = -1.0f;
                     spend.fightSec = 0.0f;
