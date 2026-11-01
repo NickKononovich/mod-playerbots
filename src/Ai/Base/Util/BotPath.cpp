@@ -12,6 +12,7 @@
 #include "MotionMaster.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "RouteSearch.h"  // [lead144] NoteHeightGap
 
 bool UsesLeaderRoute(Unit* owner)
 {
@@ -126,6 +127,7 @@ bool WalkBotPoints(Player* bot, Movement::PointsArray points)
     if (!mm || points.size() < 2)
         return false;
     points[0] = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    Leader::Travel::NoteHeightGap(bot, points[0], points[0].z, "walker position");  // [lead144]
     mm->Clear();
     mm->MoveSplinePath(&points);
     return true;

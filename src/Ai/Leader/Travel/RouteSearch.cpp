@@ -16,6 +16,7 @@
 #include <cmath>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Leader::Travel
 {
@@ -211,6 +212,67 @@ namespace Leader::Travel
         }
         return points.back();
     }
+
+    void NoteHeightGap(Unit* walker, G3D::Vector3 const& point, float beforeSnap, char const* what)
+    {
+        constexpr int HEIGHT_GAP_NODES = 64;              // findNearestPoly needs no search nodes; init wants some
+        constexpr float HEIGHT_GAP_COLUMN = 50.0f;        // the navmesh layers searched above / below the point
+        constexpr size_t HEIGHT_GAP_MEMO_MAX = 65536;     // logged cells kept per thread
+        constexpr float HEIGHT_GAP_VMAP_UP = 2.0f;        // the floor search starts this far above (Map::GetHeight)
+        Map* map = walker ? walker->GetMap() : nullptr;
+        dtNavMesh const* navMesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
+        if (!navMesh)
+            return;
+        thread_local std::unordered_map<dtNavMesh const*, std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree>>
+            queries;
+        auto& query = queries[navMesh];
+        if (!query)
+        {
+            query.reset(dtAllocNavMeshQuery());
+            if (!query || dtStatusFailed(query->init(navMesh, HEIGHT_GAP_NODES)))
+            {
+                query.reset();
+                return;
+            }
+        }
+        dtQueryFilter filter;  // every polygon, liquids included: the navmesh's own floor at the point
+        filter.setIncludeFlags(0xFFFF);
+        filter.setExcludeFlags(0);
+        float const centre[3] = {point.y, point.z, point.x};  // Detour works in (y, z, x)
+        float const extents[3] = {1.0f, HEIGHT_GAP_COLUMN, 1.0f};
+        float nearest[3];
+        dtPolyRef ref = 0;
+        if (dtStatusFailed(query->findNearestPoly(centre, extents, &filter, &ref, nearest)) || !ref)
+            return;
+        dtMeshTile const* tile = nullptr;
+        dtPoly const* poly = nullptr;
+        if (dtStatusFailed(navMesh->getTileAndPolyByRef(ref, &tile, &poly)) || !tile || !poly || !tile->header)
+            return;
+        float const meshZ = nearest[1];
+        if (std::fabs(point.z - meshZ) <= tile->header->walkableClimb)
+            return;
+        thread_local std::unordered_set<uint64> logged;
+        if (logged.size() >= HEIGHT_GAP_MEMO_MAX)
+            logged.clear();
+        uint64 const cell = (uint64(map->GetId()) << 40) ^ (uint64(uint32(int32(std::floor(point.x)))) << 20) ^
+                            uint64(uint32(int32(std::floor(point.y))) & 0xFFFFF);
+        if (!logged.insert(cell).second)
+            return;
+        auto& staticTree = map->GetMapCollisionData().GetStaticTree();
+        float const vmapFromSample = staticTree.getHeight(point.x, point.y, point.z + HEIGHT_GAP_VMAP_UP,
+                                                          HEIGHT_GAP_COLUMN);
+        float const vmapFromMesh = staticTree.getHeight(point.x, point.y, meshZ + HEIGHT_GAP_VMAP_UP,
+                                                        HEIGHT_GAP_COLUMN);
+        LiquidData const liquid = map->GetLiquidData(walker->GetPhaseMask(), point.x, point.y,
+                                                     std::max(point.z, meshZ), walker->GetCollisionHeight(), {});
+        LOG_INFO("playerbots",
+                 "[height_gap] {} {}: map {} ({:.1f},{:.1f}) sample z {:.1f} (before the ground snap {:.1f}), navmesh "
+                 "z {:.1f} (poly flags {:#x}, climb {:.1f}), grid z {:.1f}, vmap z {:.1f} from the sample / {:.1f} "
+                 "from the navmesh, liquid entry {} flags {:#x} level {:.1f}",
+                 what, walker->GetName(), map->GetId(), point.x, point.y, point.z, beforeSnap, meshZ,
+                 uint32(poly->flags), tile->header->walkableClimb, map->GetGridHeight(point.x, point.y),
+                 vmapFromSample, vmapFromMesh, liquid.Entry, liquid.Flags, liquid.Level);
+    }
 }
 
 // [lead99] the leader's one route service (Leader::Route, LeaderOrders.h)
@@ -268,7 +330,9 @@ namespace Leader
             for (float at = ROUTE_SAMPLE_YD; at < len; at += ROUTE_SAMPLE_YD)
             {
                 G3D::Vector3 p = a + (b - a) * (at / len);
+                float const beforeSnap = p.z;
                 walker->UpdateAllowedPositionZ(p.x, p.y, p.z);  // on its ground (a step shows as a step)
+                Travel::NoteHeightGap(walker, p, beforeSnap, "route sample");  // [lead144]
                 result.points.push_back(p);
             }
             result.points.push_back(b);

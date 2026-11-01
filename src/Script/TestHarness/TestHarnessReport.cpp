@@ -27,6 +27,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "PullStrategy.h"
+#include "RouteSearch.h"  // [lead144] NoteHeightGap
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -1457,6 +1458,10 @@ namespace TestHarness
                         casting = spell->GetSpellInfo() ? spell->GetSpellInfo()->Id : 0;
 
             Unit* target = targetOf(bot);
+            if (bot->IsInWorld() && !bot->IsFlying() && !bot->isSwimming() && !bot->GetTransport())
+                Leader::Travel::NoteHeightGap(bot, G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(),
+                                                                bot->GetPositionZ()),
+                                              bot->GetPositionZ(), "member position");  // [lead144]
             JsonObject line;
             line.Str("n", bot->GetName()).Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
                 .Real("z", bot->GetPositionZ()).Real("o", bot->GetOrientation()).Bool("a", bot->IsAlive())

@@ -44,6 +44,11 @@ namespace Leader::Travel
 
     // [lead107] the point `walk` yd along `points` (its last point when the path is shorter)
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk);
+
+    // [lead144] diagnostic only: logs [height_gap] once per 1 yd cell when `point` (a route sample after its ground
+    // snap, or a walker's own position) lies farther than the tile's walkable climb from the navmesh's detail height
+    // there: the sample z, the z before the snap, the navmesh z, the grid z, the vmap floor from both, the liquid
+    void NoteHeightGap(Unit* walker, G3D::Vector3 const& point, float beforeSnap, char const* what);
 }
 
 #endif
