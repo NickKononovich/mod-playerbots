@@ -576,16 +576,9 @@ namespace
     // template's permanent pet (Glyph of Eternal Water 50045, "no pet" upkeep), not a cooldown. Exceptions in
     // BurnCooldownException: a healer's Avenging Wrath / Shadowfiend (its heal and mana tools), Shadowfiend for mana,
     // Mirror Image as the mage's own threat drop with mobs on it.
-    bool IsBurnCooldown(std::string const& name)
-    {
-        static std::vector<std::string> const names = {
-            "icy veins", "combustion", "arcane power", "presence of mind", "mirror image", "force of nature",
-            "berserk", "bloodlust", "heroism", "feral spirit", "fire elemental totem", "earth elemental totem",
-            "elemental mastery", "shadowfiend", "rapid fire", "readiness", "adrenaline rush", "killing spree",
-            "blade flurry", "avenging wrath", "recklessness", "death wish", "metamorphosis", "summon infernal",
-            "summon doomguard"};
-        return std::find(names.begin(), names.end(), name) != names.end();
-    }
+    // [lead80] the one list (Leader::BURN_COOLDOWNS) - the "kept on cooldown" ones above now wait for the leader's
+    // burn too: the leader burns them when they pay (the fight outlasts the effect, back before the next boss)
+    bool IsBurnCooldown(std::string const& name) { return Leader::IsBurnCooldown(name); }
 
     // [rot2] Where an area action lands and how far it reaches (the rules of ThreatMultiplier::AreaHolds).
     bool AreaFootprint(Player* bot, CastSpellAction* action, SpellInfo const* info, Unit* mainTarget, Position& center,

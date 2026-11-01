@@ -207,6 +207,23 @@ namespace Leader
     constexpr bool LEADER_COMBINE_PACKS = true;
     // [lead66] the leader's position arbiter owns every move of a led member: no own reach melee / reach spell
     constexpr bool LEADER_ARBITER_OWNS_MOVES = true;
+
+    // [lead80] one list of the offensive cooldowns (long-cooldown damage boosts and summons) every gate and the
+    // leader's burn decision use: they run only under the leader's Intensity burn
+    inline char const* const BURN_COOLDOWNS[] = {
+        "bloodlust", "heroism", "icy veins", "arcane power", "presence of mind", "combustion", "mirror image",
+        "avenging wrath", "death wish", "recklessness", "berserk", "army of the dead", "summon gargoyle",
+        "rapid fire", "readiness", "bestial wrath", "adrenaline rush", "blade flurry", "killing spree",
+        "shadowfiend", "feral spirit", "elemental mastery", "fire elemental totem", "earth elemental totem",
+        "metamorphosis", "starfall", "force of nature", "summon infernal", "summon doomguard",
+        "dancing rune weapon", "unholy frenzy", "hysteria", "bladestorm", "shadow dance", "cold blood"};
+    inline bool IsBurnCooldown(std::string const& name)
+    {
+        for (char const* burn : BURN_COOLDOWNS)
+            if (name == burn)
+                return true;
+        return false;
+    }
     // [lead34] user: «Если патруль, надо убивать патруль.» - no wait for a patrol to walk away (no patrol window, no
     // patrol wait, no step back, no lane wait): a patrol near the route or the pull is the leader's target, taken along
     // with the pull when the combined fight is safe (PullPlanner::JudgePack), else pulled as its own pull first

@@ -505,6 +505,9 @@ namespace TestHarness
             std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
             std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
             std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
+            float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
+            float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
+            std::set<ObjectGuid> burnLogged;                  // [lead80] burn_decision logged in this fight
             std::string slowestPass;                       // [lead76] the slowest leader pass this minute
             uint32 slowestPassUs = 0;
             uint32 slowestPassLogMs = 0;

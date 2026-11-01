@@ -22105,6 +22105,21 @@ namespace TestHarness
             aoeWhy = lead.aoeWhy;
             if (Creature* creature = target->ToCreature(); creature && creature->IsDungeonBoss())
                 intensity = Leader::Intensity::Burn;
+            // [lead80] the fight's expected seconds (its mobs' health over the estimated group dps) and the walk to
+            // the nearest standing boss (its distance over the tank's run speed): what each member's burn is judged by
+            float health = 0.0f;
+            for (Unit* mob : fightingMobs)
+                health += float(mob->GetHealth());
+            PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
+            float const groupDps =
+                tankAI ? tankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
+            lead.fightSecLeft = health / std::max(groupDps, 1.0f);
+            float bossYd = -1.0f;
+            for (ObjectGuid const& bossGuid : party.bossCreatures)
+                if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive() && !boss->IsInCombat())
+                    if (bossYd < 0.0f || tank->GetExactDist(boss) < bossYd)
+                        bossYd = tank->GetExactDist(boss);
+            lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
         }
 
         // [lead20] the tank holds every fight mob near `to` and the walk from `from` (its victim is the tank, or it is
@@ -22745,7 +22760,10 @@ namespace TestHarness
         // [lead45] the tank rests too (it is no seat): the boss pull waits for its mana, so the leader tells it to
         // drink (its own rest line / the boss top-up line, RestState) while no order runs
         if (!fighting)
+        {
             lead.healStarted = false;  // [lead61] the next fight's heals start on the leader's word again
+            lead.burnLogged.clear();   // [lead80]
+        }
         // [lead67] the tank's threat lead at 2 s and 5 s into each fight: per fight mob the tank's threat over the
         // top other's (threat_lead) - how well the tank picks the pack up
         // [lead67] user metric: threat per second per member over the pull (the highest threat it held on each mob,
@@ -23610,7 +23628,35 @@ namespace TestHarness
                 // [lead53] only when no fight mob leaves it headroom (it was every member at the tank's threat)
                 bool const overThreat = !victim && bot != healer && !PlayerbotAI::IsHeal(bot) && target &&
                                         lead.noHeadroom[guid];
-                Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : intensity;
+                // [lead80] a trash burn when it pays: the member's burn cooldown's effect fits in the fight's
+                // seconds and the cooldown is back before the next boss (no boss left: it pays whenever it fits)
+                Leader::Intensity burnable = intensity;
+                if (burnable != Leader::Intensity::Burn && !victim && !overThreat && bot != healer && botAI)
+                    for (char const* burn : Leader::BURN_COOLDOWNS)
+                    {
+                        uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
+                        SpellInfo const* info = spell && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell)
+                                                    ? sSpellMgr->GetSpellInfo(spell)
+                                                    : nullptr;
+                        if (!info)
+                            continue;
+                        float const effectSec = std::max(info->GetDuration(), 0) / 1000.0f;
+                        float const rechargeSec =
+                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
+                        if (lead.fightSecLeft >= effectSec &&
+                            (lead.bossWalkSec < 0.0f || lead.bossWalkSec >= rechargeSec))
+                        {
+                            burnable = Leader::Intensity::Burn;
+                            if (lead.burnLogged.insert(bot->GetGUID()).second)
+                                DecisionLog::Instance().Write(
+                                    run, "leader", "burn_decision", guid, bot->GetName(), true,
+                                    JsonObject().Str("member", bot->GetName()).Str("cooldown", burn)
+                                        .Real("fightSec", lead.fightSecLeft).Real("effectSec", effectSec)
+                                        .Real("rechargeSec", rechargeSec).Real("bossWalkSec", lead.bossWalkSec));
+                            break;
+                        }
+                    }
+                Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : burnable;
                 if (Leader::Events::SetIntensity(guid, mine) && mine != Leader::Intensity::Normal)
                     logEvent(bot, "Intensity",
                              JsonObject().Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")

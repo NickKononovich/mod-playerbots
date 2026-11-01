@@ -246,12 +246,9 @@ namespace
             return true;
         // [lead42] b91 rfc-h 156.7 s: Rtmagaa's Mirror Image without the leader's burn (own_decision, two_owners):
         // the burn cooldowns run only under the leader's Intensity burn
-        if (combat && events.intensity != Leader::Intensity::Burn &&
-            in({"bloodlust", "heroism", "icy veins", "arcane power", "presence of mind", "avenging wrath", "death wish",
-                "recklessness", "berserk", "army of the dead", "summon gargoyle", "rapid fire", "bestial wrath",
-                "adrenaline rush", "blade flurry", "killing spree", "shadowfiend", "feral spirit", "elemental mastery",
-                "metamorphosis", "mirror image", "starfall", "force of nature", "summon infernal",
-                "dancing rune weapon", "unholy frenzy", "hysteria"}))
+        // [lead80] b123 141.6 s: Feral Spirit went out of combat (the gate held only in a fight) - the one list
+        // (Leader::IsBurnCooldown), in and out of a fight
+        if (events.intensity != Leader::Intensity::Burn && Leader::IsBurnCooldown(name))
             return true;
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
         // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
@@ -420,11 +417,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
             note("external", "an external without a leader assignment");
         return;
     }
-    if (in({"bloodlust", "heroism", "icy veins", "arcane power", "presence of mind", "avenging wrath", "death wish",
-            "recklessness", "berserk", "army of the dead", "summon gargoyle", "rapid fire", "bestial wrath",
-            "adrenaline rush", "blade flurry", "killing spree", "shadowfiend", "feral spirit", "elemental mastery",
-            "metamorphosis", "mirror image", "starfall", "force of nature", "summon infernal", "dancing rune weapon",
-            "unholy frenzy", "hysteria"}))
+    if (Leader::IsBurnCooldown(name))  // [lead80] the one list
     {
         if (events.intensity != Leader::Intensity::Burn)
             note("burn", "a burn cooldown without the leader's Intensity burn");
