@@ -1102,6 +1102,12 @@ namespace TestHarness
         bool InCombat() const override { return _party.inCombat; }
         bool FightOn(Player* leader) const override { return _party.FightOn(leader); }
         uint32 PullStartMs() const override { return _party.pullStartMs; }
+        uint32 PullSeq() const override { return _party.pullSeq; }
+        std::string const& PullStarter() const override { return _party.pullStarter; }
+        std::string const& PullScript() const override { return _party.pullScript; }
+        bool BodyPull() const override { return _party.approach != 0; }
+        uint32 LastPullEndMs() const override { return _party.lastPullEndMs; }
+        std::string ContentKey() const override { return _party.content ? _party.content->key : ""; }
         bool NeedBuff() const override { return _party.needBuff; }
         std::set<ObjectGuid> const& BossCreatures() const override { return _party.bossCreatures; }
         std::map<ObjectGuid, PathVerdict> const& PathVerdicts() const override { return _party.pathVerdicts; }

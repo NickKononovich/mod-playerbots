@@ -91,6 +91,15 @@ namespace Leader
         virtual bool InCombat() const = 0;
         virtual bool FightOn(Player* leader) const = 0;
         virtual uint32 PullStartMs() const = 0;
+        // the pull's own facts: its serial, who started it ("planned" / "unplanned: ..."), the dungeon script that
+        // started it ("chain", "escort", ...; empty: none), a body pull walk on, the last pull's end (0: none)
+        virtual uint32 PullSeq() const = 0;
+        virtual std::string const& PullStarter() const = 0;
+        virtual std::string const& PullScript() const = 0;
+        virtual bool BodyPull() const = 0;
+        virtual uint32 LastPullEndMs() const = 0;
+        // the content's key ("rfc-h", ...; empty: none)
+        virtual std::string ContentKey() const = 0;
 
         // the group needs its buffs (run start, after a wipe / a death)
         virtual bool NeedBuff() const = 0;
