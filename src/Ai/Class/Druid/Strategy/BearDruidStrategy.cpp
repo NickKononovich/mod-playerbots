@@ -228,8 +228,9 @@ void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "lacerate", { NextAction("lacerate", 16.0f) }
     ));
+    // [rot31] wowsims feral tank: the Demoralizing Roar refresh above Mangle
     triggers.push_back(new TriggerNode(
-        "demoralizing roar", { NextAction("demoralizing roar", 15.5f) }
+        "demoralizing roar", { NextAction("demoralizing roar", 17.6f) }
     ));
     // [b31_deep] Challenging Roar left "high aoe" (any 4 mobs in 8 yd, 26.5): on a fresh pull it went out before
     // any threat existed and the mobs left after its 6 s. It stays an emergency for loose mobs on group members

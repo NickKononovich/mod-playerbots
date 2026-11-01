@@ -32,10 +32,9 @@ bool CastFeralChargeBearAction::isUseful()
            !IdleMobReachingSpot(botAI, bot, target);
 }
 
-// [b31_deep] wowsims feral tank APL queues Maul at 25+ rage. 30 keeps Mangle (15 with Ferocity) plus this Maul
-// (10) affordable with a little slack; 45 starved Maul in the level 60-79 gear (6.5-9.6/min on bosses).
+// [b31_deep] [rot31] wowsims feral_tank_druid__default queues Maul at 25+ rage (was 30 here)
 bool CastMaulAction::isUseful()
 {
-    constexpr uint8 MAUL_MIN_RAGE = 30;
+    constexpr uint8 MAUL_MIN_RAGE = 25;
     return CastMeleeSpellAction::isUseful() && AI_VALUE2(uint8, "rage", "self target") >= MAUL_MIN_RAGE;
 }
