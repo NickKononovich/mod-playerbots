@@ -81,7 +81,6 @@
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
 #include "TerrainHazard.h"
-#include "TestRunnerStrategy.h"
 #include "Transport.h"
 #include "UKTriggers.h"
 #include "UPTriggers.h"
@@ -295,13 +294,13 @@ using namespace Leader::Fight;
     // [b48_scholo] A hold (ROUTE_PATROL_HOLD, ROUTE_REST_HOLD) clears the leader's waypoint, which stops no walk
     // already under way: the leader's "test runner move" spline still ending at that waypoint (not a jump, a
     // link's straight walk or a gate pass) is stopped here. True: stopped; `to` is where it went.
-    bool HaltLeaderWalk(Player* leader, G3D::Vector3& to)
+    bool HaltLeaderWalk(LeaderGroup& group, Player* leader, G3D::Vector3& to)
     {
         // [lead2] a ROUTE-phase tool only: while the tank's pull order is open its walk is the order's
         if (Leader::LEADER_ONE_TANK_MOVER && Leader::Orders::IsOpen(leader->GetGUID()))
             return false;
-        TestRunner::Waypoint walk;
-        if (!leader->isMoving() || leader->IsInCombat() || !TestRunner::GetWaypoint(leader->GetGUID(), walk) ||
+        LeaderGroup::WalkPoint walk;
+        if (!leader->isMoving() || leader->IsInCombat() || !group.GetWaypoint(leader->GetGUID(), walk) ||
             walk.mapId != leader->GetMapId() || walk.jump || walk.straight || walk.gatePass)
             return false;
         if (!leader->movespline || !leader->movespline->Initialized() || leader->movespline->Finalized())
@@ -486,8 +485,8 @@ using namespace Leader::Fight;
             return std::string();
         };
         // [b48_scholo] the leader's harness walk: this tick's waypoint (Steer gives the next one after the hold)
-        TestRunner::Waypoint walk;
-        bool const walking = PATROL_LANE_HOLD && TestRunner::GetWaypoint(group.LeaderGuid(), walk) &&
+        LeaderGroup::WalkPoint walk;
+        bool const walking = PATROL_LANE_HOLD && group.GetWaypoint(group.LeaderGuid(), walk) &&
                              walk.mapId == leader->GetMapId() && !walk.jump;
         std::list<Creature*> idle;
         IdleAggroCheck check{leader};
@@ -737,7 +736,7 @@ using namespace Leader::Fight;
                 routeState.stopSinceMs = 0;
                 if (!LeaderPicksFor(group))  // [lead5]
                     RouteTarget::Set(group.LeaderGuid(), handed);
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 holdClocks();
                 return true;
             }
@@ -786,7 +785,7 @@ using namespace Leader::Fight;
                 leader->GetExactDist(state.spot.x, state.spot.y, state.spot.z) <= PATROL_STEP_BACK_ARRIVED)
             {
                 state.arrived = true;
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
             }
             else
                 group.SetLeaderWaypoint(leader, state.hops[state.hop].x, state.hops[state.hop].y,
@@ -1087,14 +1086,14 @@ using namespace Leader::Fight;
         }
         auto const halt = [&](char const* kind)
         {
-            if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
+            if (G3D::Vector3 haltedTo; HaltLeaderWalk(group, leader, haltedTo))
                 group.LogEvent("harness_walk_halt", JsonObject().Str("hold", kind).Str("why", why)
                                                          .Real("x", leader->GetPositionX())
                                                          .Real("y", leader->GetPositionY())
                                                          .Real("z", leader->GetPositionZ())
                                                          .Real("toX", haltedTo.x).Real("toY", haltedTo.y)
                                                          .Real("toZ", haltedTo.z));
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
         };
         if (pull)
         {

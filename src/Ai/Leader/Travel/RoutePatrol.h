@@ -210,7 +210,7 @@ namespace Leader::Travel
     // [b48_scholo] A hold (ROUTE_PATROL_HOLD, ROUTE_REST_HOLD) clears the leader's waypoint, which stops no walk
     // already under way: the leader's "test runner move" spline still ending at that waypoint (not a jump, a
     // link's straight walk or a gate pass) is stopped here. True: stopped; `to` is where it went.
-    bool HaltLeaderWalk(Player* leader, G3D::Vector3& to);
+    bool HaltLeaderWalk(LeaderGroup& group, Player* leader, G3D::Vector3& to);
 
     // [b46_patrol] PATROL_STEP_BACK: a patrol walks in (PatrolHoldWhy's "comes to the group") while a member rests
     // or wants to, or while it walks beside an idle pack: the group steps back along the tank's own trail (the way

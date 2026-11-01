@@ -83,7 +83,6 @@
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
 #include "TerrainHazard.h"
-#include "TestRunnerStrategy.h"
 #include "Transport.h"
 #include "UKTriggers.h"
 #include "UPTriggers.h"
@@ -1014,8 +1013,8 @@ namespace Leader::Travel
             if (!routeState.linkCrossLogMs || getMSTimeDiff(routeState.linkCrossLogMs, now) >= LINK_CROSS_LOG_MS)
             {
                 routeState.linkCrossLogMs = now ? now : 1;
-                TestRunner::Waypoint current;
-                bool const hasWaypoint = TestRunner::GetWaypoint(group.LeaderGuid(), current);
+                LeaderGroup::WalkPoint current;
+                bool const hasWaypoint = group.GetWaypoint(group.LeaderGuid(), current);
                 group.LogEvent("link_cross",
                          JsonObject().Str("note", link.note).Num("sec", getMSTimeDiff(routeState.linkSinceMs, now) /
                                                                             IN_MILLISECONDS)
@@ -1037,9 +1036,9 @@ namespace Leader::Travel
                 bool const airborne =
                     leader->GetMotionMaster()->GetCurrentMovementGeneratorType() == EFFECT_MOTION_TYPE ||
                     leader->HasUnitMovementFlag(MOVEMENTFLAG_FALLING);
-                TestRunner::Waypoint current;
+                LeaderGroup::WalkPoint current;
                 if (!airborne && AtLinkPoint(leader, link.fromX, link.fromY, link.fromZ, LINK_ARRIVE_RANGE) &&
-                    (!TestRunner::GetWaypoint(group.LeaderGuid(), current) || !current.jump))
+                    (!group.GetWaypoint(group.LeaderGuid(), current) || !current.jump))
                     StartLinkCross(group, leader, link);
                 if (airborne)
                     group.NoteProgress(now);
@@ -1062,7 +1061,7 @@ namespace Leader::Travel
                     {
                         LOG_INFO("playerbots", "[queue-link-off-line-cap] {}: {} off the line of {} {} times - ended",
                                  group.Run().runId, leader->GetName(), link.note, routeState.linkOffLineReturns);
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         EndLink(group, "off the line");
                         return false;
                     }
@@ -1116,7 +1115,7 @@ namespace Leader::Travel
 
         if (AtLinkPoint(leader, link.fromX, link.fromY, link.fromZ, LINK_ARRIVE_RANGE))
         {
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             // Over it together: every living member near the leader, nobody fighting.
             for (LeaderGroup::MemberInfo const& member : group.Members())
                 if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
@@ -1286,8 +1285,8 @@ namespace Leader::Travel
             // Bots walk by themselves: a member already given the far end walks on over the link.
             if (!HARNESS_MOVES_BOTS && member && group.MemberHasWaypoint(memberGuid))
             {
-                TestRunner::Waypoint current;
-                if (TestRunner::GetWaypoint(bot->GetGUID(), current) &&
+                LeaderGroup::WalkPoint current;
+                if (group.GetWaypoint(bot->GetGUID(), current) &&
                     std::fabs(current.x - link.toX) < 0.1f && std::fabs(current.y - link.toY) < 0.1f)
                 {
                     // LINK_OFF_LINE_BACK: off the line on another level - back to the start below, cross again.
@@ -1740,7 +1739,7 @@ namespace Leader::Travel
                 }
                 if (SpellInfo const* info = sSpellMgr->GetSpellInfo(openSpell))
                     routeState.castHoldUntilMs = now + info->CalcCastTime(leader) + 1000;  // 1 s: a walk would break it
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
             }
             else if (!leader->IsInCombat() && routeState.doorCutDoor != go->GetGUID() &&
                      DoorGatherHolds(group, users.empty() ? leader : users.front(), go))
@@ -1905,7 +1904,7 @@ namespace Leader::Travel
         if (ROUTE_STARTER_ITEM_CHECK && !starter.def->expectDoor && info->CalcCastTime(leader) > 0 &&
             (info->InterruptFlags & SPELL_INTERRUPT_FLAG_MOVEMENT) && leader->isMoving())
         {
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             leader->StopMoving();
             routeState.castHoldUntilMs = now + 1500;
             starter.nextAllowedMs = now + 1000;
@@ -2279,7 +2278,7 @@ namespace Leader::Travel
                 // the use point and the members' gather waypoints fought their follow - move_conflict every 20 s).
                 // Only a leader in combat lets the target go.
                 if (!leader->IsInCombat() && atUse)
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                 if (!routeState.keyPassLogMs || getMSTimeDiff(routeState.keyPassLogMs, now) >= KEY_PASS_LOG_MS)
                 {
                     routeState.keyPassLogMs = now ? now : 1;
@@ -2299,7 +2298,7 @@ namespace Leader::Travel
         {
             starter.nextAllowedMs = now + KEY_PASS_RETRY_MS;
             if (!leader->IsInCombat())
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
             return false;
         }
 
@@ -2337,7 +2336,7 @@ namespace Leader::Travel
         {
             uint32 const castMs = info->CalcCastTime(leader);
             routeState.castHoldUntilMs = now + castMs + 1000;
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
         }
 
         // An instant item spell is cast at once and starts its cooldown (Spell::prepare); none: CheckCast refused it

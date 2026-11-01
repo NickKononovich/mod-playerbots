@@ -83,7 +83,6 @@
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
 #include "TerrainHazard.h"
-#include "TestRunnerStrategy.h"
 #include "Transport.h"
 #include "UKTriggers.h"
 #include "UPTriggers.h"
@@ -267,7 +266,7 @@ bot, leader))
         // A walk out and in (a wing change, a regroup's exit) is under way: nobody walks to meet anybody.
         if (group.Route().wingWalk)
         {
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             return true;
         }
         // A regroup whose returning side runs already keeps its sides until the two are together (the runner leaves
@@ -494,7 +493,7 @@ bot, leader))
 
                 if (state.mode == RegroupMode::Exit)
                 {
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     return true;
                 }
 
@@ -515,7 +514,7 @@ bot, leader))
                 }
                 if (!leaderAtEntrance)
                 {
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     return true;
                 }
                 member = anchor;
@@ -555,7 +554,7 @@ bot, leader))
                 }
                 if (getMSTimeDiff(episode->holdSinceMs, now) < MEET_GRACE_MS)
                 {
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     group.Route().lastEvent = "meet hold: " + member->GetName() + " follows first";
                     return true;
                 }
@@ -614,7 +613,7 @@ bot, leader))
                 longRouteCache.erase(leader->GetGUID());
                 progress.progressMs = now;
                 progress.bestDistance = best;
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 if (episode->gaveWay)
                 {
                     LOG_INFO("playerbots",
@@ -669,7 +668,7 @@ bot, leader))
                 LogHarnessHold(group, leader, blocker, "meet", walkTo.x, walkTo.y, walkTo.z);
             if (held)
             {
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return true;
             }
         }

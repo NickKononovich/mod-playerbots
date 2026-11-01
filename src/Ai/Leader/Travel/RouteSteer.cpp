@@ -84,7 +84,6 @@
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
 #include "TerrainHazard.h"
-#include "TestRunnerStrategy.h"
 #include "Transport.h"
 #include "UKTriggers.h"
 #include "UPTriggers.h"
@@ -1509,7 +1508,7 @@ namespace Leader::Travel
                                                      .Str("why", gate).Bool("hold", gateHold));
             if (gateHold)
             {
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return true;  // the group gets ready where it stands, nothing skipped
             }
             return false;
@@ -1611,7 +1610,7 @@ namespace Leader::Travel
         bool gateHold = false;
         if (std::string const gate = BlockerPullGate(group, leader, target, nullptr, true, gateHold); !gate.empty())
         {
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             uint32 const nowMs = getMSTime();
             // [b33_bodypull] a hold is logged too (it was silent: the trace showed no reason for the stand)
             if (!routeState.blockerGateLogMs ||
@@ -1635,7 +1634,7 @@ namespace Leader::Travel
         if (uint32 aoeSinceMs = 0; PartyAoePlanned(group, target->GetGUID(), &aoeSinceMs) &&  // [lead5]
                                    getMSTimeDiff(aoeSinceMs, getMSTime()) < AOE_PULL_WALK_MS)
         {
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             uint32 const nowMs = getMSTime();
             if (!routeState.blockerGateLogMs ||
                 getMSTimeDiff(routeState.blockerGateLogMs, nowMs) > 10 * IN_MILLISECONDS)
@@ -1665,7 +1664,7 @@ namespace Leader::Travel
                              JsonObject().Str("name", target->GetName()).Num("entry", target->GetEntry())
                                  .Num("packMobs", uint32(pack.size())).Str("why", why)
                                  .Num("waitSec", BODY_PULL_PLANNER_MS / IN_MILLISECONDS));
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return;
             }
             group.LogEvent("body_pull_planner_timeout",
@@ -1728,10 +1727,10 @@ namespace Leader::Travel
                         routeState.stopSinceMs = 0;
                         routeState.approachBlocker.Clear();
                         routeState.orderHoldSinceMs.erase(boss->GetGUID());
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     routeState.approach = 0;
                     group.SkipTarget(target->GetGUID(), CAREFUL_REFUSED_SKIP_MS,
                                "body pull refused: brings boss " + boss->GetName());
@@ -1882,7 +1881,7 @@ namespace Leader::Travel
         {
             if (group.State().commit && !group.State().commitMob.IsEmpty())
                 routeState.target = group.State().commitMob;
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             return;
         }
 
@@ -1938,7 +1937,7 @@ namespace Leader::Travel
                 if (leader->GetExactDist(door) <= door->GetInteractionDistance() &&
                     DoorGatherHolds(group, leader, door))
                 {
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     return;
                 }
                 if (OpenDoorByUse(leader, door))
@@ -1993,7 +1992,7 @@ namespace Leader::Travel
                     if (fromCentre < HOR_HOLD_FROM_CENTRE)
                         group.SetLeaderWaypoint(leader, HOR_ENTRANCE_X, HOR_ENTRANCE_Y, HOR_ENTRANCE_Z);
                     else
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                     return;
                 }
             }
@@ -2168,14 +2167,14 @@ namespace Leader::Travel
                                                      .Real("z", leader->GetPositionZ()));
                 }
                 // [b48_scholo] the walk under way stops too (HaltLeaderWalk)
-                if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
+                if (G3D::Vector3 haltedTo; HaltLeaderWalk(group, leader, haltedTo))
                     group.LogEvent("harness_walk_halt", JsonObject().Str("hold", "rest").Str("why", resting)
                                                              .Real("x", leader->GetPositionX())
                                                              .Real("y", leader->GetPositionY())
                                                              .Real("z", leader->GetPositionZ())
                                                              .Real("toX", haltedTo.x).Real("toY", haltedTo.y)
                                                              .Real("toZ", haltedTo.z));
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return;
             }
             if (hold.logged)
@@ -2220,7 +2219,7 @@ namespace Leader::Travel
                 routeState.driveSinceMs = holdNow;
                 routeState.driveAnchor = leader->GetPosition();
                 // [b48_scholo] the walk under way stops too (scholo-h 111724-5C-4: 12 yd on into the patrol's walk)
-                if (G3D::Vector3 haltedTo; HaltLeaderWalk(leader, haltedTo))
+                if (G3D::Vector3 haltedTo; HaltLeaderWalk(group, leader, haltedTo))
                 {
                     LOG_INFO("playerbots", "[b48_scholo] halt_walk {}: patrol hold stops the walk to ({:.1f},{:.1f},"
                              "{:.1f}) at ({:.1f},{:.1f},{:.1f}): {}", leader->GetName(), haltedTo.x, haltedTo.y,
@@ -2233,7 +2232,7 @@ namespace Leader::Travel
                                                              .Real("toX", haltedTo.x).Real("toY", haltedTo.y)
                                                              .Real("toZ", haltedTo.z));
                 }
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return;
             }
             if (hold.logged)
@@ -2287,7 +2286,7 @@ namespace Leader::Travel
             if (auto const hold = ritualHoldUntilMs.find(group.InstanceId());
                 hold != ritualHoldUntilMs.end() && int32(hold->second - getMSTime()) > 0 && !leader->IsInCombat())
             {
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return;
             }
             bool const idle = routeState.noTargets && !leader->IsInCombat() && !group.InCombat();
@@ -2319,7 +2318,7 @@ namespace Leader::Travel
                                                           .Real("y", leader->GetPositionY())
                                                           .Real("z", leader->GetPositionZ()));
                     }
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     routeState.noTargetsSinceMs = now;
                     return;
                 }
@@ -2329,7 +2328,7 @@ namespace Leader::Travel
                 return;
             // A starter step-out the leader walks on its own (UseStarterItem) keeps its waypoint.
             if (!routeState.waypointHoldUntilMs || int32(getMSTime() - routeState.waypointHoldUntilMs) >= 0)
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
             // An escort still walking (or waiting for its next wave) is no reason to end the run or change wings,
             // nor the Oculus drake flow between the rings (the OC strategy mounts and flies the group).
             if (idle && (!routeState.escort.IsEmpty() || OculusDrakePhase(leader) || group.ScriptEventRunning()))
@@ -2444,7 +2443,7 @@ namespace Leader::Travel
             RouteTarget::Clear(group.LeaderGuid());
             routeState.target.Clear();
             routeState.nextRetargetMs = getMSTime();
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             return;
         }
 
@@ -2603,7 +2602,7 @@ namespace Leader::Travel
                                      .Num("idle", int64(MagistersTerrace::SelinRoom::Get(leaderAI).idle.size())));
                     }
                     routeState.steerSinceMs = now;
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     return;
                 }
             }
@@ -2862,7 +2861,7 @@ namespace Leader::Travel
                                 if (CountDoorSpin(group.Run().runSeq, door->GetGUID(), now, spinLog, spinSkips,
                                                   spinWindowMs))
                                 {
-                                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                                    group.ClearWaypoint(group.LeaderGuid());
                                     if (spinLog)
                                     {
                                         std::string opener;
@@ -3085,7 +3084,7 @@ namespace Leader::Travel
                                     BlockerPullGate(group, leader, blocker, object, false, unseenHold);
                                 if (!unseenGate.empty() && unseenHold)
                                 {
-                                    TestRunner::ClearWaypoint(group.LeaderGuid());  // ready first, nothing skipped
+                                    group.ClearWaypoint(group.LeaderGuid());  // ready first, nothing skipped
                                     return;
                                 }
                                 if (unseenGate.empty() &&
@@ -3194,7 +3193,7 @@ namespace Leader::Travel
                                     {
                                         if (!group.GroupFullyReady(leader))
                                         {
-                                            TestRunner::ClearWaypoint(group.LeaderGuid());
+                                            group.ClearWaypoint(group.LeaderGuid());
                                             return;
                                         }
                                         sightStops[group.LeaderGuid()] = {routeState.target, blocker->GetGUID(),
@@ -3449,7 +3448,7 @@ namespace Leader::Travel
                         routeState.stopSinceMs = 0;
                         routeState.approachBlocker.Clear();
                         routeState.orderHoldSinceMs.erase(blocker->GetGUID());
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
                     // [b33_dme] the blocker is no boss, but its pack brings one of the run (BossBroughtBy: Hydrospawn's
@@ -3489,7 +3488,7 @@ namespace Leader::Travel
                         routeState.stopSinceMs = 0;
                         routeState.approachBlocker.Clear();
                         routeState.orderHoldSinceMs.erase(broughtBoss->GetGUID());
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
                     // [b30_stalls] trash of a boss's area whose only walk runs through that boss (it joins his fight,
@@ -3529,7 +3528,7 @@ namespace Leader::Travel
                         routeState.stopSinceMs = 0;
                         routeState.approachBlocker.Clear();
                         routeState.orderHoldSinceMs.erase(blocker->GetGUID());
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
                     LogHarnessHold(group, leader, blocker, "body pull", stop.x, stop.y, stop.z);
@@ -3773,7 +3772,7 @@ namespace Leader::Travel
                 if ((leaderAI && AKJedogaRoom::OwnsPull(leaderAI)) || jedogaAlive)
                 {
                     routeState.steerSinceMs = now;
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     return;
                 }
             }
@@ -3803,7 +3802,7 @@ namespace Leader::Travel
                 if (getMSTimeDiff(hold.sinceMs, now) < SELIN_ENTRY_HOLD_MAX_MS)
                 {
                     routeState.steerSinceMs = now;
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     if (!hold.logMs || getMSTimeDiff(hold.logMs, now) >= 10 * IN_MILLISECONDS)
                     {
                         hold.logMs = now ? now : 1;
@@ -3859,7 +3858,7 @@ namespace Leader::Travel
                     starter.nextAllowedMs = now + STARTER_STUCK_RETRY_MS;
                 routeState.target.Clear();
                 routeState.nextRetargetMs = now;
-                TestRunner::ClearWaypoint(group.LeaderGuid());
+                group.ClearWaypoint(group.LeaderGuid());
                 return;
             }
             else
@@ -3942,7 +3941,7 @@ namespace Leader::Travel
         if (arrived)
         {
             routeState.steerSinceMs = now;  // waiting for the pull is no lack of progress
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             if (routeState.targetIsStarter)
             {
                 StarterTrack& starter = routeState.starters[routeState.starterIdx];
@@ -4437,7 +4436,7 @@ namespace Leader::Travel
                                 routeState.approach = 0;
                                 routeState.approachBlocker.Clear();
                                 routeState.stopSinceMs = 0;
-                                TestRunner::ClearWaypoint(group.LeaderGuid());
+                                group.ClearWaypoint(group.LeaderGuid());
                                 return;
                             }
                             group.LogEvent("boss_area_clear",
@@ -4826,7 +4825,7 @@ namespace Leader::Travel
                             routeState.stopSinceMs = 0;
                             routeState.approachBlocker.Clear();
                             routeState.orderHoldSinceMs.erase(boss->GetGUID());
-                            TestRunner::ClearWaypoint(group.LeaderGuid());
+                            group.ClearWaypoint(group.LeaderGuid());
                             return;
                         }
                     }
@@ -4857,7 +4856,7 @@ namespace Leader::Travel
                                      JsonObject().Str("name", pack->GetName()).Num("entry", pack->GetEntry())
                                          .Str("why", "the stop's wait")
                                          .Num("waitSec", BODY_PULL_PLANNER_MS / IN_MILLISECONDS));
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
                     group.LogEvent("body_pull_planner_timeout",
@@ -4887,7 +4886,7 @@ namespace Leader::Travel
                                                                     : "the group is not ready: " + sitter + " sits")
                                          .Bool("hold", true));
                         }
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         return;
                     }
                 }
@@ -4945,10 +4944,10 @@ namespace Leader::Travel
                             routeState.stopSinceMs = 0;
                             routeState.approachBlocker.Clear();
                             routeState.orderHoldSinceMs.erase(boss->GetGUID());
-                            TestRunner::ClearWaypoint(group.LeaderGuid());
+                            group.ClearWaypoint(group.LeaderGuid());
                             return;
                         }
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
                                    "body pull refused: brings boss " + boss->GetName());
                         return;
@@ -5122,7 +5121,7 @@ namespace Leader::Travel
                     else
                     {
                         group.CountHarnessMove();
-                        TestRunner::ClearWaypoint(group.LeaderGuid());
+                        group.ClearWaypoint(group.LeaderGuid());
                         leader->GetMotionMaster()->Clear();
                         MovementAction::RecordTankTrail(leader);
                         // A harness step never runs through a closed door either (ROUTE_CLOSED_DOORS_ALL).

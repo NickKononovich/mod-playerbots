@@ -83,7 +83,6 @@
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
 #include "TerrainHazard.h"
-#include "TestRunnerStrategy.h"
 #include "Transport.h"
 #include "UKTriggers.h"
 #include "UPTriggers.h"
@@ -1375,7 +1374,7 @@ namespace Leader::Travel
                 group.LogEvent("drake_phase", JsonObject().Str("state", "harness targeting paused"));
             group.Route().target.Clear();
             group.Route().noTargets = false;
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             return;
         }
 
@@ -1539,7 +1538,7 @@ namespace Leader::Travel
                 uint32 spinWindowMs = 0;
                 if (CountDoorSpin(group.Run().runSeq, door->GetGUID(), now, spinLog, spinSkips, spinWindowMs))
                 {
-                    TestRunner::ClearWaypoint(group.LeaderGuid());
+                    group.ClearWaypoint(group.LeaderGuid());
                     if (spinLog)
                     {
                         std::string opener;
@@ -4433,7 +4432,7 @@ namespace Leader::Travel
                                   nextBoss ? AggressiveTargetValue::Explain(leader, nextBoss) : std::string()));
             }
             group.Route().target.Clear();
-            TestRunner::ClearWaypoint(group.LeaderGuid());
+            group.ClearWaypoint(group.LeaderGuid());
             return;
         }
 
