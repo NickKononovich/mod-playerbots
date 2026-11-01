@@ -466,6 +466,8 @@ namespace TestHarness
             std::map<ObjectGuid, uint32> spotRejectLogMs;
             std::map<ObjectGuid, std::string> spotRejectLogged;  // [lead81] the last logged rejection (walk|reason)
             ObjectGuid routeFirstFor;  // [lead82] the engage the route walk leads to first (route_first logged)
+            std::string lingeringSig;          // [lead84] the lingering combat's mob set (lingering_combat logged)
+            ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
             struct MeleeMeet
             {
                 ObjectGuid target;  // the mob the point is for
@@ -585,6 +587,10 @@ namespace TestHarness
             std::set<ObjectGuid> noOption;
         };
         LeaderState lead;
+        // [lead84] ONE definition of "the group fights", the harness's (Steer) and the leader's: the harness's pull
+        // state (its phantom rule counts a no-exchange combat out), or the leader flagged with a mob on it. A leader
+        // flagged in combat with nobody on it is a lingering combat, not a fight
+        bool FightOn(Player* leader) const;
         // Steering progress towards the target: where the leader stood when steerSinceMs began (Steer resets it on
         // every 3 yd of walking). No progress for STEER_STUCK_MS: the route has nothing left to walk or the leader's
         // own move refuses the waypoint (Utgarde Pinnacle wave 8: 21 minutes under a Mindless Servant on a ledge).

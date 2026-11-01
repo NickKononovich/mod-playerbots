@@ -10968,8 +10968,7 @@ namespace TestHarness
         // Steer runs only while the harness counts the party out of combat, so a leader flagged here with nobody on
         // it is that phantom flag: the walk goes on (the route target too, the tank's pull gets its target). A leader
         // somebody attacks still holds. Either way a held walk is logged (harness_hold).
-        bool const leaderFlagOnly = !party.target.IsEmpty() && leader->IsInCombat() && !party.inCombat &&
-                                    leader->getAttackers().empty();
+        bool const leaderFlagOnly = !party.target.IsEmpty() && leader->IsInCombat() && !party.FightOn(leader);
         if (!party.target.IsEmpty() && leader->IsInCombat())
         {
             uint32 const holdNow = getMSTime();
@@ -21566,6 +21565,11 @@ namespace TestHarness
         return waitFor;
     }
 
+    bool Party::FightOn(Player* leader) const
+    {
+        return inCombat || (leader && leader->IsInCombat() && !leader->getAttackers().empty());
+    }
+
     void TestHarnessMgr::TickLeaderEvents(Party& party, Player* tank)
     {
         auto& lead = party.lead;
@@ -21575,10 +21579,11 @@ namespace TestHarness
         // [lead15] the cadence (user: «чем быстрее у него реакция, тем лучше»): the FAST layer runs on every update
         // while the group fights, a pull waits for its spots or a hazard is active; calm, every LEADER_CALM_TICK_MS.
         // The SLOW layer (exit / re-spot searches, the AoE rule's grid visit) runs only on a change (cached).
-        bool anyCombat = party.inCombat || tank->IsInCombat();
+        bool anyCombat = party.FightOn(tank);  // [lead84] the one definition
         for (Member const& member : party.members)
             if (!anyCombat)
-                if (Player* bot = ObjectAccessor::FindPlayer(member.guid); bot && bot->IsInCombat())
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                    bot && bot->IsInCombat() && !bot->getAttackers().empty())
                     anyCombat = true;
         bool const prePull = lead.spotsWaiting || !lead.spots.empty();
         uint32 const state = lead.hazardActive ? 3 : anyCombat ? 2 : prePull ? 1 : 0;
@@ -21694,7 +21699,7 @@ namespace TestHarness
                     // an idle pack's reach blocks: once per pack, the capacity model (JudgePack) on the fight plus that
                     // pack decides - it fits: the pack joins the pull (its mobs count, no longer block); it does not:
                     // the fight moves away from it (the tank to a spot out of its reach, on the group's side)
-                    if (mob && (party.inCombat || tank->IsInCombat()) && !lead.joinedPack.count(mob->GetGUID()))
+                    if (mob && party.FightOn(tank) && !lead.joinedPack.count(mob->GetGUID()))
                     {
                         std::vector<ObjectGuid> combined;
                         for (Unit* attacker : tank->getAttackers())
@@ -21748,7 +21753,7 @@ namespace TestHarness
                     // [lead77] the group moves as one: a member's walk with the tank refused (an idle mob's reach on
                     // its path, no walk) out of a fight blocks the group - the tank stays until it is clear, the mob
                     // in the way is the next pull
-                    if (!(party.inCombat || tank->IsInCombat()) && member != tank->GetGUID() &&
+                    if (!party.FightOn(tank) && member != tank->GetGUID() &&
                         why.rfind("along with the tank", 0) == 0)
                     {
                         if (!lead.groupBlockedBy.count(member))
@@ -21916,7 +21921,7 @@ namespace TestHarness
         bool anySitting = false;
         bool anyDead = false;
         bool rebuff = false;
-        bool fighting = party.inCombat || tank->IsInCombat();
+        bool fighting = party.FightOn(tank);  // [lead84] the one definition (Steer reads the same)
         for (Member const& member : party.members)
         {
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
@@ -22538,6 +22543,80 @@ namespace TestHarness
         if (fighting && !lead.lastFighting && !(lead.commit && lead.commitIssued))
             lead.meetPoint = tank->GetPosition();
         lead.lastFighting = fighting;
+        // [lead84] b127 rfc-h 206-306 s: a Ragefire Trogg 5.5 yd below on Rtdruaa (not evading, the tank out of its
+        // sight, the attacks refused "no line of sight") kept the tank flagged in combat with nobody on it; the
+        // harness counted the fight over at 221 s, the leader stayed in its fight mode and issued nothing for 85 s.
+        // Out of a fight (Party::FightOn) with the group still flagged: the lingering mob set is logged on a change;
+        // an attackable one (alive, not evading) the tank walks to (checked); refused, it is unreachable - the
+        // leader's out-of-combat flow goes on and the harness's hunt for it ends (its stale combat ends as an
+        // evading mob's would)
+        bool lingeringWalk = false;
+        if (!fighting && tank->IsInCombat())
+        {
+            std::vector<Player*> flagged = seats;
+            flagged.push_back(tank);
+            std::set<ObjectGuid> listed;
+            std::string sig;
+            JsonArray refs;
+            Creature* lingering = nullptr;
+            for (Player* bot : flagged)
+                for (auto const& [refGuid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+                {
+                    Unit* other = ref ? ref->GetOther(bot) : nullptr;
+                    Creature* mob = other ? other->ToCreature() : nullptr;
+                    if (!mob || !mob->IsAlive() || mob->GetMap() != map || !listed.insert(mob->GetGUID()).second)
+                        continue;
+                    bool const evades = mob->IsInEvadeMode();
+                    sig += std::to_string(mob->GetGUID().GetCounter()) + (evades ? "e" : "") + ",";
+                    Unit* victim = mob->GetVictim();
+                    refs.Raw(JsonObject().Str("name", mob->GetName()).Num("low", mob->GetGUID().GetCounter())
+                                 .Str("victim", victim ? victim->GetName() : "-").Bool("evades", evades)
+                                 .Real("tankDistance", tank->GetExactDist(mob))
+                                 .Real("dz", mob->GetPositionZ() - tank->GetPositionZ())
+                                 .Bool("tankSees", tank->IsWithinLOSInMap(mob)).Bool("moving", mob->isMoving())
+                                 .Build());
+                    if (!evades && tank->IsValidAttackTarget(mob) &&
+                        (!lingering || tank->GetExactDist(mob) < tank->GetExactDist(lingering)))
+                        lingering = mob;
+                }
+            if (sig != lead.lingeringSig)
+            {
+                lead.lingeringSig = sig;
+                DecisionLog::Instance().Write(run, "leader", "lingering_combat",
+                                              lingering ? lingering->GetGUID() : ObjectGuid(),
+                                              lingering ? lingering->GetName() : std::string("-"), true,
+                                              JsonObject().Raw("mobs", refs.Build())
+                                                  .Bool("harnessFight", party.inCombat)
+                                                  .Num("tankAttackers", int64(tank->getAttackers().size())));
+            }
+            if (lingering && lead.lingeringUnreachable != lingering->GetGUID())
+            {
+                float const pickUp = LeaderTauntReach(tank);
+                float const arrive = pickUp > 0.0f ? pickUp : NOMINAL_MELEE_RANGE;
+                if (!(tank->GetExactDist(lingering) <= arrive && tank->IsWithinLOSInMap(lingering)))
+                {
+                    std::string const why = "lingering combat: the tank goes to the mob";
+                    checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, lingering->GetPosition(), arrive, why);
+                    Leader::MemberEvents tankNow;
+                    lingeringWalk = Leader::Events::Get(tank->GetGUID(), tankNow) && tankNow.moveWhy == why;
+                    if (!lingeringWalk)
+                    {
+                        lead.lingeringUnreachable = lingering->GetGUID();
+                        if (party.phantomHunt == lingering->GetGUID())
+                            party.phantomHunt.Clear();
+                        DecisionLog::Instance().Write(run, "leader", "lingering_unreachable", lingering->GetGUID(),
+                                                      lingering->GetName(), true,
+                                                      JsonObject().Str("why", tankNow.moveWhy)
+                                                          .Real("tankDistance", tank->GetExactDist(lingering)));
+                    }
+                }
+            }
+        }
+        else
+        {
+            lead.lingeringSig.clear();
+            lead.lingeringUnreachable.Clear();
+        }
         // [lead34] the route is data: its waypoint for the tank becomes the leader's MoveTo ("route walk") while no
         // pull is committed and no fight is on (the special waypoints stay the tank's own walk: a jump, a straight
         // line, a gate pass)
@@ -22562,7 +22641,7 @@ namespace TestHarness
         }
         // [lead77] the tank walks on only where the group follows: no route walk while a member is blocked
         if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader) &&
-            lead.groupBlockedBy.empty())
+            lead.groupBlockedBy.empty() && !lingeringWalk)
         {
             TestRunner::Waypoint waypoint;
             if (TestRunner::GetWaypoint(tank->GetGUID(), waypoint) && waypoint.mapId == tank->GetMapId() &&
@@ -24184,7 +24263,7 @@ namespace TestHarness
                 lead.commitTickMs = now;
             }
             std::string broken;
-            if (party.inCombat || tank->IsInCombat())
+            if (party.FightOn(tank))
             {
                 broken = "the fight is on";
                 // [lead25] user: «если лишние мобы сагрятся, то танк неправильно выбирает позицию» - an add outside
