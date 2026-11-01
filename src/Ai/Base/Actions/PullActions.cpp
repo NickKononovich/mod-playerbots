@@ -581,25 +581,32 @@ bool PullAction::Execute(Event event)
         // (20261025-123018-fos-n-5A-84) logged "Soul Horror out of pull range" 310 times, the harness withheld the
         // route for the running pull. With no step closer for PULL_NO_PROGRESS_MS the pull is given up
         // (NoteAborted, "pull end"): the planner plans again, from another spot or another mob.
-        constexpr uint32 PULL_NO_PROGRESS_MS = 4 * IN_MILLISECONDS;
-        constexpr float PULL_PROGRESS_STEP = 1.0f;
+        // [lead139] user: no elapsed-time rule decides (PULL_NO_PROGRESS_MS 4 s without a step closer was the old
+        // clock): the pull is given up when there is no walk to the mob (no complete path) - the fact that the
+        // reach pull cannot fix it; with a walk the reach pull walks
         uint32 const now = getMSTime();
         float const distance = bot->GetExactDist(target);
-        if (_outOfRangeFor != target->GetGUID() || !_outOfRangeSinceMs ||
-            distance < _outOfRangeBest - PULL_PROGRESS_STEP)
+        bool noWalk = false;
+        if (!bot->isMoving())
+        {
+            PathGenerator path(bot);
+            path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+            noWalk = (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) != 0;
+        }
+        if (_outOfRangeFor != target->GetGUID())
         {
             _outOfRangeFor = target->GetGUID();
             _outOfRangeSinceMs = now ? now : 1;
             _outOfRangeBest = distance;
         }
-        else if (getMSTimeDiff(_outOfRangeSinceMs, now) >= PULL_NO_PROGRESS_MS && !bot->isMoving())
+        else if (noWalk)
         {
-            LOG_INFO("playerbots", "[pull_out_of_range_loop] {}: {} out of pull range ({:.1f} yd, spell {}) for {} s "
-                     "without a step closer: pull ended, planned again", bot->GetName(), target->GetName(), distance,
-                     strategy->GetSpellName(), getMSTimeDiff(_outOfRangeSinceMs, now) / IN_MILLISECONDS);
+            LOG_INFO("playerbots", "[pull_out_of_range_loop] {}: {} out of pull range ({:.1f} yd, spell {}) and no walk "
+                     "to it: pull ended, planned again", bot->GetName(), target->GetName(), distance,
+                     strategy->GetSpellName());
             _outOfRangeFor.Clear();
             _outOfRangeSinceMs = 0;
-            NotePullAbort(bot, target, Acore::StringFormat("no step closer ({:.1f} yd)", distance));  // [b34_wc]
+            NotePullAbort(bot, target, Acore::StringFormat("no walk to it ({:.1f} yd)", distance));  // [b34_wc]
             // [b32_smpull] The give-up alone only re-planned the same pull: sm-h 20261025-221216-sm-h-5E-14, "Scarlet
             // Commander Mograine out of pull range (33.0 yd, spell hand of reckoning)" 48 times and "pull ended,
             // planned again" 6 times from one spot (the Mograine keep-away hold vetoed every walk for range) until
