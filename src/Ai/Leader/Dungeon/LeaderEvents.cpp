@@ -786,10 +786,33 @@ namespace Leader::Dungeon
                 tankAI ? tankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
             lead.fightSecLeft = health / std::max(groupDps, 1.0f);
             float bossYd = -1.0f;
+            Creature* nextBoss = nullptr;
             for (ObjectGuid const& bossGuid : group.BossCreatures())
                 if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive() && !boss->IsInCombat())
                     if (bossYd < 0.0f || tank->GetExactDist(boss) < bossYd)
+                    {
                         bossYd = tank->GetExactDist(boss);
+                        nextBoss = boss;
+                    }
+            // [lead184] user: «почему босс не оценивается по тем же принципам, что и мобы» - the next boss is judged as
+            // a pull (the planner's estimate: overload of tank health, healer mana, the fight's length) once per fight;
+            // within the budget the group kills him without its burn cooldowns, and none is held for him
+            if (lead.bossJudgedFor != lead.fightStartMs)
+            {
+                lead.bossJudgedFor = lead.fightStartMs;
+                lead.bossNeedsBurn = false;
+                lead.bossVerdict = "no boss left";
+                if (nextBoss)
+                {
+                    float overload = 0.0f;
+                    std::string judged;
+                    PullPlanner::JudgePack(tank, {nextBoss->GetGUID()}, overload, judged);
+                    lead.bossNeedsBurn = overload > 1.0f;
+                    lead.bossVerdict = nextBoss->GetName() + ": " + judged +
+                                       (lead.bossNeedsBurn ? " - over the budget: the burn waits for him"
+                                                           : " - fits without the burn cooldowns");
+                }
+            }
             lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
             // [lead178] the time to the next boss pull: what is left of this fight, the fights of the idle mobs the
             // leader holds on the path (their health over the group's dps) and the walk; no boss left: -1
@@ -3005,6 +3028,7 @@ namespace Leader::Dungeon
                 if (burnable != Leader::Intensity::Burn && !victim && !overThreat && bot != healer && botAI)
                 {
                     std::string allowedNote;
+                    std::string heldNote;  // [lead184] the cooldowns the boss needs (held for him)
                     for (char const* burn : Leader::BURN_COOLDOWNS)
                     {
                         uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
@@ -3013,26 +3037,29 @@ namespace Leader::Dungeon
                                                     : nullptr;
                         if (!info)
                             continue;
-                        float const effectSec = std::max(info->GetDuration(), 0) / 1000.0f;
                         float const rechargeSec =
                             std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
-                        if (lead.fightSecLeft >= effectSec &&
-                            (lead.bossPullSec < 0.0f || lead.bossPullSec >= rechargeSec))
-                        {
+                        // [lead184] held only for a boss who does not fit without it and when it is not back by
+                        // then; else used on trash on cooldown (the effect's length no longer gates it)
+                        bool const allowed =
+                            !lead.bossNeedsBurn || lead.bossPullSec < 0.0f || lead.bossPullSec >= rechargeSec;
+                        if (allowed)
                             burnAllowed.push_back(burn);
-                            allowedNote += Acore::StringFormat("{}{} ({:.0f} s)", allowedNote.empty() ? "" : ", ", burn,
-                                                               rechargeSec);
-                        }
+                        std::string& note = allowed ? allowedNote : heldNote;
+                        note += Acore::StringFormat("{}{} ({:.0f} s)", note.empty() ? "" : ", ", burn, rechargeSec);
                     }
                     if (!burnAllowed.empty())
-                    {
                         burnable = Leader::Intensity::Burn;
+                    if (!burnAllowed.empty() || !heldNote.empty())
+                    {
                         if (lead.burnLogged.insert(bot->GetGUID()).second)
                             Decisions().Write(
                                 run, "leader", "burn_decision", guid, bot->GetName(), true,
                                 JsonObject().Str("member", bot->GetName()).Str("cooldowns", allowedNote)
+                                    .Str("heldForBoss", heldNote)
                                     .Real("fightSec", lead.fightSecLeft).Real("bossPullSec", lead.bossPullSec)
-                                    .Real("bossWalkSec", lead.bossWalkSec));
+                                    .Real("bossWalkSec", lead.bossWalkSec).Str("boss", lead.bossVerdict)
+                                    .Bool("bossNeedsBurn", lead.bossNeedsBurn));
                     }
                 }
                 Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : burnable;
@@ -3045,7 +3072,7 @@ namespace Leader::Dungeon
                                              : overThreat ? std::string("threat: no mob with headroom")
                                              : intensity == Leader::Intensity::Burn
                                                  ? std::string("a dungeon boss")
-                                                 : "trash: cooldowns back before the next boss pull"));
+                                                 : "trash: the boss fits without them, or they are back for him"));
                 if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
@@ -3193,6 +3220,14 @@ namespace Leader::Dungeon
                 target->ToCreature()->IsDungeonBoss())
                 if (auto const [bot, spell] = withSpell({SPELL_HEROISM, SPELL_BLOODLUST}, nullptr); bot)
                     tell(bot, spell, nullptr, "the boss burn: the group's haste");
+            // [lead184] user: «Bloodlust не нужен, чтобы убить босса» - the next boss fits without it (judged as a
+            // pull, lead.bossNeedsBurn): it goes on trash on cooldown, the group not under Sated / Exhaustion
+            constexpr uint32 SPELL_SATED = 57724;
+            constexpr uint32 SPELL_EXHAUSTION = 57723;
+            if (intensity != Leader::Intensity::Burn && !lead.bossNeedsBurn && target && !tank->HasAura(SPELL_SATED) &&
+                !tank->HasAura(SPELL_EXHAUSTION))
+                if (auto const [bot, spell] = withSpell({SPELL_HEROISM, SPELL_BLOODLUST}, nullptr); bot)
+                    tell(bot, spell, nullptr, "trash: the next boss fits without it");
             if (intensity == Leader::Intensity::Burn)
                 for (Player* member : seats)
                     if (member != healer && member->getPowerType() == POWER_MANA && !PlayerbotAI::IsTank(member))
