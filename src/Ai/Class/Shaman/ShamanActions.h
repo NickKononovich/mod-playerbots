@@ -490,6 +490,8 @@ class CastCallOfTheElementsAction : public CastSpellAction
 public:
     CastCallOfTheElementsAction(PlayerbotAI* botAI) :
         CastSpellAction(botAI, "call of the elements") {}
+
+    bool isUseful() override;
 };
 
 class CastTotemicRecallAction : public CastSpellAction

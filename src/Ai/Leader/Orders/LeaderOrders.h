@@ -606,6 +606,9 @@ namespace Leader
         int32 MovePrecedence(std::string const& why);
         // [lead127] the move is no move for the member now (an out-of-fight follow while it holds an Attack)
         bool MoveBarred(ObjectGuid member, std::string const& why);
+        // [lead149] a led executor member stands where the leader puts it: no walk under way and, under a MoveTo /
+        // StandAt / Hold, within the command's tolerance of its spot (true for a bot the leader does not lead)
+        bool AtCommandedSpot(Player* member);
         // [lead74] the arbiter's stored decision stands until its end: a MoveTo / StandAt not asserted this tick
         // is kept while the member (at `at`) has not arrived - no "was -" gap before the tick's end
         // ... only within the move phase it was issued in (StampPhase): its purpose ends with the phase (the fight

@@ -7,6 +7,7 @@
 #include "ShamanActions.h"
 #include "Action.h"
 #include "Group.h"
+#include "LeaderOrders.h"  // [lead149] AtCommandedSpot
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RaidUtilityAssignment.h"
@@ -68,6 +69,13 @@ bool AllowsSingleTargetFireAoe(PlayerbotAI* botAI, Unit* target)
     return ai::raidutil::IsBossUnit(target) && bot->GetPowerPct(POWER_MANA) >= FIRE_AOE_SINGLE_TARGET_BOSS_MANA_PCT;
 }
 
+bool TankHoldsTarget(Unit* target)
+{
+    Unit* victim = target ? target->GetVictim() : nullptr;
+    Player* tank = victim ? victim->ToPlayer() : nullptr;
+    return tank && PlayerbotAI::IsTank(tank) && target->GetThreatMgr().GetThreat(tank) > 0.0f;
+}
+
 bool MagmaTotemPays(PlayerbotAI* botAI, Unit* target)
 {
     return AllowsSingleTargetFireAoe(botAI, target) ||
@@ -78,6 +86,12 @@ bool MagmaTotemPays(PlayerbotAI* botAI, Unit* target)
 bool CastTotemAction::isUseful()
 {
     if (botAI->HasAura(buff, bot))
+        return false;
+
+    // [lead149] b170 rfc-h 20261101-142639, user: «шаман поставил тотемы где-то в центре комнаты, а потом обратно
+    // убежал» - the totems went down where the fight start found it (following the tank), then it walked to its fight
+    // spot out of their range. A led member drops its totems at the spot the leader puts it, its walk done
+    if (bot->IsInCombat() && !Leader::Events::AtCommandedSpot(bot))
         return false;
 
     if (!AI_VALUE2(bool, "has totem", name))
@@ -112,6 +126,8 @@ bool CastMagmaTotemAction::isUseful() {
     // target too, from level 70 on or on a boss with mana to spare).
     if (!ai::shaman::MagmaTotemPays(botAI, target) || !HasManaForSpell(bot, AI_VALUE2(uint32, "spell id", name)))
         return false;
+    if (!ai::shaman::TankHoldsTarget(target))  // [lead149] the damaging totems only on a mob the tank holds
+        return false;
 
     return CastTotemAction::isUseful() && !AI_VALUE2(bool, "has totem", name);
 }
@@ -126,6 +142,10 @@ bool CastSearingTotemAction::isUseful()
 
     Unit* target = AI_VALUE(Unit*, "current target");
     if (!target || !target->IsAlive() || !bot->IsInCombat())
+        return false;
+
+    // [lead149] at the leader's spot, on a mob the tank holds
+    if (!Leader::Events::AtCommandedSpot(bot) || !ai::shaman::TankHoldsTarget(target))
         return false;
 
     if (bot->GetDistance(target) > SEARING_TOTEM_RANGE - DROP_MARGIN || !bot->IsWithinLOSInMap(target))
@@ -407,4 +427,12 @@ bool CastEarthShieldOnMainTankAction::isUseful()
 
     Aura* own = botAI->GetAura(spell, target, true);
     return own && own->GetCharges() <= EARTH_SHIELD_RECAST_CHARGES;
+}
+
+bool CastCallOfTheElementsAction::isUseful()
+{
+    // [lead149] the four totems at the spot the leader puts the member, its walk done
+    if (bot->IsInCombat() && !Leader::Events::AtCommandedSpot(bot))
+        return false;
+    return CastSpellAction::isUseful();
 }

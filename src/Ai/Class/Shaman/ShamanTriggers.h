@@ -188,6 +188,8 @@ namespace ai::shaman
     bool AllowsSingleTargetFireAoe(PlayerbotAI* botAI, Unit* target);
     // Magma Totem pays for its cost: the single-target case above, or a pack (3+) around the shaman.
     bool MagmaTotemPays(PlayerbotAI* botAI, Unit* target);
+    // [lead149] the target's victim is a tank with threat on it (the damaging totems wait for the tank's hold)
+    bool TankHoldsTarget(Unit* target);
 }
 
 inline constexpr uint8 FIRE_AOE_SINGLE_TARGET_LEVEL = 70;

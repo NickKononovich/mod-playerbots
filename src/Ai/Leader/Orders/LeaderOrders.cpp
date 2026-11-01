@@ -500,6 +500,22 @@ namespace Leader
             }
         }
 
+        bool AtCommandedSpot(Player* member)
+        {
+            if (!member || !ExecutorMember(member))
+                return true;
+            if (member->isMoving())
+                return false;
+            MemberEvents events;
+            if (!Get(member->GetGUID(), events))
+                return true;
+            if (events.move != MoveEvent::MoveTo && events.move != MoveEvent::StandAt &&
+                events.move != MoveEvent::Hold)
+                return true;
+            return member->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) <=
+                   std::max(events.tolerance, LEADER_SPOT_TOLERANCE);
+        }
+
         bool MoveBarred(ObjectGuid member, std::string const& why)
         {
             std::lock_guard<std::mutex> lock(eventLock);

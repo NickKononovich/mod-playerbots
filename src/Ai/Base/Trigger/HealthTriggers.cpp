@@ -527,7 +527,11 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
         }
         }
 
-        if (healer && fight.topUp && line < REFUSED_TOPUP_HEALER_PCT)
+        // [lead149] b170 rfc-h 20261101-142639 63.2-70.5 s: "mana 48 % < top-up 82 %: the tank waits for the group
+        // topped up" - the fixed line of the old planner's 80 % wait. A led group's readiness is the leader's verdict
+        // on the computed line (FightManaLine above, PullReadiness::LeaderVerdict): no fixed top-up there
+        if (healer && fight.topUp && line < REFUSED_TOPUP_HEALER_PCT &&
+            !(Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot)))
         {
             line = REFUSED_TOPUP_HEALER_PCT;
             fightNote = Acore::StringFormat("top-up {:.0f} %: the tank waits for the group topped up", line);
