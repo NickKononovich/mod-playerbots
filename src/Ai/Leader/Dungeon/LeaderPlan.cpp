@@ -51,6 +51,7 @@
 #include "PathGenerator.h"
 #include "RouteLegs.h"  // [lead110] PackMobCheck
 #include "RouteSearch.h"  // [lead99] the leader's route search
+#include "RouteSteer.h"   // [lead167] BossBroughtBy
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "Pet.h"  // [lead38] the pet redirect
@@ -838,7 +839,18 @@ namespace Leader::Dungeon
                     combined.push_back(walker->GetGUID());
                 float overload = 0.0f;
                 std::string judged;
-                bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                bool fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                // [lead167] b179 rfc-h 5G 866-930 s: Taragaman released 39 times for "the patrol first" - the
+                // patrol Searing Blade Enforcer comes into his fight anyway (the planner refuses its own pull as
+                // "brings a boss, pulled as his fight"), JudgePack's "a boss" made the pair over the budget. A patrol
+                // the boss brings is his fight: taken along
+                Creature* const bossPull = mob ? mob->ToCreature() : nullptr;
+                if (!fits && bossPull && IsBossLook(tank, bossPull->GetGUID()) &&
+                    Leader::Travel::BossBroughtBy(tank, bossPull, patrol))
+                {
+                    fits = true;
+                    judged += "; the boss brings it: his fight";
+                }
                 if (lead.patrolDangerFor != patrol->GetGUID() || lead.patrolDangerFits != fits)
                 {
                     lead.patrolDangerFor = patrol->GetGUID();
@@ -977,6 +989,7 @@ namespace Leader::Dungeon
             // mobs, the walkers taken along and the woken mob's pack judged as one fight (PullPlanner::JudgePack, the
             // planner's estimate): it fits, the pull goes with them (taken along: PullPack, the walk guards let them
             // come); it does not, the woken pack is the pull first (as before)
+            std::string wakesWait;  // [lead167] the woken mob cannot be pulled first: the pull waits
             if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && committed.kind == "engage")
             {
                 std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
@@ -1019,9 +1032,24 @@ namespace Leader::Dungeon
                             Leader::PullPack::Set(tankGroup->GetGUID(), mobs);
                         }
                     }
+                    // [lead167] b179 rfc-h 5F: 99 releases of Oggleflint for "wakes Earthborer: it is the pull first"
+                    // and Earthborer never pulled (its pick was skipped: off the route / refused). The woken mob is the
+                    // next pick (on the path: the walk in crosses it); one release per fact - the same release again
+                    // means it cannot be the pull first (refused / unreachable): the pull waits, no new release
+                    else if (lead.walkWakesFirst == woken->GetGUID() && lead.walkWakesReleased == mob->GetGUID())
+                    {
+                        auto const refused = lead.refusedPicks.find(woken->GetGUID());
+                        auto const unreachable = lead.unreachable.find(woken->GetGUID());
+                        wakesWait = "the walk in wakes " + woken->GetName() + ", not pullable first (" +
+                                    (refused != lead.refusedPicks.end()      ? refused->second
+                                     : unreachable != lead.unreachable.end() ? unreachable->second.why
+                                                                             : std::string("not picked")) +
+                                    ")";
+                    }
                     else
                     {
                         lead.walkWakesFirst = woken->GetGUID();
+                        lead.walkWakesReleased = mob->GetGUID();
                         broken = "the walk in to it wakes " + woken->GetName() + ": it is the pull first";
                     }
                 }
@@ -1055,6 +1083,8 @@ namespace Leader::Dungeon
                 // [lead77] pull readiness includes positions: no order while a member trails or is blocked
                 if (waitFor.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
                     waitFor = "a member cannot follow (trailing / its walk blocked)";
+                if (waitFor.empty())
+                    waitFor = wakesWait;
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
@@ -1222,7 +1252,9 @@ namespace Leader::Dungeon
                 {
                     auto const found = group.PathVerdicts().find(guid);
                     // the route's target, the patrol the leader pulls and the pack it must clear are the path's
+                    // [lead167] and the mob the walk in to the pull wakes (the walk crosses it)
                     bool const on = guid == group.RouteTarget() || guid == lead.intercept || guid == lead.wholePack ||
+                                    guid == lead.walkWakesFirst ||
                                     (found != group.PathVerdicts().end() && found->second.on);
                     auto const logged = group.PathVerdictLogged().find(guid);
                     if (found != group.PathVerdicts().end() &&
@@ -1232,7 +1264,9 @@ namespace Leader::Dungeon
                         Creature const* mob = map->GetCreature(guid);
                         std::string const why = guid == lead.intercept   ? std::string("the patrol the leader pulls")
                                                 : guid == lead.wholePack ? std::string("the pack the route must clear")
-                                                                         : found->second.why;
+                                                : guid == lead.walkWakesFirst
+                                                    ? std::string("the walk in to the pull wakes it")
+                                                    : found->second.why;
                         Decisions().Write(run, "leader", "path_verdict", guid,
                                                       mob ? mob->GetName() : std::string("?"), true,
                                                       JsonObject().Str("verdict", on ? "on_path" : "off_path")
@@ -1288,7 +1322,10 @@ namespace Leader::Dungeon
                 // [lead101] the pack the walk to a patrol wakes is the pull first (released when it is dead or fights)
                 Creature* wakesFirst = lead.walkWakesFirst.IsEmpty() ? nullptr : idleAlive(lead.walkWakesFirst);
                 if (!wakesFirst)
+                {
                     lead.walkWakesFirst.Clear();
+                    lead.walkWakesReleased.Clear();
+                }
                 if (blocker)
                 {
                     inputs.pick = blocker->GetGUID();

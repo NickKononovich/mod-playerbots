@@ -17,6 +17,7 @@
 #include "Player.h"
 #include "Playerbots.h"
 #include "LeaderOrders.h"  // [lead108] Leader::Route
+#include "RouteSteer.h"  // [lead167] BossBroughtBy
 #include <algorithm>
 
 namespace Leader::Fight
@@ -31,11 +32,16 @@ namespace Leader::Fight
             dynamic_cast<LeaderMoveOrderAction*>(tankAI->GetAiObjectContext()->GetAction("leader move order"));
         if (!mover)
             return nullptr;
+        // [lead167] b179 rfc-h 5G 264-330 s: the walk to Oggleflint "woke" Ragefire Trogg 54, which joins his fight by
+        // script - the planner refuses that pack as "brings a boss, pulled as his fight", the walk-in check released
+        // the boss for it as "the pull first": 74 releases. A mob the boss brings into his fight anyway is his pull
+        bool const boss = creature->IsDungeonBoss() || creature->isWorldBoss();
         auto const counts = [&](Unit* woken)
         {
             return woken && woken->ToCreature() &&
                    std::find(planMobs.begin(), planMobs.end(), woken->GetGUID()) == planMobs.end() &&
-                   !(creature->GetFormation() && woken->ToCreature()->GetFormation() == creature->GetFormation());
+                   !(creature->GetFormation() && woken->ToCreature()->GetFormation() == creature->GetFormation()) &&
+                   !(boss && Leader::Travel::BossBroughtBy(tank, creature, woken->ToCreature()));
         };
         if (Unit* woken = mover->WalkWakes(target->GetPosition(), target->GetGUID()); counts(woken))
             return woken;

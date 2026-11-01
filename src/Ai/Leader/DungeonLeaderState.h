@@ -202,6 +202,7 @@ namespace Leader
         bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside
         std::set<ObjectGuid> routeSkips;   // [lead96] route targets skipped while the leader refuses them
         ObjectGuid walkWakesFirst;         // [lead101] the pack the walk to a patrol wakes: the pull first
+        ObjectGuid walkWakesReleased;      // [lead167] the pull released once for walkWakesFirst (one release per fact)
         std::map<ObjectGuid, ObjectGuid> fleeStoppers;  // [lead104] fleer -> the member the leader set to stop it
         ObjectGuid fleeFocusLogged;                     // [lead104] flee_focus logged for this fleer
         // [lead117] the pull walk's decision per member (one per order and per fact): the order, the reaching mob and
