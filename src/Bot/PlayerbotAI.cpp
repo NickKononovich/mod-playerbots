@@ -2029,9 +2029,17 @@ void PlayerbotAI::DoNextAction(bool min)
     // [lead112] a tank joins the combat engine as soon as a mob it can take back is on a member (TankIncomingMob):
     // its take-back ("tank open incoming") is a combat action; b147 rfc-h the tank stood 18 s in its non-combat
     // engine (its last action a blessing) while the healer and the shaman died
+    // [lead114] b149 rfc-h: the combat engine entered with no current target ran "invalid target" -> "drop target"
+    // on its first tick and went back to the non-combat engine, every tick, and the tank never fought - the mob is
+    // its target first (as the tank's pull / assist set it), then the engine
     else if (currentEngine == engines[BOT_STATE_NON_COMBAT] && isBotAlive && PlayerbotAI::IsTank(bot) &&
-             bot->GetGroup() && TankIncomingMob(this, bot))
-        ChangeEngine(BOT_STATE_COMBAT);
+             bot->GetGroup())
+        if (Unit* incoming = TankIncomingMob(this, bot))
+        {
+            bot->SetSelection(incoming->GetGUID());
+            aiObjectContext->GetValue<Unit*>("current target")->Set(incoming);
+            ChangeEngine(BOT_STATE_COMBAT);
+        }
 
     // Clear targets if in combat but sticking with old data
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
