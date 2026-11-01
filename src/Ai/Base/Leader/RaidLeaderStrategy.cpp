@@ -378,7 +378,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
         return;
     Leader::MemberEvents events;
     Leader::Events::Get(bot->GetGUID(), events);
-    bool const combat = bot->IsInCombat();
+    bool const combat = HealerFights(bot, events);  // [lead181] the same fight as the member gate's
     bool const fights = events.attack == Leader::AttackEvent::Attack || events.attack == Leader::AttackEvent::Heal;
     bool const prepare = events.ready == Leader::ReadyEvent::Prepare ||
                          events.ready == Leader::ReadyEvent::ReadyCheck || events.ready == Leader::ReadyEvent::Rest;
