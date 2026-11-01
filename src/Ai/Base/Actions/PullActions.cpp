@@ -13,6 +13,10 @@
 
 #include "PullActions.h"
 #include "AggressiveTargetValue.h"
+#include "CellImpl.h"        // [lead86] the corner pack's assist search
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "World.h"
 #include "SpellMgr.h"
 #include "Spell.h"
 #include "AttackersValue.h"
@@ -1111,6 +1115,22 @@ bool ReachPullAction::Execute(Event event)
                     LOG_INFO("playerbots", "[b38_scholo] pull_sight_walk_abort: {}: {} at {:.1f} yd out of sight: the "
                              "walk for sight ends {:.1f} yd from it (reach {:.1f}), inside its pack: pull ended",
                              bot->GetName(), target->GetName(), bot->GetExactDist(target), endToMob, reachDistance);
+                    // [lead86] b128/b129 957-962 s: two los pulls of one corner pack alternated, each given up here
+                    // ("inside its pack") 1 of 3 at a time - a pack that sits at the corner is seen only from inside
+                    // its reach: no ranged pull of it works from here, the planner engages it (its capacity model
+                    // judges the fight) at once - the mob and every mob that assists it
+                    CarefulPlanVerdict::NoteEngageOnly(bot, target->GetGUID(), PULL_ABORT_SKIP_MS);
+                    if (Creature* corner = target->ToCreature())
+                    {
+                        std::list<Creature*> pack;
+                        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+                        Acore::AnyAssistCreatureInRangeCheck check(corner, bot, assist);
+                        Acore::CreatureListSearcher<Acore::AnyAssistCreatureInRangeCheck> searcher(corner, pack,
+                                                                                                    check);
+                        Cell::VisitObjects(corner, searcher, assist);
+                        for (Creature* mate : pack)
+                            CarefulPlanVerdict::NoteEngageOnly(bot, mate->GetGUID(), PULL_ABORT_SKIP_MS);
+                    }
                     NotePullAbort(bot, target, "the walk for sight ends at the mob",
                                   bot->GetExactDist(target) <= strategy->GetRange());
                     botAI->DoSpecificAction("pull end", event, true);

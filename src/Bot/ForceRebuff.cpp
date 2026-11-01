@@ -56,10 +56,12 @@ bool ForceRebuffState::BuffBelowRefreshTarget(int32 remaining, int32 maxDuration
         if (remaining <= 0 || maxDuration <= 0)
             return false;
 
-        // Anything refreshed after the rebuff began counts as topped off
-        uint32 const marginMs = std::max(sPlayerbotAIConfig.ForceRebuffMarginSecs * IN_MILLISECONDS,
-                                         getMSTimeDiff(beginMs, getMSTime()) + 5000);
-        return uint32(remaining) + marginMs < uint32(maxDuration);
+        // [lead86] b128: every boss prep ran to the harness's 15 s cap ("Rtpalaa rebuff window open") - every buff
+        // that had lost ForceRebuffMarginSecs was recast, a 10-minute blessing with 9 minutes left included. A buff
+        // needs the pass only when it runs out within the margin (the buff's own remaining time): the window closes
+        // once every member has every buff it needs
+        (void)maxDuration;
+        return uint32(remaining) < sPlayerbotAIConfig.ForceRebuffMarginSecs * IN_MILLISECONDS;
     }
 
     return baseBeforeDuration && uint32(remaining) < baseBeforeDuration;

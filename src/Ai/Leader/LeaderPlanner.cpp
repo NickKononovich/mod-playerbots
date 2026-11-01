@@ -4617,8 +4617,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     float BossFightSec(Player* bot, Unit* boss)
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        // [lead86] b129 rfc-h: Taragaman's fight was estimated at 100 s (the rolling dps, pulled down by short trash
+        // pulls) and died in 54 s in b128 (11988 dps): the group's sustained measured dps when it is higher
         float const groupDps =
-            botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
+            std::max(botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f,
+                     GroupDamage::SustainedDps(bot));
         return boss ? float(boss->GetHealth()) / std::max(groupDps, 1.0f) : 0.0f;
     }
 
@@ -9213,19 +9216,23 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     if (!found && boss && !bossWalkWakes)
     {
         float danger = 0.0f;
-        if (IsPackManageable(botAI, bot, target, strength, danger))
-        {
-            _planCached = target->GetGUID();
-            _planPullBack = false;
-            _planLos = false;
-            chosen = PackEstimate();
-            chosenPack.clear();
-            chosenOverlaps.clear();
-            chosen.danger = danger;
-            chosen.boss = true;
-            found = true;
-            _planReason = "boss pulled where it stands";
-        }
+        bool const manageable = IsPackManageable(botAI, bot, target, strength, danger);
+        // [lead86] b129 rfc-h 683.2-727 s: "the pack does not fit (a boss pull: no fallback plan)" on Taragaman, who
+        // died in 50-54 s with 0 deaths in b100 / b118 / b128 - the boss is the route's goal, never "does not fit ->
+        // nothing": over the capacity estimate he is pulled where he stands all the same, behind the boss gate's full
+        // readiness and with the leader's burn (a boss fight always burns)
+        _planCached = target->GetGUID();
+        _planPullBack = false;
+        _planLos = false;
+        chosen = PackEstimate();
+        chosenPack.clear();
+        chosenOverlaps.clear();
+        chosen.danger = danger;
+        chosen.boss = true;
+        found = true;
+        _planReason = manageable ? std::string("boss pulled where it stands")
+                                 : Acore::StringFormat("boss pulled where it stands: over the capacity estimate "
+                                                       "(danger {:.2f}), the boss is the route's goal", danger);
     }
 
     // The mob of the pack that brings the fewest when pulled at range to where the tank stands with a pull spell

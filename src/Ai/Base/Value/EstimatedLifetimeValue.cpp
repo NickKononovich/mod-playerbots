@@ -346,6 +346,8 @@ namespace
         uint32 rollingMembers = 0;
         uint32 updatedMs = 0;
         uint32 lastDealtMs = 0;  // the group's last hit, kept across fights ([combat_no_damage_release])
+        uint64 totalDamage = 0;   // [lead86] every measured fight's damage and seconds (SustainedDps)
+        uint64 totalActiveMs = 0;
     };
 
     struct ClosedFight
@@ -373,6 +375,13 @@ namespace
                                getMSTimeDiff(track.updatedMs, now) < GROUP_DPS_TTL_MS;
             track.rollingDps = fresh ? track.rollingDps * (1.0f - GROUP_DPS_WEIGHT) + dps * GROUP_DPS_WEIGHT : dps;
             track.fights = fresh ? track.fights + 1 : 1;
+            if (!fresh)
+            {
+                track.totalDamage = 0;
+                track.totalActiveMs = 0;
+            }
+            track.totalDamage += track.damage;  // [lead86]
+            track.totalActiveMs += track.activeMs;
             track.rollingMembers = track.members;
             track.updatedMs = now ? now : 1;
             closed.measured = true;
@@ -446,6 +455,19 @@ namespace GroupDamage
         }
 
         LogClosedFight(closed);
+    }
+
+    float SustainedDps(Player* bot)
+    {
+        Group* group = bot ? bot->GetGroup() : nullptr;
+        if (!group || !bot->GetMap() || !bot->GetMap()->IsDungeon())
+            return 0.0f;
+        std::lock_guard<std::mutex> guard(groupDamageLock);
+        auto const found = groupDamage.find(group->GetGUID().GetRawValue());
+        if (found == groupDamage.end() || !found->second.totalActiveMs ||
+            found->second.rollingMembers != group->GetMembersCount())
+            return 0.0f;
+        return float(found->second.totalDamage) * IN_MILLISECONDS / float(found->second.totalActiveMs);
     }
 
     float CalibratedDps(Player* bot, uint32* fights)

@@ -460,9 +460,9 @@ bool CastBlessingAction::Execute(Event /*event*/)
     if (!target)
         return false;
 
-    botAI->forceRebuff.NoteBuffWork();
-
     bool const cast = botAI->CastSpell(planned.spellId, target);
+    if (cast)
+        botAI->forceRebuff.NoteBuffWork();  // [lead86] only a blessing really cast is buff work
 
     if (planned.notice == ReagentNoticeKind::Clear)
         ai::buff::ClearMissingBuffReagentNotice(botAI, BlessingSpellName(ToGreaterVariant(planned.category)));

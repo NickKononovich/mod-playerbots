@@ -418,9 +418,11 @@ bool CastBuffSpellAction::isUseful()
 
 bool CastBuffSpellAction::Execute(Event /*event*/)
 {
-    botAI->forceRebuff.NoteBuffWork();
-
-    return botAI->CastSpell(spell, GetTarget());
+    // [lead86] only a buff really cast is buff work (a failed cast kept the rebuff window open)
+    bool const cast = botAI->CastSpell(spell, GetTarget());
+    if (cast)
+        botAI->forceRebuff.NoteBuffWork();
+    return cast;
 }
 
 // [b31_shared] Lifebloom on the tank was vetoed 7076 times at L80, Bone Shield / Beacon of Light the same way
@@ -453,7 +455,6 @@ bool GroupBuffSpellAction::isUseful()
 
 bool GroupBuffSpellAction::Execute(Event /*event*/)
 {
-    botAI->forceRebuff.NoteBuffWork();
 
     std::string missingReagentGroupName;
     std::string const castName = ai::buff::UpgradeToGroupIfAppropriate(
@@ -461,6 +462,7 @@ bool GroupBuffSpellAction::Execute(Event /*event*/)
 
     if (!botAI->CastSpell(castName, GetTarget()))
         return false;
+    botAI->forceRebuff.NoteBuffWork();  // [lead86] only a buff really cast
 
     if (!missingReagentGroupName.empty())
         ai::buff::TryAnnounceMissingBuffReagents(botAI, spell, missingReagentGroupName);
