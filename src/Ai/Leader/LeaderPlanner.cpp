@@ -5631,10 +5631,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         constexpr float MAX_WALK = 25.0f;      // the corner is at most this far from the tank
     }
 
-    // [lead202] The tank's tool that takes `mob` from where the tank stands, ready and castable on it now: Death Grip
-    // brings it in; the ranged threat spells (Avenger's Shield, Heroic Throw, Faerie Fire (Feral), the taunts) hold
-    // it at range. nullptr: none - the mob stays out of the tank's threat reach.
-    char const* TankRangedTool(PlayerbotAI* tankAI, Player* tank, Unit* mob)
+    // [lead206] the tank's ranged threat tools by class, best first (lead202's list)
+    std::vector<char const*> TankRangedTools(Player* tank)
     {
         static char const* const PALADIN[] = {"avenger's shield", "hand of reckoning"};
         static char const* const WARRIOR[] = {"heroic throw", "taunt"};
@@ -5658,10 +5656,114 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             default:
                 break;
         }
-        for (char const* tool : tools)
+        return tools;
+    }
+
+    // [lead202] The tank's tool that takes `mob` from where the tank stands, ready and castable on it now: Death Grip
+    // brings it in; the ranged threat spells (Avenger's Shield, Heroic Throw, Faerie Fire (Feral), the taunts) hold
+    // it at range. nullptr: none - the mob stays out of the tank's threat reach.
+    char const* TankRangedTool(PlayerbotAI* tankAI, Player* tank, Unit* mob)
+    {
+        for (char const* tool : TankRangedTools(tank))
             if (tankAI->CanCastSpell(tool, mob))
                 return tool;
         return nullptr;
+    }
+
+    // [lead206] How many of `ranged` (standing where they are) the tank holds from `from` with its ranged tools
+    // (TankRangedTools): each tool it knows and has off cooldown takes the nearest ones in its range, as many as
+    // the spell jumps to (Avenger's Shield's chain targets), else one. loose: the ones it does not hold.
+    uint32 TankRangedHolds(PlayerbotAI* tankAI, Player* tank, Position const& from, std::vector<Unit*> ranged,
+                           std::vector<Unit*>* loose = nullptr)
+    {
+        std::sort(ranged.begin(), ranged.end(),
+                  [&from](Unit* a, Unit* b) { return from.GetExactDist(a) < from.GetExactDist(b); });
+        uint32 held = 0;
+        for (char const* tool : TankRangedTools(tank))
+        {
+            uint32 const spellId = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", tool)->Get();
+            SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+            if (!info || tank->HasSpellCooldown(spellId))
+                continue;
+            float const range = info->GetMaxRange(false);
+            uint32 targets = 1;
+            for (uint8 effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+                targets = std::max(targets, info->Effects[effect].ChainTarget);
+            for (auto mob = ranged.begin(); mob != ranged.end() && targets;)
+            {
+                if (from.GetExactDist(*mob) <= range + (*mob)->GetCombatReach())
+                {
+                    mob = ranged.erase(mob);
+                    ++held;
+                    --targets;
+                }
+                else
+                    ++mob;
+            }
+        }
+        if (loose)
+            *loose = ranged;
+        return held;
+    }
+
+    // [lead206] the farthest walk of a living member (not the tank) to `to`, straight
+    float GroupWalkTo(Player* tank, Position const& to)
+    {
+        float farthest = 0.0f;
+        if (Group* group = tank->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member != tank && member->IsAlive() && member->GetMap() == tank->GetMap())
+                    farthest = std::max(farthest, member->GetExactDist(to));
+        return farthest;
+    }
+
+    // [lead206] user: a corner pull only when it is cheaper. Both ways in seconds of the group's time: the corner -
+    // the tank's walk to the cast spot and on to the corner or the group's walk to its spot behind it (the longer),
+    // then the casters' walk round it, then the fight of the pack that comes; standing - the walk in, the fight of
+    // the pack where it stands, and the threat loss: every caster / shooter the tank's ranged tools do not hold from
+    // there (TankRangedHolds) fights off the tank until it dies (its health over the group's damage).
+    struct CornerCost
+    {
+        float cornerSec = 0.0f;
+        float standSec = 0.0f;
+        float lossSec = 0.0f;
+        uint32 ranged = 0;
+        uint32 held = 0;
+    };
+
+    CornerCost CornerVsStand(PlayerbotAI* tankAI, Player* tank, Unit* candidate, Position const& castSpot,
+                             Position const& corner, Position const& gather, std::vector<Unit*> const& losPack,
+                             float losFightSec, std::vector<Unit*> const& standPack, float standFightSec,
+                             float groupDps)
+    {
+        CornerCost cost;
+        float const speed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
+        float const tankCorner = tank->GetExactDist(castSpot) + castSpot.GetExactDist(corner);
+        float casterSec = 0.0f;
+        for (Unit* mob : losPack)
+        {
+            Creature* creature = mob->ToCreature();
+            if (MobRoles::IsCaster(mob) || (creature && KeepsRange(creature)))
+                casterSec = std::max(casterSec, mob->GetExactDist(corner) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
+        }
+        cost.cornerSec = std::max(tankCorner, GroupWalkTo(tank, gather)) / speed + casterSec + losFightSec;
+
+        std::vector<Unit*> ranged;
+        for (Unit* mob : standPack)
+        {
+            Creature* creature = mob->ToCreature();
+            if (MobRoles::IsCaster(mob) || (creature && KeepsRange(creature)))
+                ranged.push_back(mob);
+        }
+        cost.ranged = uint32(ranged.size());
+        std::vector<Unit*> loose;
+        cost.held = TankRangedHolds(tankAI, tank, candidate->GetPosition(), ranged, &loose);
+        for (Unit* mob : loose)
+            cost.lossSec += groupDps > 0.0f ? float(mob->GetHealth()) / groupDps : standFightSec;
+        float const standWalk = std::max(tank->GetExactDist(candidate), GroupWalkTo(tank, candidate->GetPosition()));
+        cost.standSec = standWalk / speed + standFightSec + cost.lossSec;
+        return cost;
     }
 
     // [lead199] b181 rfc-h 5B / 5F: the prot warrior opened 37 / 48 and 33 / 41 pulls without a hit - Heroic Throw
@@ -8289,55 +8391,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // calls for help), if the pack that comes is at most `limit` times what the group takes; `comfort`: and within
     // the size the group prefers. `losOnly`: round a corner or not at all. Neither plan's walk (to the mob, to the
     // cast spot) may wake a mob the pack does not count.
-    auto const tryPlan = [&](Unit* candidate, bool allowBossPack, float limit, bool comfort, bool losOnly) -> bool
+    // [lead206] the plan without a corner: fought where it stands, or pulled back (tryPlan below asks for it).
+    auto const tryPlanStand = [&](Unit* candidate, bool allowBossPack, float limit, bool comfort) -> bool
     {
-        // A mob the group's crowd control holds or has claimed is not opened on while the rest of its pack lives.
-        if (candidate != target &&
-            (IsCrowdControlled(candidate) || PrePullCc::IsClaimed(bot, candidate->GetGUID())))
-            return false;
-
-        // Nor one whose encounter's predecessor has not started (EncounterOrder: it evades at once when engaged).
-        if (EncounterOrder::IsLocked(candidate))
-            return false;
-
-        // [lead182] b180 rfc-h 5E 1305-1475 s: the los pull / lone-mob plans alternated between Voidwalker Minion 142
-        // and 133 of the look's pack every 2 s, each aborted by the tank "out of sight on another floor" and capped
-        // out of reach (b34_wc) - which only the look target was checked against. A candidate the tank gave up as out
-        // of its reach from here is no pull mob either
-        if (candidate != target && CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))
-            return false;
-
-        // Several casters in the pack: round a corner first, if the pack that comes is one the group takes.
-        PackEstimate losEstimate;
-        std::vector<Unit*> losSeen;
-        auto const acceptLos = [&](std::vector<Unit*> const& losPack) -> bool
-        {
-            losSeen = losPack;
-            losEstimate = EstimatePack(losPack, bot, groupDps, estimateMode, true);
-            OverloadTerms losTerms;
-            CarefulOverload(bot, losEstimate, strength, support, kit, measured, &losTerms);
-            return (withinCap(losEstimate) && affordable(losEstimate, limit) && losTerms.Max(comfort) <= limit) ||
-                   provenFits(losEstimate);
-        };
-
-        if (PlanLosPull(candidate, possible, acceptLos, measured))
-        {
-            _planReason = Acore::StringFormat("{} casters / shooters pulled round the corner; packs: los pull {} at "
-                                              "the tank's spot round the corner", CountRanged(losSeen),
-                                              losSeen.size());
-            _planCached = candidate->GetGUID();
-            _planPullBack = false;
-            _planLos = true;
-            _planKillFor.Clear();
-            chosen = losEstimate;
-            chosenPack = losSeen;
-            chosenOverlaps.clear();
-            return true;
-        }
-
-        if (losOnly)
-            return false;
-
         OverloadTerms terms;
         CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, pack,
                     FightHere(candidate->GetPosition()), measured, false, overlapsOut);
@@ -8808,6 +8864,89 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                               : Acore::StringFormat("{}, the fight {:.0f} yd further back; ",
                                                                     fightNote, fightBack),
                                           estimate.mobs, packSizes);
+        return true;
+    };
+
+    // [lead206] the corner pull (PlanLosPull) when it is cheaper than the fight where the pack stands (CornerVsStand);
+    // losOnly: round a corner or not at all.
+    auto const tryPlan = [&](Unit* candidate, bool allowBossPack, float limit, bool comfort, bool losOnly) -> bool
+    {
+        // A mob the group's crowd control holds or has claimed is not opened on while the rest of its pack lives.
+        if (candidate != target && (IsCrowdControlled(candidate) || PrePullCc::IsClaimed(bot, candidate->GetGUID())))
+            return false;
+
+        // Nor one whose encounter's predecessor has not started (EncounterOrder: it evades at once when engaged).
+        if (EncounterOrder::IsLocked(candidate))
+            return false;
+
+        // [lead182] b180 rfc-h 5E 1305-1475 s: the los pull / lone-mob plans alternated between Voidwalker Minion 142
+        // and 133 of the look's pack every 2 s, each aborted by the tank "out of sight on another floor" and capped
+        // out of reach (b34_wc) - which only the look target was checked against. A candidate the tank gave up as out
+        // of its reach from here is no pull mob either
+        if (candidate != target && CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))
+            return false;
+
+        // Several casters in the pack: round a corner first, if the pack that comes is one the group takes.
+        PackEstimate losEstimate;
+        std::vector<Unit*> losSeen;
+        auto const acceptLos = [&](std::vector<Unit*> const& losPack) -> bool
+        {
+            losSeen = losPack;
+            losEstimate = EstimatePack(losPack, bot, groupDps, estimateMode, true);
+            OverloadTerms losTerms;
+            CarefulOverload(bot, losEstimate, strength, support, kit, measured, &losTerms);
+            return (withinCap(losEstimate) && affordable(losEstimate, limit) && losTerms.Max(comfort) <= limit) ||
+                   provenFits(losEstimate);
+        };
+
+        if (!PlanLosPull(candidate, possible, acceptLos, measured))
+            return !losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort);
+
+        // [lead206] b181 rfc-h 5E: 8 corner pulls, 351 yd in fights (5B: 5, 153 yd). The corner's cost against the
+        // engage where the pack stands - the plan the planner takes without the corner, when that plan is an engage
+        Position const corner = _losSpot;
+        Position const gather = _losGather;
+        std::vector<Unit*> const packBefore = pack;
+        std::vector<PackOverlap> const overlapsBefore = overlaps;
+        auto const hopsBefore = lastPackHops;
+        std::string cornerNote;
+        if (!losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort) && !_planPullBack && !_planLos &&
+            _planCached == candidate->GetGUID())
+        {
+            Position castSpot = bot->GetPosition();
+            PullBackSpot(candidate, castSpot);
+            CornerCost const cost = CornerVsStand(botAI, bot, candidate, castSpot, corner, gather, losSeen,
+                                                  losEstimate.fightSec, chosenPack, chosen.fightSec, groupDps);
+            bool const stand = cost.standSec < cost.cornerSec;
+            cornerNote = Acore::StringFormat(
+                "corner {:.0f} s vs where it stands {:.0f} s (threat loss {:.0f} s, "
+                "ranged tools hold {} of {}): {}",
+                cost.cornerSec, cost.standSec, cost.lossSec, cost.held, cost.ranged,
+                stand ? "no corner" : "the corner");
+            LOG_DEBUG("playerbots", "[lead206] {}: {}: {}", bot->GetName(), candidate->GetName(), cornerNote);
+            if (stand)
+            {
+                _planReason += "; " + cornerNote;
+                return true;
+            }
+        }
+
+        pack = packBefore;
+        overlaps = overlapsBefore;
+        lastPackHops = hopsBefore;
+        _planReason = Acore::StringFormat(
+            "{} casters / shooters pulled round the corner; packs: los pull {} at "
+            "the tank's spot round the corner{}",
+            CountRanged(losSeen), losSeen.size(), cornerNote.empty() ? std::string() : "; " + cornerNote);
+        _planCached = candidate->GetGUID();
+        _planPullBack = false;
+        _planLos = true;
+        _planKillFor.Clear();
+        _planFightFor.Clear();
+        _planFightNote.clear();
+        chosen = losEstimate;
+        chosenPack = losSeen;
+        chosenOverlaps.clear();
         return true;
     };
 
