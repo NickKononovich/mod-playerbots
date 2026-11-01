@@ -99,14 +99,6 @@ void ElementalShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "thunderstorm for mana",
-            {
-                NextAction("thunderstorm", 19.0f)
-            }
-        )
-    );
 
     // Range Triggers
     triggers.push_back(

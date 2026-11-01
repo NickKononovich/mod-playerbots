@@ -174,7 +174,6 @@ public:
         creators["spirit walk ready"] = &ShamanATriggerFactoryInternal::spirit_walk_ready;
         creators["chain lightning filler"] = &ShamanATriggerFactoryInternal::chain_lightning_filler;
         creators["chain lightning aoe"] = &ShamanATriggerFactoryInternal::chain_lightning_aoe;
-        creators["thunderstorm for mana"] = &ShamanATriggerFactoryInternal::thunderstorm_for_mana;
         creators["thunderstorm knockback"] = &ShamanATriggerFactoryInternal::thunderstorm_knockback;
         creators["riptide on main tank"] = &ShamanATriggerFactoryInternal::riptide_on_main_tank;
         creators["battle resurrected member"] = &ShamanATriggerFactoryInternal::battle_resurrected_member;
@@ -254,7 +253,6 @@ private:
     static Trigger* spirit_walk_ready(PlayerbotAI* botAI) { return new SpiritWalkTrigger(botAI); }
     static Trigger* chain_lightning_filler(PlayerbotAI* botAI) { return new ChainLightningFillerTrigger(botAI); }
     static Trigger* chain_lightning_aoe(PlayerbotAI* botAI) { return new ChainLightningAoeTrigger(botAI); }
-    static Trigger* thunderstorm_for_mana(PlayerbotAI* botAI) { return new ThunderstormForManaTrigger(botAI); }
     static Trigger* thunderstorm_knockback(PlayerbotAI* botAI) { return new ThunderstormKnockbackTrigger(botAI); }
     static Trigger* riptide_on_main_tank(PlayerbotAI* botAI) { return new RiptideOnMainTankTrigger(botAI); }
     static Trigger* natures_swiftness_active(PlayerbotAI* botAI)

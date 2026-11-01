@@ -422,14 +422,6 @@ public:
     bool IsActive() override;
 };
 
-class ThunderstormForManaTrigger : public Trigger
-{
-public:
-    ThunderstormForManaTrigger(PlayerbotAI* botAI) : Trigger(botAI, "thunderstorm for mana") {}
-
-    bool IsActive() override;
-};
-
 class ThunderstormKnockbackTrigger : public Trigger
 {
 public:

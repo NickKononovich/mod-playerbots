@@ -710,24 +710,6 @@ bool ChainLightningAoeTrigger::IsActive()
                                CHAIN_LIGHTNING_AOE_MIN_TARGETS);
 }
 
-// Thunderstorm hits and knocks back everything within its radius, so it is only a free mana tap
-// when nothing is in range.
-bool ThunderstormForManaTrigger::IsActive()
-{
-    if (!AI_VALUE2(bool, "has mana", "self target") ||
-        AI_VALUE2(uint8, "mana", "self target") >= sPlayerbotAIConfig.HighMana)
-        return false;
-
-    for (ObjectGuid const guid : AI_VALUE(GuidVector, "attackers"))
-    {
-        Unit* unit = botAI->GetUnit(guid);
-        if (unit && unit->IsAlive() && bot->IsWithinDist(unit, THUNDERSTORM_RADIUS))
-            return false;
-    }
-
-    return true;
-}
-
 // Knocking mobs away from the tank wrecks a group pull, so the knockback is solo only.
 bool ThunderstormKnockbackTrigger::IsActive()
 {
