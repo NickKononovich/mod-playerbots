@@ -674,6 +674,14 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // [lead159] standing on the spot is no work: the tick is the rotation's (it was executed every tick)
         return false;
     }
+    // [lead162] a cast / channel under way that reaches its target (in range and sight) is not broken for a spot move
+    // of combat-spot rank or lower (Mind Flay, Arcane Missiles, Drain Soul were cut by re-spots); a hazard, an aggro
+    // loss or the heal reach moves it at once
+    if (bot->IsNonMeleeSpellCast(false) && Leader::Events::MovePrecedence(events.moveWhy) <= 2)
+        if (Unit* victim = AI_VALUE(Unit*, "current target");
+            victim && victim->IsAlive() && bot->GetExactDist(victim) <= botAI->GetRange("spell") &&
+            bot->IsWithinLOSInMap(victim))
+            return false;
     // [lead27] already walking there: the same move again is no refusal
     // [lead44] ... and no execution either: the member's other actions run meanwhile (no starvation)
     if (IsDuplicateMove(events.spot.GetPositionX(), events.spot.GetPositionY(), events.spot.GetPositionZ()))

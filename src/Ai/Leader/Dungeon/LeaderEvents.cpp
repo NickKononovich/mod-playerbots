@@ -2224,8 +2224,11 @@ namespace Leader::Dungeon
                 // melee member's target walks (it is on the tank: the walk is the fight's, not its run in), its one
                 // command is the chase - a Follow behind that mob, issued once per target; the spot "behind the
                 // target" once it stands
-                bool const chases = melee && target->isMoving() && target->GetVictim() == tank &&
-                                    tank->IsWithinMeleeRange(target);
+                // [lead162] wowsims audit (rfc-h wave b178): 1889 move orders vs 2888 casts, the enh shaman 310 vs
+                // 225 - the chase while the mob walked, the StandAt behind it once it stood, again on its next step. One
+                // decision per fact: a melee member on a mob the tank holds keeps the one Follow behind that mob,
+                // walking or standing (the Follow walks only out of melee reach, lead160); a new target is the next
+                bool const chases = melee && target->GetVictim() == tank && tank->IsWithinMeleeRange(target);
                 if (chases)
                 {
                     if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
