@@ -34,8 +34,9 @@ private:
     }
     static ActionNode* raptor_strike([[maybe_unused]] PlayerbotAI* botAI)
     {
+        // no "melee" prerequisite: a white swing stops Auto Shot
         return new ActionNode("raptor strike",
-                              /*P*/ { NextAction("melee") },
+                              /*P*/ {},
                               /*A*/ {},
                               /*C*/ {});
     }
@@ -83,11 +84,14 @@ void GenericHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     // Ranged-based Triggers
     // [lead105] the melee bites only for Beast Mastery / Survival (their strategies add them): never Marksmanship
-    triggers.push_back(new TriggerNode("enemy within melee", { NextAction("explosive trap", 37.0f),
-                                                               NextAction("wing clip", 21.0f) }));
+    // [rot7] Wing Clip below every shot and Auto Shot (wowsims never casts it): only when no shot can go
+    triggers.push_back(new TriggerNode(
+        "enemy within melee", {NextAction("explosive trap", 37.0f), NextAction("wing clip", ACTION_DEFAULT + 0.05f)}));
 
-    triggers.push_back(new TriggerNode("enemy too close for auto shot", { NextAction("disengage", 35.0f),
-                                                                          NextAction("flee", 34.0f) }));
+    // [rot7] below every shot and Auto Shot: they go only when no shot can (wowsims casts neither)
+    triggers.push_back(new TriggerNode(
+        "enemy too close for auto shot",
+        {NextAction("disengage", ACTION_DEFAULT + 0.09f), NextAction("flee", ACTION_DEFAULT + 0.085f)}));
 }
 
 // ===== AoE Strategy, 2/3+ enemies =====

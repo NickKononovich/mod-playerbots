@@ -35,7 +35,8 @@ std::vector<NextAction> BeastMasteryHunterStrategy::getDefaultActions()
 void BeastMasteryHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     GenericHunterStrategy::InitTriggers(triggers);
-    triggers.push_back(new TriggerNode("enemy within melee", { NextAction("mongoose bite", 22.0f) }));  // [lead105]
+    // [lead105] [rot7] below every shot and Auto Shot (wowsims never casts it): only when no shot can go
+    triggers.push_back(new TriggerNode("enemy within melee", {NextAction("mongoose bite", ACTION_DEFAULT + 0.08f)}));
     triggers.push_back(
         new TriggerNode(
             "bestial wrath",
