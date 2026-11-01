@@ -150,10 +150,10 @@ void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // [b31_deep] every ready Blood rune; a Death rune is left for Obliterate. [rot21] wowsims: only while Frost Fever
     // has more than 10 s, so the Blood rune for Pestilence stays
     triggers.push_back(new TriggerNode("frost blood strike", {NextAction("blood strike", ACTION_DEFAULT + 0.45f)}));
-    // [b31_deep] Raise Dead as a damage cooldown. [rot39] wowsims frost_bl_pesti summons it inside its opener (the first
-    // ~8 GCDs of the boss); at 5.42 (under every spender) the bot raised it late in the 30-60 s rfc-h boss fights: the
-    // ghoul's Claw 1.2 % of the damage against the sim's 8.5 % (b179 5G Rtdekad). Now above Obliterate (5.7): once per
-    // boss / burn ("raise dead boost"), at its start
+    // [b31_deep] Raise Dead as a damage cooldown. [rot39] wowsims frost_bl_pesti summons it inside its opener (the
+    // first ~8 GCDs of the boss); at 5.42 (under every spender) the bot raised it late in the 30-60 s rfc-h boss
+    // fights: the ghoul's Claw 1.2 % of the damage against the sim's 8.5 % (b179 5G Rtdekad). Now above Obliterate
+    // (5.7): once per boss / burn ("raise dead boost"), at its start
     triggers.push_back(new TriggerNode("raise dead boost", {NextAction("raise dead", ACTION_DEFAULT + 0.74f)}));
 
     // [b35_uh] Empower Rune Weapon on a boss once every rune is down (wowsims frost_bl_pesti: once, in the boss opener
