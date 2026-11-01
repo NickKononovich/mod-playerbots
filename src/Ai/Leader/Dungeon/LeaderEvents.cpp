@@ -104,7 +104,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "TestRunnerStrategy.h"  // TestRunner::Waypoint: the route walk's waypoint registry (Ai/Test)
 
 namespace Leader::Dungeon
 {
@@ -1277,7 +1276,7 @@ namespace Leader::Dungeon
                     lead.travelMoving += dt;
                 else
                 {
-                    TestRunner::Waypoint routePoint;
+                    LeaderGroup::WalkPoint routePoint;
                     std::string const cause =
                         lead.commit ? (lead.spotsWaiting ? "pull: the spots wait" : "pull committed")
                         : !lead.groupBlockedBy.empty() ? "a member's walk blocked"
@@ -1285,7 +1284,7 @@ namespace Leader::Dungeon
                         : anySitting || tank->IsSitState() ? "rest"
                         : group.NeedBuff() || rebuff     ? "buffs"
                         : !lead.routeFirstFor.IsEmpty() ? "route first"
-                        : !TestRunner::GetWaypoint(tank->GetGUID(), routePoint) ? "no route point"
+                        : !group.GetWaypoint(tank->GetGUID(), routePoint) ? "no route point"
                                                                                 : "other";
                     lead.travelStops[cause] += dt;
                 }
@@ -1301,8 +1300,8 @@ namespace Leader::Dungeon
         if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(group.LeaderGuid()) &&
             lead.groupBlockedBy.empty() && !lingeringWalk)
         {
-            TestRunner::Waypoint waypoint;
-            if (TestRunner::GetWaypoint(tank->GetGUID(), waypoint) && waypoint.mapId == tank->GetMapId() &&
+            LeaderGroup::WalkPoint waypoint;
+            if (group.GetWaypoint(tank->GetGUID(), waypoint) && waypoint.mapId == tank->GetMapId() &&
                 !waypoint.jump && !waypoint.straight && !waypoint.gatePass)
             {
                 Position point(waypoint.x, waypoint.y, waypoint.z);
@@ -1830,8 +1829,8 @@ namespace Leader::Dungeon
             uint32 const index = seat++;
             // [lead17] the harness's (the leader's) own walk for this member (a link, out of the water, an event
             // gather): it runs, the leader issues no other move meanwhile
-            TestRunner::Waypoint harnessWalk;
-            bool const walking = TestRunner::GetWaypoint(guid, harnessWalk);
+            LeaderGroup::WalkPoint harnessWalk;
+            bool const walking = group.GetWaypoint(guid, harnessWalk);
 
             bool restCommanded = false;  // [lead47] the Rest command this tick: no move replaces it
             // 1. readiness, out of combat: Rest to whoever needs it (to full), Ready? while the pull waits for the

@@ -41,6 +41,9 @@ namespace Leader::Travel
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes = nullptr,
                    std::vector<G3D::Vector4> const* avoidDiscs = nullptr);
+
+    // [lead107] the point `walk` yd along `points` (its last point when the path is shorter)
+    G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk);
 }
 
 #endif

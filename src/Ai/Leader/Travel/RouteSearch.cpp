@@ -197,6 +197,20 @@ namespace Leader::Travel
                                  straight[size_t(index) * 3 + 1]);
         return true;
     }
+
+    G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk)
+    {
+        float walked = 0.0f;
+        for (size_t index = 1; index < points.size(); ++index)
+        {
+            G3D::Vector3 const segment = points[index] - points[index - 1];
+            float const length = segment.length();
+            if (length > 0.0f && walked + length >= walk)
+                return points[index - 1] + segment * ((walk - walked) / length);
+            walked += length;
+        }
+        return points.back();
+    }
 }
 
 // [lead99] the leader's one route service (Leader::Route, LeaderOrders.h)

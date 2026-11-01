@@ -1089,6 +1089,9 @@ namespace TestHarness
         Leader::DungeonLeaderState& State() override { return _party.lead; }
         DecisionRun Run() const override { return DecisionRun{_party.id, _party.seq, _party.runStartMs}; }
         std::vector<ObjectGuid> MemberGuids() const override;
+        std::vector<MemberInfo> Members() const override;
+        bool HasContent() const override { return _party.content != nullptr; }
+        bool LeaderDecides() const override { return _mgr.LeaderDecides(_party); }
         ObjectGuid LeaderGuid() const override { return _party.leader; }
         uint32 MapId() const override;
         uint32 InstanceId() const override { return _party.instanceId; }
@@ -1105,6 +1108,30 @@ namespace TestHarness
         std::map<ObjectGuid, bool>& PathVerdictLogged() override { return _party.pathVerdictLogged; }
         ObjectGuid PhantomHunt() const override { return _party.phantomHunt; }
         void ClearPhantomHunt() override { _party.phantomHunt.Clear(); }
+        uint32 ArrivedMs() const override { return _party.arrivedMs; }
+        bool DoorCutHold() const override { return _party.doorCutHold; }
+        ObjectGuid DoorCutMember() const override { return _party.doorCutMember; }
+        bool NeedsPack(Map* map, WorldObject const* object, std::string& why) const override
+        {
+            return _mgr.LeaderNeedsPack(_party, map, object, why);
+        }
+        int32 DoorStarterFor(GameObject const* door) const override;
+        std::string StarterNote(int32 index) const override;
+        bool HasDoorWalk() const override;
+        bool GetWaypoint(ObjectGuid bot, WalkPoint& out) const override;
+        void ClearWaypoint(ObjectGuid bot) override;
+        void ReleaseSkip(ObjectGuid guid) override
+        {
+            _party.skipUntil.erase(guid);
+            _party.skipReason.erase(guid);
+        }
+        void ResetSteerClock(uint32 now) override { _party.steerSinceMs = now; }
+        void RetargetAt(uint32 ms) override { _party.nextRetargetMs = ms; }
+        void SetBossOnTheWay(ObjectGuid boss, uint32 now) override;
+        void MarkRequired(ObjectGuid mob) override;
+        void NoteHopelessPack(Player* leader, Creature* mob) override;
+        void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point, uint32 untilMs) override;
+        void FailRun(std::string const& reason) override;
         void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
         void LogEvent(std::string const& type, JsonObject fields) override;
 
