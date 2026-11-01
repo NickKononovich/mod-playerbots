@@ -507,6 +507,8 @@ namespace Leader
         uint8 followIndex = 0;
         float tolerance = LEADER_SPOT_TOLERANCE;
         std::string moveWhy;
+        ObjectGuid healTarget;  // [lead76] the leader's "top up X"
+        uint32 healTargetMs = 0;
         uint32 moveMs = 0;
         AttackEvent attack = AttackEvent::None;
         ObjectGuid target;
@@ -566,6 +568,8 @@ namespace Leader
         void StampPhase(ObjectGuid member, uint32 phase);
         // [lead69] the identical commands the arbiter refused since the last call (command_dupe_blocked)
         uint32 TakeDupesBlocked(ObjectGuid member);
+        // [lead76] the leader's "top up X": the healer heals `target` now (a readiness gap on health); Empty: none
+        bool SetHealTarget(ObjectGuid member, ObjectGuid target);
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder);
         bool SetIntensity(ObjectGuid member, Intensity intensity);

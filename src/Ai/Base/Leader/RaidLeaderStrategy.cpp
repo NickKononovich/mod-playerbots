@@ -95,6 +95,9 @@ void RaidLeaderStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode("leader move order", {NextAction("leader move order", ACTION_EMERGENCY + 4)}));
     triggers.push_back(
         new TriggerNode("leader attack order", {NextAction("leader attack order", ACTION_HIGH + 3)}));
+    // [lead76] the leader's "top up X" (a readiness gap on health): above the healer's own heals
+    triggers.push_back(
+        new TriggerNode("leader heal target", {NextAction("leader heal target", ACTION_HIGH + 2)}));
 }
 
 void RaidLeaderStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
@@ -145,7 +148,7 @@ namespace
     bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
                         bool combat, bool gate = false)
     {
-        if (name == "leader move order" || name == "leader attack order")
+        if (name == "leader move order" || name == "leader attack order" || name == "leader heal target")
             return false;
         auto const in = [&name](std::initializer_list<std::string_view> names)
         {

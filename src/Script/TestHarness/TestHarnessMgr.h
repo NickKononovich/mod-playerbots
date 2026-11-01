@@ -15,6 +15,7 @@
 
 #include <deque>
 #include <map>
+#include <optional>  // [lead76]
 #include <memory>
 #include <set>
 #include <string>
@@ -498,6 +499,15 @@ namespace TestHarness
             std::string bossWaitWhy;       // [lead45] boss_pull_waits: the readiness gap last logged
             ObjectGuid bossWaitFor;        // [lead46] the boss whose pull waits for the group's readiness
             std::string plannerRestFor;    // [lead50] the member the planner's held answer waits for (its Rest)
+            ObjectGuid topUpFor;           // [lead76] the member the healer tops up (a readiness gap on health)
+            std::map<ObjectGuid, std::string> restLogged;  // [lead76] the Rest line state last logged per member
+            std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
+            std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
+            std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
+            std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
+            std::string slowestPass;                       // [lead76] the slowest leader pass this minute
+            uint32 slowestPassUs = 0;
+            uint32 slowestPassLogMs = 0;
             // [lead51] the measured mana spend per member in fights
             struct ManaSpend
             {

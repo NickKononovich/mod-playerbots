@@ -727,6 +727,27 @@ std::string LeaderMoveOrderAction::WalkRefusal(Position const& to)
     return std::string();
 }
 
+bool LeaderHealTargetAction::Execute(Event /*event*/)
+{
+    Leader::MemberEvents events;
+    if (!Leader::Events::Get(bot->GetGUID(), events) || events.healTarget.IsEmpty())
+        return false;
+    Unit* target = botAI->GetUnit(events.healTarget);
+    if (!target || !target->IsAlive() || target->GetHealthPct() >= 100.0f)
+        return false;
+    // the healer's own heals, the most efficient it can cast on the member now (a top-up, not a burst)
+    for (char const* heal : {"rejuvenation", "nourish", "healing touch", "regrowth", "renew", "heal", "lesser heal",
+                             "greater heal", "flash heal", "healing wave", "lesser healing wave", "holy light",
+                             "flash of light"})
+        if (botAI->CanCastSpell(heal, target) && botAI->CastSpell(heal, target))
+        {
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "heal", std::string("tops up ") + target->GetName() +
+                                                                        " with " + heal);
+            return true;
+        }
+    return false;
+}
+
 bool LeaderAttackOrderAction::Execute(Event /*event*/)
 {
     Leader::MemberEvents events;

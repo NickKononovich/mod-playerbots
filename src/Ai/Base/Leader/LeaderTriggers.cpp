@@ -219,6 +219,16 @@ bool LeaderMoveOrderTrigger::IsActive()
            !bot->IsStandState();
 }
 
+bool LeaderHealTargetTrigger::IsActive()
+{
+    Leader::MemberEvents events;
+    if (!bot->IsAlive() || !Leader::Events::Get(bot->GetGUID(), events) || events.healTarget.IsEmpty())
+        return false;
+    Unit* target = botAI->GetUnit(events.healTarget);
+    return target && target->IsAlive() && target->GetHealthPct() < 100.0f &&
+           !bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+}
+
 bool LeaderAttackOrderTrigger::IsActive()
 {
     if (!Leader::LEADER_MEMBER_EVENTS || !Leader::LEADER_ATTACK_EVENTS || !bot->IsAlive())

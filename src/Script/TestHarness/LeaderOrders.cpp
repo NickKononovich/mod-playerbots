@@ -518,6 +518,19 @@ namespace Leader
             return changed;
         }
 
+        bool SetHealTarget(ObjectGuid member, ObjectGuid target)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            bool const changed = e.healTarget != target;
+            e.healTarget = target;
+            e.healTargetMs = slot.gen;
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder)
         {
@@ -768,6 +781,11 @@ namespace Leader
             {
                 e.threatSpell = 0;
                 e.threatTarget.Clear();
+                changed = true;
+            }
+            if (!e.healTarget.IsEmpty() && drop(e.healTargetMs))
+            {
+                e.healTarget.Clear();
                 changed = true;
             }
             if (!e.dontAttack.IsEmpty() && drop(e.dontAttackMs))

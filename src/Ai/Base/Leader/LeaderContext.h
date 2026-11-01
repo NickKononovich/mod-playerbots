@@ -54,6 +54,7 @@ public:
         creators["wipe escape end"] = &LeaderActionContext::wipe_escape_end;
         creators["leader move order"] = &LeaderActionContext::leader_move_order;      // [lead15]
         creators["leader attack order"] = &LeaderActionContext::leader_attack_order;  // [lead15]
+        creators["leader heal target"] = &LeaderActionContext::leader_heal_target;    // [lead76]
     }
 
 private:
@@ -77,6 +78,7 @@ private:
     static Action* wipe_escape_end(PlayerbotAI* botAI) { return new WipeEscapeEndAction(botAI); }
     static Action* leader_move_order(PlayerbotAI* botAI) { return new LeaderMoveOrderAction(botAI); }
     static Action* leader_attack_order(PlayerbotAI* botAI) { return new LeaderAttackOrderAction(botAI); }
+    static Action* leader_heal_target(PlayerbotAI* botAI) { return new LeaderHealTargetAction(botAI); }
 };
 
 class LeaderTriggerContext : public NamedObjectContext<Trigger>
@@ -97,6 +99,7 @@ public:
         creators["burst over"] = &LeaderTriggerContext::burst_over;
         creators["leader move order"] = &LeaderTriggerContext::leader_move_order;      // [lead15]
         creators["leader attack order"] = &LeaderTriggerContext::leader_attack_order;  // [lead15]
+        creators["leader heal target"] = &LeaderTriggerContext::leader_heal_target;    // [lead76]
         creators["wipe escape"] = &LeaderTriggerContext::wipe_escape;
         creators["wipe escape over"] = &LeaderTriggerContext::wipe_escape_over;
 
@@ -123,6 +126,7 @@ private:
     static Trigger* burst_over(PlayerbotAI* botAI) { return new BurstOverTrigger(botAI); }
     static Trigger* leader_move_order(PlayerbotAI* botAI) { return new LeaderMoveOrderTrigger(botAI); }
     static Trigger* leader_attack_order(PlayerbotAI* botAI) { return new LeaderAttackOrderTrigger(botAI); }
+    static Trigger* leader_heal_target(PlayerbotAI* botAI) { return new LeaderHealTargetTrigger(botAI); }
     static Trigger* wipe_escape(PlayerbotAI* botAI) { return new WipeEscapeTrigger(botAI); }
     static Trigger* wipe_escape_over(PlayerbotAI* botAI) { return new WipeEscapeOverTrigger(botAI); }
     static Trigger* pause(PlayerbotAI* botAI) { return new ChatCommandTrigger(botAI, "pause"); }

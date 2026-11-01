@@ -146,6 +146,15 @@ public:
     bool IsActive() override;
 };
 
+// [lead76] The leader's "top up X": a member to heal named and below full.
+class LeaderHealTargetTrigger : public Trigger
+{
+public:
+    LeaderHealTargetTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader heal target") {}
+
+    bool IsActive() override;
+};
+
 // [lead15] The leader's Attack event: its target is in the fight and the member attacks something else / nothing.
 class LeaderAttackOrderTrigger : public Trigger
 {

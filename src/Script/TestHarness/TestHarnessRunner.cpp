@@ -49,6 +49,7 @@
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
 #include "Pet.h"  // [lead38] the pet redirect
+#include <source_location>  // [lead76]
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -21622,7 +21623,8 @@ namespace TestHarness
                 idleMobs.push_back(mob);
         g_leaderIdle = &idleMobs;
         g_leaderCleared = &lead.clearedGround;
-        std::vector<ObjectGuid> const pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+        std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
+        pullMobs.insert(pullMobs.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());  // [lead76]
         g_leaderExempt = &pullMobs;
         struct GuardReset
         {
@@ -21681,6 +21683,73 @@ namespace TestHarness
                                                           .Real("aggroRange", mob ? mob->GetAggroRange(bot) : -1.0f)
                                                           .Real("margin", Leader::LEADER_SPOT_AGGRO_MARGIN));
                     }
+                    // [lead76] user: the leader computes, bigger pulls are better if survivable - a fight whose spots
+                    // an idle pack's reach blocks: once per pack, the capacity model (JudgePack) on the fight plus that
+                    // pack decides - it fits: the pack joins the pull (its mobs count, no longer block); it does not:
+                    // the fight moves away from it (the tank to a spot out of its reach, on the group's side)
+                    if (mob && (party.inCombat || tank->IsInCombat()) && !lead.joinedPack.count(mob->GetGUID()))
+                    {
+                        std::vector<ObjectGuid> combined;
+                        for (Unit* attacker : tank->getAttackers())
+                            if (attacker && attacker->IsAlive())
+                                combined.push_back(attacker->GetGUID());
+                        std::list<Creature*> pack;
+                        IdleAggroCheck packCheck{tank};
+                        Acore::CreatureListSearcher<IdleAggroCheck> packSearcher(mob, pack, packCheck);
+                        float const packReach = mob->GetAggroRange(tank);
+                        Cell::VisitObjects(mob, packSearcher, packReach);
+                        std::vector<ObjectGuid> packMobs{mob->GetGUID()};
+                        for (Creature* other : pack)
+                            if (other != mob && other->GetExactDist(mob) <= packReach)
+                                packMobs.push_back(other->GetGUID());
+                        combined.insert(combined.end(), packMobs.begin(), packMobs.end());
+                        float overload = 0.0f;
+                        std::string judged;
+                        bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                        lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
+                        if (fits)
+                        {
+                            lead.joinedMobs.insert(packMobs.begin(), packMobs.end());
+                            if (Group* group = tank->GetGroup())
+                            {
+                                std::vector<ObjectGuid> all = LeaderPullMobs(lead.commit, lead.commitMob);
+                                all.insert(all.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
+                                Leader::PullPack::Set(group->GetGUID(), all);
+                            }
+                        }
+                        else
+                        {
+                            // away from the pack, out of its reach (its aggro range + the spot guard's margin)
+                            float const dx = tank->GetPositionX() - mob->GetPositionX();
+                            float const dy = tank->GetPositionY() - mob->GetPositionY();
+                            float const length = std::max(0.1f, std::hypot(dx, dy));
+                            float const away = packReach + Leader::LEADER_SPOT_AGGRO_MARGIN;
+                            float x = mob->GetPositionX() + dx / length * std::max(away, length);
+                            float y = mob->GetPositionY() + dy / length * std::max(away, length);
+                            float z = tank->GetPositionZ();
+                            if (tank->GetMap()->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(),
+                                                                                tank->GetPositionY(),
+                                                                                tank->GetPositionZ(), x, y, z))
+                                lead.fightMoveTo = Position(x, y, z);
+                        }
+                        DecisionLog::Instance().Write(run, "leader", fits ? "pack_joins" : "fight_moves_away",
+                                                      mob->GetGUID(), mob->GetName(), true,
+                                                      JsonObject().Num("packMobs", int64(packMobs.size()))
+                                                          .Real("overload", overload).Str("judged", judged)
+                                                          .Str("blocked", bot->GetName()));
+                    }
+                    // [lead77] the group moves as one: a member's walk with the tank refused (an idle mob's reach on
+                    // its path, no walk) out of a fight blocks the group - the tank stays until it is clear, the mob
+                    // in the way is the next pull
+                    if (!(party.inCombat || tank->IsInCombat()) && member != tank->GetGUID() &&
+                        why.rfind("along with the tank", 0) == 0)
+                    {
+                        if (!lead.groupBlockedBy.count(member))
+                            DecisionLog::Instance().Write(run, "leader", "group_blocked", member, bot->GetName(), true,
+                                                          JsonObject().Str("member", bot->GetName()).Str("why", reject)
+                                                              .Str("mob", mob ? mob->GetName() : "-"));
+                        lead.groupBlockedBy[member] = mob ? mob->GetGUID() : ObjectGuid::Empty;
+                    }
                     // [lead71] the arbiter's next candidate: the member stays where it is (never a move it refuses)
                     if (move != Leader::MoveEvent::StandAt || spot.GetExactDist(bot->GetPosition()) > 1.0f)
                         Leader::Events::SetMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
@@ -21697,6 +21766,7 @@ namespace TestHarness
             bool const changed = Leader::Events::SetMove(member, move, spot, tolerance, why);
             if (changed)
                 Leader::Events::StampPhase(member, lead.movePhase);  // [lead74] the purpose's phase
+            lead.groupBlockedBy.erase(member);  // [lead77] its walk is clear again
             // [lead55] command_repeat: the new command is the one before the current (a ping-pong) - logged once per
             // member and purpose, counted (should be 0)
             if (changed && hadMove && bot)
@@ -21755,14 +21825,31 @@ namespace TestHarness
             return stays;
         };
         // a slow-layer call, timed
-        auto const slow = [&](auto&& call)
+        auto const slow = [&](auto&& call, std::source_location where = std::source_location::current())
         {
             auto const start = std::chrono::steady_clock::now();
             auto result = call();
-            lead.slowUsTick += uint32(std::chrono::duration_cast<std::chrono::microseconds>(
-                                          std::chrono::steady_clock::now() - start).count());
+            uint32 const us = uint32(std::chrono::duration_cast<std::chrono::microseconds>(
+                                         std::chrono::steady_clock::now() - start).count());
+            lead.slowUsTick += us;
+            // [lead76] the slowest slow-layer call this minute (its call site's line), logged once a minute
+            if (us > lead.slowestPassUs)
+            {
+                lead.slowestPassUs = us;
+                lead.slowestPass = "TestHarnessRunner.cpp:" + std::to_string(where.line());
+            }
             return result;
         };
+        if (!lead.slowestPassLogMs)
+            lead.slowestPassLogMs = now;
+        else if (getMSTimeDiff(lead.slowestPassLogMs, now) >= MINUTE * IN_MILLISECONDS && lead.slowestPassUs)
+        {
+            DecisionLog::Instance().Write(run, "leader", "leader_cadence", tank->GetGUID(), tank->GetName(), false,
+                                          JsonObject().Str("slowestPass", lead.slowestPass)
+                                              .Num("slowestUs", lead.slowestPassUs));
+            lead.slowestPassUs = 0;
+            lead.slowestPassLogMs = now;
+        }
         auto const wake = [&](Player* bot)
         {
             if (!Leader::LEADER_FAST_REACT)
@@ -22414,7 +22501,11 @@ namespace TestHarness
         // [lead34] the route is data: its waypoint for the tank becomes the leader's MoveTo ("route walk") while no
         // pull is committed and no fight is on (the special waypoints stay the tank's own walk: a jump, a straight
         // line, a gate pass)
-        if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader))
+        if (fighting)
+            lead.groupBlockedBy.clear();
+        // [lead77] the tank walks on only where the group follows: no route walk while a member is blocked
+        if (Leader::LEADER_ROUTE_IS_DATA && !fighting && !lead.commit && !Leader::Orders::IsOpen(party.leader) &&
+            lead.groupBlockedBy.empty())
         {
             TestRunner::Waypoint waypoint;
             if (TestRunner::GetWaypoint(tank->GetGUID(), waypoint) && waypoint.mapId == tank->GetMapId() &&
@@ -22535,6 +22626,21 @@ namespace TestHarness
                             JsonObject().Str("member", member->GetName()).Num("count", dupes));
                     total += dupes;
                 }
+        }
+        // [lead76] the fight moves away from a pack it cannot take (the leader's fight spot): one tank MoveTo
+        if (!fighting)
+        {
+            lead.fightMoveTo.reset();
+            lead.joinedPack.clear();
+            lead.joinedMobs.clear();
+        }
+        else if (lead.fightMoveTo)
+        {
+            if (tank->GetExactDist(*lead.fightMoveTo) <= 2.0f)
+                lead.fightMoveTo.reset();
+            else if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, *lead.fightMoveTo, 2.0f,
+                                 "hazard: the fight moves away from an unpulled pack"))
+                LogFightDrag(run, tank, *lead.fightMoveTo, lead.meetPoint, "away from an unpulled pack");
         }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
@@ -22812,6 +22918,30 @@ namespace TestHarness
                                            .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
         }
 
+        // [lead76] the leader's "top up X": the healer heals the member whose health holds the pull (out of a fight)
+        if (!fighting && healer)
+        {
+            ObjectGuid topUp = lead.topUpFor;
+            if (topUp.IsEmpty())
+                if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor))
+                {
+                    std::vector<Player*> all = seats;
+                    all.push_back(tank);
+                    for (Player* member : all)
+                        if (PullReadiness::MemberBossGap(member, waitBoss).rfind("health", 0) == 0)
+                        {
+                            topUp = member->GetGUID();
+                            break;
+                        }
+                }
+            Player* healed = topUp.IsEmpty() ? nullptr : ObjectAccessor::FindPlayer(topUp);
+            if (healed && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
+                Leader::Events::SetHealTarget(healer->GetGUID(), topUp))
+                logEvent(healer, "TopUp", JsonObject().Str("member", healed->GetName())
+                                              .Real("health", healed->GetHealthPct())
+                                              .Str("why", "a readiness gap on health"));
+        }
+
         uint32 seat = 0;
         for (Player* bot : seats)
         {
@@ -22854,6 +22984,21 @@ namespace TestHarness
                 {
                     needsRest = true;
                     restWhy = "the planner waits for it";
+                }
+                {
+                    // [lead76] the Rest's line vs the member's mana, logged at the Rest's start and end
+                    std::string const state = needsRest ? "rest: " + restWhy : std::string();
+                    std::string& logged = lead.restLogged[guid];
+                    if (state != logged && (needsRest || !logged.empty()))
+                    {
+                        DecisionLog::Instance().Write(
+                            run, "leader", "rest_line", guid, bot->GetName(), false,
+                            JsonObject().Str("member", bot->GetName()).Str("state", needsRest ? "start" : "end")
+                                .Str("line", needsRest ? restWhy : logged)
+                                .Real("mana", bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f)
+                                .Real("health", bot->GetHealthPct()));
+                        logged = state;
+                    }
                 }
                 if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
@@ -24123,6 +24268,9 @@ namespace TestHarness
                                   LeaderAssignSpots(party, tank, committed);
                 if (gate)
                     waitFor = LeaderSpotsWait(party, tank);
+                // [lead77] pull readiness includes positions: no order while a member trails or is blocked
+                if (waitFor.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
+                    waitFor = "a member cannot follow (trailing / its walk blocked)";
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
@@ -24202,7 +24350,10 @@ namespace TestHarness
             // ("Rtpalaa at 71 % mana"), the order stood without a target and the tank idled 50 s. The leader checks
             // the boss readiness (the planner's own BossReadyGap) BEFORE it issues; not ready: no order - the group
             // rests to its boss top-up line (the Rest commands) and the boss pull comes when it is ready
-            std::string const notReady = boss ? PullReadiness::BossNotReady(tank, boss) : std::string();
+            std::string notReady = boss ? PullReadiness::BossNotReady(tank, boss) : std::string();
+            // [lead77] b120 537.5 s: "boss pulled where it stands" with the group ~100 yd away
+            if (boss && notReady.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
+                notReady = "a member cannot follow (trailing / its walk blocked)";
             if (boss && !notReady.empty())
             {
                 lead.bossWaitFor = boss->GetGUID();  // [lead46] the members' Rest reads this wait
@@ -24331,7 +24482,18 @@ namespace TestHarness
                 // [lead43] b92 rfc-h 387-485 s: the patrol pick (held for pre-pull cc, refused) shadowed every other
                 // pick - "every pick here is refused" while the route stood at Trogg 29's stop. A refused / unreachable
                 // patrol or whole-pack pick falls through to the next pick (the route target first)
-                if (intercept && !skipPick(intercept->GetGUID()))
+                // [lead77] the mob that blocks a member's walk with the tank is on the path: the next pull
+                Creature* blocker = nullptr;
+                for (auto const& [blockedMember, blockingMob] : lead.groupBlockedBy)
+                    if (!blockingMob.IsEmpty())
+                        if (Creature* mob = idleAlive(blockingMob); mob && !IsBossLook(tank, mob->GetGUID()))
+                            blocker = mob;
+                if (blocker)
+                {
+                    inputs.pick = blocker->GetGUID();
+                    pickWhy = "it blocks the group's walk";
+                }
+                else if (intercept && !skipPick(intercept->GetGUID()))
                 {
                     inputs.pick = intercept->GetGUID();
                     pickWhy = "patrol pull: " + lead.interceptWhy;
@@ -24528,6 +24690,12 @@ namespace TestHarness
                 if (restFor.empty() && decision.why.find("tank") != std::string::npos)
                     restFor = tank->GetName();
             }
+            // [lead76] a health gap is the healer's "top up X", not a Rest of the member (b118: 15 s for 94 -> 95 %)
+            lead.topUpFor.Clear();
+            if (!restFor.empty() && decision.why.find("% health") != std::string::npos)
+                for (Member const& member : party.members)
+                    if (member.name == restFor)
+                        lead.topUpFor = member.guid;
             if (restFor != lead.plannerRestFor)
             {
                 lead.plannerRestFor = restFor;

@@ -159,6 +159,15 @@ public:
     bool DryMoveTo(Position const& to);
 };
 
+// [lead76] Executes the leader's "top up X": the healer's heal on the named member now.
+class LeaderHealTargetAction : public Action
+{
+public:
+    LeaderHealTargetAction(PlayerbotAI* botAI) : Action(botAI, "leader heal target") {}
+
+    bool Execute(Event event) override;
+};
+
 // [lead15] Executes the leader's Attack event: attacks the leader's target (the pull's first mob) at once.
 class LeaderAttackOrderAction : public AttackAction
 {
