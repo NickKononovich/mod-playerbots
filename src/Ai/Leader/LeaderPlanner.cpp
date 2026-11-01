@@ -4074,6 +4074,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool rescaledSpells = false;
         float landedScale = 1.0f;  // the tank's measured calibration (LandedCalibration), at most 1
         float aoeTargetDps = 0.0f;  // [b44_packs] the group's AoE damage per second on each stacked mob (0: none)
+        bool withBoss = false;      // [lead201] a boss's own health and damage are in the estimate (the boss judge)
     };
 
     // `groupDps` > 0: the fight's cost and length are read from the mobs' health too. The group kills one mob after
@@ -4104,7 +4105,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (IsBossMob(mob))
             {
                 estimate.boss = true;
-                continue;
+                if (!mode.withBoss)
+                    continue;
             }
 
             if (Creature* creature = mob->ToCreature())
@@ -11989,13 +11991,29 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     EstimateMode mode;
     mode.measured = true;
     mode.landedScale = LandedCalibration(bot);
-    PackEstimate const estimate = EstimatePack(mobs, bot, groupDps, mode);
+    PackEstimate estimate = EstimatePack(mobs, bot, groupDps, mode);
+    // [lead201] a boss is judged on his own facts: his health over the group's measured damage, what he (and the adds
+    // his script brings) lands on the tank meanwhile against the healers' mana and their healing per second
+    if (estimate.boss)
+    {
+        mode.withBoss = true;
+        estimate = EstimatePack(mobs, bot, groupDps, mode);
+    }
     OverloadTerms terms;
     CarefulOverload(bot, estimate, strength, support, kit, true, &terms);
+    if (estimate.boss && estimate.mobs == 1)  // a lone boss: CarefulOverload's peak term is a pack's (mobs > 1)
+    {
+        float const healing = PlanTankHealth(bot) * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
+        if (healing > 0.0f)
+            terms.peak = CAREFUL_DTPS_SHARE * estimate.landedDps / healing;
+    }
     overload = terms.Max();
     bool const fits = !estimate.boss && overload <= 1.0f;
     why = Acore::StringFormat("{} mobs, cost {:.2f} tank hp, fight {:.0f} s, overload {:.2f} of 1.00{}", estimate.mobs,
                               estimate.cost, estimate.fightSec, overload, estimate.boss ? ", a boss" : "");
+    if (estimate.boss)
+        why += Acore::StringFormat(" (healer mana {:.2f}, healing {:.2f}, group dps {:.0f}, landed {:.0f}/s)",
+                                   terms.size, terms.peak, groupDps, estimate.landedDps);
     return fits;
 }
 
