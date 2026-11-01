@@ -7550,10 +7550,22 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         return false;
     }
 
-    if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < CAREFUL_TANK_MANA)
+    // [lead74] user: no hard mana constant - the tank's computed line for its next fight (RestState::TankManaLine:
+    // its measured net use x the fight's seconds + the reserve + the pick-ups' taunt cost), the same line its rest
+    // uses; CAREFUL_TANK_MANA only without a known next fight
     {
-        _planNotReadyWhy = Acore::StringFormat("paladin tank at {:.0f} % mana", bot->GetPowerPct(POWER_MANA));
-        return false;
+        RestState::NextFight next;
+        std::string terms;
+        // no published plan: the pack this look is about (its mobs, the fight seconds from them), no fixed %
+        if (!RestState::PredictNextFight(bot, next))
+            next.mobs = std::max<uint32>(1, uint32(_planLookPack.size()));
+        float const tankLine = bot->GetMaxPower(POWER_MANA) ? RestState::TankManaLine(bot, next, &terms) : 0.0f;
+        if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < tankLine)
+        {
+            _planNotReadyWhy = Acore::StringFormat("paladin tank at {:.0f} % mana (needs {})",
+                                                   bot->GetPowerPct(POWER_MANA), terms);
+            return false;
+        }
     }
 
     // Nor with a healer still drinking up from the last fight (wave 10 Stratholme: the next pack 24 s after a

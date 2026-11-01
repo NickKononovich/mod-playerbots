@@ -558,6 +558,12 @@ namespace Leader
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why);
         // [lead64] the position arbiter's precedence of a move by its purpose (hazard 5 ... walk-along 0)
         int32 MovePrecedence(std::string const& why);
+        // [lead74] the arbiter's stored decision stands until its end: a MoveTo / StandAt not asserted this tick
+        // is kept while the member (at `at`) has not arrived - no "was -" gap before the tick's end
+        // ... only within the move phase it was issued in (StampPhase): its purpose ends with the phase (the fight
+        // starts / ends, a new order or commitment, the fight target changes or dies)
+        void HoldMove(ObjectGuid member, Position const& at, uint32 phase);
+        void StampPhase(ObjectGuid member, uint32 phase);
         // [lead69] the identical commands the arbiter refused since the last call (command_dupe_blocked)
         uint32 TakeDupesBlocked(ObjectGuid member);
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,

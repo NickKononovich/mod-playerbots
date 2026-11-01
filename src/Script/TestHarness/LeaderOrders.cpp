@@ -467,6 +467,7 @@ namespace Leader
                 Position prevMoveSpot;
                 uint32 moveSetGen = 0;
                 uint32 dupesBlocked = 0;
+                uint32 holdPhase = 0;  // [lead74] the move phase the current move was issued in
                 uint32 gen = 1;  // [lead27] the leader's tick generation: a field asserted in it is current
             };
             std::mutex eventLock;
@@ -668,6 +669,28 @@ namespace Leader
             if (changed)
                 ++e.seq;
             return changed;
+        }
+
+        void StampPhase(ObjectGuid member, uint32 phase)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            eventSlots[member].holdPhase = phase;
+        }
+
+        void HoldMove(ObjectGuid member, Position const& at, uint32 phase)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end())
+                return;
+            Slot& slot = found->second;
+            MemberEvents& e = slot.events;
+            // its purpose still holds (the same move phase: no fight start / end, no new order or commitment, the
+            // same fight target alive) and the member is still on its way: the stored decision stands this tick too
+            if ((e.move == MoveEvent::MoveTo || e.move == MoveEvent::StandAt) && e.moveMs != slot.gen &&
+                slot.holdPhase == phase &&
+                at.GetExactDist2d(e.spot.GetPositionX(), e.spot.GetPositionY()) > e.tolerance)
+                e.moveMs = slot.gen;
         }
 
         uint32 TakeDupesBlocked(ObjectGuid member)

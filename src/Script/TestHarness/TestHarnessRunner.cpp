@@ -21695,6 +21695,8 @@ namespace TestHarness
             Leader::MemberEvents before;
             bool const hadMove = Leader::Events::Get(member, before) && before.move != Leader::MoveEvent::None;
             bool const changed = Leader::Events::SetMove(member, move, spot, tolerance, why);
+            if (changed)
+                Leader::Events::StampPhase(member, lead.movePhase);  // [lead74] the purpose's phase
             // [lead55] command_repeat: the new command is the one before the current (a ping-pong) - logged once per
             // member and purpose, counted (should be 0)
             if (changed && hadMove && bot)
@@ -21863,13 +21865,19 @@ namespace TestHarness
         {
             std::vector<Player*> const& seats;
             Player* tank;
+            uint32 const& phase;
             ~TickEnd()
             {
+                // [lead74] the stored position decisions stand until they arrive (generalised lead72)
                 for (Player* bot : seats)
+                {
+                    Leader::Events::HoldMove(bot->GetGUID(), bot->GetPosition(), phase);
                     Leader::Events::EndTick(bot->GetGUID());
+                }
+                Leader::Events::HoldMove(tank->GetGUID(), tank->GetPosition(), phase);
                 Leader::Events::EndTick(tank->GetGUID());
             }
-        } tickEnd{seats, tank};
+        } tickEnd{seats, tank, lead.movePhase};
         for (Member const& member : party.members)
             if (Player* dead = ObjectAccessor::FindPlayer(member.guid); dead && !dead->IsAlive())
                 Leader::Events::Clear(member.guid);
@@ -22731,8 +22739,10 @@ namespace TestHarness
         {
             Leader::PullOrder phaseOrder;
             uint32 const orderId = Leader::Orders::GetOpen(party.leader, phaseOrder) ? phaseOrder.id : 0;
+            // [lead74] ... and the fight target (a held move's purpose ends when its target changes or dies)
             std::string const key = std::string(fighting ? "fight:" : "out:") + std::to_string(orderId) + ":" +
-                                    std::to_string(lead.commitMob.GetCounter());
+                                    std::to_string(lead.commitMob.GetCounter()) + ":" +
+                                    std::to_string(target ? target->GetGUID().GetCounter() : 0);
             if (key != lead.movePhaseKey)
             {
                 lead.movePhaseKey = key;

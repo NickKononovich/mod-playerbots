@@ -390,6 +390,29 @@ namespace
     thread_local bool ignoreLeaderRest = false;  // [lead59] BelowOwnLine reads the bot's own lines
 }
 
+float TankManaLine(Player* tank, NextFight const& fight, std::string* why)
+{
+    float const fightSec =
+        fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+    std::string terms;
+    float line = FightManaLine(tank, fightSec, fight.cost, &terms);
+    float tauntPct = 0.0f;
+    uint32 const maxMana = tank->GetMaxPower(POWER_MANA);
+    // Hand of Reckoning, Righteous Defense (the paladin's taunts); the others' taunts cost no mana
+    for (uint32 spell : {62124u, 31789u})
+        if (tank->HasSpell(spell) && maxMana)
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+            {
+                float const pct = 100.0f * float(info->CalcPowerCost(tank, info->GetSchoolMask())) / float(maxMana);
+                tauntPct = tauntPct > 0.0f ? std::min(tauntPct, pct) : pct;
+            }
+    float const pickUps = fight.mobs > 1 ? float(fight.mobs - 1) : 0.0f;
+    line = std::min(100.0f, line + pickUps * tauntPct);
+    if (why)
+        *why = Acore::StringFormat("{} + {:.0f} pick-ups x {:.1f} %", terms, pickUps, tauntPct);
+    return line;
+}
+
 // [lead47] the leader's Rest command is on this led bot: it rests now, by the leader's line (no line of its own)
 bool LeaderRests(Player* bot)
 {
@@ -435,7 +458,9 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
         {
             fightSec = fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
             std::string terms;
-            line = FightManaLine(bot, fightSec, fight.cost, &terms);
+            // [lead74] the tank: its line with the pick-ups (the same as the planner's tank hold)
+            line = PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, &terms)
+                                            : FightManaLine(bot, fightSec, fight.cost, &terms);
             fightNote = Acore::StringFormat("need {} for the next fight ({}{} mobs)", terms,
                                             fight.boss ? "a boss, " : "", fight.mobs);
         }

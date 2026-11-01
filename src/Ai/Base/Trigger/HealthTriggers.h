@@ -319,6 +319,10 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr);
 // [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
 void NoteManaRate(ObjectGuid member, float pctPerSec);
+// [lead74] a tank's mana line for its next fight: FightManaLine for the fight plus the cost of the pick-ups it may need
+// (the fight's mobs beyond the first, each one taunt: the cheapest known taunt's real mana cost); one line for the
+// planner's tank hold and the tank's rest. `why`: the terms
+float TankManaLine(Player* tank, NextFight const& fight, std::string* why = nullptr);
 
 // The bot sits with a food / drink aura (spell specific, breaks on standing up), not a passive regen buff.
 bool IsEating(Player* player);
