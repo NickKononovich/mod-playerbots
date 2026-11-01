@@ -295,6 +295,12 @@ float ThreatMultiplier::GetValue(Action* action)
     // A mob already hitting this bot is not held off by its silence: the bot fights it until the tank takes it.
     // Stockade 2026-10-24, a rogue under three mobs the tank had no threat on read 100 % and stood 25 s idle.
     Unit* target = AI_VALUE(Unit*, "current target");
+    // [rot46] a cast on another mob - a multi-DoT "on attacker" (balance Moonfire / Insect Swarm), a spell at a group
+    // member's attacker - is judged on that mob: the gate read the current target only, so the DoTs went onto loose
+    // casters the tank had no threat on (b180 5C: the balance druid took 10 of the bear's 17 lost mobs)
+    if (Unit* actionTarget = action->GetTarget(); actionTarget && actionTarget != target && actionTarget != bot &&
+                                                  !actionTarget->GetGUID().IsPlayer() && bot->IsHostileTo(actionTarget))
+        target = actionTarget;
     if (target && target->GetVictim() == bot)
         return 1.0f;
 
