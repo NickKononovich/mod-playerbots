@@ -10,6 +10,7 @@
 #include "DynamicObject.h"
 #include "InstanceScript.h"
 #include "LeaderCommandState.h"  // [rot2] [rot3]
+#include "LeaderOrders.h"        // [rot10] Leader::ExecutorMember
 #include "Log.h"  // [rot1]
 #include "Player.h"
 #include "Playerbots.h"
@@ -59,6 +60,12 @@ namespace
         Leader::MemberEvents command;
         LeaderCommandState::State const state = LeaderCommandState::Read(bot, command);
         if (state == LeaderCommandState::State::NotLed)
+            return true;
+
+        // [rot10] the led tank is no executor: the leader sends it no Prepare / Ready? / Rest (only its pull order),
+        // so it buffs on its own rule (run 20261101-171156-rfc-h-5D-4: the bear never marked the DK, the pull held
+        // for that Mark)
+        if (!Leader::ExecutorMember(bot))
             return true;
 
         // [rot3] a stale command: no buffs of its own
