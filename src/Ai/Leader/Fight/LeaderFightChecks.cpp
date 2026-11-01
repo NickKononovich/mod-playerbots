@@ -84,6 +84,14 @@ namespace Leader::Fight
                                                  VMAP::ModelIgnoreFlags::Nothing);
     }
 
+    bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at)
+    {
+        float const gap = at.GetExactDist(target->GetPosition());
+        float const reach = std::max(LeaderShootReach(bot), LeaderSpellReach(bot));
+        float const minGap = bot->getClass() == CLASS_HUNTER ? LeaderRangedMinGap(bot, target) : 0.0f;
+        return reach > 0.0f && gap <= reach && gap >= minGap && LeaderSeesFrom(bot, target, at);
+    }
+
     bool HealReaches(Player* tank, Position const& from, Position const& to)
     {
         return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&
@@ -809,9 +817,15 @@ namespace Leader::Fight
         float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
         if (melee && gap > target->GetCombatReach() + bot->GetCombatReach() + 1.5f)
             return "out of melee reach of the target";
-        if (!melee && !PlayerbotAI::IsHeal(bot) && gap > LeaderSpellReach(bot) - g_spotAcquireMargin)
+        // [lead203] b181 (8 runs): 240 re-spots "inside its minimum range", and this rule (30 yd, the 2D gap) and the
+        // Attack block's (28.5 yd SpellDistance, 3D) left each other's spots. A held ranged spot breaks only where the
+        // member cannot cast from it (LeaderCastsFrom's range; the minimum range is Auto Shot's dead zone)
+        float const castGap = target->GetExactDist(spot);
+        float const castReach = std::max(LeaderShootReach(bot), LeaderSpellReach(bot));
+        if (!melee && !PlayerbotAI::IsHeal(bot) && castGap > castReach - g_spotAcquireMargin)
             return "out of spell range of the target";
-        if (!melee && !PlayerbotAI::IsHeal(bot) && gap < LeaderRangedMinGap(bot, target))  // [lead157]
+        if (!melee && !PlayerbotAI::IsHeal(bot) && bot->getClass() == CLASS_HUNTER &&
+            castGap < LeaderRangedMinGap(bot, target))  // [lead157]
             return "inside its minimum range of the target";
         if (LeaderZoneAt(zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), LEADER_HAZARD_EDGE))
             return "a hazard covers it";

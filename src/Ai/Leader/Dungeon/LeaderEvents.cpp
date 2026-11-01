@@ -3073,12 +3073,12 @@ namespace Leader::Dungeon
                         bool const runningIn = attackOn->isMoving() && tank->IsAlive() &&
                                                !(attackOn->GetVictim() == tank && tank->IsWithinMeleeRange(attackOn));
                         Unit* const judgedOn = runningIn ? static_cast<Unit*>(tank) : attackOn;
-                        auto const shootsFrom = [&](Position const& at)
-                        {
-                            float const gap = at.GetExactDist(judgedOn->GetPosition());
-                            return gap <= shootReach && gap >= LeaderRangedMinGap(bot, judgedOn) &&
-                                   LeaderSeesFrom(bot, judgedOn, at);
-                        };
+                        // [lead203] b181 (8 runs): 478 re-spots "the tank its Attack target runs to" and 293 "its
+                        // Attack target", ~7 yd each, of members that cast from where they stood. One fact for every
+                        // spot rule (LeaderCastsFrom): no re-spot while the member casts on its Attack target from
+                        // where it stands; a new spot only when it cannot
+                        auto const shootsFrom = [&](Position const& at) { return LeaderCastsFrom(bot, judgedOn, at); };
+                        bool const castsNow = LeaderCastsFrom(bot, attackOn, bot->GetPosition());
                         auto const kept = lead.combatSpots.find(guid);
                         bool const spotShoots = kept != lead.combatSpots.end() && shootsFrom(kept->second.second);
                         // [lead174] b179 rfc-h 5A: 122 re-spots "out of its reach / sight of the tank its Attack target
@@ -3087,7 +3087,7 @@ namespace Leader::Dungeon
                         // the tank stands: the spot kept for this target holds while the tank walks
                         bool const tankSettling = runningIn && tank->isMoving() && kept != lead.combatSpots.end() &&
                                                   kept->second.first == attackOn->GetGUID();
-                        if (!tankSettling && !shootsFrom(bot->GetPosition()) && !spotShoots)
+                        if (!tankSettling && !castsNow && !shootsFrom(bot->GetPosition()) && !spotShoots)
                         {
                             std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                             // [lead137] never back to the spot it just left for this target

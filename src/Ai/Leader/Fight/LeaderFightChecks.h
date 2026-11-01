@@ -125,6 +125,10 @@ namespace Leader::Fight
     float LeaderRangedMinGap(Player* bot, Unit* target);
     // [lead127] the member standing at `at` sees `target` (the game's IsWithinLOSInMap from there)
     bool LeaderSeesFrom(Player* bot, Unit* target, Position const& at);
+    // [lead203] a ranged member standing at `at` casts on `target`: within its spells' range (the larger of its
+    // positioning reach and LeaderSpellReach), out of Auto Shot's dead zone (a hunter), in sight. The one fact both
+    // combat spot rules leave a spot by
+    bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at);
 
     // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
     // unpulled pack) stands within the AoE radius (plus a margin) of it
