@@ -144,6 +144,10 @@ namespace Leader
         virtual void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point, uint32 untilMs) = 0;
         // the run fails (planner_no_option with a stop)
         virtual void FailRun(std::string const& reason) = 0;
+        // the leader's walk to (x, y, z) (the route walk's waypoint; `straight`: walked straight)
+        virtual void SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight = false) = 0;
+        // a boss encounter of the run is in progress
+        virtual bool BossEncounterInProgress() const = 0;
     };
 }
 

@@ -276,6 +276,19 @@ namespace Leader
         int32 lastLinkIdx = -1;
         ObjectGuid lastLinkFor;
         uint32 lastLinkMs = 0;
+        // [lead107] moved from the Party with the patrol stage
+        // The idle mob outside the target's pack whose aggro reach ended the leader's approach (Steer), if any.
+        ObjectGuid approachBlocker;
+        // ROUTE_STOP_KEEPS_WAIT: where the leader stands waiting for a pull and since when, whatever the target (a
+        // retarget to another mob of the same pack, or behind the same blocker, keeps the clock).
+        Position stopPos;
+        uint32 stopSinceMs = 0;
+        uint32 stopLastMs = 0;
+        uint32 lastStarterUseMs = 0;
+        ObjectGuid neighbourTarget;  // boss_neighbour_target: kept as the target (Retarget) until NEIGHBOUR_TARGET_MS
+        uint32 neighbourTargetUntilMs = 0;
+        bool guaranteeHolding = false;
+        std::string lastEvent;
     };
 }
 

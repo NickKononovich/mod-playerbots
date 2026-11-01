@@ -355,15 +355,8 @@ namespace TestHarness
         std::set<ObjectGuid> targetDied;
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
         std::map<ObjectGuid, uint32> carefulRefused;
-        // The idle mob outside the target's pack whose aggro reach ended the leader's approach (Steer), if any.
-        ObjectGuid approachBlocker;
         // The last skipped neighbour pack that stopped an approach (ROUTE_SKIP_BEHIND_SKIPPED), for the idle guard.
         std::string behindSkipped;
-        // ROUTE_STOP_KEEPS_WAIT: where the leader stands waiting for a pull and since when, whatever the target (a
-        // retarget to another mob of the same pack, or behind the same blocker, keeps the clock).
-        Position stopPos;
-        uint32 stopSinceMs = 0;
-        uint32 stopLastMs = 0;
         ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
         ObjectGuid meeting;    // the member the leader walks back to (MeetMember), logged once per episode
         std::set<uint32> endlessSummons;  // summoned entries no longer route targets (logged once each)
@@ -409,7 +402,6 @@ namespace TestHarness
         // Idle guard (CheckIdle, user rule 2026-10-25: two minutes without a fight is a blocker): time without a fight
         // outside rest / buffing (idleMs) and in genuine event waits (eventWaitMs), each logged once per episode.
         uint32 idleTickMs = 0;
-        uint32 lastStarterUseMs = 0;
         // ROUTE_DETOUR_FALLBACK: until then detours are targets too (everything left was a detour: the long way).
         uint32 detourFallbackUntilMs = 0;  // the last event_start (an event the group works through: CoS crates)
         uint32 rearmCheckLogMs = 0;  // ReopenKeyDoorHeld: the last "rearm_check" line (a failed re-key, its reason)
@@ -420,8 +412,6 @@ namespace TestHarness
         // Boss approach held at a neighbour pack (neighbourStop): the boss and how often in a row.
         ObjectGuid neighbourHoldBoss;
         uint32 neighbourHolds = 0;
-        ObjectGuid neighbourTarget;  // boss_neighbour_target: kept as the target (Retarget) until NEIGHBOUR_TARGET_MS
-        uint32 neighbourTargetUntilMs = 0;
         // route_blocker_body_pull: the pack that stands on the way to the route's target (its walk enters the pack's
         // reach) is the target, and pulled - by sight, else walked in - never skipped while it is on the way.
         std::vector<ObjectGuid> routeBlockerPack;
@@ -435,13 +425,11 @@ namespace TestHarness
         // stand guarantee (CarefulPlanVerdict::GetRefusal), and when that guarantee came due (0: not yet).
         ObjectGuid guaranteeTarget;
         uint32 guaranteeDueMs = 0;
-        bool guaranteeHolding = false;
         // [held_for_now_cap] the target the planner answers "held for now" for, and since when (0: none)
         ObjectGuid heldForNowTarget;
         uint32 heldForNowSinceMs = 0;
         bool idleLogged = false;
         bool eventWaitLogged = false;
-        std::string lastEvent;
         // Bots walk by themselves (HARNESS_MOVES_BOTS): moves the harness still made (0 when off), and what the
         // bots' own movement could not do (bot_cannot_move, throttled per bot, capability and reason).
         uint32 harnessMoves = 0;
@@ -900,6 +888,8 @@ namespace TestHarness
         void NoteHopelessPack(Player* leader, Creature* mob) override;
         void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point, uint32 untilMs) override;
         void FailRun(std::string const& reason) override;
+        void SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight) override;
+        bool BossEncounterInProgress() const override;
         void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
         void LogEvent(std::string const& type, JsonObject fields) override;
 
