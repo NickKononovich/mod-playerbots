@@ -175,19 +175,8 @@ float BloodDnDRuneReserveMultiplier::GetValue(Action* action)
     if (!dndId || !bot->HasSpell(dndId))
         return 1.0f;
 
-    uint32 const cooldown = bot->GetSpellCooldownDelay(dndId);
+    uint32 const cooldown = bot->HasSpellCooldown(dndId) ? bot->GetSpellCooldownDelay(dndId) : 0;
     if (cooldown > READY_WINDOW_MS)
-    {
-        _readySinceMs = 0;
-        return 1.0f;
-    }
-
-    uint32 const now = getMSTime();
-    if (cooldown)
-        _readySinceMs = 0;
-    else if (!_readySinceMs)
-        _readySinceMs = now;
-    else if (getMSTimeDiff(_readySinceMs, now) > DK_DND_RESERVE_MAX_MS)
         return 1.0f;
 
     uint8 ready[NUM_RUNE_TYPES] = {};
@@ -198,6 +187,11 @@ float BloodDnDRuneReserveMultiplier::GetValue(Action* action)
     }
 
     uint8 const before = DnDRunesCovered(ready);
+    // [rot14] no clock: Death and Decay ready with all its runes and still not cast (its trigger ranks above every
+    // spender, so it did not want it this tick: immune, out of sight) frees the runes
+    if (!cooldown && before >= DND_RUNE_TYPES)
+        return 1.0f;
+
     if (!PayRunes(ready, RUNE_BLOOD, blood) || !PayRunes(ready, RUNE_FROST, frost) ||
         !PayRunes(ready, RUNE_UNHOLY, unholy))
         return 1.0f;  // not payable: the cast check refuses it anyway
