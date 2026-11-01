@@ -244,7 +244,6 @@ namespace TestHarness
         constexpr uint32 ENTRY_REFUSED_MAX_MS = 5 * MINUTE * IN_MILLISECONDS;  // then the run ends with the cause
         using Leader::Travel::HOR_MAP;  // [lead107] RouteSteer.h
         constexpr uint32 HOR_DATA_WAVE_NUMBER = 8;  // halls_of_reflection.h DATA_WAVE_NUMBER
-        using Leader::Travel::SCRIPT_EVENT_MAX_MS;  // [lead107] RouteSteer.h
         constexpr float GHOST_DIRECT_RANGE = 40.0f;  // no usable path this close to the portal: straight to it
         constexpr float GHOST_ARRIVED_RANGE = 8.0f;  // standing on the portal, not worth a log line
         constexpr float GHOST_CORNER_STEP = 150.0f;  // one move along a corner path (corpse runs over 590 yd)
@@ -1310,12 +1309,12 @@ namespace TestHarness
 
         using Leader::Travel::AtHoldGuard;  // [lead107] RouteTargets.h
 
-        // A script slot IN_PROGRESS for at most SCRIPT_EVENT_MAX_MS (an event between its waves).
+        // A script slot IN_PROGRESS (an event between its waves): the instance script's own state is the fact
+        // ([lead135] no SCRIPT_EVENT_MAX_MS 10 min cap)
         bool ScriptEventRunning(Party const& party)
         {
             for (BossTrack const& boss : party.bosses)
-                if (!boss.dbc && !boss.killed && !boss.failed && boss.lastState == IN_PROGRESS &&
-                    (!boss.attemptStartMs || getMSTimeDiff(boss.attemptStartMs, getMSTime()) < SCRIPT_EVENT_MAX_MS))
+                if (!boss.dbc && !boss.killed && !boss.failed && boss.lastState == IN_PROGRESS)
                     return true;
             return false;
         }

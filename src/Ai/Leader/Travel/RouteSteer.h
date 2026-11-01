@@ -138,7 +138,6 @@ namespace Leader::Travel
 
     // A script slot IN_PROGRESS with nothing to fight is an event between its waves (Halls of Stone: the Tribunal
     // of Ages, three 100 s phases with dialogue): no end of the run meanwhile, at most this long.
-    constexpr uint32 SCRIPT_EVENT_MAX_MS = 10 * MINUTE * IN_MILLISECONDS;
 
     // A target whose approach a skipped neighbour pack stops is skipped at once (Steer, approach stop).
     constexpr bool ROUTE_SKIP_BEHIND_SKIPPED = true;
