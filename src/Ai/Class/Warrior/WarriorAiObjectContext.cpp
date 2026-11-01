@@ -97,8 +97,6 @@ public:
         creators["bloodthirst ready"] = &WarriorTriggerFactoryInternal::bloodthirst_ready;
         creators["whirlwind ready"] = &WarriorTriggerFactoryInternal::whirlwind_ready;
         creators["shield slam ready"] = &WarriorTriggerFactoryInternal::shield_slam_ready;
-        creators["concussion blow ready"] = &WarriorTriggerFactoryInternal::concussion_blow_ready;
-        creators["shockwave ready"] = &WarriorTriggerFactoryInternal::shockwave_ready;
         // [b31_wr] stance-aware AoE and the rage-gated Cleave
         creators["light aoe berserker stance"] = &WarriorTriggerFactoryInternal::light_aoe_berserker_stance;
         creators["light aoe thunder clap stance"] = &WarriorTriggerFactoryInternal::light_aoe_thunder_clap_stance;
@@ -201,11 +199,6 @@ private:
     static Trigger* bloodthirst_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "bloodthirst"); }
     static Trigger* whirlwind_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "whirlwind"); }
     static Trigger* shield_slam_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "shield slam"); }
-    static Trigger* concussion_blow_ready(PlayerbotAI* botAI)
-    {
-        return new WarriorSpellReadyTrigger(botAI, "concussion blow");
-    }
-    static Trigger* shockwave_ready(PlayerbotAI* botAI) { return new WarriorSpellReadyTrigger(botAI, "shockwave"); }
     static Trigger* light_aoe_berserker_stance(PlayerbotAI* botAI)
     {
         return new WarriorStanceAoeTrigger(botAI, "light aoe berserker stance", WarriorStanceAoeTrigger::BERSERKER,
