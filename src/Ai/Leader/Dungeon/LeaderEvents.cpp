@@ -127,6 +127,18 @@ namespace Leader::Dungeon
             return line < 0.0f || !bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) < line;
         }
 
+        // [lead226] b185 rfc-h 5B 721-838 s: 50 "sits: to full" Rests to the tank eating in Ragefire's magma - each
+        // tick of the lava broke the food and the next tick ordered the Rest again. What hurts a member out of a
+        // fight (lava / slime under it, a damage over time on it) is no fact for a Rest: the Rest waits until it ends
+        char const* HurtOutOfFight(Player* bot)
+        {
+            if (InHarmfulLiquid(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
+                return "it stands in lava / slime";
+            if (bot->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE) || bot->HasAuraType(SPELL_AURA_PERIODIC_DAMAGE_PERCENT))
+                return "a damage over time is on it";
+            return nullptr;
+        }
+
         std::string PlannerWaitWhy(float line)
         {
             return line < 0.0f ? std::string("the planner waits for it")
@@ -2008,7 +2020,13 @@ namespace Leader::Dungeon
                                         ? !tankGap.empty()
                                         : RestState::BelowOwnLine(tank, &tankRestWhy) && !MemberFull(tank)) &&
                                                       (tank->IsSitState() || RestState::CanRest(tank));
-            if (tankRests && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
+            char const* const tankHurt = tankRests ? HurtOutOfFight(tank) : nullptr;
+            if (tankHurt && lead.restHurtLogged.insert(tank->GetGUID()).second)
+                Decisions().Write(run, "leader", "rest_held", tank->GetGUID(), tank->GetName(), true,
+                                  JsonObject().Str("member", tank->GetName()).Str("why", tankHurt));
+            if (!tankHurt)
+                lead.restHurtLogged.erase(tank->GetGUID());
+            if (tankRests && !tankHurt && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
                 logEvent(tank, "Rest", JsonObject().Str("who", "tank")
                                            .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
         }
@@ -2172,7 +2190,13 @@ namespace Leader::Dungeon
                         logged = state;
                     }
                 }
-                if (needsRest && (bot->IsSitState() || RestState::CanRest(bot)))
+                char const* const hurt = needsRest ? HurtOutOfFight(bot) : nullptr;
+                if (hurt && lead.restHurtLogged.insert(guid).second)
+                    Decisions().Write(run, "leader", "rest_held", guid, bot->GetName(), true,
+                                      JsonObject().Str("member", bot->GetName()).Str("why", hurt));
+                if (!hurt)
+                    lead.restHurtLogged.erase(guid);
+                if (needsRest && !hurt && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
                     restCommanded = true;
                     if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Rest))

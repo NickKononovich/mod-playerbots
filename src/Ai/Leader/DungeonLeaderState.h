@@ -277,6 +277,7 @@ namespace Leader
         float plannerRestLine = -1.0f;  // [lead221] the mana line that answer names for it ("needs N %"), -1: none
         ObjectGuid topUpFor;           // [lead76] the member the healer tops up (a readiness gap on health)
         std::map<ObjectGuid, std::string> restLogged;  // [lead76] the Rest line state last logged per member
+        std::set<ObjectGuid> restHurtLogged;  // [lead226] no Rest while it takes damage: logged once per stretch
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
         std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)

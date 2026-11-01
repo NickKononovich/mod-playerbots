@@ -5,6 +5,7 @@
  */
 
 #include "TestHarnessMgr.h"
+#include "TerrainHazard.h"  // [lead226] InHarmfulLiquid: no dry place in lava
 
 #include "ANAddTactics.h"
 #include "AccountMgr.h"
@@ -3102,7 +3103,8 @@ namespace TestHarness
         // The last dry place of the leader inside, out of combat: where the group rests and where a member who stays
         // under water goes (bots do not surface to breathe).
         if (map && leader->IsAlive() && leader->GetMap() == map && !leader->IsInCombat() &&
-            !leader->Unit::IsInWater() && !leader->IsFlying())
+            !leader->Unit::IsInWater() && !leader->IsFlying() &&
+            !InHarmfulLiquid(leader, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()))
         {
             party.dryPos = leader->GetPosition();
             party.hasDryPos = true;

@@ -195,9 +195,12 @@ namespace Leader::Travel
             }
             water.surfacing = false;
 
-            bool const wet = bot->Unit::IsInWater();
+            // [lead226] lava / slime under a member out of a fight is left at once, resting or not (b185 5B: the tank
+            // ate in Ragefire's magma for 2 min and burned to death)
+            bool const burns = InHarmfulLiquid(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            bool const wet = bot->Unit::IsInWater() || burns;
             // Resting (eating / drinking / waiting for mana) happens on dry ground, out of combat.
-            bool const leave = resting && wet && !bot->IsInCombat();
+            bool const leave = (resting || burns) && wet && !bot->IsInCombat();
             if (!wet || !leave)
             {
                 // Out of the water, or the rest is over: the dry spot is no longer its waypoint.
