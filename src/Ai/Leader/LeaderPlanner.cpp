@@ -7297,8 +7297,13 @@ bool AggressiveTargetAction::DecideLook()
             uint32 const now = getMSTime();
             std::string why;
             bool held = PullReadiness::GroupPreparing(bot, &why);
-            if (!held && (RestState::IsDrinking(bot) || RestState::IsEating(bot) || RestState::WantsDrink(bot) ||
-                          RestState::WantsFood(bot)))
+            // [lead221] b185 rfc-h 5E 1317-1324 s: "paladin tank at 73 % mana (needs 77 %)", then "the tank rests"
+            // while it drank on to 100 % - its drink held the pull and the hold (lead50) its Rest. A led tank's rest
+            // holds the pull while it is below its own lines (the tank mana line below holds the rest), or eats
+            bool const restHolds = Leader::LedGroup(bot) ? RestState::BelowOwnLine(bot) || RestState::IsEating(bot)
+                                                         : RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
+                                                               RestState::WantsDrink(bot) || RestState::WantsFood(bot);
+            if (!held && restHolds)
             {
                 std::pair<ObjectGuid, uint32>& hold = selfRestHolds[bot->GetGUID()];
                 if (hold.first != target->GetGUID() || !hold.second)

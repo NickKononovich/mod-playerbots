@@ -274,6 +274,7 @@ namespace Leader
         std::string bossWaitWhy;       // [lead45] boss_pull_waits: the readiness gap last logged
         ObjectGuid bossWaitFor;        // [lead46] the boss whose pull waits for the group's readiness
         std::string plannerRestFor;    // [lead50] the member the planner's held answer waits for (its Rest)
+        float plannerRestLine = -1.0f;  // [lead221] the mana line that answer names for it ("needs N %"), -1: none
         ObjectGuid topUpFor;           // [lead76] the member the healer tops up (a readiness gap on health)
         std::map<ObjectGuid, std::string> restLogged;  // [lead76] the Rest line state last logged per member
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)

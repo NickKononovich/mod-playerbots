@@ -805,7 +805,17 @@ bool RestDone(Player* bot)
     bool const healthDone = !eating || bot->GetHealthPct() >= 100.0f ||
                             (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) &&
                              bot->GetHealthPct() >= HealthLine(bot));
-    bool const manaDone = !drinking || !bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 100.0f;
+    bool manaDone = !drinking || !bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 100.0f;
+    // [lead221] b185 rfc-h 5H 753-776 s: the planner's answer named 15 % for the disc priest, the leader's Rest ended
+    // there and the priest drank on to 100 % (22 s) - a led sitter drank to full whatever the leader's line. It drinks
+    // while the leader's Rest holds or its own computed line is above its mana, and stands when neither does
+    if (!manaDone && Leader::LEADER_ONE_REST_RULE && Leader::LedBot(bot) && !TimedRunStandsAtLine(bot) &&
+        !LeaderRests(bot))
+    {
+        ignoreLeaderRest = true;
+        manaDone = !WantsDrink(bot);
+        ignoreLeaderRest = false;
+    }
     if (healthDone && manaDone)
         return true;
 

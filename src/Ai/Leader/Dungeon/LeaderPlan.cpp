@@ -97,6 +97,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <list>
 #include <map>
@@ -112,6 +113,24 @@ namespace Leader::Dungeon
 {
     using namespace Leader::Fight;
     using Leader::Travel::PointOnPath;
+
+    namespace
+    {
+        // [lead221] the mana line a held answer names for `who` ("<who> at 46 % mana (needs 77 % = ...)",
+        // "(needs 51 %)"), -1 when it names none (a health gap, "the tank rests")
+        float NamedManaLine(std::string const& why, std::string const& who)
+        {
+            std::string::size_type const at = why.find(who + " at ");
+            if (at == std::string::npos)
+                return -1.0f;
+            std::string::size_type const mana = why.find("% mana", at);
+            std::string::size_type const needs = why.find("(needs ", at);
+            if (mana == std::string::npos || needs == std::string::npos || needs < mana)
+                return -1.0f;
+            float const line = std::strtof(why.c_str() + needs + std::strlen("(needs "), nullptr);
+            return line > 0.0f ? line : -1.0f;
+        }
+    }
 
     // [lead6] The one readiness judge: the group here (alive, in the instance, within LEADER_READY_RANGE, the
     // healer sees the leader), nobody buffing (needBuff), sitting, or preparing (PullReadiness::GroupPreparing). The
@@ -1603,8 +1622,12 @@ namespace Leader::Dungeon
             bool const restHold = !lead.plannerRestFor.empty() &&
                                   (decision.why.find(lead.plannerRestFor + " sits") != std::string::npos ||
                                    decision.why.find(lead.plannerRestFor + " rests") != std::string::npos);
+            float restLine = -1.0f;
             if (decision.verdict == PullPlanner::Verdict::Held && restHold)
+            {
                 restFor = lead.plannerRestFor;
+                restLine = lead.plannerRestLine;
+            }
             else if (decision.verdict == PullPlanner::Verdict::Held && lineHold)
             {
                 for (LeaderGroup::MemberInfo const& member : group.Members())
@@ -1616,7 +1639,15 @@ namespace Leader::Dungeon
                 // [lead73] the planner's tank lines name it "tank" ("paladin tank at 26 % mana", "the tank rests")
                 if (restFor.empty() && decision.why.find("tank") != std::string::npos)
                     restFor = tank->GetName();
+                // [lead221] b185 rfc-h 5H 753-776 s: "Rtpriad at 14 % mana (needs 15 %)" - the Rest held while the
+                // answer named it, the answer turned to "the leader: Rtpriad sits" (its Rest goes on, lead82) and the
+                // priest drank to 100 %. The Rest ends at the line the answer named
+                if (!restFor.empty())
+                    restLine = NamedManaLine(decision.why, restFor);
+                if (restLine < 0.0f && restFor == tank->GetName())
+                    restLine = NamedManaLine(decision.why, "tank");
             }
+            lead.plannerRestLine = restLine;
             // [lead76] a health gap is the healer's "top up X", not a Rest of the member (b118: 15 s for 94 -> 95 %)
             lead.topUpFor.Clear();
             if (!restFor.empty() && decision.why.find("% health") != std::string::npos)

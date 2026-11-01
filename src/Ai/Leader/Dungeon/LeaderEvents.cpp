@@ -120,6 +120,22 @@ namespace Leader::Dungeon
 
     namespace
     {
+        // [lead221] the planner's held answer named this mana line for the member (lead.plannerRestLine): its Rest
+        // holds below it; without a named line (a health gap) the Rest holds as before, until the member is full
+        bool BelowPlannerLine(Player* bot, float line)
+        {
+            return line < 0.0f || !bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) < line;
+        }
+
+        std::string PlannerWaitWhy(float line)
+        {
+            return line < 0.0f ? std::string("the planner waits for it")
+                               : Acore::StringFormat("the planner waits for it (its line {:.0f} % mana)", line);
+        }
+    }
+
+    namespace
+    {
         // [lead217] a loose mob that stands off its victim (out of its melee reach, not moving: a caster at range, a
         // rooted mob) does not follow the victim anywhere
         bool LooseStandsOff(Unit* mob, Unit* victim)
@@ -1978,16 +1994,16 @@ namespace Leader::Dungeon
             if (!tankGap.empty())
                 tankRestWhy = "the boss pull waits: " + tankGap;
             bool const plannerWaits = !lead.plannerRestFor.empty() && tank->GetName() == lead.plannerRestFor &&
-                                      !MemberFull(tank);  // [lead50]
+                                      !MemberFull(tank) && BelowPlannerLine(tank, lead.plannerRestLine);  // [lead50]
             if (plannerWaits)
-                tankRestWhy = "the planner waits for it";
+                tankRestWhy = PlannerWaitWhy(lead.plannerRestLine);
+            // [lead221] b185 rfc-h 5E 770-816 s: "sits: to full" at 97 % and 62 % mana - a tank already drinking
+            // (or under the leader's Rest, which WantsDrink reads as "drink to 100 %") was rested to full. The tank
+            // rests while it is below its own computed lines (RestState::BelowOwnLine), as every member (lead59)
             bool const tankRests = plannerWaits ? (tank->IsSitState() || RestState::CanRest(tank))
                                                 : (waitBoss && waitBoss->IsAlive()
                                         ? !tankGap.empty()
-                                        : (RestState::IsDrinking(tank) || RestState::IsEating(tank) ||
-                                           RestState::WantsDrink(tank, &tankRestWhy) ||
-                                           RestState::WantsFood(tank, &tankRestWhy)) &&
-                                              !MemberFull(tank)) &&
+                                        : RestState::BelowOwnLine(tank, &tankRestWhy) && !MemberFull(tank)) &&
                                                       (tank->IsSitState() || RestState::CanRest(tank));
             if (tankRests && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
                 logEvent(tank, "Rest", JsonObject().Str("who", "tank")
@@ -2072,10 +2088,11 @@ namespace Leader::Dungeon
                     lead.restingToFull.erase(guid);
                 }
                 // [lead50] the planner's held answer waits for this member: it rests
-                if (!lead.plannerRestFor.empty() && bot->GetName() == lead.plannerRestFor && !MemberFull(bot))
+                if (!lead.plannerRestFor.empty() && bot->GetName() == lead.plannerRestFor && !MemberFull(bot) &&
+                    BelowPlannerLine(bot, lead.plannerRestLine))  // [lead221] up to the line it named
                 {
                     needsRest = true;
-                    restWhy = "the planner waits for it";
+                    restWhy = PlannerWaitWhy(lead.plannerRestLine);
                 }
                 // [lead179] b179 rfc-h 5H 450-460 s: the disc priest sat at 10 %, stood at its line (15.2 %), was
                 // told to top up the mage (88 %), fell below the line and sat again - 7 drinks in 10 s. A drinking

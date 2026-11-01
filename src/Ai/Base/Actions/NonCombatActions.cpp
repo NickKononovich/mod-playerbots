@@ -188,7 +188,11 @@ bool StandUpAction::Execute(Event /*event*/)
     // Standing up removes the food / drink auras (AURA_INTERRUPT_FLAG_NOT_SEATED), nothing else.
     Creature* patrol = bot->IsInCombat() ? nullptr : RestState::PatrolComes(bot);  // [b46_patrol]
     LOG_INFO("playerbots", "[rest] {} stands up: {}{} (hp {:.0f} %, mana {:.0f} %)", bot->GetName(),
-             bot->IsInCombat() ? "a fight started" : patrol ? "[b46_patrol] a patrol walks in: " : "full",
+             bot->IsInCombat() ? "a fight started"
+             : patrol          ? "[b46_patrol] a patrol walks in: "
+             : RestState::IsDrinking(bot) && bot->GetMaxPower(POWER_MANA) && bot->GetPowerPct(POWER_MANA) < 100.0f
+                 ? "mana at its line"  // [lead221]
+                 : "full",
              patrol ? patrol->GetName() : std::string(), bot->GetHealthPct(),
              bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f);
     bot->SetStandState(UNIT_STAND_STATE_STAND);
