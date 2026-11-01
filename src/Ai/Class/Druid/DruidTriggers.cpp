@@ -75,6 +75,15 @@ namespace
     }
 }
 
+// [rot30]
+bool InsectSwarmMissingTrigger::IsActive()
+{
+    if (DruidHasEclipseTalent(bot) && DruidLunarProcReady(context, bot))
+        return false;
+
+    return DruidDotMissingTrigger::IsActive();
+}
+
 // [rot1] Out of combat only (and the group out of combat) and only when missing.
 bool MarkOfTheWildTrigger::IsActive()
 {

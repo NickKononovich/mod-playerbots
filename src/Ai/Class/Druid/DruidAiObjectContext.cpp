@@ -166,9 +166,9 @@ private:
     static Trigger* faerie_fire_feral(PlayerbotAI* botAI) { return new FaerieFireFeralTrigger(botAI); }
     static Trigger* insect_swarm_on_attacker(PlayerbotAI* botAI) { return new InsectSwarmOnAttackerTrigger(botAI); }
     static Trigger* moonfire_on_attacker(PlayerbotAI* botAI) { return new MoonfireOnAttackerTrigger(botAI); }
-    static Trigger* insect_swarm_missing(PlayerbotAI* botAI)  // [b31_sd]
+    static Trigger* insect_swarm_missing(PlayerbotAI* botAI)  // [b31_sd] [rot30]
     {
-        return new DruidDotMissingTrigger(botAI, "insect swarm");
+        return new InsectSwarmMissingTrigger(botAI);
     }
     static Trigger* moonfire_missing(PlayerbotAI* botAI) { return new DruidDotMissingTrigger(botAI, "moonfire"); }
     static Trigger* faerie_fire(PlayerbotAI* botAI) { return new FaerieFireTrigger(botAI); }

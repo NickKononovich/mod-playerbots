@@ -114,6 +114,10 @@ namespace
     }
 }
 
+bool DruidLunarProcReady(AiObjectContext* context, Player* bot) { return LunarProcReady(context, bot); }
+
+bool DruidHasEclipseTalent(Player* bot) { return HasEclipseTalent(bot); }
+
 bool CastWrathAction::isUseful()
 {
     bool const lunarReady = LunarProcReady(context, bot);

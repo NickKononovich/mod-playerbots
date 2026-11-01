@@ -550,6 +550,10 @@ public:
     std::string const getName() override { return "wild growth blanket"; }
 };
 
+// [rot30] Whether the Lunar Eclipse proc cooldown is over (it records an active Lunar Eclipse) / the Eclipse talent
+bool DruidLunarProcReady(AiObjectContext* context, Player* bot);
+bool DruidHasEclipseTalent(Player* bot);
+
 // [b31_deep] Start of the last Lunar Eclipse (time()), for its 30 s proc cooldown (CastWrathAction and
 // CastStarfireAction). The Solar counterpart is gone: the fishing rule only needs the Lunar cooldown.
 class EclipseLunarProcTimeValue : public ManualSetValue<time_t>

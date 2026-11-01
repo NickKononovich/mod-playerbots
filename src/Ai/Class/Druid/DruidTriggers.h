@@ -118,6 +118,15 @@ public:
     }
 };
 
+// [rot30] wowsims balance_druid__basic_p3: Insect Swarm when missing only while the Lunar Eclipse cooldown runs (with
+// the Eclipse talent); outside that the GCD goes to the Wrath that fishes for Lunar
+class InsectSwarmMissingTrigger : public DruidDotMissingTrigger
+{
+public:
+    InsectSwarmMissingTrigger(PlayerbotAI* botAI) : DruidDotMissingTrigger(botAI, "insect swarm") {}
+    bool IsActive() override;
+};
+
 // [b31_sd] Both on-attacker triggers went to BuffTrigger::IsActive(), skipping the lifetime gate, and fired on a
 // single target too. Now: 2+ attackers and the attacker expected to live DRUID_MULTI_DOT_MIN_LIFETIME.
 class InsectSwarmOnAttackerTrigger : public DebuffOnAttackerTrigger
