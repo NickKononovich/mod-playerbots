@@ -15,6 +15,7 @@
 #include "LeaderKnowledge.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "LeaderOrders.h"  // [lead108] Leader::Route
 #include <algorithm>
 
 namespace Leader::Fight
@@ -37,7 +38,25 @@ namespace Leader::Fight
         return woken;
     }
 
-    bool OrderMobStaysPick(Creature* own) { return own && own->IsAlive() && !own->IsInCombat(); }
+    bool OrderMobStaysPick(Player* tank, Creature* own)
+    {
+        return own && own->IsAlive() && !own->IsInCombat() && TankHasWalk(tank, own);
+    }
+
+    bool TankHasWalk(Player* tank, Unit* mob)
+    {
+        if (!tank || !mob)
+            return false;
+        Leader::RouteResult const path = Leader::Route(tank, mob->GetPosition());
+        if (!path.found)
+            return false;
+        if (path.complete || path.points.empty())
+            return path.complete;
+        float const straight = tank->GetExactDist(mob);
+        float const left =
+            (path.points.back() - G3D::Vector3(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ())).length();
+        return left + 5.0f < straight;
+    }
 
     bool NeedsFleeStop(Unit* mob)
     {

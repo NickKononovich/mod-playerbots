@@ -182,6 +182,9 @@ namespace PullPlanner
         GuidVector aoePlan;
         // [lead3] a refusal: the group stood topped up at the look (IsGroupToppedUp), so the refusal is no readiness
         bool toppedUp = false;
+        // [lead108] Held by the group's or the tank's readiness (the leader's readiness, missing buffs, a member
+        // preparing, the tank's own rest, a boss's readiness gap): a wait for the group, never a refusal of the mob
+        bool readinessHold = false;
 
         std::string Describe() const;  // one short line (diff log)
     };
@@ -444,6 +447,7 @@ private:
     bool _lookCareful = false;
     ObjectGuid _lookTarget;
     std::string _lookWhy;
+    bool _lookReadiness = false;  // [lead108] the look's hold is a readiness hold (Decision::readinessHold)
 
     // A levelling 5-man tank plans its pull: the mob to open on (the target itself, or an add at the edge of a room
     // or before a boss) and whether it pulls it at range back to where it stands. `measured`: a heroic or max-level

@@ -11266,8 +11266,13 @@ namespace TestHarness
                                               keeperEntries.end();
                     // [dmw-guard-behind-exempt] a door's pending guard keeps its own walk and pull, as a keeper
                     bool const guardTarget = IsPendingDoorGuard(map, mob);
+                    // [lead108] b141 rfc-h 119.2 s on: the route target the leader refused (its routeSkips) skipped
+                    // Trogg 56, Earthborer 4 ... "behind" it - the leader's refusal of one mob is no refusal of the
+                    // walkable mobs behind it (the route walks on to the next, lead96)
+                    bool const leaderSkipOnly = party.lead.routeSkips.count(blocker->GetGUID()) &&
+                                                Leader::Fight::TankHasWalk(leader, mob);
                     if (ROUTE_SKIP_BEHIND_SKIPPED && !ownPackHere && !bossInvolved && !keeperTarget && !guardTarget &&
-                        party.skipUntil.count(blocker->GetGUID()))
+                        !leaderSkipOnly && party.skipUntil.count(blocker->GetGUID()))
                     {
                         auto const why = party.skipReason.find(blocker->GetGUID());
                         std::string const blockerWhy = why != party.skipReason.end() ? why->second : "skipped";
@@ -19775,7 +19780,9 @@ namespace TestHarness
             closeOrder(Leader::OrderState::Done, "no engaged mob: the fight is over", "order_done");
             // [lead101] the order's own mob alive and in no fight (another pack came instead): it stays the leader's
             // pick, the next pull goes for it from where the group stands now (released by the kept pick's facts)
-            if (Creature* own = leader->GetMap()->GetCreature(order.target); Leader::Fight::OrderMobStaysPick(own))
+            // [lead108] only one the tank has a walk to
+            if (Creature* own = leader->GetMap()->GetCreature(order.target);
+                Leader::Fight::OrderMobStaysPick(leader, own))
             {
                 party.lead.keptPick = order.target;
                 party.lead.keptPickWhy = "its order ended with it out of the fight";
@@ -24985,6 +24992,16 @@ namespace TestHarness
                         // [lead96] user: no elapsed-time rule - the skip has no time: it lasts until the leader's
                         // refusal ends by a fact (released below with lead.unreachable / refusedPicks: the tank or
                         // the mob moved, the fight changed the room, the leader picks it again)
+                        // [lead108] the store is read before the skip (SkipTarget clears the route target: b141 logged
+                        // "none" for a route target refusedPicks held)
+                        ObjectGuid const conflicted = party.target;
+                        auto const unreachable = lead.unreachable.find(conflicted);
+                        auto const refused = lead.refusedPicks.find(conflicted);
+                        std::string const store =
+                            refused != lead.refusedPicks.end()       ? "refusedPicks: " + refused->second
+                            : unreachable != lead.unreachable.end() ? "unreachable: " + unreachable->second.why
+                            : !onPath(conflicted)                   ? std::string("off the path")
+                                                                    : std::string("none (" + pickWhy + ")");
                         if (!IsBossLook(tank, party.target) && !routeMob->IsDungeonBoss())
                         {
                             constexpr uint32 ROUTE_SKIP_UNTIL_RELEASED = 0x3FFFFFFF;  // no time: released by facts
@@ -24992,14 +25009,7 @@ namespace TestHarness
                             SkipTarget(party, party.target, ROUTE_SKIP_UNTIL_RELEASED,
                                        "the leader does not pick it (" + pickWhy + ")");
                         }
-                        auto const unreachable = lead.unreachable.find(party.target);
-                        auto const refused = lead.refusedPicks.find(party.target);
-                        std::string const store =
-                            refused != lead.refusedPicks.end()       ? "refusedPicks: " + refused->second
-                            : unreachable != lead.unreachable.end() ? "unreachable: " + unreachable->second.why
-                            : !onPath(party.target)                 ? std::string("off the path")
-                                                                    : std::string("none (" + pickWhy + ")");
-                        DecisionLog::Instance().Write(run, "leader", "pick_route_conflict", party.target,
+                        DecisionLog::Instance().Write(run, "leader", "pick_route_conflict", conflicted,
                                                       routeMob->GetName(), true,
                                                       JsonObject().Str("store", store).Str("pick", pickWhy));
                     }
@@ -25030,7 +25040,11 @@ namespace TestHarness
             !lead.refusedPicks.count(decision.lookTarget) && !IsBossLook(tank, decision.lookTarget) &&
             // [lead73] b117 266-271 s: "paladin tank at 26 % mana" put every on-path mob into refusedPicks and the
             // route walked past them - a member's mana / health is readiness (its Rest), never a refusal of the mob
-            decision.why.find("% mana") == std::string::npos && decision.why.find("% health") == std::string::npos)
+            decision.why.find("% mana") == std::string::npos && decision.why.find("% health") == std::string::npos &&
+            // [lead108] b141 rfc-h 116.3 s: "held for now: the tank rests (health 100 %, mana 48 %)" refused the route
+            // target Earthborer 1, the route skipped it for good and every mob behind it - a readiness hold
+            // (Decision::readinessHold) is the group's wait, never a refusal of the mob
+            !decision.readinessHold)
             lead.refusedPicks[decision.lookTarget] = decision.why;  // [lead45] never a boss
         // [lead50] b99 rfc-h 543-608 s: the planner held the boss pick for "Rtpalaa at 76 % mana" and no Rest came
         // (lead46's boss Rest ran only while the boss-pull gate waited). One readiness path: a held answer that

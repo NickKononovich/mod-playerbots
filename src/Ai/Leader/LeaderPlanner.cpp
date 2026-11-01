@@ -6861,6 +6861,7 @@ bool AggressiveTargetAction::DecideLook()
     _lookCareful = false;
     _lookTarget.Clear();
     _lookWhy.clear();
+    _lookReadiness = false;
     _verdictRec = false;  // [lead5] this look's verdict, for the leader's memory
     _aoePlanNoted.clear();
     if (bot->IsInCombat())
@@ -6922,6 +6923,7 @@ bool AggressiveTargetAction::DecideLook()
             PublishVerdict(target->GetGUID(), false, 1, GuidVector{target->GetGUID()}, fight, false, reason);
             _lookVerdict = PullPlanner::Verdict::Held;
             _lookWhy = reason;
+            _lookReadiness = true;
             return false;
         }
         // A pull of the tank's own waits for the group's buffs (user rule: everyone buffed).
@@ -6935,6 +6937,7 @@ bool AggressiveTargetAction::DecideLook()
                            "held for now: waits for " + _buffMissing);  // [lead5] [lead7]
             _lookVerdict = PullPlanner::Verdict::Held;
             _lookWhy = "waits for " + _buffMissing;
+            _lookReadiness = true;
             return false;
         }
 
@@ -6993,6 +6996,7 @@ bool AggressiveTargetAction::DecideLook()
                                reason);  // [lead5] [lead7]
                 _lookVerdict = PullPlanner::Verdict::Held;
                 _lookWhy = reason;
+                _lookReadiness = true;  // [lead108] b141 rfc-h 116.3 s: "the tank rests" refused the route target
                 return false;
             }
         }
@@ -7172,6 +7176,7 @@ bool AggressiveTargetAction::DecideLook()
             LogPullHold(bot, "group not ready", target);
             _lookVerdict = PullPlanner::Verdict::Held;  // [lead7]
             _lookWhy = "group not ready";
+            _lookReadiness = true;
             return false;
         }
         if (HoldForPrePullCc(target, false))
@@ -12252,6 +12257,7 @@ void AggressiveTargetAction::FillDecision(bool go, PullPlanner::Decision& out)
     {
         out.verdict = _lookVerdict;
         out.why = _lookWhy;
+        out.readinessHold = _lookVerdict == PullPlanner::Verdict::Held && _lookReadiness;  // [lead108]
         // [lead3] a refusal the leader may take as its whole-pack request's answer only with the group topped up
         if (_lookVerdict == PullPlanner::Verdict::Refused)
             out.toppedUp = IsGroupToppedUp(bot);
