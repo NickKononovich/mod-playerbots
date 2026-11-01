@@ -173,6 +173,8 @@ public:
         // [b31_deep]
         creators["paladin tank judges wisdom"] = &PaladinTriggerFactoryInternal::paladin_tank_judges_wisdom;
         creators["tank seal of wisdom"] = &PaladinTriggerFactoryInternal::tank_seal_of_wisdom;
+        creators["tank hammer of wrath"] = &PaladinTriggerFactoryInternal::tank_hammer_of_wrath;  // [lead87]
+        creators["tank divine plea"] = &PaladinTriggerFactoryInternal::tank_divine_plea;
         creators["infusion of light"] = &PaladinTriggerFactoryInternal::infusion_of_light;
         creators["holy light boss tank"] = &PaladinTriggerFactoryInternal::holy_light_boss_tank;
         creators["holy avenging wrath"] = &PaladinTriggerFactoryInternal::holy_avenging_wrath;
@@ -285,6 +287,8 @@ private:
     // [b31_deep]
     static Trigger* paladin_tank_judges_wisdom(PlayerbotAI* botAI) { return new PaladinTankJudgesWisdomTrigger(botAI); }
     static Trigger* tank_seal_of_wisdom(PlayerbotAI* botAI) { return new TankSealOfWisdomTrigger(botAI); }
+    static Trigger* tank_hammer_of_wrath(PlayerbotAI* botAI) { return new TankHammerOfWrathTrigger(botAI); }
+    static Trigger* tank_divine_plea(PlayerbotAI* botAI) { return new TankDivinePleaTrigger(botAI); }
     static Trigger* infusion_of_light(PlayerbotAI* botAI) { return new InfusionOfLightTrigger(botAI); }
     static Trigger* holy_light_boss_tank(PlayerbotAI* botAI) { return new HolyLightBossTankTrigger(botAI); }
     static Trigger* holy_avenging_wrath(PlayerbotAI* botAI) { return new HolyAvengingWrathTrigger(botAI); }

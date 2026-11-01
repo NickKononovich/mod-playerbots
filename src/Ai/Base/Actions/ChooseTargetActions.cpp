@@ -74,8 +74,11 @@
 // [lead85] the tank's ranged threat openers (lead75), and the range of the first one ready
 namespace
 {
-    constexpr char const* TANK_OPENERS[] = {"avenger's shield", "hand of reckoning", "judgement of wisdom",
-                                            "heroic throw", "death grip", "icy touch", "faerie fire (feral)"};
+    // [lead87] b130: no Judgement of Wisdom in the fights - with Avenger's Shield / Hand of Reckoning on cooldown the
+    // opener walk (lead85) went to Judgement's 10 yd and spent its cooldown before the fight. Judgement is the
+    // tank's mana (Judgement of Wisdom) in the rotation, no opener
+    constexpr char const* TANK_OPENERS[] = {"avenger's shield", "hand of reckoning", "heroic throw", "death grip",
+                                            "icy touch", "faerie fire (feral)"};
 }
 
 // [lead31a] C:/WoW/LEADER_REFACTOR_PLAN.md: the pull planner moved into the leader module (Ai/Leader); this file keeps

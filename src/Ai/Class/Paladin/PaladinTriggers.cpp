@@ -5,6 +5,8 @@
  */
 
 #include "PaladinTriggers.h"
+#include "HealthTriggers.h"  // [lead87] RestState::OwnManaLine
+#include "SpellMgr.h"
 #include "GenericBuffUtils.h"
 #include "PaladinActions.h"
 #include "PaladinHelper.h"
@@ -305,6 +307,31 @@ bool PaladinTankJudgesWisdomTrigger::IsActive()
 }
 
 // [b31_deep]
+bool TankHammerOfWrathTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || target->GetHealthPct() >= 20.0f)  // the spell's own 20 % rule
+        return false;
+    uint32 const spell = AI_VALUE2(uint32, "spell id", "hammer of wrath");
+    uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
+    SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+    if (!info || !maxMana || bot->HasSpellCooldown(spell))
+        return false;
+    float const costPct = 100.0f * float(info->CalcPowerCost(bot, info->GetSchoolMask())) / float(maxMana);
+    return bot->GetPowerPct(POWER_MANA) - costPct >= RestState::OwnManaLine(bot);
+}
+
+bool TankDivinePleaTrigger::IsActive()
+{
+    constexpr uint32 SPELL_DIVINE_PLEA = 54428;
+    constexpr float DIVINE_PLEA_RETURN_PCT = 25.0f;  // the spell: 25 % of max mana over 15 s (FightManaLine's term)
+    if (!bot->IsInCombat() || !bot->HasSpell(SPELL_DIVINE_PLEA) || bot->HasSpellCooldown(SPELL_DIVINE_PLEA) ||
+        !bot->GetMaxPower(POWER_MANA) || botAI->HasAura("divine plea", bot))
+        return false;
+    float const mana = bot->GetPowerPct(POWER_MANA);
+    return mana + DIVINE_PLEA_RETURN_PCT <= 100.0f || mana < RestState::OwnManaLine(bot);
+}
+
 bool TankSealOfWisdomTrigger::IsActive()
 {
     return AI_VALUE2(bool, "has mana", "self target") &&

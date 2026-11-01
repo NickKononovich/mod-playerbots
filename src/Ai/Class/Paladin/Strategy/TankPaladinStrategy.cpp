@@ -80,7 +80,6 @@ std::vector<NextAction> TankPaladinStrategy::getDefaultActions()
         NextAction("avenger's shield", ACTION_DEFAULT + 0.9f),
         NextAction("shield of righteousness", ACTION_DEFAULT + 0.8f),
         NextAction("hammer of the righteous", ACTION_DEFAULT + 0.75f),
-        NextAction("hammer of wrath", ACTION_DEFAULT + 0.7f),
         NextAction("consecration", ACTION_DEFAULT + 0.65f),
         NextAction("holy shield", ACTION_DEFAULT + 0.6f),
         NextAction("judgement of wisdom", ACTION_DEFAULT + 0.5f),
@@ -120,9 +119,10 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // A paladin tank lives on mana: taunts, Consecration and Holy Shield all cost it. Divine Plea goes on cooldown
     // once mana dips (its halved healing does not matter to a tank that leaves healing to the healer), and the
     // target keeps Judgement of Wisdom, whose procs feed the whole melee group.
+    // [lead87] Divine Plea whenever its return fits (TankDivinePleaTrigger), not only below "high mana"
     triggers.push_back(
         new TriggerNode(
-            "high mana",
+            "tank divine plea",
             {
                 NextAction("divine plea", ACTION_HIGH + 1)
             }
@@ -332,7 +332,7 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "target critical health",
+            "tank hammer of wrath",  // [lead87] only while its cost leaves the tank at its own line
             {
                 NextAction("hammer of wrath", ACTION_CRITICAL_HEAL)
             }
