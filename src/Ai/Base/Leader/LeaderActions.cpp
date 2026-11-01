@@ -596,8 +596,17 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         Unit* target = botAI->GetUnit(events.followTarget);
         if (!target || !target->IsAlive())
             return false;
-        float const back = 3.0f + 2.5f * float((events.followIndex / 2) % 2);
-        float const side = events.followIndex % 2 ? 1.5f : -1.5f;
+        float back = 3.0f + 2.5f * float((events.followIndex / 2) % 2);
+        float side = events.followIndex % 2 ? 1.5f : -1.5f;
+        // [lead219] the chase of a mob: behind it within its melee reach (LeaderCombatSpot's melee distance, the two
+        // places a little apart), not the follow rows behind a walking member (3-5.5 yd: out of melee of a small mob)
+        if (bot->IsValidAttackTarget(target))
+        {
+            float const reach = std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f);
+            float const turn = events.followIndex % 2 ? 0.35f : -0.35f;
+            back = reach * std::cos(turn);
+            side = reach * std::sin(turn);
+        }
         float const o = target->GetOrientation();
         float x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
         float y = target->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;

@@ -210,8 +210,14 @@ bool LeaderMoveOrderTrigger::IsActive()
     if (events.move == Leader::MoveEvent::Follow)
     {
         Unit* target = botAI->GetUnit(events.followTarget);
-        return target && target->IsAlive() &&
-               (bot->GetExactDist(target) > Leader::LEADER_FOLLOW_KEEP_YD || !bot->IsWithinLOSInMap(target));
+        if (!target || !target->IsAlive())
+            return false;
+        // [lead219] b184 rfc-h 5G: the frost DK chasing Jergosh / Bazzalan stood 5.4 yd off them all fight - out of
+        // melee reach, inside LEADER_FOLLOW_KEEP_YD. The chase of a mob walks whenever the member is out of its melee
+        // reach (the game's own range)
+        if (bot->IsValidAttackTarget(target))
+            return !bot->IsWithinMeleeRange(target) || !bot->IsWithinLOSInMap(target);
+        return bot->GetExactDist(target) > Leader::LEADER_FOLLOW_KEEP_YD || !bot->IsWithinLOSInMap(target);
     }
     if (Leader::WalksOffStand(bot, events))  // [lead81]
         return true;
