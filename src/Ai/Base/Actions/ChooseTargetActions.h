@@ -331,6 +331,8 @@ namespace PullReadiness
     // [lead46] the same readiness for one member: its health / mana below the boss ready lines (BossReadyGap's,
     // a real boss or a mini-boss by IsEncounterBoss); empty when this member is ready for `boss`
     std::string MemberBossGap(Player* member, Unit* boss);
+    // [lead179] that member's boss mana line (the same FightManaLine MemberBossGap reads)
+    float MemberBossManaLine(Player* member, Unit* boss);
 }
 
 class DpsAoeAction : public AttackAction

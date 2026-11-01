@@ -1924,7 +1924,9 @@ namespace Leader::Dungeon
                         }
                 }
             Player* healed = topUp.IsEmpty() ? nullptr : ObjectAccessor::FindPlayer(topUp);
+            // [lead179] not while the healer drinks: its Rest holds the top-up's mana, it heals once it stands
             if (healed && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
+                !(healer->IsSitState() && RestState::IsDrinking(healer)) &&
                 Leader::Events::SetHealTarget(healer->GetGUID(), topUp))
                 logEvent(healer, "TopUp", JsonObject().Str("member", healed->GetName())
                                               .Real("health", healed->GetHealthPct())
@@ -1973,6 +1975,38 @@ namespace Leader::Dungeon
                 {
                     needsRest = true;
                     restWhy = "the planner waits for it";
+                }
+                // [lead179] b179 rfc-h 5H 450-460 s: the disc priest sat at 10 %, stood at its line (15.2 %), was
+                // told to top up the mage (88 %), fell below the line and sat again - 7 drinks in 10 s. A drinking
+                // healer's line holds the top-up heals still to come: it drinks on while its mana is below its line
+                // plus the mana of every member's missing health (HEALER_PCT_PER_TANK_HEALTH per tank health), so
+                // it stands once and heals without dropping under the line (one Rest per fact)
+                if (!needsRest && PlayerbotAI::IsHeal(bot) && bot->IsSitState() && RestState::IsDrinking(bot) &&
+                    bot->GetMaxPower(POWER_MANA) && tank->GetMaxHealth())
+                {
+                    float missing = 0.0f;
+                    std::vector<Player*> all = seats;
+                    all.push_back(tank);
+                    for (Player* member : all)
+                        if (member->IsAlive())
+                            missing += float(member->GetMaxHealth() - member->GetHealth());
+                    if (missing > 0.0f)
+                    {
+                        Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+                        float const line = waitBoss && waitBoss->IsAlive()
+                                               ? PullReadiness::MemberBossManaLine(bot, waitBoss)
+                                               : RestState::OwnManaLine(bot);
+                        float const topUp =
+                            RestState::HEALER_PCT_PER_TANK_HEALTH * missing / float(tank->GetMaxHealth());
+                        if (bot->GetPowerPct(POWER_MANA) < line + topUp)
+                        {
+                            needsRest = true;
+                            restWhy = Acore::StringFormat(
+                                "drinks on for the top-up heals: mana {:.0f} % < {:.0f} % "
+                                "line + {:.0f} % for {:.0f} missing health",
+                                bot->GetPowerPct(POWER_MANA), line, topUp, missing);
+                        }
+                    }
                 }
                 {
                     // [lead76] the Rest's line vs the member's mana, logged at the Rest's start and end
