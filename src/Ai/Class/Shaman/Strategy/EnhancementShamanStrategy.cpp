@@ -39,7 +39,8 @@ std::vector<NextAction> EnhancementShamanStrategy::getDefaultActions()
 {
     return {
        NextAction("stormstrike", 5.5f),
-       // [b31_sd] Earth Shock only while Flame Shock outlasts the shared shock cooldown (Flame Shock upkeep first).
+       // [rot6] wowsims enhancement order: Stormstrike, Flame Shock (5.45), Earth Shock, Fire Nova, Lightning Shield
+       // (5.22), Lava Lash
        NextAction("earth shock between flame shocks", 5.3f),
        // [b31_deep] Fire Nova on cooldown below Earth Shock, above Lava Lash (wowsims enhancement APLs). Its
        // isUseful() keeps it to a pack, or the single-target case of ai::shaman::AllowsSingleTargetFireAoe.
@@ -105,7 +106,7 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         new TriggerNode(
             "flame shock",
             {
-                NextAction("flame shock", 19.0f)
+                NextAction("flame shock", 5.45f)
             }
         )
     );
@@ -113,7 +114,7 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         new TriggerNode(
             "lightning shield",
             {
-                NextAction("lightning shield", 18.5f)
+                NextAction("lightning shield", 5.22f)
             }
         )
     );

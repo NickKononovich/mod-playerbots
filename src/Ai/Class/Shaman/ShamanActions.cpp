@@ -293,29 +293,15 @@ bool CastEarthShockOnTheMoveAction::isUseful()
     return flameShock && flameShock->GetDuration() > SHOCK_COOLDOWN_MS;
 }
 
-// [b31_sd] 3.3.5 Enhancement: Flame Shock upkeep, Earth Shock in between. Earth Shock now leaves the shared cooldown
-// free when the Flame Shock refresh (last FLAME_SHOCK_REFRESH_WINDOW_MS) comes due: it goes out only while the
-// own Flame Shock has more than the shock cooldown plus a second left. Without a Flame Shock on the target it goes
-// out only when none is coming: the spell is not known, or the target is below Flame Shock's lifetime gate (the
-// same health / "estimated group dps" test as FlameShockTrigger). Two aura lookups and a cached value.
+// Enhancement Earth Shock on cooldown (wowsims enhancement APLs: no Flame Shock margin; Flame Shock, ranked above
+// it, takes the shared cooldown when its own dot is due).
 bool CastEarthShockBetweenFlameShocksAction::isUseful()
 {
-    constexpr int32 EARTH_SHOCK_FLAME_SHOCK_MARGIN_MS = 1 * IN_MILLISECONDS;
-
     if (!CastSpellAction::isUseful())
         return false;
 
     Unit* target = GetTarget();
-    if (!target || !target->IsAlive())
-        return false;
-
-    if (Aura* flameShock = GetOwnFlameShock(target, bot->GetGUID()))
-        return flameShock->GetDuration() > SHOCK_COOLDOWN_MS + EARTH_SHOCK_FLAME_SHOCK_MARGIN_MS;
-
-    if (!AI_VALUE2(uint32, "spell id", "flame shock"))
-        return true;
-
-    return (target->GetHealth() / AI_VALUE(float, "estimated group dps")) < FLAME_SHOCK_MIN_LIFETIME_S;
+    return target && target->IsAlive();
 }
 
 // [b31_deep] See the header: the current target's own Flame Shock must outlast the shared shock cooldown plus a

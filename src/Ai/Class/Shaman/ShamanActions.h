@@ -294,10 +294,7 @@ public:
         CastSpellAction(botAI, "earth shock") {}
 };
 
-// [b31_sd] Enhancement filler Earth Shock. It shares the shock cooldown with Flame Shock, which is only refreshed in
-// its last second: an unconditional Earth Shock held that refresh back and Flame Shock dropped. Now only while this
-// shaman's Flame Shock on the target outlasts the shock cooldown plus a second, or when no Flame Shock is coming
-// (not known, or the target dies before Flame Shock's lifetime gate).
+// Enhancement Earth Shock on cooldown (wowsims); Flame Shock, ranked above it, takes the shared cooldown when due.
 class CastEarthShockBetweenFlameShocksAction : public CastSpellAction
 {
 public:
