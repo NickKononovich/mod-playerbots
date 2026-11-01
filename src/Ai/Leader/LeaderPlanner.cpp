@@ -4719,7 +4719,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             }
         }
 
-        if (missing.empty() && askBuffs)
+        // [lead164] b178 rfc-h 5D (20261101-171156) 303-413 s: "held for now: missing Mark of the Wild on Rtdekab"
+        // 110 s before Oggleflint - this gate counts a buff as missing whenever a member of its class knows the spell,
+        // while the leader's buff pass (LeaderBuffing, the casters' facts: in range, castable, reagents) had ended
+        // with it missing; nothing could end the wait. In a led group the buffs are the leader's buff pass alone
+        if (missing.empty() && askBuffs && !Leader::LedBot(bot))
         {
             std::string const buff = MissingGroupBuff(bot);
             if (!buff.empty())
