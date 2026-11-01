@@ -26,6 +26,10 @@ namespace Leader::Travel
     // the no-walk watch: a target set, `traveling`, no walk point and the leader standing - logged with what holds
     // it; `compactPause`: the travel pause holds it
     void NoWalkWatch(LeaderGroup& group, Player* leader, uint32 now, bool compactPause, bool traveling);
+    // [lead129] the route chooses its target again: no target, the target dead / gone / skipped, a retarget asked
+    // for (GroupRouteState::nextRetargetMs reached), a kill or the end of a fight since the last choice. True: it
+    // does now (the facts it read are kept)
+    bool RetargetDue(LeaderGroup& group, Player* leader, uint32 now);
 }
 
 #endif

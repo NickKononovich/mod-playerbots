@@ -3887,11 +3887,10 @@ namespace TestHarness
         bool const trapHold = party.trapHoldUntilMs && int32(now - party.trapHoldUntilMs) < 0;
         if (!wingWalking && !castHold && !waveHold && !trapHold)
         {
-            if (now >= party.nextRetargetMs || party.target.IsEmpty())
-            {
-                party.nextRetargetMs = now + 4 * IN_MILLISECONDS;
+            // [lead129] the route chooses its target again when a fact changes (Leader::Travel::RetargetDue), not
+            // on a 4 s clock
+            if (Leader::Travel::RetargetDue(group, leader, now))
                 Retarget(party, leader);
-            }
             bool const compactPause = CompactPause(party, leader, now, ledGather);
             // [lead107] the level-split rejoin is the leader's (Ai/Leader/Travel/RouteHolds.h)
             bool const levelRejoin = Leader::Travel::LevelSplitRejoin(group, leader, now);

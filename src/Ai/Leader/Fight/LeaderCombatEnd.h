@@ -20,9 +20,6 @@ class Player;
 
 namespace Leader::Fight
 {
-    // [phantom_mob_hunt] the route's hold on a hunted mob (GroupRouteState::neighbourTargetUntilMs) has no end of
-    // its own: the farthest getMSTime() comparison ahead; the hunt's facts end it (TickPhantomCombat)
-    constexpr uint32 PHANTOM_HUNT_HOLD_OPEN = 0x7FFFFFFF;
 
     // anyInCombat: the group's pull state, false while a phantom combat counts out (activeBoss: a boss attempt runs)
     void TickPhantomCombat(LeaderGroup& group, std::vector<Player*> const& players, Player* leader, uint32 now,

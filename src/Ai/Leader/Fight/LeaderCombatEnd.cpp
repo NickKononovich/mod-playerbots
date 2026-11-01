@@ -260,7 +260,7 @@ namespace Leader::Fight
             if (!hunting && !route.phantomHunt.IsEmpty())
             {
                 if (route.neighbourTarget == route.phantomHunt)
-                    route.neighbourTargetUntilMs = now;  // the route's hold on it ends with the hunt
+                    route.neighbourTarget.Clear();  // the route's hold on it ends with the hunt
                 route.phantomHunt.Clear();
             }
             if (!hunting && hunt && !route.phantomHunted.count(hunt->GetGUID()))
@@ -269,7 +269,6 @@ namespace Leader::Fight
                 route.phantomHunt = hunt->GetGUID();
                 route.neighbourTarget = hunt->GetGUID();
                 // the route keeps it as its target until the hunt's facts end it (above)
-                route.neighbourTargetUntilMs = now + PHANTOM_HUNT_HOLD_OPEN;
                 route.target = hunt->GetGUID();
                 route.targetIsBoss = false;
                 route.targetIsStarter = false;

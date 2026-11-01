@@ -1452,12 +1452,13 @@ namespace Leader::Travel
             }
         }
 
-        // boss_neighbour_target: the neighbour pack stays the target while it lives, is not skipped and its time runs.
+        // boss_neighbour_target: the neighbour pack stays the target while it lives and is not skipped
+        // [lead129] user: no elapsed-time rule decides (NEIGHBOUR_TARGET_MS / PATROL_HANDOVER_MS 4 min were the old
+        // clocks): the hold is its facts - alive, not skipped (a hunt or handover that ends clears it)
         if (!group.Route().neighbourTarget.IsEmpty() && group.Route().target == group.Route().neighbourTarget)
         {
             Creature* held = map->GetCreature(group.Route().neighbourTarget);
-            if (held && held->IsAlive() && !group.Route().skipUntil.count(group.Route().neighbourTarget) &&
-                int32(now - group.Route().neighbourTargetUntilMs) < 0)
+            if (held && held->IsAlive() && !group.Route().skipUntil.count(group.Route().neighbourTarget))
                 return;
             group.Route().neighbourTarget.Clear();
         }

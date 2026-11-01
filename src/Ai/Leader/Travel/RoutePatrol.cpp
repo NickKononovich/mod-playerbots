@@ -195,8 +195,7 @@ using namespace Leader::Fight;
         if (instance == patrolWaitBudgets.end())
             return false;
         auto const budget = instance->second.find(patrol);
-        return budget != instance->second.end() && budget->second.handedUntilMs &&
-               int32(now - budget->second.handedUntilMs) < 0;
+        return budget != instance->second.end() && budget->second.handedUntilMs;
     }
 
     // One tick of waiting for `patrol` (start: a hold or step-back begins). True when its budget is spent: the
@@ -204,12 +203,10 @@ using namespace Leader::Fight;
     bool ChargePatrolWait(uint32 instanceId, ObjectGuid patrol, uint32 now, bool start)
     {
         PatrolWaitBudget& budget = patrolWaitBudgets[instanceId][patrol];
+        // [lead129] a patrol handed to the planner stays handed (PATROL_HANDOVER_MS 4 min was the old clock): the
+        // planner pulls it, its death ends it
         if (budget.handedUntilMs)
-        {
-            if (int32(now - budget.handedUntilMs) < 0)
-                return true;
-            budget = PatrolWaitBudget();
-        }
+            return true;
         if (budget.lastMs && getMSTimeDiff(budget.lastMs, now) <= PATROL_WAIT_TICK_CAP_MS)
             budget.spentMs += getMSTimeDiff(budget.lastMs, now);
         budget.lastMs = now ? now : 1;
@@ -217,7 +214,7 @@ using namespace Leader::Fight;
             ++budget.starts;
         if (budget.spentMs < PATROL_WAIT_BUDGET_MS && budget.starts <= PATROL_WAIT_BUDGET_STARTS)
             return false;
-        budget.handedUntilMs = now + PATROL_HANDOVER_MS;
+        budget.handedUntilMs = now ? now : 1;  // handed since
         patrolHandOvers[instanceId] = patrol;
         LOG_INFO("playerbots", "[b47_patrol] patrol_wait_budget: instance {}: {} s of waits, {} starts for "
                  "patrol {}: handed to the tank's planner", instanceId, budget.spentMs / IN_MILLISECONDS,
@@ -723,7 +720,6 @@ using namespace Leader::Fight;
                              .Str("previousTarget", routeState.target.IsEmpty() ? std::string()
                                                                                    : routeState.target.ToString()));
                 routeState.neighbourTarget = handed;
-                routeState.neighbourTargetUntilMs = now + PATROL_HANDOVER_MS;
                 routeState.target = handed;
                 routeState.targetIsBoss = false;
                 routeState.targetIsStarter = false;

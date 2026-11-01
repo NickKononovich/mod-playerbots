@@ -117,7 +117,6 @@ namespace Leader::Travel
     // click (GameObject::Use m_cooldownTime) and only while the user still channels the anim spell.
     constexpr uint32 RITUAL_CHANNEL_HOLD_MS = 6500;
 
-    constexpr uint32 NEIGHBOUR_TARGET_MS = 4 * MINUTE * IN_MILLISECONDS;  // the guarantee hold's 240 s
 
     // [unseen-blocker-pull] an unseen neighbour pack this small that holds an approach becomes the target
     constexpr size_t UNSEEN_BLOCKER_PACK_MAX = 4;

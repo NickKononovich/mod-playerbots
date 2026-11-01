@@ -133,57 +133,59 @@ namespace Leader::Travel
         // of the day fought the Voidwalkers 13-14 s after the kill.
         bool waveHold = false;
         {
+            // [lead129] user: no elapsed-time rule decides (the wave's 30 s waitMs was the old clock). The hold is
+            // the event's facts: the boss dead, the door closed, the wave's summoner alive (its script still
+            // sends the wave) and no wave creature seen yet in this instance. A wave seen (alive: the normal
+            // targeting fights it) ends the hold for good; its door opens with the wave's death
             struct PostKillWaveDef
             {
                 uint32 mapId;
                 uint32 bossEntry;
                 uint32 waveEntry;
                 uint32 doorEntry;
-                uint32 waitMs;  // the wave comes this long after the kill at the latest
+                uint32 summonerEntry;  // the creature whose script sends the wave
             };
             static constexpr PostKillWaveDef POST_KILL_WAVES[] = {
-                {33, 4274, 4627, 18972, 30 * IN_MILLISECONDS},
+                {33, 4274, 4627, 18972, 4275},
             };
-            // Party::instanceId -> since when the group waits for the wave (world thread only)
-            static std::unordered_map<uint32, uint32> waveWaitSince;
-            static std::unordered_map<uint32, uint32> waveWaitLogged;  // 1 started, 2 ended
+            // Party::instanceId -> 1 the hold logged, 2 the wave seen / no summoner (world thread only)
+            static std::unordered_map<uint32, uint32> waveWaitLogged;
             Map* waveMap = leader->GetMap();
             for (PostKillWaveDef const& wave : POST_KILL_WAVES)
             {
                 if (!waveMap || waveMap->GetId() != wave.mapId || !route.deadEntries.count(wave.bossEntry))
                     continue;
+                uint32& logged = waveWaitLogged[group.InstanceId()];
+                if (logged == 2)
+                    continue;
                 bool doorClosed = false;
                 for (auto const& [spawnId, go] : waveMap->GetGameObjectBySpawnIdStore())
                     doorClosed |= go && go->isSpawned() && go->GetEntry() == wave.doorEntry &&
                                   go->GetGoState() == GO_STATE_READY;
-                uint32& since = waveWaitSince[group.InstanceId()];
-                uint32& logged = waveWaitLogged[group.InstanceId()];
                 if (!doorClosed)
                     continue;
-                // A wave creature alive: the group fights it (the normal targeting), no hold.
-                if (leader->FindNearestCreature(wave.waveEntry, 150.0f, true))
-                    continue;
-                if (!since)
-                    since = now ? now : 1;
-                if (getMSTimeDiff(since, now) < wave.waitMs)
+                bool const waveSeen = leader->FindNearestCreature(wave.waveEntry, 150.0f, true) != nullptr;
+                bool summoner = false;
+                for (auto const& [spawnId, creature] : waveMap->GetCreatureBySpawnIdStore())
+                    summoner |= creature && creature->IsAlive() && creature->GetEntry() == wave.summonerEntry;
+                if (waveSeen || !summoner)
                 {
-                    waveHold = true;
-                    if (!logged)
-                    {
-                        logged = 1;
+                    if (logged == 1)
                         group.LogEvent("post_kill_wave_hold",
-                                 JsonObject().Str("state", "start").Num("boss", wave.bossEntry)
-                                     .Num("wave", wave.waveEntry).Num("door", wave.doorEntry)
-                                     .Num("waitSec", wave.waitMs / IN_MILLISECONDS));
-                    }
-                }
-                else if (logged == 1)
-                {
+                                 JsonObject().Str("state", waveSeen ? "the wave came" : "no summoner, no wave")
+                                     .Num("boss", wave.bossEntry).Num("wave", wave.waveEntry)
+                                     .Num("door", wave.doorEntry));
                     logged = 2;
+                    continue;
+                }
+                waveHold = true;
+                if (!logged)
+                {
+                    logged = 1;
                     group.LogEvent("post_kill_wave_hold",
-                             JsonObject().Str("state", "no wave, door still closed")
-                                 .Num("boss", wave.bossEntry).Num("wave", wave.waveEntry)
-                                 .Num("door", wave.doorEntry));
+                             JsonObject().Str("state", "start").Num("boss", wave.bossEntry)
+                                 .Num("wave", wave.waveEntry).Num("door", wave.doorEntry)
+                                 .Num("summoner", wave.summonerEntry));
                 }
             }
         }
@@ -204,24 +206,25 @@ namespace Leader::Travel
         // the compact pause cycled 30 s on / 20 s off, "arrived (the tank's pull decides)" with no tank
         // target: 4 minutes. A leader standing LEVEL_SPLIT_AFTER_MS without a walk while a member is on
         // another level close below / above (|dz| over FAR_SLOPE_DZ_ALLOWANCE, within FAR_WAIT_RANGE,
-        // no line of sight) walks to that member - the healer first - for LEVEL_SPLIT_WALK_MS at most,
-        // LEVEL_SPLIT_MAX times per instance, then the stop is decided anew from there.
+        // no line of sight) walks to that member - the healer first.
+        // [lead129] user: no elapsed-time rule decides (LEVEL_SPLIT_AFTER_MS 60 s standing, _WALK_MS 25 s, _COOLDOWN_MS
+        // 90 s, LEVEL_SPLIT_MAX 3 were the old clocks and cap). The rejoin starts on the facts - the leader at its
+        // stop (arrived, no walk point), a member split off on another level that the leader can walk to (a complete
+        // path) - once per stop (a new start needs the leader FAR_RESUME_RANGE away from the last one's), and ends on
+        // them: together, the member gone, a fight, or no walk to it any more
         bool levelRejoin = false;
         {
-            constexpr uint32 LEVEL_SPLIT_AFTER_MS = 60 * IN_MILLISECONDS;
-            constexpr uint32 LEVEL_SPLIT_WALK_MS = 25 * IN_MILLISECONDS;
-            constexpr uint32 LEVEL_SPLIT_COOLDOWN_MS = 90 * IN_MILLISECONDS;
-            constexpr uint32 LEVEL_SPLIT_MAX = 3;
             struct LevelSplit
             {
                 ObjectGuid member;
-                uint32 untilMs = 0;
-                uint32 lastMs = 0;
+                bool on = false;
+                bool started = false;
+                Position from;  // where the leader stood when it started
                 uint32 count = 0;
             };
             static std::unordered_map<uint32, LevelSplit> levelSplits;  // instance id (world)
             LevelSplit& split = levelSplits[group.InstanceId()];
-            if (split.untilMs)
+            if (split.on)
             {
                 Player* bot = ObjectAccessor::FindPlayer(split.member);
                 bool const gone = !bot || !bot->IsAlive() || bot->GetMap() != leader->GetMap();
@@ -229,19 +232,25 @@ namespace Leader::Travel
                     !gone &&
                     std::fabs(bot->GetPositionZ() - leader->GetPositionZ()) <= FAR_SLOPE_DZ_ALLOWANCE &&
                     bot->GetExactDist(leader) <= FAR_RESUME_RANGE && bot->IsWithinLOSInMap(leader);
-                bool const timedOut = int32(now - split.untilMs) >= 0;
-                if (gone || together || timedOut || leader->IsInCombat())
+                bool noWalk = false;
+                if (!gone && !together)
+                {
+                    PathGenerator path(leader);
+                    path.CalculatePath(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                    noWalk = (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) != 0;
+                }
+                if (gone || together || noWalk || leader->IsInCombat())
                 {
                     group.LogEvent("level_split_rejoin",
                              JsonObject().Str("state", "end")
                                  .Str("why", gone        ? "member gone"
                                              : together  ? "together"
-                                             : timedOut  ? "timed out"
+                                             : noWalk    ? "no walk to it"
                                                          : "combat")
                                  .Num("count", split.count)
                                  .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
                                  .Real("z", leader->GetPositionZ()));
-                    split.untilMs = 0;
+                    split.on = false;
                     group.ClearWaypoint(group.LeaderGuid());
                     // the old stop is no stop any more: Steer decides from here
                     route.arrivedMs = 0;
@@ -257,10 +266,8 @@ namespace Leader::Travel
                                       bot->GetPositionZ());
                 }
             }
-            else if (route.noWalkSinceMs &&
-                     getMSTimeDiff(route.noWalkSinceMs, now) >= LEVEL_SPLIT_AFTER_MS &&
-                     split.count < LEVEL_SPLIT_MAX &&
-                     (!split.lastMs || getMSTimeDiff(split.lastMs, now) >= LEVEL_SPLIT_COOLDOWN_MS) &&
+            else if (route.arrivedMs && route.noWalkSinceMs &&
+                     (!split.started || leader->GetExactDist(split.from) > FAR_RESUME_RANGE) &&
                      !leader->IsInCombat() && !route.approach && route.escort.IsEmpty() &&
                      route.linkIdx < 0 && !group.IsRaid())
             {
@@ -275,6 +282,10 @@ namespace Leader::Travel
                             FAR_SLOPE_DZ_ALLOWANCE ||
                         bot->GetExactDist2d(leader) > FAR_WAIT_RANGE || bot->IsWithinLOSInMap(leader))
                         continue;
+                    PathGenerator path(leader);
+                    path.CalculatePath(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                    if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+                        continue;
                     bool const healer = PlayerbotAI::IsHeal(bot);
                     if (!splitBot || (healer && !splitHealer))
                     {
@@ -285,18 +296,19 @@ namespace Leader::Travel
                 if (splitBot)
                 {
                     split.member = splitBot->GetGUID();
-                    split.untilMs = now + LEVEL_SPLIT_WALK_MS;
-                    split.lastMs = now ? now : 1;
+                    split.on = true;
+                    split.started = true;
+                    split.from = leader->GetPosition();
                     ++split.count;
                     levelRejoin = true;
                     LOG_INFO("playerbots",
                              "[b35_brd] level_split_rejoin {}: {} stood {} s without a walk, {} is "
                              "{:.1f} yd below / above out of sight ({:.1f} yd away): the leader walks "
-                             "to it ({} of {})",
+                             "to it (rejoin {})",
                              group.Run().runId, leader->GetName(),
                              getMSTimeDiff(route.noWalkSinceMs, now) / IN_MILLISECONDS,
                              splitBot->GetName(), splitBot->GetPositionZ() - leader->GetPositionZ(),
-                             splitBot->GetExactDist2d(leader), split.count, LEVEL_SPLIT_MAX);
+                             splitBot->GetExactDist2d(leader), split.count);
                     group.LogEvent("level_split_rejoin",
                              JsonObject().Str("state", "start").Str("member", splitBot->GetName())
                                  .Bool("healer", splitHealer)
@@ -425,44 +437,40 @@ namespace Leader::Travel
                              .Real("distance", held ? leader->GetExactDist(held) : -1.0f)
                              .Num("sec", getMSTimeDiff(route.noWalkSinceMs, now) / IN_MILLISECONDS)
                              .Str("routeRule", route.targetRouteRule));
-                // [lead14] the general breaker: the leader stood LEADER_NO_WALK_BREAK_MS out of combat
-                // with no order open, no door gather and no escort - the hold that holds it is named
-                // and, when it is a patrol (a wait or a pull that never ends), broken: the patrol is
-                // banned from waits and pulls for 5 minutes, the group walks on (the old patrol
-                // budget's end). Other holds are reported (leader_unstuck), their own rules end them.
-                constexpr uint32 LEADER_NO_WALK_BREAK_MS = 60 * IN_MILLISECONDS;
-                if (group.LeaderDecides() && !leader->IsInCombat() && !route.doorGatherHeld &&
-                    route.escort.IsEmpty() && !Leader::Orders::IsOpen(group.LeaderGuid()) &&
-                    getMSTimeDiff(route.noWalkSinceMs, now) >= LEADER_NO_WALK_BREAK_MS)
-                {
-                    auto& lead = group.State();
-                    // [lead41] patrols are killed, never waited out (LEADER_PATROL_IS_TARGET): the
-                    // patrol pick (intercept) is no hold, only a wait would be one
-                    bool const waitOnly =
-                        !lead.waitPatrol.IsEmpty() || Leader::LEADER_PATROL_IS_TARGET;
-                    ObjectGuid const patrol = waitOnly ? lead.waitPatrol : lead.intercept;
-                    std::string broke = "nothing to break: reported";
-                    // [lead24] LEADER_NO_FORCING_TIMERS: no ban because time passed (waited_long)
-                    if (!patrol.IsEmpty() && Leader::LEADER_NO_FORCING_TIMERS)
-                        broke = "waited_long: no break (the patrol hold stays)";
-                    else if (!patrol.IsEmpty())
-                    {
-                        lead.interceptBanned[patrol] = now + 5 * MINUTE * IN_MILLISECONDS;
-                        lead.intercept.Clear();
-                        lead.interceptMs = 0;
-                        lead.interceptSinceMs = 0;
-                        lead.waitPatrol.Clear();
-                        broke = "the patrol hold: banned, the group walks on";
-                    }
-                    LOG_INFO("playerbots", "[lead14] leader_unstuck {}: {} s without a walk ({}): {}",
-                             group.Run().runId, getMSTimeDiff(route.noWalkSinceMs, now) / IN_MILLISECONDS,
-                             state, broke);
-                    group.LogEvent("leader_unstuck",
-                             JsonObject().Str("state", state).Str("action", broke)
-                                 .Num("sec", getMSTimeDiff(route.noWalkSinceMs, now) /
-                                                 IN_MILLISECONDS));
-                }
             }
         }
+    }
+
+    bool RetargetDue(LeaderGroup& group, Player* leader, uint32 now)
+    {
+        GroupRouteState& route = group.Route();
+        uint32 kills = 0;
+        for (auto const& [entry, count] : route.deadEntries)
+            kills += count;
+        std::string why;
+        if (route.target.IsEmpty())
+            why = "no target";
+        else if (route.nextRetargetMs && int32(now - route.nextRetargetMs) >= 0)
+            why = "asked for";
+        else if (route.skipUntil.count(route.target))
+            why = "target skipped";
+        else if (kills != route.retargetKills)
+            why = "a kill";
+        else if (group.LastPullEndMs() != route.retargetPullEndMs)
+            why = "a fight ended";
+        else
+        {
+            Map* map = leader->GetMap();
+            Creature* creature = map ? map->GetCreature(route.target) : nullptr;
+            GameObject* object = !creature && map ? map->GetGameObject(route.target) : nullptr;
+            if (creature ? !creature->IsAlive() || !creature->IsInWorld() : !object || !object->isSpawned())
+                why = "target dead or gone";
+        }
+        if (why.empty())
+            return false;
+        route.nextRetargetMs = 0;
+        route.retargetKills = kills;
+        route.retargetPullEndMs = group.LastPullEndMs();
+        return true;
     }
 }

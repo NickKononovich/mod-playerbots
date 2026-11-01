@@ -238,7 +238,6 @@ namespace TestHarness
         using Leader::Travel::TRAP_GATE_DOORS;  // [lead107] RouteTargets.h
         using Leader::Travel::TRAP_GATE_LOG_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::IsTrapGate;  // [lead107] RouteTargets.h
-        using Leader::Travel::NEIGHBOUR_TARGET_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::UNSEEN_BLOCKER_PACK_MAX;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_BLOCKER_BODY_PULL;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_BLOCKER_MAX_TRIES;  // [lead107] RouteSteer.h
@@ -1108,7 +1107,6 @@ namespace TestHarness
         using Leader::Travel::PATROL_WAIT_BUDGET_MS;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_WAIT_BUDGET_STARTS;  // [lead107] RoutePatrol.h
         using Leader::Travel::PATROL_WAIT_TICK_CAP_MS;  // [lead107] RoutePatrol.h
-        using Leader::Travel::PATROL_HANDOVER_MS;  // [lead107] RoutePatrol.h
         using Leader::Travel::PatrolWaitBudget;  // [lead107] RoutePatrol.h
         using Leader::Travel::patrolWaitBudgets;  // [lead107] RoutePatrol.h
         using Leader::Travel::patrolHandOvers;  // [lead107] RoutePatrol.h

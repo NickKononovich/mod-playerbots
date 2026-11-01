@@ -1209,10 +1209,13 @@ namespace Leader::Travel
     bool IsRouteBlocker(LeaderGroup& group, ObjectGuid guid)
     {
         GroupRouteState& routeState = group.Route();
-        return ROUTE_BLOCKER_BODY_PULL && !guid.IsEmpty() && routeState.routeBlockerUntilMs &&
-               int32(getMSTime() - routeState.routeBlockerUntilMs) < 0 &&
-               std::find(routeState.routeBlockerPack.begin(), routeState.routeBlockerPack.end(), guid) !=
+        // [lead129] while the route's target is of the blocker pack (NEIGHBOUR_TARGET_MS 4 min was the old clock)
+        auto const inPack = [&routeState](ObjectGuid mob)
+        {
+            return std::find(routeState.routeBlockerPack.begin(), routeState.routeBlockerPack.end(), mob) !=
                    routeState.routeBlockerPack.end();
+        };
+        return ROUTE_BLOCKER_BODY_PULL && !guid.IsEmpty() && inPack(guid) && inPack(routeState.target);
     }
 
     bool RouteBlockerBehindRequired(LeaderGroup& group, Map* map, WorldObject const* behind,
@@ -1562,7 +1565,6 @@ namespace Leader::Travel
             routeState.skipUntil.erase(mob->GetGUID());
             routeState.skipReason.erase(mob->GetGUID());
         }
-        routeState.routeBlockerUntilMs = now + NEIGHBOUR_TARGET_MS;
         LOG_INFO("playerbots", "[route_blocker_body_pull] {}: {} ({} mobs, {:.1f} yd) stands on the way to {}: the "
                  "target, pulled by sight or walked in ({}, try {})", leader->GetName(), blocker->GetName(),
                  pack.size(), leader->GetExactDist(blocker), behind ? behind->GetName() : std::string("?"), why,
@@ -1575,7 +1577,6 @@ namespace Leader::Travel
         sightStops.erase(group.LeaderGuid());
         sightHolds.erase(group.LeaderGuid());
         routeState.neighbourTarget = blocker->GetGUID();
-        routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
         routeState.target = blocker->GetGUID();
         routeState.targetIsBoss = false;
         routeState.targetIsStarter = false;
@@ -2788,7 +2789,6 @@ namespace Leader::Travel
                                 sightStops.erase(group.LeaderGuid());
                                 sightHolds.erase(group.LeaderGuid());
                                 routeState.neighbourTarget = blocker->GetGUID();
-                                routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
                                 routeState.target = blocker->GetGUID();
                                 routeState.targetIsBoss = false;
                                 routeState.targetIsStarter = false;
@@ -3106,7 +3106,6 @@ namespace Leader::Travel
                                     sightStops.erase(group.LeaderGuid());
                                     sightHolds.erase(group.LeaderGuid());
                                     routeState.neighbourTarget = blocker->GetGUID();
-                                    routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
                                     routeState.target = blocker->GetGUID();
                                     routeState.targetIsBoss = false;
                                     routeState.targetIsStarter = false;
@@ -4425,7 +4424,6 @@ namespace Leader::Travel
                                 routeState.skipUntil.erase(areaMob->GetGUID());
                                 routeState.skipReason.erase(areaMob->GetGUID());
                                 routeState.neighbourTarget = areaMob->GetGUID();
-                                routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
                                 routeState.target = areaMob->GetGUID();
                                 routeState.targetIsBoss = false;
                                 routeState.targetIsStarter = false;
@@ -4532,7 +4530,6 @@ namespace Leader::Travel
                                                                      .Num("holds", routeState.neighbourHolds));
                         routeState.neighbourHolds = 0;
                         routeState.neighbourTarget = neighbour->GetGUID();
-                        routeState.neighbourTargetUntilMs = now + NEIGHBOUR_TARGET_MS;
                         routeState.target = neighbour->GetGUID();
                         routeState.targetIsBoss = false;
                         routeState.targetIsStarter = false;

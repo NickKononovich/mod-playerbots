@@ -159,7 +159,9 @@ namespace Leader
         uint32 driveSinceMs = 0;
         uint32 driveLastMs = 0;
         bool driving = false;
-        uint32 nextRetargetMs = 0;
+        uint32 nextRetargetMs = 0;  // [lead129] a retarget asked for at this time (0: none); RetargetDue
+        uint32 retargetKills = 0;     // the kills (deadEntries) and the last pull end at the last retarget
+        uint32 retargetPullEndMs = 0;
         uint32 waypointSerial = 0;
         // ROUTE_CLOSED_DOORS_ALL: the leader's last waypoint ran through this closed door and was cut short before it
         // (door_hold, SetLeaderWaypoint); Retarget then drops a target that door does not open for (DoorOpensFor).
@@ -332,8 +334,7 @@ namespace Leader
         uint32 stopSinceMs = 0;
         uint32 stopLastMs = 0;
         uint32 lastStarterUseMs = 0;
-        ObjectGuid neighbourTarget;  // boss_neighbour_target: kept as the target (Retarget) until NEIGHBOUR_TARGET_MS
-        uint32 neighbourTargetUntilMs = 0;
+        ObjectGuid neighbourTarget;  // boss_neighbour_target: kept as the target (Retarget) while it lives
         bool guaranteeHolding = false;
         std::string lastEvent;
         // [lead107] the route's holds (moved with the event / starter stage)
@@ -372,7 +373,6 @@ namespace Leader
         // route_blocker_body_pull: the pack that stands on the way to the route's target (its walk enters the pack's
         // reach) is the target, and pulled - by sight, else walked in - never skipped while it is on the way.
         std::vector<ObjectGuid> routeBlockerPack;
-        uint32 routeBlockerUntilMs = 0;
         std::map<ObjectGuid, uint32> routeBlockerTries;  // by blocker: how often it was made the target
         uint32 idleMs = 0;
         uint32 eventWaitMs = 0;

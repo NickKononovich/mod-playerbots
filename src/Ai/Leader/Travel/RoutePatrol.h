@@ -113,7 +113,6 @@ namespace Leader::Travel
 
     constexpr uint32 PATROL_WAIT_TICK_CAP_MS = 3 * IN_MILLISECONDS;  // a longer gap is no wait of this patrol
 
-    constexpr uint32 PATROL_HANDOVER_MS = 4 * MINUTE * IN_MILLISECONDS;
 
     struct PatrolWaitBudget
     {
