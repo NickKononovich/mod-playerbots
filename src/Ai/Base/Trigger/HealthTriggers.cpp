@@ -1364,6 +1364,12 @@ bool RestDone(Player* bot)
         return true;
     if (PatrolComes(bot))
         return true;  // [b46_patrol] up before the patrol walks in
+    // [lead467] b207 rfc-h: the tank sat on to full health / mana under the leader's issued pull order - its pull
+    // started 12.6 s (5B warrior, eating to 100 % health), 19.1 s and 25.8 s (5E paladin, drinking to 100 % mana)
+    // after the issue (pull_trace ask): 5E 662-682 s "pull_order: walks in ... [Taragaman]" 20 s of standing. The
+    // leader decided the group is ready when it issued the order: the tank whose order is open stands up
+    if (Leader::LedBot(bot) && Leader::Orders::IsOpen(bot->GetGUID()))
+        return true;
 
     // Food and water at once (or a combined item): up only when both are full - or ([rest_stand_at_line]) both are
     // above the bot's own lines while nobody close by sits any more (the group is ready, nobody tops up to 100 %).
