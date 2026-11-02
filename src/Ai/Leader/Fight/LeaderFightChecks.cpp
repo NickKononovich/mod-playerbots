@@ -595,35 +595,51 @@ namespace Leader::Fight
         float const distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
                                : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
                                                           : LeaderShootReach(bot) - 2.0f;  // [lead127] its reach
+        // [lead452] b205 / b206 rfc-h Oggleflint: the ranged damage dealers stood 85-90 s at 0 damage (5F the warlock
+        // and the SV hunter, 5E the warlock; "combat_spot_none ... first spot") - every point of the one ring at its
+        // reach minus 2 yd round the boss on his ledge fell off it (the ground more than 4 yd below him) and the
+        // rings round the member, on the floor below, saw nothing. A ranged spot fits anywhere in its band
+        // (LeaderCombatSpotValid: half its reach .. its reach, out of the target's melee): when the outer ring has
+        // none, the rings inside the band are searched too, the search step of LeaderNearestCombatSpot's rings
+        constexpr float RING_STEP_YD = 3.0f;
+        float const reach = LeaderShootReach(bot);
+        float const inner = melee || PlayerbotAI::IsHeal(bot)
+                                ? distance
+                                : std::max(reach / 2.0f, LeaderRangedMinGap(bot, target)) + 1.0f;
         Map* map = target->GetMap();
-        for (float turn : TURNS)
+        for (float ring = distance; ring >= inner || ring == distance; ring -= RING_STEP_YD)
         {
-            if (melee && std::fabs(turn) > 1.2f)
-                break;  // behind it only
-            float const angle = base + turn;
-            float x = target->GetPositionX() + std::cos(angle) * distance;
-            float y = target->GetPositionY() + std::sin(angle) * distance;
-            float z = target->GetPositionZ();
-            if (!map->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
-                                                      target->GetPositionZ(), x, y, z) ||
-                std::fabs(z - target->GetPositionZ()) > 4.0f)
-                continue;
-            Position const spot(x, y, z);
-            if (!LeaderCombatSpotValid(bot, botAI, target, spot, melee, zones, keeps, true))
-                continue;
-            // [lead214] a fresh ranged / healer spot is out of every fight mob's melee reach too (lead210), else it
-            // breaks on the next look
-            if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
-                continue;
-            if (LeaderCandidate(bot, spot, fallback) != 2)
-                continue;
-            out = spot;
-            return true;
-        }
-        if (fallback)
-        {
-            out = *fallback;
-            return true;
+            for (float turn : TURNS)
+            {
+                if (melee && std::fabs(turn) > 1.2f)
+                    break;  // behind it only
+                float const angle = base + turn;
+                float x = target->GetPositionX() + std::cos(angle) * ring;
+                float y = target->GetPositionY() + std::sin(angle) * ring;
+                float z = target->GetPositionZ();
+                if (!map->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                          target->GetPositionZ(), x, y, z) ||
+                    std::fabs(z - target->GetPositionZ()) > 4.0f)
+                    continue;
+                Position const spot(x, y, z);
+                if (!LeaderCombatSpotValid(bot, botAI, target, spot, melee, zones, keeps, true))
+                    continue;
+                // [lead214] a fresh ranged / healer spot is out of every fight mob's melee reach too (lead210), else
+                // it breaks on the next look
+                if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
+                    continue;
+                if (LeaderCandidate(bot, spot, fallback) != 2)
+                    continue;
+                out = spot;
+                return true;
+            }
+            if (fallback)
+            {
+                out = *fallback;
+                return true;
+            }
+            if (ring < inner)
+                break;
         }
         return false;
     }
