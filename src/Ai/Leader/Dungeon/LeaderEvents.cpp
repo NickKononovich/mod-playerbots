@@ -450,7 +450,7 @@ namespace Leader::Dungeon
                             // [lead71] b115 220.8 s: Rtshaab refused the leader's meeting-point move ("a straight
                             // move over open air") - one verdict: the member's own MoveTo guards, run dry from where
                             // it stands, before the move is issued
-                            if (reject.empty() && !mover->DryMoveTo(spot))
+                            if (reject.empty() && !mover->DryMoveTo(spot, why))
                                 reject = "the member's own move guards refuse it: " + LastMoveRefusal();  // [lead112]
                         }
                 if (again)  // [lead143] the verdict and the facts it was judged on
@@ -772,6 +772,48 @@ namespace Leader::Dungeon
         for (Player* bot : seats)
             Leader::Events::SetFact(bot->GetGUID(), lead.movePhase);
         Leader::Events::SetFact(tank->GetGUID(), lead.movePhase);
+        // [lead372] user: the leader says where, the member walks there safely and reports what it cannot reach. A
+        // reported MoveTo / StandAt is the spot verdict checkedMove keeps until a fact changes (the member, the spot
+        // or the mob its walk would wake moved): the leader's own fallback (the member stays) or another spot. A
+        // reported follow place: the follow rule below holds the member where it stands while the facts stand
+        {
+            std::vector<Player*> reporters = seats;
+            reporters.push_back(tank);
+            thread_local std::map<ObjectGuid, std::string> refusalLogged;
+            if (refusalLogged.size() > 4096)
+                refusalLogged.clear();
+            for (Player* bot : reporters)
+            {
+                Leader::MoveRefusal refusal;
+                if (!Leader::Events::TakeMoveRefused(bot->GetGUID(), refusal))
+                    continue;
+                if (refusal.move == Leader::MoveEvent::MoveTo || refusal.move == Leader::MoveEvent::StandAt)
+                {
+                    auto& verdict = lead.spotChecked[bot->GetGUID()];
+                    verdict = {};
+                    verdict.spot = refusal.spot;
+                    verdict.from = refusal.from;
+                    verdict.ms = now;
+                    verdict.reject = "the member's walk refused: " + refusal.reason;
+                    verdict.mob = refusal.mob;
+                    verdict.mobAt = refusal.mobAt;
+                }
+                std::string& logged = refusalLogged[bot->GetGUID()];
+                if (logged == refusal.why + "|" + refusal.reason)
+                    continue;
+                logged = refusal.why + "|" + refusal.reason;
+                Creature* woken = refusal.mob.IsEmpty() ? nullptr : map->GetCreature(refusal.mob);
+                Decisions().Write(run, "leader", "member_move_refused", bot->GetGUID(), bot->GetName(), true,
+                                  JsonObject()
+                                      .Str("member", bot->GetName())
+                                      .Str("why", refusal.why)
+                                      .Str("reason", refusal.reason)
+                                      .Str("mob", woken ? woken->GetName() : "-")
+                                      .Real("x", refusal.spot.GetPositionX())
+                                      .Real("y", refusal.spot.GetPositionY())
+                                      .Real("z", refusal.spot.GetPositionZ()));
+            }
+        }
         struct TickEnd
         {
             std::vector<Player*> const& seats;
@@ -3252,6 +3294,38 @@ namespace Leader::Dungeon
                                         "along with the tank: to range of the engage"))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                      JsonObject().Str("why", "along with the tank: to range of the engage"));
+                        moved = true;
+                    }
+                }
+                // [lead372] the member reported it cannot reach its follow place safely: while the facts of that
+                // report stand (the member, the tank and the mob its walk would wake where they were) it stays where it
+                // is and the group holds for it (group_blocked: the tank walks on only where the group follows)
+                Leader::MoveRefusal followRefusal;
+                if (!moved && !meleeToMeeting && Leader::Events::MoveRefused(guid, followRefusal) &&
+                    followRefusal.move == Leader::MoveEvent::Follow)
+                {
+                    Creature* woken = followRefusal.mob.IsEmpty() ? nullptr : map->GetCreature(followRefusal.mob);
+                    bool const holds =
+                        bot->GetExactDist(followRefusal.from) <= 1.0f &&
+                        tank->GetExactDist(followRefusal.targetAt) <= 1.0f &&
+                        (followRefusal.mob.IsEmpty() || (woken && woken->IsAlive() && !woken->IsInCombat() &&
+                                                         woken->GetExactDist(followRefusal.mobAt) <= 1.0f));
+                    if (!holds)
+                        Leader::Events::ClearMoveRefused(guid);
+                    else
+                    {
+                        std::string const stay =
+                            "along with the tank: stays (the member's walk refused: " + followRefusal.reason + ")";
+                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt), JsonObject().Str("why", stay));
+                        if (!lead.groupBlockedBy.count(guid))
+                            Decisions().Write(run, "leader", "group_blocked", guid, bot->GetName(), true,
+                                              JsonObject()
+                                                  .Str("member", bot->GetName())
+                                                  .Str("why", followRefusal.reason)
+                                                  .Str("mob", woken ? woken->GetName() : "-")
+                                                  .Str("walk", followRefusal.why));
+                        lead.groupBlockedBy[guid] = followRefusal.mob;
                         moved = true;
                     }
                 }

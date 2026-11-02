@@ -501,6 +501,15 @@ namespace Leader
         Hold,     // do not move
         Follow    // [lead27] walk along with `followTarget` at place `followIndex` behind it
     };
+    // [lead371] user: «лидер может сказать hard path, soft path»: the leader decides where (the spot, the follow
+    // place); the member's walk decides how and never changes where. Both modes may leave the straight line to get
+    // round what would stop or kill the walk (an obstacle, a hazard, an idle mob's reach); an X it cannot reach that
+    // way is reported (Events::NoteMoveRefused), never replaced
+    enum class MoveMode : uint8
+    {
+        Hard,  // only the walk to X: no side goal on the way (no kill, loot, skin, gather)
+        Soft   // the walk to X, with the side goals the leader's rules allow on the way
+    };
     enum class AttackEvent : uint8
     {
         None,
@@ -540,6 +549,7 @@ namespace Leader
         uint8 followIndex = 0;
         float tolerance = LEADER_SPOT_TOLERANCE;
         std::string moveWhy;
+        MoveMode moveMode = MoveMode::Hard;  // [lead371]
         ObjectGuid healTarget;  // [lead76] the leader's "top up X"
         uint32 healTargetMs = 0;
         uint32 moveMs = 0;
@@ -622,6 +632,20 @@ namespace Leader
     // [lead320] SetExternal's precedence: the fight's saves and buffs on a target (TickLeaderEvents 3c) above the
     // trap weave's, the prepull Army's and the buff pass's orders (0)
     constexpr int32 EXTERNAL_PRECEDENCE_FIGHT_SAVE = 1;
+    // [lead372] the member's walk could not reach the leader's X (no way round what would stop or kill it, or a guard
+    // that would have ended the walk elsewhere): the member stays and reports, the leader decides again
+    struct MoveRefusal
+    {
+        uint32 seq = 0;  // the command's seq
+        MoveEvent move = MoveEvent::None;
+        std::string why;     // the command's purpose
+        Position spot;       // X: the spot, or the follow place the member computed
+        Position from;       // where the member stood
+        std::string reason;  // the guard and what it saw
+        ObjectGuid mob;      // the idle mob the walk would wake (Empty: none)
+        Position mobAt;
+        Position targetAt;   // a Follow's target where it stood
+    };
     struct MemberEvents;
     // [lead81] b124 rfc-h 161.7-167.8 s: Rtshaab's "stays" (StandAt where it stood) never stopped its old walk - the
     // spot moved with it, so it was always "on the spot" - and it walked into the Trogg its walk would wake. An
@@ -631,7 +655,8 @@ namespace Leader
     namespace Events
     {
         // Leader side (world thread). Each returns true when the field changed (a new event to log).
-        bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why);
+        bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why,
+                     MoveMode mode = MoveMode::Hard);
         // [lead64] the position arbiter's precedence of a move by its purpose (hazard 5 ... walk-along 0)
         // [lead320] the table: 5 "hazard: ...", "out of a cleave cone"; 4 "aggro loss: to the tank"; 3 "heal reach",
         // "sight ..."; 2 "combat spot ...", "chase: behind the target", "trap weave ..."; 1 "its spot for the pull",
@@ -677,7 +702,8 @@ namespace Leader
         void EndTick(ObjectGuid member);
         // [lead27] the formation command: walk along with `target` (the tank) at place `index` behind it; the member
         // keeps it continuously (one command, not a new point every tick)
-        bool SetFollow(ObjectGuid member, ObjectGuid target, uint8 index, std::string const& why);
+        bool SetFollow(ObjectGuid member, ObjectGuid target, uint8 index, std::string const& why,
+                       MoveMode mode = MoveMode::Hard);
         // Member side: the member's fresh events (stale fields come back None); false: none at all.
         bool Get(ObjectGuid member, MemberEvents& out);
         void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why);
@@ -690,6 +716,12 @@ namespace Leader
         // takes the report for `spell` (false: none) and drops the order
         void NoteExternalFailed(ObjectGuid member, uint32 spell, std::string const& why);
         bool TakeExternalFailed(ObjectGuid member, uint32 spell, std::string& why);
+        // [lead372] the member's walk refused the leader's move (member thread; the latest one kept). Take: a report
+        // not taken yet; MoveRefused: the latest one, kept until ClearMoveRefused (the facts it was judged on stand)
+        void NoteMoveRefused(ObjectGuid member, MoveRefusal const& refusal);
+        bool TakeMoveRefused(ObjectGuid member, MoveRefusal& out);
+        bool MoveRefused(ObjectGuid member, MoveRefusal& out);
+        void ClearMoveRefused(ObjectGuid member);
         // [lead16] a member tick in a fight with no fresh Attack / Heal (the rotation's stale_command fallback)
         void NoteStale(ObjectGuid member);
         uint32 TakeStale(ObjectGuid member);

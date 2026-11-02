@@ -35,6 +35,10 @@ namespace Leader
 
 // [lead109] the guard that refused this thread's last MovementAction::MoveTo ("" = none)
 std::string const& LastMoveRefusal();
+// [lead372] the guard that ended this thread's last MoveTo somewhere other than the destination asked ("" = none: it
+// walks to it, perhaps round an obstacle); and the idle mob a path guard judged on that walk (Empty: none)
+std::string const& LastMoveSubstitute();
+ObjectGuid LastMoveMob();
 
 class MovementAction : public Action
 {
@@ -46,6 +50,9 @@ public:
     static thread_local bool s_dryRun;
     // [lead109] the guard that refused this thread's last MoveTo ("" = it walked), for the callers' refusal lines
     static thread_local std::string s_moveRefusal;
+    // [lead372] LastMoveSubstitute / LastMoveMob
+    static thread_local std::string s_moveSubstitute;
+    static thread_local ObjectGuid s_moveMob;
 
     // The core's proximity aggro (Creature::CanStartAttack) of an idle `mob` on `who` standing at (x, y, z), in its
     // order: the Z gate (a mob that cannot fly never wakes on a walker more than CREATURE_Z_ATTACK_RANGE plus its

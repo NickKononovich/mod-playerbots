@@ -1560,14 +1560,20 @@ namespace
 
 thread_local bool MovementAction::s_dryRun = false;
 thread_local std::string MovementAction::s_moveRefusal;
+thread_local std::string MovementAction::s_moveSubstitute;
+thread_local ObjectGuid MovementAction::s_moveMob;
 
 std::string const& LastMoveRefusal() { return MovementAction::s_moveRefusal; }
+std::string const& LastMoveSubstitute() { return MovementAction::s_moveSubstitute; }
+ObjectGuid LastMoveMob() { return MovementAction::s_moveMob; }
 
 bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle*/, bool /*react*/, bool normal_only,
                             bool exact_waypoint, MovementPriority priority, bool lessDelay, bool backwards)
 {
     bool const dry = s_dryRun;  // [lead70]
     s_moveRefusal.clear();
+    s_moveSubstitute.clear();  // [lead372]
+    s_moveMob.Clear();
     float const origX = x;  // [lead238] the destination as asked, before a guard picks another
     float const origY = y;
     float const origZ = z;
@@ -1641,13 +1647,22 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         // bot stays and takes the hit. The zone is the radius authority there in place of the fight hold below.
         Leader::SafeZone zone;
         bool zoned = false;
+        float const askedX = x;
+        float const askedY = y;
         if (!ClampToFightZone(x, y, z, zone, zoned))
             return refuse("ClampToFightZone (the leader's safe zone)");
 
+        if (zoned && (x != askedX || y != askedY))
+            s_moveSubstitute = "ClampToFightZone (the leader's safe zone)";  // [lead372]
+
         // [drift_fight_hold] a trash fight's chase stays at the tank's fight spot (before the path guard: the walk
         // it judges is the shortened one)
+        float const heldX = x;
+        float const heldY = y;
         if (!zoned && bot->IsInCombat() && !HoldFightSpot(x, y, z))
             return refuse("HoldFightSpot (the tank's fight spot)");
+        if (x != heldX || y != heldY)
+            s_moveSubstitute = "HoldFightSpot (the tank's fight spot's edge)";
         float const zonedX = x;
         float const zonedY = y;
         float const zonedZ = z;
@@ -1656,6 +1671,8 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         // it, or stand in a light one, or wait at its edge (no out-in-out-in)
         if (bot->IsInCombat() && !HazardMeleeSpot(x, y, z))
             return refuse("HazardMeleeSpot (a ground effect)");
+        if (x != zonedX || y != zonedY)
+            s_moveSubstitute = "HazardMeleeSpot (a spot out of a ground effect)";
 
         if (IsPathGuarded() && !GuardIdleMobPath(x, y, z, bot->IsFlying() || bot->isSwimming()))
             return refuse("GuardIdleMobPath (the walk wakes an idle mob: see the [follow path] / [combat path] lines)");
@@ -3657,6 +3674,7 @@ bool MovementAction::GuardIdleMobPath(float& x, float& y, float& z, bool straigh
 
         return true;
     }
+    s_moveMob = wake.mob->GetGUID();  // [lead372]
 
     char const* kind = _guardedMove == GuardedMove::FOLLOW || !bot->IsInCombat() ? "follow path" : "combat path";
     if (followsTank)
@@ -3989,6 +4007,7 @@ bool MovementAction::GuardIdleMobPath(float& x, float& y, float& z, bool straigh
     {
         LogGuardVeto(bot, kind, getName(), x, y, z, wake,
                      Acore::StringFormat("{} ({:.1f},{:.1f},{:.1f})", outcome, alt.x, alt.y, alt.z));
+        s_moveSubstitute = "GuardIdleMobPath (" + outcome + ": the walk would wake " + wake.mob->GetName() + ")";
         x = alt.x;
         y = alt.y;
         z = alt.z;
@@ -4195,6 +4214,7 @@ bool MovementAction::GuardClosedDoor(float& x, float& y, float& z)
         G3D::Vector3 const shorter = PointAlong(path, stop);
         LogDoorVeto(bot, getName(), x, y, z, hit,
                     Acore::StringFormat("shorter ({:.1f},{:.1f},{:.1f})", shorter.x, shorter.y, shorter.z));
+        s_moveSubstitute = "GuardClosedDoor (stops before a closed door: see the [closed door] lines)";  // [lead372]
         x = shorter.x;
         y = shorter.y;
         z = shorter.z;

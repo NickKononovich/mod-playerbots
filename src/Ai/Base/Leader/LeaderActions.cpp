@@ -63,6 +63,14 @@ namespace
             return PlayerbotTextMgr::instance().GetBotTextOrDefault("leader_wipe_reason_reset", reason, {});
         return reason;
     }
+
+    // [lead372] a MoveTo "refusal" that refuses no X: the same walk is on, or the game holds the bot (a root, a
+    // stun, a cast); the walk goes once that ends
+    bool TransientRefusal(std::string const& guard)
+    {
+        return guard.empty() || guard.rfind("IsDuplicateMove", 0) == 0 || guard.rfind("IsWaitingForLastMove", 0) == 0 ||
+               guard.rfind("IsMovingAllowed", 0) == 0 || guard.rfind("the walk ends where", 0) == 0;
+    }
 }
 
 bool LeaderReadyCheckAction::Execute(Event /*event*/)
@@ -673,16 +681,37 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             return false;
         if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target))
             return false;
+        Position const place(x, y, z);
         if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
+        {
+            // [lead372] user: the member walks to the leader's place safely and never swaps it for another: a guard
+            // that ended the walk elsewhere (a safe-zone clamp, a stop short of an idle mob's reach) is no way there -
+            // the member stays and reports, the leader decides again (a walk round a problem that still ends at the
+            // place, a trail leg, is the walk's own how)
+            if (std::string const substitute = LastMoveSubstitute(); !substitute.empty())
+            {
+                ObjectGuid const mob = LastMoveMob();
+                bot->StopMoving();
+                bot->GetMotionMaster()->Clear();
+                ReportRefusal(events, place, substitute, mob);
+                return false;
+            }
             return true;
+        }
         // [lead40] b89 rfc-h 57.8 s: Rtshaab "member_refusal: the member's guard refused the follow walk (ledge /
-        // ground effect)". Members never refuse (the leader checks before it issues): the follow place is walked on
-        // the plain navmesh path, no refusal. Honest play: never through a closed door (that one stays, reported).
-        std::string const refusal = WalkRefusal(Position(x, y, z));
+        // ground effect)" and walked it anyway. [lead372] user: no safe way to the place is the leader's to decide -
+        // the member stays and reports; only a refusal of no place (the walk under way, the game holding the bot)
+        // walks the plain path. Honest play: never through a closed door
+        if (std::string const guard = LastMoveRefusal(); !TransientRefusal(guard))
+        {
+            ReportRefusal(events, place, guard, LastMoveMob());
+            return false;
+        }
+        std::string const refusal = WalkRefusal(place);
         if (refusal.rfind("closed door", 0) == 0)
         {
-            Leader::Events::Ack(bot->GetGUID(), events.seq, "follow", "member_refusal: " + refusal + ", stays");
-            return true;
+            ReportRefusal(events, place, refusal, ObjectGuid::Empty);
+            return false;
         }
         if (!WalkBotRoute(bot, x, y, z))  // [lead109] the leader's route (BotPath.h)
             bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
@@ -740,6 +769,17 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     bool const moved = MoveTo(bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
                               events.spot.GetPositionZ(), false, false, false, false,
                               MovementPriority::MOVEMENT_COMBAT, true);
+    // [lead372] a guard that ended the walk short of the spot (a closed door on its way) is no way there: the
+    // member stays and reports, the leader decides again
+    if (moved && !LastMoveSubstitute().empty())
+    {
+        std::string const substitute = LastMoveSubstitute();
+        ObjectGuid const mob = LastMoveMob();
+        bot->StopMoving();
+        bot->GetMotionMaster()->Clear();
+        ReportRefusal(events, events.spot, substitute, mob);
+        return false;
+    }
     // [lead19] a refusal names its reason (invalid_spot): what the member's guards saw
     // [lead27] the old command's walk stops at once (user: «старая отменяется, слушается только новая»): no spline to
     // a superseded point goes on
@@ -752,14 +792,21 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             bot->GetMotionMaster()->Clear();
         }
         std::string const guard = LastMoveRefusal();  // [lead235] the MoveTo guard that refused, by name
+        ObjectGuid const mob = LastMoveMob();
         refusal = WalkRefusal(events.spot);
+        // [lead372] user: the member reaches the spot safely: the leader checked it with these guards (DryMoveTo); a
+        // member that still finds no safe way there stays and reports, the leader decides again (lead29 walked it
+        // anyway). Only a refusal of no place (the walk under way, the game holding the bot) walks the plain path
+        // to it. Honest play: never through a closed door
+        bool const lasting = !TransientRefusal(guard);
+        if (lasting || refusal.rfind("closed door", 0) == 0)
+        {
+            ReportRefusal(events, events.spot, lasting ? guard : refusal, mob);
+            return false;
+        }
         if (refusal.empty())
-            refusal = guard.empty() ? std::string("another guard (ledge, ground effect)") : guard;
-        // [lead29] a member never refuses a leader command: the leader validated the spot, the member walks the plain
-        // path to it; the refusal is a blocker (member_refusal) - the leader's model and the member's disagree
-        // honest play: never through a closed door (that one stays refused - the leader's check missed it)
-        if (refusal.rfind("closed door", 0) != 0 &&
-            !WalkBotRoute(bot, events.spot.GetPositionX(), events.spot.GetPositionY(),
+            refusal = guard;
+        if (!WalkBotRoute(bot, events.spot.GetPositionX(), events.spot.GetPositionY(),
                           events.spot.GetPositionZ()))  // [lead109] the leader's route (BotPath.h)
             bot->GetMotionMaster()->MovePoint(0, events.spot.GetPositionX(), events.spot.GetPositionY(),
                                               events.spot.GetPositionZ(), FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
@@ -770,24 +817,58 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     return true;
 }
 
+void LeaderMoveOrderAction::ReportRefusal(Leader::MemberEvents const& events, Position const& spot,
+                                          std::string const& reason, ObjectGuid mob)
+{
+    Leader::MoveRefusal refusal;
+    refusal.seq = events.seq;
+    refusal.move = events.move;
+    refusal.why = events.moveWhy;
+    refusal.spot = spot;
+    refusal.from = bot->GetPosition();
+    refusal.reason = reason;
+    refusal.mob = mob;
+    if (Unit* woken = mob.IsEmpty() ? nullptr : botAI->GetUnit(mob))
+        refusal.mobAt = woken->GetPosition();
+    if (Unit* target = events.move == Leader::MoveEvent::Follow ? botAI->GetUnit(events.followTarget) : nullptr)
+        refusal.targetAt = target->GetPosition();
+    Leader::Events::NoteMoveRefused(bot->GetGUID(), refusal);
+    char const* const what = events.move == Leader::MoveEvent::Follow   ? "follow"
+                             : events.move == Leader::MoveEvent::MoveTo ? "move"
+                                                                        : "stand";
+    Leader::Events::Ack(bot->GetGUID(), events.seq, what,
+                        "member_refusal: " + events.moveWhy + " - " + reason + ", stays (reported)");
+}
+
 bool LeaderMoveOrderAction::SkipsIdleGuard()
 {
     // [lead27] a Follow walk is the member's own path (no point the leader checked): its guards stay
     // [lead34] ... and so does the tank's route walk (the route's point, not a leader-checked spot)
+    // [lead373] the leader's dry check judges the move it is about to issue, not the member's current one
+    if (_dryWhy)
+        return Leader::LedBot(bot) && *_dryWhy != "route walk";
     Leader::MemberEvents events;
     bool const got = Leader::Events::Get(bot->GetGUID(), events);
     return Leader::LedBot(bot) &&
            !(got && (events.move == Leader::MoveEvent::Follow || events.moveWhy == "route walk"));
 }
 
-bool LeaderMoveOrderAction::DryMoveTo(Position const& to)
+bool LeaderMoveOrderAction::DryMoveTo(Position const& to, std::string const& why)
 {
     if (bot->GetExactDist2d(to.GetPositionX(), to.GetPositionY()) <= 1.0f)
         return true;
     MovementAction::s_dryRun = true;
-    bool const goes = MoveTo(bot->GetMapId(), to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false, false,
-                             false, false, MovementPriority::MOVEMENT_COMBAT, true);
+    _dryWhy = &why;
+    bool goes = MoveTo(bot->GetMapId(), to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), false, false, false,
+                       false, MovementPriority::MOVEMENT_COMBAT, true);
+    _dryWhy = nullptr;
     MovementAction::s_dryRun = false;
+    // [lead372] a walk a guard would end short of the spot does not reach it: the member would stay and report
+    if (goes && !MovementAction::s_moveSubstitute.empty())
+    {
+        MovementAction::s_moveRefusal = MovementAction::s_moveSubstitute;
+        goes = false;
+    }
     return goes;
 }
 

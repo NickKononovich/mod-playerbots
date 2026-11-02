@@ -13,6 +13,10 @@
 #include "UseItemAction.h"
 
 class PlayerbotAI;
+namespace Leader
+{
+struct MemberEvents;
+}
 
 class LeaderReadyCheckAction : public Action
 {
@@ -158,10 +162,16 @@ public:
     // [lead101] the idle mob the walk to `to` (the leader's route search) wakes, `exempt` not judged (null: none)
     Unit* WalkWakes(Position const& to, ObjectGuid exempt);
     // [lead71] the member's own MoveTo guards run dry (MovementAction::s_dryRun) for a walk to `to`: would it go?
-    bool DryMoveTo(Position const& to);
+    // [lead373] judged as the move `why` the leader is about to issue (its guards, not the current command's)
+    bool DryMoveTo(Position const& to, std::string const& why);
 
 private:
+    // [lead372] the walk to `spot` cannot reach it safely: the member stays, the leader reads the report
+    void ReportRefusal(Leader::MemberEvents const& events, Position const& spot, std::string const& reason,
+                       ObjectGuid mob);
+
     uint32 _attackFirstSeq = 0;  // [lead281] the command (seq) whose unstarted Attack this walk let run first
+    std::string const* _dryWhy = nullptr;  // [lead373] the move DryMoveTo judges
 };
 
 // [lead76] Executes the leader's "top up X": the healer's heal on the named member now.

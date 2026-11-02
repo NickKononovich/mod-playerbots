@@ -507,6 +507,9 @@ namespace Leader
                 uint32 stale = 0;
                 uint32 externalFailed = 0;  // [lead272] the External the member reported it cannot cast
                 std::string externalFailedWhy;
+                bool moveRefusalNew = false;  // [lead372] not taken yet
+                bool moveRefused = false;     // kept until the leader clears it
+                MoveRefusal moveRefusal;
                 std::map<std::string, uint32> vetoedEvals;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
@@ -646,7 +649,8 @@ namespace Leader
             return found != eventSlots.end() && Barred(found->second, why);
         }
 
-        bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why)
+        bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why,
+                     MoveMode mode)
         {
             // [lead161] the leader never issues a spot that is no number
             if (!std::isfinite(spot.GetPositionX()) || !std::isfinite(spot.GetPositionY()) ||
@@ -679,7 +683,8 @@ namespace Leader
             // is no new command: a move changes only when its point leaves the current one's arrival tolerance
             // (the walk's own, at least the old 1 yd) or its purpose changes; an unchanged one keeps its point
             float const keep = std::max(std::max(e.tolerance, tolerance), 1.0f);
-            bool const changed = e.move != move || e.moveWhy != why || e.spot.GetExactDist(spot) > keep;
+            bool const changed =
+                e.move != move || e.moveWhy != why || e.moveMode != mode || e.spot.GetExactDist(spot) > keep;
             // [lead69] the arbiter emits no command identical to the one before the current within the next tick
             // (member, purpose, point within tolerance): command_dupe_blocked - should be 0
             // [lead320] ... except the tick's incumbent asserted again after an equal rule replaced it this tick
@@ -706,6 +711,7 @@ namespace Leader
                 e.spot = spot;
                 e.tolerance = tolerance;
                 e.moveWhy = why;
+                e.moveMode = mode;
             }
             e.moveMs = slot.gen;
             if (changed)
@@ -1120,7 +1126,7 @@ namespace Leader
                 ++e.seq;
         }
 
-        bool SetFollow(ObjectGuid member, ObjectGuid target, uint8 index, std::string const& why)
+        bool SetFollow(ObjectGuid member, ObjectGuid target, uint8 index, std::string const& why, MoveMode mode)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
@@ -1134,8 +1140,10 @@ namespace Leader
                 return false;
             if (!Arbitrate(slot, DOMAIN_MOVE, why, MoveRule(why), precedence, currentPrecedence, false))
                 return false;
-            bool const changed = e.move != MoveEvent::Follow || e.followTarget != target || e.followIndex != index;
+            bool const changed =
+                e.move != MoveEvent::Follow || e.followTarget != target || e.followIndex != index || e.moveMode != mode;
             e.move = MoveEvent::Follow;
+            e.moveMode = mode;
             e.followTarget = target;
             e.followIndex = index;
             e.tolerance = 2.5f;
@@ -1231,6 +1239,44 @@ namespace Leader
             Slot& slot = eventSlots[member];
             slot.externalFailed = spell;
             slot.externalFailedWhy = why;
+        }
+
+        void NoteMoveRefused(ObjectGuid member, MoveRefusal const& refusal)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            slot.moveRefusalNew = true;
+            slot.moveRefused = true;
+            slot.moveRefusal = refusal;
+        }
+
+        bool TakeMoveRefused(ObjectGuid member, MoveRefusal& out)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || !found->second.moveRefusalNew)
+                return false;
+            out = found->second.moveRefusal;
+            found->second.moveRefusalNew = false;
+            return true;
+        }
+
+        bool MoveRefused(ObjectGuid member, MoveRefusal& out)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || !found->second.moveRefused)
+                return false;
+            out = found->second.moveRefusal;
+            return true;
+        }
+
+        void ClearMoveRefused(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found != eventSlots.end())
+                found->second.moveRefused = false;
         }
 
         bool TakeExternalFailed(ObjectGuid member, uint32 spell, std::string& why)
