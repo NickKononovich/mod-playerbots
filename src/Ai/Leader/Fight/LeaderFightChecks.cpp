@@ -843,6 +843,12 @@ namespace Leader::Fight
         float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
         if (melee && gap > target->GetCombatReach() + bot->GetCombatReach() + 1.5f)
             return "out of melee reach of the target";
+        // [lead242] b189 rfc-h 5H: the cat never stood behind Bazzalan (no Shred all fight, "bh" false in every
+        // sample) and 30 s not behind Oggleflint: the chase ended in melee reach at the boss's side and a melee spot in
+        // reach was kept. A melee damage dealer's spot is behind the target (out of its front half: no parry, no
+        // frontal attack, Shred / Backstab land) unless the target fights that member itself
+        if (melee && !PlayerbotAI::IsTank(bot) && target->GetVictim() != bot && target->HasInArc(float(M_PI), &spot))
+            return "in front of the target";
         // [lead203] b181 (8 runs): 240 re-spots "inside its minimum range", and this rule (30 yd, the 2D gap) and the
         // Attack block's (28.5 yd SpellDistance, 3D) left each other's spots. A held ranged spot breaks only where the
         // member cannot cast from it (LeaderCastsFrom's range; the minimum range is Auto Shot's dead zone)
