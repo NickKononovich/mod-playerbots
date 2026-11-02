@@ -416,9 +416,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr float CAREFUL_WEAK_PACK_OVERLOAD = 0.5f;
     // The tank waits this long at most for a buff the group can give before a pull of its own.
     constexpr uint32 PULL_BUFF_WAIT_MS = 10 * IN_MILLISECONDS;
-    // And this long before a boss (BossReadyGap): bf-h batch6, the prot paladin never blessed the others and Keli'dan's
-    // channelers were held "missing a Blessing" until the run was stopped.
-    constexpr uint32 BOSS_BUFF_WAIT_MS = 30 * IN_MILLISECONDS;
     constexpr uint32 PULL_BUFF_CHECK_MS = 2 * IN_MILLISECONDS;
     // No pick in range this long with the group topped up: the tank walks toward the nearest possible target until
     // it is this far from it (inside the dungeon pick range of AggressiveTargetValue).
@@ -1184,33 +1181,38 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             }
         }
 
-        bool canBless = false;
-        bool provides[std::size(GROUP_BUFFS)] = {};
-        for (Player* member : members)
+        // [lead479] user rule (no forcing timers): a missing buff held a boss pull at most BOSS_BUFF_WAIT_MS (30 s) -
+        // bf-h batch6: the prot paladin never blessed the others. A buff is missing only while it can come: a giver
+        // of its class alive, knowing it, that can cast it on the member now (its spell, reagent, power, range and
+        // sight: the game's cast check, PlayerbotAI::CanCastSpell); one nobody can give holds nothing
+        auto const canGive = [&members](uint8 casterClass, char const* spell, Player* to)
         {
-            canBless = canBless || (member->getClass() == CLASS_PALADIN && Knows(member, "blessing of might"));
-            for (size_t i = 0; i < std::size(GROUP_BUFFS); ++i)
-                provides[i] = provides[i] ||
-                              (member->getClass() == GROUP_BUFFS[i].casterClass && Knows(member, GROUP_BUFFS[i].spell));
-        }
+            for (Player* giver : members)
+                if (giver->IsAlive() && giver->getClass() == casterClass && Knows(giver, spell))
+                    if (PlayerbotAI* giverAI = GET_PLAYERBOT_AI(giver); !giverAI || giverAI->CanCastSpell(spell, to))
+                        return true;
+            return false;
+        };
 
         for (Player* member : members)
         {
             for (size_t i = 0; i < std::size(GROUP_BUFFS); ++i)
             {
                 GroupBuff const& buff = GROUP_BUFFS[i];
-                if (provides[i] && (!buff.manaOnly || member->getPowerType() == POWER_MANA) &&
-                    !HasAuraNamed(member, buff.auras, std::size(buff.auras), false))
+                if ((!buff.manaOnly || member->getPowerType() == POWER_MANA) &&
+                    !HasAuraNamed(member, buff.auras, std::size(buff.auras), false) &&
+                    canGive(buff.casterClass, buff.spell, member))
                     return Acore::StringFormat("{} on {}", buff.auras[0], member->GetName());
             }
 
-            if (canBless && !HasAuraNamed(member, blessings, std::size(blessings), true))
+            if (!HasAuraNamed(member, blessings, std::size(blessings), true) &&
+                canGive(CLASS_PALADIN, "blessing of might", member))
                 return Acore::StringFormat("a Blessing on {}", member->GetName());
         }
 
         static char const* const fury[] = { "Righteous Fury" };
-        if (bot->getClass() == CLASS_PALADIN && Knows(bot, "righteous fury") &&
-            !HasAuraNamed(bot, fury, std::size(fury), false))
+        if (bot->getClass() == CLASS_PALADIN && !HasAuraNamed(bot, fury, std::size(fury), false) &&
+            canGive(CLASS_PALADIN, "righteous fury", bot))
             return Acore::StringFormat("Righteous Fury on {}", bot->GetName());
 
         return std::string();
@@ -7770,7 +7772,6 @@ bool AggressiveTargetAction::DecideLook()
         // at its line); an unled tank's while it eats / drinks, or wants to and has the food / drink and the ground
         if (!target->IsInCombat() && bot->GetMap()->IsNonRaidDungeon() && !GroupDamage::NoDamageRelease(bot))
         {
-            uint32 const now = getMSTime();
             std::string why;
             bool held = PullReadiness::GroupPreparing(bot, &why);
             // [lead221] b185 rfc-h 5E 1317-1324 s: "paladin tank at 73 % mana (needs 77 %)", then "the tank rests"
@@ -7797,8 +7798,8 @@ bool AggressiveTargetAction::DecideLook()
 
             if (!held && IsBossMob(target))
             {
-                // the missing buff the tank has waited for long enough (WaitForBuffs' clock) holds no boss either
-                bool const askBuffs = !_buffWaitMs || getMSTimeDiff(_buffWaitMs, now) < BOSS_BUFF_WAIT_MS;
+                // [lead479] a missing buff holds the boss while it can come (MissingGroupBuff), no clock
+                bool const askBuffs = true;  // [lead479] the buffs that can come (MissingGroupBuff)
                 why = BossReadyGap(bot, askBuffs, IsEncounterBoss(target), target);
                 held = !why.empty();
             }
@@ -12261,8 +12262,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                                          fightSpot.GetPositionX(), fightSpot.GetPositionY(),
                                                          fightSpot.GetPositionZ(), drawn->GetName(),
                                                          drawn->GetExactDist(fightSpot), drawnWhy);
-            // the missing buff the tank has waited for long enough (WaitForBuffs' clock) holds no boss either
-            bool const askBuffs = !_buffWaitMs || getMSTimeDiff(_buffWaitMs, now) < BOSS_BUFF_WAIT_MS;
+            // [lead479] a missing buff holds the boss while it can come (MissingGroupBuff), no clock
+            bool const askBuffs = true;  // [lead479] the buffs that can come (MissingGroupBuff)
             std::string const readyGap = waitSec > 0.0f && held < BOSS_WINDOW_MAX_HOLD_MS
                                              ? std::string()
                                              : BossReadyGap(bot, askBuffs, IsEncounterBoss(drawn), drawn);
@@ -12315,7 +12316,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // Warchief Kargath Bladefist 9 s after "buffing: before Warchief Kargath Bladefist", the group's mana at 69 %,
         // the healer dead to Blade Dance 31 s in. A boss is pulled with the group as ready as for a boss
         // (BossReadyGap: health, mana, nobody sitting, nobody still buffing, no group buff missing).
-        bool const askBuffs = !_buffWaitMs || getMSTimeDiff(_buffWaitMs, now) < BOSS_BUFF_WAIT_MS;
+        bool const askBuffs = true;  // [lead479] the buffs that can come (MissingGroupBuff)
         std::string const readyGap = BossReadyGap(bot, askBuffs, IsEncounterBoss(plannedMob), plannedMob);
         if (!readyGap.empty())
         {
