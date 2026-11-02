@@ -20,6 +20,7 @@
 #include "ObjectAccessor.h"   // [lead401]
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
+#include "ReachTargetActions.h"  // [lead392] the gap closers
 #include "SpellInfo.h"  // [lead188] the dispel types
 #include "SpellMgr.h"
 #include "TestRunnerStrategy.h"  // [lead17] the harness's waypoint for a member
@@ -353,6 +354,18 @@ namespace
                 if (Unit* current = selfAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
                     current && current->IsAlive() && current->GetGUID() == events.target)
                     return true;
+        // [lead392] b201 rfc-h 5H: the cat druid took 14 mobs, 9 of them in four leaps - 606.1 s the leader's
+        // Attack on a Searing Blade Cultist the bear had just growled (a LoS pull, the mob still at its pack, "Searing
+        // Blade Enforcer is not pulled, 9 yd from the target"), and the cat's Feral Charge put it 37 yd from the bear
+        // in the pack: Cultist and three Enforcers on the cat in 2.3 s. A gap closer is a move; in a fight a damage
+        // dealer's or healer's position is the leader's (its combat spot, which keeps off an unpulled pack's reach).
+        // The tank's gap closers stay its own threat work
+        if (dynamic_cast<CastReachTargetSpellAction*>(action) && !PlayerbotAI::IsTank(self))
+        {
+            if (!gate)
+                NoteBlocked(self, name, "blocked_move");
+            return true;
+        }
         // [lead300] a spell on an enemy the leader did not name for this member (a multi-DoT, a group member's
         // attacker) or on its DontAttack mob: the target is the leader's
         if (!gate && events.attack == Leader::AttackEvent::Attack && dynamic_cast<CastSpellAction*>(action) &&
