@@ -137,7 +137,6 @@ namespace Leader::Travel
             if (!bot->IsAlive() || bot->GetMapId() != group.MapId())
             {
                 water.breathMs = -1;
-                water.surfacing = false;
                 water.leavingWater = false;
                 continue;
             }
@@ -152,48 +151,17 @@ namespace Leader::Travel
             water.breathMs = under ? std::max<int32>(0, water.breathMs - elapsed)
                                      : std::min<int32>(BREATH_MAX_MS, water.breathMs + elapsed * BREATH_REFILL_RATE);
 
-            if (!HARNESS_MOVES_BOTS)
+            // Bots walk by themselves: the bot's own "breathe" swims up. Logged once per dive, for comparison with
+            // its death events (environment: drowning).
+            if (under && water.breathMs < BREATH_SURFACE_MS && !water.lowBreathLogged)
             {
-                // Bots walk by themselves: the bot's own "breathe" swims up. Logged once per dive, for comparison
-                // with its death events (environment: drowning).
-                if (under && water.breathMs < BREATH_SURFACE_MS && !water.lowBreathLogged)
-                {
-                    water.lowBreathLogged = true;
-                    group.LogEvent("low_breath", JsonObject().Str("name", bot->GetName())
-                                                      .Num("breathPct", water.breathMs * 100 / BREATH_MAX_MS)
-                                                      .Bool("combat", bot->IsInCombat()));
-                }
-                if (!under)
-                    water.lowBreathLogged = false;
+                water.lowBreathLogged = true;
+                group.LogEvent("low_breath", JsonObject().Str("name", bot->GetName())
+                                                  .Num("breathPct", water.breathMs * 100 / BREATH_MAX_MS)
+                                                  .Bool("combat", bot->IsInCombat()));
             }
-            else if (under && water.breathMs < BREATH_SURFACE_MS)
-            {
-                // Straight up to the surface, like a player would, then back to what it was doing.
-                LiquidData const& liquid = bot->GetLiquidData();
-                if (liquid.Level != INVALID_HEIGHT)
-                {
-                    if (!water.surfacing)
-                        group.LogEvent("surface", JsonObject().Str("name", bot->GetName())
-                                                       .Num("breathPct", water.breathMs * 100 / BREATH_MAX_MS)
-                                                       .Real("depth", liquid.Level - bot->GetPositionZ())
-                                                       .Bool("combat", bot->IsInCombat()));
-                    water.surfacing = true;
-                    group.CountHarnessMove();
-                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                        botAI->SetNextCheckDelay(SURFACE_HOLD_MS);
-                    bot->GetMotionMaster()->MovePoint(0, bot->GetPositionX(), bot->GetPositionY(), liquid.Level + 0.5f,
-                                                      FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
-                }
-                continue;
-            }
-            if (HARNESS_MOVES_BOTS && water.surfacing && (under || water.breathMs < BREATH_RESUME_MS))
-            {
-                // At the surface: hold there until breathed (the bot AI would dive straight back).
-                if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                    botAI->SetNextCheckDelay(SURFACE_HOLD_MS);
-                continue;
-            }
-            water.surfacing = false;
+            if (!under)
+                water.lowBreathLogged = false;
 
             // [lead226] lava / slime under a member out of a fight is left at once, resting or not (b185 5B: the tank
             // ate in Ragefire's magma for 2 min and burned to death)
@@ -204,30 +172,19 @@ namespace Leader::Travel
             if (!wet || !leave)
             {
                 // Out of the water, or the rest is over: the dry spot is no longer its waypoint.
-                if (water.leavingWater && !HARNESS_MOVES_BOTS && memberGuid != group.LeaderGuid())
+                if (water.leavingWater && memberGuid != group.LeaderGuid())
                     group.ClearMemberWaypoint(memberGuid);
                 if (!wet)
                     water.leavingWater = false;
             }
-            if (!leave || !routeState.hasDryPos || (HARNESS_MOVES_BOTS && bot->isMoving()))
+            if (!leave || !routeState.hasDryPos)
                 continue;
 
             float const angle = float(index) * 2.0f * float(M_PI) / 5.0f;
             float const dryX = routeState.dryPos.GetPositionX() + DRY_SPOT_SPREAD * std::cos(angle);
             float const dryY = routeState.dryPos.GetPositionY() + DRY_SPOT_SPREAD * std::sin(angle);
-            if (!HARNESS_MOVES_BOTS)
-            {
-                // As a leader says "rest over here": the dry spot is the member's waypoint, its own walk out.
-                group.SetMemberWaypoint(memberGuid, bot, dryX, dryY, routeState.dryPos.GetPositionZ());
-            }
-            else
-            {
-                if (bot->IsSitState())
-                    bot->SetStandState(UNIT_STAND_STATE_STAND);  // also ends eating / drinking under water
-                group.CountHarnessMove();
-                bot->GetMotionMaster()->MovePoint(0, dryX, dryY, routeState.dryPos.GetPositionZ(), FORCED_MOVEMENT_NONE,
-                                                  0.0f, 0.0f, true, false);
-            }
+            // As a leader says "rest over here": the dry spot is the member's waypoint, its own walk out.
+            group.SetMemberWaypoint(memberGuid, bot, dryX, dryY, routeState.dryPos.GetPositionZ());
             if (!water.leavingWater)
             {
                 water.leavingWater = true;

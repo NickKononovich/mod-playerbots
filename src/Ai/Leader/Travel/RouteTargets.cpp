@@ -5138,7 +5138,7 @@ namespace Leader::Travel
         Player* wingLeader = ObjectAccessor::FindPlayer(group.LeaderGuid());
         bool reenter = false;
         float insideWalk = -1.0f;
-        if (!HARNESS_MOVES_BOTS && wingLeader && wingLeader->IsAlive() &&
+        if (wingLeader && wingLeader->IsAlive() &&
             wingLeader->GetMapId() == group.MapId() && !wingLeader->IsInCombat() &&
             !wingLeader->GetTransport() && !wingLeader->GetVehicle() && group.Route().linkIdx < 0 &&
                 group.Route().escort.IsEmpty())
@@ -5159,31 +5159,22 @@ namespace Leader::Travel
                     reentering.push_back(bot);
                     continue;
                 }
-                if (!HARNESS_MOVES_BOTS)
-                {
-                    anyPortalGoal = true;
-                    SelfTravel::PortalGoal goal;
-                    goal.mapId = group.MapId();
-                    goal.x = entrance.GetPositionX();
-                    goal.y = entrance.GetPositionY();
-                    goal.z = entrance.GetPositionZ();
-                    goal.exact = true;
-                    SelfTravel::SetPortalGoal(member.guid, goal);
-                    group.SetMemberHasPortalGoal(member.guid, true);
-                }
-                else if (bot->IsAlive() && bot->GetMapId() == group.MapId())
-                {
-                    group.CountHarnessMove();
-                    bot->TeleportTo(group.MapId(), entrance.GetPositionX(), entrance.GetPositionY(),
-                                    entrance.GetPositionZ(), entrance.GetOrientation());
-                }
+                anyPortalGoal = true;
+                SelfTravel::PortalGoal goal;
+                goal.mapId = group.MapId();
+                goal.x = entrance.GetPositionX();
+                goal.y = entrance.GetPositionY();
+                goal.z = entrance.GetPositionZ();
+                goal.exact = true;
+                SelfTravel::SetPortalGoal(member.guid, goal);
+                group.SetMemberHasPortalGoal(member.guid, true);
             }
         if (!reentering.empty())
             group.ShortcutReenter(reentering, next,
                             insideWalk < 0.0f ? "wing change: no walk inside, out through a portal and in again"
                                               : "wing change: the walk inside is longer",
                             insideWalk, 0.0f, "entrance " + std::to_string(next));
-        if (!HARNESS_MOVES_BOTS && anyPortalGoal)
+        if (anyPortalGoal)
         {
             group.Route().wingWalk = true;
             group.Route().wingWalkSinceMs = getMSTime();
@@ -5193,7 +5184,7 @@ namespace Leader::Travel
         group.Route().unreachableFrom.clear();
         group.Route().target.Clear();
         group.LogEvent("wing_change", JsonObject().Num("entrance", int64(group.Route().entranceIdx))
-                                           .Bool("walked", !HARNESS_MOVES_BOTS && anyPortalGoal)
+                                           .Bool("walked", anyPortalGoal)
                                            .Num("reentered", int64(reentering.size())).Str("why", why)
                                            .Real("x", entrance.GetPositionX()).Real("y", entrance.GetPositionY())
                                            .Real("z", entrance.GetPositionZ()));

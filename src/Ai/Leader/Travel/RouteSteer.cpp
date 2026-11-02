@@ -2370,8 +2370,8 @@ namespace Leader::Travel
                 // Another wing of the same instance (Scarlet Monastery, Dire Maul, Maraudon): the group walks
                 // out and in through the next portal. Bots walk by themselves: every member gets the portal goal
                 // (the leader's "we go in over there") and its own "instance portal" walks out through the exit and
-                // in through that entrance (TickWingWalk watches). HARNESS_MOVES_BOTS: the old teleport to it. Not
-                // while an event the group started waits for its next wave.
+                // in through that entrance (TickWingWalk watches). Not while an event the group started waits for
+                // its next wave.
                 // A next boss behind a closed door that does not open for him: another wing does not open it
                 // (Gnomeregan heroic 2026-10-25: Thermaplugg behind The Final Chamber 142207; the walk to the Train
                 // Depot entrance, the same caves, paced between two exits 4 minutes without a fight).
@@ -4922,37 +4922,13 @@ namespace Leader::Travel
                 if (lineOk && leader->IsWithinLOS(dest.x, dest.y, dest.z + 2.0f))
                 {
                     ++routeState.gapTries;
-                    if (!HARNESS_MOVES_BOTS)
-                    {
-                        // The aggro edge across the gap is the leader's waypoint: its own "test runner move" walks
-                        // straight where its path ends (MovementAction::MoveStraight, over ground, in sight).
-                        group.SetLeaderWaypoint(leader, dest.x, dest.y, dest.z);
-                    }
-                    else
-                    {
-                        group.CountHarnessMove();
-                        group.ClearWaypoint(group.LeaderGuid());
-                        leader->GetMotionMaster()->Clear();
-                        MovementAction::RecordTankTrail(leader);
-                        // A harness step never runs through a closed door either (ROUTE_CLOSED_DOORS_ALL).
-                        {
-                            ObjectGuid doorGuid;
-                            float doorWalked = 0.0f;
-                            LeaderDoorStop(leader, dest, doorGuid, doorWalked);
-                        }
-                        leader->GetMotionMaster()->MovePoint(0, dest.x, dest.y, dest.z, FORCED_MOVEMENT_NONE, 0.0f,
-                                                             0.0f, false, true);
-                        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(leader))
-                        {
-                            float const speed = std::max(1.0f, leader->GetSpeed(MOVE_RUN));
-                            botAI->SetNextCheckDelay(uint32((dest - here).length() / speed * IN_MILLISECONDS) +
-                                                     LINK_HOLD_MS);
-                        }
-                    }
+                    // The aggro edge across the gap is the leader's waypoint: its own "test runner move" walks
+                    // straight where its path ends (MovementAction::MoveStraight, over ground, in sight).
+                    group.SetLeaderWaypoint(leader, dest.x, dest.y, dest.z);
                     group.NoteProgress(now);
                     group.LogEvent("gap_cross", JsonObject().Str("name", object->GetName())
                                                      .Num("entry", object->GetEntry()).Num("try", routeState.gapTries)
-                                                     .Bool("swim", swimming).Bool("own", !HARNESS_MOVES_BOTS)
+                                                     .Bool("swim", swimming).Bool("own", true)
                                                      .Real("distance", distance).Real("x", here.x).Real("y", here.y)
                                                      .Real("z", here.z).Real("toX", dest.x).Real("toY", dest.y)
                                                      .Real("toZ", dest.z));
@@ -4980,7 +4956,7 @@ namespace Leader::Travel
             // (27.9,-530.7) / (30.8,-525.7), 21-26 yd along the leg that goes east round a raised object (navmesh
             // islands z -15..-12 at x 22-28, y -546..-549; navmesh_probe: connected via 30.9,-552.8 / 33.4,-546.9);
             // its own path was refused and the straight line ran over the object: bot_cannot_move x13, 173 s idle.
-            if (routeState.driving && !HARNESS_MOVES_BOTS)
+            if (routeState.driving)
                 for (size_t index = 1; index < leg.points.size(); ++index)
                 {
                     G3D::Vector3 const ahead = leg.points[index] - here;

@@ -287,7 +287,7 @@ bot, leader))
                     (bot == runningAnchor || bot->GetExactDist(runningMember) > MEET_RANGE))
                     groupSide.push_back(bot);
         }
-        else if (ROUTE_REGROUP && !HARNESS_MOVES_BOTS && entrance &&
+        else if (ROUTE_REGROUP && entrance &&
                  (!regroupCooldownUntilMs.count(group.InstanceId()) ||
                   int32(now - regroupCooldownUntilMs[group.InstanceId()]) >= 0))
         {

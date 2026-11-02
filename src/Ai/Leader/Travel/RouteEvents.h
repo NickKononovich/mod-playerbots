@@ -327,7 +327,7 @@ namespace Leader::Travel
 
     // Over the link as a player walks it: a straight walk (no navmesh on a game-object bridge). Bots walk by
     // themselves: the far end is the bot's waypoint, its own "test runner move" walks straight where the navmesh
-    // ends (MovementAction::MoveStraight). HARNESS_MOVES_BOTS: the harness walks it, the bot AI held.
+    // ends (MovementAction::MoveStraight).
     void StartLinkCross(LeaderGroup& group, Player* bot, RouteLinkDef const& link);
 
     // The leader's waypoint is withheld for its own running pull (GiveWaypoint's ROUTE_NO_WALK_IN_PULL rule).

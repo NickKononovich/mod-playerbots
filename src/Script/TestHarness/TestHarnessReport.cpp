@@ -907,7 +907,6 @@ namespace TestHarness
                      .Num("size", party.content->size).Num("contentIlvl", party.content->ilvl)
                      .Num("targetIlvl", party.targetIlvl).Real("groupAvgIlvl", avg).Num("level", party.level)
                      .Str("variant", party.comp->id).Str("variantNote", party.comp->note)
-                     .Bool("harnessMovesBots", HARNESS_MOVES_BOTS)
                      .Num("instanceId", party.instanceId).Num("bossesTotal", RequiredBossCount(party))
                      // [hleft-daily-reset] seconds until the server's scheduled reset of this instance, -1: none
                      .Num("resetInSec", party.instanceResetAt
@@ -1686,28 +1685,15 @@ namespace TestHarness
                 }
             }
             // One automatic recovery: drop the current target (the leader's intent). Bots walk by themselves: their
-            // movement and AI are not reset from outside; HARNESS_MOVES_BOTS restarts every member's movement too.
+            // movement and AI are not reset from outside.
             if (!party.target.IsEmpty())
                 SkipTarget(party, party.target, 10 * MINUTE * IN_MILLISECONDS, "stall");
             TestRunner::ClearWaypoint(party.leader);
-            if (HARNESS_MOVES_BOTS)
-                for (Player* bot : players)
-                {
-                    if (!bot->IsAlive())
-                        continue;
-                    ++party.harnessMoves;
-                    bot->GetMotionMaster()->Clear();
-                    bot->StopMoving();
-                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                        botAI->Reset();
-                }
             party.waitSinceMs = 0;
             party.nextRetargetMs = now;
             party.stallLevel = 1;
             party.lastProgressMs = now;
-            LogEvent(party, "stall_recovery",
-                     JsonObject().Str("action", HARNESS_MOVES_BOTS ? "skip target, clear waypoint, reset movement"
-                                                                   : "skip target, clear waypoint"));
+            LogEvent(party, "stall_recovery", JsonObject().Str("action", "skip target, clear waypoint"));
             return;
         }
 

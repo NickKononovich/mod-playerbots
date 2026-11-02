@@ -23,13 +23,6 @@
 
 namespace Leader
 {
-    // User rule (2026-10-24): bots walk by themselves. false: the harness never moves, teleports or holds a bot
-    // during a run (no MovePoint / MoveJump / TeleportTo / SetNextCheckDelay for a walk); it gives the group intent
-    // (the leader's waypoint, a portal to go through, a spot to come to) and the bots' own actions walk. What a bot
-    // cannot do is logged as bot_cannot_move. true restores the harness-driven moves of waves 1-10 (each counted in
-    // run_end.harnessMoves). Setup before the run (the teleport to the entrance) is not affected.
-    constexpr bool HARNESS_MOVES_BOTS = false;
-
     struct StarterTrack
     {
         Knowledge::EventStarterDef const* def = nullptr;
@@ -97,8 +90,7 @@ namespace Leader
         // Player::HandleDrowning does (3 minutes under water, refilled 10x as fast above).
         int32 breathMs = -1;  // -1 = not sampled yet (full)
         uint32 breathSampleMs = 0;
-        bool surfacing = false;
-        bool lowBreathLogged = false;  // HARNESS_MOVES_BOTS off: the bot's own "breathe" surfaces, logged once
+        bool lowBreathLogged = false;  // the bot's own "breathe" surfaces, logged once per dive
     };
 
     // [lead107 stage 5] a member's rest / far-wait facts (RestWait), moved out of the harness's member record

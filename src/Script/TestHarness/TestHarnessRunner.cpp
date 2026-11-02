@@ -223,8 +223,6 @@ namespace TestHarness
         constexpr uint8 BRD_RING_MAX_FAILS = 3;
         using Leader::Travel::EVENT_HOLD_LOG_MS;  // [lead107] RouteTargets.h
         constexpr uint32 ENTRANCE_REFIRE_MS = 10 * IN_MILLISECONDS;
-        constexpr uint32 SPELL_HYPERSPEED_ACCELERATION = 54758;
-        constexpr float GHOST_PATH_MAX_DROP = 60.0f;
         constexpr uint32 GHOST_STUCK_MS = 60 * IN_MILLISECONDS;
         using Leader::Travel::ESCORT_OPENED_DOORS;  // [lead107] RouteTargets.h
         using Leader::Travel::TRAP_GATE_DOORS;  // [lead107] RouteTargets.h
@@ -244,18 +242,9 @@ namespace TestHarness
         constexpr uint32 ENTRY_REFUSED_MAX_MS = 5 * MINUTE * IN_MILLISECONDS;  // then the run ends with the cause
         using Leader::Travel::HOR_MAP;  // [lead107] RouteSteer.h
         constexpr uint32 HOR_DATA_WAVE_NUMBER = 8;  // halls_of_reflection.h DATA_WAVE_NUMBER
-        constexpr float GHOST_DIRECT_RANGE = 40.0f;  // no usable path this close to the portal: straight to it
-        constexpr float GHOST_ARRIVED_RANGE = 8.0f;  // standing on the portal, not worth a log line
-        constexpr float GHOST_CORNER_STEP = 150.0f;  // one move along a corner path (corpse runs over 590 yd)
-        constexpr float FLY_CRUISE_HEIGHT = 30.0f;   // above the higher of start and portal
-        constexpr float FLY_ARRIVE_DISTANCE = 6.0f;  // 2D distance at which the descent to the portal starts
-        constexpr float FLY_SIDE_DISTANCE = 25.0f;   // the descent point beside the portal (ROUTE_FLY_SIDE_APPROACH)
-        constexpr uint32 MOUNT_CAST_WAIT_MS = 4 * IN_MILLISECONDS;
         using Leader::Travel::BREATH_MAX_MS;  // [lead107] RouteWater.h
         using Leader::Travel::BREATH_REFILL_RATE;  // [lead107] RouteWater.h
         using Leader::Travel::BREATH_SURFACE_MS;  // [lead107] RouteWater.h
-        using Leader::Travel::BREATH_RESUME_MS;  // [lead107] RouteWater.h
-        using Leader::Travel::SURFACE_HOLD_MS;  // [lead107] RouteWater.h
         using Leader::Travel::DEEP_TARGET_DEPTH;  // [lead107] RouteTargets.h
         using Leader::Travel::DRY_SPOT_SPREAD;  // [lead107] RouteEvents.h
         using Leader::Travel::ROUTE_SKIP_BEHIND_SKIPPED;  // [lead107] RouteSteer.h
@@ -446,7 +435,7 @@ namespace TestHarness
         using Leader::Travel::STARTER_GATHER_RETRY_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::STARTER_GATHER_MAX_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::STARTER_GATHER_LOG_MS;  // [lead107] RouteEvents.h
-        // Bots walk by themselves (HARNESS_MOVES_BOTS off): the same bot_cannot_move (bot, capability, reason) is
+        // Bots walk by themselves: the same bot_cannot_move (bot, capability, reason) is
         // logged at most this often; a walked wing change is over once every member stands this close (2D) to the
         // next entrance (SelfTravel's goal range), and fails after WING_WALK_MAX_MS.
         constexpr uint32 CANNOT_MOVE_LOG_MS = 30 * IN_MILLISECONDS;
@@ -514,8 +503,6 @@ namespace TestHarness
         using Leader::Travel::WAYPOINT_REACHED_SWIM;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_STARTER_REARM;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_GATHER_MEMBERS;  // [lead107] RouteEvents.h
-        // - FlyToPortal descends beside the portal (FLY_SIDE_DISTANCE out on its axis), not onto it.
-        constexpr bool ROUTE_FLY_SIDE_APPROACH = true;
         using Leader::Travel::ROUTE_CHAIN_GUARD;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_TWIN_SKIP;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_OCULUS_DRAKE_ONLY;  // [lead107] RouteTargets.h
@@ -1506,7 +1493,7 @@ namespace TestHarness
 
         // Over the link as a player walks it: a straight walk (no navmesh on a game-object bridge). Bots walk by
         // themselves: the far end is the bot's waypoint, its own "test runner move" walks straight where the navmesh
-        // ends (MovementAction::MoveStraight). HARNESS_MOVES_BOTS: the harness walks it, the bot AI held.
+        // ends (MovementAction::MoveStraight).
         void StartLinkCross(Party& party, Player* bot, RouteLinkDef const& link)
         {
             // [lead107] the leader's (RouteEvents.h)
@@ -1537,18 +1524,6 @@ namespace TestHarness
             PartyLeaderGroup group(TestHarnessMgr::Instance(), const_cast<Party&>(party));
             return Leader::Travel::NearestEntrance(group, object);
         }
-
-        // Spirit healers near a ghost (the graveyard's), for a corpse run that cannot be walked.
-        constexpr float SPIRIT_HEALER_RANGE = 60.0f;
-        constexpr float SPIRIT_HEALER_USE_RANGE = 4.0f;  // within INTERACTION_DISTANCE
-
-        struct SpiritHealerCheck
-        {
-            bool operator()(Creature* creature) const
-            {
-                return creature->IsInWorld() && creature->IsAlive() && creature->HasNpcFlag(UNIT_NPC_FLAG_SPIRITHEALER);
-            }
-        };
 
         Member const* FindMember(Party const& party, ObjectGuid guid)
         {
@@ -3825,229 +3800,45 @@ namespace TestHarness
 
     void TestHarnessMgr::GuideGhosts(Party& party, std::vector<Player*> const& players)
     {
-        if (!HARNESS_MOVES_BOTS)
+        // Bots walk by themselves: a ghost runs to the portal on its own ("ghost portal": a walk, else the spirit
+        // healer), a living member outside walks or flies in ("instance portal") once the group's intent says so
+        // (the portal goal: back in through the entrance the run uses). The harness only watches and logs what
+        // the bot cannot do.
+        uint32 const now = getMSTime();
+        // Where the members outside are (wave 13: RFK's ghosts paced under the Great Lift for 20 minutes and the
+        // run log had no position outside the instance): every GHOST_POS_MS while anyone is out.
+        if (!party.ghostPosMs || getMSTimeDiff(party.ghostPosMs, now) >= GHOST_POS_MS)
         {
-            // Bots walk by themselves: a ghost runs to the portal on its own ("ghost portal": a walk, else the spirit
-            // healer), a living member outside walks or flies in ("instance portal") once the group's intent says so
-            // (the portal goal: back in through the entrance the run uses). The harness only watches and logs what
-            // the bot cannot do.
-            uint32 const now = getMSTime();
-            // Where the members outside are (wave 13: RFK's ghosts paced under the Great Lift for 20 minutes and the
-            // run log had no position outside the instance): every GHOST_POS_MS while anyone is out.
-            if (!party.ghostPosMs || getMSTimeDiff(party.ghostPosMs, now) >= GHOST_POS_MS)
-            {
-                JsonArray outside;
-                for (Player* bot : players)
-                {
-                    if (bot->GetMapId() == party.content->mapId)
-                        continue;
-                    std::string trail;
-                    bool ghostPortal = false;
-                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                    {
-                        if (Engine* engine = botAI->GetCurrentEngine())
-                            trail = engine->GetLastAction();
-                        ghostPortal = botAI->HasStrategy("ghost portal", BOT_STATE_DEAD);
-                    }
-                    if (trail.size() > GHOST_POS_TRAIL)
-                        trail = trail.substr(trail.size() - GHOST_POS_TRAIL);
-                    outside.Raw(JsonObject().Str("name", bot->GetName()).Bool("alive", bot->IsAlive())
-                                    .Bool("ghost", bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
-                                    .Bool("ghostPortal", ghostPortal).Num("map", bot->GetMapId())
-                                    .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
-                                    .Real("z", bot->GetPositionZ()).Bool("moving", bot->isMoving())
-                                    .Str("lastAction", trail).Build());
-                }
-                if (!outside.Empty())
-                {
-                    party.ghostPosMs = now;
-                    LogEvent(party, "ghost_pos", JsonObject().Raw("members", outside.Build()));
-                }
-            }
+            JsonArray outside;
             for (Player* bot : players)
             {
-                Member* member = nullptr;
-                for (Member& candidate : party.members)
-                    if (candidate.guid == bot->GetGUID())
-                        member = &candidate;
-                if (!member)
+                if (bot->GetMapId() == party.content->mapId)
                     continue;
-
-                bool const inside = bot->GetMapId() == party.content->mapId;
-                bool const ghost = !bot->IsAlive() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
-                if (inside || bot->IsBeingTeleported() || bot->IsInCombat() || (!ghost && !bot->IsAlive()))
+                std::string trail;
+                bool ghostPortal = false;
+                if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
                 {
-                    if (inside && member->hasPortalGoal && !party.wingWalk && !bot->IsBeingTeleported())
-                    {
-                        SelfTravel::ClearPortalGoal(member->guid);
-                        member->hasPortalGoal = false;
-                    }
-                    if (inside)
-                    {
-                        member->leftOutside = false;
-                        member->outsideStuckCount = 0;
-                    }
-                    member->noWalkSinceMs = 0;
-                    continue;
+                    if (Engine* engine = botAI->GetCurrentEngine())
+                        trail = engine->GetLastAction();
+                    ghostPortal = botAI->HasStrategy("ghost portal", BOT_STATE_DEAD);
                 }
-                if (ghost && bot->GetCorpseLocation().GetMapId() != party.content->mapId)
-                    continue;
-
-                if (!ghost && !member->hasPortalGoal && !party.wingWalk && party.entranceIdx < party.entrances.size())
-                {
-                    // Back in next to the group (Gundrak heroic 2026-10-25: a revived shaman went in through the
-                    // run's south entrance, 1002 yd of walk from the group at the north one, and fell off its
-                    // ledge): the entrance whose arrival is nearest the leader inside (FindPortal: the arrival
-                    // nearest the goal).
-                    Player* const inLeader = ObjectAccessor::FindPlayer(party.leader);
-                    bool const leaderIn = inLeader && inLeader != bot && inLeader->IsAlive() &&
-                                          inLeader->GetMapId() == party.content->mapId;
-                    Position const at = leaderIn ? inLeader->GetPosition() : party.entrances[party.entranceIdx];
-                    SelfTravel::PortalGoal goal;
-                    goal.mapId = party.content->mapId;
-                    goal.x = at.GetPositionX();
-                    goal.y = at.GetPositionY();
-                    goal.z = at.GetPositionZ();
-                    SelfTravel::SetPortalGoal(member->guid, goal);
-                    member->hasPortalGoal = true;
-                }
-
-                // The portal it is heading for, for the log only.
-                AreaTrigger const* best = nullptr;
-                for (TriggerTrack const& track : party.triggers)
-                {
-                    AreaTrigger const* trigger = track.entrance ? sObjectMgr->GetAreaTrigger(track.triggerId) : nullptr;
-                    if (trigger && trigger->map == bot->GetMapId() &&
-                        (!best || bot->GetExactDist(trigger->x, trigger->y, trigger->z) <
-                                      bot->GetExactDist(best->x, best->y, best->z)))
-                        best = trigger;
-                }
-                float const toX = best ? best->x : 0.0f;
-                float const toY = best ? best->y : 0.0f;
-                float const toZ = best ? best->z : 0.0f;
-
-                // On its entrance and still outside: the core's refusal by name (hor-n / hor-h 2026-10-25: the members
-                // inside kept the Falric / Marwyn waves running, the others stood on the portal 400 s logging only "the
-                // portal did not take the bot"). The bot keeps trying by itself; the run waits, then ends with it.
-                bool const onEntrance = best && bot->GetExactDist2d(toX, toY) < ENTRY_REFUSAL_RANGE;
-                std::string const refusal = onEntrance ? EntryRefusal(bot, party.content->mapId) : std::string();
-                if (refusal.empty())
-                    member->entryRefusedSinceMs = 0;
-                else
-                {
-                    if (!member->entryRefusedSinceMs)
-                        member->entryRefusedSinceMs = now ? now : 1;
-                    if (refusal != member->entryRefusal)
-                    {
-                        member->entryRefusal = refusal;
-                        party.lastEvent = "entry refused: " + refusal;
-                        LogEvent(party, "entry_refused",
-                                 JsonObject().Str("name", bot->GetName()).Str("reason", refusal)
-                                     .Num("trigger", best->entry)
-                                     .Num("refusedSec",
-                                          getMSTimeDiff(member->entryRefusedSinceMs, now) / IN_MILLISECONDS));
-                    }
-                    if (getMSTimeDiff(member->entryRefusedSinceMs, now) > ENTRY_REFUSED_MAX_MS)
-                    {
-                        uint32 const minutes = ENTRY_REFUSED_MAX_MS / MINUTE / IN_MILLISECONDS;
-                        Finish(party, "failed",
-                               member->name + " cannot enter for " + std::to_string(minutes) + " min: " + refusal);
-                        return;
-                    }
-                }
-
-                if (!member->noWalkSinceMs)
-                {
-                    float const left = best ? bot->GetExactDist(toX, toY, toZ) : 0.0f;
-                    LogEvent(party, "ghost_guide", JsonObject().Str("name", bot->GetName()).Bool("own", true)
-                                                       .Bool("ghost", ghost).Num("trigger", best ? best->entry : 0)
-                                                       .Real("distance", left));
-                }
-
-                if (!member->noWalkSinceMs || bot->GetExactDist(&member->noWalkPos) > 3.0f)
-                {
-                    if (member->noWalkSinceMs)
-                    {
-                        party.lastProgressMs = now;  // a member walking back is progress for the stall detector
-                        member->outsideStuckCount = 0;
-                    }
-                    member->noWalkPos = bot->GetPosition();
-                    member->noWalkSinceMs = now;
-                }
-                else if (getMSTimeDiff(member->noWalkSinceMs, now) > GHOST_STUCK_MS)
-                {
-                    member->noWalkSinceMs = now;
-                    // Outside and stuck for good, alive or a ghost (dtk-n build 10: a spirit-healed shaman stood 30
-                    // yd above the portal for 4 minutes; bfd-h: a ghost with no walk to the underwater portal, 265
-                    // s): not waited for any more; it keeps trying by itself and is waited for again once inside.
-                    if (++member->outsideStuckCount >= OUTSIDE_GIVE_UP_STUCKS && !member->leftOutside)
-                    {
-                        member->leftOutside = true;
-                        LogEvent(party, "member_left_outside", JsonObject().Str("name", bot->GetName())
-                                                                   .Bool("ghost", ghost)
-                                                                   .Real("x", bot->GetPositionX())
-                                                                   .Real("y", bot->GetPositionY())
-                                                                   .Real("z", bot->GetPositionZ()));
-                        // [b30_st_spirit] Going on without it needs a healer alive inside (st-n
-                        // 20261025-184229-st-n-5F-11: the druid healer's and the warlock's ghosts stood above the
-                        // Sunken Temple portal - no navmesh from the Pool of Tears down into the temple - while the
-                        // tank, hunter and rogue sat idle inside for 5 minutes). Nobody resurrects a released ghost
-                        // (PartyMemberToResurrect takes corpses only), so without a healer the run cannot go on.
-                        bool healerInside = false;
-                        for (Member const& other : party.members)
-                        {
-                            Player* mate = ObjectAccessor::FindPlayer(other.guid);
-                            healerInside |= mate && mate != bot && mate->IsInWorld() && mate->IsAlive() &&
-                                            mate->GetMapId() == party.content->mapId && PlayerbotAI::IsHeal(mate);
-                        }
-                        if (!healerInside)
-                        {
-                            Finish(party, "failed",
-                                   member->name + (ghost ? " (ghost)" : " (alive, outside)") +
-                                       " cannot get back in: no walk to the portal (trigger " +
-                                       std::to_string(best ? best->entry : 0) + ", " +
-                                       std::to_string(int32(best ? bot->GetExactDist(toX, toY, toZ) : 0.0f)) +
-                                       " yd) and no healer alive inside to go on without it");
-                            return;
-                        }
-                    }
-                    LogCannotMove(party, bot, "corpse run",
-                                  ghost ? "ghost made no progress to the portal for 60 s"
-                                        : "made no progress back into the instance for 60 s",
-                                  toX, toY, toZ);
-                }
+                if (trail.size() > GHOST_POS_TRAIL)
+                    trail = trail.substr(trail.size() - GHOST_POS_TRAIL);
+                outside.Raw(JsonObject().Str("name", bot->GetName()).Bool("alive", bot->IsAlive())
+                                .Bool("ghost", bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+                                .Bool("ghostPortal", ghostPortal).Num("map", bot->GetMapId())
+                                .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
+                                .Real("z", bot->GetPositionZ()).Bool("moving", bot->isMoving())
+                                .Str("lastAction", trail).Build());
             }
-            return;
+            if (!outside.Empty())
+            {
+                party.ghostPosMs = now;
+                LogEvent(party, "ghost_pos", JsonObject().Raw("members", outside.Build()));
+            }
         }
-
         for (Player* bot : players)
         {
-            if (bot->GetMapId() == party.content->mapId || bot->isMoving() || bot->IsInCombat())
-                continue;
-            // A ghost walks back to its corpse inside; a member who was revived outside (spirit healer, a res at
-            // the entrance) walks in through the same portal.
-            bool const ghost = !bot->IsAlive() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
-            if (!ghost && !bot->IsAlive())
-                continue;
-            if (ghost && bot->GetCorpseLocation().GetMapId() != party.content->mapId)
-                continue;
-
-            AreaTrigger const* best = nullptr;
-            for (TriggerTrack const& track : party.triggers)
-            {
-                if (!track.entrance)
-                    continue;
-                AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(track.triggerId);
-                if (!trigger || trigger->map != bot->GetMapId())
-                    continue;
-                if (!best || bot->GetExactDist(trigger->x, trigger->y, trigger->z) <
-                                 bot->GetExactDist(best->x, best->y, best->z))
-                    best = trigger;
-            }
-
-            if (!best)
-                continue;
-
             Member* member = nullptr;
             for (Member& candidate : party.members)
                 if (candidate.guid == bot->GetGUID())
@@ -4055,303 +3846,150 @@ namespace TestHarness
             if (!member)
                 continue;
 
-            // The ghost walks to the instance portal like a player would, on the navmesh, one path segment at a time:
-            // a path is capped at MAX_POINT_PATH_LENGTH points (~300 yd), and a MovePoint whose path fails falls back
-            // to a straight spline through the terrain (Icecrown: graveyard 6447,2061,564 -> Frozen Halls portal at
-            // z 808 went down to z -490 and up again). The portal trigger then takes it in.
-            // A long corpse run (Blackrock Mountain: graveyard -> Blackrock Spire portal) is over the smooth path's
-            // point limit: the corner path then, and the ghost walks GHOST_CORNER_STEP yd of it per move (the
-            // MovePoint builds its own smooth path, which must stay under that limit).
-            PathResult leg;
-            G3D::Vector3 const portal(best->x, best->y, best->z);
-            G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-            uint32 const type = BuildLeg(bot, here, portal, true, leg.points, leg.end, leg.straightPath);
-            Movement::PointsArray const& points = leg.points;
-            float const left = bot->GetExactDist(best->x, best->y, best->z);
-            float const floorZ = std::min(bot->GetPositionZ(), best->z) - GHOST_PATH_MAX_DROP;
-            bool usable = !(type & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH)) &&
-                          points.size() >= 2;
-            for (G3D::Vector3 const& point : points)
-                usable = usable && point.z > floorZ;
-
-            G3D::Vector3 const end = !usable ? portal
-                                     : leg.straightPath ? RouteWaypoint(leg, points.back(), GHOST_CORNER_STEP)
-                                                        : points.back();
-            usable = usable && (end - G3D::Vector3(best->x, best->y, best->z)).length() + 2.0f < left;
-            // The last yards to the portal where the navmesh ends short of it (Deadmines: the mine ramp 17 yd above
-            // the portal, The Stockade, Utgarde Pinnacle) or the path is too short to count: straight to the trigger.
-            // Straight to the portal: a ghost always (no fall damage), a living member only over solid ground (Oculus:
-            // the entrance ring floats above Coldarra).
-            bool const directSafe = ghost || DirectLineOverGround(bot, best->x, best->y, best->z);
-            bool const nearPortal = !usable && left <= GHOST_DIRECT_RANGE && directSafe;
-
-            // Progress check: a ghost that stood still for GHOST_STUCK_MS on a usable path is stuck on geometry.
-            uint32 const now = getMSTime();
-            if (bot->GetExactDist(&member->ghostLastPos) > 3.0f)
+            bool const inside = bot->GetMapId() == party.content->mapId;
+            bool const ghost = !bot->IsAlive() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+            if (inside || bot->IsBeingTeleported() || bot->IsInCombat() || (!ghost && !bot->IsAlive()))
             {
-                member->ghostLastPos = bot->GetPosition();
-                member->ghostStillMs = now;
-                party.lastProgressMs = now;  // a member walking back is progress for the stall detector
-            }
-            else if (!member->ghostStillMs)
-                member->ghostStillMs = now;
-
-            bool const stuck = member->ghostStillMs && getMSTimeDiff(member->ghostStillMs, now) > GHOST_STUCK_MS;
-
-            // No walk to the portal for a ghost (Tempest Keep: the portals float above Netherstorm; wave 8 Mechanar
-            // "corpse run did not finish in 20 minutes", Arcatraz "did not come back"), or it got stuck on the way:
-            // as a player does, it takes the spirit healer at the graveyard (resurrection sickness and durability loss
-            // included) and flies from there (FlyToPortal below, on the next ticks).
-            if (ghost && ((!usable && !nearPortal) || stuck))
-            {
-                std::list<Creature*> healers;
-                SpiritHealerCheck check;
-                Acore::CreatureListSearcher<SpiritHealerCheck> searcher(bot, healers, check);
-                Cell::VisitObjects(bot, searcher, SPIRIT_HEALER_RANGE);
-                Creature* healer = nullptr;
-                for (Creature* candidate : healers)
-                    if (!healer || bot->GetExactDist(candidate) < bot->GetExactDist(healer))
-                        healer = candidate;
-                if (healer)
+                if (inside && member->hasPortalGoal && !party.wingWalk && !bot->IsBeingTeleported())
                 {
-                    if (bot->GetExactDist(healer) <= SPIRIT_HEALER_USE_RANGE)
-                    {
-                        WorldPacket activate(CMSG_SPIRIT_HEALER_ACTIVATE, 8);
-                        activate << healer->GetGUID();
-                        bot->GetSession()->HandleSpiritHealerActivateOpcode(activate);
-                        LogEvent(party, "spirit_healer", JsonObject().Str("name", bot->GetName())
-                                                            .Bool("alive", bot->IsAlive()).Bool("stuck", stuck)
-                                                            .Num("trigger", best->entry).Real("distance", left));
-                        member->ghostStillMs = now;
-                    }
-                    else
-                        bot->GetMotionMaster()->MovePoint(0, healer->GetPositionX(), healer->GetPositionY(),
-                                                          healer->GetPositionZ(), FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                                                          true, true);
-                    continue;
+                    SelfTravel::ClearPortalGoal(member->guid);
+                    member->hasPortalGoal = false;
                 }
-            }
-
-            ++party.harnessMoves;  // HARNESS_MOVES_BOTS only: the harness walks / flies this member
-            // No walkable route for a living member (Tempest Keep: the portals float above Netherstorm), or stuck on
-            // the way: its own flying mount.
-            if (!ghost && ((!usable && !nearPortal) || stuck || member->flyCruiseZ > 0.0f) &&
-                FlyToPortal(party, *member, bot, best))
-            {
-                if (!member->ghostGuided)
+                if (inside)
                 {
-                    member->ghostGuided = true;
-                    member->ghostLastPos = bot->GetPosition();
-                    member->ghostStillMs = now;
+                    member->leftOutside = false;
+                    member->outsideStuckCount = 0;
                 }
+                member->noWalkSinceMs = 0;
                 continue;
             }
+            if (ghost && bot->GetCorpseLocation().GetMapId() != party.content->mapId)
+                continue;
 
-            if (usable)
-                bot->GetMotionMaster()->MovePoint(0, end.x, end.y, end.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true,
-                                                  true);
-            else if (nearPortal)
+            if (!ghost && !member->hasPortalGoal && !party.wingWalk && party.entranceIdx < party.entrances.size())
             {
-                // generatePath false: a generated path ends where the navmesh does, and the ghost never moved.
-                bot->GetMotionMaster()->MovePoint(0, best->x, best->y, best->z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                                                  false, true);
-                if (!member->ghostNoPathLogged && left > GHOST_ARRIVED_RANGE)
-                {
-                    member->ghostNoPathLogged = true;
-                    LogEvent(party, "ghost_direct",
-                             JsonObject().Str("name", bot->GetName()).Num("trigger", best->entry)
-                                 .Num("pathType", type).Num("points", int64(points.size()))
-                                 .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
-                                 .Real("z", bot->GetPositionZ()).Real("distance", left));
-                }
+                // Back in next to the group (Gundrak heroic 2026-10-25: a revived shaman went in through the
+                // run's south entrance, 1002 yd of walk from the group at the north one, and fell off its
+                // ledge): the entrance whose arrival is nearest the leader inside (FindPortal: the arrival
+                // nearest the goal).
+                Player* const inLeader = ObjectAccessor::FindPlayer(party.leader);
+                bool const leaderIn = inLeader && inLeader != bot && inLeader->IsAlive() &&
+                                      inLeader->GetMapId() == party.content->mapId;
+                Position const at = leaderIn ? inLeader->GetPosition() : party.entrances[party.entranceIdx];
+                SelfTravel::PortalGoal goal;
+                goal.mapId = party.content->mapId;
+                goal.x = at.GetPositionX();
+                goal.y = at.GetPositionY();
+                goal.z = at.GetPositionZ();
+                SelfTravel::SetPortalGoal(member->guid, goal);
+                member->hasPortalGoal = true;
             }
+
+            // The portal it is heading for, for the log only.
+            AreaTrigger const* best = nullptr;
+            for (TriggerTrack const& track : party.triggers)
+            {
+                AreaTrigger const* trigger = track.entrance ? sObjectMgr->GetAreaTrigger(track.triggerId) : nullptr;
+                if (trigger && trigger->map == bot->GetMapId() &&
+                    (!best || bot->GetExactDist(trigger->x, trigger->y, trigger->z) <
+                                  bot->GetExactDist(best->x, best->y, best->z)))
+                    best = trigger;
+            }
+            float const toX = best ? best->x : 0.0f;
+            float const toY = best ? best->y : 0.0f;
+            float const toZ = best ? best->z : 0.0f;
+
+            // On its entrance and still outside: the core's refusal by name (hor-n / hor-h 2026-10-25: the members
+            // inside kept the Falric / Marwyn waves running, the others stood on the portal 400 s logging only "the
+            // portal did not take the bot"). The bot keeps trying by itself; the run waits, then ends with it.
+            bool const onEntrance = best && bot->GetExactDist2d(toX, toY) < ENTRY_REFUSAL_RANGE;
+            std::string const refusal = onEntrance ? EntryRefusal(bot, party.content->mapId) : std::string();
+            if (refusal.empty())
+                member->entryRefusedSinceMs = 0;
             else
             {
-                // No navmesh route (or one through the ground): last resort is the old direct move, logged so the
-                // missing route can be added; it is the only way the run can still continue. Not for a living member
-                // whose straight line leaves the ground: it waits (ghost_no_path says why) instead of falling.
-                if (directSafe)
-                    bot->GetMotionMaster()->MovePoint(0, best->x, best->y, best->z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                                                      true, false);
-                if (!member->ghostNoPathLogged)
+                if (!member->entryRefusedSinceMs)
+                    member->entryRefusedSinceMs = now ? now : 1;
+                if (refusal != member->entryRefusal)
                 {
-                    member->ghostNoPathLogged = true;
-                    LogEvent(party, "ghost_no_path",
-                             JsonObject().Str("name", bot->GetName()).Num("trigger", best->entry)
-                                 .Bool("directSafe", directSafe).Bool("ghost", ghost)
-                                 .Num("pathType", type).Num("points", int64(points.size()))
-                                 .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
-                                 .Real("z", bot->GetPositionZ()).Real("distance", left));
+                    member->entryRefusal = refusal;
+                    party.lastEvent = "entry refused: " + refusal;
+                    LogEvent(party, "entry_refused",
+                             JsonObject().Str("name", bot->GetName()).Str("reason", refusal)
+                                 .Num("trigger", best->entry)
+                                 .Num("refusedSec",
+                                      getMSTimeDiff(member->entryRefusedSinceMs, now) / IN_MILLISECONDS));
+                }
+                if (getMSTimeDiff(member->entryRefusedSinceMs, now) > ENTRY_REFUSED_MAX_MS)
+                {
+                    uint32 const minutes = ENTRY_REFUSED_MAX_MS / MINUTE / IN_MILLISECONDS;
+                    Finish(party, "failed",
+                           member->name + " cannot enter for " + std::to_string(minutes) + " min: " + refusal);
+                    return;
                 }
             }
 
-            if (getMSTimeDiff(member->ghostStillMs, now) > GHOST_STUCK_MS)
+            if (!member->noWalkSinceMs)
             {
-                member->ghostStillMs = now;
-                LogEvent(party, "ghost_stuck", JsonObject().Str("name", bot->GetName()).Num("trigger", best->entry)
-                                                   .Bool("navmesh", usable).Real("x", bot->GetPositionX())
-                                                   .Real("y", bot->GetPositionY()).Real("z", bot->GetPositionZ())
+                float const left = best ? bot->GetExactDist(toX, toY, toZ) : 0.0f;
+                LogEvent(party, "ghost_guide", JsonObject().Str("name", bot->GetName()).Bool("own", true)
+                                                   .Bool("ghost", ghost).Num("trigger", best ? best->entry : 0)
                                                    .Real("distance", left));
             }
 
-            if (!member->ghostGuided)
+            if (!member->noWalkSinceMs || bot->GetExactDist(&member->noWalkPos) > 3.0f)
             {
-                member->ghostGuided = true;
-                member->ghostNoPathLogged = false;
-                member->ghostLastPos = bot->GetPosition();
-                member->ghostStillMs = now;
-                LogEvent(party, "ghost_guide", JsonObject().Str("name", bot->GetName()).Num("trigger", best->entry)
-                                                   .Bool("navmesh", usable).Real("distance", left));
-            }
-        }
-    }
-
-    bool TestHarnessMgr::FlyToPortal(Party& party, Member& member, Player* bot, AreaTrigger const* portal)
-    {
-        if (!bot->IsAlive() || bot->IsInCombat() || !portal)
-            return false;
-
-        uint32 const now = getMSTime();
-        if (!bot->HasIncreaseMountedFlightSpeedAura() && !bot->HasFlyAura())
-        {
-            if (bot->IsNonMeleeSpellCast(false) ||
-                (member.flyCastMs && getMSTimeDiff(member.flyCastMs, now) < MOUNT_CAST_WAIT_MS))
-                return true;  // mounting
-
-            // The fastest flying mount the character knows (PlayerbotFactory::InitMounts in the preparation).
-            uint32 mount = 0;
-            int32 bestSpeed = -1;
-            for (auto const& [spellId, spell] : bot->GetSpellMap())
-            {
-                if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active)
-                    continue;
-                SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-                if (!info || !info->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
-                    continue;
-                int32 speed = 0;
-                for (uint8 effect = EFFECT_0; effect <= EFFECT_2; ++effect)
-                    if (info->Effects[effect].ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
-                        speed = std::max(speed, info->Effects[effect].CalcValue());
-                if (speed > bestSpeed)
+                if (member->noWalkSinceMs)
                 {
-                    bestSpeed = speed;
-                    mount = spellId;
+                    party.lastProgressMs = now;  // a member walking back is progress for the stall detector
+                    member->outsideStuckCount = 0;
                 }
+                member->noWalkPos = bot->GetPosition();
+                member->noWalkSinceMs = now;
             }
-
-            auto refuse = [&](char const* reason, uint32 result)
+            else if (getMSTimeDiff(member->noWalkSinceMs, now) > GHOST_STUCK_MS)
             {
-                if (!member.flyRefusedLogged)
+                member->noWalkSinceMs = now;
+                // Outside and stuck for good, alive or a ghost (dtk-n build 10: a spirit-healed shaman stood 30
+                // yd above the portal for 4 minutes; bfd-h: a ghost with no walk to the underwater portal, 265
+                // s): not waited for any more; it keeps trying by itself and is waited for again once inside.
+                if (++member->outsideStuckCount >= OUTSIDE_GIVE_UP_STUCKS && !member->leftOutside)
                 {
-                    member.flyRefusedLogged = true;
-                    LogEvent(party, "fly_refused", JsonObject().Str("name", bot->GetName()).Str("reason", reason)
-                                                       .Num("castResult", result).Num("map", bot->GetMapId())
-                                                       .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
-                                                       .Real("z", bot->GetPositionZ()));
-                }
-                member.flyCruiseZ = 0.0f;
-                return false;
-            };
-
-            if (!mount)
-                return refuse("no flying mount", 0);
-
-            if (bot->IsMounted())
-                bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-            if (bot->IsSitState())
-                bot->SetStandState(UNIT_STAND_STATE_STAND);
-            bot->StopMoving();
-
-            // A normal cast: cast time, outdoor and flyable-zone checks (Cold Weather Flying in Northrend).
-            SpellCastResult const result = bot->CastSpell(bot, mount, false);
-            member.flyCastMs = now;
-            if (result != SPELL_CAST_OK)
-                return refuse("mount cast failed", uint32(result));
-            return true;
-        }
-
-        // Mounted: the same movement flags the bot AI sets for a flying mount (MovementAction::UpdateMovementState).
-        if (!bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING))
-        {
-            bot->AddUnitMovementFlag(MOVEMENTFLAG_CAN_FLY);
-            bot->AddUnitMovementFlag(MOVEMENTFLAG_DISABLE_GRAVITY);
-            bot->AddUnitMovementFlag(MOVEMENTFLAG_FLYING);
-            bot->SendMovementFlagUpdate();
-        }
-
-        if (member.flyCruiseZ <= 0.0f)
-        {
-            member.flyCruiseZ = std::max(bot->GetPositionZ(), portal->z) + FLY_CRUISE_HEIGHT;
-            member.flyStage = 0;
-            member.flyApproach.Relocate(portal->x, portal->y, portal->z);
-            // The descent beside the portal, not onto it (ROUTE_FLY_SIDE_APPROACH). Mechanar wave 10: a walkable roof
-            // at z ~283 over the portal (navmesh_probe 530 --at 2857.9 1541.9 284): the four flyers descended onto
-            // it, stood there 18 minutes ("corpse run did not finish in 20 minutes"). A player flies in from the
-            // side the portal faces: a point FLY_SIDE_DISTANCE out along the trigger's thin axis, either side,
-            // with a clear drop from cruise height and a clear line into the trigger.
-            if (ROUTE_FLY_SIDE_APPROACH)
-            {
-                Map* map = bot->GetMap();
-                float const approachZ = portal->z + 2.0f;
-                for (float const side : {1.0f, -1.0f})
-                {
-                    float const ax = portal->x + std::cos(portal->orientation) * FLY_SIDE_DISTANCE * side;
-                    float const ay = portal->y + std::sin(portal->orientation) * FLY_SIDE_DISTANCE * side;
-                    LineOfSightChecks const checks = LINEOFSIGHT_ALL_CHECKS;
-                    if (map->isInLineOfSight(ax, ay, member.flyCruiseZ, ax, ay, approachZ, bot->GetPhaseMask(), checks,
-                                             VMAP::ModelIgnoreFlags::Nothing) &&
-                        map->isInLineOfSight(ax, ay, approachZ, portal->x, portal->y, approachZ, bot->GetPhaseMask(),
-                                             checks, VMAP::ModelIgnoreFlags::Nothing))
+                    member->leftOutside = true;
+                    LogEvent(party, "member_left_outside", JsonObject().Str("name", bot->GetName())
+                                                               .Bool("ghost", ghost)
+                                                               .Real("x", bot->GetPositionX())
+                                                               .Real("y", bot->GetPositionY())
+                                                               .Real("z", bot->GetPositionZ()));
+                    // [b30_st_spirit] Going on without it needs a healer alive inside (st-n
+                    // 20261025-184229-st-n-5F-11: the druid healer's and the warlock's ghosts stood above the
+                    // Sunken Temple portal - no navmesh from the Pool of Tears down into the temple - while the
+                    // tank, hunter and rogue sat idle inside for 5 minutes). Nobody resurrects a released ghost
+                    // (PartyMemberToResurrect takes corpses only), so without a healer the run cannot go on.
+                    bool healerInside = false;
+                    for (Member const& other : party.members)
                     {
-                        member.flyApproach.Relocate(ax, ay, approachZ);
-                        break;
+                        Player* mate = ObjectAccessor::FindPlayer(other.guid);
+                        healerInside |= mate && mate != bot && mate->IsInWorld() && mate->IsAlive() &&
+                                        mate->GetMapId() == party.content->mapId && PlayerbotAI::IsHeal(mate);
+                    }
+                    if (!healerInside)
+                    {
+                        Finish(party, "failed",
+                               member->name + (ghost ? " (ghost)" : " (alive, outside)") +
+                                   " cannot get back in: no walk to the portal (trigger " +
+                                   std::to_string(best ? best->entry : 0) + ", " +
+                                   std::to_string(int32(best ? bot->GetExactDist(toX, toY, toZ) : 0.0f)) +
+                                   " yd) and no healer alive inside to go on without it");
+                        return;
                     }
                 }
+                LogCannotMove(party, bot, "corpse run",
+                              ghost ? "ghost made no progress to the portal for 60 s"
+                                    : "made no progress back into the instance for 60 s",
+                              toX, toY, toZ);
             }
-            LogEvent(party, "fly_to_portal", JsonObject().Str("name", bot->GetName()).Num("trigger", portal->entry)
-                                                 .Real("distance", bot->GetExactDist(portal->x, portal->y, portal->z))
-                                                 .Real("cruiseZ", member.flyCruiseZ)
-                                                 .Real("approachX", member.flyApproach.GetPositionX())
-                                                 .Real("approachY", member.flyApproach.GetPositionY()));
         }
-
-        // The bot AI is held while the harness flies it (it would dismount at cruise height).
-        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-            botAI->SetNextCheckDelay(LINK_HOLD_MS);
-
-        if (bot->isMoving())
-            return true;
-
-        // Beside the portal, at its height: straight into the trigger.
-        float const approachFlat = bot->GetExactDist2d(&member.flyApproach);
-        if (member.flyStage == 0 && approachFlat <= FLY_ARRIVE_DISTANCE &&
-            bot->GetPositionZ() <= member.flyApproach.GetPositionZ() + 3.0f)
-            member.flyStage = 1;
-        if (member.flyStage == 1)
-        {
-            bot->GetMotionMaster()->MovePoint(0, portal->x, portal->y, portal->z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                                              false, true);
-            return true;
-        }
-
-        // Climb, cross at altitude, descend at the approach point: a straight line from the ground would cut through
-        // the floating islands.
-        float const flat = approachFlat;
-        if (flat > FLY_ARRIVE_DISTANCE)
-        {
-            if (bot->GetPositionZ() < member.flyCruiseZ - 3.0f)
-                bot->GetMotionMaster()->MovePoint(0, bot->GetPositionX(), bot->GetPositionY(), member.flyCruiseZ,
-                                                  FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
-            else
-                bot->GetMotionMaster()->MovePoint(0, member.flyApproach.GetPositionX(),
-                                                  member.flyApproach.GetPositionY(), member.flyCruiseZ,
-                                                  FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
-        }
-        else
-            bot->GetMotionMaster()->MovePoint(0, member.flyApproach.GetPositionX(), member.flyApproach.GetPositionY(),
-                                              member.flyApproach.GetPositionZ(), FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                                              false, true);
-        return true;
     }
 
     void TestHarnessMgr::LeaveWater(Party& party, std::vector<Player*> const& players, bool resting)
@@ -4426,8 +4064,6 @@ namespace TestHarness
         if (HasWellFed(bot))
             return false;
 
-        if (HARNESS_MOVES_BOTS)
-            bot->StopMoving();
         if (!UseItem(bot, role.food))
             return false;
         botAI->SetNextCheckDelay(11 * IN_MILLISECONDS);  // sit through the ten seconds of eating

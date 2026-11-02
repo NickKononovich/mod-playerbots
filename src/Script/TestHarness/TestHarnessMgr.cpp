@@ -1065,16 +1065,13 @@ namespace TestHarness
             else
                 botAI->ChangeStrategy("+follow", BOT_STATE_NON_COMBAT);
 
-            // Bots walk by themselves (HARNESS_MOVES_BOTS off): every member walks to the waypoint it is given (the
-            // leader's "come here", "test runner"), into the instance through its portal alive ("instance portal")
-            // and as a ghost ("ghost portal"), and swims up for air ("breathe") - its own actions, the same a human
-            // leader's bots get with "nc +instance portal" and so on.
-            if (!HARNESS_MOVES_BOTS)
-            {
-                botAI->ChangeStrategy("+test runner,+instance portal,+breathe", BOT_STATE_NON_COMBAT);
-                botAI->ChangeStrategy("+breathe", BOT_STATE_COMBAT);
-                botAI->ChangeStrategy("+ghost portal", BOT_STATE_DEAD);
-            }
+            // Bots walk by themselves: every member walks to the waypoint it is given (the leader's "come here",
+            // "test runner"), into the instance through its portal alive ("instance portal") and as a ghost ("ghost
+            // portal"), and swims up for air ("breathe") - its own actions, the same a human leader's bots get with
+            // "nc +instance portal" and so on.
+            botAI->ChangeStrategy("+test runner,+instance portal,+breathe", BOT_STATE_NON_COMBAT);
+            botAI->ChangeStrategy("+breathe", BOT_STATE_COMBAT);
+            botAI->ChangeStrategy("+ghost portal", BOT_STATE_DEAD);
         }
     }
 
@@ -1395,7 +1392,6 @@ namespace TestHarness
             return inserted || getMSTimeDiff(it->second, now) < PET_FIGHT_MAX_MS;
         }
         constexpr uint32 AWAY_MAX_MS = 20 * MINUTE * IN_MILLISECONDS;   // a dead / outside member must be back
-        constexpr uint32 DEAD_RELEASE_MS = 2 * MINUTE * IN_MILLISECONDS;  // nobody resurrects it: release the spirit
         // Longest gap between two boss kills in the "done" runs of waves 1-3 without a wipe: 16.4 min (zf-h), with a
         // wipe 21.4 (fos-h, the corpse run is not counted here); no raid "done" runs yet, raids get more room.
         constexpr uint32 NO_BOSS_PROGRESS_DUNGEON_MS = 25 * MINUTE * IN_MILLISECONDS;
@@ -2441,19 +2437,18 @@ namespace TestHarness
                 LogEvent(party, "strategies_reapplied", JsonObject().Str("reason", "leader lost test runner"));
             }
         }
-        if (!HARNESS_MOVES_BOTS)
-            for (Member const& member : party.members)
-                if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
-                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                        if (bot->IsInWorld() && !bot->IsBeingTeleported() &&
-                            (!botAI->HasStrategy("instance portal", BOT_STATE_NON_COMBAT) ||
-                             !botAI->HasStrategy("ghost portal", BOT_STATE_DEAD)))
-                        {
-                            ApplyStrategies(party);
-                            LogEvent(party, "strategies_reapplied",
-                                     JsonObject().Str("reason", member.name + " lost instance portal"));
-                            break;
-                        }
+        for (Member const& member : party.members)
+            if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
+                if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+                    if (bot->IsInWorld() && !bot->IsBeingTeleported() &&
+                        (!botAI->HasStrategy("instance portal", BOT_STATE_NON_COMBAT) ||
+                         !botAI->HasStrategy("ghost portal", BOT_STATE_DEAD)))
+                    {
+                        ApplyStrategies(party);
+                        LogEvent(party, "strategies_reapplied",
+                                 JsonObject().Str("reason", member.name + " lost instance portal"));
+                        break;
+                    }
         // ApplyInstanceStrategies puts classic-brs back on every worldport (PlayerbotAI.cpp, after the map attach)
         // without touching "test runner": its UBRS steps (Blackrock Altar) walked the lbrs-n tank into the Dragonspire
         // Hall after the wipe (2026-10-25 wave 7). An LBRS group has none of its business.
@@ -2482,11 +2477,6 @@ namespace TestHarness
             if (!bot || !bot->IsInWorld())
                 continue;
             players.push_back(bot);
-            if (bot->GetMapId() == party.content->mapId)
-            {
-                member.flyCruiseZ = 0.0f;
-                member.flyRefusedLogged = false;
-            }
             // Back in through the portal (MeetMember's regroup): only a member that was inside, left and came back.
             if (bot->GetMapId() != party.content->mapId)
                 member.wasOutside = member.seenInside;
@@ -2503,7 +2493,6 @@ namespace TestHarness
                 member.deadSinceMs = 0;
                 if (bot->GetMapId() == party.content->mapId && !bot->IsBeingTeleported())
                     member.awaySinceMs = 0;
-                member.ghostGuided = false;
                 // [b33_sh2] a pet that fights for its out-of-combat owner keeps the pull on (HarnessPetFighting)
                 bool const petFighting = HarnessPetFighting(bot, now);
                 if (petFighting && !bot->IsInCombat())
@@ -3308,28 +3297,8 @@ namespace TestHarness
                     LogEvent(party, "members_away", JsonObject().Raw("members", names.Build()));
                 }
 
-                // A dead member nobody resurrects (Razorfen Kraul heroic wave 6: the healer lay dead 44 yd behind the
-                // group, the others "waiting" until the stall watchdog ended the run after 4 minutes): out of combat,
-                // DEAD_RELEASE_MS after the death and with no resurrection offered, it releases its spirit as a
-                // player does (CMSG_REPOP_REQUEST) and walks back from the graveyard (GuideGhosts, the bot's own
-                // corpse run inside). Only while the harness may move bots: user rule 2026-10-24, the bot releases
-                // by itself (AutoReleaseSpiritAction, ReleaseSpiritAction's self-resurrect wait).
-                if (HARNESS_MOVES_BOTS && !anyInCombat)
-                    for (Member const& member : party.members)
-                    {
-                        Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                        if (!bot || !bot->IsInWorld() || bot->IsAlive() || bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ||
-                            !member.deadSinceMs || getMSTimeDiff(member.deadSinceMs, now) < DEAD_RELEASE_MS ||
-                            bot->isResurrectRequested())
-                            continue;
-                        WorldPacket repop(CMSG_REPOP_REQUEST, 1);
-                        repop << uint8(0);
-                        bot->GetSession()->HandleRepopRequestOpcode(repop);
-                        LogEvent(party, "spirit_release",
-                                 JsonObject().Str("name", member.name)
-                                     .Num("deadSec", getMSTimeDiff(member.deadSinceMs, now) / IN_MILLISECONDS)
-                                     .Bool("ghost", bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)));
-                    }
+                // A dead member releases its spirit by itself (AutoReleaseSpiritAction, ReleaseSpiritAction's
+                // self-resurrect wait; user rule 2026-10-24).
                 GuideGhosts(party, players);
                 if (IsTerminal(party.phase))
                     return;
@@ -4138,7 +4107,6 @@ namespace TestHarness
                          .Num("encountersDbc", int64(party.encounters.size())).Raw("bossesMissing", missing.Build())
                          .Raw("bossesExcluded", excluded.Build())
                          .Num("corpseRunSec", party.corpseRunMs / IN_MILLISECONDS)
-                         .Bool("harnessMovesBots", HARNESS_MOVES_BOTS).Num("harnessMoves", party.harnessMoves)
                          .Num("botCannotMove", party.cannotMoveEvents)
                          .Bool("suspicious", !party.suspicious.empty()).Raw("suspiciousReasons", suspicious.Build())
                          .Raw("members", members.Build()));

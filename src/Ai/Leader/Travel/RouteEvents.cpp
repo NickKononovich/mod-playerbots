@@ -570,31 +570,11 @@ namespace Leader::Travel
 
     // Over the link as a player walks it: a straight walk (no navmesh on a game-object bridge). Bots walk by
     // themselves: the far end is the bot's waypoint, its own "test runner move" walks straight where the navmesh
-    // ends (MovementAction::MoveStraight). HARNESS_MOVES_BOTS: the harness walks it, the bot AI held.
+    // ends (MovementAction::MoveStraight).
     void StartLinkCross(LeaderGroup& group, Player* bot, RouteLinkDef const& link)
     {
-        if (!HARNESS_MOVES_BOTS)
-        {
-            // A walked link (not a jump, not a lift): the line itself, straight (TestRunner::Waypoint::straight).
-            group.GiveWaypoint(bot, link.toX, link.toY, link.toZ, link.jump, !link.jump && !LinkIsLift(link));
-            return;
-        }
-        group.CountHarnessMove();
-        bot->GetMotionMaster()->Clear();
-        if (link.jump)
-        {
-            float const speed = std::max(1.0f, bot->GetSpeed(MOVE_RUN));
-            bot->GetMotionMaster()->MoveJump(link.toX, link.toY, link.toZ, speed, speed);
-        }
-        else
-            bot->GetMotionMaster()->MovePoint(0, link.toX, link.toY, link.toZ, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                                              false, true);
-        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-        {
-            float const speed = std::max(1.0f, bot->GetSpeed(MOVE_RUN));
-            botAI->SetNextCheckDelay(uint32(bot->GetExactDist(link.toX, link.toY, link.toZ) / speed *
-                                            IN_MILLISECONDS) + LINK_HOLD_MS);
-        }
+        // A walked link (not a jump, not a lift): the line itself, straight (TestRunner::Waypoint::straight).
+        group.GiveWaypoint(bot, link.toX, link.toY, link.toZ, link.jump, !link.jump && !LinkIsLift(link));
     }
 
     // The leader's waypoint is withheld for its own running pull (GiveWaypoint's ROUTE_NO_WALK_IN_PULL rule).
@@ -1029,7 +1009,7 @@ namespace Leader::Travel
     {
         GroupRouteState& routeState = group.Route();
         Map* map = leader->GetMap();
-        if (routeState.linkIdx < 0 || (routeState.linkLeaderCrossed && HARNESS_MOVES_BOTS) || !map ||
+        if (routeState.linkIdx < 0 || !map ||
             map->GetInstanceId() != group.InstanceId() || !leader->IsAlive())
             return false;
 
@@ -1298,26 +1278,16 @@ namespace Leader::Travel
             if (bot == leader || bot->IsInCombat())
                 continue;
 
-            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-            // Moving on a harness move already (to the link or over it): the bot AI stays paused until it arrives.
-            if (HARNESS_MOVES_BOTS && bot->isMoving() &&
-                bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-            {
-                if (botAI)
-                    botAI->SetNextCheckDelay(LINK_HOLD_MS);
-                continue;
-            }
-
             if (AtLinkPoint(bot, link.fromX, link.fromY, link.fromZ, LINK_ARRIVE_RANGE))
             {
                 StartLinkCross(group, bot, link);
                 if (member)
-                    group.SetMemberHasWaypoint(memberGuid, !HARNESS_MOVES_BOTS);
+                    group.SetMemberHasWaypoint(memberGuid, true);
                 group.NoteProgress(now);
                 continue;
             }
             // Bots walk by themselves: a member already given the far end walks on over the link.
-            if (!HARNESS_MOVES_BOTS && member && group.MemberHasWaypoint(memberGuid))
+            if (member && group.MemberHasWaypoint(memberGuid))
             {
                 LeaderGroup::WalkPoint current;
                 if (group.GetWaypoint(bot->GetGUID(), current) &&
@@ -1350,21 +1320,11 @@ namespace Leader::Travel
                 continue;
             G3D::Vector3 const waypoint =
                 FloorWaypoint(bot, leg, RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
-            if (!HARNESS_MOVES_BOTS)
-            {
-                // As a leader points at the bridge: the route point is the member's waypoint, its own walk.
-                if (member)
-                    group.SetMemberWaypoint(memberGuid, bot, waypoint.x, waypoint.y, waypoint.z);
-                if (bot->isMoving())
-                    group.NoteProgress(now);
-                continue;
-            }
-            group.CountHarnessMove();
-            bot->GetMotionMaster()->MovePoint(0, waypoint.x, waypoint.y, waypoint.z, FORCED_MOVEMENT_NONE, 0.0f,
-                                              0.0f, true, true);
-            if (botAI)
-                botAI->SetNextCheckDelay(LINK_HOLD_MS);
-            group.NoteProgress(now);
+            // As a leader points at the bridge: the route point is the member's waypoint, its own walk.
+            if (member)
+                group.SetMemberWaypoint(memberGuid, bot, waypoint.x, waypoint.y, waypoint.z);
+            if (bot->isMoving())
+                group.NoteProgress(now);
         }
 
         if (everybody)
@@ -1585,14 +1545,7 @@ namespace Leader::Travel
                 return false;
             }
 
-            // A client's gossip needs no stop or turn; HARNESS_MOVES_BOTS keeps the old stop.
-            if (HARNESS_MOVES_BOTS)
-            {
-                leader->GetMotionMaster()->Clear();
-                leader->StopMoving();
-                leader->SetFacingToObject(creature);
-            }
-
+            // A client's gossip needs no stop or turn.
             WorldPacket hello(CMSG_GOSSIP_HELLO);
             hello << creature->GetGUID();
             leader->GetSession()->HandleGossipHelloOpcode(hello);
@@ -1893,28 +1846,9 @@ namespace Leader::Travel
                     dest.z = ground;
                     uint32 const walkMs = uint32(STARTER_ITEM_STEP_OUT /
                                                  std::max(1.0f, leader->GetSpeed(MOVE_RUN)) * IN_MILLISECONDS);
-                    if (!HARNESS_MOVES_BOTS)
-                    {
-                        // The step out is the leader's waypoint (its own "test runner move"), kept for the walk.
-                        group.SetLeaderWaypoint(leader, dest.x, dest.y, dest.z);
-                        routeState.waypointHoldUntilMs = now + walkMs + 1500;
-                    }
-                    else
-                    {
-                        group.CountHarnessMove();
-                        leader->GetMotionMaster()->Clear();
-                        MovementAction::RecordTankTrail(leader);
-                        // A harness step never runs through a closed door either (ROUTE_CLOSED_DOORS_ALL).
-                        {
-                            ObjectGuid doorGuid;
-                            float doorWalked = 0.0f;
-                            LeaderDoorStop(leader, dest, doorGuid, doorWalked);
-                        }
-                        leader->GetMotionMaster()->MovePoint(0, dest.x, dest.y, dest.z, FORCED_MOVEMENT_NONE, 0.0f,
-                                                             0.0f, false, true);
-                        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(leader))
-                            botAI->SetNextCheckDelay(walkMs + 1500);
-                    }
+                    // The step out is the leader's waypoint (its own "test runner move"), kept for the walk.
+                    group.SetLeaderWaypoint(leader, dest.x, dest.y, dest.z);
+                    routeState.waypointHoldUntilMs = now + walkMs + 1500;
                     starter.nextAllowedMs = now + walkMs + 500;
                     group.LogEvent("starter_step_out", JsonObject().Str("note", starter.def->note)
                                                             .Num("entry", go->GetEntry()).Real("distance", near2d)
@@ -2338,13 +2272,6 @@ namespace Leader::Travel
         }
 
         // Bots walk by themselves: the leader stopped on arriving, nothing stops or turns it here.
-        // HARNESS_MOVES_BOTS keeps the old stop and turn.
-        if (HARNESS_MOVES_BOTS)
-        {
-            leader->GetMotionMaster()->Clear();
-            leader->StopMoving();
-            leader->SetFacingToObject(go);
-        }
 
         // [b30_stalls] A player leaves a form the item spell refuses (Spell::CheckCast -> CheckShapeshift:
         // SPELL_FAILED_NOT_SHAPESHIFT). ulda-h 20261025-184229-ulda-h-5D-61: the bear tank used the Staff of
@@ -2617,25 +2544,11 @@ namespace Leader::Travel
                     float const x = spot.GetPositionX() + std::cos(angle) * DRY_SPOT_SPREAD;
                     float const y = spot.GetPositionY() + std::sin(angle) * DRY_SPOT_SPREAD;
                     // As a leader says "come here": the spot is the member's waypoint, its own "test runner move"
-                    // walks there. HARNESS_MOVES_BOTS: the harness walks it, the AI held.
-                    if (!HARNESS_MOVES_BOTS)
-                        group.SetMemberWaypoint(member.guid, bot, x, y, spot.GetPositionZ());
-                    else
-                    {
-                        group.CountHarnessMove();
-                        bot->GetMotionMaster()->Clear();
-                        bot->GetMotionMaster()->MovePoint(0, x, y, spot.GetPositionZ());
-                        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                        {
-                            float const speed = std::max(1.0f, bot->GetSpeed(MOVE_RUN));
-                            botAI->SetNextCheckDelay(std::min<uint32>(
-                                uint32(bot->GetExactDist2d(&spot) / speed * IN_MILLISECONDS) + LINK_HOLD_MS,
-                                10 * IN_MILLISECONDS));
-                        }
-                    }
+                    // walks there.
+                    group.SetMemberWaypoint(member.guid, bot, x, y, spot.GetPositionZ());
                     group.LogEvent("event_gather", JsonObject().Str("state", "member called").Str("name", member.name)
                                                         .Real("distance", bot->GetExactDist2d(&spot))
-                                                        .Bool("own", !HARNESS_MOVES_BOTS));
+                                                        .Bool("own", true));
                 }
             return false;
         }

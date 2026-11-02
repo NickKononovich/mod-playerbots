@@ -56,7 +56,6 @@ namespace TestHarness
     // Character names: "Rt<class><aa..zz>" for the level-80 pool, "Rl<class><aa..zz>" for the levelling pool
     // ("test setup <n> leveling"), which is only ever used by normal dungeons below level 80.
     constexpr char const* NAME_PREFIX_MAX_LEVEL = "Rt";
-    using Leader::HARNESS_MOVES_BOTS;  // [lead107] GroupRouteState.h
     constexpr char const* NAME_PREFIX_LEVELING = "Rl";
 
     enum class Phase : uint8
@@ -105,22 +104,12 @@ namespace TestHarness
         bool seenInside = false;
         bool wasOutside = false;
         uint32 backInMs = 0;  // when it came back in (0: never during this run)
-        bool ghostGuided = false;
         uint32 combatMs = 0;  // time alive and in combat during the run (sampled every harness tick)
         uint32 aggroPulled = 0;  // mobs that stayed on this non-tank member for AGGRO_LOSS_MS or longer
         uint32 unplannedStarts = 0;  // fights this non-tank member entered combat first (pull_start "unplanned")
-        Position ghostLastPos;   // corpse run: where the ghost stood at the last guidance check
-        uint32 ghostStillMs = 0;
-        bool ghostNoPathLogged = false;
         MemberCounters pullStart;  // counters when the current pull started
         uint32 pullStartCombatMs = 0;
-        // Return to the instance by flying mount (portal on a floating island: Tempest Keep, ...)
-        uint32 flyCastMs = 0;     // last mount cast
-        float flyCruiseZ = 0.0f;  // altitude of the current flight, 0 = not flying to the portal
-        Position flyApproach;     // where the flight descends beside the portal (the portal itself without a side)
-        uint8 flyStage = 0;       // 0 cruise / descent to flyApproach, 1 the last straight leg into the trigger
-        bool flyRefusedLogged = false;
-        // HARNESS_MOVES_BOTS off: intent given to this member (not the leader): its own "test runner move" walks to
+        // Intent given to this member (not the leader): its own "test runner move" walks to
         // the waypoint (dry spot, gather spot, link), its own "instance portal" into the instance.
         bool hasWaypoint = false;
         bool hasPortalGoal = false;
@@ -339,9 +328,8 @@ namespace TestHarness
         bool trashPhantomLogged = false;
         bool idleLogged = false;
         bool eventWaitLogged = false;
-        // Bots walk by themselves (HARNESS_MOVES_BOTS): moves the harness still made (0 when off), and what the
-        // bots' own movement could not do (bot_cannot_move, throttled per bot, capability and reason).
-        uint32 harnessMoves = 0;
+        // Bots walk by themselves: what the bots' own movement could not do (bot_cannot_move, throttled per bot,
+        // capability and reason).
         uint32 cannotMoveEvents = 0;
         std::map<std::string, uint32> cannotMoveLoggedMs;
         uint32 ghostPosMs = 0;  // last "ghost_pos" event
@@ -528,7 +516,7 @@ namespace TestHarness
         // while walking (the caller does nothing else), false at the spot or when no gather spot applies.
         bool WalkToEventGather(Party& party, Player* leader);
         bool EventGatherApplies(Party const& party) const;
-        // A walked (HARNESS_MOVES_BOTS: teleported) change to entrance `next`: every member's portal goal, the skips
+        // A walked change to entrance `next`: every member's portal goal, the skips
         // cleared, wing_change logged with the reason.
         void StartWingChange(Party& party, size_t next, char const* why);
         // Proximity-started events (EventSpotDef): with nothing hostile reachable, the leader walks to the first spot
@@ -652,11 +640,8 @@ namespace TestHarness
         bool TickWingWalk(Party& party, std::vector<Player*> const& players, Player* leader);
         // Diagnostic at a pull start: no alive healer within PULL_HEALER_RANGE of the tank (pull_without_healer).
         void CheckPullHealer(Party& party, std::vector<Player*> const& players);
-        // An alive member outside the instance with no walkable route to the portal flies there on its own flying
-        // mount (riding and mount come from the preparation). False when it cannot fly here.
-        bool FlyToPortal(Party& party, Member& member, Player* bot, AreaTrigger const* portal);
-        // Breathing: a member under water whose breath is low swims straight up to the surface (in a fight too) and
-        // goes on once it has breathed; the group rests on the last dry spot, never in the water (resting).
+        // Breathing: the leader's water watch (RouteWater.h); the group rests on the last dry spot, never in the water
+        // (resting).
         void LeaveWater(Party& party, std::vector<Player*> const& players, bool resting);
         void LoadEncounters(Party& party, Map* map);
         void ResolveBoss(Party& party, BossTrack& boss, Map* map, InstanceScript* script);
@@ -833,8 +818,6 @@ namespace TestHarness
         void SetMemberHasWaypoint(ObjectGuid member, bool has) override;
         void SetMemberHasPortalGoal(ObjectGuid member, bool has) override;
         void ClearMemberIntent() override { _mgr.ClearMemberIntent(_party); }
-        uint32 HarnessMoves() const override { return _party.harnessMoves; }
-        void CountHarnessMove() override { ++_party.harnessMoves; }
         uint32 Wipes() const override { return _party.wipes; }
         uint32 LastProgressMs() const override { return _party.lastProgressMs; }
         void NoteProgress(uint32 ms) override { _party.lastProgressMs = ms; }

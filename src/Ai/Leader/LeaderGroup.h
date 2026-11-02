@@ -172,10 +172,7 @@ namespace Leader
         // a member's walk to an instance portal is set (SelfTravel's portal goal)
         virtual void SetMemberHasPortalGoal(ObjectGuid member, bool has) = 0;
         virtual void ClearMemberIntent() = 0;
-        // the walks the group's owner made itself (a metric), the run's wipes, the run's last progress (its stall
-        // watch) and a progress now
-        virtual uint32 HarnessMoves() const = 0;
-        virtual void CountHarnessMove() = 0;
+        // the run's wipes, the run's last progress (its stall watch) and a progress now
         virtual uint32 Wipes() const = 0;
         virtual uint32 LastProgressMs() const = 0;
         virtual void NoteProgress(uint32 ms) = 0;

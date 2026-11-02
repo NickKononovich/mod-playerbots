@@ -43,10 +43,6 @@ namespace Leader::Travel
 
     constexpr int32 BREATH_SURFACE_MS = BREATH_MAX_MS * 40 / 100;    // surface below 40 %
 
-    constexpr int32 BREATH_RESUME_MS = BREATH_MAX_MS * 90 / 100;     // and dive again from 90 %
-
-    constexpr uint32 SURFACE_HOLD_MS = 2 * IN_MILLISECONDS;          // bot AI paused while it swims up
-
     void LeaveWater(LeaderGroup& group, std::vector<Player*> const& players, bool resting);
 }
 
