@@ -187,7 +187,6 @@ namespace TestHarness
         using Leader::Travel::LATER_BOSS_TRASH_RADIUS;  // [lead107] RouteTargets.h
         using Leader::Travel::DEFERRED_TRASH_PENALTY;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_BUFF_DISTANCE;  // [lead107] RouteSteer.h
-        constexpr float BOSS_PREPOT_DISTANCE = 35.0f;
         using Leader::Travel::UNREACHABLE_SKIP_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::UNREACHABLE_RECHECK_DISTANCE;  // [lead107] RouteTargets.h
         using Leader::Travel::UNREACHABLE_RECHECK_HEIGHT;  // [lead107] RouteTargets.h
@@ -602,20 +601,6 @@ namespace TestHarness
         using Leader::Travel::NavmeshFloor;  // [lead107] RouteLegs.h
 
         using Leader::Travel::FloorWaypoint;  // [lead107] RouteLegs.h
-
-        std::set<uint32> const& FlaskSpells()
-        {
-            static std::set<uint32> const spells = []
-            {
-                std::set<uint32> result;
-                for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
-                    if (proto.Class == ITEM_CLASS_CONSUMABLE && proto.SubClass == ITEM_SUBCLASS_FLASK &&
-                        proto.Spells[0].SpellId > 0)
-                        result.insert(uint32(proto.Spells[0].SpellId));
-                return result;
-            }();
-            return spells;
-        }
 
         using Leader::Dungeon::HasAuraNamed;  // [lead107] LeaderBuffing.h
 
@@ -1488,21 +1473,6 @@ namespace TestHarness
         }
     }
 
-    bool HasFlaskAura(Player* bot)
-    {
-        std::set<uint32> const& flasks = FlaskSpells();
-        for (auto const& [spellId, aurApp] : bot->GetAppliedAuras())
-            if (flasks.count(spellId))
-                return true;
-        return false;
-    }
-
-
-    bool LeaderLayerHandlesConsumables(Party const& party)
-    {
-        return party.content && party.content->raid && sPlayerbotAIConfig.RaidLeader &&
-               sPlayerbotAIConfig.RaidConsumables;
-    }
 
     namespace
     {
@@ -3640,79 +3610,6 @@ namespace TestHarness
         Leader::Travel::LeaveWater(group, players, resting);
     }
 
-    bool TestHarnessMgr::UseItem(Player* bot, uint32 itemId, uint32 spellOverride)
-    {
-        if (!bot || !itemId || !bot->IsAlive() || bot->IsNonMeleeSpellCast(false))
-            return false;
-
-        Item* item = bot->GetItemByEntry(itemId);
-        if (!item || bot->CanUseItem(item) != EQUIP_ERR_OK)
-            return false;
-
-        ItemTemplate const* proto = item->GetTemplate();
-        uint32 spellId = spellOverride;
-        for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS && !spellId; ++i)
-            if (proto->Spells[i].SpellId > 0 && proto->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
-                spellId = uint32(proto->Spells[i].SpellId);
-        if (!spellId)
-            return false;
-
-        if (bot->HasSpellCooldown(spellId))
-            return false;
-
-        WorldPacket packet(CMSG_USE_ITEM);
-        packet << item->GetBagSlot() << item->GetSlot() << uint8(1) << spellId << item->GetGUID() << uint32(0)
-               << uint8(0);
-        packet << uint32(TARGET_FLAG_NONE) << bot->GetPackGUID();
-        bot->GetSession()->HandleUseItemOpcode(packet);
-        return true;
-    }
-
-    bool TestHarnessMgr::UseEquipped(Player* bot, uint8 slot, uint32 spellId)
-    {
-        if (!bot || !bot->IsAlive())
-            return false;
-
-        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item || bot->HasSpellCooldown(spellId))
-            return false;
-
-        WorldPacket packet(CMSG_USE_ITEM);
-        packet << uint8(INVENTORY_SLOT_BAG_0) << slot << uint8(1) << spellId << item->GetGUID() << uint32(0)
-               << uint8(0);
-        packet << uint32(TARGET_FLAG_NONE) << bot->GetPackGUID();
-        bot->GetSession()->HandleUseItemOpcode(packet);
-        return true;
-    }
-
-    bool TestHarnessMgr::UseConsumables(Party& party, Player* bot, bool food)
-    {
-        Member const* member = FindMember(party, bot->GetGUID());
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!member || !botAI || !bot->IsAlive() || bot->IsInCombat())
-            return false;
-
-        RoleConsumables const role = ConsumablesFor(*member->spec, party.level);
-        if (!food)
-        {
-            if (!role.flask || HasFlaskAura(bot) || !UseItem(bot, role.flask))
-                return false;
-            LogEvent(party, "consumable", JsonObject().Str("name", bot->GetName()).Str("kind", "flask")
-                                              .Num("item", role.flask));
-            return true;
-        }
-
-        if (HasWellFed(bot))
-            return false;
-
-        if (!UseItem(bot, role.food))
-            return false;
-        botAI->SetNextCheckDelay(11 * IN_MILLISECONDS);  // sit through the ten seconds of eating
-        LogEvent(party, "consumable", JsonObject().Str("name", bot->GetName()).Str("kind", "food")
-                                          .Num("item", role.food));
-        return true;
-    }
-
     // [lead107 stage 5] the buffing pass is the leader's (Ai/Leader/Dungeon/LeaderBuffing.h)
 
     // [lead107 stage 5] the test setup of a buffing pass (stays in the harness): the run start puts everyone full
@@ -3737,53 +3634,6 @@ namespace TestHarness
     {
         PartyLeaderGroup group(*this, party);
         Leader::Dungeon::TickBuffing(group, players, leader);
-    }
-
-    void TestHarnessMgr::PrePot(Party& party, std::vector<Player*> const& players)
-    {
-        if (!party.targetIsBoss || party.target.IsEmpty())
-            return;
-
-        Player* leader = ObjectAccessor::FindPlayer(party.leader);
-        Creature* boss = leader ? leader->GetMap()->GetCreature(party.target) : nullptr;
-        if (!boss || boss->IsInCombat())
-            return;
-
-        float const distance = leader->GetExactDist(boss);
-        if (distance < BOSS_BUFF_DISTANCE && !party.bossBuffed.count(party.target))
-        {
-            party.bossBuffed.insert(party.target);
-            // Black Morass: the shield drains during buffs + ready check (50 -> 30 % before Temporus, 33 -> 11 % before
-            // Deja in bm-n 2026-10-25); a rift boss is pulled at once.
-            if (party.watchedRift > 0)
-                return;
-            // [brd_seven_fast] a scripted wave that just became attackable: no buff pass / ready check, pulled at
-            // once (the Tomb of the Seven resets after 15 s with no dwarf in combat).
-            if (EventWaveFresh(party.instanceId, party.target))
-            {
-                LogEvent(party, "event_wave_no_ready_check",
-                         JsonObject().Str("name", boss->GetName()).Num("entry", boss->GetEntry()));
-                return;
-            }
-            party.needBuff = true;
-            party.buffStep = 0;
-            party.buffReason = std::string("before ") + boss->GetName();
-            return;
-        }
-
-        if (distance > BOSS_PREPOT_DISTANCE || party.prePotted.count(party.target) ||
-            LeaderLayerHandlesConsumables(party))
-            return;
-
-        party.prePotted.insert(party.target);
-        JsonArray users;
-        for (Player* bot : players)
-        {
-            Member const* member = FindMember(party, bot->GetGUID());
-            if (member && UseItem(bot, ConsumablesFor(*member->spec, party.level).prePot))
-                users.Str(bot->GetName());
-        }
-        LogEvent(party, "prepot", JsonObject().Str("boss", boss->GetName()).Raw("users", users.Build()));
     }
 
     void TestHarnessMgr::LogCannotMove(Party& party, Player* bot, std::string const& capability,
@@ -4266,7 +4116,18 @@ namespace TestHarness
 
     void PartyLeaderGroup::BuffPassSetup(std::vector<Player*> const& players) { _mgr.BuffPassSetup(_party, players); }
 
-    bool PartyLeaderGroup::UseConsumables(Player* bot, bool food) { return _mgr.UseConsumables(_party, bot, food); }
+    bool PartyLeaderGroup::MemberConsumables(Player* bot, uint32& flask, uint32& food) const
+    {
+        for (Member const& member : _party.members)
+            if (member.guid == bot->GetGUID())
+            {
+                RoleConsumables const role = ConsumablesFor(*member.spec, _party.level);
+                flask = role.flask;
+                food = role.food;
+                return true;
+            }
+        return false;
+    }
 
     std::string PartyLeaderGroup::MemberBuffJson(Player* bot) { return _mgr.MemberBuffJson(_party, bot); }
 

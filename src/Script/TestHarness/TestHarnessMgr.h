@@ -33,6 +33,7 @@ class Unit;  // [lead3]
 #include "DungeonLeaderState.h"  // [lead107]
 #include "LeaderGroup.h"         // [lead107] the leader's group view (PartyLeaderGroup)
 #include "LeaderBuffing.h"       // [lead107] HasWellFed
+#include "LeaderConsumables.h"   // [lead344] HasFlaskAura
 
 namespace Leader::Travel
 {
@@ -143,8 +144,6 @@ namespace TestHarness
         std::map<ObjectGuid, MemberCounters> attemptStart;
         std::map<ObjectGuid, uint32> attemptStartCombatMs;
         std::vector<std::string> attemptDeaths;
-        bool hyperspeedUsed = false;
-        bool combatPotionUsed = false;
         // boss_phantom (build 11): the boss's health while the attempt runs, and since when it has not changed.
         uint32 attemptKills = 0;  // Party::kills when the attempt was engaged (boss_attempt_loop)
         // [w24c-hor-escape] Halls of Reflection escape: walls seen up / broken (bit per ice wall), and the last
@@ -333,8 +332,6 @@ namespace TestHarness
         std::vector<std::string> suspicious;
     };
 
-    // The raid leader layer (src/Ai/Base/Leader) pre-pots and uses raid consumables itself in raids.
-    bool LeaderLayerHandlesConsumables(Party const& party);
     // What the boss of that track needs to appear (TestHarnessData.cpp encounterRequirements), nullptr if nothing.
     char const* TrackRequirement(uint32 mapId, BossTrack const& boss, char const** note = nullptr);
     // User rule: a boss only one class can unlock (ClassGatedBossDef) is the only one a run may leave alive; its
@@ -346,7 +343,7 @@ namespace TestHarness
     bool IsPhantomSlot(Party const& party, BossTrack const& boss);
     // Bosses the run must kill: every track but phantom slots and class-gated bosses (bossesTotal in the logs).
     uint32 RequiredBossCount(Party const& party);
-    bool HasFlaskAura(Player* bot);
+    using Leader::Dungeon::HasFlaskAura;  // [lead344] LeaderConsumables.h
     using Leader::Dungeon::HasWellFed;  // [lead107] LeaderBuffing.h
     // Combat-time fields of one member between two snapshots: activeSec, activeDps, activeHps, activeDtps.
     JsonObject CombatStatsJson(MemberCounters const& now, MemberCounters const& start, uint32 combatMs);
@@ -644,10 +641,6 @@ namespace TestHarness
         // buffs and consumables
         void TickBuffing(Party& party, std::vector<Player*> const& players, Player* leader);
         void BuffPassSetup(Party& party, std::vector<Player*> const& players);  // the pass's test setup
-        bool UseConsumables(Party& party, Player* bot, bool food);  // true: it used a flask / food
-        void PrePot(Party& party, std::vector<Player*> const& players);
-        bool UseItem(Player* bot, uint32 itemId, uint32 spellOverride = 0);
-        bool UseEquipped(Player* bot, uint8 slot, uint32 spellId);
 
         // logging
         void LogEvent(Party& party, std::string const& type, JsonObject fields);
@@ -812,7 +805,7 @@ namespace TestHarness
         void NoteActivity(Activity activity) override;
         void SetApartIgnore(ObjectGuid member, uint32 untilMs) override;
         void BuffPassSetup(std::vector<Player*> const& players) override;
-        bool UseConsumables(Player* bot, bool food) override;
+        bool MemberConsumables(Player* bot, uint32& flask, uint32& food) const override;
         std::string MemberBuffJson(Player* bot) override;
         void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
         void LogEvent(std::string const& type, JsonObject fields) override;

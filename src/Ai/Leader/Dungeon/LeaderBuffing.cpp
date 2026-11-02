@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "LeaderBuffing.h"
+#include "LeaderConsumables.h"  // [lead344]
 #include "LeaderRest.h"  // CountRestItems
 #include "LeaderPrepull.h"  // [lead270]
 
@@ -460,7 +461,7 @@ namespace Leader::Dungeon
                                 }
                     stepDone(2, why);
                     for (Player* bot : players)
-                        wait.consumableUsed = group.UseConsumables(bot, false) || wait.consumableUsed;
+                        wait.consumableUsed = UseConsumables(group, bot, false) || wait.consumableUsed;
                     break;
                 }
                 case 2:
@@ -474,7 +475,7 @@ namespace Leader::Dungeon
                     uint32 eating = 0;
                     wait.fed.clear();
                     for (Player* bot : players)
-                        if (group.UseConsumables(bot, true))
+                        if (UseConsumables(group, bot, true))
                         {
                             ++eating;
                             wait.fed.insert(bot->GetGUID());

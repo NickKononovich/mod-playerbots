@@ -2666,8 +2666,6 @@ namespace TestHarness
                         boss.horWallsUp = 0;
                         boss.horWallsBroken = 0;
                         boss.attemptDeaths.clear();
-                        boss.hyperspeedUsed = false;
-                        boss.combatPotionUsed = false;
                         boss.homePos = fought ? fought->GetPosition() : leader->GetPosition();
                         for (Member const& member : party.members)
                         {
@@ -3665,28 +3663,8 @@ namespace TestHarness
                             return;
                         }
                     }
-                    for (Player* bot : players)
-                    {
-                        Member const* member = nullptr;
-                        for (Member const& m : party.members)
-                            if (m.guid == bot->GetGUID())
-                                member = &m;
-                        if (!member || !bot->IsAlive() || !bot->IsInCombat())
-                            continue;
-
-                        if (!activeBoss->hyperspeedUsed && fightMs > 2 * IN_MILLISECONDS &&
-                            (member->professions.first == SKILL_ENGINEERING ||
-                             member->professions.second == SKILL_ENGINEERING))
-                            UseEquipped(bot, EQUIPMENT_SLOT_HANDS, 54758);  // Hyperspeed Acceleration
-
-                        if (!activeBoss->combatPotionUsed && fightMs > 60 * IN_MILLISECONDS &&
-                            !LeaderLayerHandlesConsumables(party))
-                            UseItem(bot, ConsumablesFor(*member->spec, party.level).prePot);
-                    }
-                    if (fightMs > 2 * IN_MILLISECONDS)
-                        activeBoss->hyperspeedUsed = true;
-                    if (fightMs > 60 * IN_MILLISECONDS)
-                        activeBoss->combatPotionUsed = true;
+                    // [lead344] no item use by the harness in a boss fight (it used Hyperspeed Acceleration at 2 s
+                    // and a potion at 60 s): a member's consumables are the leader's and the bot's own
                 }
                 else
                 {
@@ -3890,7 +3868,7 @@ namespace TestHarness
                 return true;  // Finish() logged the members out, the pointers above are gone
             // [lead107] the no-walk watch is the leader's (RouteHolds.h)
             Leader::Travel::NoWalkWatch(group, leader, now, compactPause, party.phase == Phase::Traveling);
-            PrePot(party, players);
+            Leader::Dungeon::BossBuffPass(group);  // [lead344] the leader's (LeaderConsumables.h)
         }
         return false;
     }

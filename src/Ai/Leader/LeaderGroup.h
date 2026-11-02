@@ -213,10 +213,10 @@ namespace Leader
         virtual void NoteActivity(Activity activity) = 0;
         // the group's apart rule ignores `member` until `untilMs`
         virtual void SetApartIgnore(ObjectGuid member, uint32 untilMs) = 0;
-        // the owner's test setup of a buffing pass, a member's consumables (true: it used a flask / food) and a
-        // member's buff state for the log
+        // the owner's test setup of a buffing pass, a member's flask and buff food items (false: not a member; 0:
+        // none of that kind; [lead344] the leader uses them, LeaderConsumables.h) and a member's buff state for the log
         virtual void BuffPassSetup(std::vector<Player*> const& players) = 0;
-        virtual bool UseConsumables(Player* bot, bool food) = 0;
+        virtual bool MemberConsumables(Player* bot, uint32& flask, uint32& food) const = 0;
         virtual std::string MemberBuffJson(Player* bot) = 0;
     };
 }

@@ -262,7 +262,6 @@ namespace Leader
         // other wings. A hostile nearer to another wing's boss than to anything of this wing is not a target.
         std::vector<Position> wingAnchors;
         std::vector<Position> otherWingAnchors;
-        std::set<ObjectGuid> prePotted;
         std::set<ObjectGuid> bossBuffed;
         bool noTargets = false;
         // Event started, nothing hostile: the group walks to the content's gather spot (Halls of Reflection waves

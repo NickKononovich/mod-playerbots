@@ -10,7 +10,7 @@
 // [lead107 stage 5] user: production code does not live in the test harness. The leader's buffing pass before a pull
 // (the buffs the group gives, the flask and food steps, the ready check and its end), moved out of
 // TestHarnessMgr::TickBuffing unchanged; the pass's test setup (the run start's full health / mana, the test
-// consumables) and the run phase stay with the group's owner (LeaderGroup::BuffPassSetup / UseConsumables /
+// consumables' items) and the run phase stay with the group's owner (LeaderGroup::BuffPassSetup / MemberConsumables /
 // NoteActivity).
 
 #include "Common.h"
