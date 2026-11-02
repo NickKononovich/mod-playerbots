@@ -516,9 +516,9 @@ bool BoostTrigger::IsActive()
     // (the tool uses stay the bot's, as ThreatMultiplier's burn exceptions: a healer's, Mirror Image with attackers on
     // it, Shadowfiend for mana)
     std::string const name = getName();
+    // [lead422] a damage dealer's Shadowfiend below half mana is no tool use: the leader's verdict decides it
     bool const toolUse =
-        PlayerbotAI::IsHeal(bot) || (name == "mirror image" && AI_VALUE(uint8, "my attacker count")) ||
-        (name == "shadowfiend" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.MediumMana));
+        PlayerbotAI::IsHeal(bot) || (name == "mirror image" && AI_VALUE(uint8, "my attacker count"));
     if (!toolUse && Leader::IsBurnCooldown(name) && Leader::ExecutorMember(bot))
     {
         Leader::MemberEvents events;

@@ -807,7 +807,8 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     // [rot5] the tool uses of a burn cooldown stay the bot's (IsBurnCooldown's comment)
     bool const burnException =
         (PlayerbotAI::IsHeal(bot) && (name == "avenging wrath" || name == "shadowfiend")) ||
-        (name == "shadowfiend" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.MediumMana)) ||
+        // [lead422] user 2026-11-02: a damage dealer's own Shadowfiend below half mana is off - the leader's verdict
+        // decides it (b201 5B: spent on trash at 38 % mana, on cooldown for Taragaman)
         (name == "mirror image" && AI_VALUE(uint8, "my attacker count") > 0) ||
         LeaderCommand::BurnToolUse(bot, name,
                                    bot->GetHealthPct() < static_cast<float>(sPlayerbotAIConfig.CriticalHealth),

@@ -351,9 +351,10 @@ namespace
             IsDungeonPull(name) || IsPullStarter(name) || in({"wipe escape", "mount"}) ||
             IsOwnResurrection(action, name) || IsOwnDispel(action, name))  // [lead400] [lead401]
             return true;
-        if (name == "innervate" && !gate)  // its own mana tool on itself stays (rot38)
-            if (Unit* onWhom = action->GetTarget(); onWhom && onWhom != self)
-                return true;
+        // [lead422] user 2026-11-02 (all doubles are bugs): Innervate is the leader's only - on whom its fight need
+        // says (lead416), the druid itself included; the druid's own "medium mana" Innervate (rot38) is off
+        if (name == "innervate")
+            return true;
         // [lead300] the leader's live Attack target is not dropped
         if (name == "drop target" && events.attack == Leader::AttackEvent::Attack)
             if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(self))
@@ -664,7 +665,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
         // [lead169] b179 rfc-h 5F 650.5 s: the resto druid's Innervate on itself (its own mana tool, kept by rot38
         // like Evocation) counted as an external - an external is a cast on another member
         Unit* const onWhom = action->GetTarget();
-        if (!events.externalSpell && !(onWhom == bot && in({"innervate"})))
+        if (!events.externalSpell)  // [lead422] its own Innervate on itself too
             note("external", "an external without a leader assignment");
         return;
     }
