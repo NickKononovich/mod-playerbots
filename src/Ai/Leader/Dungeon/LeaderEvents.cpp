@@ -3485,8 +3485,23 @@ namespace Leader::Dungeon
             // [lead197] b181 5E: Tricks of the Trade held 223 times "waiting for the leader's assignment" - the
             // leader told it only in the pull's opening window. Misdirection / Tricks put the caster's threat on the
             // tank (headroom for everyone): on the tank whenever one is ready in the fight
-            if (auto const [bot, spell] = withSpell({SPELL_MISDIRECTION, SPELL_TRICKS_OF_THE_TRADE}, tank); bot)
-                tell(bot, spell, tank, "the threat onto the tank");
+            // [lead233] b187 rfc-h 5H: Misdirection 2.6 times a minute on the boss (each a GCD and mana) while every
+            // damage dealer had headroom. It is told when the threat needs it: a fight mob the tank has no threat on
+            // yet (the pull's start), or a damage dealer without headroom (lead53 / lead229)
+            bool threatNeeded = false;
+            for (Player* bot : seats)
+                if (auto const none = lead.noHeadroom.find(bot->GetGUID());
+                    none != lead.noHeadroom.end() && none->second)
+                    threatNeeded = true;
+            for (ObjectGuid const& guid : killOrder)
+                if (Unit* mob = ObjectAccessor::GetUnit(*tank, guid);
+                    !threatNeeded && mob && mob->IsAlive() && mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                    threatNeeded = true;
+            if (threatNeeded)
+                if (auto const [bot, spell] = withSpell({SPELL_MISDIRECTION, SPELL_TRICKS_OF_THE_TRADE}, tank); bot)
+                    tell(bot, spell, tank,
+                         "the threat onto the tank: a mob without its threat or a member without "
+                         "headroom");
             if (tank->GetHealthPct() < LEADER_SAVE_HP_PCT)
                 if (auto const [bot, spell] = withSpell({SPELL_PAIN_SUPPRESSION, SPELL_HAND_OF_SACRIFICE}, tank); bot)
                     tell(bot, spell, tank, "the tank is low");
