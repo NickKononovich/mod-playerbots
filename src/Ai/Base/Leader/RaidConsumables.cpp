@@ -339,6 +339,12 @@ namespace RaidConsumables
     {
         uint32 best = 0;
         amount = 0;
+        // [lead481] b208 rfc-h: 526 "mana potion" Consumes, a fresh one every ~0.3 s (5C's balance druid: its Runic
+        // Mana Injector 100 times) after the member drank one this combat - the game keeps that potion's cooldown off
+        // until the combat ends (Spell::SendSpellCooldown sets Player::m_lastPotionId instead, Spell::CheckCast
+        // refuses the next with SPELL_FAILED_NOT_READY), so HasSpellCooldown below saw none. No potion until then
+        if (bot->GetLastPotionId())
+            return 0;
         ForEachBagItem(bot,
                        [&](Item* item)
                        {
