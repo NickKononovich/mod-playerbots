@@ -3533,106 +3533,127 @@ namespace Leader::Dungeon
                         else
                         {
                             lead.combatSpots.erase(guid);
-                            // [lead151] b171 20261101-144503 Oggleflint (396-480 s): the shaman and the hunter stood
-                            // 42-52 yd off on the level below, no spot of theirs fit (an idle Trogg's modelled reach
-                            // round the boss) and nothing moved them - 0 damage for 90 s. A damage dealer that does
-                            // not reach its target from where it stands goes to the tank's own spot: the tank stands
-                            // there in the fight, the same facts hold for it there
-                            // [lead218] b184 rfc-h 5F Oggleflint: the SV hunter 3 yd from the boss "reached" it (no
-                            // dead zone in this test) and stood in Auto Shot's dead zone all fight, no fallback spot
+                            // [lead470] user 2026-11-02: no default behaviour - a member with no spot is a leader bug.
+                            // The ranged "tank trail" fallback (lead151 / lead152 / lead153 / lead218) is gone: the
+                            // ranged search covers its whole band (lead452 / lead463), a ranged member or healer that
+                            // still finds none is combat_spot_none, an error to fix in the search (b207: 52 ranged
+                            // "first spot" and 21 "out of spell range" walks onto the tank's trail).
+                            // A melee member belongs at the target: when the behind-the-target ring has no spot, its
+                            // spot is a melee spot at the target - the tank's own spot when that one is in the
+                            // member's melee reach of the target on its floor and safe, else the nearest safe point in
+                            // melee reach round the target on its floor that no unpulled mob reaches (b207: 230 melee
+                            // fallbacks to the tank's spot, 43 of them "out of melee reach of the target" - the tank
+                            // stood away from the mob)
                             bool const reaches = melee ? bot->IsWithinMeleeRange(target) : MemberCastsHere(bot, target);
-                            if (bot != healer && !PlayerbotAI::IsHeal(bot) && bot != tank && tank->IsAlive() &&
-                                !reaches)
+                            float const meleeReach = target->GetCombatReach() + bot->GetCombatReach() + 1.0f;
+                            auto const meleeAtTarget = [&](Position const& at, char const* search)
                             {
-                                // [lead152] a point of the tank's own walk first (the ground it covered unwoken):
-                                // melee in the target's melee reach off its front, ranged within its reach and sight
-                                // and out of the target's melee; the nearest to the member. None: the tank's spot.
-                                // Kept as the member's combat spot until it no longer fits (no re-issue as the tank
-                                // shifts)
-                                Position chosen = tank->GetPosition();
-                                char const* from = "the tank's spot";
-                                float best = -1.0f;
-                                float const shoot = LeaderShootReach(bot);
-                                // [lead153] b172 20261101-151524: the hunter on the tank's spot (melee range, Auto
-                                // Shot's dead zone) swung white 752 dps, Wing Clip / Disengage. A ranged member
-                                // never stands inside the ranged minimum (LEADER_RANGED_MIN_YD): half its reach
-                                // first, then down to that minimum; no point - no fallback (the tank's spot is melee)
-                                float const rangedMin = LeaderRangedMinGap(bot, target);  // [lead157]
-                                for (float const minGap : {std::max(shoot / 2.0f, rangedMin), rangedMin})
+                                if (target->GetExactDist2d(at.GetPositionX(), at.GetPositionY()) > meleeReach)
                                 {
-                                    if (best >= 0.0f || (melee && minGap == rangedMin))
-                                        break;
-                                    std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(tank);
-                                    if (trail.empty())
-                                        NoteSpotReject("trail", "no trail points");
-                                    for (G3D::Vector3 const& point : trail)
-                                    {
-                                        Position const at(point.x, point.y, point.z);
-                                        float const gap =
-                                            target->GetExactDist2d(at.GetPositionX(), at.GetPositionY());
-                                        bool const inBand =
-                                            melee ? gap <= target->GetCombatReach() + bot->GetCombatReach() + 1.0f &&
-                                                        !target->HasInArc(float(M_PI) / 2.0f, &at)
-                                                  : shoot > 0.0f && gap <= shoot && gap >= minGap;
-                                        bool const fits = inBand && (melee || LeaderSeesFrom(bot, target, at));
-                                        if (!fits)  // [lead455]
-                                            NoteSpotReject("trail", !inBand ? "out of its band" : "no line of sight");
-                                        float const walk = bot->GetExactDist(at);
-                                        // [lead155] never a point a hazard covers (b174 669.5 s: "a hazard covers
-                                        // it" went straight to the fallback)
-                                        if (fits && !LeaderSpotSafe(bot, botAI, zones, at.GetPositionX(),
-                                                                    at.GetPositionY(), at.GetPositionZ()))
-                                        {
-                                            NoteSpotReject("trail", "unsafe (hazard / drop-off / cleave)");
-                                            continue;
-                                        }
-                                        if (fits && (best < 0.0f || walk < best))
-                                        {
-                                            best = walk;
-                                            chosen = at;
-                                            from = "the tank's trail";
-                                        }
-                                    }
+                                    NoteSpotReject(search, "out of melee reach");
+                                    return false;
                                 }
-                                Position const tankAt = tank->GetPosition();
-                                bool const tankSafe = LeaderSpotSafe(bot, botAI, zones, tankAt.GetPositionX(),
-                                                                     tankAt.GetPositionY(), tankAt.GetPositionZ());
-                                if ((!melee || !tankSafe) && best < 0.0f)
+                                if (std::fabs(at.GetPositionZ() - target->GetPositionZ()) > 4.0f)
                                 {
-                                    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> noneLogged;
-                                    if (noneLogged.size() > 4096)
-                                        noneLogged.clear();
-                                    if (noneLogged.insert({guid, target->GetGUID()}).second)
-                                    {
-                                        // [lead463] user 2026-11-02: a member with no spot is a leader bug - loud
-                                        LOG_ERROR("playerbots",
-                                                  "[lead463] combat_spot_none: {} has no spot on {} ({}): {}",
-                                                  bot->GetName(), target->GetName(), breaks, rejects.Summary());
-                                        Decisions().Write(run, "leader", "combat_spot_none", guid, bot->GetName(),
-                                                          false,
-                                                          JsonObject().Str("member", bot->GetName())
-                                                              .Str("why", breaks).Str("target", target->GetName())
-                                                              .Str("rejects", rejects.Summary()));
-                                    }
+                                    NoteSpotReject(search, "off the target's floor");
+                                    return false;
+                                }
+                                if (!LeaderSpotSafe(bot, botAI, zones, at.GetPositionX(), at.GetPositionY(),
+                                                    at.GetPositionZ()))
+                                {
+                                    NoteSpotReject(search, "unsafe (hazard / drop-off / cleave)");
+                                    return false;
+                                }
+                                if (LeaderAggroAt(bot, at))
+                                {
+                                    NoteSpotReject(search, "an idle mob's aggro reach");
+                                    return false;
+                                }
+                                return true;
+                            };
+                            bool placed = false;
+                            Position chosen;
+                            char const* from = "";
+                            if (melee && bot != tank && tank->IsAlive() && !reaches)
+                            {
+                                if (meleeAtTarget(tank->GetPosition(), "tank's spot"))
+                                {
+                                    chosen = tank->GetPosition();
+                                    from = "the tank's spot at the target";
+                                    placed = true;
                                 }
                                 else
                                 {
-                                    lead.combatSpots[guid] = {target->GetGUID(), chosen};
-                                    lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
-                                    // [lead156] one decision per member, target and point (b175: 5 in a row)
-                                    auto const before = lead.tankGroundSpots.find(guid);
-                                    bool const same = before != lead.tankGroundSpots.end() &&
-                                                      before->second.GetExactDist(chosen) <= 1.0f &&
-                                                      lead.tankGroundFor[guid] == target->GetGUID();
-                                    lead.tankGroundSpots[guid] = chosen;
-                                    lead.tankGroundFor[guid] = target->GetGUID();
-                                    if (!same)
-                                        Decisions().Write(run, "leader", "combat_spot_by_tank", guid, bot->GetName(),
-                                                          true,
-                                                          JsonObject().Str("member", bot->GetName())
-                                                              .Str("why", breaks).Str("target", target->GetName())
-                                                              .Str("from", from)
-                                                              .Real("walk", bot->GetExactDist(chosen)));
+                                    // round the target from its back, both ways, at the ring's melee distance
+                                    constexpr uint32 DIRECTIONS = 16;
+                                    float const distance =
+                                        std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f);
+                                    float const back = target->GetOrientation() + float(M_PI);
+                                    float best = -1.0f;
+                                    Map* map = target->GetMap();
+                                    for (uint32 i = 0; i < DIRECTIONS; ++i)
+                                    {
+                                        float const turn = float((i + 1) / 2) * 2.0f * float(M_PI) /
+                                                           float(DIRECTIONS) * (i % 2 ? 1.0f : -1.0f);
+                                        float x = target->GetPositionX() + std::cos(back + turn) * distance;
+                                        float y = target->GetPositionY() + std::sin(back + turn) * distance;
+                                        float z = target->GetPositionZ();
+                                        if (!map->CheckCollisionAndGetValidCoords(target, target->GetPositionX(),
+                                                                                  target->GetPositionY(),
+                                                                                  target->GetPositionZ(), x, y, z))
+                                        {
+                                            NoteSpotReject("at target", "no ground");
+                                            continue;
+                                        }
+                                        Position const at(x, y, z);
+                                        if (!meleeAtTarget(at, "at target"))
+                                            continue;
+                                        float const walk = bot->GetExactDist(at);
+                                        if (best < 0.0f || walk < best)
+                                        {
+                                            best = walk;
+                                            chosen = at;
+                                            from = "a melee spot at the target";
+                                            placed = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if (placed)
+                            {
+                                lead.combatSpots[guid] = {target->GetGUID(), chosen};
+                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                // [lead156] one decision per member, target and point (b175: 5 in a row)
+                                auto const before = lead.tankGroundSpots.find(guid);
+                                bool const same = before != lead.tankGroundSpots.end() &&
+                                                  before->second.GetExactDist(chosen) <= 1.0f &&
+                                                  lead.tankGroundFor[guid] == target->GetGUID();
+                                lead.tankGroundSpots[guid] = chosen;
+                                lead.tankGroundFor[guid] = target->GetGUID();
+                                if (!same)
+                                    Decisions().Write(run, "leader", "combat_spot_melee_at_target", guid,
+                                                      bot->GetName(), true,
+                                                      JsonObject().Str("member", bot->GetName())
+                                                          .Str("why", breaks).Str("target", target->GetName())
+                                                          .Str("from", from)
+                                                          .Real("walk", bot->GetExactDist(chosen))
+                                                          .Str("rejects", rejects.Summary()));
+                            }
+                            else if (bot != tank)
+                            {
+                                thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> noneLogged;
+                                if (noneLogged.size() > 4096)
+                                    noneLogged.clear();
+                                if (noneLogged.insert({guid, target->GetGUID()}).second)
+                                {
+                                    // [lead463] user 2026-11-02: a member with no spot is a leader bug - loud
+                                    LOG_ERROR("playerbots", "[lead463] combat_spot_none: {} has no spot on {} ({}): {}",
+                                              bot->GetName(), target->GetName(), breaks, rejects.Summary());
+                                    Decisions().Write(run, "leader", "combat_spot_none", guid, bot->GetName(), false,
+                                                      JsonObject().Str("member", bot->GetName())
+                                                          .Str("why", breaks).Str("target", target->GetName())
+                                                          .Bool("reaches", reaches)
+                                                          .Str("rejects", rejects.Summary()));
                                 }
                             }
                         }
