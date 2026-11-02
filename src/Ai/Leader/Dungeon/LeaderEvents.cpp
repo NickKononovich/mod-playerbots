@@ -1021,7 +1021,10 @@ namespace Leader::Dungeon
             it = lead.looseMobs.erase(it);
         }
         if (looseOn.empty())
+        {
             lead.tankCannotTake = false;
+            lead.looseIsTarget = false;  // [lead245]
+        }
         if (!looseOn.empty())
         {
             // the tank: the first loose mob (its taunt when ready, else its AoE threat, else an attack)
@@ -1112,10 +1115,18 @@ namespace Leader::Dungeon
                             break;
                         }
             }
+            // [lead245] the loose mob the tank cannot take back now (no taunt / AoE threat ready) hits a member while
+            // the group kills the boss behind it: it is the target, first in the kill order
             if (!target || lead.tankCannotTake)
             {
-                target = target ? target : looseTarget ? looseTarget : mob;
+                target = lead.tankCannotTake ? (looseTarget ? looseTarget : mob)
+                         : target            ? target
+                         : looseTarget       ? looseTarget
+                                             : mob;
                 lead.looseIsTarget = true;
+                if (auto const at = std::find(killOrder.begin(), killOrder.end(), target->GetGUID());
+                    at != killOrder.end())
+                    std::rotate(killOrder.begin(), at, at + 1);
             }
             else
             {
@@ -3291,7 +3302,7 @@ namespace Leader::Dungeon
                         if (Unit* held = ObjectAccessor::GetUnit(*tank, current.target);
                             held && held->IsAlive() && held->IsInCombat() &&
                             std::find(killOrder.begin(), killOrder.end(), held->GetGUID()) != killOrder.end() &&
-                            pickable(held))
+                            (!lead.looseIsTarget || held == target) && pickable(held))  // [lead245] the loose mob first
                             mine = held;
                     if (!mine && pickable(target))
                         mine = target;
