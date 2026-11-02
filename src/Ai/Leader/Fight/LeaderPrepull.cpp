@@ -238,7 +238,13 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         if (found == plans.end() || found->second.done || !found->second.orderedMs)
             continue;
         DungeonLeaderState::ArmyPrepull& plan = found->second;
-        bool const channeling = ArmyChannel(dk) != nullptr;
+        Spell* channel = ArmyChannel(dk);
+        bool const channeling = channel != nullptr;
+        if (channel)
+        {
+            plan.channelLeftMs = channel->GetCastTimeRemaining();
+            plan.channelSeenMs = now;
+        }
         if (channeling && !plan.startedMs)
         {
             plan.startedMs = now;
@@ -250,9 +256,14 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         else if (!channeling && plan.startedMs)
         {
             plan.done = true;
+            // [lead272] interrupted: the channel had more left when last seen than has passed since (the cooldown
+            // ran from its start: no second channel)
+            bool const interrupted = plan.channelLeftMs > int32(getMSTimeDiff(plan.channelSeenMs, now));
             group.LogEvent("army_prepull_end",
                            JsonObject()
                                .Str("dk", dk->GetName())
+                               .Bool("interrupted", interrupted)
+                               .Real("channelLeftSec", interrupted ? plan.channelLeftMs / 1000.0f : 0.0f)
                                .Real("channelSec", Sec(plan.startedMs, now))
                                .Real("predictedPrepEndSec", Sec(plan.orderedMs, plan.predictedEndMs))
                                .Real("prepEndSec", plan.prepEndMs ? Sec(plan.orderedMs, plan.prepEndMs) : -1.0f)
@@ -308,8 +319,33 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
             group.LogEvent("army_prepull_dropped", JsonObject().Str("dk", dk->GetName()).Str("why", blocked));
             continue;
         }
-        // the order stands until the channel runs (each tick asserts it; a buff order of the same tick keeps
-        // the member's one external slot)
+        // [lead272] the DK reported it cannot cast it (its own cast check or the cast): dropped, nothing waits on it
+        if (std::string failed; Leader::Events::TakeExternalFailed(dk->GetGUID(), SPELL_ARMY_OF_THE_DEAD, failed))
+        {
+            plan.done = true;
+            Leader::Events::SetExternal(dk->GetGUID(), 0, ObjectGuid::Empty);
+            group.LogEvent("army_prepull_dropped",
+                           JsonObject().Str("dk", dk->GetName()).Str("why", "the DK reports: " + failed));
+            continue;
+        }
+        // [lead272] one command per fact: the order is off while the DK walks, and given again once it stands
+        if (blocked == "walking")
+        {
+            if (!plan.paused)
+            {
+                plan.paused = true;
+                group.LogEvent("army_prepull_paused", JsonObject().Str("dk", dk->GetName()).Str("why", "it walks"));
+            }
+            continue;
+        }
+        if (plan.paused)
+        {
+            plan.paused = false;
+            group.LogEvent("army_prepull_reissued", JsonObject().Str("dk", dk->GetName()).Str("why", "it stands"));
+        }
+        // the order stands until the channel runs: the event channel keeps a command only while each leader tick
+        // asserts it (lead27), and an unchanged assert is no new command (no seq, no log); a buff order of the
+        // same tick keeps the member's one external slot
         Leader::MemberEvents events;
         if (Leader::Events::Get(dk->GetGUID(), events) && events.externalSpell &&
             events.externalSpell != SPELL_ARMY_OF_THE_DEAD)

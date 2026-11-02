@@ -385,6 +385,9 @@ namespace Leader
             uint32 predictedEndMs = 0;   // when the preparation was computed to end
             uint32 prepEndMs = 0;        // when the preparation really ended (the pull gate open but for the Army)
             uint32 startedMs = 0;        // the channel seen running
+            int32 channelLeftMs = 0;     // [lead272] the channel's remainder when last seen, and when
+            uint32 channelSeenMs = 0;
+            bool paused = false;         // [lead272] the order is off while the DK walks
             bool done = false;
         };
         std::map<ObjectGuid, ArmyPrepull> armyPrepull;

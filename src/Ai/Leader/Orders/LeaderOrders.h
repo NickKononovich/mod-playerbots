@@ -658,6 +658,11 @@ namespace Leader
         // [lead15] the member's own decisions (member thread) and their drain (the leader)
         void NoteOwn(ObjectGuid member, OwnDecision const& own);
         bool TakeOwn(ObjectGuid member, OwnDecision& out);
+        // [lead272] the member cannot cast the leader's External for a lasting reason (its own cast check refuses
+        // it while it stands, casts nothing and is off the global cooldown, or the cast itself failed); the leader
+        // takes the report for `spell` (false: none) and drops the order
+        void NoteExternalFailed(ObjectGuid member, uint32 spell, std::string const& why);
+        bool TakeExternalFailed(ObjectGuid member, uint32 spell, std::string& why);
         // [lead16] a member tick in a fight with no fresh Attack / Heal (the rotation's stale_command fallback)
         void NoteStale(ObjectGuid member);
         uint32 TakeStale(ObjectGuid member);

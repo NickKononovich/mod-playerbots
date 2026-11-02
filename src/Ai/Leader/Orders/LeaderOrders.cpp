@@ -471,6 +471,8 @@ namespace Leader
                 std::deque<MemberAck> acks;
                 std::deque<OwnDecision> owns;
                 uint32 stale = 0;
+                uint32 externalFailed = 0;  // [lead272] the External the member reported it cannot cast
+                std::string externalFailedWhy;
                 std::map<std::string, uint32> vetoedEvals;
                 uint32 lastAckSeq = 0;
                 std::string lastAckWhat;
@@ -993,6 +995,26 @@ namespace Leader
         {
             std::lock_guard<std::mutex> lock(eventLock);
             ++eventSlots[member].stale;
+        }
+
+        void NoteExternalFailed(ObjectGuid member, uint32 spell, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            slot.externalFailed = spell;
+            slot.externalFailedWhy = why;
+        }
+
+        bool TakeExternalFailed(ObjectGuid member, uint32 spell, std::string& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || !spell || found->second.externalFailed != spell)
+                return false;
+            why = found->second.externalFailedWhy;
+            found->second.externalFailed = 0;
+            found->second.externalFailedWhy.clear();
+            return true;
         }
 
         uint32 TakeStale(ObjectGuid member)

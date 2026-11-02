@@ -128,7 +128,17 @@ bool LeaderExternalAction::isPossible()
         return false;
 
     Unit* unit = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
-    return unit && botAI->CanCastSpell(spell, unit, true);
+    if (!unit)
+        return false;
+    if (botAI->CanCastSpell(spell, unit, true))
+        return true;
+    // [lead272] refused while nothing passing holds it (a walk, a cast, the global cooldown): reported to the
+    // leader, which drops the order instead of waiting on it
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+    if (info && !bot->isMoving() && !bot->IsNonMeleeSpellCast(false) &&
+        !bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+        Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "its cast check refuses it on " + unit->GetName());
+    return false;
 }
 
 bool LeaderExternalAction::Execute(Event /*event*/)
@@ -140,8 +150,14 @@ bool LeaderExternalAction::Execute(Event /*event*/)
 
     Unit* unit = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
     SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
-    if (!unit || !info || !botAI->CastSpell(spell, unit))
+    if (!unit || !info)
         return false;
+    if (!botAI->CastSpell(spell, unit))
+    {
+        // [lead272] reported: the leader drops the order instead of waiting on it
+        Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "the cast failed on " + unit->GetName());
+        return false;
+    }
 
     LOG_INFO("playerbots", "[rot2] [leader external] {} casts {} ({}) on {}", bot->GetName(), info->SpellName[0], spell,
              unit->GetName());
