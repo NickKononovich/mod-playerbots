@@ -42,12 +42,10 @@ std::string DeathKnightPullStrategy::GetPrePullBuffActionName() const
     if (!botAI->HasStrategy("blood", BOT_STATE_COMBAT) && !botAI->HasStrategy("blood", BOT_STATE_NON_COMBAT))
         return "";
 
-    // [rot2] a led tank channels it only under the leader's Prepare (the leader times the boss pull), never as a delay
-    // of its own at the pull commit
+    // [lead270] a led death knight channels it only by the leader's order, timed into the boss's preparation
+    // (Leader::Prepull), never as a delay of its own at the pull commit
     Leader::MemberEvents command;
-    LeaderCommandState::State const state = LeaderCommandState::Read(botAI->GetBot(), command);
-    if (state != LeaderCommandState::State::NotLed &&
-        (state == LeaderCommandState::State::Stale || command.ready != Leader::ReadyEvent::Prepare))
+    if (LeaderCommandState::Read(botAI->GetBot(), command) != LeaderCommandState::State::NotLed)
         return "";
 
     Unit* target = GetTarget();

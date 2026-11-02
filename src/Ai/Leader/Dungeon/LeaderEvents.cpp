@@ -52,6 +52,7 @@
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
+#include "LeaderPrepull.h"      // [lead270]
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -1866,15 +1867,9 @@ namespace Leader::Dungeon
                                                      .Str("why", "the leader's pull order runs"));
                 }
         }
-        // [lead16] LEADER_BOSS_PREPARE: the tank's Prepare until the pull is on (and a moment after the commit)
-        if (fighting)
-            lead.bossPrepareFor.Clear();
-        else if (!lead.bossPrepareFor.IsEmpty() &&
-                 getMSTimeDiff(lead.bossPrepareSinceMs, now) < Leader::LEADER_BOSS_PREPARE_MS + 3 * IN_MILLISECONDS)
-        {
-            if (Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Prepare))
-                logEvent(tank, "Prepare", JsonObject().Str("why", "Army of the Dead before the boss pull"));
-        }
+        // [lead270] the prepull Army of the Dead, timed into the boss's preparation (replaces lead16's 4.5 s
+        // LEADER_BOSS_PREPARE wait: an elapsed-time rule, and the tank never channelled under it)
+        Leader::Prepull::TickArmy(group, tank, seats, fighting, logEvent);
 
         // [lead16] the hazard scan (slow layer, every LEADER_HAZARD_SCAN_MS); membership is checked every tick
         if (Leader::LEADER_HAZARD_SPOTS &&

@@ -147,9 +147,6 @@ namespace Leader
     constexpr bool LEADER_TANK_EXECUTES = true;
     // [lead16] after a fight the leader tells one member to loot (LEADER_LOOT_MS); nobody else loots
     constexpr bool LEADER_LOOT_EVENTS = true;
-    // [lead16] rot2: a DK tank's Army of the Dead before a boss pull runs only under a fresh Prepare: the leader
-    // issues it to the tank and holds the pull LEADER_BOSS_PREPARE_MS for the channel
-    constexpr bool LEADER_BOSS_PREPARE = true;
     // [lead16] PreSave(member, until): the leader foresees a big hit (a heavy cast on the member or the tank, an
     // enraged boss on the tank, the tank low under a boss) and tells the member to use its personal save now; the
     // bot's own saves are for critical health only (the rotation side)
@@ -274,7 +271,6 @@ namespace Leader
     constexpr float LEADER_HEALER_LOST_YD = 36.0f;
     constexpr float LEADER_PRESAVE_HIT_PCT = 35.0f;   // a cast whose damage is this share of the victim's max health
     constexpr float LEADER_PRESAVE_TANK_PCT = 40.0f;  // the tank under a boss below this health
-    constexpr uint32 LEADER_BOSS_PREPARE_MS = 4500;
     constexpr uint32 LEADER_LOOT_MS = 15000;
     constexpr bool LEADER_NO_OWN_BUFF_TIMING = true;    // out of combat buffs only under Prepare / Ready? / Rest
     // step 2 / 3 of the correction, NOT built yet: the leader does not detect these hazards / tactics itself, so the

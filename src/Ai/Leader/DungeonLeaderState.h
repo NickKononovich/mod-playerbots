@@ -156,7 +156,7 @@ namespace Leader
         uint32 fightLenStartMs = 0;    // [lead88] the fight's start and its estimated length (-1: none)
         float fightLenEstSec = -1.0f;
         std::map<std::string, uint32> staleCommands;  // [lead16] member -> stale_command ticks
-        ObjectGuid bossPrepareFor;                     // [lead16] the boss pull the tank prepares for
+        ObjectGuid armyHoldFor;                        // [lead270] the boss pull a prepull Army holds (logged)
         std::set<ObjectGuid> trailing;                 // [lead17] members the leader waits for (far behind)
         std::map<ObjectGuid, uint32> spotReassigns;    // [lead17] pull spots re-assigned per member
         std::map<std::string, uint32> blockedMoves;    // [lead17b] "<kind>|<action>" -> blocked (10 s windows)
@@ -363,7 +363,6 @@ namespace Leader
         std::map<std::string, std::vector<float>> walkDistances;  // [lead29] member -> tank on the walk
         std::vector<ObjectGuid> extraLogged;       // [lead25] extra_aggro logged per pull
         uint32 lostCheckMs = 0;
-        uint32 bossPrepareSinceMs = 0;
         ObjectGuid heldReadyMob;
         uint32 heldReadySinceMs = 0;
         // [lead8] where the group fought and cleared this run (the tank at each fight's end)
@@ -377,6 +376,18 @@ namespace Leader
         uint32 doorStepLogMs = 0;
         // [lead3] packs reported planner_no_option this run
         std::set<ObjectGuid> noOption;
+        // [lead270] the prepull Army of the Dead per death knight (LeaderPrepull.h)
+        struct ArmyPrepull
+        {
+            ObjectGuid boss;
+            uint32 orderedMs = 0;        // the leader told the DK to channel (0: not yet)
+            float orderedRemainSec = 0.0f;  // the preparation left (computed) when it was told
+            uint32 predictedEndMs = 0;   // when the preparation was computed to end
+            uint32 prepEndMs = 0;        // when the preparation really ended (the pull gate open but for the Army)
+            uint32 startedMs = 0;        // the channel seen running
+            bool done = false;
+        };
+        std::map<ObjectGuid, ArmyPrepull> armyPrepull;
     };
 }
 

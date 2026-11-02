@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "LeaderBuffing.h"
 #include "LeaderRest.h"  // CountRestItems
+#include "LeaderPrepull.h"  // [lead270]
 
 #include "LeaderReports.h"
 #include "LeaderEvents.h"
@@ -551,6 +552,16 @@ namespace Leader::Dungeon
                     }
                     if (why.empty())
                         break;
+                    // [lead270] the pass is the boss's preparation and the group walks to the pull after it: a prepull
+                    // Army not timed into it yet starts now, and its channel ends before the pass does
+                    if (Creature* boss = route.targetIsBoss && !route.target.IsEmpty()
+                                             ? leader->GetMap()->GetCreature(route.target)
+                                             : nullptr)
+                        if (std::string const army = Leader::Prepull::ArmyHolds(group, boss, true); !army.empty())
+                        {
+                            waitingFor(army);
+                            break;
+                        }
                     stepDone(0, why);
                     buffWaits.erase(group.InstanceId());
                     {

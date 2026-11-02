@@ -108,6 +108,7 @@
 #include <unordered_set>
 #include <vector>
 #include "LeaderEvents.h"
+#include "LeaderPrepull.h"  // [lead270]
 
 namespace Leader::Dungeon
 {
@@ -1140,21 +1141,9 @@ namespace Leader::Dungeon
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
                 Creature* boss = mob ? mob->ToCreature() : nullptr;
-                if (waitFor.empty() && Leader::LEADER_BOSS_PREPARE && boss && boss->IsDungeonBoss() &&
-                    tank->getClass() == CLASS_DEATH_KNIGHT && tank->HasSpell(42650) && !tank->HasSpellCooldown(42650))
-                {
-                    if (lead.bossPrepareFor != boss->GetGUID())
-                    {
-                        lead.bossPrepareFor = boss->GetGUID();
-                        lead.bossPrepareSinceMs = now;
-                        group.LogEvent("leader_boss_prepare",
-                                 JsonObject().Str("boss", boss->GetName())
-                                     .Str("why", "Army of the Dead before the pull")
-                                     .Num("waitMs", Leader::LEADER_BOSS_PREPARE_MS));
-                    }
-                    if (getMSTimeDiff(lead.bossPrepareSinceMs, now) < Leader::LEADER_BOSS_PREPARE_MS)
-                        waitFor = "Army of the Dead";
-                }
+                // [lead270] a prepull Army's channel under way ends before the boss pull goes
+                if (waitFor.empty() && boss && (boss->IsDungeonBoss() || boss->isWorldBoss()))
+                    waitFor = Leader::Prepull::ArmyHolds(group, boss, false);
                 if (!waitFor.empty())
                 {
                     lead.spotsWaiting = gate;
@@ -1945,23 +1934,19 @@ namespace Leader::Dungeon
                 lead.spotsWaiting = false;
                 lead.spotsIssuedMs = now;
             }
-            // [lead16] LEADER_BOSS_PREPARE: a DK tank with Army of the Dead ready gets Prepare before a boss pull,
-            // and the pull waits LEADER_BOSS_PREPARE_MS for the channel
-            if (decides && Leader::LEADER_BOSS_PREPARE && lookMob && lookMob->ToCreature() &&
-                lookMob->ToCreature()->IsDungeonBoss() && tank->getClass() == CLASS_DEATH_KNIGHT &&
-                tank->HasSpell(SPELL_ARMY_OF_THE_DEAD) && !tank->HasSpellCooldown(SPELL_ARMY_OF_THE_DEAD))
-            {
-                if (lead.bossPrepareFor != lookMob->GetGUID())
+            // [lead270] a prepull Army's channel under way ends before the boss pull is issued
+            if (decides && lookMob && lookMob->ToCreature() &&
+                (lookMob->ToCreature()->IsDungeonBoss() || lookMob->ToCreature()->isWorldBoss()))
+                if (std::string const army = Leader::Prepull::ArmyHolds(group, lookMob, false); !army.empty())
                 {
-                    lead.bossPrepareFor = lookMob->GetGUID();
-                    lead.bossPrepareSinceMs = now;
-                    group.LogEvent("leader_boss_prepare",
-                             JsonObject().Str("boss", lookMob->GetName()).Str("why", "Army of the Dead before the pull")
-                                 .Num("waitMs", Leader::LEADER_BOSS_PREPARE_MS));
-                }
-                if (getMSTimeDiff(lead.bossPrepareSinceMs, now) < Leader::LEADER_BOSS_PREPARE_MS)
+                    if (lead.armyHoldFor != lookMob->GetGUID())
+                    {
+                        lead.armyHoldFor = lookMob->GetGUID();
+                        group.LogEvent("leader_spots_wait", JsonObject().Str("name", lookMob->GetName())
+                                                                .Str("kind", decision.kind).Str("waitFor", army));
+                    }
                     return;
-            }
+                }
             issue(decision, pickWhy);
             return;
         }
