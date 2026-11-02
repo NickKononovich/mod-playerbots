@@ -318,8 +318,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // the fight left the tank at 92 %; 132 of the wave's 432 refusals were "at cost 0.00".
     constexpr bool CAREFUL_READY_LAST_RESORT = true;
     // [careful_small_pack_cost] The cost cap of the last resort and of the fallback for a small plan. The calibrated
-    // drop law below (waves 13/15) puts the tank's p90 lowest health over a pull of cost 1.0 at a drop of 0.32 (melee)
-    // / 0.36 (casters), well inside CAREFUL_MAX_DROP 0.6. The deaths behind the 0.9 / 0.8 caps were 7 mobs at 1.82
+    // drop law of waves 13/15 put the tank's p90 lowest health over a pull of cost 1.0 at a drop of 0.32 (melee)
+    // / 0.36 (casters), well inside its 0.6 line. The deaths behind the 0.9 / 0.8 caps were 7 mobs at 1.82
     // (RFC) and RFK at 1.08; the caps refused 3 mobs at 0.95 (the fight: tank >= 92 %) while the guarantee took 6 at
     // 0.90 after the stand. A plan of at most CAREFUL_SMALL_PACK_MOBS mobs is held to CAREFUL_SMALL_PACK_MAX_COST.
     constexpr uint32 CAREFUL_SMALL_PACK_MOBS = 3;
@@ -427,24 +427,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // caster casts on others too, is interrupted and controlled) come in by the measured spell ratio of the dungeon.
     // [lead258] What the healers heal (rate, health per mana, the gap between two heals) is read from their spells
     // and the dungeon's measured healing per mana (RestState::HealerThroughput, GroupSupport).
-    constexpr float CAREFUL_MIN_GROUP_DPS = 100.0f;
-    // Measured careful pulls, calibrated on wave 13 (380 executed plans with their outcome) and checked on wave 15:
-    // the planned cost overstates large packs (the group kills them faster than one by one, stuns and area damage
-    // help), so the tank's lowest health over a pull follows the plan's cost by a power law. Median drop (share of
-    // the tank's health): 0.146 cost^0.41 for melee packs, 0.164 cost^0.66 for packs with casters (spells ignore
-    // armor and avoidance); the 90th percentile is 2.2 times the median in both waves.
-    constexpr float DROP_MELEE_SCALE = 0.146f;
-    constexpr float DROP_MELEE_EXPONENT = 0.41f;
-    constexpr float DROP_SPELL_SCALE = 0.164f;
-    constexpr float DROP_SPELL_EXPONENT = 0.66f;
-    constexpr float DROP_P90 = 2.2f;
-    // (a) The tank survives: in 9 pulls of 10 it keeps 40% of its health. Waves 13 and 15: no plan within it lost
-    // someone except where more mobs came than were counted.
-    constexpr float CAREFUL_MAX_DROP = 0.6f;
-    // The size the group prefers when the pack can be split: the 90th percentile drop of the median 3-mob plan at
-    // the content's target gear (wave 13: cost 0.70). A tank with more health or mitigation, or a pack of softer
-    // mobs, fits more mobs in it; a soft tank fewer.
-    constexpr float CAREFUL_COMFORT_DROP = 0.28f;
+    // Measured careful pulls: [lead259] (a) the tank survives: its deepest drop over the pull (the estimate's lives
+    // against the healers' rate after their first heal, DropOver, times the dungeon's measured drop ratio) leaves it
+    // the health for one more gap between two heals at the pack's rate (PackEstimate::maxDrop). The size the group
+    // prefers when the pack can be split: a pull within half of it, which still fits when an equal pack joins. (The
+    // wave 13 power law 0.146 / 0.164 cost^0.41 / 0.66 x 2.2, the 0.6 and the 0.28 lines are gone.)
     // (b) The healers keep up: [lead258] the pack's average damage on the tank (AverageDtps: the estimate's own
     // lives) within the healers' best rate together (HealerThroughput), and the healer mana it takes (TakenCost:
     // the calibrated cost) within their pool (HealerPool).
@@ -809,6 +796,38 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     };
 
     float PlanTankHealth(Player* tank);
+
+    // [lead259] The group's damage the game gives without a measured fight or a gear model: every member's weapon
+    // (its min-max damage over its attack time, the better of melee and ranged) - the floor of the fight's length.
+    float GroupWeaponDps(Player* bot)
+    {
+        auto const weapon = [](Player* member)
+        {
+            float best = 0.0f;
+            for (WeaponAttackType type : {BASE_ATTACK, RANGED_ATTACK})
+            {
+                uint32 const attackTime = member->GetAttackTime(type);
+                if (!attackTime)
+                    continue;
+                float const hit =
+                    type == BASE_ATTACK
+                        ? (member->GetFloatValue(UNIT_FIELD_MINDAMAGE) + member->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) /
+                              2.0f
+                        : (member->GetFloatValue(UNIT_FIELD_MINRANGEDDAMAGE) +
+                           member->GetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE)) /
+                              2.0f;
+                best = std::max(best, hit * float(IN_MILLISECONDS) / float(attackTime));
+            }
+            return best;
+        };
+        float dps = weapon(bot);
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member != bot && member->IsAlive() && member->GetMap() == bot->GetMap())
+                    dps += weapon(member);
+        return std::max(dps, 1.0f);
+    }
 
     GroupSupport CountSupport(Player* bot)
     {
@@ -3412,7 +3431,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             // It dies on the way: the helper never hears of the fight.
             if (fleeDps < 0.0f)
                 fleeDps = std::max(botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get(),
-                                   CAREFUL_MIN_GROUP_DPS);
+                                   GroupWeaponDps(bot));  // [lead259]
 
             float const reachSec = nearest / std::max(fleer->GetSpeed(MOVE_RUN), 0.1f);
             float const killSec = float(fleer->GetMaxHealth()) * FLEE_HEALTH_SHARE / fleeDps;
@@ -4153,6 +4172,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float aoeSec = 0.0f;
         float aoeCost = 0.0f;
         float aoeSpellCost = 0.0f;
+        // [lead259] the tank's deepest health drop over the fight (share of its health): what the pack lands before
+        // the healers' rate catches up (DropOver), times the dungeon's measured drop ratio (EstimateMode::dropScale);
+        // `maxDrop`: the most it may drop and still live through one more gap between two heals at the pack's rate
+        float dropRaw = 0.0f;
+        float drop = 0.0f;
+        float maxDrop = 1.0f;
+        float aoeDrop = 0.0f;
     };
 
     // [b44_packs] User 2026-10-26: «некоторые паки из 20 мобов - это мобы с одного удара, их надо просто АОЕшить».
@@ -4232,7 +4258,44 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         std::unordered_map<uint32, LandedScale> const* landedByEntry = nullptr;
         float aoeTargetDps = 0.0f;  // [b44_packs] the group's AoE damage per second on each stacked mob (0: none)
         bool withBoss = false;      // [lead201] a boss's own health and damage are in the estimate (the boss judge)
+        float healHps = 0.0f;       // [lead259] the healers' best rate together (GroupSupport::healHps)
+        float healGapSec = 0.0f;    // [lead259] the time between two heals landing (GroupSupport::healGapSec)
+        float dropScale = 1.0f;     // [lead259] the dungeon's measured drop ratio (DropCalibration)
     };
+
+    // [lead259] The deepest the tank's health falls (health units) under a damage profile - each life lands its rate
+    // until it dies - against healing at `healHps` from the first heal on (`gapSec` in: the first heal lands one gap
+    // into the fight): the loss less the healing at each point the profile changes, the highest of them.
+    float DropOver(std::vector<std::pair<float, float>> lives, float healHps, float gapSec)
+    {
+        std::sort(lives.begin(), lives.end(),
+                  [](std::pair<float, float> const& left, std::pair<float, float> const& right)
+                  { return left.second < right.second; });  // by when it dies
+        float rate = 0.0f;
+        for (auto const& [landed, life] : lives)
+            rate += landed;
+        std::vector<float> points{gapSec};
+        for (auto const& life : lives)
+            points.push_back(life.second);
+        std::sort(points.begin(), points.end());
+
+        float deepest = 0.0f;
+        float taken = 0.0f;
+        float at = 0.0f;
+        size_t next = 0;
+        for (float point : points)
+        {
+            while (next < lives.size() && lives[next].second <= at)  // the ones dead by now land nothing more
+                rate -= lives[next++].first;
+            taken += std::max(rate, 0.0f) * (point - at);
+            at = point;
+            deepest = std::max(deepest, taken - healHps * std::max(at - gapSec, 0.0f));
+        }
+        return deepest;
+    }
+
+    // The game's global cooldown: the tank's own reaction when no healer heals it.
+    constexpr float GCD_SEC = 1.5f;
 
     // `groupDps` > 0: the fight's cost and length are read from the mobs' health too. The group kills one mob after
     // another in no known order: a mob lives its own kill time plus, on average, half of the others', and lands its
@@ -4337,6 +4400,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             estimate.cost = damage / tankHealth;
             estimate.spellCost = spellDamage / tankHealth;
             estimate.fightSec = totalHealth / groupDps;
+            // [lead259] the drop: every life's rate until it dies against the healers' rate after their first heal
+            std::vector<std::pair<float, float>> profile;
+            for (size_t i = 0; i < lives.size(); ++i)
+                profile.emplace_back(
+                    lives[i].first,
+                    (quick[i] ? lives[i].second : lives[i].second + (totalHealth - lives[i].second) / 2.0f) / groupDps);
+            float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.fightSec;
+            estimate.dropRaw = std::min(DropOver(profile, mode.healHps, gapSec) / tankHealth, estimate.cost);
+            estimate.drop = estimate.dropRaw * mode.dropScale;
+            estimate.maxDrop =
+                std::clamp(1.0f - estimate.landedDps * std::max(mode.healGapSec, GCD_SEC) / tankHealth, 0.0f, 1.0f);
         }
 
         // [b44_packs] The same pack under the group's AoE: the group's damage on its first target plus the AoE on the
@@ -4354,6 +4428,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             {
                 estimate.aoeCost = estimate.landedDps * estimate.aoeSec * WEAK_PACK_ALIVE_SHARE / tankHealth;
                 estimate.aoeSpellCost = landedSpell * estimate.aoeSec * WEAK_PACK_ALIVE_SHARE / tankHealth;
+                // [lead259] the stack lands its whole rate for its alive share of the kill time
+                float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.aoeSec;
+                estimate.aoeDrop = std::min(DropOver({{estimate.landedDps, estimate.aoeSec * WEAK_PACK_ALIVE_SHARE}},
+                                                     mode.healHps, gapSec) /
+                                                tankHealth,
+                                            estimate.aoeCost) *
+                                   mode.dropScale;
             }
         }
 
@@ -4406,8 +4487,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float peak = 0.0f;     // melee on the tank before a mob dies (levelling) or its average against what the
                                // healers heal (measured)
         float drain = 0.0f;    // the fight's melee against what the healers heal over it plus half the tank's health
-                               // (levelling) or the tank's 90th percentile health drop against CAREFUL_MAX_DROP
-        float comfort = 0.0f;  // measured: the drop against the size the group prefers (CAREFUL_COMFORT_DROP)
+                               // (levelling) or the tank's 90th percentile health drop against its most
+                               // (PackEstimate::maxDrop)
+        float comfort = 0.0f;  // measured: the drop against the size the group prefers (half the most)
         float drop = 0.0f;     // measured: the tank's 90th percentile health drop
         float holdMobs = 0.0f;
 
@@ -4418,26 +4500,18 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         }
     };
 
-    // Measured careful pulls: the tank's health drop over the fight in 9 pulls of 10, from the planned cost (see
-    // DROP_MELEE_SCALE), weighted by how much of it is spells.
-    float DropP90(PackEstimate const& estimate)
-    {
-        if (estimate.cost <= 0.0f)
-            return 0.0f;
-
-        float const spellShare = std::clamp(estimate.spellCost / estimate.cost, 0.0f, 1.0f);
-        float const melee = DROP_MELEE_SCALE * std::pow(estimate.cost, DROP_MELEE_EXPONENT);
-        float const spell = DROP_SPELL_SCALE * std::pow(estimate.cost, DROP_SPELL_EXPONENT);
-        return DROP_P90 * ((1.0f - spellShare) * melee + spellShare * spell);
-    }
+    // Measured careful pulls: the tank's health drop over the fight in 9 pulls of 10: [lead259] the estimate's own
+    // drop (DropOver) times the upper quantile of this dungeon's measured drop ratios (DropCalibration); nothing
+    // measured: the drop as the game's numbers give it.
+    float DropP90(PackEstimate const& estimate) { return std::max(estimate.drop, 0.0f); }
 
     // How far the pack is over what the group takes (1.0: just fits): the group's danger capacity (levelling) or the
     // healers' mana for the fight (measured), the tank's spells hold the pack but for a couple of loose mobs, and the
     // tank's health carries the melee it takes, at once and over the fight. About 4-5 mobs for a tank without area
-    // threat, more with Consecration or Thunder Clap, fewer for a soft group. Measured: (a) the tank keeps
-    // CAREFUL_MAX_DROP of its health in 9 pulls of 10 and (b) the healers keep up with the pack's average damage
-    // and have the mana for it; the tank's own health, armor and avoidance are in the cost, the healers' gear scales
-    // what they heal.
+    // threat, more with Consecration or Thunder Clap, fewer for a soft group. Measured: (a) the tank's drop in 9 pulls
+    // of 10 leaves it one more heal gap at the pack's rate (PackEstimate::maxDrop) and (b) the healers keep up with the
+    // pack's average damage and have the mana for it; the tank's own health, armor and avoidance are in the cost, the
+    // healers' gear scales what they heal.
     float CarefulOverload(Player* bot, PackEstimate const& estimate, PartyStrength const& strength,
                           GroupSupport const& support, TankKit const& kit, bool measured,
                           OverloadTerms* out = nullptr)
@@ -4448,6 +4522,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         terms.size = measured
                          ? (pool > 0.0f ? TakenCost(estimate) / pool : 0.0f)
                          : SwarmDanger(estimate.danger, estimate.mobs, strength) / PackCapacity(bot, strength, support);
+        if (measured)  // [lead259] a lone mob's drop too: it is no limit there, but its fight measures the drop ratio
+            terms.drop = DropP90(estimate);
         if (estimate.mobs > 1)
         {
             terms.holdMobs =
@@ -4458,9 +4534,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             float const maxHealth = PlanTankHealth(bot);  // [b32_smpull]
             if (measured)
             {
-                terms.drop = DropP90(estimate);
-                terms.drain = terms.drop / CAREFUL_MAX_DROP;
-                terms.comfort = terms.drop / CAREFUL_COMFORT_DROP;
+                // [lead259] the drop against the most the tank may drop (EstimatePack::maxDrop); the comfort: against
+                // half of it, a pull that still fits when an equal pack joins it
+                terms.drain = estimate.maxDrop > 0.0f ? terms.drop / estimate.maxDrop : 99.0f;
+                terms.comfort = 2.0f * terms.drain;
                 // [lead258] the pack's average damage per second against the healers' best rate together (their
                 // spells and spell power: the gear is in it); without a healer the drop term alone
                 if (support.healHps > 0.0f)
@@ -6596,6 +6673,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             float mana = 0.0f;
         };
         std::vector<HealerStart> healers;  // [lead258] the healers present when the fight began
+        float dropScale = 1.0f;            // [lead259] the measured drop ratio `drop` was planned with
+        float tankStartPct = 0.0f;         // [lead259] the tank's health when the fight began
+        float tankLowPct = 100.0f;         // [lead259] ... and the lowest in it
     };
 
     std::mutex pullCheckLock;
@@ -6630,6 +6710,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         std::vector<MeasuredSample> melee;
         std::vector<MeasuredSample> spell;
     };
+
+    // [lead259] the tank's real deepest drop against the planned one (DropOver), this dungeon's trash fights
+    struct MeasuredDrop
+    {
+        std::vector<MeasuredSample> fights;  // real drop over the planned drop
+        uint32 instanceId = 0;
+    };
+    std::unordered_map<uint64, MeasuredDrop> measuredDrops;  // by tank, under pullCheckLock
 
     struct MeasuredTaken
     {
@@ -6740,6 +6828,43 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                   "{:.1f} s ({} mobs{})",
                   tank->GetName(), realMelee, realSpell, templateMelee, templateSpell, fightSec, record.came.size(),
                   boss ? ", a boss" : "");
+    }
+
+    // [lead259] The fight is over: the tank's deepest drop in it against the drop the plan expected before the
+    // dungeon's ratio (DropOver alone). Under pullCheckLock.
+    void NoteMeasuredDrop(PlayerbotAI* botAI, Player* tank, PullRecord const& record)
+    {
+        if (!record.startMs || record.drop <= 0.0f || record.dropScale <= 0.0f || record.tankStartPct <= 0.0f)
+            return;
+        for (ObjectGuid const& guid : record.came)  // a boss is healed as the fight goes: trash fights only
+            if (Unit* mob = botAI->GetUnit(guid); mob && IsBossMob(mob))
+                return;
+        float const planned = record.drop / record.dropScale;
+        float const real = std::max(record.tankStartPct - record.tankLowPct, 0.0f) / 100.0f;
+        MeasuredDrop& entry = measuredDrops[tank->GetGUID().GetRawValue()];
+        if (entry.instanceId != tank->GetInstanceId())
+            entry = MeasuredDrop();  // this dungeon's fights only
+        entry.instanceId = tank->GetInstanceId();
+        entry.fights.push_back({real, planned});
+        LOG_DEBUG("playerbots", "[lead259] {}: drop {:.2f} against the planned {:.2f} ({} fights)", tank->GetName(),
+                  real, planned, entry.fights.size());
+    }
+
+    // [lead259] the upper quantile (MEASURED_QUANTILE, each fight weighted by its planned drop) of the dungeon's
+    // real / planned drops; nothing measured: 1 (the drop as the game's numbers give it). Under pullCheckLock.
+    float DropScaleLocked(Player* tank)
+    {
+        auto const found = measuredDrops.find(tank->GetGUID().GetRawValue());
+        if (found == measuredDrops.end() || found->second.instanceId != tank->GetInstanceId())
+            return 1.0f;
+        float const scale = WeightedQuantile(found->second.fights, MEASURED_QUANTILE);
+        return scale > 0.0f ? scale : 1.0f;
+    }
+
+    float DropCalibration(Player* tank)
+    {
+        std::lock_guard<std::mutex> guard(pullCheckLock);
+        return DropScaleLocked(tank);
     }
 
     // [lead258] The fight is over: each healer's effective healing and net mana spent over it, its measured health
@@ -7188,6 +7313,7 @@ namespace PullCheck
         }
 
         std::lock_guard<std::mutex> guard(pullCheckLock);
+        record.dropScale = DropScaleLocked(tank);  // [lead259] the ratio this drop was planned with
         lastPlannedMs[tank->GetGUID().GetRawValue()] = record.plannedMs ? record.plannedMs : 1;
         pullChecks[tank->GetGUID().GetRawValue()] = std::move(record);
     }
@@ -7236,6 +7362,7 @@ namespace PullCheck
                 record.startMs = now;
                 record.takenAtStart = DamageTaken::Total(bot->GetGUID());
                 record.spellAtStart = DamageTaken::Spell(bot->GetGUID());
+                record.tankStartPct = bot->GetHealthPct();  // [lead259]
                 if (Group* group = bot->GetGroup())  // [lead258] the healers' healing and mana at the start
                     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                         if (Player* member = ref->GetSource(); member && member->IsAlive() &&
@@ -7264,6 +7391,7 @@ namespace PullCheck
             }
 
             record.deaths = std::max(record.deaths, CountDeadMembers(bot));
+            record.tankLowPct = std::min(record.tankLowPct, bot->IsAlive() ? bot->GetHealthPct() : 0.0f);
             return;
         }
 
@@ -7274,6 +7402,8 @@ namespace PullCheck
         NoteMeasuredDps(botAI, bot, record, now);
         NoteMeasuredTaken(botAI, bot, record, now);
         NoteMeasuredHealing(bot, record, now);
+        if (!record.deaths || record.tankLowPct <= 0.0f)  // [lead259] a wipe by others says nothing of the drop
+            NoteMeasuredDrop(botAI, bot, record);
         pullChecks.erase(found);
     }
 
@@ -8346,10 +8476,12 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     std::vector<PackOverlap>* overlapsOut = split ? &overlaps : nullptr;
     std::vector<PackOverlap> chosenOverlaps;
     // The fight's length and cost, in every careful mode: the tank's health carries part of the fight.
-    float const groupDps =
-        std::max({PlanGroupDps(), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});  // [lead7]
+    float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), GroupWeaponDps(bot)});  // [lead7] [lead259]
     EstimateMode estimateMode;
     estimateMode.measured = measured;
+    estimateMode.healHps = support.healHps;  // [lead259]
+    estimateMode.healGapSec = support.healGapSec;
+    estimateMode.dropScale = DropCalibration(bot);
     LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
     estimateMode.landedScale = landedRatios.trash;
     estimateMode.landedByEntry = &landedRatios.byEntry;
@@ -8388,8 +8520,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     ProvenCap const proven = ProvenFor(bot);
     // [b44_packs] A weak pack (WEAK_PACK_*): it dies to the group's AoE within WEAK_PACK_TTK_SEC, the healers keep
     // up with what the whole stack lands meanwhile (the measured peak term with every mob alive: the healers' best
-    // rate, HealerThroughput), the tank keeps CAREFUL_MAX_DROP of its health in 9 pulls of 10
-    // (DropP90 of that cost) and the healers have the mana (HealerPool). The AoE cost carries the same spell part.
+    // rate, HealerThroughput), the tank's drop in 9 pulls of 10 (DropP90 of the stack) is within its most
+    // (PackEstimate::maxDrop) and the healers have the mana (HealerPool). The AoE cost carries the same spell part.
     // Not with crowd control planned on the pack (the AoE breaks it) and never a boss.
     auto const weakAoeFits = [&](PackEstimate const& estimate) -> bool
     {
@@ -8402,6 +8534,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         aoe.cost = estimate.aoeCost;
         aoe.spellCost = estimate.aoeSpellCost;
         aoe.fightSec = estimate.aoeSec;
+        aoe.drop = estimate.aoeDrop;
         // [lead258] what the stack lands per second on average against the healers' best rate (HealerThroughput)
         float const peak = support.healHps > 0.0f ? AverageDtps(aoe, tankHealth) / support.healHps : 0.0f;
         float const drop = DropP90(aoe);
@@ -8414,7 +8547,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             why = "casters stand out of the stack";
         else if (peak > 1.0f)
             why = "the healers do not keep up";
-        else if (drop > CAREFUL_MAX_DROP)
+        else if (drop > estimate.maxDrop)
             why = "the tank's drop";
         else if (mana > 1.0f)
             why = "healer mana";
@@ -12246,6 +12379,12 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                   "{:.0f} %; {}",
                   bot->GetName(), support.healHps, HealerPool(support), HealerManaNeed(chosen, support),
                   support.healerFacts.empty() ? std::string("none") : support.healerFacts);
+        LOG_DEBUG("playerbots",
+                  "[lead259] {} estimate drop {:.2f} = {:.2f} (landed {:.0f}/s over {:.0f} s, heals {:.0f}/s after "
+                  "{:.1f} s) x measured {:.2f}; most {:.2f}; group dps {:.0f} (measured {:.0f}, weapons {:.0f})",
+                  bot->GetName(), chosen.drop, chosen.dropRaw, chosen.landedDps, chosen.fightSec, support.healHps,
+                  support.healGapSec, estimateMode.dropScale, chosen.maxDrop, groupDps, MeasuredGroupDps(bot),
+                  GroupWeaponDps(bot));
         std::vector<uint32> logged;
         for (Unit* mob : chosenPack)
         {
@@ -12748,9 +12887,12 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     PartyStrength const strength = PlanStrength();
     GroupSupport const support = CountSupport(bot);
     TankKit const kit = PartyStrengthShared::GetTankKit(bot);
-    float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});
+    float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), GroupWeaponDps(bot)});  // [lead259]
     EstimateMode mode;
     mode.measured = true;
+    mode.healHps = support.healHps;  // [lead259]
+    mode.healGapSec = support.healGapSec;
+    mode.dropScale = DropCalibration(bot);
     LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
     mode.landedScale = landedRatios.trash;
     mode.landedByEntry = &landedRatios.byEntry;
