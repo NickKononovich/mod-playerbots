@@ -1029,8 +1029,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // SPELL_AURA_MOD_DAMAGE_PERCENT_DONE) of this member's share of the group's damage, per % of mana it returns -
     // the aura's own power tick (SPELL_AURA_OBS_MOD_POWER) plus the hit energize spell_hun_ascpect_of_the_viper casts:
     // the ranged attack time in seconds as % of max mana per ranged hit, 1 % per second of Auto Shot
-    constexpr uint32 SPELL_ASPECT_OF_THE_VIPER = 34074;
-    if (bot->HasSpell(SPELL_ASPECT_OF_THE_VIPER) && fightSec > 0.0f)
+    if (credits && bot->HasSpell(SPELL_ASPECT_OF_THE_VIPER) && fightSec > 0.0f)  // [lead425] its own credit too
         if (SpellInfo const* viper = sSpellMgr->GetSpellInfo(SPELL_ASPECT_OF_THE_VIPER))
         {
             float viperPerSec = 1.0f;  // the hit energize over Auto Shot

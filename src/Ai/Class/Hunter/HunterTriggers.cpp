@@ -100,6 +100,9 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
 
     if (botAI->HasAura("aspect of the viper", target))
     {
+        // [lead426] a led hunter's switch out of Viper is the leader's External (its fight need, its rest line)
+        if (Leader::LedBot(bot))
+            return false;
         uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
         // [rot8] out of a led group's fight the leader's rest line (the regen in Viper costs no damage)
         // [lead361] and at least wowsims' Dragonhawk line: the line counts Viper's mana in the fight now, so the walk
@@ -202,6 +205,9 @@ bool HunterAspectOfTheViperTrigger::IsActive()
         return false;
 
     if (!BuffTrigger::IsActive())
+        return false;
+    // [lead426] a led hunter's Viper is the leader's External (its fight need, its rest line)
+    if (Leader::LedBot(bot))
         return false;
     uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
     // [rot8] in a fight wowsims' line (Viper below 10 %, Dragonhawk again above 30 %): Viper halves the shots, the

@@ -4341,6 +4341,57 @@ namespace Leader::Dungeon
         else
             lead.kickers.clear();
 
+        // [lead426] user 2026-11-02 (rest / drink / food and Viper are the leader's, in a fight too): a led hunter's
+        // aspect switch is the leader's External. In a fight: Viper while its need for the fight's seconds left
+        // (FightManaLine without the cooldowns and Viper it would cover) exceeds its mana, its attack aspect
+        // (Dragonhawk, else Hawk) once its mana covers it - the same need test as the mana tools (lead423), in place of
+        // the hunter's own wowsims lines (10 % / 30 %); out of a fight: Viper below its rest line for the next fight
+        // (RestState::OwnManaLine, the walk regenerates), its attack aspect at the line. 0: no switch
+        auto const viperSwitch = [&](Player* hunter, bool inFight, std::string& why) -> uint32
+        {
+            PlayerbotAI* hunterAI = GET_PLAYERBOT_AI(hunter);
+            if (!hunterAI || hunter->getClass() != CLASS_HUNTER || !hunter->IsAlive() ||
+                !hunter->HasSpell(RestState::SPELL_ASPECT_OF_THE_VIPER))
+                return 0;
+            AiObjectContext* hunterContext = hunterAI->GetAiObjectContext();
+            uint32 attack = hunterContext->GetValue<uint32>("spell id", "aspect of the dragonhawk")->Get();
+            if (!attack || !hunter->HasSpell(attack))
+                attack = hunterContext->GetValue<uint32>("spell id", "aspect of the hawk")->Get();
+            if (!attack || !hunter->HasSpell(attack))
+                return 0;
+            float const pct = hunter->GetPowerPct(POWER_MANA);
+            float line = 0.0f;
+            if (inFight)
+            {
+                if (lead.fightSecLeft <= 0.0f)
+                    return 0;
+                line = RestState::FightManaLine(hunter, lead.fightSecLeft, 0.0f, nullptr, fightBoss != nullptr, false);
+            }
+            else
+                line = RestState::OwnManaLine(hunter);
+            bool const inViper = hunter->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER);
+            bool const wantViper = pct < line;
+            why = Acore::StringFormat("{}: mana {:.0f} % {} its {} {:.0f} %", wantViper ? "Viper" : "its attack aspect",
+                                      pct, wantViper ? "<" : ">=",
+                                      inFight ? "need for the fight's seconds left" : "rest line", line);
+            if (wantViper && !inViper)
+                return RestState::SPELL_ASPECT_OF_THE_VIPER;
+            if (!wantViper && inViper)
+                return attack;
+            return 0;
+        };
+        if (!fighting)
+            for (Player* hunter : seats)
+            {
+                if (hunter->IsInCombat())
+                    continue;
+                std::string why;
+                if (uint32 const aspect = viperSwitch(hunter, false, why))
+                    if (Leader::Events::SetExternal(hunter->GetGUID(), aspect, ObjectGuid::Empty))
+                        logEvent(hunter, "External", JsonObject().Num("spell", aspect).Str("on", hunter->GetName())
+                                                         .Str("why", why));
+            }
+
         // 3c. external saves and buffs on a target: the leader picks who and when, the member casts when told
         if (fighting && Leader::LEADER_ATTACK_EVENTS)
         {
@@ -4595,6 +4646,13 @@ namespace Leader::Dungeon
                         consider(caster, spell, nullptr, inReach);
                     }
                 }
+            }
+            // [lead426] the hunters' aspect switch by their fight need (Viper / the attack aspect)
+            for (Player* hunter : seats)
+            {
+                std::string why;
+                if (uint32 const aspect = viperSwitch(hunter, true, why))
+                    tell(hunter, aspect, nullptr, why.c_str());
             }
             if (best.caster)
                 if (SpellInfo const* info = sSpellMgr->GetSpellInfo(best.spell))
