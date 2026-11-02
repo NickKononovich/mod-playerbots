@@ -377,7 +377,9 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
 
 std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
 {
-    if (!boss)
+    // [lead520] b211 rfc-h 5G 347 s: "army_prepull_ordered ... before Oggleflint" 6 s after he died (the late buff
+    // pass's end): a boss dead or already fought has no prepull
+    if (!boss || !boss->IsAlive() || boss->IsInCombat())
         return std::string();
     auto& plans = group.State().armyPrepull;
     uint32 const now = getMSTime() ? getMSTime() : 1;
@@ -395,7 +397,10 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
         if (!plan.orderedMs)
         {
             // the preparation ended before the leader could time the channel into it: the pull waits it whole
-            if (!orderNow || !ArmyBlocked(dk).empty())
+            // [lead520] b211 rfc-h 5C Oggleflint / Taragaman: the knight was in combat / walking during the one-second
+            // buff pass end and was never told, then stood idle 14 s before the pull. Its pull orders it too, once
+            // the knight can channel (wowsims prepulls Army whenever it is ready; one on cooldown is not waited for)
+            if (!ArmyBlocked(dk).empty())
                 continue;
             plan.orderedMs = now;
             plan.predictedEndMs = now;
@@ -403,7 +408,8 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
                                                        .Str("boss", boss->GetName())
                                                        .Str("dk", dk->GetName())
                                                        .Real("prepLeftSec", 0.0f)
-                                                       .Str("prepLeftWhy", "the preparation is over")
+                                                       .Str("prepLeftWhy", orderNow ? "the preparation is over"
+                                                                                    : "the boss pull")
                                                        .Real("channelSec", ChannelSec())
                                                        .Real("plannedDelaySec", ChannelSec()));
         }
