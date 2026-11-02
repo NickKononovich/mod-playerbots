@@ -355,9 +355,6 @@ namespace Leader
             float threat = 0.0f;
             uint32 riseMs = 0;  // [lead432] the last time its threat there grew
         };
-        // [lead501] the largest threat a member was seen to add on one fight mob within one global cooldown (one
-        // cast's threat lands at once: a Lightning Bolt / Arcane Blast / Aimed Shot / a big heal), over the run
-        std::map<ObjectGuid, float> threatStep;
         std::map<ObjectGuid, std::map<ObjectGuid, ThreatSeen>> threatSeen;  // [lead243] fight mob -> who -> seen
         std::map<ObjectGuid, std::string> stopProjection;        // [lead246] the headroom projection a Stop was read on
         std::map<ObjectGuid, std::pair<float, uint32>> openTps;  // [lead243] its threat / s on each mob it hit: sum, n
