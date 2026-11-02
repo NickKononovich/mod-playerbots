@@ -377,6 +377,18 @@ void NotePeakManaRate(ObjectGuid member, float pctPerSec)
 
 namespace
 {
+    std::unordered_map<uint64, float> trashManaDip;  // [lead248] under manaRateLock
+    std::unordered_map<uint64, float> bossManaDip;   // [lead248] under manaRateLock
+}
+
+void NoteManaDip(ObjectGuid member, float pct, bool boss)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    (boss ? bossManaDip : trashManaDip)[member.GetRawValue()] = pct;
+}
+
+namespace
+{
     struct FightLengthError
     {
         float sum = 0.0f;
@@ -457,9 +469,21 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float rate = RoleManaRate(bot);
     bool measured = false;
     char const* source = "measured";
+    // [lead248] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
+    // need 2-12 % (0.07-0.38 %/s x 6-25 s + reserve): the floor was the config's LowMana, 80 s of its drinks and the
+    // group's 150 s. The floor is the mana the fight draws before its regains come: its measured mean deepest drop
+    // below a fight's start mana (trash or boss); the config's low line only while none is measured
+    float dipFloor = float(sPlayerbotAIConfig.LowMana);
+    bool dipMeasured = false;
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
         uint64 const key = bot->GetGUID().GetRawValue();
+        auto const& dips = boss ? bossManaDip : trashManaDip;
+        if (auto const found = dips.find(key); found != dips.end())
+        {
+            dipFloor = found->second;
+            dipMeasured = true;
+        }
         if (auto const found = measuredManaRate.find(key); found != measuredManaRate.end())
         {
             rate = found->second;
@@ -538,14 +562,16 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // Light): its mana is in that rate already, a credit on top counted it twice
     if (!measured)
         credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
-    float const line = std::clamp(need + reserve - returned, float(sPlayerbotAIConfig.LowMana), 100.0f);
+    float const line = std::clamp(need + reserve - returned, std::min(dipFloor, 100.0f), 100.0f);
     if (why)
-        *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
-                                   line, rate, measured ? source : "role", fightSec, reserve,
-                                   uncertainSec >= 0.0f && measured
-                                       ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
-                                       : std::string("flat"),
-                                   returned, pick.empty() ? std::string() : " (" + pick + ")");
+        *why = Acore::StringFormat(
+            "{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}, "
+            "at least {:.0f} % ({})",
+            line, rate, measured ? source : "role", fightSec, reserve,
+            uncertainSec >= 0.0f && measured ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
+                                             : std::string("flat"),
+            returned, pick.empty() ? std::string() : " (" + pick + ")", dipFloor,
+            dipMeasured ? "its mean drop in a fight" : "the low line");
     return line;
 }
 
