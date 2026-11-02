@@ -336,7 +336,22 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 // (Evocation, Divine Plea). One line for the boss gate, the boss rest and the trash rest; why: the terms
 // [lead232] `boss`: a boss fight - the member's rate measured on boss fights, else its rate over its full-length fights
 // (its whole rotation, lead234), else the rate of all fights
-float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false);
+// [lead423] `credits` false: without the mana its own ready cooldowns return (the leader's mana tools judge the need
+// they would cover)
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false,
+                    bool credits = true);
+// [lead423] the mana tools (Innervate, Shadowfiend, Hymn of Hope, Mana Tide Totem, Evocation, Divine Plea, Dispersion)
+constexpr uint32 SPELL_INNERVATE = 29166;
+constexpr uint32 SPELL_SHADOWFIEND = 34433;
+constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
+constexpr uint32 SPELL_MANA_TIDE_TOTEM = 16190;
+constexpr uint32 SPELL_EVOCATION = 12051;
+constexpr uint32 SPELL_DISPERSION = 47585;
+// [lead423] the mana (% of the receiver's max) `caster`'s `spell` returns to `receiver`, from spell and game data: an
+// energize (% or flat) over the aura's ticks, the spells it triggers, a totem's aura over the totem's life, Innervate's
+// 225 % of the druid's base mana (spell_dru_innervate), the Shadowfiend's hits (its life over its attack time) each
+// returning its Mana Leech (34650); 0: none known
+float ManaToolPct(Player* caster, Player* receiver, uint32 spell);
 // [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
 void NoteManaRate(ObjectGuid member, float pctPerSec);
 // [lead232] ... on boss fights, and over its fights at least as long as this run's mean fight (lead234)

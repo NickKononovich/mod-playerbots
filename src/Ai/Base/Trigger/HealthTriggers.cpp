@@ -828,7 +828,67 @@ namespace
 
 float DrinkPctPerSecOf(Player* bot) { return DrinkPctPerSec(bot); }
 
-float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss)
+namespace
+{
+    constexpr uint32 SPELL_MANA_LEECH = 34650;  // the Shadowfiend's hit: mana to its priest (spell_pri_mana_leech)
+
+    float ToolPct(Player* caster, Player* receiver, SpellInfo const* info, uint8 depth, int32 lifeMs)
+    {
+        float const maxMana = float(receiver->GetMaxPower(POWER_MANA));
+        if (!info || maxMana <= 0.0f)
+            return 0.0f;
+        int32 const durationMs = info->GetMaxDuration() > 0 ? info->GetMaxDuration() : lifeMs;
+        float pct = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (!effect.IsEffect())
+                continue;
+            float const ticks =
+                effect.Amplitude > 0 && durationMs > 0 ? float(durationMs) / float(effect.Amplitude) : 0.0f;
+            if (effect.Effect == SPELL_EFFECT_ENERGIZE_PCT && effect.MiscValue == POWER_MANA)
+                pct += float(effect.CalcValue(caster));
+            else if (effect.Effect == SPELL_EFFECT_ENERGIZE && effect.MiscValue == POWER_MANA)
+                pct += float(effect.CalcValue(caster)) / maxMana * 100.0f;
+            else if (effect.ApplyAuraName == SPELL_AURA_OBS_MOD_POWER && effect.MiscValue == POWER_MANA)
+                pct += float(effect.CalcValue(caster)) * ticks;
+            else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_ENERGIZE && effect.MiscValue == POWER_MANA)
+                pct += info->Id == SPELL_INNERVATE
+                           ? CalculatePct(float(caster->GetCreatePowers(POWER_MANA)), float(effect.CalcValue(caster))) /
+                                 maxMana * 100.0f
+                           : float(effect.CalcValue(caster)) * ticks / maxMana * 100.0f;
+            else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && depth && effect.TriggerSpell)
+                pct += ticks * ToolPct(caster, receiver, sSpellMgr->GetSpellInfo(effect.TriggerSpell), depth - 1, 0);
+            else if ((effect.Effect == SPELL_EFFECT_SUMMON) && depth && effect.MiscValue > 0)
+                if (CreatureTemplate const* summoned = sObjectMgr->GetCreatureTemplate(uint32(effect.MiscValue)))
+                    for (uint32 spell : summoned->spells)  // a totem's aura lives as long as the totem
+                        if (spell)
+                            pct += ToolPct(caster, receiver, sSpellMgr->GetSpellInfo(spell), depth - 1, durationMs);
+        }
+        return pct;
+    }
+}
+
+float ManaToolPct(Player* caster, Player* receiver, uint32 spell)
+{
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+    if (!info || !caster || !receiver || !receiver->GetMaxPower(POWER_MANA))
+        return 0.0f;
+    if (spell == SPELL_SHADOWFIEND)
+    {
+        // its hits over its life (the summon's duration over the fiend's attack time), each its Mana Leech
+        SpellInfo const* leech = sSpellMgr->GetSpellInfo(SPELL_MANA_LEECH);
+        float perHit = leech ? ToolPct(caster, receiver, leech, 0, 0) : 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.Effect == SPELL_EFFECT_SUMMON && effect.MiscValue > 0)
+                if (CreatureTemplate const* fiend = sObjectMgr->GetCreatureTemplate(uint32(effect.MiscValue));
+                    fiend && fiend->BaseAttackTime && info->GetMaxDuration() > 0)
+                    return perHit * float(info->GetMaxDuration()) / float(fiend->BaseAttackTime);
+        return 0.0f;
+    }
+    return ToolPct(caster, receiver, info, 2, 0);
+}
+
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits)
 {
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
@@ -902,8 +962,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
             reserve += perTankHealth * cost * uncertainSec / fightSec;
     }
-    // the mana its own ready cooldowns return in the fight (spell effects: Evocation 60 %, Divine Plea 25 %)
-    constexpr uint32 SPELL_EVOCATION = 12051;
+    // the mana its own ready cooldowns return in the fight ([lead423] spell data, ManaToolPct: Evocation, Divine
+    // Plea, a priest's Shadowfiend)
     // [lead177] a cooldown's mana counts only when using it in the fight costs less time than drinking that mana before
     // the pull: its cast (a channel's duration, else the global cooldown) takes this member's share of the group's
     // damage out of the fight (cast x 1 / damage dealers, a healer's the whole cast), the drink costs the group the
@@ -913,7 +973,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float const drinkRate = DrinkPctPerSec(bot);
     auto const credit = [&](uint32 spell, float pct, char const* name)
     {
-        if (!bot->HasSpell(spell) || bot->HasSpellCooldown(spell))
+        if (!credits || !bot->HasSpell(spell) || bot->HasSpellCooldown(spell))
             return;
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
         if (!info)
@@ -929,7 +989,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         pick += Acore::StringFormat("{}{} {}: {:.1f} s in the fight vs {:.1f} s drinking", pick.empty() ? "" : "; ",
                                     name, inFight ? "in the fight" : "drunk before", fightCost, drinkSec);
     };
-    credit(SPELL_EVOCATION, 60.0f, "Evocation");
+    credit(SPELL_EVOCATION, ManaToolPct(bot, bot, SPELL_EVOCATION), "Evocation");
+    credit(SPELL_SHADOWFIEND, ManaToolPct(bot, bot, SPELL_SHADOWFIEND), "Shadowfiend");  // [lead423]
     // [lead224] a measured rate is the net use of fights the paladin keeps Divine Plea up in (rot48, Guarded by the
     // Light): its mana is in that rate already, a credit on top counted it twice
     // [lead367] b198 rfc-h 5A: the tank's rate came from its opening fight alone, no Divine Plea up yet (first cast
@@ -943,7 +1004,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         pleaInRate = found != pleaMeasured.end() && found->second;
     }
     if (!pleaInRate)
-        credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
+        credit(SPELL_DIVINE_PLEA, ManaToolPct(bot, bot, SPELL_DIVINE_PLEA), "Divine Plea");
     // [lead361] b196 rfc-h 5E: the BM hunter sat to drink before trash ("Rthunab rests below its line (mana 23 %,
     // need 46 %)") - a WotLK hunter regenerates in the fight with Aspect of the Viper (wowsims: Viper below 10 %,
     // Dragonhawk again above 30 %). Viper's mana counts in the fight when a Viper second costs the group less than
