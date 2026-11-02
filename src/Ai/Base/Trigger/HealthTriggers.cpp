@@ -5,25 +5,26 @@
  */
 
 #include "HealthTriggers.h"
-#include "AggressiveTargetValue.h"
 
 #include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
 
-#include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
-#include "Bag.h"          // [lead177] the drinks in the bags
-#include "BuyAction.h"    // [lead177] RESTOCK_SPELL_CATEGORY_DRINK
-#include "ANTriggers.h"   // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
-#include "CoSTriggers.h"  // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
-#include "CreatureGroups.h"   // [b46_patrol]
-#include "Group.h"
+#include "AKTriggers.h"  // [b47_patrol] AKJedogaRoom::OwnsPull
+#include "ANTriggers.h"  // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
+#include "AggressiveTargetValue.h"
+#include "Bag.h"             // [lead177] the drinks in the bags
+#include "BuyAction.h"       // [lead177] RESTOCK_SPELL_CATEGORY_DRINK
+#include "CoSTriggers.h"     // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
+#include "CreatureGroups.h"  // [b46_patrol]
 #include "GenericSpellActions.h"
+#include "Group.h"
 #include "HealAssignmentValues.h"
-#include "LeaderOrders.h"  // [lead15] LEADER_ONE_REST_RULE
+#include "LeaderOrders.h"     // [lead15] LEADER_ONE_REST_RULE
 #include "MgTShared.h"        // [b47_patrol] MagistersTerrace::SelinRoom
 #include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
+#include "ObjectMgr.h"        // [lead264] CreatureBaseStats
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
 #include "SpellAuras.h"
@@ -309,18 +310,12 @@ namespace
 // (PREDICT_DRINK_ALL_ROLES off: tank, melee and hunter mana users).
 float PredictedManaNeed(Player* bot, NextFight const& fight, float& fightSec)
 {
-    fightSec = fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+    fightSec = FightSecOf(bot, fight);  // [lead264]
     if (PlayerbotAI::IsHeal(bot))
-        return std::max(HEALER_BURN_PCT_PER_SEC * fightSec, HealerPctPerTankHealth(bot) * fight.cost);
-    if (PlayerbotAI::IsCaster(bot))
-        return CASTER_BURN_PCT_PER_SEC * fightSec;
-    if (!PREDICT_DRINK_ALL_ROLES)
+        return std::max(SpellManaRate(bot) * fightSec, HealerPctPerTankHealth(bot) * fight.cost);
+    if (!PlayerbotAI::IsCaster(bot) && !PREDICT_DRINK_ALL_ROLES)
         return -1.0f;
-    if (bot->getClass() == CLASS_HUNTER)
-        return HUNTER_BURN_PCT_PER_SEC * fightSec;
-    if (PlayerbotAI::IsTank(bot))
-        return TANK_BURN_PCT_PER_SEC * fightSec;
-    return MELEE_BURN_PCT_PER_SEC * fightSec;
+    return SpellManaRate(bot) * fightSec;  // [lead264] the spell data's rate, not a role's measured median
 }
 
 // [b33_cos] Rest lines of a timed run (CoSHelpers::IsGuardianTimerRunning): before a real boss the healer tops up to
@@ -337,18 +332,6 @@ namespace
     std::mutex manaRateLock;
     std::unordered_map<uint64, float> measuredManaRate;  // [lead51] % of max mana per second of fight
 
-    float RoleManaRate(Player* bot)
-    {
-        if (PlayerbotAI::IsHeal(bot))
-            return HEALER_BURN_PCT_PER_SEC;
-        if (PlayerbotAI::IsCaster(bot))
-            return CASTER_BURN_PCT_PER_SEC;
-        if (bot->getClass() == CLASS_HUNTER)
-            return HUNTER_BURN_PCT_PER_SEC;
-        if (PlayerbotAI::IsTank(bot))
-            return TANK_BURN_PCT_PER_SEC;
-        return MELEE_BURN_PCT_PER_SEC;
-    }
 }
 
 void NoteManaRate(ObjectGuid member, float pctPerSec)
@@ -502,6 +485,9 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
             if (hps > game.hps)
             {
                 game.hps = hps;
+                game.manaPctPerSec = facts.maxMana > 0.0f && cost > 0
+                                         ? 100.0f * float(cost) * float(IN_MILLISECONDS) / everyMs / facts.maxMana
+                                         : 0.0f;
                 game.gapSec = std::max(gapMs, 1.0f) / float(IN_MILLISECONDS);
                 game.spell = info->SpellName[0] ? info->SpellName[0] : "?";
             }
@@ -534,6 +520,139 @@ float HealerPctPerTankHealth(Player* healer)
     if (facts.healPerMana <= 0.0f || facts.maxMana <= 0.0f)
         return 0.0f;
     return 100.0f * float(tank->GetMaxHealth()) / (facts.healPerMana * facts.maxMana);
+}
+
+float SpellManaRate(Player* bot)
+{
+    float const maxMana = float(bot->GetMaxPower(POWER_MANA));
+    if (maxMana <= 0.0f)
+        return 0.0f;
+    if (PlayerbotAI::IsHeal(bot))
+        return HealerThroughput(bot, bot).manaPctPerSec;
+
+    // the spell scan is cached per bot while its spells and spell power stay the same (a lookup, no clock)
+    struct Cached
+    {
+        size_t spells = 0;
+        int32 power = -1;
+        uint32 mana = 0;
+        float rate = 0.0f;
+    };
+    thread_local std::unordered_map<uint64, Cached> cache;
+    Cached& cached = cache[bot->GetGUID().GetRawValue()];
+    int32 const power = bot->SpellBaseDamageBonusDone(SPELL_SCHOOL_MASK_ALL);
+    if (cached.spells == bot->GetSpellMap().size() && cached.power == power &&
+        cached.mana == bot->GetMaxPower(POWER_MANA))
+        return cached.rate;
+
+    float const weapon = (bot->GetFloatValue(UNIT_FIELD_MINDAMAGE) + bot->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
+    float bestDps = 0.0f;
+    float rate = 0.0f;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->IsPassive() || info->IsPositive() || info->PowerType != POWER_MANA)
+            continue;
+        int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
+        if (cost <= 0)
+            continue;
+
+        float damage = 0.0f;
+        float durationMs = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            int32 const base = std::max(effect.CalcValue(bot), 0);
+            switch (effect.Effect)
+            {
+                case SPELL_EFFECT_SCHOOL_DAMAGE:
+                    damage += float(base);
+                    break;
+                case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                    damage += weapon * float(base) / 100.0f;
+                    break;
+                case SPELL_EFFECT_WEAPON_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                    damage += weapon + float(base);
+                    break;
+                case SPELL_EFFECT_APPLY_AURA:
+                case SPELL_EFFECT_PERSISTENT_AREA_AURA:
+                    if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
+                    {
+                        durationMs = float(std::max(info->GetMaxDuration(), 0));
+                        damage += float(base) * durationMs / float(effect.Amplitude);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        if (damage <= 0.0f)
+            continue;
+
+        float const castMs =
+            info->IsChanneled() ? float(std::max(info->GetDuration(), 0)) : float(info->CalcCastTime(bot));
+        float const everyMs = std::max({castMs, float(info->StartRecoveryTime), float(info->RecoveryTime),
+                                        float(info->CategoryRecoveryTime), durationMs, 1.0f});
+        float const dps = damage / everyMs;
+        if (dps > bestDps)
+        {
+            bestDps = dps;
+            rate = 100.0f * float(cost) * float(IN_MILLISECONDS) / everyMs / maxMana;
+        }
+    }
+    cached = {bot->GetSpellMap().size(), power, bot->GetMaxPower(POWER_MANA), rate};
+    return rate;
+}
+
+namespace
+{
+struct FightLengths
+{
+    uint32 instanceId = 0;
+    float sec = 0.0f;
+    float mobs = 0.0f;
+};
+std::unordered_map<uint64, FightLengths> fightLengths;  // [lead264] by group, under manaRateLock
+}  // namespace
+
+void NoteFightLength(Player* tank, uint32 mobs, float sec)
+{
+    Group* group = tank ? tank->GetGroup() : nullptr;
+    if (!group || !mobs || sec <= 0.0f)
+        return;
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    FightLengths& entry = fightLengths[group->GetGUID().GetRawValue()];
+    if (entry.instanceId != tank->GetInstanceId())
+        entry = FightLengths();  // this dungeon's fights only
+    entry.instanceId = tank->GetInstanceId();
+    entry.sec += sec;
+    entry.mobs += float(mobs);
+}
+
+float FightSecOf(Player* bot, NextFight const& fight)
+{
+    if (fight.fightSec > 0.0f)
+        return fight.fightSec;
+    float const mobs = float(std::max<uint32>(fight.mobs, 1));
+    if (Group* group = bot->GetGroup())
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        if (auto const found = fightLengths.find(group->GetGUID().GetRawValue());
+            found != fightLengths.end() && found->second.instanceId == bot->GetInstanceId() &&
+            found->second.mobs > 0.0f)
+            return found->second.sec / found->second.mobs * mobs;
+    }
+    // the game's: a creature of the bot's level (base health of its expansion's table) per mob over the group's damage
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    float const groupDps = botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
+    CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(bot->GetLevel(), CLASS_WARRIOR);
+    uint8 const expansion = bot->GetLevel() > 70 ? 2 : bot->GetLevel() > 60 ? 1 : 0;
+    if (!stats || groupDps <= 0.0f)
+        return 0.0f;
+    return float(stats->BaseHealth[expansion]) * mobs / groupDps;
 }
 
 namespace
@@ -597,7 +716,7 @@ namespace
 
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss)
 {
-    float rate = RoleManaRate(bot);
+    float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
     char const* source = "measured";
     {
@@ -633,8 +752,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         need = std::max(need, perTankHealth * cost);
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
     // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
-    // those seconds. The flat 20 / 25 % only while no fight is measured
-    float reserve = PlayerbotAI::IsHeal(bot) ? HEALER_PREDICT_RESERVE_PCT : PREDICT_RESERVE_PCT;
+    // those seconds. [lead264] While no fight is measured: the spend of one more mob's fight (FightSecOf one mob)
+    NextFight oneMob;
+    oneMob.mobs = 1;
+    float const oneMobSec = FightSecOf(bot, oneMob);
+    float reserve = rate * oneMobSec;
+    if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
+        reserve += perTankHealth * cost * oneMobSec / fightSec;
     float uncertainSec = -1.0f;
     if (Group* group = bot->GetGroup())
     {
@@ -691,10 +815,10 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float const line = std::clamp(need + reserve - returned, floorPct, 100.0f);
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
-                                   line, rate, measured ? source : "role", fightSec, reserve,
+                                   line, rate, measured ? source : "spell data", fightSec, reserve,
                                    uncertainSec >= 0.0f && measured
                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
-                                       : std::string("flat"),
+                                       : Acore::StringFormat("one more mob, {:.1f} s", oneMobSec),
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
     if (why && perTankHealth > 0.0f)  // [lead258]
         *why += Acore::StringFormat("; heals {:.1f} % per tank health x {:.2f} cost", perTankHealth, cost);
@@ -708,8 +832,7 @@ namespace
 
 float TankManaLine(Player* tank, NextFight const& fight, std::string* why)
 {
-    float const fightSec =
-        fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+    float const fightSec = FightSecOf(tank, fight);  // [lead264]
     std::string terms;
     float line = FightManaLine(tank, fightSec, fight.cost, &terms);
     float tauntPct = 0.0f;
@@ -780,7 +903,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
         // fixed boss top-up, no mini-boss floor, no trash cap
         if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot))
         {
-            fightSec = fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+            fightSec = FightSecOf(bot, fight);  // [lead264]
             std::string terms;
             // [lead74] the tank: its line with the pick-ups (the same as the planner's tank hold)
             line = PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, &terms)
@@ -798,8 +921,11 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
         }
         else if (need >= 0.0f)
         {
-            float const reserve = healer ? HEALER_PREDICT_RESERVE_PCT : PREDICT_RESERVE_PCT;
-            line = std::max(std::min(need + reserve, PREDICT_MAX_LINE_PCT), float(sPlayerbotAIConfig.LowMana));
+            // [lead264] the reserve: one more mob's fight at the bot's rate; no cap over the need (75 % was one)
+            NextFight oneMob;
+            oneMob.mobs = 1;
+            float const reserve = need / std::max(fightSec, 1.0f) * FightSecOf(bot, oneMob);
+            line = std::clamp(need + reserve, float(sPlayerbotAIConfig.LowMana), 100.0f);
             fightNote = Acore::StringFormat("need {:.0f} % for next fight ({} mobs, ~{:.0f} s)", line, fight.mobs,
                                             fightSec);
         }
@@ -891,8 +1017,7 @@ float OwnManaLine(Player* bot, std::string* why)
     if (Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot) && PredictNextFight(bot, fight) &&
         (fight.boss || fight.mobs))
     {
-        float const fightSec =
-            fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
+        float const fightSec = FightSecOf(bot, fight);  // [lead264]
         return PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, why)
                                         : FightManaLine(bot, fightSec, fight.cost, why, fight.boss);
     }

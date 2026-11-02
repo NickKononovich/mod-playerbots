@@ -263,20 +263,14 @@ constexpr float GROUP_RANGE = 50.0f;            // group members this close coun
 // (a priest at 45 % stays up for one small mob, tops up at 65-70 % before a big pack), and before a boss always.
 // Without a prediction (no plan published, no group) the fixed lines hold as before.
 constexpr bool PREDICT_DRINK = true;
-// Mana burn per second of fight, % of max mana, from the [rest] drink / stand-up lines against the [pull check]
-// durations between them (Playerbots-20261024-204140, 5 groups, full -> next drink): Shadow Priest median 1.38
-// (pooled 1.16, N 40), Elemental Shaman 0.98 (0.74, N 39), Holy Paladin 0.55 (0.36, N 17).
-constexpr float CASTER_BURN_PCT_PER_SEC = 1.3f;
-constexpr float HEALER_BURN_PCT_PER_SEC = 0.6f;
+// [lead264] A mana user's spend per second while none is measured is its spell data's (SpellManaRate), not the
+// role medians of 2026-10-24 (caster 1.3, healer 0.6, hunter 1.5, melee 1.5, tank 1.4 %/s).
 // The other mana users (2026-10-24, *.bak_drink2): a hunter sat 18 s "to drink" at 47 % before a one-mob pull (Utgarde
 // Keep heroic). Measured the same way, every kept log of 2026-10-24 scoped per harness run (names are reused across
 // runs), full -> next drink: Marksmanship Hunter median 1.53 %/s (pooled 1.35, N 844), Enhancement Shaman 1.56 (1.20,
 // N 778), Prot Paladin tank 1.39 (1.08, N 983). Retribution Paladin and feral druid have no window in these logs (no
 // drink after a [pull check] from full): they take the melee rate. false restores the fixed lines for these roles.
 constexpr bool PREDICT_DRINK_ALL_ROLES = true;
-constexpr float HUNTER_BURN_PCT_PER_SEC = 1.5f;
-constexpr float MELEE_BURN_PCT_PER_SEC = 1.5f;  // a melee mana user (enhancement shaman, retribution paladin)
-constexpr float TANK_BURN_PCT_PER_SEC = 1.4f;   // a tank on mana (protection paladin)
 // A healer's mana per tank health the pack lands over the fight (the planner's cost): 11.0 % (same windows).
 // [lead258] RestState's own lines read HealerPctPerTankHealth (the healer's spells, its measured healing per mana);
 // this stays for the leader's rest computation in LeaderEvents only.
@@ -292,6 +286,7 @@ struct HealerFacts
     float gapSec = 0.0f;
     float maxMana = 0.0f;
     bool measured = false;  // healPerMana (and hps, if higher) from this dungeon's fights
+    float manaPctPerSec = 0.0f;  // [lead264] the best rate's heal cast on and on: % of max mana per second
     std::string spell;      // the best rate's heal (logged)
 };
 HealerFacts HealerThroughput(Player* healer, Unit* target);
@@ -299,17 +294,24 @@ HealerFacts HealerThroughput(Player* healer, Unit* target);
 void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec);
 // [lead258] a healer's mana (% of its max) per tank health it heals: the group tank's health over its health per mana
 float HealerPctPerTankHealth(Player* healer);
+// [lead264] A member's mana spend from its spell data while nothing is measured (% of max mana per second): the mana
+// per second of its best heal (a healer) or of its best damage spell that costs mana, each cast at the fastest the
+// spell comes again; 0 for a bot whose spells cost no mana.
+float SpellManaRate(Player* bot);
+// [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon
+void NoteFightLength(Player* tank, uint32 mobs, float sec);
+// [lead264] the next fight's length: the plan's estimate, else the group's measured seconds per mob in this dungeon
+// times its mobs, else the game's: a creature of the bot's level (its base health) per mob over the group's
+// estimated damage.
+struct NextFight;
+float FightSecOf(Player* bot, NextFight const& fight);
 // Fight length when the plan gives only its mob count: median [pull check] duration by mobs that came, all kept
-// logs of 2026-10-24 (N 4883): 1 -> 10 s, 2 -> 16, 3 -> 19, 4 -> 22, 5 -> 24, 6 -> 27, 7 -> 30.
+// logs of 2026-10-24 (N 4883): 1 -> 10 s, 2 -> 16, 3 -> 19, 4 -> 22, 5 -> 24, 6 -> 27, 7 -> 30. [lead264] RestState
+// and the planner read FightSecOf (measured, else game data); these stay for LeaderEvents' rest sum only.
 constexpr float FIGHT_BASE_SEC = 6.0f;
 constexpr float FIGHT_SEC_PER_MOB = 4.0f;
-// Left over after the predicted fight: a pull that brings more than planned (a third of the measured windows burnt
-// ~1.8x the median rate) and the healer's spike.
-constexpr float PREDICT_RESERVE_PCT = 20.0f;
-constexpr float HEALER_PREDICT_RESERVE_PCT = 25.0f;
-// [rest_trash_line_75] above this only before a boss (90 before DOWNTIME_AUDIT 2026-10-25: in 68 % of the wave's
-// drinking waits the group's average mana was >= 80 %; a trash pull needs 20-45 % of a caster's mana).
-constexpr float PREDICT_MAX_LINE_PCT = 75.0f;
+// [lead264] Left over after the predicted fight: one more mob's fight at the member's rate (FightManaLine's flat 20 /
+// 25 % and the 75 % trash line cap are gone).
 constexpr float BOSS_TOPUP_PCT = 95.0f;        // before a boss everybody tops up below this
 // [rest_topup_real_boss] STN92_EFFICIENCY 2026-10-25: the 95 % top-up only before a real boss (an encounter of the
 // map's DungeonEncounter.dbc list, NextFight::realBoss), never before a mini-boss / named trash flagged as a dungeon

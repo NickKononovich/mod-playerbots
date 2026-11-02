@@ -7395,6 +7395,9 @@ namespace PullCheck
         NoteMeasuredDps(botAI, bot, record, now);
         NoteMeasuredTaken(botAI, bot, record, now);
         NoteMeasuredHealing(bot, record, now);
+        if (record.startMs)  // [lead264] the group's measured seconds per mob
+            RestState::NoteFightLength(bot, uint32(record.came.size()),
+                                       float(getMSTimeDiff(record.startMs, now)) / float(IN_MILLISECONDS));
         if (!record.deaths || record.tankLowPct <= 0.0f)  // [lead259] a wipe by others says nothing of the drop
             NoteMeasuredDrop(botAI, bot, record);
         pullChecks.erase(found);
@@ -8505,9 +8508,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             RestState::NextFight next;
             if (!bossPull && !RestState::PredictNextFight(healer, next))
                 next.mobs = std::max<uint32>(1, uint32(_planLookPack.size()));
-            float const nextSec = next.fightSec > 0.0f
-                                      ? next.fightSec
-                                      : RestState::FIGHT_BASE_SEC + RestState::FIGHT_SEC_PER_MOB * float(next.mobs);
+            float const nextSec = RestState::FightSecOf(healer, next);  // [lead264]
             float const line = bossPull
                                    ? RestState::FightManaLine(healer, NextPullSec(healer, target), 0.0f, &terms, true)
                                    : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
