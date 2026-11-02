@@ -2931,7 +2931,8 @@ namespace Leader::Dungeon
             {
                 Leader::MemberEvents held;
                 if (Leader::Events::Get(guid, held) && held.move == Leader::MoveEvent::MoveTo &&
-                    held.moveWhy == "aggro loss: to the tank" &&
+                    (held.moveWhy == "aggro loss: to the tank" ||
+                     held.moveWhy == "aggro loss: into the mob's reach") &&  // [lead430]
                     bot->GetExactDist2d(held.spot.GetPositionX(), held.spot.GetPositionY()) > held.tolerance)
                 {
                     Leader::Events::SetMove(guid, held.move, held.spot, held.tolerance, held.moveWhy);
@@ -2950,6 +2951,38 @@ namespace Leader::Dungeon
             bool const inPickUp = pickUp > 0.0f && bot->GetExactDist(tank) <= pickUp && tank->IsWithinLOSInMap(bot);
             // [lead217] ... nor does a mob that stands off it (a caster at range): the run would only take the member
             // out of its spot; the tank goes to that mob (above)
+            // [lead430] b202 rfc-h 5A 749-837 s: a Voidwalker Minion stood by the tank (0.7 yd) for 90 s on Rtmagaa
+            // / Rtdruaa 13 / 26 yd off; it had no path to them (Creature::CanNotReachTarget), so the core evaded every
+            // hit and taunt on it (IsEvadingAttacks), the tank's Attack failed ("the attack itself failed"), and every
+            // 10 s the core dropped the threat of the one it could not reach for the next (EvadeTimerExpired) - the
+            // healer's heal threat. The victim was in the taunt's reach and the mob stood off it, so nobody ran. A mob
+            // that cannot reach its victim stops evading only once the victim stands in its reach: the victim runs to
+            // the tank when the tank stands in the mob's melee reach, else to the mob
+            Creature* const looseCreature = loose != looseOn.end() ? loose->second->ToCreature() : nullptr;
+            bool const unreachable = looseCreature && looseCreature->CanNotReachTarget() &&
+                                     looseCreature->GetCannotReachTarget() == guid &&
+                                     !looseCreature->IsWithinMeleeRange(bot);
+            if (!moved && unreachable)
+            {
+                Position spot =
+                    looseCreature->IsWithinMeleeRange(tank) ? tank->GetPosition() : looseCreature->GetPosition();
+                Leader::MemberEvents runEvents;
+                bool const running = Leader::Events::Get(guid, runEvents) &&
+                                     runEvents.move == Leader::MoveEvent::MoveTo &&
+                                     runEvents.moveWhy == "aggro loss: into the mob's reach" &&
+                                     runEvents.spot.GetExactDist(spot) <= 1.5f;
+                if (running)
+                    spot = runEvents.spot;
+                lead.runHold.insert(guid);
+                if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: into the mob's reach") &&
+                    !running)
+                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                             JsonObject().Str("why", "aggro loss: into the mob's reach")
+                                 .Str("mob", loose->second->GetName()).Real("gap", bot->GetExactDist(loose->second)));
+                if (bot == healer)
+                    healerAt = spot;
+                moved = true;
+            }
             if (!moved && loose != looseOn.end() && !inPickUp && !LooseStandsOff(loose->second, bot))
             {
                 float const dx = bot->GetPositionX() - tank->GetPositionX();
