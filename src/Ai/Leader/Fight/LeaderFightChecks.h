@@ -221,6 +221,21 @@ namespace Leader::Fight
 
     // a combat spot still fits: in its window from the target (melee: behind it), safe, in heal reach; `sight`:
     // also the line of sight to the target (ranged / healer)
+    // [lead455] coordinator 2026-11-02 (Q4): combat_spot_none names why each candidate failed. While one lives on
+    // the thread, the spot searches (LeaderCombatSpot, LeaderNearestCombatSpot, the tank-trail fallback) count every
+    // rejected candidate by its search and reason; Summary() lists them ("ring: off the target's floor x16; ...")
+    struct SpotRejects
+    {
+        SpotRejects();
+        ~SpotRejects();
+        SpotRejects(SpotRejects const&) = delete;
+        SpotRejects& operator=(SpotRejects const&) = delete;
+        std::string Summary() const;
+        std::map<std::string, uint32> counts;
+        SpotRejects* previous = nullptr;
+    };
+    void NoteSpotReject(char const* search, std::string const& why);
+
     bool LeaderCombatSpotValid(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot, bool melee,
                                std::vector<HazardZone> const& zones,
                                std::function<bool(Position const&)> const& keeps, bool sight);

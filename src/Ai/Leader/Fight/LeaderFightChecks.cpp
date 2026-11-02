@@ -551,36 +551,72 @@ namespace Leader::Fight
 
     // a combat spot still fits: in its window from the target (melee: behind it), safe, in heal reach; `sight`:
     // also the line of sight to the target (ranged / healer)
+    namespace
+    {
+        thread_local SpotRejects* g_spotRejects = nullptr;
+
+        // [lead455] LeaderCombatSpotValid's checks, "" when the spot fits, else the first that fails
+        std::string CombatSpotValidWhy(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot, bool melee,
+                                       std::vector<HazardZone> const& zones,
+                                       std::function<bool(Position const&)> const& keeps, bool sight)
+        {
+            float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
+            if (melee)
+            {
+                float const reach = target->GetCombatReach() + bot->GetCombatReach() + 1.0f;
+                if (gap > reach)
+                    return "out of melee reach";
+                if (target->HasInArc(float(M_PI), &spot))
+                    return "in front of the target";
+            }
+            else if (PlayerbotAI::IsHeal(bot))
+            {
+                if (gap < LEADER_HEALER_YD - 6.0f || gap > LEADER_HEALER_YD + 10.0f)
+                    return "out of the healer's band";
+            }
+            else
+            {
+                // [lead127] the member's own reach (LeaderShootReach), not a fixed band: within it, and not nearer
+                // than half of it (out of the target's melee and cleaves)
+                float const reach = LeaderShootReach(bot);
+                if (reach <= 0.0f || gap < std::max(reach / 2.0f, LeaderRangedMinGap(bot, target)) || gap > reach)
+                    return "out of its band";
+            }
+            if (!LeaderSpotSafe(bot, botAI, zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()))
+                return "unsafe (hazard / drop-off / cleave)";
+            if (!keeps(spot))
+                return "heal reach";
+            // [lead127] the game's own sight from the spot (b159: the hunter's spot passed a +2 yd eye-to-eye ray, its
+            // shots "no line of sight" all fight)
+            if (sight && !melee && !LeaderSeesFrom(bot, target, spot))
+                return "no line of sight to the target";
+            return std::string();
+        }
+    }
+
+    SpotRejects::SpotRejects() : previous(g_spotRejects) { g_spotRejects = this; }
+
+    SpotRejects::~SpotRejects() { g_spotRejects = previous; }
+
+    std::string SpotRejects::Summary() const
+    {
+        std::string out;
+        for (auto const& [why, count] : counts)
+            out += Acore::StringFormat("{}{} x{}", out.empty() ? "" : "; ", why, count);
+        return out.empty() ? std::string("no candidate searched") : out;
+    }
+
+    void NoteSpotReject(char const* search, std::string const& why)
+    {
+        if (g_spotRejects)
+            ++g_spotRejects->counts[std::string(search) + ": " + why];
+    }
+
     bool LeaderCombatSpotValid(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot, bool melee,
                                std::vector<HazardZone> const& zones,
                                std::function<bool(Position const&)> const& keeps, bool sight)
     {
-        float const gap = target->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
-        if (melee)
-        {
-            float const reach = target->GetCombatReach() + bot->GetCombatReach() + 1.0f;
-            if (gap > reach || target->HasInArc(float(M_PI), &spot))
-                return false;
-        }
-        else if (PlayerbotAI::IsHeal(bot))
-        {
-            if (gap < LEADER_HEALER_YD - 6.0f || gap > LEADER_HEALER_YD + 10.0f)
-                return false;
-        }
-        else
-        {
-            // [lead127] the member's own reach (LeaderShootReach), not a fixed band: within it, and not nearer than
-            // half of it (out of the target's melee and cleaves)
-            float const reach = LeaderShootReach(bot);
-            if (reach <= 0.0f || gap < std::max(reach / 2.0f, LeaderRangedMinGap(bot, target)) || gap > reach)
-                return false;
-        }
-        if (!LeaderSpotSafe(bot, botAI, zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()) ||
-            !keeps(spot))
-            return false;
-        // [lead127] the game's own sight from the spot (b159: the hunter's spot passed a +2 yd eye-to-eye ray, its
-        // shots "no line of sight" all fight)
-        return !sight || melee || LeaderSeesFrom(bot, target, spot);
+        return CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, sight).empty();
     }
 
     // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) / the healer at LEADER_HEALER_YD
@@ -619,18 +655,36 @@ namespace Leader::Fight
                 float y = target->GetPositionY() + std::sin(angle) * ring;
                 float z = target->GetPositionZ();
                 if (!map->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
-                                                          target->GetPositionZ(), x, y, z) ||
-                    std::fabs(z - target->GetPositionZ()) > 4.0f)
+                                                          target->GetPositionZ(), x, y, z))
+                {
+                    NoteSpotReject("ring", "no ground");
                     continue;
+                }
+                if (std::fabs(z - target->GetPositionZ()) > 4.0f)
+                {
+                    NoteSpotReject("ring", "off the target's floor");
+                    continue;
+                }
                 Position const spot(x, y, z);
-                if (!LeaderCombatSpotValid(bot, botAI, target, spot, melee, zones, keeps, true))
+                if (std::string const why = CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, true);
+                    !why.empty())
+                {
+                    NoteSpotReject("ring", why);
                     continue;
+                }
                 // [lead214] a fresh ranged / healer spot is out of every fight mob's melee reach too (lead210), else
                 // it breaks on the next look
                 if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
+                {
+                    NoteSpotReject("ring", "inside a fight mob's melee reach");
                     continue;
-                if (LeaderCandidate(bot, spot, fallback) != 2)
+                }
+                if (int const candidate = LeaderCandidate(bot, spot, fallback); candidate != 2)
+                {
+                    if (!candidate)
+                        NoteSpotReject("ring", "an idle mob's aggro reach");
                     continue;
+                }
                 out = spot;
                 return true;
             }
@@ -1008,14 +1062,29 @@ namespace Leader::Fight
                                                                           from.GetPositionY(), from.GetPositionZ(),
                                                                           x, y, z) ||
                                     std::fabs(z - from.GetPositionZ()) > 4.0f))
+                {
+                    NoteSpotReject("near", "no ground on its floor");
                     continue;
+                }
                 Position const spot(x, y, z);
                 if (!melee && target->GetExactDist2d(x, y) < std::max(8.0f, LeaderRangedMinGap(bot, target)))
+                {
+                    NoteSpotReject("near", "inside its minimum gap to the target");
                     continue;
-                if (!LeaderCombatSpotBreaks(bot, botAI, target, spot, melee, zones, keeps, true, fightMobs).empty())
+                }
+                if (std::string const why =
+                        LeaderCombatSpotBreaks(bot, botAI, target, spot, melee, zones, keeps, true, fightMobs);
+                    !why.empty())
+                {
+                    NoteSpotReject("near", why);
                     continue;
-                if (LeaderCandidate(bot, spot, fallback) != 2)
+                }
+                if (int const candidate = LeaderCandidate(bot, spot, fallback); candidate != 2)
+                {
+                    if (!candidate)
+                        NoteSpotReject("near", "an idle mob's aggro reach");
                     continue;
+                }
                 out = spot;
                 return true;
             }

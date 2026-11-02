@@ -3357,6 +3357,7 @@ namespace Leader::Dungeon
                         // [lead380] for every break, not only the first spot, by the cast facts (standsFit), not by the
                         // band of LeaderCombatSpotValid (b200: 107 healer and 41 caster first spots walked 1-2 yd
                         // from a place that fit)
+                        SpotRejects rejects;  // [lead455] each rejected candidate's reason, for combat_spot_none
                         bool const here = standsFit(true);
                         if (here)
                         {
@@ -3437,22 +3438,30 @@ namespace Leader::Dungeon
                                 {
                                     if (best >= 0.0f || (melee && minGap == rangedMin))
                                         break;
-                                    for (G3D::Vector3 const& point : MovementAction::TankTrailPoints(tank))
+                                    std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(tank);
+                                    if (trail.empty())
+                                        NoteSpotReject("trail", "no trail points");
+                                    for (G3D::Vector3 const& point : trail)
                                     {
                                         Position const at(point.x, point.y, point.z);
                                         float const gap =
                                             target->GetExactDist2d(at.GetPositionX(), at.GetPositionY());
-                                        bool const fits =
+                                        bool const inBand =
                                             melee ? gap <= target->GetCombatReach() + bot->GetCombatReach() + 1.0f &&
                                                         !target->HasInArc(float(M_PI) / 2.0f, &at)
-                                                  : shoot > 0.0f && gap <= shoot && gap >= minGap &&
-                                                        LeaderSeesFrom(bot, target, at);
+                                                  : shoot > 0.0f && gap <= shoot && gap >= minGap;
+                                        bool const fits = inBand && (melee || LeaderSeesFrom(bot, target, at));
+                                        if (!fits)  // [lead455]
+                                            NoteSpotReject("trail", !inBand ? "out of its band" : "no line of sight");
                                         float const walk = bot->GetExactDist(at);
                                         // [lead155] never a point a hazard covers (b174 669.5 s: "a hazard covers
                                         // it" went straight to the fallback)
                                         if (fits && !LeaderSpotSafe(bot, botAI, zones, at.GetPositionX(),
                                                                     at.GetPositionY(), at.GetPositionZ()))
+                                        {
+                                            NoteSpotReject("trail", "unsafe (hazard / drop-off / cleave)");
                                             continue;
+                                        }
                                         if (fits && (best < 0.0f || walk < best))
                                         {
                                             best = walk;
@@ -3473,7 +3482,8 @@ namespace Leader::Dungeon
                                         Decisions().Write(run, "leader", "combat_spot_none", guid, bot->GetName(),
                                                           false,
                                                           JsonObject().Str("member", bot->GetName())
-                                                              .Str("why", breaks).Str("target", target->GetName()));
+                                                              .Str("why", breaks).Str("target", target->GetName())
+                                                              .Str("rejects", rejects.Summary()));
                                 }
                                 else
                                 {
