@@ -1813,6 +1813,10 @@ namespace Leader::Dungeon
         {
             for (char const* burn : Leader::BURN_COOLDOWNS)
             {
+                // [lead273] wowsims casts Army of the Dead only before a boss pull (Blood, Frost) or on the boss
+                // under the Gargoyle (Unholy): never a trash burn, it is kept for the boss prepull (Leader::Prepull)
+                if (std::string(burn) == "army of the dead")
+                    continue;
                 uint32 const spell = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
                 SpellInfo const* info = spell && who->HasSpell(spell) && !who->HasSpellCooldown(spell)
                                             ? sSpellMgr->GetSpellInfo(spell)
