@@ -768,6 +768,10 @@ namespace Leader::Dungeon
         for (Player* bot : seats)
             Leader::Events::BeginTick(bot->GetGUID());
         Leader::Events::BeginTick(tank->GetGUID());
+        // [lead320] the fact the commands are judged in (the move phase; set again once this tick's is known)
+        for (Player* bot : seats)
+            Leader::Events::SetFact(bot->GetGUID(), lead.movePhase);
+        Leader::Events::SetFact(tank->GetGUID(), lead.movePhase);
         struct TickEnd
         {
             std::vector<Player*> const& seats;
@@ -1796,6 +1800,20 @@ namespace Leader::Dungeon
                             JsonObject().Str("member", member->GetName()).Num("count", dupes));
                     total += dupes;
                 }
+            // [lead320] leader_contradiction: a rule that would reverse a command within one fact (should be 0)
+            for (Player* member : commanded)
+                for (Leader::Contradiction contradiction;
+                     Leader::Events::TakeContradiction(member->GetGUID(), contradiction);)
+                    Decisions().Write(run, "leader", "leader_contradiction", member->GetGUID(), member->GetName(), true,
+                                      JsonObject()
+                                          .Str("member", member->GetName())
+                                          .Str("domain", contradiction.domain)
+                                          .Str("was", contradiction.was)
+                                          .Str("current", contradiction.current)
+                                          .Str("again", contradiction.again)
+                                          .Num("fact", contradiction.fact)
+                                          .Bool("refused", contradiction.refused)
+                                          .Num("count", contradiction.count));
         }
         // [lead76] the fight moves away from a pack it cannot take (the leader's fight spot): one tank MoveTo
         if (!fighting)
@@ -2202,6 +2220,9 @@ namespace Leader::Dungeon
             {
                 lead.movePhaseKey = key;
                 ++lead.movePhase;
+                for (Player* bot : seats)
+                    Leader::Events::SetFact(bot->GetGUID(), lead.movePhase);
+                Leader::Events::SetFact(tank->GetGUID(), lead.movePhase);
             }
         }
 
@@ -3828,7 +3849,8 @@ namespace Leader::Dungeon
                 if (!caster || !spell || told.count(caster->GetGUID()))
                     return false;
                 told.insert(caster->GetGUID());
-                if (Leader::Events::SetExternal(caster->GetGUID(), spell, on ? on->GetGUID() : ObjectGuid::Empty))
+                if (Leader::Events::SetExternal(caster->GetGUID(), spell, on ? on->GetGUID() : ObjectGuid::Empty,
+                                                Leader::EXTERNAL_PRECEDENCE_FIGHT_SAVE))  // [lead320]
                     logEvent(caster, "External", JsonObject().Num("spell", spell)
                                                      .Str("on", on ? on->GetName() : "group").Str("why", why));
                 return true;

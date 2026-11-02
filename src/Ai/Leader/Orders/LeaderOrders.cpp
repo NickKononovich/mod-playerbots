@@ -19,8 +19,10 @@
 #include "Unit.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -465,6 +467,38 @@ namespace Leader
     {
         namespace
         {
+            // [lead320] a member's command domains (one arbiter each)
+            enum Domain : uint8
+            {
+                DOMAIN_MOVE,
+                DOMAIN_ATTACK,
+                DOMAIN_INTENSITY,
+                DOMAIN_READY,
+                DOMAIN_EXTERNAL,
+                DOMAIN_CC,
+                DOMAIN_INTERRUPT,
+                DOMAIN_FLEE_STOP,
+                DOMAIN_THREAT,
+                DOMAIN_DONT_ATTACK,
+                DOMAIN_HEAL_TARGET,
+                DOMAIN_LOOT,
+                DOMAIN_PRE_SAVE,
+                DOMAIN_COUNT
+            };
+            // [lead320] one domain's commands as the arbiter sees them (an empty key: no command)
+            struct Track
+            {
+                std::string current;
+                std::string currentRule;
+                uint32 currentFact = 0;
+                std::string previous;  // the command before the current one
+                uint32 previousFact = 0;
+                uint32 assertGen = 0;  // the tick a rule last asserted the current command
+                std::string start;     // the command at this tick's start (the incumbent) and its rule
+                std::string startRule;
+                uint32 startAssertGen = 0;  // the tick the incumbent's rule last asserted
+            };
+
             struct Slot
             {
                 MemberEvents events;
@@ -483,10 +517,95 @@ namespace Leader
                 uint32 dupesBlocked = 0;
                 uint32 holdPhase = 0;  // [lead74] the move phase the current move was issued in
                 uint32 gen = 1;  // [lead27] the leader's tick generation: a field asserted in it is current
+                // [lead320] the arbiter's view per domain, and the fact the commands are judged in
+                std::array<Track, DOMAIN_COUNT> tracks;
+                uint32 fact = 0;
+                int32 externalPrecedence = 0;
+                std::map<std::string, uint32> contradictionCounts;
+                std::deque<Contradiction> contradictions;
             };
             std::mutex eventLock;
             std::unordered_map<ObjectGuid, Slot> eventSlots;
             constexpr size_t MAX_ACKS = 32;
+
+            // [lead320] the domains of a member's commands
+            char const* DomainName(Domain domain)
+            {
+                static constexpr char const* names[DOMAIN_COUNT] = {
+                    "move",     "attack", "intensity",  "ready",      "external", "cc",     "interrupt",
+                    "fleeStop", "threat", "dontAttack", "healTarget", "loot",     "preSave"};
+                return names[domain];
+            }
+
+            // [lead320] the rule of a move: its purpose's text before the first ':' (a rule's own fallbacks, "X:
+            // stays (...)", are the same rule)
+            std::string MoveRule(std::string const& why) { return why.substr(0, why.find(':')); }
+
+            void NoteContradiction(Slot& slot, Domain domain, std::string const& was, std::string const& current,
+                                   std::string const& again, bool refused)
+            {
+                uint32& count =
+                    slot.contradictionCounts[std::string(DomainName(domain)) + "|" + was + "|" + current + "|" + again];
+                ++count;
+                // logged at the first one and at every power of ten
+                uint32 power = 1;
+                while (power < count && power <= std::numeric_limits<uint32>::max() / 10)
+                    power *= 10;
+                if (power != count || slot.contradictions.size() >= MAX_ACKS)
+                    return;
+                slot.contradictions.push_back(
+                    Contradiction{DomainName(domain), was, current, again, slot.fact, refused, count});
+            }
+
+            // [lead320] the arbiter of one domain. `key` the command (the same key: the same command asserted
+            // again), `rule` the rule that asserts it, `precedence` / `currentPrecedence` the rules' ranks, `clear` a
+            // rule ending its own command. False: refused, the current command stays
+            bool Arbitrate(Slot& slot, Domain domain, std::string const& key, std::string const& rule,
+                           int32 precedence, int32 currentPrecedence, bool clear)
+            {
+                Track& t = slot.tracks[domain];
+                if (rule == t.startRule)
+                    t.startAssertGen = slot.gen;  // the incumbent's rule asserts this tick
+                if (key == t.current)
+                {
+                    t.assertGen = slot.gen;
+                    return true;
+                }
+                // between equal ranks the incumbent holds while its own rule asserts it this tick
+                if (!clear && !t.current.empty() && t.current == t.start && t.startAssertGen == slot.gen &&
+                    rule != t.startRule && precedence <= currentPrecedence)
+                {
+                    NoteContradiction(slot, domain, t.startRule, t.current, key, true);
+                    return false;
+                }
+                // a reversal within one fact: the command before the current again while the current still stands
+                // (a higher current that ended gives way to the lower one again: no contradiction)
+                if (currentPrecedence <= precedence)
+                {
+                    if (!t.previous.empty() && key == t.previous && t.previousFact == slot.fact &&
+                        t.currentFact == slot.fact && t.assertGen + 1 >= slot.gen)
+                        NoteContradiction(slot, domain, t.previous, t.current, key, false);
+                    else if (!t.current.empty() && t.assertGen == slot.gen && rule != t.currentRule)
+                        NoteContradiction(slot, domain, t.currentRule, t.current, key, false);  // two rules, one tick
+                }
+                t.previous = t.current;
+                t.previousFact = t.currentFact;
+                t.current = key;
+                t.currentRule = rule;
+                t.currentFact = slot.fact;
+                t.assertGen = slot.gen;
+                return true;
+            }
+
+            // [lead320] the leader no longer asserts the command (EndTick): it ends, no rule decided it
+            void Dropped(Slot& slot, Domain domain)
+            {
+                Track& t = slot.tracks[domain];
+                t.current.clear();
+                t.currentRule.clear();
+            }
+
+            std::string GuidKey(ObjectGuid guid) { return guid.IsEmpty() ? std::string() : guid.ToString(); }
 
         }
 
@@ -546,24 +665,39 @@ namespace Leader
             // one cannot overwrite it in the same tick (b109: "aggro loss: to the tank" then "combat spot" at 32.6 s)
             // [lead69] ... nor one it asserted last tick (b114: heal reach <-> combat spot flipped every tick, 204
             // commands in one second - the lower rule came first in the next tick)
-            if (e.move != MoveEvent::None && e.moveMs + 1 >= slot.gen &&
-                MovePrecedence(e.moveWhy) > MovePrecedence(why))
+            int32 const precedence = MovePrecedence(why);
+            int32 const currentPrecedence = e.move != MoveEvent::None ? MovePrecedence(e.moveWhy) : -1;
+            if (e.move != MoveEvent::None && e.moveMs + 1 >= slot.gen && currentPrecedence > precedence)
+            {
+                // [lead320] a reversal the precedence refuses is a contradiction too
+                Track const& t = slot.tracks[DOMAIN_MOVE];
+                if (why == t.previous && t.previousFact == slot.fact && t.currentFact == slot.fact)
+                    NoteContradiction(slot, DOMAIN_MOVE, t.previous, t.current, why, true);
                 return false;
+            }
             // [lead55] user: «пожалей мой CPU» - b100: Rtdruaa 5 073 commands (813 in one second). The same command
             // is no new command: a move changes only when its point leaves the current one's arrival tolerance
             // (the walk's own, at least the old 1 yd) or its purpose changes; an unchanged one keeps its point
             float const keep = std::max(std::max(e.tolerance, tolerance), 1.0f);
             bool const changed = e.move != move || e.moveWhy != why || e.spot.GetExactDist(spot) > keep;
-            e.move = move;
             // [lead69] the arbiter emits no command identical to the one before the current within the next tick
             // (member, purpose, point within tolerance): command_dupe_blocked - should be 0
-            if (changed && why == slot.prevMoveWhy && slot.prevMoveSpot.GetExactDist(spot) <= keep &&
+            // [lead320] ... except the tick's incumbent asserted again after an equal rule replaced it this tick
+            Track const& moveTrack = slot.tracks[DOMAIN_MOVE];
+            bool const incumbentBack = !moveTrack.start.empty() && moveTrack.current != moveTrack.start &&
+                                       MoveRule(why) == moveTrack.startRule;
+            if (changed && !incumbentBack && why == slot.prevMoveWhy && slot.prevMoveSpot.GetExactDist(spot) <= keep &&
                 slot.moveSetGen + 1 >= slot.gen)
             {
                 ++slot.dupesBlocked;
                 e.moveMs = slot.gen;
                 return false;
             }
+            // [lead320] the domain's arbiter (equal ranks: the incumbent holds while its rule asserts it)
+            if (!Arbitrate(slot, DOMAIN_MOVE, move == MoveEvent::None ? std::string() : why, MoveRule(why),
+                           precedence, currentPrecedence, move == MoveEvent::None))
+                return false;
+            e.move = move;
             if (changed)
             {
                 slot.prevMoveWhy = e.moveWhy;
@@ -584,6 +718,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = GuidKey(target);
+            if (!Arbitrate(slot, DOMAIN_HEAL_TARGET, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.healTarget != target;
             e.healTarget = target;
             e.healTargetMs = slot.gen;
@@ -598,6 +735,10 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key =
+                attack == AttackEvent::None ? std::string() : std::to_string(uint32(attack)) + ":" + GuidKey(target);
+            if (!Arbitrate(slot, DOMAIN_ATTACK, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.attack != attack || e.target != target;
             e.attack = attack;
             e.target = target;
@@ -613,6 +754,15 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string key;
+            if (intensity != Intensity::Normal)
+            {
+                key = std::to_string(uint32(intensity));
+                for (std::string const& allowed : burnAllowed)
+                    key += ":" + allowed;
+            }
+            if (!Arbitrate(slot, DOMAIN_INTENSITY, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.intensity != intensity || e.burnAllowed != burnAllowed;
             e.intensity = intensity;
             e.burnAllowed = burnAllowed;
@@ -643,6 +793,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = GuidKey(mob);
+            if (!Arbitrate(slot, DOMAIN_CC, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.cc != mob;
             e.cc = mob;
             e.ccMs = slot.gen;
@@ -656,6 +809,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = GuidKey(caster);
+            if (!Arbitrate(slot, DOMAIN_INTERRUPT, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.interrupt != caster;
             e.interrupt = caster;
             e.interruptMs = slot.gen;
@@ -669,6 +825,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = GuidKey(mob);
+            if (!Arbitrate(slot, DOMAIN_FLEE_STOP, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.fleeStop != mob;
             e.fleeStop = mob;
             e.fleeStopMs = slot.gen;
@@ -682,6 +841,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = target.IsEmpty() ? std::string() : std::to_string(spell) + ":" + GuidKey(target);
+            if (!Arbitrate(slot, DOMAIN_THREAT, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.threatSpell != spell || e.threatTarget != target;
             e.threatSpell = spell;
             e.threatTarget = target;
@@ -696,6 +858,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = untilMs ? why : std::string();  // the foreseen hit, not its time
+            if (!Arbitrate(slot, DOMAIN_PRE_SAVE, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.preSaveUntilMs != untilMs;
             e.preSaveUntilMs = untilMs;
             e.preSaveWhy = why;
@@ -710,6 +875,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = loot ? "loot" : "";
+            if (!Arbitrate(slot, DOMAIN_LOOT, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.loot != loot;
             e.loot = loot;
             e.lootMs = slot.gen;
@@ -723,6 +891,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = GuidKey(mob);
+            if (!Arbitrate(slot, DOMAIN_DONT_ATTACK, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.dontAttack != mob;
             e.dontAttack = mob;
             e.dontAttackMs = slot.gen;
@@ -731,11 +902,19 @@ namespace Leader
             return changed;
         }
 
-        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target)
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            // [lead320] a lower order never replaces a fight save asserted this tick or the last
+            if (spell && e.externalSpell && e.externalMs + 1 >= slot.gen && slot.externalPrecedence > precedence)
+                return false;
+            std::string const key = spell ? std::to_string(spell) + ":" + GuidKey(target) : std::string();
+            if (!Arbitrate(slot, DOMAIN_EXTERNAL, key, key, precedence, e.externalSpell ? slot.externalPrecedence : -1,
+                           key.empty()))
+                return false;
+            slot.externalPrecedence = spell ? precedence : 0;
             bool const changed =
                 e.externalSpell != spell || e.externalTarget != target;
             e.externalSpell = spell;
@@ -751,6 +930,9 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            std::string const key = ready == ReadyEvent::None ? std::string() : std::to_string(uint32(ready));
+            if (!Arbitrate(slot, DOMAIN_READY, key, key, 0, 0, key.empty()))
+                return false;
             bool const changed = e.ready != ready;
             e.ready = ready;
             e.readyMs = slot.gen;
@@ -796,7 +978,7 @@ namespace Leader
         {
             // hazard / puddle > aggro-loss run > heal reach / sight > combat spot > the pull's spot > walk-along
             auto const starts = [&why](char const* prefix) { return why.rfind(prefix, 0) == 0; };
-            if (starts("hazard"))
+            if (starts("hazard") || starts("out of a cleave cone"))  // [lead320] the cleave exit is a dodge too
                 return 5;
             if (starts("aggro loss"))
                 return 4;
@@ -813,7 +995,31 @@ namespace Leader
         void BeginTick(ObjectGuid member)
         {
             std::lock_guard<std::mutex> lock(eventLock);
-            ++eventSlots[member].gen;
+            Slot& slot = eventSlots[member];
+            ++slot.gen;
+            for (Track& t : slot.tracks)  // [lead320] this tick's incumbents
+            {
+                t.start = t.current;
+                t.startRule = t.currentRule;
+                t.startAssertGen = 0;
+            }
+        }
+
+        void SetFact(ObjectGuid member, uint32 fact)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            eventSlots[member].fact = fact;
+        }
+
+        bool TakeContradiction(ObjectGuid member, Contradiction& out)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || found->second.contradictions.empty())
+                return false;
+            out = std::move(found->second.contradictions.front());
+            found->second.contradictions.pop_front();
+            return true;
         }
 
         void EndTick(ObjectGuid member)
@@ -829,71 +1035,84 @@ namespace Leader
             auto const drop = [&](uint32 stamp) { return stamp != gen; };
             if (e.move != MoveEvent::None && drop(e.moveMs))
             {
+                Dropped(slot, DOMAIN_MOVE);
                 e.move = MoveEvent::None;
                 changed = true;
             }
             if ((e.attack != AttackEvent::None || e.aoe != AoeRule::Unset) && drop(e.attackMs))
             {
+                Dropped(slot, DOMAIN_ATTACK);
                 e.attack = AttackEvent::None;
                 e.aoe = AoeRule::Unset;
                 changed = true;
             }
             if (e.intensity != Intensity::Normal && drop(e.intensityMs))
             {
+                Dropped(slot, DOMAIN_INTENSITY);
                 e.intensity = Intensity::Normal;
                 e.burnAllowed.clear();
                 changed = true;
             }
             if (!e.cc.IsEmpty() && drop(e.ccMs))
             {
+                Dropped(slot, DOMAIN_CC);
                 e.cc.Clear();
                 changed = true;
             }
             if (!e.interrupt.IsEmpty() && drop(e.interruptMs))
             {
+                Dropped(slot, DOMAIN_INTERRUPT);
                 e.interrupt.Clear();
                 changed = true;
             }
             if (!e.fleeStop.IsEmpty() && drop(e.fleeStopMs))
             {
+                Dropped(slot, DOMAIN_FLEE_STOP);
                 e.fleeStop.Clear();
                 changed = true;
             }
             if (!e.threatTarget.IsEmpty() && drop(e.threatMs))
             {
+                Dropped(slot, DOMAIN_THREAT);
                 e.threatSpell = 0;
                 e.threatTarget.Clear();
                 changed = true;
             }
             if (!e.healTarget.IsEmpty() && drop(e.healTargetMs))
             {
+                Dropped(slot, DOMAIN_HEAL_TARGET);
                 e.healTarget.Clear();
                 changed = true;
             }
             if (!e.dontAttack.IsEmpty() && drop(e.dontAttackMs))
             {
+                Dropped(slot, DOMAIN_DONT_ATTACK);
                 e.dontAttack.Clear();
                 changed = true;
             }
             if (e.loot && drop(e.lootMs))
             {
+                Dropped(slot, DOMAIN_LOOT);
                 e.loot = false;
                 changed = true;
             }
             if (e.preSaveUntilMs && drop(e.preSaveMs))
             {
+                Dropped(slot, DOMAIN_PRE_SAVE);
                 e.preSaveUntilMs = 0;
                 e.preSaveWhy.clear();
                 changed = true;
             }
             if (e.externalSpell && drop(e.externalMs))
             {
+                Dropped(slot, DOMAIN_EXTERNAL);
                 e.externalSpell = 0;
                 e.externalTarget.Clear();
                 changed = true;
             }
             if (e.ready != ReadyEvent::None && drop(e.readyMs))
             {
+                Dropped(slot, DOMAIN_READY);
                 e.ready = ReadyEvent::None;
                 changed = true;
             }
@@ -906,6 +1125,15 @@ namespace Leader
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
+            // [lead320] the follow is a move: the same arbiter (another rule's higher live move holds; a rule's own
+            // follow fallback is that rule)
+            int32 const precedence = MovePrecedence(why);
+            int32 const currentPrecedence = e.move != MoveEvent::None ? MovePrecedence(e.moveWhy) : -1;
+            if (e.move != MoveEvent::None && e.moveMs + 1 >= slot.gen && currentPrecedence > precedence &&
+                MoveRule(e.moveWhy) != MoveRule(why))
+                return false;
+            if (!Arbitrate(slot, DOMAIN_MOVE, why, MoveRule(why), precedence, currentPrecedence, false))
+                return false;
             bool const changed = e.move != MoveEvent::Follow || e.followTarget != target || e.followIndex != index;
             e.move = MoveEvent::Follow;
             e.followTarget = target;

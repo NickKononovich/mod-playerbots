@@ -603,6 +603,25 @@ namespace Leader
         std::string why;
         uint32 ms = 0;
     };
+    // [lead320] user: «Лидер не должен себе противоречить». One arbiter per command domain of a member, in the
+    // Events::Set* path (every caller): a lower rule never replaces a higher one's live command (moves:
+    // MovePrecedence; externals: the fight's saves above every other order), and between rules of equal precedence
+    // the incumbent holds while its own rule asserts it again in the same leader tick (the facts that rule reads did
+    // not change); it gives way only when its rule falls silent. A rule that would reverse a command within the same
+    // fact (the move phase: fight state, order, commitment, fight target) is a leader_contradiction line.
+    struct Contradiction
+    {
+        std::string domain;  // "move", "attack", "intensity", "ready", "external", "cc", ...
+        std::string was;     // the command before the current one (or the incumbent of the tick)
+        std::string current;
+        std::string again;  // the command the rule asserts now
+        uint32 fact = 0;
+        bool refused = false;  // the arbiter kept the current command
+        uint32 count = 0;      // occurrences of this pair so far (logged at 1, 10, 100, ...)
+    };
+    // [lead320] SetExternal's precedence: the fight's saves and buffs on a target (TickLeaderEvents 3c) above the
+    // trap weave's, the prepull Army's and the buff pass's orders (0)
+    constexpr int32 EXTERNAL_PRECEDENCE_FIGHT_SAVE = 1;
     struct MemberEvents;
     // [lead81] b124 rfc-h 161.7-167.8 s: Rtshaab's "stays" (StandAt where it stood) never stopped its old walk - the
     // spot moved with it, so it was always "on the spot" - and it walked into the Trogg its walk would wake. An
@@ -614,6 +633,10 @@ namespace Leader
         // Leader side (world thread). Each returns true when the field changed (a new event to log).
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why);
         // [lead64] the position arbiter's precedence of a move by its purpose (hazard 5 ... walk-along 0)
+        // [lead320] the table: 5 "hazard: ...", "out of a cleave cone"; 4 "aggro loss: to the tank"; 3 "heal reach",
+        // "sight ..."; 2 "combat spot ...", "chase: behind the target", "trap weave ..."; 1 "its spot for the pull",
+        // "along with the tank: to range"; 0 every other ("rests", "the group holds", "along with the tank ...", the
+        // pull walk, the tank's route / fight moves). The rule is the purpose's text before its first ':'
         int32 MovePrecedence(std::string const& why);
         // [lead127] the move is no move for the member now (an out-of-fight follow while it holds an Attack)
         bool MoveBarred(ObjectGuid member, std::string const& why);
@@ -626,6 +649,10 @@ namespace Leader
         // starts / ends, a new order or commitment, the fight target changes or dies)
         void HoldMove(ObjectGuid member, Position const& at, uint32 phase);
         void StampPhase(ObjectGuid member, uint32 phase);
+        // [lead320] the fact the member's commands are judged in this tick (the leader's move phase)
+        void SetFact(ObjectGuid member, uint32 fact);
+        // [lead320] the next leader_contradiction to log (false: none)
+        bool TakeContradiction(ObjectGuid member, Contradiction& out);
         // [lead69] the identical commands the arbiter refused since the last call (command_dupe_blocked)
         uint32 TakeDupesBlocked(ObjectGuid member);
         // [lead76] the leader's "top up X": the healer heals `target` now (a readiness gap on health); Empty: none
@@ -637,7 +664,7 @@ namespace Leader
         bool SetCc(ObjectGuid member, ObjectGuid mob);
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster);
         bool SetFleeStop(ObjectGuid member, ObjectGuid mob);  // [lead104]
-        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target);
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence = 0);
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob);
         bool SetLoot(ObjectGuid member, bool loot);
