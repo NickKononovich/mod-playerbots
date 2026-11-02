@@ -348,7 +348,9 @@ void NoteBossManaRate(ObjectGuid member, float pctPerSec);
 void NotePeakManaRate(ObjectGuid member, float pctPerSec);
 // [lead88] the leader notes how far a fight's real length was from its estimate (seconds, either way) for its group;
 // FightManaLine's reserve is the spend over that measured uncertainty (the mean of this run's fights)
-void NoteFightLengthError(ObjectGuid group, float errorSec);
+// [lead362] the estimate and the real length: FightSecOf scales the plan's estimate by the group's real / estimated
+// seconds, and the uncertainty is the error left against that scaled estimate
+void NoteFightLengthError(ObjectGuid group, float estimatedSec, float realSec);
 // [lead74] a tank's mana line for its next fight: FightManaLine for the fight plus the cost of the pick-ups it may need
 // (the fight's mobs beyond the first, each one taunt: the cheapest known taunt's real mana cost); one line for the
 // planner's tank hold and the tank's rest. `why`: the terms

@@ -8,6 +8,7 @@
 #include "AggressiveTargetValue.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -364,16 +365,30 @@ namespace
     {
         float sum = 0.0f;
         uint32 fights = 0;
+        float estimatedSum = 0.0f;  // [lead362] the plan's estimates of these fights
+        float realSum = 0.0f;       // [lead362] their real lengths
     };
     std::unordered_map<uint64, FightLengthError> fightLengthErrors;  // [lead88] by group, under manaRateLock
+
+    // [lead362] the group's real / estimated fight seconds so far (1 before a fight is measured); under manaRateLock
+    float EstimateScale(FightLengthError const& error)
+    {
+        return error.estimatedSum > 0.0f && error.realSum > 0.0f ? error.realSum / error.estimatedSum : 1.0f;
+    }
 }
 
-void NoteFightLengthError(ObjectGuid group, float errorSec)
+// [lead362] b196 rfc-h 5E: the plan's fight estimates ran 1227 s against 879 s real (47 fights; 5A 984 / 761, 5G
+// 702 / 647): "pull together: 7 mobs ... 65 s" fought 1 mob in 8 s. The mana lines took the raw estimate ("x 53 s",
+// "x 48 s") and its whole bias again as the reserve ("x 15.1 s uncertainty"), and the group drank for fights that
+// never came. The estimate is scaled by what this group's fights measured; the uncertainty is what is left
+void NoteFightLengthError(ObjectGuid group, float estimatedSec, float realSec)
 {
     std::lock_guard<std::mutex> lock(manaRateLock);
     FightLengthError& error = fightLengthErrors[group.GetRawValue()];
-    error.sum += errorSec;
+    error.sum += std::fabs(realSec - estimatedSec * EstimateScale(error));
     ++error.fights;
+    error.estimatedSum += estimatedSec;
+    error.realSum += realSec;
 }
 
 namespace
@@ -635,7 +650,17 @@ void NoteFightLength(Player* tank, uint32 mobs, float sec)
 float FightSecOf(Player* bot, NextFight const& fight)
 {
     if (fight.fightSec > 0.0f)
-        return fight.fightSec;
+    {
+        float scale = 1.0f;  // [lead362] the plan's estimate as this group's fights measured it
+        if (Group* group = bot->GetGroup())
+        {
+            std::lock_guard<std::mutex> lock(manaRateLock);
+            if (auto const found = fightLengthErrors.find(group->GetGUID().GetRawValue());
+                found != fightLengthErrors.end())
+                scale = EstimateScale(found->second);
+        }
+        return fight.fightSec * scale;
+    }
     float const mobs = float(std::max<uint32>(fight.mobs, 1));
     if (Group* group = bot->GetGroup())
     {

@@ -1446,7 +1446,7 @@ namespace Leader::Dungeon
             float const realSec = getMSTimeDiff(lead.fightLenStartMs, now) / 1000.0f;
             if (Group* group = tank->GetGroup())
             {
-                RestState::NoteFightLengthError(group->GetGUID(), std::fabs(realSec - lead.fightLenEstSec));
+                RestState::NoteFightLengthError(group->GetGUID(), lead.fightLenEstSec, realSec);  // [lead362]
                 // [lead234] a boss kill: the group's damage on the boss over the fight's seconds
                 float health = 0.0f;
                 bool killed = !lead.fightBosses.empty();
