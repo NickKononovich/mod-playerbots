@@ -11,6 +11,7 @@
 #include "DungeonHazard.h"
 #include "DungeonTactics.h"
 #include "DynamicObject.h"
+#include "EstimatedLifetimeValue.h"  // [lead454] ExpectedLifetime
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"
@@ -953,6 +954,37 @@ namespace Leader::Fight
         if (sight && !melee && !PlayerbotAI::IsHeal(bot) && !LeaderSeesFrom(bot, target, spot))
             return "no line of sight to the target";
         return std::string();
+    }
+
+    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why)
+    {
+        Creature* mob = target ? target->ToCreature() : nullptr;
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!mob || !botAI || mob->IsDungeonBoss() || mob->isWorldBoss() || !bot->IsWithinMeleeRange(mob) ||
+            !mob->HasInArc(float(M_PI), bot))
+            return false;
+        // the rotations that need the back: Shred (cat form), Backstab as the Subtlety builder (Hemorrhage talent)
+        if ((bot->getClass() == CLASS_DRUID && botAI->HasSpell("shred")) ||
+            (bot->getClass() == CLASS_ROGUE && botAI->HasSpell("hemorrhage")))
+            return false;
+        float const avgHit =
+            (bot->GetFloatValue(UNIT_FIELD_MINDAMAGE) + bot->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
+        float const blockShare = avgHit > 0.0f ? std::min(1.0f, float(mob->GetShieldBlockValue()) / avgHit) : 0.0f;
+        float const lossShare = (mob->GetUnitParryChance() + mob->GetUnitBlockChance() * blockShare) / 100.0f;
+        float const lifetime = ExpectedLifetime(botAI, mob);
+        float const lossSec = lifetime * lossShare;
+        // the arc into its back half: from the member's angle off the mob's facing to a right angle
+        float const off = std::fabs(Position::NormalizeOrientation(mob->GetRelativeAngle(bot) + float(M_PI)) -
+                                    float(M_PI));
+        float const arc = mob->GetExactDist2d(bot) * std::max(0.0f, float(M_PI) / 2.0f - off);
+        float const speed = bot->GetSpeed(MOVE_RUN);
+        float const walkSec = speed > 0.0f ? arc / speed : 0.0f;
+        if (why)
+            *why = Acore::StringFormat("front loss {:.2f} s ({:.1f} % parry + {:.1f} % block x {:.2f} over {:.1f} s) "
+                                       "vs the walk {:.2f} s ({:.1f} yd)",
+                                       lossSec, mob->GetUnitParryChance(), mob->GetUnitBlockChance(), blockShare,
+                                       lifetime, walkSec, arc);
+        return lossSec < walkSec;
     }
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)

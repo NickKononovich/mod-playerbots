@@ -3234,7 +3234,22 @@ namespace Leader::Dungeon
                     judgeBlockingPack(bot, woken);
                     return true;
                 };
-                bool const chases = melee && target->GetVictim() == tank &&
+                // [lead454] in reach in front of a trash mob whose remaining life loses less to its parry / block
+                // than the walk round it costs: the member stays where it stands (no chase, its spot is here)
+                std::string frontWhy;
+                bool const frontHere =
+                    melee && target->GetVictim() != bot && LeaderFrontCostsLess(bot, target, &frontWhy);
+                if (frontHere)
+                {
+                    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> frontLogged;
+                    if (frontLogged.size() > 4096)
+                        frontLogged.clear();
+                    if (frontLogged.insert({guid, target->GetGUID()}).second)
+                        Decisions().Write(run, "leader", "melee_front", guid, bot->GetName(), true,
+                                          JsonObject().Str("member", bot->GetName()).Str("target", target->GetName())
+                                              .Str("why", frontWhy));
+                }
+                bool const chases = melee && !frontHere && target->GetVictim() == tank &&
                                     (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused();
                 if (chases)
                 {
@@ -3303,6 +3318,26 @@ namespace Leader::Dungeon
                             found = lead.combatSpots.end();
                             breaks.clear();
                             moved = true;
+                        }
+                    }
+                    // [lead454] in front of the trash mob where the front costs less than the walk: where it stands
+                    // is its spot when the spot's other checks hold there (no walk behind, a spot in front no break)
+                    if (frontHere)
+                    {
+                        std::string const standing =
+                            LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(), true, zones, keeps, true,
+                                                   &killOrder, true);
+                        if (standing.empty() || standing == "in front of the target")
+                        {
+                            if (found == lead.combatSpots.end() || found->second.first != target->GetGUID() ||
+                                bot->GetExactDist2d(found->second.second.GetPositionX(),
+                                                    found->second.second.GetPositionY()) > 1.0f)
+                            {
+                                lead.combatSpots[guid] = {target->GetGUID(), bot->GetPosition()};
+                                lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
+                                found = lead.combatSpots.find(guid);
+                            }
+                            breaks.clear();
                         }
                     }
                     // [lead38] no first spot for a ranged / healer while the target runs in: it stays (and casts)

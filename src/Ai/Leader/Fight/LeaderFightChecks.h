@@ -293,6 +293,14 @@ namespace Leader::Fight
                                        std::vector<ObjectGuid> const* fightMobs = nullptr,
                                        bool whereTheyStand = false);
 
+    // [lead454] coordinator 2026-11-02 (Q2): a melee member in reach in front of a trash mob stays there when the
+    // damage its front loses over the mob's remaining life costs less than the walk round it. The loss: the core's
+    // parry chance (Unit::GetUnitParryChance) plus its block chance times the share of the member's average hit the
+    // mob's block value takes (mobs neither parry nor block from behind) over ExpectedLifetime; the walk: the arc at
+    // its distance into the mob's back half (out of HasInArc(pi)) at its run speed. Bosses keep behind, and so do the
+    // members whose rotation needs the back (a cat's Shred, a Subtlety rogue's Backstab). `why`: the terms
+    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why = nullptr);
+
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
                                  std::vector<HazardZone> const& zones,
