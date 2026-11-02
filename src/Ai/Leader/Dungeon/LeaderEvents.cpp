@@ -3869,6 +3869,12 @@ namespace Leader::Dungeon
                 // where it runs to. 5E 441.1 / 441.7 s, 5A 1213.8 / 1214.1 s: the stop fired twice on one walk - the
                 // hunter ran on 2-2.5 yd past the point it was stopped at, and the second stop put it back near the
                 // spot the first one had left. A walk is stopped once; the stop's point is its spot
+                // [lead505] b210 rfc-h: the command_repeat double decisions (5A 258.6 / 762.8, 5C 777.8, 5H 269.8 /
+                // 666.1 s) were this flip the other way: the stop "it casts from where it walks" read a running mob
+                // where it runs to, the held spot under its feet is judged by the mobs where they stand (onHeld), and
+                // 0.3 s later it broke "inside a fight mob's melee reach" (the Shaman / Trogg passing it on its run to
+                // the tank) - command_repeat "combat spot". The stop holds only where both facts let it cast: the mobs
+                // where they run to and where they stand now
                 auto const stopped = lead.combatSpotStoppedAt.find(guid);
                 bool const stoppedHere = found != lead.combatSpots.end() && stopped != lead.combatSpotStoppedAt.end() &&
                                          stopped->second.GetExactDist(found->second.second) <= 0.1f;
@@ -3876,7 +3882,7 @@ namespace Leader::Dungeon
                     found->second.first == target->GetGUID() &&
                     bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
                         2.0f &&
-                    standsFit(false))
+                    standsFit(false) && standsFit(true))  // [lead505]
                 {
                     Decisions().Write(run, "leader", "combat_spot_here", guid, bot->GetName(), true,
                                       JsonObject().Str("member", bot->GetName())
