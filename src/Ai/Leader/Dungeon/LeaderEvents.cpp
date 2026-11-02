@@ -3663,7 +3663,15 @@ namespace Leader::Dungeon
                             bool placed = false;
                             Position chosen;
                             char const* from = "";
-                            if (melee && bot != tank && tank->IsAlive() && !reaches)
+                            // [lead478] user 2026-11-02: a melee member in reach with no spot behind the target takes
+                            // its own place in front of it - a real melee spot at the target - when it fits there
+                            if (melee && bot != tank && reaches && meleeAtTarget(bot->GetPosition(), "where it stands"))
+                            {
+                                chosen = bot->GetPosition();
+                                from = "where it stands at the target";
+                                placed = true;
+                            }
+                            else if (melee && bot != tank && tank->IsAlive())
                             {
                                 if (meleeAtTarget(tank->GetPosition(), "tank's spot"))
                                 {
