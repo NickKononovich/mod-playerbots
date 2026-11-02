@@ -23,9 +23,10 @@
 #include "SharedDefines.h"
 #include "TargetValue.h"
 
-constexpr uint8 ASPECT_OF_THE_VIPER_MANA_PCT = 10;
-// [b31_deep] wowsims hunter APLs: Viper below 10 % mana, back to Dragonhawk above 30 %
-constexpr uint8 ASPECT_OF_THE_DRAGONHAWK_MANA_PCT = 30;
+// [b31_deep] wowsims hunter APLs: Viper below 10 % mana, back to Dragonhawk above 30 % ([lead440] one pair of lines
+// with the leader's switch, RestState)
+constexpr uint8 ASPECT_OF_THE_VIPER_MANA_PCT = uint8(RestState::VIPER_START_MANA_PCT);
+constexpr uint8 ASPECT_OF_THE_DRAGONHAWK_MANA_PCT = uint8(RestState::VIPER_STOP_MANA_PCT);
 // [b31_deep] Misdirection window: the opening of a pull, or our threat closing on the tank's
 constexpr uint32 MISDIRECTION_PULL_WINDOW_SECONDS = 10;
 constexpr uint8 MISDIRECTION_THREAT_PCT = 70;

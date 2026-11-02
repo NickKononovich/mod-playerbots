@@ -4437,11 +4437,11 @@ namespace Leader::Dungeon
             lead.kickers.clear();
 
         // [lead426] user 2026-11-02 (rest / drink / food and Viper are the leader's, in a fight too): a led hunter's
-        // aspect switch is the leader's External. In a fight: Viper while its need for the fight's seconds left
-        // (FightManaLine without the cooldowns and Viper it would cover) exceeds its mana, its attack aspect
-        // (Dragonhawk, else Hawk) once its mana covers it - the same need test as the mana tools (lead423), in place of
-        // the hunter's own wowsims lines (10 % / 30 %); out of a fight: Viper below its rest line for the next fight
-        // (RestState::OwnManaLine, the walk regenerates), its attack aspect at the line. 0: no switch
+        // aspect switch is the leader's External. In a fight ([lead440]): Viper below wowsims' 10 % line while its
+        // need for the fight's seconds left (FightManaLine without the cooldowns and Viper it would cover) exceeds its
+        // mana, its attack aspect (Dragonhawk, else Hawk) at wowsims' 30 % line; out of a fight: Viper below its rest
+        // line for the next fight (RestState::OwnManaLine, the walk regenerates), its attack aspect at the line. 0: no
+        // switch
         auto const viperSwitch = [&](Player* hunter, bool inFight, std::string& why) -> uint32
         {
             PlayerbotAI* hunterAI = GET_PLAYERBOT_AI(hunter);
@@ -4455,20 +4455,45 @@ namespace Leader::Dungeon
             if (!attack || !hunter->HasSpell(attack))
                 return 0;
             float const pct = hunter->GetPowerPct(POWER_MANA);
-            float line = 0.0f;
+            bool const inViper = hunter->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER);
+            bool wantViper = false;
             if (inFight)
             {
-                if (lead.fightSecLeft <= 0.0f)
-                    return 0;
-                line = RestState::FightManaLine(hunter, lead.fightSecLeft, 0.0f, nullptr, fightBoss != nullptr, false);
+                // [lead440] b203 rfc-h 5H: the need line alone flipped Viper <-> Dragonhawk 288 times (Rthunad "Viper:
+                // mana 50 % < 54 %" / "attack aspect: mana 48 % >= 47 %" a second apart): in Viper the mana rises
+                // and the need for the seconds left falls, so they cross again at once - a GCD and half the damage
+                // each time (MM 47 %, SV 34 % of wowsims). wowsims' lines in a fight (its hunter APL: Viper below
+                // 10 %, the attack aspect again at 30 %) - the leader enters Viper only while the fight's need for
+                // its seconds left also exceeds the mana (a hunter whose mana covers the rest keeps its damage) and
+                // leaves it at the 30 % line alone, so no fact the switch itself changes flips it back
+                if (inViper)
+                {
+                    wantViper = pct < RestState::VIPER_STOP_MANA_PCT;
+                    why = Acore::StringFormat("{}: mana {:.0f} % {} wowsims' line {:.0f} %",
+                                              wantViper ? "Viper" : "its attack aspect", pct, wantViper ? "<" : ">=",
+                                              RestState::VIPER_STOP_MANA_PCT);
+                }
+                else
+                {
+                    if (lead.fightSecLeft <= 0.0f || pct >= RestState::VIPER_START_MANA_PCT)
+                        return 0;
+                    float const need =
+                        RestState::FightManaLine(hunter, lead.fightSecLeft, 0.0f, nullptr, fightBoss != nullptr, false);
+                    wantViper = pct < need;
+                    why = Acore::StringFormat(
+                        "{}: mana {:.0f} % < wowsims' line {:.0f} %, {} its need for the fight's {:.0f} s left "
+                        "{:.0f} %",
+                        wantViper ? "Viper" : "its attack aspect", pct, RestState::VIPER_START_MANA_PCT,
+                        wantViper ? "<" : ">=", lead.fightSecLeft, need);
+                }
             }
             else
-                line = RestState::OwnManaLine(hunter);
-            bool const inViper = hunter->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER);
-            bool const wantViper = pct < line;
-            why = Acore::StringFormat("{}: mana {:.0f} % {} its {} {:.0f} %", wantViper ? "Viper" : "its attack aspect",
-                                      pct, wantViper ? "<" : ">=",
-                                      inFight ? "need for the fight's seconds left" : "rest line", line);
+            {
+                float const line = RestState::OwnManaLine(hunter);
+                wantViper = pct < line;
+                why = Acore::StringFormat("{}: mana {:.0f} % {} its rest line {:.0f} %",
+                                          wantViper ? "Viper" : "its attack aspect", pct, wantViper ? "<" : ">=", line);
+            }
             if (wantViper && !inViper)
                 return RestState::SPELL_ASPECT_OF_THE_VIPER;
             if (!wantViper && inViper)

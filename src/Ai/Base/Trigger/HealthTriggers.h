@@ -352,6 +352,9 @@ constexpr uint32 SPELL_MANA_TIDE_TICK = 39610;    // [lead425] the totem's tick 
 constexpr uint32 SPELL_HYMN_OF_HOPE_TICK = 64904;  // [lead425] Hymn's tick: its aura on the members it reaches
 constexpr uint32 HYMN_OF_HOPE_TARGETS = 3;        // [lead425] spell_pri_hymn_of_hope: the 3 lowest on mana
 constexpr uint32 SPELL_ASPECT_OF_THE_VIPER = 34074;
+// [lead440] wowsims' hunter APL lines in a fight (b31_deep): Viper below 10 % mana, the attack aspect again at 30 %
+constexpr float VIPER_START_MANA_PCT = 10.0f;
+constexpr float VIPER_STOP_MANA_PCT = 30.0f;
 // [lead425] the radius a group mana tool reaches its receivers in around its caster (Mana Tide: its tick's area,
 // spell data); 0: not a group tool
 float ManaToolRadius(Player* caster, uint32 spell);
