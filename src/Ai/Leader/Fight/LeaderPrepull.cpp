@@ -21,6 +21,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "Playerbots.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
