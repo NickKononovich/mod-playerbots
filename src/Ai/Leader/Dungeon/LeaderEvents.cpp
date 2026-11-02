@@ -481,14 +481,15 @@ namespace Leader::Dungeon
         // the members' own idle-path guard - the leader issued Follows it never judged. Every Follow is judged before
         // it goes out by the member's own walk to its place (LeaderMoveOrderAction::DryFollow: the executor's place,
         // its guards run dry); "" - it walks there, else what its walk would meet and the idle mob it would wake
-        auto const followRefusal = [&](Player* bot, Unit* target, uint8 index, ObjectGuid& mob) -> std::string
+        auto const followRefusal = [&](Player* bot, Unit* target, uint8 index, ObjectGuid& mob,
+                                       bool chase = false) -> std::string
         {
             mob.Clear();
             PlayerbotAI* memberAI = bot && target ? GET_PLAYERBOT_AI(bot) : nullptr;
             auto* mover = memberAI ? dynamic_cast<LeaderMoveOrderAction*>(
                                          memberAI->GetAiObjectContext()->GetAction("leader move order"))
                                    : nullptr;
-            return mover ? mover->DryFollow(target, index, mob) : std::string();
+            return mover ? mover->DryFollow(target, index, mob, chase) : std::string();
         };
         // [lead374] the walk along with the tank: a Follow the member's walk takes is issued; one it cannot take
         // safely is not - the member stays and the group holds for it (group_blocked: the tank walks on only where
@@ -3487,7 +3488,8 @@ namespace Leader::Dungeon
                     if (chaseBlocked)
                         return *chaseBlocked;
                     ObjectGuid mob;
-                    std::string const refusal = followRefusal(bot, target, uint8(index % 2), mob);
+                    std::string const refusal =
+                        followRefusal(bot, target, uint8(index % 2), mob, true);  // [lead491] the chase
                     chaseBlocked = !refusal.empty();
                     if (!*chaseBlocked)
                         return false;

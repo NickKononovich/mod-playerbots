@@ -13,6 +13,7 @@
 #include "HealthTriggers.h"
 #include "InterruptValues.h"
 #include "LastMovementValue.h"  // [lead36]
+#include "LeaderFightChecks.h"  // [lead491] the leader's melee idle-reach test
 #include "LeaderValues.h"
 #include "LeaderOrders.h"  // [lead15]
 #include "PathGenerator.h"  // [lead19]
@@ -848,7 +849,7 @@ bool LeaderMoveOrderAction::FollowPlace(Unit* target, uint8 index, float& x, flo
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
 }
 
-std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGuid& mob)
+std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGuid& mob, bool chase)
 {
     mob.Clear();
     _judgedFollow.valid = false;
@@ -863,11 +864,25 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
         return std::string();
     MovementAction::s_dryRun = true;
     _dryFollow = true;
+    _dryChase = chase;
     bool const goes =
         MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
     _dryFollow = false;
+    _dryChase = false;
     MovementAction::s_dryRun = false;
     mob = MovementAction::s_moveMob;
+    // [lead491] b209 rfc-h 5A 97.0 s: "chase_refused ... GuardIdleMobPath (the walk would wake Ragefire Trogg)" -
+    // the member's guard refused the leader's chase of a target that itself stood inside that Trogg's reach. The
+    // chase's idle reach is the leader's melee test, the one its combat spots at the target are judged by
+    if (chase && (goes || TransientRefusal(MovementAction::s_moveRefusal)))
+    {
+        bool noPath = false;
+        if (Creature* idle = Leader::Fight::LeaderAggroOnWalk(bot, Position(x, y, z), noPath, target))
+        {
+            mob = idle->GetGUID();
+            return "the chase walks deeper into " + idle->GetName() + "'s reach than the fight stands";
+        }
+    }
     // the executor's verdicts (Execute's Follow branch): a guard that ends the walk elsewhere, a lasting refusal
     if (goes && !MovementAction::s_moveSubstitute.empty())
         return MovementAction::s_moveSubstitute;
@@ -875,7 +890,7 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
         return MovementAction::s_moveRefusal;
     mob.Clear();
     if (goes)  // [lead370] the walk judged clear: the executor's walk with the same inputs takes it as judged
-        _judgedFollow = {true, target->GetGUID(), bot->GetPosition(), Position(x, y, z)};
+        _judgedFollow = {true, target->GetGUID(), bot->GetPosition(), Position(x, y, z), chase};
     return std::string();
 }
 
@@ -912,9 +927,16 @@ bool LeaderMoveOrderAction::SkipsIdleGuard()
     if (_dryWhy)
         return Leader::LedBot(bot) && *_dryWhy != "route walk";
     if (_dryFollow)  // [lead374] a follow place is the member's own path: its guards run
-        return false;
+        return _dryChase;  // [lead491] the leader's chase: its idle reach is the leader's melee test
     Leader::MemberEvents events;
     bool const got = Leader::Events::Get(bot->GetGUID(), events);
+    // [lead491] the leader's chase of a fight target, judged clear by the leader's last DryFollow of it (chase: the
+    // leader's melee test): the member's idle guard does not judge it again (project rule: leader commands are
+    // final, no member refusal). A chase the leader refused (no judged follow left) keeps the member's guards
+    if (got && events.move == Leader::MoveEvent::Follow && Leader::LedBot(bot) && _judgedFollow.valid &&
+        _judgedFollow.chase && _judgedFollow.target == events.followTarget)
+        if (Unit* chased = botAI->GetUnit(events.followTarget); chased && bot->IsValidAttackTarget(chased))
+            return true;
     return Leader::LedBot(bot) &&
            !(got && (events.move == Leader::MoveEvent::Follow || events.moveWhy == "route walk"));
 }

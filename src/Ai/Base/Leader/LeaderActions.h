@@ -169,7 +169,9 @@ public:
     // [lead374] the leader's check of a Follow before it issues it: the member's walk to its place, its own guards
     // run dry - "" when it would walk there (or needs no walk), else the refusal the member would report, and the
     // idle mob its walk would wake in `mob`
-    std::string DryFollow(Unit* target, uint8 index, ObjectGuid& mob);
+    // [lead491] `chase`: the leader's melee chase of its fight target - the idle reach is the leader's melee test
+    // (LeaderMeleeAggroOnWalk: no deeper into an idle mob's reach than the fight there), not the member's guard
+    std::string DryFollow(Unit* target, uint8 index, ObjectGuid& mob, bool chase = false);
 
 private:
     // [lead372] the walk to `spot` cannot reach it safely: the member stays, the leader reads the report
@@ -179,6 +181,7 @@ private:
     uint32 _attackFirstSeq = 0;  // [lead281] the command (seq) whose unstarted Attack this walk let run first
     std::string const* _dryWhy = nullptr;  // [lead373] the move DryMoveTo judges
     bool _dryFollow = false;               // [lead374] DryFollow runs
+    bool _dryChase = false;                // [lead491] ... for the leader's melee chase
     // [lead370] the walk DryFollow judged clear (the target, where the member stood, the place): the executor's walk
     // with these inputs is that walk - the leader's check is final, its guard is not run a second time
     struct JudgedFollow
@@ -187,6 +190,7 @@ private:
         ObjectGuid target;
         Position from;
         Position place;
+        bool chase = false;  // [lead491] the leader's melee chase (DryFollow, chase)
     } _judgedFollow;
     bool _judgedWalk = false;  // [lead370] the executor walks a judged follow now
 };
