@@ -30,13 +30,16 @@ public:
 // TargetAuraState AURA_STATE_BLEEDING; its script effect then puts the self buff (63848, 60 s) on the rogue. So the
 // target stays "current target" (cast on self it fails CheckCast); usefulness reads the self buff, refreshed below
 // HUNGER_FOR_BLOOD_REFRESH_MS (RogueFinishingActions.h) like the trigger.
-class CastHungerForBloodAction : public CastBuffSpellAction
+// [rot60] a spell on the enemy, not a buff action: the led member's trigger gate takes a damage dealer's buff action
+// aimed at anything but itself for a buff on another member (RaidLeader::GateVetoes, OwnTargetName), so b201 rfc-h
+// 5E Rtrogab cast Hunger for Blood 0 times in 41 pulls with the target bleeding (wowsims mutilate: kept up, 1.8/min)
+class CastHungerForBloodAction : public CastSpellAction
 {
 public:
-    CastHungerForBloodAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "hunger for blood") {}
+    CastHungerForBloodAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "hunger for blood") {}
 
-    std::string const GetTargetName() override { return "current target"; }
     bool isUseful() override;
+    ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
 // [b31_wr] Subtlety: 2 combo points on the target, off the global cooldown; needs Stealth or Shadow Dance
