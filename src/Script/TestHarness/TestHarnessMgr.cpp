@@ -1437,8 +1437,6 @@ namespace TestHarness
         constexpr uint32 TRASH_LOOP_RAID_MS = 10 * MINUTE * IN_MILLISECONDS;
         constexpr uint32 TRASH_LOOP_MIN_KILLS = 15;
         constexpr uint32 TRASH_LOOP_MIN_PROGRESS = 5;  // [trash_loop_progress] spawned mobs fewer: no loop
-        constexpr uint32 TRASH_LOOP_SKIP_MS = 15 * MINUTE * IN_MILLISECONDS;
-        constexpr uint32 BOSS_RUSH_MS = 10 * MINUTE * IN_MILLISECONDS;
         constexpr uint32 BOSSES_DONE_COMBAT_MS = 20 * IN_MILLISECONDS;
 
         // "entry name x count" of the most killed creatures, for the loop / no-progress diagnosis.
@@ -3514,26 +3512,13 @@ namespace TestHarness
             }
             if (loopDue)
             {
-                uint32 skipped = 0;
-                for (auto const& [spawnId, creature] : map->GetCreatureBySpawnIdStore())
-                {
-                    if (!creature || !creature->IsAlive() || creature->IsDungeonBoss() || creature->isWorldBoss() ||
-                        party.bossCreatures.count(creature->GetGUID()) ||
-                        creature->GetExactDist(&party.loopAnchor) > TRASH_LOOP_RADIUS)
-                        continue;
-                    party.skipUntil[creature->GetGUID()] = now + TRASH_LOOP_SKIP_MS;
-                    party.skipReason[creature->GetGUID()] = "trash loop";
-                    ++skipped;
-                }
-                party.bossRushUntilMs = now + BOSS_RUSH_MS;
+                // [lead346] user: «Стенд никого не двигает»: a report only - the harness no longer skips the area's
+                // trash, rushes the boss, drops the leader's target or clears its walk
                 LogEvent(party, "trash_loop",
                          JsonObject().Num("minutes", loopMs / MINUTE / IN_MILLISECONDS)
                              .Num("kills", party.kills - party.loopKills).Real("x", party.loopAnchor.GetPositionX())
                              .Real("y", party.loopAnchor.GetPositionY()).Real("z", party.loopAnchor.GetPositionZ())
-                             .Num("skipped", skipped).Str("topKills", TopKills(party.killsSinceBoss, 5)));
-                party.target.Clear();
-                party.nextRetargetMs = now;
-                TestRunner::ClearWaypoint(party.leader);
+                             .Str("action", "report only").Str("topKills", TopKills(party.killsSinceBoss, 5)));
                 party.loopAnchor = leader->GetPosition();
                 party.loopSinceMs = now;
                 party.loopKills = party.kills;
