@@ -589,6 +589,19 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     Leader::MemberEvents events;
     if (!Leader::Events::Get(bot->GetGUID(), events))
         return false;
+    // [lead281] b193 / b195 rfc-h (16 runs): damage dealers stood out of combat 1500 s of fights with an Attack held -
+    // "leader attack order" (23) not evaluated, the walk to the combat spot / along with the tank (94) ran first every
+    // tick. An Attack the member has not started (its victim is not the target yet) on a target it sees goes first,
+    // once per command: the walk of combat-spot rank or lower goes on the next tick (the attack sets no walk)
+    if (events.seq != _attackFirstSeq && Leader::ExecutorMember(bot) && events.attack == Leader::AttackEvent::Attack &&
+        events.intensity != Leader::Intensity::Stop && Leader::Events::MovePrecedence(events.moveWhy) <= 2)
+        if (Unit* attackTarget = botAI->GetUnit(events.target);
+            attackTarget && attackTarget->IsAlive() && attackTarget->IsInCombat() && bot->GetVictim() != attackTarget &&
+            bot->IsValidAttackTarget(attackTarget) && bot->IsWithinLOSInMap(attackTarget))
+        {
+            _attackFirstSeq = events.seq;
+            return false;
+        }
     // [lead27] Follow: the place `followIndex` behind the target (two rows of two), walked with the member's own path
     // guards (the leader issued no point)
     if (events.move == Leader::MoveEvent::Follow)
@@ -653,7 +666,10 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             bot->StopMoving();
             return false;
         }
-        if (bot->isMoving() && std::hypot(last.lastMoveToX - x, last.lastMoveToY - y) <= tolerance)
+        // [lead281] the walk under way is known by its end as asked too (a guard may have moved the end it walks to)
+        if (bot->isMoving() &&
+            (std::hypot(last.lastMoveToX - x, last.lastMoveToY - y) <= tolerance ||
+             std::hypot(last.lastMoveAsked.GetPositionX() - x, last.lastMoveAsked.GetPositionY() - y) <= tolerance))
             return false;
         if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target))
             return false;

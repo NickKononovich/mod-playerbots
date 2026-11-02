@@ -159,6 +159,9 @@ public:
     Unit* WalkWakes(Position const& to, ObjectGuid exempt);
     // [lead71] the member's own MoveTo guards run dry (MovementAction::s_dryRun) for a walk to `to`: would it go?
     bool DryMoveTo(Position const& to);
+
+private:
+    uint32 _attackFirstSeq = 0;  // [lead281] the command (seq) whose unstarted Attack this walk let run first
 };
 
 // [lead76] Executes the leader's "top up X": the healer's heal on the named member now.
