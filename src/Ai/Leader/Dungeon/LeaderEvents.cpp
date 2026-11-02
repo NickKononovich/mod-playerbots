@@ -2849,7 +2849,7 @@ namespace Leader::Dungeon
                 }
                 if (found != lead.combatSpots.end())
                 {
-                    Position const& spot = found->second.second;
+                    Position const spot = found->second.second;
                     if (checkedMove(guid, Leader::MoveEvent::StandAt, spot, melee ? 1.0f : 2.0f,
                                                 melee ? "combat spot: behind the target" : "combat spot"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
@@ -2858,6 +2858,19 @@ namespace Leader::Dungeon
                                      .Real("distance", target->GetExactDist(spot))
                                      .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
                                      .Real("z", spot.GetPositionZ()));
+                    // [lead241] b189 rfc-h 5A Taragaman 625-687 s: the frost mage's combat spot was rejected ("in the
+                    // reach of Searing Blade Enforcer") and kept - no move, it stood 34-36 yd off and cast nothing for
+                    // 62 s. A rejected spot from which it cannot attack where it stands is a spot left: the next tick
+                    // searches another one (lead239 keeps it out)
+                    else if (auto const verdict = lead.spotChecked.find(guid);
+                             verdict != lead.spotChecked.end() && !verdict->second.reject.empty() &&
+                             verdict->second.spot.GetExactDist(spot) <= 1.0f &&
+                             !(melee ? bot->IsWithinMeleeRange(target) : MemberCastsHere(bot, target)))
+                    {
+                        lead.combatSpotLeft[guid].push_back(found->second);
+                        lead.combatSpots.erase(found);
+                        found = lead.combatSpots.end();
+                    }
                     if (bot == healer)
                         healerAt = spot;
                     moved = true;
