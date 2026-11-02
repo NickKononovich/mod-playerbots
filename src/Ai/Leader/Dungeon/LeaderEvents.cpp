@@ -3243,6 +3243,7 @@ namespace Leader::Dungeon
                         logEvent(bot, "Follow",
                                  JsonObject().Str("why", "chase: behind the target").Str("target", target->GetName()));
                     lead.combatSpots.erase(guid);
+                    found = lead.combatSpots.end();  // [lead442] the erase freed the node found pointed at (ASan)
                     moved = true;
                 }
                 // [lead190] the chase of a walked-off target holds until the member is in its melee reach again
