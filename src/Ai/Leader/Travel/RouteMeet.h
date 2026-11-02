@@ -166,6 +166,12 @@ namespace Leader::Travel
     bool BlackMorassHoldsAtMedivh(Player* member);
 
     bool MeetMember(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
+
+    // [lead345] a member with attackers farther than ASSIST_RANGE from the leader (the tank), or on another floor:
+    // the leader walks to it (out of its own fight; moved unchanged out of TestHarnessMgr::AssistMember)
+    constexpr float ASSIST_RANGE = 25.0f;
+    constexpr float ASSIST_FLOOR_DZ = 5.0f;
+    bool AssistMember(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
 }
 
 #endif

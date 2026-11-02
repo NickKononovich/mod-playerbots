@@ -294,7 +294,6 @@ namespace TestHarness
         // chosen creatures seen dead since (Retarget). Choices of a mob that never died do not count: dme-n
         // 2026-10-25 skipped a living Imp / Fel Lash / Whip Lasher as "respawning trash" after four refusals.
         // Careful-pull refusals per pack member (heroic / level 80: deferred twice, then body-pulled).
-        ObjectGuid assisting;  // the member the leader walks to (AssistMember), logged once per episode
         // [lead107 stage 5] the phantom-combat facts, the buffing pass and the waits are the leader's (GroupRouteState)
 
         // heartbeat / stall
@@ -522,7 +521,6 @@ namespace TestHarness
         void EndLink(Party& party, char const* reason);
         // The leader (the tank) out of combat while a member fights far away or on another floor: true while it
         // walks to that member (the caller then sets no other waypoint).
-        bool AssistMember(Party& party, std::vector<Player*> const& players, Player* leader);
         // Out of combat, a living member far behind (back from a corpse run): true while the leader (and with it the
         // group) walks to meet it, instead of letting it cross the idle packs alone.
         bool MeetMember(Party& party, std::vector<Player*> const& players, Player* leader);

@@ -443,6 +443,7 @@ namespace Leader
         // [lead107] moved with the meet stage: the group wiped (until the revive), the member the leader walks back
         // to (MeetMember), logged once per episode
         bool wiped = false;
+        ObjectGuid assisting;  // [lead345] the member the leader walks to (AssistMember), logged once per episode
         ObjectGuid meeting;
         // [lead107] moved with the water stage: the last place the leader stood on dry ground out of combat inside
         // the instance: the group rests there, never in water (Underbog, Blackfathom Deeps: bots drank at the lake

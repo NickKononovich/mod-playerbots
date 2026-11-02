@@ -675,4 +675,64 @@ bot, leader))
         group.SetLeaderWaypoint(leader, walkTo.x, walkTo.y, walkTo.z);
         return true;
     }
+
+    bool AssistMember(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
+    {
+        GroupRouteState& route = group.Route();
+        // Sunken Temple heroic wave 8: the tank stood idle at the pool floor (z -172.9) for 20 minutes while the
+        // healer and the mage, back from their corpse runs, fought on the gallery above (z -148.8) and died again and
+        // again; Maraudon heroic: members killed 150+ yd from the tank. The bot's "aggressive target" leaves mobs
+        // with |dz| > 5 alone, so the tank never came. A tank runs to the member who has aggro.
+        if (!leader || !leader->IsAlive() || leader->IsInCombat() || route.wiped || route.linkIdx >= 0)
+        {
+            route.assisting.Clear();
+            return false;
+        }
+
+        Player* member = nullptr;
+        float best = 0.0f;
+        for (Player* bot : players)
+        {
+            if (bot == leader || !bot->IsAlive() || bot->GetMap() != leader->GetMap() || !bot->IsInCombat() ||
+                bot->getAttackers().empty())
+                continue;
+            float const distance = leader->GetExactDist(bot);
+            bool const away = distance > ASSIST_RANGE ||
+                              std::fabs(bot->GetPositionZ() - leader->GetPositionZ()) > ASSIST_FLOOR_DZ;
+            if (away && (!member || distance < best))
+            {
+                member = bot;
+                best = distance;
+            }
+        }
+        if (!member)
+        {
+            route.assisting.Clear();
+            return false;
+        }
+
+        PathResult leg;
+        G3D::Vector3 const goal(member->GetPositionX(), member->GetPositionY(), member->GetPositionZ());
+        SteerLeg(leader, goal, leg);
+        if (leg.type & PATHFIND_NOPATH)
+            return false;
+        G3D::Vector3 const waypoint =
+            FloorWaypoint(leader, leg, RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
+
+        if (route.assisting != member->GetGUID())
+        {
+            route.assisting = member->GetGUID();
+            Unit* attacker = *member->getAttackers().begin();
+            group.LogEvent("assist_member", JsonObject().Str("name", member->GetName())
+                                                .Str("attacker", attacker ? attacker->GetName() : "")
+                                                .Real("distance", best)
+                                                .Real("dz", member->GetPositionZ() - leader->GetPositionZ())
+                                                .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
+                                                .Real("z", leader->GetPositionZ()));
+        }
+
+        group.SetLeaderWaypoint(leader, waypoint.x, waypoint.y, waypoint.z);
+        group.NoteProgress(getMSTime());
+        return true;
+    }
 }

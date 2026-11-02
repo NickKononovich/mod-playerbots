@@ -3602,7 +3602,10 @@ namespace TestHarness
                     rest.regenAboveLineLogged = false;
                 }
                 SetPhase(party, activeBoss ? Phase::BossFight : Phase::Clearing);
-                AssistMember(party, players, leader);
+                {
+                    PartyLeaderGroup group(*this, party);
+                    Leader::Travel::AssistMember(group, players, leader);  // [lead345] the leader's (RouteMeet.h)
+                }
                 ReopenKeyDoorInCombat(party, leader);
                 if (activeBoss)
                 {

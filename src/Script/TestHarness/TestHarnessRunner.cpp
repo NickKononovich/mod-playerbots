@@ -292,9 +292,6 @@ namespace TestHarness
         using Leader::Travel::GAP_REACHABLE_LEFT;  // [lead107] RouteLegs.h
         using Leader::Travel::GAP_REACHABLE_DZ;  // [lead107] RouteLegs.h
         using Leader::Travel::GAP_SWIM_ABOVE;  // [lead107] RouteLegs.h
-        // AssistMember: a member with attackers this far from the leader, or on another floor.
-        constexpr float ASSIST_RANGE = 25.0f;
-        constexpr float ASSIST_FLOOR_DZ = 5.0f;
         using Leader::Travel::MEET_RANGE;  // [lead107] RouteMeet.h
         using Leader::Travel::MEET_END_RANGE;  // [lead107] RouteMeet.h
         // MemberStranded: the navmesh check per far member at most this often; stranded after this long within the
@@ -2896,65 +2893,6 @@ namespace TestHarness
         // [lead107] the leader's (RouteEvents.h)
         PartyLeaderGroup group(*this, party);
         Leader::Travel::CrossLinks(group, players, leader);
-    }
-
-    bool TestHarnessMgr::AssistMember(Party& party, std::vector<Player*> const& players, Player* leader)
-    {
-        // Sunken Temple heroic wave 8: the tank stood idle at the pool floor (z -172.9) for 20 minutes while the
-        // healer and the mage, back from their corpse runs, fought on the gallery above (z -148.8) and died again and
-        // again; Maraudon heroic: members killed 150+ yd from the tank. The bot's "aggressive target" leaves mobs
-        // with |dz| > 5 alone, so the tank never came. A tank runs to the member who has aggro.
-        if (!leader || !leader->IsAlive() || leader->IsInCombat() || party.wiped || party.linkIdx >= 0)
-        {
-            party.assisting.Clear();
-            return false;
-        }
-
-        Player* member = nullptr;
-        float best = 0.0f;
-        for (Player* bot : players)
-        {
-            if (bot == leader || !bot->IsAlive() || bot->GetMap() != leader->GetMap() || !bot->IsInCombat() ||
-                bot->getAttackers().empty())
-                continue;
-            float const distance = leader->GetExactDist(bot);
-            bool const away = distance > ASSIST_RANGE ||
-                              std::fabs(bot->GetPositionZ() - leader->GetPositionZ()) > ASSIST_FLOOR_DZ;
-            if (away && (!member || distance < best))
-            {
-                member = bot;
-                best = distance;
-            }
-        }
-        if (!member)
-        {
-            party.assisting.Clear();
-            return false;
-        }
-
-        PathResult leg;
-        G3D::Vector3 const goal(member->GetPositionX(), member->GetPositionY(), member->GetPositionZ());
-        SteerLeg(leader, goal, leg);
-        if (leg.type & PATHFIND_NOPATH)
-            return false;
-        G3D::Vector3 const waypoint =
-            FloorWaypoint(leader, leg, RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
-
-        if (party.assisting != member->GetGUID())
-        {
-            party.assisting = member->GetGUID();
-            Unit* attacker = *member->getAttackers().begin();
-            LogEvent(party, "assist_member", JsonObject().Str("name", member->GetName())
-                                                 .Str("attacker", attacker ? attacker->GetName() : "")
-                                                 .Real("distance", best)
-                                                 .Real("dz", member->GetPositionZ() - leader->GetPositionZ())
-                                                 .Real("x", leader->GetPositionX()).Real("y", leader->GetPositionY())
-                                                 .Real("z", leader->GetPositionZ()));
-        }
-
-        SetLeaderWaypoint(party, leader, waypoint.x, waypoint.y, waypoint.z);
-        party.lastProgressMs = getMSTime();
-        return true;
     }
 
     bool TestHarnessMgr::MemberStranded(Party& party, Player* bot, Player* leader)
