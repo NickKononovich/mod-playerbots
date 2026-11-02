@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include "AggressiveTargetValue.h"
 #include "Battleground.h"
+#include "BuyAction.h"  // [lead477] CountBagFood
 #include "ChooseRpgTargetAction.h"
 #include "ClassicShared.h"
 #include "CreatureGroups.h"
@@ -7762,28 +7763,28 @@ bool AggressiveTargetAction::DecideLook()
         // then the walk to him was refused ([reach_idle_waits_ready]) and the tank stood in the combat engine. The
         // pick waits for the same readiness as the walk: nobody buffing or sitting below its line
         // (PullReadiness::GroupPreparing), the tank not resting or wanting to (its own drink / food line), and for a
-        // boss the group ready for him (BossReadyGap). The tank's own rest line holds at most SELF_REST_HOLD_MS per
-        // target (a tank with no water left would otherwise never pull); the harness's regen stall release covers
-        // the others.
+        // boss the group ready for him (BossReadyGap). The harness's regen stall release covers the others.
+        // [lead477] user rule (no forcing timers): the tank's own rest held at most SELF_REST_HOLD_MS (60 s) per
+        // target, for a tank with no water left that would otherwise never pull. The hold is the fact it stood for: a
+        // led tank's rest holds while the leader's Rest is on it or it eats / drinks (the leader replaces the Rest
+        // at its line); an unled tank's while it eats / drinks, or wants to and has the food / drink and the ground
         if (!target->IsInCombat() && bot->GetMap()->IsNonRaidDungeon() && !GroupDamage::NoDamageRelease(bot))
         {
-            constexpr uint32 SELF_REST_HOLD_MS = 60 * IN_MILLISECONDS;
-            thread_local std::unordered_map<ObjectGuid, std::pair<ObjectGuid, uint32>> selfRestHolds;
             uint32 const now = getMSTime();
             std::string why;
             bool held = PullReadiness::GroupPreparing(bot, &why);
             // [lead221] b185 rfc-h 5E 1317-1324 s: "paladin tank at 73 % mana (needs 77 %)", then "the tank rests"
             // while it drank on to 100 % - its drink held the pull and the hold (lead50) its Rest. A led tank's rest
             // holds the pull while it is below its own lines (the tank mana line below holds the rest), or eats
-            bool const restHolds = Leader::LedGroup(bot) ? RestState::BelowOwnLine(bot) || RestState::IsEating(bot)
-                                                         : RestState::IsDrinking(bot) || RestState::IsEating(bot) ||
-                                                               RestState::WantsDrink(bot) || RestState::WantsFood(bot);
+            bool const sits = RestState::IsDrinking(bot) || RestState::IsEating(bot);
+            bool const canRest = RestState::CanRest(bot);
+            bool const wantsDrink = RestState::WantsDrink(bot) && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
+            bool const wantsFood = RestState::WantsFood(bot) && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
+            bool const restHolds = Leader::LedGroup(bot) ? sits || RestState::LeaderRests(bot)
+                                                         : sits || (canRest && (wantsDrink || wantsFood));
             if (!held && restHolds)
             {
-                std::pair<ObjectGuid, uint32>& hold = selfRestHolds[bot->GetGUID()];
-                if (hold.first != target->GetGUID() || !hold.second)
-                    hold = {target->GetGUID(), now ? now : 1};
-                held = getMSTimeDiff(hold.second, now) < SELF_REST_HOLD_MS;
+                held = true;
                 // [lead39] b88 rfc-h 21.7 s "the tank rests (health 98 %, mana 100 %)": it ate its Well Fed food
                 // (the harness's buff food, a 10 s eat) - named as what it is
                 bool const buffFood = RestState::IsEating(bot) && !RestState::WantsFood(bot) &&
@@ -7793,8 +7794,6 @@ bool AggressiveTargetAction::DecideLook()
                                               buffFood ? "eats its buff food" : "rests", bot->GetHealthPct(),
                                               bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f);
             }
-            else if (!held)
-                selfRestHolds.erase(bot->GetGUID());
 
             if (!held && IsBossMob(target))
             {
