@@ -856,6 +856,11 @@ namespace
                            ? CalculatePct(float(caster->GetCreatePowers(POWER_MANA)), float(effect.CalcValue(caster))) /
                                  maxMana * 100.0f
                            : float(effect.CalcValue(caster)) * ticks / maxMana * 100.0f;
+            // [lead425] the Mana Tide Totem's tick is a script (spell_sha_mana_tide_totem): each restores the
+            // periodic aura's value in % of the receiver's max mana
+            else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL &&
+                     effect.TriggerSpell == SPELL_MANA_TIDE_TICK)
+                pct += ticks * float(effect.CalcValue(caster));
             else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && depth && effect.TriggerSpell)
                 pct += ticks * ToolPct(caster, receiver, sSpellMgr->GetSpellInfo(effect.TriggerSpell), depth - 1, 0);
             else if ((effect.Effect == SPELL_EFFECT_SUMMON) && depth && effect.MiscValue > 0)
@@ -885,7 +890,19 @@ float ManaToolPct(Player* caster, Player* receiver, uint32 spell)
                     return perHit * float(info->GetMaxDuration()) / float(fiend->BaseAttackTime);
         return 0.0f;
     }
-    return ToolPct(caster, receiver, info, 2, 0);
+    float pct = ToolPct(caster, receiver, info, 2, 0);
+    // [lead425] Dispersion's mana is its linked aura (spell_linked_spell), not an effect of its own
+    if (spell == SPELL_DISPERSION)
+        pct += ToolPct(caster, receiver, sSpellMgr->GetSpellInfo(SPELL_DISPERSION_MANA), 0, 0);
+    return pct;
+}
+
+float ManaToolRadius(Player* caster, uint32 spell)
+{
+    if (spell != SPELL_MANA_TIDE_TOTEM)
+        return 0.0f;
+    SpellInfo const* tick = sSpellMgr->GetSpellInfo(SPELL_MANA_TIDE_TICK);
+    return tick ? tick->Effects[EFFECT_0].CalcRadius(caster) : 0.0f;
 }
 
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits)

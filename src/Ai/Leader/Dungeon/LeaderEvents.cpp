@@ -4459,11 +4459,37 @@ namespace Leader::Dungeon
                 float need = 0.0f;
                 float ratePct = 0.0f;  // % of its pool per fight second
             };
+            // [lead425] a member a tool's return is still coming to is no receiver (one need, one tool): under
+            // Innervate, Hymn of Hope's tick, Evocation, Dispersion's mana, Divine Plea; a priest whose Shadowfiend is
+            // out, a member in reach of a Mana Tide Totem that is down (the caster's cooldown started within its
+            // summon's duration: the core's cooldown, spell data)
+            auto const toolOut = [](Player* caster, uint32 spell)
+            {
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+                if (!info || !caster->HasSpell(spell) || info->GetMaxDuration() <= 0)
+                    return false;
+                uint32 const recovery = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
+                uint32 const delay = caster->GetSpellCooldownDelay(spell);
+                return delay && recovery > uint32(info->GetMaxDuration()) &&
+                       delay > recovery - uint32(info->GetMaxDuration());
+            };
+            auto const receiving = [&](Player* member)
+            {
+                if (member->HasAura(SPELL_INNERVATE) || member->HasAura(RestState::SPELL_HYMN_OF_HOPE_TICK) ||
+                    member->HasAura(RestState::SPELL_EVOCATION) || member->HasAura(RestState::SPELL_DISPERSION_MANA) ||
+                    member->HasAura(RestState::SPELL_DIVINE_PLEA) || toolOut(member, RestState::SPELL_SHADOWFIEND))
+                    return true;
+                for (Player* shaman : everyone)
+                    if (toolOut(shaman, SPELL_MANA_TIDE_TOTEM) &&
+                        member->GetExactDist(shaman) <= RestState::ManaToolRadius(shaman, SPELL_MANA_TIDE_TOTEM))
+                        return true;
+                return false;
+            };
             std::vector<ManaUser> manaUsers;
             if (lead.fightSecLeft > 0.0f)
                 for (Player* member : everyone)
                     if (member->IsAlive() && member->getPowerType() == POWER_MANA &&
-                        member->GetMaxPower(POWER_MANA) && !member->HasAura(SPELL_INNERVATE))
+                        member->GetMaxPower(POWER_MANA) && !receiving(member))
                     {
                         ManaUser user;
                         user.who = member;
@@ -4541,27 +4567,32 @@ namespace Leader::Dungeon
                     if (uint32 const spell = LeaderReadySpell(caster, {SPELL_HYMN_OF_HOPE}))
                     {
                         // the members lowest on mana, as many as its energize reaches (spell data)
-                        uint32 reach = 0;
-                        if (SpellInfo const* hymn = sSpellMgr->GetSpellInfo(spell))
-                            for (SpellEffectInfo const& effect : hymn->GetEffects())
-                                if (effect.TriggerSpell)
-                                    if (SpellInfo const* tick = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
-                                        reach = std::max(reach, tick->MaxAffectedTargets);
+                        // [lead425] the core's pick (spell_pri_hymn_of_hope): the 3 group members lowest on mana -
+                        // of them, the ones short of their need gain
+                        std::vector<Player*> pool;
+                        for (Player* member : everyone)
+                            if (member->IsAlive() && member->getPowerType() == POWER_MANA &&
+                                member->GetMaxPower(POWER_MANA))
+                                pool.push_back(member);
+                        std::sort(pool.begin(), pool.end(), [](Player* a, Player* b)
+                                  { return a->GetPowerPct(POWER_MANA) < b->GetPowerPct(POWER_MANA); });
+                        if (pool.size() > RestState::HYMN_OF_HOPE_TARGETS)
+                            pool.resize(RestState::HYMN_OF_HOPE_TARGETS);
                         std::vector<ManaUser const*> lowest;
                         for (ManaUser const& user : manaUsers)
-                            lowest.push_back(&user);
-                        std::sort(lowest.begin(), lowest.end(),
-                                  [](ManaUser const* a, ManaUser const* b) { return a->pct < b->pct; });
-                        if (reach && lowest.size() > reach)
-                            lowest.resize(reach);
+                            if (std::find(pool.begin(), pool.end(), user.who) != pool.end())
+                                lowest.push_back(&user);
                         consider(caster, spell, nullptr, lowest);
                     }
                     if (uint32 const spell = LeaderReadySpell(caster, {SPELL_MANA_TIDE_TOTEM}))
                     {
-                        std::vector<ManaUser const*> all;
+                        // [lead425] the members within its tick's area round the shaman (the totem drops there)
+                        float const radius = RestState::ManaToolRadius(caster, spell);
+                        std::vector<ManaUser const*> inReach;
                         for (ManaUser const& user : manaUsers)
-                            all.push_back(&user);
-                        consider(caster, spell, nullptr, all);
+                            if (radius <= 0.0f || user.who->GetExactDist(caster) <= radius)
+                                inReach.push_back(&user);
+                        consider(caster, spell, nullptr, inReach);
                     }
                 }
             }

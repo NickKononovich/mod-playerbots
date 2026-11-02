@@ -347,6 +347,14 @@ constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
 constexpr uint32 SPELL_MANA_TIDE_TOTEM = 16190;
 constexpr uint32 SPELL_EVOCATION = 12051;
 constexpr uint32 SPELL_DISPERSION = 47585;
+constexpr uint32 SPELL_DISPERSION_MANA = 60069;   // [lead425] Dispersion's linked mana aura (6 % a second, 6 s)
+constexpr uint32 SPELL_MANA_TIDE_TICK = 39610;    // [lead425] the totem's tick (spell_sha_mana_tide_totem)
+constexpr uint32 SPELL_HYMN_OF_HOPE_TICK = 64904;  // [lead425] Hymn's tick: its aura on the members it reaches
+constexpr uint32 HYMN_OF_HOPE_TARGETS = 3;        // [lead425] spell_pri_hymn_of_hope: the 3 lowest on mana
+constexpr uint32 SPELL_ASPECT_OF_THE_VIPER = 34074;
+// [lead425] the radius a group mana tool reaches its receivers in around its caster (Mana Tide: its tick's area,
+// spell data); 0: not a group tool
+float ManaToolRadius(Player* caster, uint32 spell);
 // [lead423] the mana (% of the receiver's max) `caster`'s `spell` returns to `receiver`, from spell and game data: an
 // energize (% or flat) over the aura's ticks, the spells it triggers, a totem's aura over the totem's life, Innervate's
 // 225 % of the druid's base mana (spell_dru_innervate), the Shadowfiend's hits (its life over its attack time) each
