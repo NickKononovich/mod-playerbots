@@ -3571,6 +3571,78 @@ namespace Leader::Dungeon
             // 3. the fight: the healer heals the group, every damage dealer attacks the leader's target
             if (combat && Leader::LEADER_ATTACK_EVENTS)
             {
+                // [lead53] [lead243] [lead246] the threat projection both the damage dealers' headroom and the
+                // healer's read (lead390: the healer's threat is the game's too)
+                auto const seenOn = [&](Unit* mob, Player* who) -> Leader::DungeonLeaderState::ThreatSeen&
+                {
+                    auto& seen = lead.threatSeen[mob->GetGUID()][who->GetGUID()];
+                    if (float const threat = mob->GetThreatMgr().GetThreat(who); threat > 0.0f)
+                    {
+                        if (!seen.firstMs)
+                            seen.firstMs = now;
+                        seen.lastMs = now;
+                        seen.threat = threat;
+                    }
+                    return seen;
+                };
+                float freshRate = 0.0f;
+                if (auto const measured = lead.openTps.find(guid);
+                    measured != lead.openTps.end() && measured->second.second)
+                    freshRate = measured->second.first / float(measured->second.second);
+                for (ObjectGuid const& other : killOrder)
+                    if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
+                        if (auto const& seen = seenOn(fought, bot); seen.threat > 0.0f)
+                            freshRate = std::max(freshRate, seen.threat / ThreatSeenSec(seen));
+                // [lead246] b191 rfc-h: the warrior tanks' threat rate 0-2 s into a pull was 740 / 987 per s
+                // against 1691 / 1652 at 2-5 s (rage), so the tank's next GCD read from its first hit stopped
+                // the damage dealers early (5B 129, 5F 118 stops, 31-38 of 46 per member in the first 2 s). Both
+                // sides read a rate measured over less than a GCD the same way: at least the run's opening rate
+                float tankOpen = 0.0f;
+                if (auto const measured = lead.openTps.find(tank->GetGUID());
+                    measured != lead.openTps.end() && measured->second.second)
+                    tankOpen = measured->second.first / float(measured->second.second);
+                auto const rateOf = [](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
+                {
+                    float const onMob = seen.threat > 0.0f ? seen.threat / ThreatSeenSec(seen) : 0.0f;
+                    bool const measuredHere =
+                        seen.threat > 0.0f &&
+                        getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
+                    return measuredHere ? onMob : std::max(onMob, opening);
+                };
+                struct Projection
+                {
+                    float mine = 0.0f;
+                    float mineNext = 0.0f;
+                    float tank = 0.0f;
+                    float tankNext = 0.0f;
+                    float share = 1.0f;
+                };
+                auto const project = [&](Unit* mob)
+                {
+                    Projection p;
+                    auto const& mine = seenOn(mob, bot);
+                    p.mine = mine.threat;
+                    p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                    auto const& held = seenOn(mob, tank);
+                    p.tank = held.threat;
+                    // [lead391] b201 rfc-h 5D 579.3 s: the unholy DK got Attack with headroom on a Searing Blade
+                    // Cultist the bear held at 140 threat (DK 1854 at 579.6, the mob on the DK): the bear's next GCD
+                    // was read at its opening single-target rate on a mob it did not attack. The tank's opening rate
+                    // projects onto the mob it attacks; on another its threat grows only by what it measured there
+                    p.tankNext = held.threat > 0.0f
+                                     ? held.threat + rateOf(held, tank->GetVictim() == mob ? tankOpen : 0.0f) *
+                                                         HEADROOM_GCD_SEC
+                                     : 0.0f;
+                    p.share = mob->GetVictim() != tank       ? 1.0f
+                              : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
+                                                             : THREAT_OVERTAKE_RANGED;
+                    return p;
+                };
+                auto const headroomOn = [&](Unit* mob)
+                {
+                    Projection const p = project(mob);
+                    return p.mineNext < p.share * p.tankNext;
+                };
                 if (bot == healer || PlayerbotAI::IsHeal(bot))
                 {
                     // [lead61] user: the leader starts the heals - once every fight mob is on the tank (no heal
@@ -3641,33 +3713,56 @@ namespace Leader::Dungeon
                     for (Unit* attacker : tank->getAttackers())
                         if (attacker && attacker->IsAlive() && attacker->GetVictim() != tank)
                             allOnTank = false;
-                    // [lead138] b162 20261101-121409: a Searing Blade Warlock standing back took the healer 12 s (its
-                    // heals' threat, the tank had none on it). Every mob of the fight counts, the casters the tank
-                    // has not touched too: on the tank, with the tank's threat on it
+                    // [lead390] b201 rfc-h 5B: the holy paladin took 14 mobs off the warrior. 740.5 s: Heal "every
+                    // fight mob is on the tank" 0.3 s before the pull started - the kill order held the target alone,
+                    // its four pack mates were in no member's attackers yet; at 742.6 s the paladin had 32.2 threat on
+                    // each of them and the warrior 0 (threat_lead), the Voidwalker went to the healer. 573.4 s: "the
+                    // heals go on: headroom on every fight mob" while two Enforcers joining the pack were not in the
+                    // kill order. And a Heal, once out, stayed for the fight. The game splits a heal's threat over
+                    // every mob that has the healed member on its threat list (ThreatManager::
+                    // ForwardThreatForAssistingMe): those mobs count, each on the tank with the tank's threat on it,
+                    // and the healer's threat after its next GCD below the share the game moves a mob at over the
+                    // tank's (the damage dealers' projection, lead243). Without that the Heal goes back to a hold;
+                    // the emergency (a member about to die) heals regardless
+                    std::vector<Unit*> healReach;
+                    std::set<ObjectGuid> reachSeen;
+                    auto const addReach = [&](Unit* mob)
+                    {
+                        // a crowd-controlled mob takes no assist threat (the game skips it): no fact for the heals
+                        if (mob && mob->IsAlive() && mob->GetMap() == map &&
+                            !mob->HasUnitState(UNIT_STATE_CONTROLLED) && reachSeen.insert(mob->GetGUID()).second)
+                            healReach.push_back(mob);
+                    };
+                    for (Player* member : watched)
+                        for (auto const& [mobGuid, ref] : member->GetThreatMgr().GetThreatenedByMeList())
+                            if (ref)
+                                addReach(ref->GetOwner());
                     for (ObjectGuid const& fightMob : killOrder)
-                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, fightMob);
-                            mob && mob->IsAlive() &&
-                            (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f))
-                            allOnTank = false;
-                    // [lead89] b131 rfc-h: 4 of 9 aggro losses on the healer - after the first heal "the heals go on"
-                    // for the whole fight, also while a joining mob the tank had not hit yet took the heals' threat.
-                    // Past the start the heals go on while the healer has headroom on every fight mob (its threat
-                    // below the tank's on each: the game's own measure, the damage dealers' rule), or a member dies
-                    bool healerHeadroom = lead.healStarted;
-                    for (ObjectGuid const& fightMob : killOrder)
-                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, fightMob); healerHeadroom && mob &&
-                            mob->IsAlive() &&
-                            !(mob->GetThreatMgr().GetThreat(bot) < mob->GetThreatMgr().GetThreat(tank)))
-                            healerHeadroom = false;
-                    if (healerHeadroom || allOnTank || emergency)
+                        addReach(ObjectAccessor::GetUnit(*tank, fightMob));
+                    std::string closedOn = allOnTank ? "" : "a fight mob attacks a member";
+                    for (Unit* mob : healReach)
+                    {
+                        if (!closedOn.empty())
+                            break;
+                        if (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                            closedOn = mob->GetName() + " is not on the tank with the tank's threat";
+                        else if (!headroomOn(mob))
+                            closedOn = "no headroom on " + mob->GetName();
+                    }
+                    if (closedOn.empty() || emergency)
                     {
                         if (Leader::Events::SetAttack(guid, Leader::AttackEvent::Heal, ObjectGuid::Empty, {}))
-                            logEvent(bot, "Heal", JsonObject().Str("why", allOnTank ? "every fight mob is on the tank"
-                                                                         : emergency ? emergencyWhy
-                                                                                     : "the heals go on: headroom on "
-                                                                                       "every fight mob"));
+                            logEvent(bot, "Heal",
+                                     JsonObject()
+                                         .Str("why", emergency ? emergencyWhy
+                                                               : "every mob the heals reach is on the tank, headroom "
+                                                                 "on each")
+                                         .Num("mobs", int64(healReach.size())));
                         lead.healStarted = true;
                     }
+                    else if (Leader::Events::SetAttack(guid, Leader::AttackEvent::DontAttack, ObjectGuid::Empty, {}))
+                        logEvent(bot, "DontAttack", JsonObject().Str("why", "the heals wait: " + closedOn)
+                                                        .Num("mobs", int64(healReach.size())));
                 }
                 else if (stopDps)
                 {
@@ -3701,70 +3796,6 @@ namespace Leader::Dungeon
                     // the member's threat after one GCD at its rate on THAT mob (since its first threat there; on a
                     // mob it has not hit, its fastest rate of this fight or the run's opening rate) against the
                     // tank's after the same GCD at the tank's rate there, times the share the game moves a mob at
-                    auto const seenOn = [&](Unit* mob, Player* who) -> Leader::DungeonLeaderState::ThreatSeen&
-                    {
-                        auto& seen = lead.threatSeen[mob->GetGUID()][who->GetGUID()];
-                        if (float const threat = mob->GetThreatMgr().GetThreat(who); threat > 0.0f)
-                        {
-                            if (!seen.firstMs)
-                                seen.firstMs = now;
-                            seen.lastMs = now;
-                            seen.threat = threat;
-                        }
-                        return seen;
-                    };
-                    float freshRate = 0.0f;
-                    if (auto const measured = lead.openTps.find(guid);
-                        measured != lead.openTps.end() && measured->second.second)
-                        freshRate = measured->second.first / float(measured->second.second);
-                    for (ObjectGuid const& other : killOrder)
-                        if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
-                            if (auto const& seen = seenOn(fought, bot); seen.threat > 0.0f)
-                                freshRate = std::max(freshRate, seen.threat / ThreatSeenSec(seen));
-                    // [lead246] b191 rfc-h: the warrior tanks' threat rate 0-2 s into a pull was 740 / 987 per s
-                    // against 1691 / 1652 at 2-5 s (rage), so the tank's next GCD read from its first hit stopped
-                    // the damage dealers early (5B 129, 5F 118 stops, 31-38 of 46 per member in the first 2 s). Both
-                    // sides read a rate measured over less than a GCD the same way: at least the run's opening rate
-                    float tankOpen = 0.0f;
-                    if (auto const measured = lead.openTps.find(tank->GetGUID());
-                        measured != lead.openTps.end() && measured->second.second)
-                        tankOpen = measured->second.first / float(measured->second.second);
-                    auto const rateOf = [](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
-                    {
-                        float const onMob = seen.threat > 0.0f ? seen.threat / ThreatSeenSec(seen) : 0.0f;
-                        bool const measuredHere =
-                            seen.threat > 0.0f &&
-                            getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
-                        return measuredHere ? onMob : std::max(onMob, opening);
-                    };
-                    struct Projection
-                    {
-                        float mine = 0.0f;
-                        float mineNext = 0.0f;
-                        float tank = 0.0f;
-                        float tankNext = 0.0f;
-                        float share = 1.0f;
-                    };
-                    auto const project = [&](Unit* mob)
-                    {
-                        Projection p;
-                        auto const& mine = seenOn(mob, bot);
-                        p.mine = mine.threat;
-                        p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
-                        auto const& held = seenOn(mob, tank);
-                        p.tank = held.threat;
-                        p.tankNext =
-                            held.threat > 0.0f ? held.threat + rateOf(held, tankOpen) * HEADROOM_GCD_SEC : 0.0f;
-                        p.share = mob->GetVictim() != tank       ? 1.0f
-                                  : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
-                                                                 : THREAT_OVERTAKE_RANGED;
-                        return p;
-                    };
-                    auto const headroomOn = [&](Unit* mob)
-                    {
-                        Projection const p = project(mob);
-                        return p.mineNext < p.share * p.tankNext;
-                    };
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
                     // can reach around it (the AoE radius)
