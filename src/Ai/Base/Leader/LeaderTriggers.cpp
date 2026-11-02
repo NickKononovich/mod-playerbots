@@ -215,8 +215,14 @@ bool LeaderMoveOrderTrigger::IsActive()
         // [lead219] b184 rfc-h 5G: the frost DK chasing Jergosh / Bazzalan stood 5.4 yd off them all fight - out of
         // melee reach, inside LEADER_FOLLOW_KEEP_YD. The chase of a mob walks whenever the member is out of its melee
         // reach (the game's own range)
+        // [lead511] b210 rfc-h 5H: the cat's chase of Jergosh (1020.5 s) and Bazzalan (1236.4 s) - "behind false" in
+        // 68 / 68 and 85 / 85 cat checks, it stood in reach in the boss's front arc (Jergosh facing the tank, the cat
+        // at 0.42 rad off his facing) all fight: in melee reach this trigger never fired, the executor's walk behind
+        // (lead418) never ran. The leader's chase is "behind the target": in reach in the mob's front arc (the core's
+        // HasInArc, where it parries / blocks) while the mob fights another member, the walk behind is live work
         if (bot->IsValidAttackTarget(target))
-            return !bot->IsWithinMeleeRange(target) || !bot->IsWithinLOSInMap(target);
+            return !bot->IsWithinMeleeRange(target) || !bot->IsWithinLOSInMap(target) ||
+                   (target->GetVictim() != bot && target->HasInArc(float(M_PI), bot));
         return bot->GetExactDist(target) > Leader::LEADER_FOLLOW_KEEP_YD || !bot->IsWithinLOSInMap(target);
     }
     if (Leader::WalksOffStand(bot, events))  // [lead81]
