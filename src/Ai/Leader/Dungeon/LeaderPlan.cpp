@@ -327,6 +327,18 @@ namespace Leader::Dungeon
         std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
         pullMobs.insert(pullMobs.end(), pack.begin(), pack.end());
         g_leaderExempt = &pullMobs;
+        // [lead464] a ranged member casts at the fight place from `at`: in its spell reach and in sight of it (its eye
+        // to the mob's middle where the mob will stand)
+        auto const castsAtFight = [&](Player* bot, Position const& at)
+        {
+            return at.GetExactDist(fight) <= LeaderSpellReach(bot) &&
+                   tank->GetMap()->isInLineOfSight(at.GetPositionX(), at.GetPositionY(),
+                                                   at.GetPositionZ() + bot->GetCollisionHeight(),
+                                                   fight.GetPositionX(), fight.GetPositionY(),
+                                                   fight.GetPositionZ() + mob->GetCollisionHeight() / 2.0f,
+                                                   tank->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                   VMAP::ModelIgnoreFlags::Nothing);
+        };
         uint32 index = 0;
         for (LeaderGroup::MemberInfo const& member : group.Members())
         {
@@ -354,10 +366,23 @@ namespace Leader::Dungeon
                 Position const here = bot->GetPosition();
                 // [lead61] user: «хилу не обязательно бегать» - the healer stays when it reaches and sees the fight
                 // spot (lead53's placement by the tank is gone); else the leader re-spots it after the tank holds
-                if (!healer || (HealReaches(tank, here, fight) &&
-                                here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD))
+                // [lead464] b205 rfc-h 5F Oggleflint: the warlock and the hunter "stayed" for the pull 30 yd behind
+                // the fight and 15 yd down the slope (-180,3,-54.7) / (-182.8,4.2,-56.1), out of sight of it, and
+                // never cast. A ranged member stays when it reaches and sees the fight place from where it stands;
+                // else it gets a spot of the search below (in range and sight of the fight place, out of every
+                // reach)
+                bool const rangedSees = !ranged || castsAtFight(bot, here);
+                if (!healer && rangedSees)
+                {
                     lead.spots[member.guid] = here;
-                continue;
+                    continue;
+                }
+                if (healer)
+                {
+                    if (HealReaches(tank, here, fight) && here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD)
+                        lead.spots[member.guid] = here;
+                    continue;
+                }
             }
             // [lead20] user: a member whose position already fits does not move (the healer: it reaches and sees the
             // fight spot within LEADER_HEALER_TANK_YD; a ranged member: in range of it; melee: anywhere safe)
@@ -365,7 +390,7 @@ namespace Leader::Dungeon
                 Position const here = bot->GetPosition();
                 bool const fits = healer ? (HealReaches(tank, here, fight) &&
                                             here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD)
-                                         : (!ranged || here.GetExactDist(fight) <= LeaderSpellReach(bot));
+                                         : (!ranged || castsAtFight(bot, here));  // [lead464]
                 if (fits && !LeaderAggroAt(bot, here))
                 {
                     lead.spots[member.guid] = here;
@@ -411,7 +436,8 @@ namespace Leader::Dungeon
             }
             // [lead20] user: «где он стоял - там тоже можно стоять»: with no cleared candidate, a member (not the
             // healer) stays where it stands when it is safe there - ready, no new ground walk before the pull
-            if (!found && !healer && !LeaderAggroAt(bot, bot->GetPosition()))
+            if (!found && !healer && !LeaderAggroAt(bot, bot->GetPosition()) &&
+                (!ranged || castsAtFight(bot, bot->GetPosition())))  // [lead464]
             {
                 lead.spots[member.guid] = bot->GetPosition();
                 found = true;
@@ -434,7 +460,7 @@ namespace Leader::Dungeon
                 Position const here = bot->GetPosition();
                 Creature* mob = LeaderAggroAt(bot, here);
                 bool const fits = healer ? HealReaches(tank, here, fight)
-                                         : (!ranged || here.GetExactDist(fight) <= LeaderSpellReach(bot));
+                                         : (!ranged || castsAtFight(bot, here));  // [lead464]
                 if (!mob && fits)
                     lead.spots[member.guid] = here;
                 else
