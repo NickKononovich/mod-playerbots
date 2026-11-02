@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>  // [lead15]
 
+class Item;
 class Player;
 class Unit;
 
@@ -233,6 +234,11 @@ namespace Leader
                 return true;
         return false;
     }
+    // [lead512] an equipped on-use trinket whose use is an offensive boost (a positive aura, no mana return / mana
+    // efficiency, no tank defence: those stay the member's tool uses): its on-use spell and its recharge (the item's
+    // spell cooldown / category cooldown, else the spell's own). The leader's burn verdict judges it like a burn
+    // cooldown, by the item's name (BurnAllows); defined with UseTrinketAction (GenericSpellActions.cpp)
+    bool BoostTrinket(Item const* item, uint32& spellId, float& rechargeSec);
     // [lead34] user: «Если патруль, надо убивать патруль.» - no wait for a patrol to walk away (no patrol window, no
     // patrol wait, no step back, no lane wait): a patrol near the route or the pull is the leader's target, taken along
     // with the pull when the combined fight is safe (PullPlanner::JudgePack), else pulled as its own pull first

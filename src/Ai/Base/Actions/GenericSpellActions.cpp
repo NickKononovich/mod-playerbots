@@ -14,7 +14,9 @@
 #include "GenericBuffUtils.h"
 #include "Group.h"
 #include "HealAssignmentValues.h"
+#include "Item.h"  // [lead512]
 #include "ItemTemplate.h"
+#include "LeaderOrders.h"  // [lead512] the leader's burn verdict on a trinket
 #include "MotionMaster.h"
 #include "ObjectDefines.h"
 #include "Opcodes.h"
@@ -146,6 +148,45 @@ namespace
                 return false;
         }
     }
+}
+
+// [lead512] b210 rfc-h 5C / 5G: the balance druid's and the ret paladin's on-use trinkets (Tome of Arcane Phenomena,
+// 2 min) went on trash under "generic boost" (always true in an instance, rot9) and were on cooldown at the later
+// bosses. The trinkets the leader's burn verdict judges: the first on-use spell of the item, an aura it puts on the
+// wearer, not a mana return / mana efficiency / tank defence (UseTrinket's own lines for those)
+bool Leader::BoostTrinket(Item const* item, uint32& spellId, float& rechargeSec)
+{
+    spellId = 0;
+    rechargeSec = 0.0f;
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto)
+        return false;
+    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+    {
+        _Spell const& data = proto->Spells[i];
+        if (data.SpellId <= 0 || data.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(data.SpellId);
+        if (!info || !info->IsPositive() ||
+            GetMixedTriggerTrinketSpellIds().count(uint32(data.SpellId)))
+            return false;
+        bool aura = false;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+        {
+            SpellEffectInfo const& effect = info->Effects[e];
+            if (IsManaRestoreEffect(effect) || IsManaEfficiencyEffect(effect) || IsDefensiveTankEffect(effect))
+                return false;
+            aura = aura || effect.Effect == SPELL_EFFECT_APPLY_AURA;
+        }
+        if (!aura)
+            return false;
+        spellId = uint32(data.SpellId);
+        int32 const itemMs = std::max(data.SpellCooldown, data.SpellCategoryCooldown);
+        uint32 const spellMs = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
+        rechargeSec = float(std::max<int64>(itemMs, int64(spellMs))) / 1000.0f;
+        return true;
+    }
+    return false;
 }
 
 CastSpellAction::CastSpellAction(PlayerbotAI* botAI, std::string const spell)
@@ -1345,6 +1386,18 @@ bool UseTrinketAction::UseTrinket(Item* item)
             // Frenzyheart Insignia of Fury (44869).
             if (mixedTriggerTrinketSpellIds.find(spellId) != mixedTriggerTrinketSpellIds.end())
                 return false;
+
+            // [lead512] a led damage dealer's / tank's offensive trinket by the leader's burn verdict on it (boss
+            // first; on trash only when back before the next boss, or a critical pull), like its burn cooldowns; a
+            // healer's trinkets stay its tool uses (BoostTrigger's rule)
+            if (!restoresMana && !improvesManaEfficiency && !defensiveTankEffect && !PlayerbotAI::IsHeal(bot) &&
+                Leader::LedBot(bot))
+            {
+                Leader::MemberEvents events;
+                if (!Leader::Events::Get(bot->GetGUID(), events) ||
+                    !Leader::BurnAllows(events, item->GetTemplate()->Name1))
+                    return false;
+            }
 
             if (!botAI->CanCastSpell(spellId, bot, false, nullptr, item))
                 return false;

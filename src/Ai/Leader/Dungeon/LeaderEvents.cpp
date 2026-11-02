@@ -2349,6 +2349,25 @@ namespace Leader::Dungeon
                 std::string& note = allowed ? allowedNote : heldNote;
                 note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
             }
+            // [lead512] b210 rfc-h 5C Rtdruab / 5G Rtpalae: their on-use trinkets (Tome of Arcane Phenomena, 2 min)
+            // went on trash under the bot's own "generic boost" and were ready only at Oggleflint. An equipped
+            // offensive on-use trinket that is ready is judged like the burn cooldowns, by its recharge (the item's
+            // cooldown), and allowed by its name (UseTrinketAction reads Leader::BurnAllows)
+            for (uint8 slot : {uint8(EQUIPMENT_SLOT_TRINKET1), uint8(EQUIPMENT_SLOT_TRINKET2)})
+            {
+                Item const* trinket = who->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                uint32 spell = 0;
+                float rechargeSec = 0.0f;
+                if (!Leader::BoostTrinket(trinket, spell, rechargeSec) || who->HasSpellCooldown(spell))
+                    continue;
+                std::string const name = trinket->GetTemplate()->Name1;
+                std::string why;
+                bool const allowed = cooldownVerdict(rechargeSec, why);
+                if (allowed)
+                    allowedOut.push_back(name);
+                std::string& note = allowed ? allowedNote : heldNote;
+                note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
+            }
         };
         // [lead187] b180: the blood DK tank cast no Raise Dead / Army of the Dead (sim 1.3 / min each) - its DK
         // cooldowns run only under the leader's Burn (LeaderBurnRule) and the leader gave the tank none. The tank's
