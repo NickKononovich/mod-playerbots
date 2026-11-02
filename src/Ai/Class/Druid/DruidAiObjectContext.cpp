@@ -81,6 +81,7 @@ public:
     DruidTriggerFactoryInternal()
     {
         creators["clearcasting"] = &DruidTriggerFactoryInternal::clearcasting;
+        creators["cat front builder"] = &DruidTriggerFactoryInternal::cat_front_builder;  // [rot64]
         creators["thorns"] = &DruidTriggerFactoryInternal::thorns;
         creators["thorns on party"] = &DruidTriggerFactoryInternal::thorns_on_party;
         creators["thorns on main tank"] = &DruidTriggerFactoryInternal::thorns_on_main_tank;
@@ -157,6 +158,7 @@ private:
     static Trigger* natures_swiftness(PlayerbotAI* botAI) { return new NaturesSwiftnessTrigger(botAI); }
     static Trigger* natures_swiftness_active(PlayerbotAI* botAI) { return new NaturesSwiftnessActiveTrigger(botAI); }
     static Trigger* clearcasting(PlayerbotAI* botAI) { return new ClearcastingTrigger(botAI); }
+    static Trigger* cat_front_builder(PlayerbotAI* botAI) { return new CatFrontBuilderTrigger(botAI); }
     static Trigger* eclipse_solar(PlayerbotAI* botAI) { return new EclipseSolarTrigger(botAI); }
     static Trigger* eclipse_lunar(PlayerbotAI* botAI) { return new EclipseLunarTrigger(botAI); }
     static Trigger* thorns(PlayerbotAI* botAI) { return new ThornsTrigger(botAI); }

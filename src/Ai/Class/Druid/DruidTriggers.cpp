@@ -6,6 +6,7 @@
 
 #include "DruidTriggers.h"
 #include "DruidActions.h"
+#include "DruidCatActions.h"  // [rot64] CatIsBehind
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "InstanceScript.h"
@@ -603,4 +604,11 @@ void FerociousBiteTimeTrigger::TraceCat()
 
     lastTrace = trace;
     LOG_INFO("playerbots", "[rot51] {} cat check on {}: {}", bot->GetName(), boss->GetName(), trace);
+}
+
+// [rot64]
+bool CatFrontBuilderTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    return target && !CatIsBehind(bot, target) && ComboPointsNotFullTrigger::IsActive();
 }

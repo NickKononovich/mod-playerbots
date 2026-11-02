@@ -837,4 +837,15 @@ public:
     bool IsActive() override;
 };
 
+// [rot64] wowsims feral (catOptimalRotation, InFrontOfTarget): with the cat unable to Shred, Mangle (cat) is the
+// builder as soon as its energy is there, like Shred behind the target. Active below 5 combo points while the cat is
+// not behind its target (the Shred check, CatIsBehind).
+class CatFrontBuilderTrigger : public ComboPointsNotFullTrigger
+{
+public:
+    CatFrontBuilderTrigger(PlayerbotAI* botAI) : ComboPointsNotFullTrigger(botAI, 5, "cat front builder") {}
+
+    bool IsActive() override;
+};
+
 #endif

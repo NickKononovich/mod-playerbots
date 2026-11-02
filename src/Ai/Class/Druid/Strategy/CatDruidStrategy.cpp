@@ -269,6 +269,10 @@ void CatDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot64] in front of the target Mangle (cat) builds as soon as it is affordable (wowsims InFrontOfTarget), not
+    // from 60 energy: b201 rfc-h 5H Rtdruaf never behind Oggleflint / Bazzalan (rot51 trace 91 / 102 of 103 states),
+    // energy pooled to 60 at 2 points, Rip down in 55 % of the boss states, busy 40-59 %
+    triggers.push_back(new TriggerNode("cat front builder", {NextAction("mangle (cat)", 5.35f)}));
     triggers.push_back(
         new TriggerNode(
             "almost full energy available", {
