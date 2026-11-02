@@ -179,6 +179,16 @@ private:
     uint32 _attackFirstSeq = 0;  // [lead281] the command (seq) whose unstarted Attack this walk let run first
     std::string const* _dryWhy = nullptr;  // [lead373] the move DryMoveTo judges
     bool _dryFollow = false;               // [lead374] DryFollow runs
+    // [lead370] the walk DryFollow judged clear (the target, where the member stood, the place): the executor's walk
+    // with these inputs is that walk - the leader's check is final, its guard is not run a second time
+    struct JudgedFollow
+    {
+        bool valid = false;
+        ObjectGuid target;
+        Position from;
+        Position place;
+    } _judgedFollow;
+    bool _judgedWalk = false;  // [lead370] the executor walks a judged follow now
 };
 
 // [lead76] Executes the leader's "top up X": the healer's heal on the named member now.

@@ -657,7 +657,18 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target))
             return false;
         Position const place(x, y, z);
-        if (MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true))
+        // [lead370] b200 5G 632-862 s: DryFollow passed Rtdekad's walk, the executor's own GuardIdleMobPath refused
+        // it a moment later (its inputs had moved: the member, the tank's orientation, the cached idle mobs) and the
+        // leader issued it again - 56 times. user: the leader's check is the check: the walk the leader judged clear
+        // from where the member stood to that place (both within the follow's spot tolerance) is walked as judged,
+        // its idle guard not run a second time; any other walk is the member's own and keeps its guards
+        _judgedWalk = _judgedFollow.valid && target->GetGUID() == _judgedFollow.target &&
+                      bot->GetExactDist(_judgedFollow.from) <= Leader::LEADER_SPOT_TOLERANCE &&
+                      place.GetExactDist(_judgedFollow.place) <= Leader::LEADER_SPOT_TOLERANCE;
+        bool const walks =
+            MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
+        _judgedWalk = false;
+        if (walks)
         {
             // [lead372] user: the member walks to the leader's place safely and never swaps it for another: a guard
             // that ended the walk elsewhere (a safe-zone clamp, a stop short of an idle mob's reach) is no way there -
@@ -828,6 +839,7 @@ bool LeaderMoveOrderAction::FollowPlace(Unit* target, uint8 index, float& x, flo
 std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGuid& mob)
 {
     mob.Clear();
+    _judgedFollow.valid = false;
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
@@ -850,6 +862,8 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
     if (!goes && !TransientRefusal(MovementAction::s_moveRefusal))
         return MovementAction::s_moveRefusal;
     mob.Clear();
+    if (goes)  // [lead370] the walk judged clear: the executor's walk with the same inputs takes it as judged
+        _judgedFollow = {true, target->GetGUID(), bot->GetPosition(), Position(x, y, z)};
     return std::string();
 }
 
@@ -881,6 +895,8 @@ bool LeaderMoveOrderAction::SkipsIdleGuard()
     // [lead27] a Follow walk is the member's own path (no point the leader checked): its guards stay
     // [lead34] ... and so does the tank's route walk (the route's point, not a leader-checked spot)
     // [lead373] the leader's dry check judges the move it is about to issue, not the member's current one
+    if (_judgedWalk)  // [lead370] the leader judged this very walk (DryFollow)
+        return true;
     if (_dryWhy)
         return Leader::LedBot(bot) && *_dryWhy != "route walk";
     if (_dryFollow)  // [lead374] a follow place is the member's own path: its guards run
