@@ -267,3 +267,8 @@ bool CastVampiricBloodAction::isUseful()
 
     return CastBuffSpellAction::isUseful();
 }
+
+bool CastRuneStrikeAction::isUseful()
+{
+    return !RuneStrikeHeldForRuneWeapon(bot) && CastMeleeSpellAction::isUseful();
+}

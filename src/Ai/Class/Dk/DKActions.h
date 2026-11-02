@@ -86,6 +86,8 @@ class CastRuneStrikeAction : public CastMeleeSpellAction
 {
 public:
     CastRuneStrikeAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "rune strike") {}
+
+    bool isUseful() override;  // [rot52] RuneStrikeHeldForRuneWeapon
 };
 
 class CastPestilenceAction : public CastSpellAction

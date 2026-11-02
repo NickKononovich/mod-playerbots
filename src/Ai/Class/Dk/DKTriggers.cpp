@@ -171,11 +171,24 @@ void RuneStrikeTrigger::TraceTankBoss()
     LOG_INFO("playerbots", "[rot51] {} blood tank on {}: {}", bot->GetName(), boss->GetName(), trace);
 }
 
+bool RuneStrikeHeldForRuneWeapon(Player* bot)
+{
+    return bot->GetPower(POWER_RUNIC_POWER) < RUNE_STRIKE_RUNE_WEAPON_POOL_RUNIC_POWER &&
+           bot->HasSpell(SPELL_DK_DANCING_RUNE_WEAPON) && !bot->HasSpellCooldown(SPELL_DK_DANCING_RUNE_WEAPON);
+}
+
 bool RuneStrikeTrigger::IsActive()
 {
     TraceTankBoss();
     // [b31_deep] runic power and the dodge / parry aura state first (field reads), then the queued swing
-    if (bot->GetPower(POWER_RUNIC_POWER) < RUNE_STRIKE_RUNIC_POWER || !bot->HasAuraState(AURA_STATE_DEFENSE))
+    uint32 const runicPower = bot->GetPower(POWER_RUNIC_POWER);
+    if (runicPower < RUNE_STRIKE_RUNIC_POWER || !bot->HasAuraState(AURA_STATE_DEFENSE))
+        return false;
+
+    // [rot52] wowsims blood_aggro: Rune Strike only while Dancing Rune Weapon is not ready or at 80+ runic power.
+    // b188 rot51 trace: Dancing Rune Weapon ready for whole stretches while each Rune Strike took the 20 runic power
+    // its 60 needed (rune weapon / ghoul damage 38 DPS against the sim's 420)
+    if (RuneStrikeHeldForRuneWeapon(bot))
         return false;
 
     Spell* queued = bot->GetCurrentSpell(CURRENT_MELEE_SPELL);

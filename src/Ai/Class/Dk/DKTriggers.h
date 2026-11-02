@@ -93,6 +93,11 @@ public:
 // be re-cast every tick above the rotation.
 inline constexpr uint32 SPELL_DK_RUNE_STRIKE = 56815;
 inline constexpr uint32 RUNE_STRIKE_RUNIC_POWER = 200;  // internal units (x10)
+inline constexpr uint32 RUNE_STRIKE_RUNE_WEAPON_POOL_RUNIC_POWER = 800;  // [rot52] wowsims blood_aggro (x10)
+
+// [rot52] wowsims blood_aggro: Rune Strike waits while Dancing Rune Weapon is ready and runic power is under
+// RUNE_STRIKE_RUNE_WEAPON_POOL_RUNIC_POWER (the trigger and the default action)
+bool RuneStrikeHeldForRuneWeapon(Player* bot);
 
 class RuneStrikeTrigger : public Trigger
 {
