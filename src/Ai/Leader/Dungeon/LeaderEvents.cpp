@@ -4445,9 +4445,8 @@ namespace Leader::Dungeon
         // [lead426] user 2026-11-02 (rest / drink / food and Viper are the leader's, in a fight too): a led hunter's
         // aspect switch is the leader's External. In a fight ([lead440]): Viper below wowsims' 10 % line while its
         // need for the fight's seconds left (FightManaLine without the cooldowns and Viper it would cover) exceeds its
-        // mana, its attack aspect (Dragonhawk, else Hawk) at wowsims' 30 % line; out of a fight: Viper below its rest
-        // line for the next fight (RestState::OwnManaLine, the walk regenerates), its attack aspect at the line. 0: no
-        // switch
+        // mana, its attack aspect (Dragonhawk, else Hawk) at wowsims' 30 % line; out of a fight ([lead450]): Viper below
+        // full mana (no damage to cut there), its attack aspect at full. 0: no switch
         auto const viperSwitch = [&](Player* hunter, bool inFight, std::string& why) -> uint32
         {
             PlayerbotAI* hunterAI = GET_PLAYERBOT_AI(hunter);
@@ -4495,10 +4494,14 @@ namespace Leader::Dungeon
             }
             else
             {
-                float const line = RestState::OwnManaLine(hunter);
-                wantViper = pct < line;
-                why = Acore::StringFormat("{}: mana {:.0f} % {} its rest line {:.0f} %",
-                                          wantViper ? "Viper" : "its attack aspect", pct, wantViper ? "<" : ">=", line);
+                // [lead450] b205/b206 rfc-h: the hunters left Viper on the walk at their rest line (OwnManaLine, which
+                // counts Viper's mana in the next fight: 0-50 %) and so spent 176-337 s of their fights in Viper at
+                // half damage (5H MM 337 of 969 s, 5F SV 181, 5E BM 213, 5A MM 176), while in Viper only 13-73 s of
+                // the 300-430 s out of a fight. Out of a fight Viper cuts no damage: its regeneration is free until
+                // the pool is full, the attack aspect goes on at full (or in the fight at wowsims' 30 % line above)
+                wantViper = pct < 100.0f;
+                why = Acore::StringFormat("{}: mana {:.0f} % out of a fight (Viper costs no damage there)",
+                                          wantViper ? "Viper" : "its attack aspect: full", pct);
             }
             if (wantViper && !inViper)
                 return RestState::SPELL_ASPECT_OF_THE_VIPER;
