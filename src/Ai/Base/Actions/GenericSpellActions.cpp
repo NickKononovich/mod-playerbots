@@ -851,6 +851,73 @@ std::string TauntReactionAction::ReadyFor(PlayerbotAI* botAI, Unit* mob)
     return Usable(botAI, spells->ranged, mob) ? spells->ranged : "";
 }
 
+// [lead520] the class's backups while its taunt cools, the ones that taunt first: Death Grip (it taunts and pulls the
+// mob in), Righteous Defense on the victim, Mocking Blow, the area taunts (Challenging Shout / Roar) with the mob in
+// their reach of the tank; then the gap closers that bring the tank to a mob out of its melee (Intercept, Feral Charge
+// - Bear), where its threat work takes the mob back. Each by the game's own cast checks (Usable)
+bool TauntReactionAction::BackupTaunt(PlayerbotAI* botAI, Unit* mob, Unit* victim, Plan& plan)
+{
+    Player* bot = botAI->GetBot();
+    struct Backup
+    {
+        char const* spell;
+        bool onVictim;  // cast on the attacked member (Righteous Defense)
+        bool onSelf;    // an area taunt round the tank
+        bool holds;     // it taunts (the mob is marked peeled)
+    };
+    static Backup const PALADIN[] = {{"righteous defense", true, false, true}};
+    static Backup const WARRIOR[] = {{"mocking blow", false, false, true},
+                                     {"challenging shout", false, true, true},
+                                     {"intercept", false, false, false}};
+    static Backup const DRUID[] = {{"challenging roar", false, true, true},
+                                   {"feral charge - bear", false, false, false}};
+    static Backup const DEATH_KNIGHT[] = {{"death grip", false, false, true}};
+    Backup const* begin = nullptr;
+    Backup const* end = nullptr;
+    switch (bot->getClass())
+    {
+        case CLASS_PALADIN:
+            begin = std::begin(PALADIN);
+            end = std::end(PALADIN);
+            break;
+        case CLASS_WARRIOR:
+            begin = std::begin(WARRIOR);
+            end = std::end(WARRIOR);
+            break;
+        case CLASS_DRUID:
+            begin = std::begin(DRUID);
+            end = std::end(DRUID);
+            break;
+        case CLASS_DEATH_KNIGHT:
+            begin = std::begin(DEATH_KNIGHT);
+            end = std::end(DEATH_KNIGHT);
+            break;
+        default:
+            return false;
+    }
+    if (!mob || !victim)
+        return false;
+    bool const inMelee = bot->IsWithinMeleeRange(mob);
+    for (Backup const* backup = begin; backup != end; ++backup)
+    {
+        // a gap closer only to a mob out of the tank's melee
+        if (!backup->holds && inMelee)
+            continue;
+        if (backup->onSelf && !bot->IsWithinDistInMap(mob, AOE_TAUNT_RADIUS))
+            continue;
+        Unit* castOn = backup->onVictim ? victim : backup->onSelf ? static_cast<Unit*>(bot) : mob;
+        if (!Usable(botAI, backup->spell, castOn))
+            continue;
+        plan.spell = backup->spell;
+        plan.target = castOn->GetGUID();
+        plan.victim = victim->GetGUID();
+        plan.mobs = {mob->GetGUID()};
+        plan.holds = backup->holds;
+        return true;
+    }
+    return false;
+}
+
 bool TauntReactionAction::MakePlan(Plan& plan)
 {
     plan = Plan();
@@ -947,6 +1014,12 @@ bool TauntReactionAction::MakePlan(Plan& plan)
         return false;
 
     std::string const spell = ReadyFor(botAI, mob);
+    // [lead520] user 2026-11-02: with the main taunt on its cooldown the tank uses its backups. b211 rfc-h (8 runs):
+    // 30 real aggro losses, the taunt on its cooldown at about 9 of them, and Death Grip / Challenging Shout /
+    // Challenging Roar / Feral Charge / Intercept were cast 0 times (this plan returned nothing in melee reach)
+    if ((spell.empty() || spell == spells->ranged) && !SpellReady(botAI, spells->taunt) &&
+        BackupTaunt(botAI, mob, victim, plan))
+        return true;
     if (spell.empty())
         return false;
 

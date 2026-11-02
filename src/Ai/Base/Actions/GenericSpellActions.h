@@ -342,6 +342,8 @@ private:
     };
 
     bool MakePlan(Plan& plan);
+    // [lead520] the class's backup taunts / gap closers while its taunt is on cooldown; true: `plan` holds one
+    static bool BackupTaunt(PlayerbotAI* botAI, Unit* mob, Unit* victim, Plan& plan);
     static float SpellRange(PlayerbotAI* botAI, char const* spell, float fallback);
 
     Plan _plan;
