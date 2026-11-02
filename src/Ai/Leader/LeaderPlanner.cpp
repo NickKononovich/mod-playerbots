@@ -298,14 +298,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr float CAREFUL_LOOSE_MOBS = 2.0f;
     // A pack refused this long with the group topped up, after its crowd control had its chance (PrePullCc holds a
     // pull up to 1.5 s for claims and 12 s for a Sap or a trap): the smallest plan found is pulled if it is within
-    // the pack-size cap and CAREFUL_LAST_RESORT_MAX_COST, else a lone mob at range, else the pack is left for the
+    // the pack-size cap and the tank carries it (TankCarries), else a lone mob at range, else the pack is left for the
     // next one (wave 12: tanks stood for minutes before 2-mob packs). Waves 10-12: 7-8 mobs lost someone in 8-15%
     // of pulls, 12 and more in 17-21%, and the wipes came from 12 mobs and more.
     constexpr uint32 CAREFUL_STALL_MS = 20 * IN_MILLISECONDS;
     constexpr uint32 CAREFUL_LAST_RESORT_DEFAULT_CAP = 6;  // with Playerbots.CarefulPullMaxMobs 0
-    // The most a fallback or last-resort plan may cost, in tank healths: wave 13 Razorfen Kraul pulled a plan of
-    // 1.08 and the tank died; above it the tank takes a single mob at range, or leaves the pack.
-    constexpr float CAREFUL_LAST_RESORT_MAX_COST = 0.9f;
+    // [lead263] A fallback or last-resort plan is held to what the tank and the healers carry (TankCarries: its drop
+    // within the most the tank may drop, its healer mana within their pool) instead of the 0.8 / 0.9 / 1.0 / 3.0 tank
+    // health caps (wave 13 Razorfen Kraul: a plan of 1.08 killed the tank; RFC 7 mobs at 1.82).
     // [careful_ready_last_resort] User rule 2026-10-25 (combat time as high as possible): a ready group (topped up,
     // nobody sitting below its own rest line) takes the last resort / the hard minimum on the first refused look when
     // its smallest plan is within the pack-size cap - the CAREFUL_STALL_MS wait stays for packs over the cap only. A
@@ -313,17 +313,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // hard minimum at once too. st-n 2026-10-25 08:49: Nightmare Wanderer, 3 mobs at cost 0.95, stood 20 s + 11 s and
     // the fight left the tank at 92 %; 132 of the wave's 432 refusals were "at cost 0.00".
     constexpr bool CAREFUL_READY_LAST_RESORT = true;
-    // [careful_small_pack_cost] The cost cap of the last resort and of the fallback for a small plan. The calibrated
-    // drop law of waves 13/15 put the tank's p90 lowest health over a pull of cost 1.0 at a drop of 0.32 (melee)
-    // / 0.36 (casters), well inside its 0.6 line. The deaths behind the 0.9 / 0.8 caps were 7 mobs at 1.82
-    // (RFC) and RFK at 1.08; the caps refused 3 mobs at 0.95 (the fight: tank >= 92 %) while the guarantee took 6 at
-    // 0.90 after the stand. A plan of at most CAREFUL_SMALL_PACK_MOBS mobs is held to CAREFUL_SMALL_PACK_MAX_COST.
-    constexpr uint32 CAREFUL_SMALL_PACK_MOBS = 3;
-    constexpr float CAREFUL_SMALL_PACK_MAX_COST = 1.0f;
-    float SmallPackCostCap(uint32 mobs, float cap)
-    {
-        return mobs <= CAREFUL_SMALL_PACK_MOBS ? std::max(cap, CAREFUL_SMALL_PACK_MAX_COST) : cap;
-    }
     constexpr float CAREFUL_TANK_MANA = 35.0f;           // a paladin tank below this cannot taunt through a pull
     constexpr float CAREFUL_MIN_PULL_RANGE = 8.0f;
     constexpr float CHARGE_MIN_RANGE = 8.0f;   // Charge (warrior): 8-25 yd, out of combat ("[pull plan] ... charge")
@@ -355,7 +344,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // User, 2026-10-24: «раз мы зашли в данж и предметы подходят - нет смысла стоять; минимум одного моба надо всё
     // равно пулить, если все условия хороши (все вместе, хил недалеко)». A group topped up, here and nobody sitting
     // takes the lone mob after this long refused (and waits this long for a ranged pull before it walks in), if the
-    // single costs under CAREFUL_FALLBACK_MAX_COST and the healer sees its fight; else the CAREFUL_STALL_MS path.
+    // tank carries the single (TankCarries) and the healer sees its fight; else the CAREFUL_STALL_MS path.
     constexpr uint32 CAREFUL_READY_ONE_MS = 3 * IN_MILLISECONDS;
     // A patrol this close whose path runs through the spot walks into the fight before it is over.
     constexpr float CAREFUL_PATROL_RANGE = 40.0f;  // the timeless test, for a patrol whose walk cannot be forecast
@@ -481,24 +470,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // A pack that cannot be split is still pulled, at its edge or at range, once the group is topped up, if it is
     // at most this much over what the group takes (a real group does not skip the pack in its way).
     constexpr float CAREFUL_FALLBACK_OVERLOAD = 1.5f;
-    // A fallback plan (topped up, or the last resort) never costs this much of the tank's health or more: only the
-    // hard-minimum lone mob is left then. RFC 2026-10-24 18:28: a topped-up fallback los pull of cost 1.82 (182 % of
-    // the tank's health), 7 mobs came, the tank died.
-    constexpr float CAREFUL_FALLBACK_MAX_COST = 0.8f;
-    // The hard minimum (the lone mob of a pack nothing fits, the quick single) is pulled only while what it brings
-    // costs at most this. Wave 44 Deadmines (Gilnid's foundry): "one (every plan too dangerous) Goblin Craftsman,
-    // 12 mobs, cost 15.41" was pulled, 20 came, the group died. Over it: a pull round a corner, a wait for a mover of
-    // its pack to walk off, the group's pre-pull crowd control (the refused pack), else "[pull blocked]".
-    // Sweep batch2 (21:27): at 1.2 the cap blocked ordinary 3-4 mob packs (cost 1.37-2.76: RFK Quilguards, ZF,
-    // Uldaman, Magister's Terrace) and stalled the runs; wave 44 took such packs (Searing Blade 4 mobs, 1.37)
-    // without a death. 3.0 still blocks the 8+ mob pulls (4.36-15.41).
-    constexpr float CAREFUL_LAST_RESORT_HARD_CAP = 3.0f;
-    // [b47_plan] The hard minimum's lone mob that costs more than this while a mover it brings (a patrol walking in,
-    // a wanderer) can walk off waits for it first, as long as the stand's mover wait runs (2 x CAREFUL_BLOCK_
-    // ESCALATE_MS): brd-h 20261026-093620-brd-h-5B-6 took "one ... Anvilrage Soldier, 6 mobs, cost 1.75" with the
-    // Blazing Fireguard patrol 28.7 yd off counted in it; 11 came, the wipe.
-    constexpr float CAREFUL_LAST_RESORT_SOFT_COST = 1.25f;
-    // The escalation of that cap (x2, then x3 after twice this) while the tank stands topped up without a pull; the
+    // The hard minimum's stand (lead110: the lone mob is judged, no cap escalates) while the tank stands topped up; the
     // stand ends with a fight or a gap this long without such a look (the tank walked on, the group sat down).
     constexpr uint32 CAREFUL_BLOCK_ESCALATE_MS = 30 * IN_MILLISECONDS;
     constexpr uint32 CAREFUL_BLOCK_GAP_MS = 15 * IN_MILLISECONDS;
@@ -522,9 +494,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // Scholomance hall: 18-23).
     constexpr uint32 CAREFUL_BLOCK_GUARANTEE_OVER_MS = 45 * IN_MILLISECONDS;  // [plan29_audit] 90 s -> 45 s
     constexpr float GUARANTEE_OVER_CAP_SCALE = 2.0f;  // [plan29_audit] 1.5 -> 2.0
-    // [b30_overpull] ... and what such a pack costs stays within this (the hard cap's top escalation, x3): over it the
-    // over-cap pack is no guarantee but "no safe pull" (a corner, a mover's walk-off or crowd control still may).
-    constexpr float GUARANTEE_OVER_CAP_MAX_COST = 3.0f * CAREFUL_LAST_RESORT_HARD_CAP;
     // The pack's stand (_packBlocked) is kept across a look away this long (the harness skips a refused pack for
     // 180 s and comes back to it), and the memo is pruned past this many mobs.
     constexpr uint32 PACK_BLOCKED_GAP_MS = 5 * MINUTE * IN_MILLISECONDS;
@@ -4502,6 +4471,22 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // [lead258] The pack's average damage on the tank per second: what it lands over the fight (the estimate's
     // lives: each mob its kill time plus half the others') over the fight's length.
+    float AverageDtps(PackEstimate const& estimate, float tankHealth);
+
+    // [lead263] The tank and the healers carry the plan: the tank's drop (DropP90) within the most it may drop
+    // (PackEstimate::maxDrop) and the healer mana it takes within their pool (no healer: no mana term). `why`: the
+    // terms.
+    bool TankCarries(PackEstimate const& estimate, GroupSupport const& support, std::string* why = nullptr)
+    {
+        float const pool = HealerPool(support);
+        bool const drop = std::max(estimate.drop, 0.0f) <= estimate.maxDrop;
+        bool const mana = pool <= 0.0f || TakenCost(estimate) <= pool;
+        if (why)
+            *why = Acore::StringFormat("drop {:.2f} of at most {:.2f}, healer mana {:.2f} of {:.2f} tank hp",
+                                       estimate.drop, estimate.maxDrop, TakenCost(estimate), pool);
+        return drop && mana;
+    }
+
     float AverageDtps(PackEstimate const& estimate, float tankHealth)
     {
         return estimate.fightSec > 0.0f ? estimate.cost * tankHealth / estimate.fightSec : estimate.landedDps;
@@ -8710,16 +8695,15 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     };
     // Over what the group takes (the levelling topped-up fallback), a plan is still no more than the tank's health
     // can carry; measured plans are held to the tank's and the healers' limits themselves (CarefulOverload).
-    // `fallbackCost`: a fallback plan is being looked for, held under CAREFUL_FALLBACK_MAX_COST whatever the mode.
+    // `fallbackCost`: a fallback plan is being looked for, held to what the tank carries whatever the mode
+    // ([lead263] TankCarries).
     bool fallbackCost = false;
-    auto const affordable = [measured, &fallbackCost](PackEstimate const& estimate, float limit)
+    auto const affordable = [measured, &fallbackCost, &support](PackEstimate const& estimate, float limit)
     {
-        if (fallbackCost && !estimate.boss &&
-            estimate.cost >= SmallPackCostCap(estimate.mobs, CAREFUL_FALLBACK_MAX_COST))
+        if (fallbackCost && !estimate.boss && !TankCarries(estimate, support))
             return false;
 
-        return limit <= 1.0f || measured ||
-               estimate.cost <= SmallPackCostCap(estimate.mobs, CAREFUL_LAST_RESORT_MAX_COST);
+        return limit <= 1.0f || measured || TankCarries(estimate, support);
     };
 
     // The smallest plan of a pack nothing fits: the last resort of a group that has waited long enough.
@@ -10132,8 +10116,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 PackEstimate const estimate = EstimatePack(pack, bot, groupDps, estimateMode);
                 OverloadTerms terms;
                 CarefulOverload(bot, estimate, strength, support, kit, measured, &terms);
-                if (estimate.boss || !withinCap(estimate) || terms.Max() > 1.0f ||
-                    estimate.cost >= CAREFUL_FALLBACK_MAX_COST)
+                if (estimate.boss || !withinCap(estimate) || terms.Max() > 1.0f || !TankCarries(estimate, support))
                     continue;
 
                 // the cast spot stays in the healer's sight
@@ -10511,9 +10494,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                         problem = Acore::StringFormat("brings {} mobs where it is fought", onePack.size());
                     else if (woken)
                         problem = Acore::StringFormat("is reached by a walk that wakes {}", woken->GetName());
-                    else if (quick.cost >= SmallPackCostCap(quick.mobs, CAREFUL_FALLBACK_MAX_COST))
-                        problem = Acore::StringFormat("costs {:.2f} tank hp (cap {:.2f})", quick.cost,
-                                                      SmallPackCostCap(quick.mobs, CAREFUL_FALLBACK_MAX_COST));
+                    else if (std::string carries; !TankCarries(quick, support, &carries))
+                        problem = "is more than the tank carries: " + carries;
                     else if (!HealerSees(bot, fightAt))
                         problem = "is fought where the healer does not see";
 
@@ -10533,7 +10515,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                                          : std::vector<Unit*>{one});
                 PackEstimate const oneEstimate =
                     one ? EstimatePack(single, bot, groupDps, estimateMode) : PackEstimate();
-                // Over CAREFUL_LAST_RESORT_HARD_CAP the hard minimum is no pull: round a corner (CAREFUL_FALLBACK_
+                // A hard minimum the leader's judge refuses (JudgeMobs) is no pull: round a corner (CAREFUL_FALLBACK_
                 // OVERLOAD, the cost cap of a fallback), else wait for a mover of what it brings to walk off, else
                 // blocked; the refused pack is left to the group's pre-pull crowd control (HoldForPrePullCc).
                 // Sweep batch4 (LBRS worgs 6.94, Shattered Halls entrance 3.59, Gundrak golems 3.35): a blocked pack
@@ -10554,7 +10536,6 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 // pull); it does not, round a corner, else no safe pull here (the split, the route round it). b143
                 // rfc-h 853-913 s: the cap / stand refusals cycled 60 s in the Searing Blade room.
                 (void)blockNow;
-                _lastResortCap = CAREFUL_LAST_RESORT_HARD_CAP;
                 float singleOverload = 0.0f;
                 std::string singleJudged;
                 bool const singleFits = one && !oneEstimate.boss && JudgeMobs(single, singleOverload, singleJudged);
@@ -11113,20 +11094,20 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         }
     }
 
-    // [b33_aoepull] The AoE pull of a REQUIRED route blocker (user 2026-10-26: «почему обойти, а не бить?»; tanks gather
-    // the adds, everyone AoEs the stack, in every dungeon). strat-n 20261026-000434-strat-n-5A-2 (and strat-h) King's
-    // Square: the Ravaged Cadaver chain wakes 19-36 mobs over the cap 18, every split search failed ("no peel of at
-    // most 4 mobs from 6 candidates (fewest 14-22)"), the harness rightly refused its walk-in ([b33_bodypull]) and the
-    // run stalled on the only way on. A pack the split did not peel, that the harness marks required (AoePull::
+    // [b33_aoepull] The AoE pull of a REQUIRED route blocker (user 2026-10-26: «почему обойти, а не бить?»; tanks
+    // gather the adds, everyone AoEs the stack, in every dungeon). strat-n 20261026-000434-strat-n-5A-2 (and strat-h)
+    // King's Square: the Ravaged Cadaver chain wakes 19-36 mobs over the cap 18, every split search failed ("no peel of
+    // at most 4 mobs from 6 candidates (fewest 14-22)"), the harness rightly refused its walk-in ([b33_bodypull]) and
+    // the run stalled on the only way on. A pack the split did not peel, that the harness marks required (AoePull::
     // MarkRequired: on the only way to a boss / event / required target), is pulled whole when all of these hold:
     //  (1) the group is fully ready: everyone alive and within AOE_PULL_GATHER_RANGE of the tank, topped up and nobody
     //      sitting below its line or buffing (toppedUp, IsAnyoneSittingBelowLine), every healer within
     //      AOE_PULL_HEALER_RANGE of the tank and in its sight, the healer seeing the cast spot and the stack spot;
-    //  (2) the group's proven capacity in this run (ProvenFor: the biggest pull it survived cleanly) is at least
-    //      AOE_PULL_PROVEN_SHARE of the predicted size, or the predicted size is within AOE_PULL_CAP_SCALE x the cap
-    //      (overCapMobs: the cap the hopeless verdict names - "over 18" in King's Square and in mgt-h 20261026-000434-
-    //      mgt-h-5G-16's Sunblade Mage Guard, 20-21 mobs, split fewest 17, proven 7.3, Blood DK tank) and the comp has
-    //      a tank with AoE threat (HasAoeThreat) and AOE_PULL_MIN_AOE_DPS AoE damage dealers;
+    //  (2) [lead263] the group proved that many mobs in this run (ProvenFor: the biggest pull it survived cleanly,
+    //      with what it left), or its AoE carries the stack: a tank with AoE threat, the members' area spells
+    //      (MemberAreaDps) and the stack's fight played out (EstimatePack) within what the tank carries
+    //      (TankCarries) - instead of the 0.7 proven share, the 1.5 cap scale, the 2 AoE dealers, the 4x proven
+    //      and the 18-tank-health ceiling (mgt-h 20261026-000434-mgt-h-5G-16: 20-21 Sunblade mobs over the cap 18);
     //  (3) a stack spot: KILL_SPOT_RETREAT_STEP at a time (AOE_PULL_RETREATS at most) back on the line from the pulled
     //      mob through the tank, the healer sees it, the walks there wake nobody outside what comes; one round a corner
     //      (out of the pulled mob's sight: the chain turns the corner and stacks) is preferred to a plain back pull.
@@ -11134,17 +11115,6 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // logged as aoe_pull_plan (predicted, proven, spot) and published for the harness (AoePull::NotePlan). With (2)
     // and (3) holding but (1) not, the refusal is a readiness hold ("group not ready", RefusalIsReadiness), never a
     // dead end; with (2) or (3) failing, the hold / hopeless verdict below stands as before (aoe_pull_rejected).
-    constexpr float AOE_PULL_PROVEN_SHARE = 0.7f;
-    constexpr float AOE_PULL_CAP_SCALE = 1.5f;
-    // [b34_strat] the most tank healths an aoe pull the comp carries (not the proven capacity) may cost
-    constexpr float AOE_PULL_COMP_MAX_COST = 2.0f * GUARANTEE_OVER_CAP_MAX_COST;
-    // [b38_mgt] ... and the comp carries at most this many times what the group proved in this run: mgt-n
-    // 20261026-050341-mgt-n-5E-14 (1224-1255 s, lvl 70 Prot Pala, 14.9k hp, group dps ~2000) took the 16-mob Sunblade
-    // Magister chain on "predicted 18, proven 0.8, tank aoe yes, aoe dps 2, cost 14.92": 15 attackers, tank, lock and
-    // priest dead in 4 s. The same wave's strat Ravaged Cadaver aoe pull (Rtwaraa, cost 14.25) lived on proven 6.8
-    // for 23 predicted (x3.4).
-    constexpr float AOE_PULL_COMP_PROVEN_SCALE = 4.0f;
-    constexpr uint32 AOE_PULL_MIN_AOE_DPS = 2;
     constexpr uint32 AOE_PULL_CANDIDATES = 4;
     constexpr uint32 AOE_PULL_RETREATS = 4;
     constexpr float AOE_PULL_GATHER_RANGE = 40.0f;
@@ -11282,33 +11252,30 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     return false;
                 }
                 size_t const predicted = std::max(pack.size(), adds.size() + 1);
-                bool const provenCarries = proven.mobs >= AOE_PULL_PROVEN_SHARE * float(predicted);
-                bool const compCarries = float(predicted) <= AOE_PULL_CAP_SCALE * float(overCapMobs) && tankAoe &&
-                                         aoeDps >= AOE_PULL_MIN_AOE_DPS &&
-                                         float(predicted) <= AOE_PULL_COMP_PROVEN_SCALE * proven.mobs;  // [b38_mgt]
+                // [lead263] proven, or the AoE fight of the stack carried (b34_strat: strat-h
+                // 20261026-014521-strat-h-5E-1 took a 26-mob chain at cost 45.50 on the comp alone and wiped; the AoE
+                // fight is judged here)
+                bool const provenCarries = proven.mobs >= float(predicted);
+                std::string carries = "no AoE estimate";
+                bool compCarries = false;
+                if (!provenCarries && tankAoe)
+                {
+                    PackEstimate stack = EstimatePack(pack, bot, groupDps, estimateMode);
+                    if (stack.aoeSec > 0.0f)
+                    {
+                        stack.cost = stack.aoeCost;
+                        stack.spellCost = stack.aoeSpellCost;
+                        stack.fightSec = stack.aoeSec;
+                        stack.drop = stack.aoeDrop;
+                        compCarries = TankCarries(stack, support, &carries);
+                    }
+                }
                 if (!provenCarries && !compCarries)
                 {
-                    failWhy = Acore::StringFormat("{} mobs predicted: proven {:.1f} (needs {:.1f}), cap {} x{:.1f}, "
-                                                  "tank aoe {}, aoe dps {} (needs {}), comp at most x{:.0f} proven",
-                                                  predicted, proven.mobs, AOE_PULL_PROVEN_SHARE * float(predicted),
-                                                  overCapMobs, AOE_PULL_CAP_SCALE, tankAoe ? "yes" : "no", aoeDps,
-                                                  AOE_PULL_MIN_AOE_DPS, AOE_PULL_COMP_PROVEN_SCALE);
+                    failWhy = Acore::StringFormat("{} mobs predicted: proven {:.1f}, tank aoe {}, aoe dps {}: {}",
+                                                  predicted, proven.mobs, tankAoe ? "yes" : "no", aoeDps, carries);
                     return false;
                 }
-                // [b34_strat] the comp alone carries no pull the planner's own estimate calls unsurvivable: strat-h
-                // 20261026-014521-strat-h-5E-1 took King's Square's Ravaged Cadaver chain on "26 predicted, proven
-                // 0.0, tank aoe yes, aoe dps 3" at cost 45.50 tank healths (35 mobs with the patrol forecast) and
-                // wiped (31 attackers, tank dead in 28 s). The four aoe pulls of build 34 that lived cost 3.0-17.9.
-                if (!provenCarries)
-                    if (PackEstimate const aoeEstimate = EstimatePack(pack, bot, groupDps, estimateMode);
-                        aoeEstimate.cost > AOE_PULL_COMP_MAX_COST)
-                    {
-                        failWhy = Acore::StringFormat("{} mobs predicted at cost {:.2f}, over the aoe ceiling {:.2f} "
-                                                      "(proven {:.1f}, needs {:.1f})", predicted, aoeEstimate.cost,
-                                                      AOE_PULL_COMP_MAX_COST, proven.mobs,
-                                                      AOE_PULL_PROVEN_SHARE * float(predicted));
-                        return false;
-                    }
                 if (choice.mob && (choice.corner || !corner))
                     return true;  // a spot as good is kept
                 choice.mob = candidate;
@@ -11768,8 +11735,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // [chain_pull] right after a fight a small cheap pull close by goes at once, the group above its own rest lines
     bool chain = false;
     if (CHAIN_PULL && !fallback && !chosen.boss && chosen.mobs && chosen.mobs <= lastResortMobs &&
-        chosen.cost < SmallPackCostCap(chosen.mobs, CAREFUL_FALLBACK_MAX_COST) &&
-        bot->GetHealthPct() >= CHAIN_PULL_TANK_HEALTH && IsGroupPresent(bot))
+        TankCarries(chosen, support) && bot->GetHealthPct() >= CHAIN_PULL_TANK_HEALTH && IsGroupPresent(bot))
     {
         uint32 const lastFight = PullCheck::LastFightMs(bot);
         Unit* const chainMob = botAI->GetUnit(_planCached);
@@ -12197,24 +12163,14 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         }
     }
 
-    // A fallback that grew past CAREFUL_FALLBACK_MAX_COST (a patrol counted in) is not pulled, a lone mob past
-    // CAREFUL_LAST_RESORT_HARD_CAP neither.
-    // [careful_fallback_cap_consistent] The fallback's cap is the one its search used (SmallPackCostCap: 1.0 for a
-    // plan of at most CAREFUL_SMALL_PACK_MOBS). Wave 23 (build 24): the search took 2-3 mob fallbacks at 0.86-0.98
-    // under the small-pack cap, this gate held them under the plain 0.80 as "held for now: fallback plan costs 0.98
-    // tank hp" - a hold no rest can change, the harness waits a "held for now" without a clock: gd-h 0/5, nex-h 1/5,
-    // scholo-h stalled at a 2-mob pack for 4 minutes with the group full.
-    float const singleCap = std::max(CAREFUL_LAST_RESORT_HARD_CAP, _lastResortCap);
-    float const fallbackCap = SmallPackCostCap(chosen.mobs, CAREFUL_FALLBACK_MAX_COST);
-    bool const splitCapped = _planSingle || splitPlan;  // [b36_sv] a corner peel: its search's cap (see splitPlan)
-    if (fallback && !patrolFits && !chosen.boss && !_planGuaranteed &&
-        chosen.cost >= (splitCapped ? singleCap : fallbackCap))
+    // A fallback that grew past what the tank carries (a patrol counted in) is not pulled ([lead263] TankCarries,
+    // the same test its search used: [careful_fallback_cap_consistent], wave 23 held 2-3 mob fallbacks its search
+    // took under another cap, a hold no rest can change).
+    if (std::string carries;
+        fallback && !patrolFits && !chosen.boss && !_planGuaranteed && !TankCarries(chosen, support, &carries))
     {
-        LogPullHold(bot, Acore::StringFormat("fallback plan costs {:.2f} tank hp, over {:.2f}", chosen.cost,
-                                             splitCapped ? singleCap : fallbackCap)
-                             .c_str(),
-                    target);
-        _planNotReadyWhy = Acore::StringFormat("fallback plan costs {:.2f} tank hp", chosen.cost);
+        LogPullHold(bot, ("fallback plan is more than the tank carries: " + carries).c_str(), target);
+        _planNotReadyWhy = "fallback plan is more than the tank carries: " + carries;
         return false;
     }
 
