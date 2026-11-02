@@ -38,7 +38,9 @@ namespace LeaderCommand
     inline bool BurnToolUse(Player* bot, std::string const& name, bool critical, bool healer)
     {
         return (name == "raise dead" && (bot->HasAura(SPELL_MASTER_OF_GHOULS) || critical)) ||
-               (name == "inner focus" && healer);
+               (name == "inner focus" && healer) ||
+               // [lead524] Vanish as the threat drop: a mob already on the rogue, or its critical health
+               (name == "vanish" && (!bot->getAttackers().empty() || critical));
     }
 
     // May the bot's AoE hit around `pos`? Not led or no rule from the leader: true (the rotation's own choice).

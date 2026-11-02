@@ -513,6 +513,32 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                                              std::string(Leader::MethodName(order.method)) + ")"));
         }
     }
+    // [lead524] wowsims assassination: the rogue is in Stealth at the pull so its first ability out of it starts
+    // Overkill (the talent's aura, 20 s of energy regen). The boss pull opening is its stealth's moment, like the
+    // pre-pull potion; out of combat and Stealth ready (the game's checks are the cast's own)
+    constexpr uint32 SPELL_OVERKILL_TALENT = 58426;
+    constexpr uint32 SPELL_STEALTH = 1784;
+    // the order is done once the rogue is in Stealth or fighting (its slot is free for the next External)
+    for (Player* bot : members)
+        if (Leader::MemberEvents events; bot->getClass() == CLASS_ROGUE &&
+                                         Leader::Events::Get(bot->GetGUID(), events) &&
+                                         events.externalSpell == SPELL_STEALTH &&
+                                         (bot->HasAura(SPELL_STEALTH) || bot->IsInCombat() || !boss))
+            Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+    if (boss)
+    {
+        for (Player* bot : members)
+            if (bot->getClass() == CLASS_ROGUE && bot->IsAlive() && !bot->IsInCombat() &&
+                bot->HasSpell(SPELL_OVERKILL_TALENT) && bot->HasSpell(SPELL_STEALTH) &&
+                !bot->HasAura(SPELL_STEALTH) && !bot->HasSpellCooldown(SPELL_STEALTH) &&
+                Leader::Events::SetExternal(bot->GetGUID(), SPELL_STEALTH, bot->GetGUID()))
+                logEvent(bot, "External",
+                         JsonObject()
+                             .Num("spell", SPELL_STEALTH)
+                             .Str("on", bot->GetName())
+                             .Str("boss", boss->GetName())
+                             .Str("why", "pre-pull Stealth for Overkill: the boss pull opens"));
+    }
     if (!fighting)
         return;
 

@@ -226,7 +226,10 @@ namespace Leader
         // [lead411] b201 rfc-h 5B: the shadow priest's Inner Focus (3 min) went at its first 5 Shadow Weaving stacks
         // on trash, never on a boss (wowsims shadow: Inner Focus -> Mind Flay on cooldown). A healer's Inner Focus
         // goes into its expensive heals (LeaderCommand::BurnToolUse)
-        "inner focus"};
+        "inner focus",
+        // [lead524] b211 rfc-h: the assassination rogue's Overkill Vanish (3 min) went on trash 70-120 s before the
+        // bosses; its threat drop (a mob on the rogue) stays its tool (LeaderCommand::BurnToolUse)
+        "vanish"};
     inline bool IsBurnCooldown(std::string const& name)
     {
         for (char const* burn : BURN_COOLDOWNS)

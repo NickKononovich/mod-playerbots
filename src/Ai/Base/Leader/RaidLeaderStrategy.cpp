@@ -17,6 +17,7 @@
 #include "Group.h"
 #include "LeaderCommand.h"    // [lead410] BurnToolUse
 #include "LeaderOrders.h"     // [lead15] the leader's member events
+#include "Log.h"  // [lead524] the burn hold line
 #include "MovementActions.h"  // [lead15]
 #include "ObjectAccessor.h"   // [lead401]
 #include "Playerbots.h"
@@ -24,6 +25,7 @@
 #include "SpellInfo.h"  // [lead188] the dispel types
 #include "SpellMgr.h"
 #include "TestRunnerStrategy.h"  // [lead17] the harness's waypoint for a member
+#include "Timer.h"  // [lead524]
 
 namespace
 {
@@ -506,7 +508,35 @@ namespace
             return true;
         if (Leader::IsBurnCooldown(name) && !Leader::BurnAllows(events, name) &&  // [lead178] per cooldown
             !LeaderCommand::BurnToolUse(self, name, CriticalHealth(self), PlayerbotAI::IsHeal(self)))  // [lead410]
+        {
+            // [lead524] b211 rfc-h 5E: the rogue's Cold Blood stood ready at 5 combo points on Bazzalan with no line
+            // saying what held it. The hold names the command it read (its intensity, the cooldowns its Burn allows)
+            if (!gate && combat)
+            {
+                static std::mutex holdLock;
+                static std::map<std::pair<ObjectGuid, std::string>, uint32> holdLogged;
+                uint32 const now = getMSTime() ? getMSTime() : 1;
+                bool log = false;
+                {
+                    std::lock_guard<std::mutex> guard(holdLock);
+                    uint32& at = holdLogged[{self->GetGUID(), name}];
+                    if (!at || getMSTimeDiff(at, now) >= 10 * IN_MILLISECONDS)  // a log throttle, no decision
+                    {
+                        at = now;
+                        log = true;
+                    }
+                }
+                if (log)
+                {
+                    std::string allowed;
+                    for (std::string const& burn : events.burnAllowed)
+                        allowed += (allowed.empty() ? "" : ", ") + burn;
+                    LOG_INFO("playerbots", "[burn-hold] {} holds {}: the leader's intensity {} (Burn allows: {})",
+                             self->GetName(), name, uint32(events.intensity), allowed.empty() ? "-" : allowed);
+                }
+            }
             return true;
+        }
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
         // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
         // damage: only under the leader's Attack and not under its Stop (no threat headroom)
