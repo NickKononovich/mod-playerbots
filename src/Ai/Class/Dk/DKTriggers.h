@@ -100,6 +100,12 @@ public:
     RuneStrikeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "rune strike") {}
 
     bool IsActive() override;
+
+private:
+    // [rot51] debug trace of a tanking Blood DK on a dungeon boss: swing, Rune Strike, Dancing Rune Weapon, Raise
+    // Dead inputs (logged when they change)
+    void TraceTankBoss();
+    std::string lastTrace;
 };
 
 // [b31_deep] Ready runes for a rune-paid spell, Death runes standing in for any type (MAX_RUNES = 6 slots).

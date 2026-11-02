@@ -25,6 +25,11 @@ public:
     SliceAndDiceTrigger(PlayerbotAI* botAI)
         : BuffTrigger(botAI, "slice and dice", 1, false, false, SLICE_AND_DICE_REFRESH_MS) {}
     bool IsActive() override;  // [melee_audit_b30] 2+ combo points, not on a target about to die
+
+private:
+    // [rot51] debug trace of the finisher inputs at 4+ combo points on a dungeon boss (logged when they change)
+    void TraceFinisher();
+    std::string lastTrace;
 };
 
 // [b31_wr] the self buff (63848, 60 s) missing or under 5 s, on a bleeding target (the cast needs one)

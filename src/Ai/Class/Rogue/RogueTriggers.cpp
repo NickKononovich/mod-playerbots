@@ -11,6 +11,7 @@
 #include "RoguePoisons.h"
 #include "GenericBuffUtils.h"
 #include "ServerFacade.h"
+#include "StringFormat.h"  // [rot51]
 #include "TargetValue.h"
 
 namespace
@@ -344,8 +345,39 @@ bool ShadowDanceTrigger::IsActive()
 // gets the damage finisher instead (Eviscerate / Envenom on "target with combo points almost dead").
 // [b31_wr] A 2-point cast only when the buff is gone; a running one (inside the refresh window) waits for 4 points,
 // build 30 Combat refreshed it at 2 points 3.3 times a minute.
+// [rot51] b187 5B combat: Rupture 0.8 a minute against the sim's 2.2, white swings low. The finisher inputs at 4+
+// points on a boss, one line per change (seconds and energy in steps of 10).
+void SliceAndDiceTrigger::TraceFinisher()
+{
+    constexpr uint8 TRACE_MIN_COMBO_POINTS = 4;
+    constexpr uint8 ENERGY_STEP = 10;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    uint8 const combo = boss ? AI_VALUE2(uint8, "combo", "current target") : 0;
+    if (!boss || !boss->IsDungeonBoss() || combo < TRACE_MIN_COMBO_POINTS)
+    {
+        lastTrace.clear();
+        return;
+    }
+
+    Aura const* snd = botAI->GetAura("slice and dice", bot);
+    Aura const* rupture = botAI->GetAura("rupture", target, true);
+    std::string const trace = Acore::StringFormat(
+        "cp {} energy {}+ melee {} melee attacking {}, slice and dice {} s, own rupture {} s, lives 10 s {} 20 s {}",
+        combo, AI_VALUE2(uint8, "energy", "self target") / ENERGY_STEP * ENERGY_STEP, bot->IsWithinMeleeRange(target),
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING), snd ? snd->GetDuration() / IN_MILLISECONDS : 0,
+        rupture ? rupture->GetDuration() / IN_MILLISECONDS : 0, TargetLivesFor(botAI, 10.0f),
+        TargetLivesFor(botAI, 20.0f));
+    if (trace == lastTrace)
+        return;
+
+    lastTrace = trace;
+    LOG_INFO("playerbots", "[rot51] {} finisher check on {}: {}", bot->GetName(), boss->GetName(), trace);
+}
+
 bool SliceAndDiceTrigger::IsActive()
 {
+    TraceFinisher();
     uint8 const comboPoints = AI_VALUE2(uint8, "combo", "current target");
     if (comboPoints < SND_MIN_COMBO_POINTS)
         return false;

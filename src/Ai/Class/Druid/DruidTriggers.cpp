@@ -15,6 +15,7 @@
 #include "Player.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "StringFormat.h"  // [rot51]
 #include "TargetValue.h"
 #include "HealthTriggers.h"  // [b32_tank_aoe] RestState
 #include "Timer.h"           // [b32_tank_aoe] getMSTime
@@ -568,4 +569,38 @@ bool BearBattleResReshiftTrigger::IsActive()
 
     uint32 const attempt = BearBattleRes::LastAttemptMs(botAI);
     return attempt && getMSTimeDiff(attempt, getMSTime()) < BearBattleRes::RESHIFT_WINDOW_MS;
+}
+
+// [rot51] b187 5H cat: Rip 1.7 a minute against the sim's 2.2, Shred 12.8 against 17.4. The Rip / Shred inputs on a
+// boss, one line per change (seconds and energy in steps of 10, Shred's own position requirement included).
+void FerociousBiteTimeTrigger::TraceCat()
+{
+    constexpr uint8 ENERGY_STEP = 10;
+    constexpr int32 SECONDS_STEP = 5;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !boss->IsDungeonBoss() || !bot->IsInCombat())
+        return;
+
+    Aura const* rip = botAI->GetAura("rip", target, true);
+    Aura const* rake = botAI->GetAura("rake", target, true);
+    Aura const* roar = botAI->GetAura("savage roar", bot);
+    auto seconds = [](Aura const* aura)
+    { return aura ? aura->GetDuration() / IN_MILLISECONDS / SECONDS_STEP * SECONDS_STEP : 0; };
+    std::string const trace = Acore::StringFormat(
+        "cp {} energy {}+ clearcasting {} cat form {} melee {} behind {} melee attacking {}, own rip {}+ s rake {}+ "
+        "s savage roar {}+ s, mangle on target {}",
+        AI_VALUE2(uint8, "combo", "current target"),
+        AI_VALUE2(uint8, "energy", "self target") / ENERGY_STEP * ENERGY_STEP,
+        botAI->HasAura("clearcasting", bot), botAI->HasAura("cat form", bot), bot->IsWithinMeleeRange(target),
+        !target->HasInArc(static_cast<float>(M_PI), bot), bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING), seconds(rip),
+        seconds(rake), seconds(roar),
+        botAI->HasAura("mangle (cat)", target, false, false, -1, true) ||
+            botAI->HasAura("mangle (bear)", target, false, false, -1, true) ||
+            botAI->HasAura("trauma", target, false, false, -1, true));
+    if (trace == lastTrace)
+        return;
+
+    lastTrace = trace;
+    LOG_INFO("playerbots", "[rot51] {} cat check on {}: {}", bot->GetName(), boss->GetName(), trace);
 }

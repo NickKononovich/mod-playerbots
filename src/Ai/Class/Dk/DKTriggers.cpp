@@ -19,6 +19,7 @@
 #include <algorithm>     // [rot21]
 #include "SpellInfo.h"
 #include "SpellMgr.h"  // [rot10]
+#include "StringFormat.h"  // [rot51]
 #include <string>
 
 // [rot2]
@@ -128,8 +129,51 @@ bool HasReadyRunes(Player* bot, uint8 blood, uint8 frost, uint8 unholy)
     return missing <= ready[RUNE_DEATH];
 }
 
+// [rot51] b187 5C/5G: Blood DK tank damage 60-77 % of the sim - white remainder 95 DPS against 788, Rune Strike 7.6 a
+// minute against 17.4, rune weapon / ghoul 38 DPS against 420. One line per change of the swing and cooldown state.
+void RuneStrikeTrigger::TraceTankBoss()
+{
+    constexpr uint32 RUNIC_POWER_BUCKET = 100;  // internal units (x10): 10 runic power per step, not every point
+    constexpr uint32 RUNE_WEAPON_CD_BUCKET_S = 10;
+    constexpr uint32 RAISE_DEAD_CD_BUCKET_S = 30;
+    if (!PlayerbotAI::IsTank(bot) || !bot->IsInCombat())
+        return;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !boss->IsDungeonBoss())
+        return;
+
+    Spell const* queued = bot->GetCurrentSpell(CURRENT_MELEE_SPELL);
+    uint32 const raiseDead = AI_VALUE2(uint32, "spell id", "raise dead");
+    uint32 const runeWeaponCd = bot->HasSpellCooldown(SPELL_DK_DANCING_RUNE_WEAPON)
+                                    ? bot->GetSpellCooldownDelay(SPELL_DK_DANCING_RUNE_WEAPON) / IN_MILLISECONDS
+                                    : 0;
+    uint32 const raiseDeadCd = raiseDead && bot->HasSpellCooldown(raiseDead)
+                                   ? bot->GetSpellCooldownDelay(raiseDead) / IN_MILLISECONDS
+                                   : 0;
+    bool burn = false;
+    bool const led = LeaderBurnRule(bot, burn);
+    std::string const trace = Acore::StringFormat(
+        "rp {}+ defense state {} queued {} victim is target {} melee attacking {} in melee {}, dancing "
+        "rune weapon known {} cd {}+ s, raise dead cd {}+ s glyph {} pet {}, gargoyle fight {} cooldown fight {} led "
+        "burn {}/{}",
+        bot->GetPower(POWER_RUNIC_POWER) / RUNIC_POWER_BUCKET * 10, bot->HasAuraState(AURA_STATE_DEFENSE),
+        queued && queued->GetSpellInfo() ? queued->GetSpellInfo()->Id : 0, bot->GetVictim() == target,
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING), bot->IsWithinMeleeRange(target),
+        bot->HasSpell(SPELL_DK_DANCING_RUNE_WEAPON), runeWeaponCd / RUNE_WEAPON_CD_BUCKET_S * RUNE_WEAPON_CD_BUCKET_S,
+        raiseDeadCd / RAISE_DEAD_CD_BUCKET_S * RAISE_DEAD_CD_BUCKET_S, bot->HasAura(SPELL_DK_GLYPH_OF_RAISE_DEAD),
+        bot->GetPet() != nullptr, IsGargoyleFight(botAI), IsDKCooldownFight(botAI), led, burn);
+    if (trace == lastTrace)
+        return;
+
+    lastTrace = trace;
+    LOG_INFO("playerbots", "[rot51] {} blood tank on {}: {}", bot->GetName(), boss->GetName(), trace);
+}
+
 bool RuneStrikeTrigger::IsActive()
 {
+    TraceTankBoss();
     // [b31_deep] runic power and the dodge / parry aura state first (field reads), then the queued swing
     if (bot->GetPower(POWER_RUNIC_POWER) < RUNE_STRIKE_RUNIC_POWER || !bot->HasAuraState(AURA_STATE_DEFENSE))
         return false;

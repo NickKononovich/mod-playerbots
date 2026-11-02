@@ -572,6 +572,7 @@ public:
     FerociousBiteTimeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "ferocious bite time") {}
     bool IsActive() override
     {
+        TraceCat();
         Unit* target = AI_VALUE(Unit*, "current target");
         if (!target)
             return false;
@@ -603,6 +604,10 @@ public:
 private:
     static constexpr uint8 FEROCIOUS_BITE_MAX_ENERGY = 67;
     static constexpr int32 FEROCIOUS_BITE_TIME_MS = 4000;
+
+    // [rot51] debug trace of the cat's Rip / Shred inputs on a dungeon boss (logged when they change)
+    void TraceCat();
+    std::string lastTrace;
 };
 
 // [b31_sd] Execute Bite on a target about to die, by its time to live (health / "estimated group dps") instead of
