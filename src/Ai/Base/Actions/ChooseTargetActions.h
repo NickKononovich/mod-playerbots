@@ -73,6 +73,8 @@ namespace PullPlanner
         GuidVector doorCut;
         // [lead8] spots the group fought and cleared this run (the leader's record): pull-back fight spot candidates
         std::vector<Position> cleared;
+        // [lead253] the mobs the leader judged off its path (its path verdicts): never the planner's one mob
+        GuidVector offPath;
     };
 
     // [lead3] The leader inputs of the library look running on this thread (nullptr: none, the tank's own look).

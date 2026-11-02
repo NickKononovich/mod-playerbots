@@ -1577,6 +1577,11 @@ namespace Leader::Dungeon
                 if (!inputs.pick.IsEmpty())
                     lead.pickConflictFor.Clear();
                 inputs.pickWhy = pickWhy;
+                // [lead253] the off-path verdicts for the planner (onPath's rule, without its log)
+                for (auto const& [mobGuid, verdict] : group.PathVerdicts())
+                    if (!verdict.on && mobGuid != group.RouteTarget() && mobGuid != lead.intercept &&
+                        mobGuid != lead.wholePack && mobGuid != lead.walkWakesFirst)
+                        inputs.offPath.push_back(mobGuid);
             }
             snap.BindLeader(inputs);
         }

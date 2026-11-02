@@ -9746,6 +9746,17 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     std::vector<PackOverlap> oneOverlaps;
     Position oneKill;
     bool oneBoss = false;
+    // [lead253] b192 rfc-h 5G 313 s: the pick was the on-path Ragefire Shaman 12; "every plan too dangerous, one
+    // mob walked in" took Ragefire Trogg 13 of its adds, which the leader had judged off the route (62 / 114 s) - the
+    // tank walked ~127 yd out to it, took Trogg 21 there and ~122 yd back (~60 s). The one mob is one of the leader's
+    // path: an add it judged off the path is never it (the target itself is the leader's pick)
+    PullPlanner::LeaderInputs const* const pathInputs = PullPlanner::CurrentLeaderInputs();
+    auto const offPath = [&](Unit* mob)
+    {
+        return pathInputs && mob != target &&
+               std::find(pathInputs->offPath.begin(), pathInputs->offPath.end(), mob->GetGUID()) !=
+                   pathInputs->offPath.end();
+    };
     auto const loneMob = [&]() -> Unit*
     {
         std::vector<Unit*> candidates(adds);
@@ -9761,7 +9772,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (tried >= CAREFUL_LONE_MOB_CANDIDATES)
                 break;
 
-            if (IsBossMob(candidate) || IsCrowdControlled(candidate) ||
+            if (IsBossMob(candidate) || IsCrowdControlled(candidate) || offPath(candidate) ||
                 PrePullCc::IsClaimed(bot, candidate->GetGUID()) ||
                 (candidate->GetGUID() == _lastPullBack &&
                  getMSTimeDiff(_lastPullBackMs, now) < CAREFUL_PULL_RETRY_MS) ||
@@ -9908,7 +9919,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     {
                         // nor a caster that stays where it is (loneMob above)
                         Creature* const lone = candidate->ToCreature();
-                        if (IsBossMob(candidate) || IsCrowdControlled(candidate) ||
+                        if (IsBossMob(candidate) || IsCrowdControlled(candidate) || offPath(candidate) ||
                             PrePullCc::IsClaimed(bot, candidate->GetGUID()) || (lone && KeepsRange(lone)))
                             continue;
                         float const distance = bot->GetExactDist(candidate);
