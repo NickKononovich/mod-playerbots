@@ -386,6 +386,20 @@ namespace
             else if (Unit* buffTarget = action->GetTarget(); buffTarget && !OwnUnit(self, buffTarget))
                 return true;
         }
+        // [lead398] b201 rfc-h 5E 1233.2 s: the holy priest cast Divine Spirit on the party as the fight ended, with no
+        // Prepare (own_decision + two two_owners). Out of a fight a buff on another member is the leader's buff pass
+        // (Prepare / Ready? / Rest), the own-decision check's own rule
+        if (!combat && dynamic_cast<CastBuffSpellAction*>(action) && events.ready != Leader::ReadyEvent::Prepare &&
+            events.ready != Leader::ReadyEvent::ReadyCheck && events.ready != Leader::ReadyEvent::Rest)
+        {
+            if (gate)
+            {
+                if (!OwnTargetName(action))
+                    return true;
+            }
+            else if (Unit* buffTarget = action->GetTarget(); buffTarget && !OwnUnit(self, buffTarget))
+                return true;
+        }
         // [lead20] Rest is eat / drink only: a buff stands the drinker up
         bool const prepareCmd = events.ready == Leader::ReadyEvent::Prepare ||
                                 events.ready == Leader::ReadyEvent::ReadyCheck;
