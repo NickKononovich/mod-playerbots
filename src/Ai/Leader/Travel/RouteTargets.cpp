@@ -3770,9 +3770,24 @@ namespace Leader::Travel
                     group.Route().skipUntil.count(creature->GetGUID()))
                     continue;
                 float const reach = AggroReach(creature, leader);
+                // [lead360] b196 rfc-h 5E 295-545 s: Shaman 12 under the walkway was "beside" the boss-area Shaman
+                // at (-148,0) - 25 yd in 3D through the ledge, in sight - yet its walk there is the 340-355 yd round
+                // the lower loop that ROUTE_SKIP_DETOUR skips from anywhere else. As a plan stop it made the tour
+                // 742 yd for 190, and the walk to it woke the whole side room (16 mobs, lows 8-43, 1100 yd, Oggleflint
+                // at 686 s vs 375 s for 5A). Beside a stop means it joins that stop's fight on foot: the walk
+                // between their spots is no detour by the route's own measure (DETOUR_RATIO / DETOUR_EXTRA)
+                auto const joinsOnFoot = [&](Creature* on)
+                {
+                    Position const onSpot = PlanSpawnSpot(on);
+                    Position const mobSpot = PlanSpawnSpot(creature);
+                    float const straight = onSpot.GetExactDist(mobSpot);
+                    float const walk =
+                        PlanWalkBetween(group, leader, on->GetGUID(), onSpot, creature->GetGUID(), mobSpot);
+                    return walk >= 0.0f && walk <= std::max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA);
+                };
                 for (auto const& [onDistance, on] : hostiles)
                     if (on != nextBoss && !on->IsInCombat() && routeNeedsHere(on) &&
-                        on->GetExactDist(creature) <= reach && on->IsWithinLOSInMap(creature))
+                        on->GetExactDist(creature) <= reach && on->IsWithinLOSInMap(creature) && joinsOnFoot(on))
                     {
                         beside.emplace_back(distance, creature);
                         group.Route().pathVerdicts[creature->GetGUID()] = {
