@@ -337,6 +337,9 @@ void NoteManaRate(ObjectGuid member, float pctPerSec);
 // [lead232] ... on boss fights, and over its fights at least as long as this run's mean fight (lead234)
 void NoteBossManaRate(ObjectGuid member, float pctPerSec);
 void NotePeakManaRate(ObjectGuid member, float pctPerSec);
+// [lead393] the leader notes a healer's measured net mana use (% of max) per tank health of the plan's fight cost:
+// FightManaLine's heal term reads it in place of the throughput model (HealerPctPerTankHealth) once measured
+void NoteHealerPctPerCost(ObjectGuid member, float pctPerCost);
 // [lead367] the leader notes a measured fight of `member` under Divine Plea: its measured rate has Plea's mana in it
 constexpr uint32 SPELL_DIVINE_PLEA = 54428;
 void NoteDivinePleaInFight(ObjectGuid member);

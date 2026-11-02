@@ -361,6 +361,17 @@ void NotePeakManaRate(ObjectGuid member, float pctPerSec)
 
 namespace
 {
+    std::unordered_map<uint64, float> healerPctPerCost;  // [lead393] under manaRateLock
+}
+
+void NoteHealerPctPerCost(ObjectGuid member, float pctPerCost)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    healerPctPerCost[member.GetRawValue()] = pctPerCost;
+}
+
+namespace
+{
     std::unordered_map<uint64, bool> pleaMeasured;  // [lead367] by member, under manaRateLock
 }
 
@@ -812,7 +823,22 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         }
     }
     float need = rate * fightSec;
-    float const perTankHealth = PlayerbotAI::IsHeal(bot) ? HealerPctPerTankHealth(bot) : 0.0f;  // [lead258]
+    // [lead393] b201 rfc-h 5C: the disc priest drank to 100 % three times (768.9 s 62 -> 100 % in 19 s, 779-819 s
+    // "needs 100 % = 0.13 %/s (measured) x 88 s + 4 reserve; heals 51.3 % per tank health x 2.15 cost") - its
+    // measured use was 11 % for such a fight, the heal term 110 %: the throughput model's mana for every tank health
+    // the plan costs, while the blood DK healed itself and the absorbs took the rest. Once a healer's net use per
+    // costed tank health is measured in this run's fights, the term reads it (the same unit, the plan's cost)
+    float perTankHealth = PlayerbotAI::IsHeal(bot) ? HealerPctPerTankHealth(bot) : 0.0f;  // [lead258]
+    bool perCostMeasured = false;
+    if (PlayerbotAI::IsHeal(bot))
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        if (auto const found = healerPctPerCost.find(bot->GetGUID().GetRawValue()); found != healerPctPerCost.end())
+        {
+            perTankHealth = found->second;
+            perCostMeasured = true;
+        }
+    }
     if (PlayerbotAI::IsHeal(bot))
         need = std::max(need, perTankHealth * cost);
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
@@ -926,7 +952,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                        : Acore::StringFormat("one more mob, {:.1f} s", oneMobSec),
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
     if (why && perTankHealth > 0.0f)  // [lead258]
-        *why += Acore::StringFormat("; heals {:.1f} % per tank health x {:.2f} cost", perTankHealth, cost);
+        *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
+                                    perCostMeasured ? "measured" : "throughput", cost);
     return line;
 }
 

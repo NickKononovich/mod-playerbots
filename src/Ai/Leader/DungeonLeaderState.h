@@ -320,6 +320,9 @@ namespace Leader
             float bossSec = 0.0f;
             float fullSpent = 0.0f;  // [lead234] the same over the fights at least as long as the mean fight
             float fullSec = 0.0f;
+            float fightCost = 0.0f;  // [lead393] a healer: this fight's planned cost (tank healths), its order's
+            float costSpent = 0.0f;  // [lead393] the net use over the fights with a planned cost
+            float costSum = 0.0f;    // [lead393] ... and their planned costs
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health

@@ -2413,16 +2413,29 @@ namespace Leader::Dungeon
                             RestState::NotePeakManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.fullSpent / spend.fullSec));
                         }
+                        // [lead393] a healer's net use per tank health the plan costed its fights at
+                        if (spend.fightCost > 0.0f)
+                        {
+                            spend.costSpent += spend.prev - pct;
+                            spend.costSum += spend.fightCost;
+                            RestState::NoteHealerPctPerCost(member->GetGUID(),
+                                                            std::max(0.0f, spend.costSpent / spend.costSum));
+                        }
                     }
                     spend.prev = -1.0f;
                     spend.fightSec = 0.0f;
                     spend.boss = false;
+                    spend.fightCost = 0.0f;
                     continue;
                 }
                 if (spend.prev < 0.0f)
                     spend.prev = pct;  // the fight's start
                 spend.fightSec += dt;
                 spend.boss |= bossFought;
+                // [lead393] the fight's planned cost (the open order's): the unit FightManaLine's healer term reads
+                if (PlayerbotAI::IsHeal(member))
+                    if (Leader::PullOrder open; Leader::Orders::GetOpen(group.LeaderGuid(), open))
+                        spend.fightCost = std::max(spend.fightCost, open.cost);
                 // [lead367] the measured fights' Divine Plea uptime (FightManaLine credits it only where none was)
                 if (member->HasAura(RestState::SPELL_DIVINE_PLEA))
                     RestState::NoteDivinePleaInFight(member->GetGUID());
