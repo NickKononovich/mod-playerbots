@@ -24,7 +24,7 @@
 #include <string>
 
 // [rot2]
-bool LeaderBurnRule(Player* bot, bool& burn)
+bool LeaderBurnRule(Player* bot, bool& burn, char const* cooldown)
 {
     // [rot3] a led bot without a fresh command: no burn cooldown of its own (no fallback to the boss rule)
     Leader::MemberEvents command;
@@ -32,7 +32,9 @@ bool LeaderBurnRule(Player* bot, bool& burn)
     if (state == LeaderCommandState::State::NotLed)
         return false;
 
-    burn = state == LeaderCommandState::State::Fresh && command.intensity == Leader::Intensity::Burn &&
+    // [lead410] the leader's verdict on this cooldown (Leader::BurnAllows): its Burn alone let every DK cooldown
+    // go with any one allowed (an Unbreakable Armor back before the next boss burnt Raise Dead on trash)
+    burn = state == LeaderCommandState::State::Fresh && Leader::BurnAllows(command, cooldown) &&
            command.attack != Leader::AttackEvent::StopDps;
     return true;
 }
@@ -154,7 +156,7 @@ void RuneStrikeTrigger::TraceTankBoss()
                                    ? bot->GetSpellCooldownDelay(raiseDead) / IN_MILLISECONDS
                                    : 0;
     bool burn = false;
-    bool const led = LeaderBurnRule(bot, burn);
+    bool const led = LeaderBurnRule(bot, burn, "raise dead");
     std::string const trace = Acore::StringFormat(
         "rp {}+ defense state {} queued {} victim is target {} melee attacking {} in melee {}, dancing "
         "rune weapon known {} cd {}+ s, raise dead cd {}+ s glyph {} pet {}, gargoyle fight {} cooldown fight {} led "
@@ -164,7 +166,8 @@ void RuneStrikeTrigger::TraceTankBoss()
         bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING), bot->IsWithinMeleeRange(target),
         bot->HasSpell(SPELL_DK_DANCING_RUNE_WEAPON), runeWeaponCd / RUNE_WEAPON_CD_BUCKET_S * RUNE_WEAPON_CD_BUCKET_S,
         raiseDeadCd / RAISE_DEAD_CD_BUCKET_S * RAISE_DEAD_CD_BUCKET_S, bot->HasAura(SPELL_DK_GLYPH_OF_RAISE_DEAD),
-        bot->GetPet() != nullptr, IsGargoyleFight(botAI), IsDKCooldownFight(botAI), led, burn);
+        bot->GetPet() != nullptr, IsGargoyleFight(botAI, "raise dead"), IsDKCooldownFight(botAI, "raise dead"), led,
+        burn);
     if (trace == lastTrace)
         return;
 
@@ -252,7 +255,7 @@ bool RaiseDeadBoostTrigger::IsActive()
     if (!spellId || bot->HasSpellCooldown(spellId))
         return false;
 
-    return IsGargoyleFight(botAI);
+    return IsGargoyleFight(botAI, "raise dead");
 }
 
 bool UnholyPresenceAfterGargoyleTrigger::IsActive()
@@ -278,7 +281,7 @@ bool ArmyOfTheDeadTrigger::IsActive()
 
     // [rot2] a led bot: under the leader's Burn only
     bool burn = false;
-    if (LeaderBurnRule(bot, burn))
+    if (LeaderBurnRule(bot, burn, "army of the dead"))
         return burn;
 
     Unit* target = AI_VALUE(Unit*, "current target");
@@ -370,7 +373,7 @@ bool AntiMagicShellTrigger::IsActive()
 }
 
 // [rot_b31_pdd]
-bool IsGargoyleFight(PlayerbotAI* botAI)
+bool IsGargoyleFight(PlayerbotAI* botAI, char const* cooldown)
 {
     Player* bot = botAI->GetBot();
     if (!bot->IsInCombat())
@@ -378,7 +381,7 @@ bool IsGargoyleFight(PlayerbotAI* botAI)
 
     // [rot2] a led bot: the leader's Burn is the cooldown window (LeaderBurnRule)
     bool burn = false;
-    if (LeaderBurnRule(bot, burn))
+    if (LeaderBurnRule(bot, burn, cooldown))
         return burn;
 
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
@@ -443,7 +446,7 @@ uint8 CountReadyRunes(Player* bot)
 }
 
 // [b35_uh]
-bool IsDKBossFight(PlayerbotAI* botAI)
+bool IsDKBossFight(PlayerbotAI* botAI, char const* cooldown)
 {
     Player* bot = botAI->GetBot();
     if (!bot->IsInCombat())
@@ -451,7 +454,7 @@ bool IsDKBossFight(PlayerbotAI* botAI)
 
     // [rot2] a led bot: the leader's Burn is the cooldown window (LeaderBurnRule)
     bool burn = false;
-    if (LeaderBurnRule(bot, burn))
+    if (LeaderBurnRule(bot, burn, cooldown))
         return burn;
 
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
@@ -496,7 +499,7 @@ bool EmpowerRuneWeaponUnderGargoyleTrigger::IsActive()
         bot->HasSpellCooldown(SPELL_DK_EMPOWER_RUNE_WEAPON))
         return false;
 
-    if (!IsDKBossFight(botAI))
+    if (!IsDKBossFight(botAI, "empower rune weapon"))
         return false;
 
     return IsGargoyleOut(bot) || IsGargoyleUnavailable(botAI);
@@ -509,7 +512,7 @@ bool NoRuneBossTrigger::IsActive()
         bot->HasSpellCooldown(SPELL_DK_EMPOWER_RUNE_WEAPON))
         return false;
 
-    return IsDKBossFight(botAI);
+    return IsDKBossFight(botAI, "empower rune weapon");
 }
 
 bool ArmyOfTheDeadUnderGargoyleTrigger::IsActive()
@@ -556,7 +559,8 @@ bool IsGargoyleWaiting(PlayerbotAI* botAI)
 {
     Player* bot = botAI->GetBot();
     uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "summon gargoyle")->Get();
-    return spellId && bot->HasSpell(spellId) && !bot->HasSpellCooldown(spellId) && IsGargoyleFight(botAI);
+    return spellId && bot->HasSpell(spellId) && !bot->HasSpellCooldown(spellId) &&
+           IsGargoyleFight(botAI, "summon gargoyle");
 }
 
 bool SummonGargoyleTrigger::IsActive()
@@ -607,7 +611,7 @@ bool HornOfWinterOnPartyTrigger::IsActive()
 }
 
 // [rot1]
-bool IsDKCooldownFight(PlayerbotAI* botAI)
+bool IsDKCooldownFight(PlayerbotAI* botAI, char const* cooldown)
 {
     Player* bot = botAI->GetBot();
     if (!bot->IsInCombat())
@@ -615,10 +619,10 @@ bool IsDKCooldownFight(PlayerbotAI* botAI)
 
     // [rot2] a led bot: the leader's Burn only (IsDKBossFight answers it), not the old burst window
     bool burn = false;
-    if (LeaderBurnRule(bot, burn))
+    if (LeaderBurnRule(bot, burn, cooldown))
         return burn;
 
-    return IsDKBossFight(botAI) || ai::raidutil::IsBurstWindow(botAI);
+    return IsDKBossFight(botAI, cooldown) || ai::raidutil::IsBurstWindow(botAI);
 }
 
 bool DancingRuneWeaponReadyTrigger::IsActive()
@@ -635,10 +639,13 @@ bool DancingRuneWeaponReadyTrigger::IsActive()
 
 bool HysteriaCooldownFightTrigger::IsActive()
 {
-    return HysteriaNoCooldownTrigger::IsActive() && IsDKCooldownFight(botAI);
+    return HysteriaNoCooldownTrigger::IsActive() && IsDKCooldownFight(botAI, "hysteria");
 }
 
-bool RaiseDeadBossTrigger::IsActive() { return RaiseDeadBoostTrigger::IsActive() && IsDKCooldownFight(botAI); }
+bool RaiseDeadBossTrigger::IsActive()
+{
+    return RaiseDeadBoostTrigger::IsActive() && IsDKCooldownFight(botAI, "raise dead");
+}
 
 bool NoRuneLowHealthTrigger::IsActive()
 {

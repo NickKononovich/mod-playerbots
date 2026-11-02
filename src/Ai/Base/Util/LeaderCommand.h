@@ -29,6 +29,17 @@ namespace LeaderCommand
     // The bot is led by the leader (its rotation should read the getters below as the rule); the tank included.
     inline bool Led(Player* bot) { return bot && Leader::LedBot(bot); }
 
+    // [lead410] the Unholy talent: Raise Dead summons the permanent pet
+    constexpr uint32 SPELL_MASTER_OF_GHOULS = 52143;
+
+    // [lead410] a burn-list action used as no burn, which the leader's cooldown verdict does not gate: Raise Dead
+    // with Master of Ghouls (the permanent pet's summon), or the critical-health Raise Dead + Death Pact heal (its
+    // personal save; `critical`: the bot is at its critical health)
+    inline bool BurnToolUse(Player* bot, std::string const& name, bool critical)
+    {
+        return name == "raise dead" && (bot->HasAura(SPELL_MASTER_OF_GHOULS) || critical);
+    }
+
     // May the bot's AoE hit around `pos`? Not led or no rule from the leader: true (the rotation's own choice).
     // Forbidden: false. AllowedOnPack: `pos` within the leader's radius of the pack's center.
     inline bool AoeAllowed(Player* bot, Position const& pos)

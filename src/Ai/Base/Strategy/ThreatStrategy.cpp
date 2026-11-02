@@ -799,7 +799,9 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     bool const burnException =
         (PlayerbotAI::IsHeal(bot) && (name == "avenging wrath" || name == "shadowfiend")) ||
         (name == "shadowfiend" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.MediumMana)) ||
-        (name == "mirror image" && AI_VALUE(uint8, "my attacker count") > 0);
+        (name == "mirror image" && AI_VALUE(uint8, "my attacker count") > 0) ||
+        LeaderCommand::BurnToolUse(bot, name,
+                                   bot->GetHealthPct() < static_cast<float>(sPlayerbotAIConfig.CriticalHealth));
     if (IsBurnCooldown(name) && !burn && !burnException)
     {
         if (stale)

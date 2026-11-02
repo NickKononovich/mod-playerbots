@@ -215,7 +215,13 @@ namespace Leader
         "shadowfiend", "feral spirit", "elemental mastery", "fire elemental totem", "earth elemental totem",
         "metamorphosis", "starfall", "force of nature", "summon infernal", "summon doomguard",
         "dancing rune weapon", "unholy frenzy", "hysteria", "bladestorm", "shadow dance", "cold blood",
-        "unbreakable armor"};
+        "unbreakable armor",
+        // [lead410] b201 rfc-h 5C / 5G: Blood / Frost's Raise Dead (the temporary ghoul, 3 min) and Empower Rune
+        // Weapon (5 min) had no verdict - the DK gates follow the leader's Burn, the tank's rot51 trace showed Raise
+        // Dead ready with the glyph in 93 boss states at "led burn true/false" (sim 1.0 / min, the ghoul ~13 % of the
+        // blood DK's damage). Unholy's Raise Dead (Master of Ghouls) is its permanent pet, no cooldown of a fight
+        // (LeaderCommand::BurnToolUse)
+        "raise dead", "empower rune weapon"};
     inline bool IsBurnCooldown(std::string const& name)
     {
         for (char const* burn : BURN_COOLDOWNS)

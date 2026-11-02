@@ -45,6 +45,7 @@
 #include "MoveSpline.h"
 #include "AttackerCountValues.h"
 #include "MovementActions.h"
+#include "LeaderCommand.h"  // [lead410] SPELL_MASTER_OF_GHOULS
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -2079,6 +2080,9 @@ namespace Leader::Dungeon
                     continue;
                 // Heroism / Bloodlust is the leader's own command (3c), judged there by the same verdict
                 if (name == "heroism" || name == "bloodlust")
+                    continue;
+                // [lead410] Unholy's Raise Dead is its permanent pet's summon (Master of Ghouls), no fight cooldown
+                if (name == "raise dead" && who->HasAura(LeaderCommand::SPELL_MASTER_OF_GHOULS))
                     continue;
                 uint32 const spell = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
                 SpellInfo const* info = spell && who->HasSpell(spell) && !who->HasSpellCooldown(spell)

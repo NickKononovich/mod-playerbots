@@ -357,8 +357,8 @@ inline constexpr uint32 GARGOYLE_RUNIC_POWER = 600;     // internal units (x10)
 inline constexpr uint32 DEATH_COIL_RUNIC_POWER = 400;
 inline constexpr float GARGOYLE_MIN_LIFETIME_S = 25.0f;
 
-// A fight Summon Gargoyle is saved for (no spell or cooldown check).
-bool IsGargoyleFight(PlayerbotAI* botAI);
+// A fight Summon Gargoyle is saved for (no spell or cooldown check); a led bot: the leader's verdict on `cooldown`.
+bool IsGargoyleFight(PlayerbotAI* botAI, char const* cooldown);
 // Summon Gargoyle known, off cooldown and the fight is one for it: Death Coil pools runic power.
 bool IsGargoyleWaiting(PlayerbotAI* botAI);
 
@@ -394,10 +394,12 @@ inline constexpr float DK_DND_MIN_TICK_S = 6.0f;
 // [b35_uh] Ready runes of any type (MAX_RUNES = 6 slots).
 uint8 CountReadyRunes(Player* bot);
 // [b35_uh] In combat with a live current target that is a player or a dungeon / world boss.
-bool IsDKBossFight(PlayerbotAI* botAI);
-// [rot2] [rot3] The dungeon leader's cooldown rule for a led bot: true, `burn` = a fresh Burn (no
-// Stop; a stale command: false). False: not led, the bot's own fight test stands.
-bool LeaderBurnRule(Player* bot, bool& burn);
+// [lead410] a led bot: the leader's verdict on `cooldown`
+bool IsDKBossFight(PlayerbotAI* botAI, char const* cooldown);
+// [rot2] [rot3] The dungeon leader's cooldown rule for a led bot: true, `burn` = a fresh Burn that allows `cooldown`
+// (the leader's verdict on it, Leader::BurnAllows; no Stop; a stale command: false). False: not led, the bot's own
+// fight test stands.
+bool LeaderBurnRule(Player* bot, bool& burn, char const* cooldown);
 // [b35_uh] Summon Gargoyle cast less than GARGOYLE_DURATION_MS ago (its cooldown started then).
 bool IsGargoyleOut(Player* bot);
 // [b35_uh] No Gargoyle this fight: not known, or not out and its cooldown outlasts the current target.
@@ -548,7 +550,7 @@ public:
 // any trash pack that qualified and met the boss with them on cooldown (sim: 1.28/min each, bots 0.30 / 0 / 0.39,
 // abilities_blood_dk.md). A dungeon's bosses are 5+ min apart in the usual run: saving these for a boss fight (or the
 // leader's burn window) loses no use, and the boss fight is where the kill time is scored.
-bool IsDKCooldownFight(PlayerbotAI* botAI);
+bool IsDKCooldownFight(PlayerbotAI* botAI, char const* cooldown);
 
 // [rot1] Dancing Rune Weapon (49028, 60 runic power, 1.5 min) ready with the runic power for it and a target in
 // melee. PlayerbotAI::CanCastSpell ignores the runic power cost.

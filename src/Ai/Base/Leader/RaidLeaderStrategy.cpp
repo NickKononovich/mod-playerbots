@@ -15,6 +15,7 @@
 #include "AttackAction.h"         // [lead15] the own-decision check
 #include "GenericSpellActions.h"  // [lead15] CastBuffSpellAction / CastCrowdControlSpellAction
 #include "Group.h"
+#include "LeaderCommand.h"    // [lead410] BurnToolUse
 #include "LeaderOrders.h"     // [lead15] the leader's member events
 #include "MovementActions.h"  // [lead15]
 #include "ObjectAccessor.h"   // [lead401]
@@ -303,6 +304,12 @@ namespace
                         unit->GetCharmerOrOwnerGUID() == self->GetGUID());
     }
 
+    // [lead410] the bot at its critical health (the "critical health" trigger's line)
+    bool CriticalHealth(Player* bot)
+    {
+        return bot->GetHealthPct() < static_cast<float>(sPlayerbotAIConfig.CriticalHealth);
+    }
+
     bool OwnTargetName(Action* action)
     {
         std::string const target = action->GetTargetName();
@@ -492,7 +499,8 @@ namespace
         // [lead105] Heroism / Bloodlust only as the leader's command (its external order), never the shaman's own
         if (name == "heroism" || name == "bloodlust")
             return true;
-        if (Leader::IsBurnCooldown(name) && !Leader::BurnAllows(events, name))  // [lead178] per cooldown
+        if (Leader::IsBurnCooldown(name) && !Leader::BurnAllows(events, name) &&  // [lead178] per cooldown
+            !LeaderCommand::BurnToolUse(self, name, CriticalHealth(self)))         // [lead410]
             return true;
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
         // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
@@ -673,7 +681,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
             note("external", "an external without a leader assignment");
         return;
     }
-    if (Leader::IsBurnCooldown(name))  // [lead80] the one list
+    if (Leader::IsBurnCooldown(name) && !LeaderCommand::BurnToolUse(bot, name, CriticalHealth(bot)))  // [lead80]
     {
         if (!Leader::BurnAllows(events, name))  // [lead178]
             note("burn", "a burn cooldown without the leader's Intensity burn");
