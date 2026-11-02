@@ -2090,6 +2090,26 @@ namespace Leader::Dungeon
         Creature* const fightBoss = target && target->ToCreature() && target->ToCreature()->IsDungeonBoss()
                                         ? target->ToCreature()
                                         : nullptr;
+        // [lead421] the seconds to a later boss's pull: the next boss, the route's estimate (bossPullSec); one after
+        // him: that, his fight and a stretch between bosses as this run measured them (their mean; none yet: the
+        // straight walk from him); without an estimate this fight's rest and the straight walk to him
+        auto const secToBoss = [&](Creature* later) -> float
+        {
+            float toHim = lead.fightSecLeft + tank->GetExactDist(later) / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+            if (later->GetGUID() == lead.nextBossGuid && lead.bossPullSec >= 0.0f)
+                toHim = lead.bossPullSec;
+            else if (Creature* next = lead.nextBossGuid.IsEmpty() ? nullptr : map->GetCreature(lead.nextBossGuid);
+                     next && lead.bossPullSec >= 0.0f)
+            {
+                auto const nextNeed = lead.bossNeeds.find(lead.nextBossGuid);
+                float const stretch = lead.stretches ? lead.stretchSecSum / float(lead.stretches)
+                                                     : next->GetExactDist(later) /
+                                                           std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                toHim = lead.bossPullSec + (nextNeed != lead.bossNeeds.end() ? nextNeed->second.fightSec : 0.0f) +
+                        stretch;
+            }
+            return toHim;
+        };
         // [lead274] one cooldown's verdict by its recharge: true allowed, `why` the reason either way
         auto const cooldownVerdict = [&](float rechargeSec, std::string& why) -> bool
         {
@@ -2123,22 +2143,7 @@ namespace Leader::Dungeon
                     continue;
                 bool const harder = need.overload > mine.overload ||
                                     (need.overload == mine.overload && need.fightSec > mine.fightSec);
-                // [lead421] the next boss: the route's estimate (bossPullSec); one after him: that, his fight and a
-                // stretch between bosses as this run measured them (their mean; none yet: the straight walk from him)
-                float toHim =
-                    lead.fightSecLeft + tank->GetExactDist(later) / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
-                if (bossGuid == lead.nextBossGuid && lead.bossPullSec >= 0.0f)
-                    toHim = lead.bossPullSec;
-                else if (Creature* next = lead.nextBossGuid.IsEmpty() ? nullptr : map->GetCreature(lead.nextBossGuid);
-                         next && lead.bossPullSec >= 0.0f)
-                {
-                    auto const nextNeed = lead.bossNeeds.find(lead.nextBossGuid);
-                    float const stretch = lead.stretches ? lead.stretchSecSum / float(lead.stretches)
-                                                         : next->GetExactDist(later) /
-                                                               std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
-                    toHim = lead.bossPullSec +
-                            (nextNeed != lead.bossNeeds.end() ? nextNeed->second.fightSec : 0.0f) + stretch;
-                }
+                float const toHim = secToBoss(later);
                 if (harder && toHim < rechargeSec)
                 {
                     why = Acore::StringFormat(
@@ -4685,8 +4690,57 @@ namespace Leader::Dungeon
                 float sec = 0.0f;
                 std::string why;
             };
+            // [lead440] b203 rfc-h: the burn verdict held every mana tool for a boss "that needs it more" (overload)
+            // - 5H's fire mage came to Oggleflint at 3 % mana, Innervate / Hymn "held for Taragaman (his pull in
+            // 114 s)", its Evocation "held for Jergosh" on trash 76 times and never cast (30.6 % of wowsims), the
+            // members ran at 0-5 % mana most of the run: their rest lines count Evocation / Shadowfiend / Divine
+            // Plea's mana in the fight (FightManaLine's credits) and the fight then held them. A mana tool's later
+            // use is mana, not a boss's overload: before a later boss the members rest to their line for him, so a
+            // tool is kept for him only when a member it reaches would still be short there from a full pool (his
+            // fight's need without the tools, FightManaLine credits = false, over 100 %) and it would not be back for
+            // his pull (secToBoss within its recharge); otherwise it gives its fight seconds now
+            auto const manaToolVerdict = [&](Player* caster, bool self, float rechargeSec, std::string& why) -> bool
+            {
+                if (!critical.empty())
+                {
+                    why = critical;
+                    return true;
+                }
+                for (auto const& [bossGuid, need] : lead.bossNeeds)
+                {
+                    Creature* later =
+                        fightBoss && bossGuid == fightBoss->GetGUID() ? nullptr : map->GetCreature(bossGuid);
+                    if (!later || !later->IsAlive() || later->IsInCombat() || need.fightSec <= 0.0f)
+                        continue;
+                    float const toHim = secToBoss(later);
+                    if (toHim >= rechargeSec)
+                        continue;
+                    for (Player* member : everyone)
+                    {
+                        if ((self && member != caster) || !member->IsAlive() ||
+                            member->getPowerType() != POWER_MANA || !member->GetMaxPower(POWER_MANA))
+                            continue;
+                        float const there =
+                            RestState::FightManaLine(member, need.fightSec, 0.0f, nullptr, true, false);
+                        if (there > 100.0f)
+                        {
+                            why = Acore::StringFormat(
+                                "held for {}: {} needs {:.0f} % there from a full pool ({:.0f} s; his pull in {:.0f} "
+                                "s, recharge {:.0f} s)",
+                                need.name, member->GetName(), there, need.fightSec, toHim, rechargeSec);
+                            return false;
+                        }
+                    }
+                }
+                why = "no later boss within its recharge needs it beyond a full pool";
+                return true;
+            };
             ManaTool best;
-            auto const consider = [&](Player* caster, uint32 spell, Unit* on, std::vector<ManaUser const*> const& to)
+            ManaTool heldTool;  // [lead440] the most fight seconds of a held tool (logged when none is allowed)
+            std::string bestVerdict;
+            std::string heldVerdict;
+            auto const consider = [&](Player* caster, uint32 spell, Unit* on, std::vector<ManaUser const*> const& to,
+                                      bool self)
             {
                 SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
                 if (!info || to.empty())
@@ -4703,10 +4757,22 @@ namespace Leader::Dungeon
                         names += Acore::StringFormat("{}{} {:.0f} % < {:.0f} %", names.empty() ? "" : ", ",
                                                      user->who->GetName(), user->pct, user->need);
                     }
-                if (sec > best.sec)
-                    best = {caster, spell, on, sec,
+                // [lead440] the most fight seconds among the tools the verdict allows: a held tool no longer keeps
+                // another one out (5H: Innervate / Hymn held for Taragaman kept the mage's Evocation from the test)
+                if (sec <= 0.0f || (sec <= best.sec && sec <= heldTool.sec))
+                    return;
+                std::string verdictWhy;
+                bool const allowed =
+                    manaToolVerdict(caster, self, std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f,
+                                    verdictWhy);
+                ManaTool& slot = allowed ? best : heldTool;
+                if (sec > slot.sec)
+                {
+                    slot = {caster, spell, on, sec,
                             Acore::StringFormat("{}: {} for the fight's {:.0f} s left - {:.0f} fight s gained",
                                                 info->SpellName[0], names, lead.fightSecLeft, sec)};
+                    (allowed ? bestVerdict : heldVerdict) = verdictWhy;
+                }
             };
             if (!manaUsers.empty())
             {
@@ -4720,20 +4786,20 @@ namespace Leader::Dungeon
                             self = &user;
                     if (uint32 const spell = LeaderReadySpell(caster, {SPELL_INNERVATE}))
                         for (ManaUser const& user : manaUsers)
-                            consider(caster, spell, user.who, {&user});
+                            consider(caster, spell, user.who, {&user}, false);
                     if (self)
                     {
                         // [lead423] Shadowfiend attacks the fight's target; the others are on the caster itself
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_SHADOWFIEND});
                             spell && target)
-                            consider(caster, spell, target, {self});
+                            consider(caster, spell, target, {self}, true);
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_EVOCATION}))
-                            consider(caster, spell, nullptr, {self});
+                            consider(caster, spell, nullptr, {self}, true);
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_DISPERSION}))
-                            consider(caster, spell, nullptr, {self});
+                            consider(caster, spell, nullptr, {self}, true);
                         if (PlayerbotAI::IsHeal(caster) && !caster->HasAura(RestState::SPELL_DIVINE_PLEA))
                             if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_DIVINE_PLEA}))
-                                consider(caster, spell, nullptr, {self});
+                                consider(caster, spell, nullptr, {self}, true);
                     }
                     if (uint32 const spell = LeaderReadySpell(caster, {SPELL_HYMN_OF_HOPE}))
                     {
@@ -4753,7 +4819,7 @@ namespace Leader::Dungeon
                         for (ManaUser const& user : manaUsers)
                             if (std::find(pool.begin(), pool.end(), user.who) != pool.end())
                                 lowest.push_back(&user);
-                        consider(caster, spell, nullptr, lowest);
+                        consider(caster, spell, nullptr, lowest, false);
                     }
                     if (uint32 const spell = LeaderReadySpell(caster, {SPELL_MANA_TIDE_TOTEM}))
                     {
@@ -4763,7 +4829,7 @@ namespace Leader::Dungeon
                         for (ManaUser const& user : manaUsers)
                             if (radius <= 0.0f || user.who->GetExactDist(caster) <= radius)
                                 inReach.push_back(&user);
-                        consider(caster, spell, nullptr, inReach);
+                        consider(caster, spell, nullptr, inReach, false);
                     }
                 }
             }
@@ -4774,24 +4840,21 @@ namespace Leader::Dungeon
                 if (uint32 const aspect = viperSwitch(hunter, true, why))
                     tell(hunter, aspect, nullptr, why.c_str());
             }
-            if (best.caster)
-                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(best.spell))
+            if (ManaTool const& pick = best.caster ? best : heldTool; pick.caster)
+            {
+                bool const allowed = best.caster != nullptr;
+                std::string const note = pick.why + "; " + (allowed ? bestVerdict : heldVerdict);
+                if (note != lead.innervateLogged)
                 {
-                    std::string verdictWhy;
-                    bool const allowed =
-                        cooldownVerdict(std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f, verdictWhy);
-                    std::string const note = best.why + "; " + verdictWhy;
-                    if (note != lead.innervateLogged)
-                    {
-                        lead.innervateLogged = note;
-                        Decisions().Write(run, "leader", "mana_tool", best.caster->GetGUID(), best.caster->GetName(),
-                                          allowed, JsonObject().Str("caster", best.caster->GetName())
-                                                       .Num("spell", best.spell).Bool("allowed", allowed)
-                                                       .Str("why", note));
-                    }
-                    if (allowed)
-                        tell(best.caster, best.spell, best.on, best.why.c_str());
+                    lead.innervateLogged = note;
+                    Decisions().Write(run, "leader", "mana_tool", pick.caster->GetGUID(), pick.caster->GetName(),
+                                      allowed, JsonObject().Str("caster", pick.caster->GetName())
+                                                   .Num("spell", pick.spell).Bool("allowed", allowed)
+                                                   .Str("why", note));
                 }
+                if (allowed)
+                    tell(best.caster, best.spell, best.on, best.why.c_str());
+            }
             if (hurt >= 3)
                 if (auto const [bot, spell] = withSpell({SPELL_DIVINE_HYMN}, nullptr); bot)
                     tell(bot, spell, nullptr, "three members under half health");
