@@ -316,7 +316,14 @@ namespace Leader
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health
         uint32 manaTickMs = 0;
         std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
-        std::map<std::string, std::pair<float, uint32>> memberMobTps;  // [lead240] its top mob's tps: sum, fights
+        struct ThreatSeen  // [lead243] a member's / the tank's threat on a fight mob since its first threat there
+        {
+            uint32 firstMs = 0;
+            uint32 lastMs = 0;
+            float threat = 0.0f;
+        };
+        std::map<ObjectGuid, std::map<ObjectGuid, ThreatSeen>> threatSeen;  // [lead243] fight mob -> who -> seen
+        std::map<ObjectGuid, std::pair<float, uint32>> openTps;  // [lead243] its threat / s on each mob it hit: sum, n
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
         std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived

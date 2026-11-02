@@ -121,6 +121,19 @@ namespace Leader::Dungeon
 
     namespace
     {
+        constexpr float HEADROOM_GCD_SEC = 1.5f;  // [lead163] the game's global cooldown: one cast's threat
+        // [lead243] a mob on its victim moves to another at 110 % of the victim's threat in its melee reach, else at
+        // 130 % (ThreatManager::ReselectVictim)
+        constexpr float THREAT_OVERTAKE_MELEE = 1.1f;
+        constexpr float THREAT_OVERTAKE_RANGED = 1.3f;
+
+        // [lead243] the seconds a threat was built in: its first sight to its last, at least the global cooldown
+        // its first cast landed in
+        float ThreatSeenSec(Leader::DungeonLeaderState::ThreatSeen const& seen)
+        {
+            return std::max(getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f, HEADROOM_GCD_SEC);
+        }
+
         // [lead221] the planner's held answer named this mana line for the member (lead.plannerRestLine): its Rest
         // holds below it; without a named line (a health gap) the Rest holds as before, until the member is full
         bool BelowPlannerLine(Player* bot, float line)
@@ -1912,13 +1925,11 @@ namespace Leader::Dungeon
         {
             float const sec = std::max(getMSTimeDiff(lead.fightStartMs, now) / 1000.0f, 1.0f);
             std::map<std::string, float> perMember;
-            std::map<std::string, float> topMob;  // [lead240] the threat on its top mob of the fight
             JsonArray tankMobs;
             for (auto const& [mob, byMember] : lead.threatMax)
                 for (auto const& [who, threat] : byMember)
                 {
                     perMember[who] += threat;
-                    topMob[who] = std::max(topMob[who], threat);
                     if (who == tank->GetName())
                         tankMobs.Raw(JsonObject().Num("low", mob.GetCounter()).Real("tps", threat / sec).Build());
                 }
@@ -1932,16 +1943,28 @@ namespace Leader::Dungeon
                 std::string const key = mark == 99000 ? std::string("end") : std::to_string(mark / 1000) + "s";
                 marginsJson.Raw(key.c_str(), JsonObject().Real("min", low).Real("median", median).Build());
             }
+            // [lead243] each member's threat per second on each fight mob from its first threat there (its rate
+            // while it hits that mob): the run's opening rate on a mob it has not hit yet
+            for (auto const& [mob, byWho] : lead.threatSeen)
+                for (auto const& [who, seen] : byWho)
+                    if (seen.threat > 0.0f)
+                    {
+                        auto& tps = lead.openTps[who];
+                        tps.first += seen.threat / ThreatSeenSec(seen);
+                        ++tps.second;
+                    }
+            lead.threatSeen.clear();
+            JsonObject opening;
+            for (Player* member : seats)
+                if (auto const tps = lead.openTps.find(member->GetGUID()); tps != lead.openTps.end())
+                    opening.Real(member->GetName().c_str(), tps->second.first / float(tps->second.second));
             Decisions().Write(run, "leader", "threat_tps", tank->GetGUID(), tank->GetName(), false,
-                                          JsonObject().Real("fightSec", sec).Raw("tps", members.Build())
-                                              .Raw("tankPerMob", tankMobs.Build()).Raw("margin", marginsJson.Build()));
-            for (auto const& [who, threat] : topMob)
-                if (threat > 0.0f)
-                {
-                    auto& tps = lead.memberMobTps[who];
-                    tps.first += threat / sec;
-                    ++tps.second;
-                }
+                              JsonObject()
+                                  .Real("fightSec", sec)
+                                  .Raw("tps", members.Build())
+                                  .Raw("tankPerMob", tankMobs.Build())
+                                  .Raw("margin", marginsJson.Build())
+                                  .Raw("openTps", opening.Build()));
             lead.threatMax.clear();
             lead.threatMargins.clear();
         }
@@ -3181,30 +3204,54 @@ namespace Leader::Dungeon
                     // 970 dps, and died - headroom read the threat it had, not the threat its next cast adds (Icy
                     // Touch, Death and Decay, Blood Boil). Headroom: its threat plus its own threat rate on this mob
                     // over one global cooldown (the game's 1.5 s) stays below the tank's
-                    constexpr float HEADROOM_GCD_SEC = 1.5f;
-                    float const fightSec =
-                        lead.fightStartMs ? std::max(getMSTimeDiff(lead.fightStartMs, now) / 1000.0f, 1.0f) : 1.0f;
                     // [lead229] b187 rfc-h 5D: the unholy DK took 12 of the 18 mobs off the bear, most 12-29 yd from
                     // it (a mob the bear had touched once, Icy Touch / Death Coil from range): on a mob it had not
-                    // hit yet its rate there was 0, so its first cast's threat was never counted. The rate is its
-                    // own threat per fight second on the fight mob it has the most on (its single-target rate)
-                    float myMost = 0.0f;
+                    // hit yet its rate there was 0, so its first cast's threat was never counted
+                    // [lead240] b189 rfc-h 5C: the fury warrior took 24 mobs, 30 of the run's 49 losses 8-35 yd from
+                    // the tank - early in a fight its rate was still 0 (nothing hit yet)
+                    // [lead243] b190 rfc-h: headroom stops doubled (5A 47 -> 79, 5D 64 -> 116), fight time 5A +81 s,
+                    // and the losses barely fell (73 -> 60, 5C warrior 8, most with headroom): lead240's rate (its top
+                    // mob's threat per fight second, 5C warrior ~1100) was below what a member adds while it hits
+                    // (2092 at 2 -> 5 s), and the line was the tank's threat now. Both sides as the game moves a mob:
+                    // the member's threat after one GCD at its rate on THAT mob (since its first threat there; on a
+                    // mob it has not hit, its fastest rate of this fight or the run's opening rate) against the
+                    // tank's after the same GCD at the tank's rate there, times the share the game moves a mob at
+                    auto const seenOn = [&](Unit* mob, Player* who) -> Leader::DungeonLeaderState::ThreatSeen&
+                    {
+                        auto& seen = lead.threatSeen[mob->GetGUID()][who->GetGUID()];
+                        if (float const threat = mob->GetThreatMgr().GetThreat(who); threat > 0.0f)
+                        {
+                            if (!seen.firstMs)
+                                seen.firstMs = now;
+                            seen.lastMs = now;
+                            seen.threat = threat;
+                        }
+                        return seen;
+                    };
+                    float freshRate = 0.0f;
+                    if (auto const measured = lead.openTps.find(guid);
+                        measured != lead.openTps.end() && measured->second.second)
+                        freshRate = measured->second.first / float(measured->second.second);
                     for (ObjectGuid const& other : killOrder)
                         if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
-                            myMost = std::max(myMost, fought->GetThreatMgr().GetThreat(bot));
-                    // [lead240] b189 rfc-h 5C: the fury warrior took 24 mobs, 30 of the run's 49 losses 8-35 yd from
-                    // the tank - early in a fight its rate here is still 0 (nothing hit yet), the first hits of a
-                    // fury warrior land on a mob the tank holds by a Blood Boil tick. Its rate is at least its own
-                    // measured single-target threat per second of this run's earlier fights
-                    float runTps = 0.0f;
-                    if (auto const measured = lead.memberMobTps.find(bot->GetName());
-                        measured != lead.memberMobTps.end() && measured->second.second)
-                        runTps = measured->second.first / float(measured->second.second);
+                            if (auto const& seen = seenOn(fought, bot); seen.threat > 0.0f)
+                                freshRate = std::max(freshRate, seen.threat / ThreatSeenSec(seen));
                     auto const headroomOn = [&](Unit* mob)
                     {
-                        float const mine = mob->GetThreatMgr().GetThreat(bot);
-                        float const rate = std::max(std::max(mine, myMost) / fightSec, runTps);
-                        return mine + rate * HEADROOM_GCD_SEC < mob->GetThreatMgr().GetThreat(tank);
+                        auto const& mine = seenOn(mob, bot);
+                        float const onMob = mine.threat > 0.0f ? mine.threat / ThreatSeenSec(mine) : 0.0f;
+                        bool const measuredHere =
+                            mine.threat > 0.0f &&
+                            getMSTimeDiff(mine.firstMs, mine.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
+                        float const rate = measuredHere ? onMob : std::max(onMob, freshRate);
+                        auto const& held = seenOn(mob, tank);
+                        float const tankNext = held.threat > 0.0f
+                                                   ? held.threat + held.threat / ThreatSeenSec(held) * HEADROOM_GCD_SEC
+                                                   : 0.0f;
+                        float const share = mob->GetVictim() != tank       ? 1.0f
+                                            : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
+                                                                           : THREAT_OVERTAKE_RANGED;
+                        return mine.threat + rate * HEADROOM_GCD_SEC < share * tankNext;
                     };
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
