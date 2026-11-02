@@ -154,6 +154,9 @@ namespace Leader::Fight
     Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, float range, std::string& why,
                                   std::vector<ObjectGuid>& spared);
 
+    // [lead420] the largest area radius among the bot's known offensive spells (spell data, cached per spell set)
+    float LeaderMaxAreaRadius(Player* bot);
+
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);
 

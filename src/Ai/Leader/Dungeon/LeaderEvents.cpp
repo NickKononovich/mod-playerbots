@@ -1038,12 +1038,16 @@ namespace Leader::Dungeon
                 getMSTimeDiff(lead.aoeMs, now) >= LEADER_AOE_RECHECK_MS)
             {
                 // [lead415] every member's AoE footprint around the target: its centre at the target, or at the member
-                // for a self-centred one (at most the farthest member's distance away) - plus the rule's radius
-                float range = LEADER_AOE_RADIUS + LEADER_AOE_GUARD_YD;
+                // for a self-centred one (at most the farthest member's distance away) - plus [lead420] the largest
+                // area radius among the members' spells (spell data: Starfall's 30 yd, not the rule's 10)
                 float farthest = tank->GetExactDist(target);
+                float areaRadius = LeaderMaxAreaRadius(tank);
                 for (Player* bot : seats)
+                {
                     farthest = std::max(farthest, bot->GetExactDist(target));
-                range += farthest;
+                    areaRadius = std::max(areaRadius, LeaderMaxAreaRadius(bot));
+                }
+                float const range = farthest + std::max(areaRadius, LEADER_AOE_RADIUS) + LEADER_AOE_GUARD_YD;
                 lead.aoeRule = uint8(slow([&]
                                           { return LeaderAoeRule(tank, target, range, lead.aoeWhy, lead.aoeSpared); }));
                 lead.aoeTarget = target->GetGUID();

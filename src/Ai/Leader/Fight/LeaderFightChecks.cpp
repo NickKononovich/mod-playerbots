@@ -25,6 +25,7 @@
 #include "TerrainHazard.h"
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>  // [lead420]
 
 namespace Leader::Fight
 {
@@ -169,6 +170,54 @@ namespace Leader::Fight
         if (why.empty())
             why = "the pack only";
         return Leader::AoeRule::AllowedOnPack;
+    }
+
+    namespace
+    {
+        // [lead420] a spell's area radius (its effects', then the spells they trigger, two deep: Starfall's stars);
+        // a chain without a radius: the config's AoE radius, as the member's gate reads it (AreaRadius)
+        float SpellAreaRadius(Player* bot, SpellInfo const* info, uint8 depth)
+        {
+            float radius = 0.0f;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                if (!effect.IsEffect())
+                    continue;
+                radius = std::max(radius, effect.CalcRadius(bot));
+                if (effect.ChainTarget > 1)
+                    radius = std::max(radius, float(sPlayerbotAIConfig.AoeRadius));
+                if (depth && effect.TriggerSpell)
+                    if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                        radius = std::max(radius, SpellAreaRadius(bot, triggered, depth - 1));
+            }
+            return radius;
+        }
+    }
+
+    float LeaderMaxAreaRadius(Player* bot)
+    {
+        // the spell scan is cached per bot while its spells stay the same (a lookup, no clock)
+        struct Cached
+        {
+            size_t spells = 0;
+            float radius = 0.0f;
+        };
+        thread_local std::unordered_map<uint64, Cached> cache;
+        Cached& cached = cache[bot->GetGUID().GetRawValue()];
+        if (cached.spells == bot->GetSpellMap().size())
+            return cached.radius;
+        float radius = 0.0f;
+        for (auto const& [spellId, known] : bot->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive())
+                continue;
+            radius = std::max(radius, SpellAreaRadius(bot, info, 2));
+        }
+        cached = {bot->GetSpellMap().size(), radius};
+        return radius;
     }
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
