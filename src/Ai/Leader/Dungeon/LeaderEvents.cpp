@@ -1841,6 +1841,7 @@ namespace Leader::Dungeon
         if (!fighting)
         {
             lead.combatSpots.clear();
+            lead.combatSpotLeft.clear();  // [lead239] the fight's left spots end with it
             lead.tankGroundSpots.clear();  // [lead152]
             lead.tankGroundFor.clear();
             lead.combatSpotAnchor.clear();
@@ -2558,15 +2559,19 @@ namespace Leader::Dungeon
                     !MemberCastsHere(bot, target))
                 {
                     blindOnSpot = true;
-                    lead.combatSpotLeft[guid] = held->second;
+                    lead.combatSpotLeft[guid].push_back(held->second);
                 }
                 // [lead137] never back to the spot it just left for this target
                 auto const left = lead.combatSpotLeft.find(guid);
                 std::function<bool(Position const&)> const keeps = [&](Position const& at)
                 {
                     return keepsBase(at) && !(left != lead.combatSpotLeft.end() &&
-                                              left->second.first == target->GetGUID() &&
-                                              left->second.second.GetExactDist(at) <= 2.0f);
+                                              std::any_of(left->second.begin(), left->second.end(),
+                                                          [&](std::pair<ObjectGuid, Position> const& was)
+                                                          {
+                                                              return was.first == target->GetGUID() &&
+                                                                     was.second.GetExactDist(at) <= 2.0f;
+                                                          }));
                 };
                 auto found = lead.combatSpots.find(guid);
                 uint32& losMs = lead.combatSpotLosMs[guid];
@@ -2687,7 +2692,7 @@ namespace Leader::Dungeon
                         if (got)
                         {
                             if (found != lead.combatSpots.end())
-                                lead.combatSpotLeft[guid] = found->second;  // [lead137]
+                                lead.combatSpotLeft[guid].push_back(found->second);  // [lead137]
                             if (breaks != "first spot")
                                 Decisions().Write(
                                     run, "leader", "combat_respot", guid, bot->GetName(), true,
@@ -3344,8 +3349,12 @@ namespace Leader::Dungeon
                             {
                                 return keepsHealer(at) && !(blindHere && here.GetExactDist(at) <= 2.0f) &&
                                        !(left != lead.combatSpotLeft.end() &&
-                                         left->second.first == attackOn->GetGUID() &&
-                                         left->second.second.GetExactDist(at) <= 2.0f);
+                                         std::any_of(left->second.begin(), left->second.end(),
+                                                     [&](std::pair<ObjectGuid, Position> const& was)
+                                                     {
+                                                         return was.first == attackOn->GetGUID() &&
+                                                                was.second.GetExactDist(at) <= 2.0f;
+                                                     }));
                             };
                             Position spot;
                             bool const got = slow(
@@ -3360,7 +3369,7 @@ namespace Leader::Dungeon
                             if (got && shootsFrom(spot))
                             {
                                 if (kept != lead.combatSpots.end())
-                                    lead.combatSpotLeft[guid] = kept->second;  // [lead137]
+                                    lead.combatSpotLeft[guid].push_back(kept->second);  // [lead137]
                                 lead.combatSpots[guid] = {attackOn->GetGUID(), spot};
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,

@@ -142,8 +142,9 @@ namespace Leader
         uint32 hazardScanMs = 0;
         std::map<ObjectGuid, Position> hazardSpots;
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpots;  // member -> {target, spot}
-        // [lead137] the combat spot a member last left, for its target: not chosen again for it (A -> B -> A)
-        std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpotLeft;
+        // [lead137] the combat spots a member left in this fight, for their targets: not chosen again for that target
+        // (A -> B -> A); [lead239] every one of the fight, not only the last (A -> B -> A came back over B)
+        std::map<ObjectGuid, std::vector<std::pair<ObjectGuid, Position>>> combatSpotLeft;
         // [lead152] a fallback combat spot on the tank's own fight ground (its trail / its spot): no idle mob's reach
         std::map<ObjectGuid, Position> tankGroundSpots;
         std::map<ObjectGuid, ObjectGuid> tankGroundFor;  // [lead156] the target the fallback point was chosen for
