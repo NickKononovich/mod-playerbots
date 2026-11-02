@@ -254,9 +254,16 @@ bool ColdBloodFinisherTrigger::IsActive()
     if (!sliceAndDice || sliceAndDice->GetDuration() < COLD_BLOOD_MIN_SND_MS)
         return false;
 
-    // the Hunger for Blood enabler Rupture would take the points next
+    // the Hunger for Blood enabler Rupture would take the points next ("assassination rupture": no bleed and Hunger
+    // for Blood about to need its refresh). [rot50] b187 rot49 trace: "bleeding false" on 5-point checks with Hunger
+    // for Blood running blocked Cold Blood for the whole fight (0 casts; wowsims: at 5 points on its cooldown)
     Unit* target = AI_VALUE(Unit*, "current target");
-    return target && (!bot->HasSpell(SPELL_HUNGER_FOR_BLOOD) || target->HasAuraState(AURA_STATE_BLEEDING));
+    if (!target)
+        return false;
+    if (!bot->HasSpell(SPELL_HUNGER_FOR_BLOOD) || target->HasAuraState(AURA_STATE_BLEEDING))
+        return true;
+    Aura* hungerForBlood = botAI->GetAura("hunger for blood", bot);
+    return hungerForBlood && hungerForBlood->GetDuration() >= static_cast<int32>(HUNGER_FOR_BLOOD_REFRESH_MS);
 }
 
 bool HungerForBloodTrigger::IsActive()
