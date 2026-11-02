@@ -5,23 +5,23 @@
  */
 
 #include "HealthTriggers.h"
+#include "AggressiveTargetValue.h"
 
 #include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
 
-#include "AKTriggers.h"  // [b47_patrol] AKJedogaRoom::OwnsPull
-#include "ANTriggers.h"  // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
-#include "AggressiveTargetValue.h"
-#include "Bag.h"             // [lead177] the drinks in the bags
-#include "BuyAction.h"       // [lead177] RESTOCK_SPELL_CATEGORY_DRINK
-#include "CoSTriggers.h"     // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
-#include "CreatureGroups.h"  // [b46_patrol]
-#include "GenericSpellActions.h"
+#include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
+#include "Bag.h"          // [lead177] the drinks in the bags
+#include "BuyAction.h"    // [lead177] RESTOCK_SPELL_CATEGORY_DRINK
+#include "ANTriggers.h"   // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
+#include "CoSTriggers.h"  // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
+#include "CreatureGroups.h"   // [b46_patrol]
 #include "Group.h"
+#include "GenericSpellActions.h"
 #include "HealAssignmentValues.h"
-#include "LeaderOrders.h"     // [lead15] LEADER_ONE_REST_RULE
+#include "LeaderOrders.h"  // [lead15] LEADER_ONE_REST_RULE
 #include "MgTShared.h"        // [b47_patrol] MagistersTerrace::SelinRoom
 #include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
 #include "ObjectMgr.h"        // [lead264] CreatureBaseStats
