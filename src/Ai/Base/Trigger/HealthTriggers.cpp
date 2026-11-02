@@ -367,6 +367,8 @@ namespace
         uint32 fights = 0;
         float estimatedSq = 0.0f;  // [lead363] the sum of estimate x estimate over these fights
         float crossSum = 0.0f;     // [lead363] the sum of estimate x real length
+        uint32 fitted = 0;         // [lead366] the fights in the fit (an estimate to scale)
+        float fittedMax = 0.0f;    // [lead366] the longest estimate in the fit
     };
     std::unordered_map<uint64, FightLengthError> fightLengthErrors;  // [lead88] by group, under manaRateLock
 
@@ -374,9 +376,23 @@ namespace
     // [lead363] b197: real / estimated sums let one near-zero estimate decide it - the first fight estimated 0.02 s
     // and lasted 13.2 s, the scale went to ~770, the next fight's error 4334 s, "x 2173.6 s uncertainty", every member
     // held to 100 %. The least-squares scale (real ~ scale x estimate): a fight without an estimate weighs nothing
-    float EstimateScale(FightLengthError const& error)
+    // [lead366] b198 rfc-h 5A: after the first fight alone (estimated 0.9 s, 24.3 s real) the fit was that one fight
+    // - scale 27, "x 217 s" for the next 8 s estimate - and its unfitted error "x 23.5 s uncertainty", the tank held
+    // to 84-100 % twice. One fight fits the one parameter exactly and leaves nothing to judge it by: the scale needs
+    // two fights in the fit, and a fight's overrun counts as the uncertainty only when it was judged by a fitted scale.
+    // b198 5B / 5C / 5D: fits of first fights estimated 0.0-0.1 s (29.8 s real) scaled the next 8-15 s estimates to
+    // "x 2041 s", "x 4274 s", "x 12448 s" - a slope measured on estimates near zero says nothing of a longer one: the
+    // scale holds over the estimates it was measured on (no longer than the fit's longest), beyond them the estimate
+    // stays the plan's own
+    bool ScaleFitted(FightLengthError const& error, float estimatedSec)
     {
-        return error.estimatedSq > 0.0f && error.crossSum > 0.0f ? error.crossSum / error.estimatedSq : 1.0f;
+        return error.fitted >= 2 && estimatedSec <= error.fittedMax;
+    }
+    float EstimateScale(FightLengthError const& error, float estimatedSec)
+    {
+        return ScaleFitted(error, estimatedSec) && error.estimatedSq > 0.0f && error.crossSum > 0.0f
+                   ? error.crossSum / error.estimatedSq
+                   : 1.0f;
     }
 }
 
@@ -390,10 +406,18 @@ void NoteFightLengthError(ObjectGuid group, float estimatedSec, float realSec)
     FightLengthError& error = fightLengthErrors[group.GetRawValue()];
     // [lead363] the reserve covers a fight that runs longer than its scaled estimate - a shorter one needs no mana
     // beyond the estimate's: the mean overrun, never more than the seconds the fights really ran past it
-    error.sum += std::max(0.0f, realSec - estimatedSec * EstimateScale(error));
-    ++error.fights;
-    error.estimatedSq += estimatedSec * estimatedSec;
-    error.crossSum += estimatedSec * realSec;
+    if (ScaleFitted(error, estimatedSec))  // [lead366] judged by the fit; before it the reserve: one more mob's fight
+    {
+        error.sum += std::max(0.0f, realSec - estimatedSec * EstimateScale(error, estimatedSec));
+        ++error.fights;
+    }
+    if (estimatedSec > 0.0f)
+    {
+        ++error.fitted;
+        error.fittedMax = std::max(error.fittedMax, estimatedSec);
+        error.estimatedSq += estimatedSec * estimatedSec;
+        error.crossSum += estimatedSec * realSec;
+    }
 }
 
 namespace
@@ -662,7 +686,7 @@ float FightSecOf(Player* bot, NextFight const& fight)
             std::lock_guard<std::mutex> lock(manaRateLock);
             if (auto const found = fightLengthErrors.find(group->GetGUID().GetRawValue());
                 found != fightLengthErrors.end())
-                scale = EstimateScale(found->second);
+                scale = EstimateScale(found->second, fight.fightSec);
         }
         return fight.fightSec * scale;
     }
