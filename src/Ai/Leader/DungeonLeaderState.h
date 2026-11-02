@@ -177,6 +177,7 @@ namespace Leader
         Position fightAnchor;
         uint32 fightAnchorSerial = 0;
         std::map<ObjectGuid, uint32> combatSpotAnchor;
+        std::map<ObjectGuid, Position> combatSpotStoppedAt;  // [lead397] where "casts from where it walks" stopped
         // [lead18] the spot guard: cleared ground, idle mobs, the last checked spot per member, reject log
         std::vector<Position> clearedGround;
         std::map<ObjectGuid, Position> clearedLast;

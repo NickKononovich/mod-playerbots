@@ -2161,6 +2161,7 @@ namespace Leader::Dungeon
             lead.tankGroundSpots.clear();  // [lead152]
             lead.tankGroundFor.clear();
             lead.combatSpotAnchor.clear();
+            lead.combatSpotStoppedAt.clear();  // [lead397]
             lead.fightAnchorSerial = 0;
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
             lead.healReachAnchor = 0;
@@ -2968,7 +2969,9 @@ namespace Leader::Dungeon
                 // spells' range and its sight (the game's own), out of every fight mob's melee reach where the mobs
                 // stand now, safe, in heal reach (a healer: the tank in its reach), not a spot it just left. It casts
                 // there, no walk
-                auto const standsFit = [&]() -> bool
+                // [lead397] `whereTheyStand`: a mob on the move judged where it stands now (the place the member
+                // stands on), else where it runs to (the facts a walk was decided on)
+                auto const standsFit = [&](bool whereTheyStand) -> bool
                 {
                     if (melee)
                         return false;
@@ -2976,7 +2979,7 @@ namespace Leader::Dungeon
                     {
                         SpotAcquire const acquire;
                         fits = LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(), false, zones, keepsHere,
-                                                      true, &killOrder, true)
+                                                      true, &killOrder, whereTheyStand)
                                    .empty();
                     }
                     return fits && (bot == healer || PlayerbotAI::IsHeal(bot) || MemberCastsHere(bot, target));
@@ -3135,7 +3138,7 @@ namespace Leader::Dungeon
                         // [lead380] for every break, not only the first spot, by the cast facts (standsFit), not by the
                         // band of LeaderCombatSpotValid (b200: 107 healer and 41 caster first spots walked 1-2 yd
                         // from a place that fit)
-                        bool const here = standsFit();
+                        bool const here = standsFit(true);
                         if (here)
                         {
                             spot = bot->GetPosition();
@@ -3294,10 +3297,22 @@ namespace Leader::Dungeon
                 }
                 // [lead380] a ranged member / healer still walking to its spot that casts from where it stands now (the
                 // mob came within its reach, the tank stopped) stops there: the walk has no reason left
-                if (!melee && found != lead.combatSpots.end() && found->second.first == target->GetGUID() &&
+                // [lead397] b201 rfc-h: 13 command_repeat "combat spot" in 8 runs (5B 787.2-788.4 s: the shadow priest
+                // re-spotted "inside a fight mob's melee reach" 6 yd off, stopped 0.3 s later "it casts from where it
+                // walks" 3.9 yd short, re-spotted 0.9 s later "inside a fight mob's melee reach" back to the first
+                // spot). The walk was decided with the running Searing Blade Cultist where it ran to, the stop with it
+                // where it stood that moment - two facts for one mob. The stop reads the walk's facts: a running mob
+                // where it runs to. 5E 441.1 / 441.7 s, 5A 1213.8 / 1214.1 s: the stop fired twice on one walk - the
+                // hunter ran on 2-2.5 yd past the point it was stopped at, and the second stop put it back near the
+                // spot the first one had left. A walk is stopped once; the stop's point is its spot
+                auto const stopped = lead.combatSpotStoppedAt.find(guid);
+                bool const stoppedHere = found != lead.combatSpots.end() && stopped != lead.combatSpotStoppedAt.end() &&
+                                         stopped->second.GetExactDist(found->second.second) <= 0.1f;
+                if (!melee && !stoppedHere && found != lead.combatSpots.end() &&
+                    found->second.first == target->GetGUID() &&
                     bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
                         2.0f &&
-                    standsFit())
+                    standsFit(false))
                 {
                     Decisions().Write(run, "leader", "combat_spot_here", guid, bot->GetName(), true,
                                       JsonObject().Str("member", bot->GetName())
@@ -3305,6 +3320,7 @@ namespace Leader::Dungeon
                                           .Str("target", target->GetName())
                                           .Real("walkLeft", bot->GetExactDist(found->second.second)));
                     found->second.second = bot->GetPosition();
+                    lead.combatSpotStoppedAt[guid] = found->second.second;
                     lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                 }
                 // [lead20] user: «когда танк захватил уже всех с этого радиуса, хил может зайти» - a walk to the
