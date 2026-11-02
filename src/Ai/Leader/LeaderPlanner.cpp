@@ -8442,6 +8442,14 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             // [lead182b] the members' own rest lines read the same pack (PredictNextFight) - no fixed rest line
             CarefulPlanVerdict::NoteLook(bot, next.mobs);
         }
+        // [lead474] b207 rfc-h 5E 1050.9 s: the published plan was the pull that had just ended (1 mob pulled back,
+        // cost 0), its line let the paladin tank at low mana commit "walks in; 5 mobs" - then it drank 25 s under the
+        // open order (harness_hold "no walk", 15 s). The line is for the pull this look plans: at least its pack
+        else if (next.mobs < _planLookPack.size())
+        {
+            next.mobs = uint32(_planLookPack.size());
+            next.fightSec = 0.0f;  // read from the mobs (FightSecOf), not the ended pull's seconds
+        }
         float const tankLine = bot->GetMaxPower(POWER_MANA) ? RestState::TankManaLine(bot, next, &terms) : 0.0f;
         if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < tankLine)
         {
