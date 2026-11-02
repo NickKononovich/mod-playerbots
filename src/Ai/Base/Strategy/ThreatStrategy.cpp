@@ -771,9 +771,8 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     // [rot3] its personal saves on its own only in an emergency (or the leader's PreSave)
     if (IsPersonalSave(name))
     {
-        bool const manaDispersion =
-            name == "dispersion" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.LowMana);
-        if (Emergency() || manaDispersion || LeaderCommandState::PreSaveAssigned(bot))
+        // [lead423] Dispersion for mana is the leader's mana tool (its External), no longer the bot's own
+        if (Emergency() || LeaderCommandState::PreSaveAssigned(bot))
             return 1.0f;
 
         Log(action, "a personal save is for an emergency or the leader's PreSave");
@@ -806,7 +805,8 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     bool const burn = !stale && Leader::BurnAllows(_command, name);  // [lead178] the leader's verdict per cooldown
     // [rot5] the tool uses of a burn cooldown stay the bot's (IsBurnCooldown's comment)
     bool const burnException =
-        (PlayerbotAI::IsHeal(bot) && (name == "avenging wrath" || name == "shadowfiend")) ||
+        // [lead423] a healer's Shadowfiend is the leader's mana tool too (its External, "leader external")
+        (PlayerbotAI::IsHeal(bot) && name == "avenging wrath") ||
         // [lead422] user 2026-11-02: a damage dealer's own Shadowfiend below half mana is off - the leader's verdict
         // decides it (b201 5B: spent on trash at 38 % mana, on cooldown for Taragaman)
         (name == "mirror image" && AI_VALUE(uint8, "my attacker count") > 0) ||

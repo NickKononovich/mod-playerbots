@@ -303,6 +303,12 @@ namespace
                         unit->GetCharmerOrOwnerGUID() == self->GetGUID());
     }
 
+    // [lead423] a member's own mana tool, the leader's to issue
+    bool IsOwnManaTool(Player* self, std::string const& name)
+    {
+        return name == "shadowfiend" || name == "evocation" || (name == "divine plea" && PlayerbotAI::IsHeal(self));
+    }
+
     // [lead410] the bot at its critical health (the "critical health" trigger's line)
     bool CriticalHealth(Player* bot)
     {
@@ -354,6 +360,11 @@ namespace
         // [lead422] user 2026-11-02 (all doubles are bugs): Innervate is the leader's only - on whom its fight need
         // says (lead416), the druid itself included; the druid's own "medium mana" Innervate (rot38) is off
         if (name == "innervate")
+            return true;
+        // [lead423] every mana tool is the leader's (its External, "leader external"): Shadowfiend, Evocation, a
+        // healer's Divine Plea (a ret / prot paladin's stays its rotation, wowsims); Hymn of Hope and Mana Tide Totem
+        // are IsOwnExternal, Dispersion for mana the command multiplier's
+        if (IsOwnManaTool(self, name))
             return true;
         // [lead300] the leader's live Attack target is not dropped
         if (name == "drop target" && events.attack == Leader::AttackEvent::Attack)
@@ -667,6 +678,11 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
         Unit* const onWhom = action->GetTarget();
         if (!events.externalSpell)  // [lead422] its own Innervate on itself too
             note("external", "an external without a leader assignment");
+        return;
+    }
+    if (IsOwnManaTool(bot, name))  // [lead423]
+    {
+        note("mana tool", "a mana tool without the leader's External");
         return;
     }
     if (Leader::IsBurnCooldown(name) &&

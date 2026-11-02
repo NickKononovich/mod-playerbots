@@ -212,7 +212,7 @@ namespace Leader
         "bloodlust", "heroism", "icy veins", "arcane power", "presence of mind", "combustion", "mirror image",
         "avenging wrath", "death wish", "recklessness", "berserk", "army of the dead", "summon gargoyle",
         "rapid fire", "readiness", "bestial wrath", "adrenaline rush", "blade flurry", "killing spree",
-        "shadowfiend", "feral spirit", "elemental mastery", "fire elemental totem", "earth elemental totem",
+        "feral spirit", "elemental mastery", "fire elemental totem", "earth elemental totem",
         "metamorphosis", "starfall", "force of nature", "summon infernal", "summon doomguard",
         "dancing rune weapon", "unholy frenzy", "hysteria", "bladestorm", "shadow dance", "cold blood",
         "unbreakable armor",
