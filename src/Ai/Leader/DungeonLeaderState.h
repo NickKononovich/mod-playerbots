@@ -289,12 +289,21 @@ namespace Leader
         float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
         float bossPullSec = -1.0f;  // [lead178] seconds to the next boss pull: this fight, the on-path fights, the walk
-        // [lead184] the next boss judged like any pull (JudgePack's overload) once per fight: true when it does not fit
-        // without the burn cooldowns (they are held for him), with the judgement
-        bool bossNeedsBurn = false;
-        std::string bossVerdict;
+        // [lead274] every living boss judged like any pull once per fight (JudgePack's overload, his length over the
+        // group's dps): the burn cooldowns go to the boss that needs them most; the fight itself (a critical pull)
+        struct BossNeed
+        {
+            std::string name;
+            float overload = 0.0f;
+            float fightSec = 0.0f;
+            std::string judged;
+        };
+        std::map<ObjectGuid, BossNeed> bossNeeds;
+        float fightOverload = 0.0f;
+        std::string fightJudged;
+        std::string nextBossName;  // the nearest standing boss
         uint32 bossJudgedFor = 0;  // the fightStartMs it was judged for
-        std::set<ObjectGuid> burnLogged;                  // [lead80] burn_decision logged in this fight
+        std::map<std::string, std::string> burnLogged;  // [lead274] burn_decision: the verdict logged per member
         std::string slowestPass;                       // [lead76] the slowest leader pass this minute
         uint32 slowestPassUs = 0;
         uint32 slowestPassLogMs = 0;

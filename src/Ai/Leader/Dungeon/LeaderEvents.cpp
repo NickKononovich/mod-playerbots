@@ -112,6 +112,41 @@ namespace Leader::Dungeon
 {
     using namespace Leader::Fight;
 
+    // [lead274] a member under half health is in danger (the leader's own hurt line of its saves: Divine Hymn's
+    // "three members under half health")
+    constexpr float LEADER_DANGER_HEALTH_PCT = 50.0f;
+
+    // [lead274] the burn verdict of one member (`kind`: its cooldowns, or the group's Heroism / Bloodlust), logged
+    // when which cooldowns are allowed / held changes (the reasons' running numbers are no change)
+    void LogBurnDecision(DecisionRun const& run, DungeonLeaderState& lead, Player* bot, char const* kind,
+                         std::string const& allowed, std::string const& held, bool bossFight)
+    {
+        auto const names = [](std::string const& notes)
+        {
+            std::string out;
+            size_t start = 0;
+            while (start < notes.size())
+            {
+                size_t const end = std::min(notes.find("; ", start), notes.size());
+                std::string const one = notes.substr(start, end - start);
+                std::string const reason = one.substr(one.find(':') == std::string::npos ? one.size() : one.find(':'));
+                out += one.substr(0, one.find(':')) + "|" + reason.substr(0, reason.find(" (")) + ",";
+                start = end + 2;
+            }
+            return out;
+        };
+        std::string const sig = names(allowed) + "/" + names(held);
+        std::string& logged = lead.burnLogged[bot->GetGUID().ToString() + kind];
+        if (logged == sig || (allowed.empty() && held.empty()))
+            return;
+        logged = sig;
+        Decisions().Write(run, "leader", "burn_decision", bot->GetGUID(), bot->GetName(), true,
+                          JsonObject().Str("member", bot->GetName()).Str("kind", kind).Str("allowed", allowed)
+                              .Str("held", held).Bool("bossFight", bossFight)
+                              .Real("fightSec", lead.fightSecLeft).Real("fightOverload", lead.fightOverload)
+                              .Real("bossPullSec", lead.bossPullSec).Str("nextBoss", lead.nextBossName));
+    }
+
     // [lead22] slabs-h 20261026-201857: the leader told a full healer to Rest 52 times («[rest] Rtdruaa stands up:
     // full (hp 100 %, mana 100 %)») and its readiness waited for that sitter forever. A member at 99 % health and mana
     // never rests and a full sitter holds nothing (the bot's own stand-up rule: RestDone, full)
@@ -905,25 +940,40 @@ namespace Leader::Dungeon
                         bossYd = tank->GetExactDist(boss);
                         nextBoss = boss;
                     }
-            // [lead184] user: «почему босс не оценивается по тем же принципам, что и мобы» - the next boss is judged as
-            // a pull (the planner's estimate: overload of tank health, healer mana, the fight's length) once per fight;
-            // within the budget the group kills him without its burn cooldowns, and none is held for him
+            // [lead274] user: a normal raid leader saves all cooldowns for the boss; on trash only at critical
+            // moments, or if the boss is far and everything recharges; in a short dungeon only on bosses, and not on
+            // all - on the most needed. Once per fight every living boss is judged like a pull (the planner's
+            // estimate: JudgePack's overload of tank health / healer mana, and his length over the group's dps) - the
+            // cooldowns go to the boss that needs them most - and the fight itself (a critical pull: overload >= 1)
             if (lead.bossJudgedFor != lead.fightStartMs)
             {
                 lead.bossJudgedFor = lead.fightStartMs;
-                lead.bossNeedsBurn = false;
-                lead.bossVerdict = "no boss left";
-                if (nextBoss)
-                {
-                    float overload = 0.0f;
-                    std::string judged;
-                    PullPlanner::JudgePack(tank, {nextBoss->GetGUID()}, overload, judged);
-                    lead.bossNeedsBurn = overload > 1.0f;
-                    lead.bossVerdict = nextBoss->GetName() + ": " + judged +
-                                       (lead.bossNeedsBurn ? " - over the budget: the burn waits for him"
-                                                           : " - fits without the burn cooldowns");
-                }
+                std::map<ObjectGuid, DungeonLeaderState::BossNeed> needs;
+                for (ObjectGuid const& bossGuid : group.BossCreatures())
+                    if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive())
+                    {
+                        DungeonLeaderState::BossNeed need;
+                        // a boss already in this fight keeps the judgement from before his pull (his full health)
+                        if (auto const known = lead.bossNeeds.find(bossGuid);
+                            boss->IsInCombat() && known != lead.bossNeeds.end())
+                            need = known->second;
+                        else
+                        {
+                            PullPlanner::JudgePack(tank, {bossGuid}, need.overload, need.judged);
+                            need.fightSec = float(boss->GetMaxHealth()) / std::max(groupDps, 1.0f);
+                            need.name = boss->GetName();
+                        }
+                        needs[bossGuid] = need;
+                    }
+                lead.bossNeeds = needs;
+                std::vector<ObjectGuid> fightGuids;
+                for (Unit* mob : fightingMobs)
+                    fightGuids.push_back(mob->GetGUID());
+                lead.fightOverload = 0.0f;
+                lead.fightJudged.clear();
+                PullPlanner::JudgePack(tank, fightGuids, lead.fightOverload, lead.fightJudged);
             }
+            lead.nextBossName = nextBoss ? nextBoss->GetName() : std::string();
             lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
             // [lead178] the time to the next boss pull: what is left of this fight, the fights of the idle mobs the
             // leader holds on the path (their health over the group's dps) and the walk; no boss left: -1
@@ -1806,16 +1856,89 @@ namespace Leader::Dungeon
                 if (samples.size() < 4000)
                     samples.push_back(bot->GetExactDist(tank));
             }
-        // [lead178] [lead184] one member's burn cooldowns on trash: each one ready, allowed unless the next boss does
-        // not fit without it and it would not be back for his pull (else held for him)
+        // [lead274] a critical moment of this fight: the pull over the leader's own estimate (overload >= 1), or a
+        // member in danger (the tank below LEADER_PRESAVE_TANK_PCT, another member under half health: the lines the
+        // leader's saves already use); empty: none
+        std::string critical;
+        if (fighting)
+        {
+            if (lead.fightOverload >= 1.0f)
+                critical = Acore::StringFormat("a critical pull: overload {:.2f} ({})", lead.fightOverload,
+                                               lead.fightJudged);
+            else if (tank->IsAlive() && tank->GetHealthPct() < Leader::LEADER_PRESAVE_TANK_PCT)
+                critical = Acore::StringFormat("the tank in danger at {:.0f} %", tank->GetHealthPct());
+            else
+                for (Player* bot : seats)
+                    if (bot->IsAlive() && bot->GetHealthPct() < LEADER_DANGER_HEALTH_PCT)
+                    {
+                        critical = Acore::StringFormat("{} in danger at {:.0f} %", bot->GetName(), bot->GetHealthPct());
+                        break;
+                    }
+        }
+        Creature* const fightBoss = target && target->ToCreature() && target->ToCreature()->IsDungeonBoss()
+                                        ? target->ToCreature()
+                                        : nullptr;
+        // [lead274] one cooldown's verdict by its recharge: true allowed, `why` the reason either way
+        auto const cooldownVerdict = [&](float rechargeSec, std::string& why) -> bool
+        {
+            if (!critical.empty())
+            {
+                why = critical;
+                return true;
+            }
+            if (!fightBoss)
+            {
+                if (lead.bossPullSec < 0.0f)
+                {
+                    why = "trash, no boss left";
+                    return true;
+                }
+                bool const back = lead.bossPullSec >= rechargeSec;
+                why = Acore::StringFormat("{} {} (his pull in {:.0f} s, recharge {:.0f} s)",
+                                          back ? "trash: back before the pull of" : "held for", lead.nextBossName,
+                                          lead.bossPullSec, rechargeSec);
+                return back;
+            }
+            // a boss fight: held when a boss that needs it more (overload first, then the longer fight) comes within
+            // its recharge - the time to him at least this fight's rest and the walk to him
+            auto const here = lead.bossNeeds.find(fightBoss->GetGUID());
+            DungeonLeaderState::BossNeed const mine =
+                here != lead.bossNeeds.end() ? here->second : DungeonLeaderState::BossNeed();
+            for (auto const& [bossGuid, need] : lead.bossNeeds)
+            {
+                Creature* later = bossGuid == fightBoss->GetGUID() ? nullptr : map->GetCreature(bossGuid);
+                if (!later || !later->IsAlive() || later->IsInCombat())
+                    continue;
+                bool const harder = need.overload > mine.overload ||
+                                    (need.overload == mine.overload && need.fightSec > mine.fightSec);
+                float const toHim =
+                    lead.fightSecLeft + tank->GetExactDist(later) / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                if (harder && toHim < rechargeSec)
+                {
+                    why = Acore::StringFormat(
+                        "held for {} (needs it more: overload {:.2f} / {:.0f} s vs {:.2f} / {:.0f} s; his pull in >= "
+                        "{:.0f} s, recharge {:.0f} s)",
+                        need.name, need.overload, need.fightSec, mine.overload, mine.fightSec, toHim, rechargeSec);
+                    return false;
+                }
+            }
+            why = Acore::StringFormat("the boss that needs it most within its recharge (overload {:.2f}, {:.0f} s)",
+                                      mine.overload, mine.fightSec);
+            return true;
+        };
+        // [lead178] [lead274] one member's burn cooldowns, each one ready, by its verdict
         auto const burnVerdict = [&](Player* who, PlayerbotAI* whoAI, std::vector<std::string>& allowedOut,
                                      std::string& allowedNote, std::string& heldNote)
         {
             for (char const* burn : Leader::BURN_COOLDOWNS)
             {
+                std::string const name(burn);
                 // [lead273] wowsims casts Army of the Dead only before a boss pull (Blood, Frost) or on the boss
                 // under the Gargoyle (Unholy): never a trash burn, it is kept for the boss prepull (Leader::Prepull)
-                if (std::string(burn) == "army of the dead")
+                if (!fightBoss && name == "army of the dead")
+                    continue;
+                // Heroism / Bloodlust is the leader's own command (3c), judged there by the same verdict
+                if (name == "heroism" || name == "bloodlust")
                     continue;
                 uint32 const spell = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", burn)->Get();
                 SpellInfo const* info = spell && who->HasSpell(spell) && !who->HasSpellCooldown(spell)
@@ -1824,11 +1947,12 @@ namespace Leader::Dungeon
                 if (!info)
                     continue;
                 float const rechargeSec = std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
-                bool const allowed = !lead.bossNeedsBurn || lead.bossPullSec < 0.0f || lead.bossPullSec >= rechargeSec;
+                std::string why;
+                bool const allowed = cooldownVerdict(rechargeSec, why);
                 if (allowed)
-                    allowedOut.push_back(burn);
+                    allowedOut.push_back(name);
                 std::string& note = allowed ? allowedNote : heldNote;
-                note += Acore::StringFormat("{}{} ({:.0f} s)", note.empty() ? "" : ", ", burn, rechargeSec);
+                note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
             }
         };
         // [lead187] b180: the blood DK tank cast no Raise Dead / Army of the Dead (sim 1.3 / min each) - its DK
@@ -1840,19 +1964,14 @@ namespace Leader::Dungeon
                 std::vector<std::string> tankAllowed;
                 std::string tankAllowedNote;
                 std::string tankHeldNote;
-                if (intensity != Leader::Intensity::Burn)
-                    burnVerdict(tank, tankAI, tankAllowed, tankAllowedNote, tankHeldNote);
-                Leader::Intensity const tankIntensity = intensity == Leader::Intensity::Burn || !tankAllowed.empty()
-                                                            ? Leader::Intensity::Burn
-                                                            : Leader::Intensity::Normal;
+                burnVerdict(tank, tankAI, tankAllowed, tankAllowedNote, tankHeldNote);  // [lead274] bosses too
+                Leader::Intensity const tankIntensity =
+                    !tankAllowed.empty() ? Leader::Intensity::Burn : Leader::Intensity::Normal;
+                LogBurnDecision(run, lead, tank, "cooldowns", tankAllowedNote, tankHeldNote, fightBoss != nullptr);
                 if (Leader::Events::SetIntensity(tank->GetGUID(), tankIntensity, tankAllowed) &&
                     tankIntensity == Leader::Intensity::Burn)
                     logEvent(tank, "Intensity",
-                             JsonObject()
-                                 .Str("intensity", "burn")
-                                 .Str("who", "tank")
-                                 .Str("why", intensity == Leader::Intensity::Burn ? "a dungeon boss"
-                                                                                  : "trash: " + tankAllowedNote));
+                             JsonObject().Str("intensity", "burn").Str("who", "tank").Str("why", tankAllowedNote));
             }
         // [lead21] slabs-h 20261026-195203: the tank executing a leader PullOrder out of combat had no fresh command -
         // rot3's stale mode ("keeps to its current target, no area spell") vetoed its pull: 17 orders "nothing came".
@@ -3586,26 +3705,17 @@ namespace Leader::Dungeon
                 // [lead178] user (approved): per cooldown - on trash only the ones back before the next boss pull
                 // (their recharge within lead.bossPullSec: this fight, the on-path fights, the walk), the others held
                 // for the boss; the member casts only the allowed ones (Leader::BurnAllows)
-                Leader::Intensity burnable = intensity;
+                // [lead274] bosses too: each cooldown by its verdict (held for the boss that needs it most)
+                Leader::Intensity burnable = bot == healer ? intensity : Leader::Intensity::Normal;  // its tool uses
                 std::vector<std::string> burnAllowed;
-                if (burnable != Leader::Intensity::Burn && !victim && !overThreat && bot != healer && botAI)
+                std::string allowedNote;
+                if (!victim && !overThreat && bot != healer && botAI)
                 {
-                    std::string allowedNote;
-                    std::string heldNote;  // [lead184] the cooldowns the boss needs (held for him)
+                    std::string heldNote;
                     burnVerdict(bot, botAI, burnAllowed, allowedNote, heldNote);
                     if (!burnAllowed.empty())
                         burnable = Leader::Intensity::Burn;
-                    if (!burnAllowed.empty() || !heldNote.empty())
-                    {
-                        if (lead.burnLogged.insert(bot->GetGUID()).second)
-                            Decisions().Write(
-                                run, "leader", "burn_decision", guid, bot->GetName(), true,
-                                JsonObject().Str("member", bot->GetName()).Str("cooldowns", allowedNote)
-                                    .Str("heldForBoss", heldNote)
-                                    .Real("fightSec", lead.fightSecLeft).Real("bossPullSec", lead.bossPullSec)
-                                    .Real("bossWalkSec", lead.bossWalkSec).Str("boss", lead.bossVerdict)
-                                    .Bool("bossNeedsBurn", lead.bossNeedsBurn));
-                    }
+                    LogBurnDecision(run, lead, bot, "cooldowns", allowedNote, heldNote, fightBoss != nullptr);
                 }
                 Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : burnable;
                 if (Leader::Events::SetIntensity(
@@ -3616,9 +3726,7 @@ namespace Leader::Dungeon
                                  .Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
                                  .Str("why", victim       ? "aggro loss: the tank takes the mob back"
                                              : overThreat ? std::string("threat: no mob with headroom")
-                                             : intensity == Leader::Intensity::Burn
-                                                 ? std::string("a dungeon boss")
-                                                 : "trash: the boss fits without them, or they are back for him")
+                                                          : allowedNote)
                                  .Raw("threat", overThreat && lead.stopProjection.count(guid)
                                                     ? lead.stopProjection[guid]
                                                     : std::string("null")));  // [lead246]
@@ -3779,20 +3887,26 @@ namespace Leader::Dungeon
             if (hurt >= 3)
                 if (auto const [bot, spell] = withSpell({SPELL_DIVINE_HYMN}, nullptr); bot)
                     tell(bot, spell, nullptr, "three members under half health");
-            // [lead105] Heroism / Bloodlust is the group's cooldown: the leader's command at a boss fight's burn (one
-            // shaman, the group as the target); the shaman's own trigger is off in a led group
-            if (intensity == Leader::Intensity::Burn && target && target->ToCreature() &&
-                target->ToCreature()->IsDungeonBoss())
-                if (auto const [bot, spell] = withSpell({SPELL_HEROISM, SPELL_BLOODLUST}, nullptr); bot)
-                    tell(bot, spell, nullptr, "the boss burn: the group's haste");
-            // [lead184] user: «Bloodlust не нужен, чтобы убить босса» - the next boss fits without it (judged as a
-            // pull, lead.bossNeedsBurn): it goes on trash on cooldown, the group not under Sated / Exhaustion
+            // [lead105] Heroism / Bloodlust is the group's cooldown: the leader's command (one shaman, the group as
+            // the target); the shaman's own trigger is off in a led group
+            // [lead274] by the verdict of every burn cooldown: on the boss that needs it most, on trash only at a
+            // critical moment or when it is back before the next boss pull; never under Sated / Exhaustion
             constexpr uint32 SPELL_SATED = 57724;
             constexpr uint32 SPELL_EXHAUSTION = 57723;
-            if (intensity != Leader::Intensity::Burn && !lead.bossNeedsBurn && target && !tank->HasAura(SPELL_SATED) &&
-                !tank->HasAura(SPELL_EXHAUSTION))
+            if (target && !tank->HasAura(SPELL_SATED) && !tank->HasAura(SPELL_EXHAUSTION))
                 if (auto const [bot, spell] = withSpell({SPELL_HEROISM, SPELL_BLOODLUST}, nullptr); bot)
-                    tell(bot, spell, nullptr, "trash: the next boss fits without it");
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+                    {
+                        std::string why;
+                        float const rechargeSec =
+                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
+                        bool const allowed = cooldownVerdict(rechargeSec, why);
+                        std::string const note = "heroism / bloodlust: " + why;
+                        LogBurnDecision(run, lead, bot, "heroism", allowed ? note : std::string(),
+                                        allowed ? std::string() : note, fightBoss != nullptr);
+                        if (allowed)
+                            tell(bot, spell, nullptr, "the burn: the group's haste");
+                    }
             if (intensity == Leader::Intensity::Burn)
                 for (Player* member : seats)
                     if (member != healer && member->getPowerType() == POWER_MANA && !PlayerbotAI::IsTank(member))
