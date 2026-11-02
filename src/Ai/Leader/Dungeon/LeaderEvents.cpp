@@ -1983,6 +1983,8 @@ namespace Leader::Dungeon
         {
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
             lead.plannerRestFor.clear();
+            lead.restEndMana.clear();  // [lead230] a fight's spend is the fight line's
+            lead.restExtra.clear();
         }
         // [lead51] the members' measured mana spend in fights (% of max mana per second of fight): the model's rate
         {
@@ -2191,6 +2193,38 @@ namespace Leader::Dungeon
                                 "line + {:.0f} % for {:.0f} missing health",
                                 bot->GetPowerPct(POWER_MANA), line, topUp, missing);
                         }
+                    }
+                }
+                // [lead230] b187 rfc-h 5C 970-1022 s: the disc priest rested 20 times in 52 s (12 -> 18 %, line 15 %):
+                // each Rest ended at its line, the boss buff pass (Prepare) took 6 % and it sat again. Mana it spent
+                // standing between two Rests out of a fight is mana it spends again before the pull: the Rest after
+                // such a spend holds to its line plus that spend (one Rest for the fact, not one per buff)
+                if (bot->GetMaxPower(POWER_MANA))
+                {
+                    float const mana = bot->GetPowerPct(POWER_MANA);
+                    auto const ended = lead.restEndMana.find(guid);
+                    if (needsRest && ended != lead.restEndMana.end() && ended->second > mana)
+                    {
+                        lead.restExtra[guid] = std::max(lead.restExtra[guid], ended->second - mana);
+                        lead.restEndMana.erase(ended);
+                    }
+                    auto const extra = lead.restExtra.find(guid);
+                    if (!needsRest && extra != lead.restExtra.end() && bot->IsSitState() &&
+                        RestState::IsDrinking(bot))
+                    {
+                        float const line = RestState::OwnManaLine(bot);
+                        if (mana < line + extra->second)
+                        {
+                            needsRest = true;
+                            restWhy = Acore::StringFormat(
+                                "drinks on for what it spends standing: mana {:.0f} % < {:.0f} % line + {:.0f} %", mana,
+                                line, extra->second);
+                        }
+                    }
+                    if (!needsRest && !lead.restLogged[guid].empty())
+                    {
+                        lead.restEndMana[guid] = mana;  // this Rest ends now
+                        lead.restExtra.erase(guid);
                     }
                 }
                 {
