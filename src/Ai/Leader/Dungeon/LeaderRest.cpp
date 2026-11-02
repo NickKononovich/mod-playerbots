@@ -241,7 +241,13 @@ namespace Leader::Dungeon
                                     Leader::Orders::IsTracked(group.LeaderGuid());
             bool const regenerating =
                 REGEN_WAIT_BELOW_LINE && !leaderRest ? (seatedBelowLine || freshSitter) : seated;
-            bool const waitedFor = !REGEN_WAIT_BELOW_LINE || regenerating || hardLine;
+            // [lead394] b201 rfc-h 5C: 353 s of "drinking" waits, 138 s of them under a leader Rest - 593-641 s the
+            // route waited 48 s for "Rtdruab(regen)" (the balance druid under 20 % mana, the hard line) while the
+            // leader's computed line for its next fight was ~10 % ("mana 8 % < need 10 %"): no Rest, no drink, spirit
+            // regen standing; 5D 51 s for the resto shaman, 5A 38 s for the enhancement shaman. Two rest rules for
+            // one fact. In a group the leader leads its Rest is the one rest rule: the route waits for exactly the
+            // members it rests
+            bool const waitedFor = leaderRest ? leaderRests : (!REGEN_WAIT_BELOW_LINE || regenerating || hardLine);
             if (seated && !regenerating && !hardLine && !rest.regenAboveLineLogged)
             {
                 rest.regenAboveLineLogged = true;
@@ -249,7 +255,7 @@ namespace Leader::Dungeon
                          JsonObject().Str("name", member.name).Real("hp", healthPct).Real("mana", manaPct)
                              .Str("state", "sits above its line, not waited for"));
             }
-            if (seated || hardLine || wantsDrink || wantsFood)
+            if (seated || hardLine || wantsDrink || wantsFood || (leaderRest && leaderRests))
             {
                 // Its combat engine runs out of combat (it "attacks" a mob that does not fight back: Violet
                 // Hold's released prisoner): the drink never runs, a wait only holds the group. Not waited for.
@@ -260,7 +266,7 @@ namespace Leader::Dungeon
                 // what keeps it from resting is the fact that ends the wait for it at once: no drink / food in its
                 // bags, mounted, in the water, its group fighting (RestState::CanRest), its combat engine
                 bool const noWater = lowMana && !drinks;
-                bool const shouldSit = noWater || drinkLine || foodLine;
+                bool const shouldSit = noWater || drinkLine || foodLine || (leaderRest && leaderRests);
                 std::string cannot;
                 if (!seated && shouldSit)
                 {
