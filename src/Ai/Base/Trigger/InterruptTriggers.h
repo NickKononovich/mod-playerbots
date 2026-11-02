@@ -57,4 +57,31 @@ public:
     bool IsActive() override;
 };
 
+// [lead400] The leader's Dispel for this bot (LeaderCommand::AssignedDispel), the spell known.
+class LeaderDispelTrigger : public Trigger
+{
+public:
+    LeaderDispelTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader dispel") {}
+
+    bool IsActive() override;
+};
+
+// [lead402] The leader's Consume of a bag item for this bot (LeaderCommand::AssignedConsume).
+class LeaderConsumeTrigger : public Trigger
+{
+public:
+    LeaderConsumeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader consume") {}
+
+    bool IsActive() override;
+};
+
+// [lead405] The leader's Consume of a game object for this bot.
+class LeaderUseObjectTrigger : public Trigger
+{
+public:
+    LeaderUseObjectTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader use object") {}
+
+    bool IsActive() override;
+};
+
 #endif

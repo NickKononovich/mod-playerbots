@@ -123,6 +123,33 @@ namespace LeaderCommand
         Leader::MemberEvents command;
         return CurrentCommand(bot, command) ? command.dontAttack : ObjectGuid::Empty;
     }
+
+    // [lead400] the leader's Dispel: the dispel spell (a rank the bot knows) and the member it removes a debuff from;
+    // false: none (a led bot dispels nobody of its own choice)
+    inline bool AssignedDispel(Player* bot, uint32& spell, ObjectGuid& target)
+    {
+        Leader::MemberEvents command;
+        if (!CurrentCommand(bot, command) || !command.dispelSpell)
+            return false;
+        spell = command.dispelSpell;
+        target = command.dispelTarget;
+        return true;
+    }
+
+    // [lead402] [lead405] the leader's Consume: the bag item to use and on whom (Empty: itself), or the game object
+    // to use; false: none
+    inline bool AssignedConsume(Player* bot, uint32& item, ObjectGuid& target, ObjectGuid& object, std::string* why)
+    {
+        Leader::MemberEvents command;
+        if (!CurrentCommand(bot, command) || (!command.consumeItem && command.consumeObject.IsEmpty()))
+            return false;
+        item = command.consumeItem;
+        target = command.consumeTarget;
+        object = command.consumeObject;
+        if (why)
+            *why = command.consumeWhy;
+        return true;
+    }
 }
 
 #endif

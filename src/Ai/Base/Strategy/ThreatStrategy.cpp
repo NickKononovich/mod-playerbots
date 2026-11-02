@@ -742,7 +742,8 @@ float LeaderCommandMultiplier::GetValue(Action* action)
 
     std::string const& name = action->getName();
     if (name == "leader external" || name == "leader cc" || name == "leader threat" || name == "leader pre save" ||
-        name == "interrupt assigned cast")
+        name == "interrupt assigned cast" || name == "leader dispel" || name == "leader consume" ||
+        name == "leader use object")  // [lead400] [lead402] [lead405]
         return 1.0f;
 
     Refresh();

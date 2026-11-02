@@ -483,6 +483,8 @@ namespace Leader
                 DOMAIN_HEAL_TARGET,
                 DOMAIN_LOOT,
                 DOMAIN_PRE_SAVE,
+                DOMAIN_DISPEL,   // [lead400]
+                DOMAIN_CONSUME,  // [lead402]
                 DOMAIN_COUNT
             };
             // [lead320] one domain's commands as the arbiter sees them (an empty key: no command)
@@ -507,6 +509,10 @@ namespace Leader
                 uint32 stale = 0;
                 uint32 externalFailed = 0;  // [lead272] the External the member reported it cannot cast
                 std::string externalFailedWhy;
+                uint32 dispelFailed = 0;  // [lead400] the Dispel / [lead402] Consume the member reported it cannot do
+                std::string dispelFailedWhy;
+                uint32 consumeFailed = 0;
+                std::string consumeFailedWhy;
                 bool moveRefusalNew = false;  // [lead372] not taken yet
                 bool moveRefused = false;     // kept until the leader clears it
                 MoveRefusal moveRefusal;
@@ -536,7 +542,8 @@ namespace Leader
             {
                 static constexpr char const* names[DOMAIN_COUNT] = {
                     "move",     "attack", "intensity",  "ready",      "external", "cc",     "interrupt",
-                    "fleeStop", "threat", "dontAttack", "healTarget", "loot",     "preSave"};
+                    "fleeStop", "threat", "dontAttack", "healTarget", "loot",     "preSave",
+                    "dispel",   "consume"};
                 return names[domain];
             }
 
@@ -947,6 +954,43 @@ namespace Leader
             return changed;
         }
 
+        bool SetDispel(ObjectGuid member, uint32 spell, ObjectGuid target)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            std::string const key = spell ? std::to_string(spell) + ":" + GuidKey(target) : std::string();
+            if (!Arbitrate(slot, DOMAIN_DISPEL, key, key, 0, 0, key.empty()))
+                return false;
+            bool const changed = e.dispelSpell != spell || e.dispelTarget != target;
+            e.dispelSpell = spell;
+            e.dispelTarget = spell ? target : ObjectGuid::Empty;
+            e.dispelMs = slot.gen;
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
+        bool SetConsume(ObjectGuid member, uint32 item, ObjectGuid target, ObjectGuid object, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            MemberEvents& e = slot.events;
+            std::string const key = item ? std::to_string(item) + ":" + GuidKey(target)
+                                         : (object.IsEmpty() ? std::string() : "object:" + GuidKey(object));
+            if (!Arbitrate(slot, DOMAIN_CONSUME, key, key, 0, 0, key.empty()))
+                return false;
+            bool const changed = e.consumeItem != item || e.consumeTarget != target || e.consumeObject != object;
+            e.consumeItem = item;
+            e.consumeTarget = item ? target : ObjectGuid::Empty;
+            e.consumeObject = item ? ObjectGuid::Empty : object;
+            e.consumeWhy = key.empty() ? std::string() : why;
+            e.consumeMs = slot.gen;
+            if (changed)
+                ++e.seq;
+            return changed;
+        }
+
         void StampPhase(ObjectGuid member, uint32 phase)
         {
             std::lock_guard<std::mutex> lock(eventLock);
@@ -1122,6 +1166,22 @@ namespace Leader
                 e.ready = ReadyEvent::None;
                 changed = true;
             }
+            if (e.dispelSpell && drop(e.dispelMs))
+            {
+                Dropped(slot, DOMAIN_DISPEL);
+                e.dispelSpell = 0;
+                e.dispelTarget.Clear();
+                changed = true;
+            }
+            if ((e.consumeItem || !e.consumeObject.IsEmpty()) && drop(e.consumeMs))
+            {
+                Dropped(slot, DOMAIN_CONSUME);
+                e.consumeItem = 0;
+                e.consumeTarget.Clear();
+                e.consumeObject.Clear();
+                e.consumeWhy.clear();
+                changed = true;
+            }
             if (changed)
                 ++e.seq;
         }
@@ -1179,7 +1239,8 @@ namespace Leader
                    out.intensity != Intensity::Normal || out.ready != ReadyEvent::None || !out.cc.IsEmpty() ||
                    !out.interrupt.IsEmpty() || !out.fleeStop.IsEmpty() || out.externalSpell ||
                    !out.threatTarget.IsEmpty() ||
-                   !out.dontAttack.IsEmpty() || out.loot || out.preSaveUntilMs;
+                   !out.dontAttack.IsEmpty() || out.loot || out.preSaveUntilMs || out.dispelSpell || out.consumeItem ||
+                   !out.consumeObject.IsEmpty();
         }
 
         void Ack(ObjectGuid member, uint32 seq, std::string const& what, std::string const& why)
@@ -1288,6 +1349,46 @@ namespace Leader
             why = found->second.externalFailedWhy;
             found->second.externalFailed = 0;
             found->second.externalFailedWhy.clear();
+            return true;
+        }
+
+        void NoteDispelFailed(ObjectGuid member, uint32 spell, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            slot.dispelFailed = spell;
+            slot.dispelFailedWhy = why;
+        }
+
+        bool TakeDispelFailed(ObjectGuid member, uint32 spell, std::string& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || !spell || found->second.dispelFailed != spell)
+                return false;
+            why = found->second.dispelFailedWhy;
+            found->second.dispelFailed = 0;
+            found->second.dispelFailedWhy.clear();
+            return true;
+        }
+
+        void NoteConsumeFailed(ObjectGuid member, uint32 what, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            Slot& slot = eventSlots[member];
+            slot.consumeFailed = what;
+            slot.consumeFailedWhy = why;
+        }
+
+        bool TakeConsumeFailed(ObjectGuid member, uint32 what, std::string& why)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const found = eventSlots.find(member);
+            if (found == eventSlots.end() || !what || found->second.consumeFailed != what)
+                return false;
+            why = found->second.consumeFailedWhy;
+            found->second.consumeFailed = 0;
+            found->second.consumeFailedWhy.clear();
             return true;
         }
 

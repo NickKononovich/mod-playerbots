@@ -99,6 +99,9 @@ public:
         creators["leader threat"] = &ActionContext::leader_threat;      // [rot2]
         creators["leader cc"] = &ActionContext::leader_cc;              // [rot2]
         creators["leader pre save"] = &ActionContext::leader_pre_save;  // [rot3]
+        creators["leader dispel"] = &ActionContext::leader_dispel;          // [lead400]
+        creators["leader consume"] = &ActionContext::leader_consume;        // [lead402]
+        creators["leader use object"] = &ActionContext::leader_use_object;  // [lead405]
         creators["set return position"] = &ActionContext::set_return_position;
         creators["rpg"] = &ActionContext::rpg;
         creators["crpg"] = &ActionContext::crpg;
@@ -353,6 +356,9 @@ private:
     static Action* leader_threat(PlayerbotAI* botAI) { return new LeaderThreatAction(botAI); }      // [rot2]
     static Action* leader_cc(PlayerbotAI* botAI) { return new LeaderCcAction(botAI); }              // [rot2]
     static Action* leader_pre_save(PlayerbotAI* botAI) { return new LeaderPreSaveAction(botAI); }  // [rot3]
+    static Action* leader_dispel(PlayerbotAI* botAI) { return new LeaderDispelAction(botAI); }       // [lead400]
+    static Action* leader_consume(PlayerbotAI* botAI) { return new LeaderConsumeAction(botAI); }     // [lead402]
+    static Action* leader_use_object(PlayerbotAI* botAI) { return new LeaderUseObjectAction(botAI); }  // [lead405]
     static Action* clear_auto_cc_mark(PlayerbotAI* botAI) { return new ClearAutoCcMarkAction(botAI); }
     static Action* cast_auto_cc(PlayerbotAI* botAI) { return new CastAutoCcAction(botAI); }
     static Action* control_charmed_member(PlayerbotAI* botAI) { return new ControlCharmedMemberAction(botAI); }

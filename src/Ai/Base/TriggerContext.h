@@ -113,6 +113,9 @@ public:
         creators["leader threat"] = &TriggerContext::leader_threat;      // [rot2]
         creators["leader cc"] = &TriggerContext::leader_cc;              // [rot2]
         creators["leader pre save"] = &TriggerContext::leader_pre_save;  // [rot3]
+        creators["leader dispel"] = &TriggerContext::leader_dispel;          // [lead400]
+        creators["leader consume"] = &TriggerContext::leader_consume;        // [lead402]
+        creators["leader use object"] = &TriggerContext::leader_use_object;  // [lead405]
 
         creators["light rage available"] = &TriggerContext::LightRageAvailable;
         creators["medium rage available"] = &TriggerContext::MediumRageAvailable;
@@ -570,6 +573,9 @@ private:
     static Trigger* leader_threat(PlayerbotAI* botAI) { return new LeaderThreatTrigger(botAI); }      // [rot2]
     static Trigger* leader_cc(PlayerbotAI* botAI) { return new LeaderCcTrigger(botAI); }              // [rot2]
     static Trigger* leader_pre_save(PlayerbotAI* botAI) { return new LeaderPreSaveTrigger(botAI); }  // [rot3]
+    static Trigger* leader_dispel(PlayerbotAI* botAI) { return new LeaderDispelTrigger(botAI); }       // [lead400]
+    static Trigger* leader_consume(PlayerbotAI* botAI) { return new LeaderConsumeTrigger(botAI); }     // [lead402]
+    static Trigger* leader_use_object(PlayerbotAI* botAI) { return new LeaderUseObjectTrigger(botAI); }  // [lead405]
     static Trigger* no_pet(PlayerbotAI* botAI) { return new NoPetTrigger(botAI); }
     static Trigger* has_pet(PlayerbotAI* botAI) { return new HasPetTrigger(botAI); }
     static Trigger* pet_attack(PlayerbotAI* botAI) { return new PetAttackTrigger(botAI); }

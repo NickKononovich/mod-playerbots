@@ -585,6 +585,17 @@ namespace Leader
         uint32 preSaveMs = 0;
         ReadyEvent ready = ReadyEvent::None;
         uint32 readyMs = 0;
+        // [lead400] the dispel the leader tells this member to cast (a rank it knows) and on whom
+        uint32 dispelSpell = 0;
+        ObjectGuid dispelTarget;
+        uint32 dispelMs = 0;
+        // [lead402] the bag item the leader tells this member to use (a potion, a soulstone) and on whom (Empty: on
+        // itself), or [lead405] the game object it uses (a Soulwell, a ritual's portal); `consumeWhy` the reason
+        uint32 consumeItem = 0;
+        ObjectGuid consumeTarget;
+        ObjectGuid consumeObject;
+        std::string consumeWhy;
+        uint32 consumeMs = 0;
     };
     // [lead178] the leader's verdict on one burn cooldown: under its Burn, and on trash only one it allowed
     inline bool BurnAllows(MemberEvents const& events, std::string const& name)
@@ -695,6 +706,11 @@ namespace Leader
         bool SetLoot(ObjectGuid member, bool loot);
         bool SetPreSave(ObjectGuid member, uint32 untilMs, std::string const& why);
         bool SetReady(ObjectGuid member, ReadyEvent ready);
+        // [lead400] the leader's Dispel: `member` casts `spell` on `target` (spell 0: none)
+        bool SetDispel(ObjectGuid member, uint32 spell, ObjectGuid target);
+        // [lead402] [lead405] the leader's Consume: `member` uses the bag item `item` on `target` (Empty: itself), or
+        // the game object `object` (item 0); both empty: none. The key is the item / object and target, not `why`
+        bool SetConsume(ObjectGuid member, uint32 item, ObjectGuid target, ObjectGuid object, std::string const& why);
         void Clear(ObjectGuid member);
         // [lead27] a command stays until the leader issues another: each leader tick asserts what it wants
         // (BeginTick ... the Set* calls ... EndTick), and EndTick clears every field it did not assert - no TTL
@@ -716,6 +732,12 @@ namespace Leader
         // takes the report for `spell` (false: none) and drops the order
         void NoteExternalFailed(ObjectGuid member, uint32 spell, std::string const& why);
         bool TakeExternalFailed(ObjectGuid member, uint32 spell, std::string& why);
+        // [lead400] [lead402] the same report for the leader's Dispel (its spell) and Consume (its item, else the
+        // object's low guid): the member cannot do it for a lasting reason; the leader drops the order
+        void NoteDispelFailed(ObjectGuid member, uint32 spell, std::string const& why);
+        bool TakeDispelFailed(ObjectGuid member, uint32 spell, std::string& why);
+        void NoteConsumeFailed(ObjectGuid member, uint32 what, std::string const& why);
+        bool TakeConsumeFailed(ObjectGuid member, uint32 what, std::string& why);
         // [lead372] the member's walk refused the leader's move (member thread; the latest one kept). Take: a report
         // not taken yet; MoveRefused: the latest one, kept until ClearMoveRefused (the facts it was judged on stand)
         void NoteMoveRefused(ObjectGuid member, MoveRefusal const& refusal);

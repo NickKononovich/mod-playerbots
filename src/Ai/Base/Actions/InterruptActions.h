@@ -8,6 +8,8 @@
 #define PLAYERBOTS_INTERRUPTACTIONS_H
 
 #include "Action.h"
+#include "MovementActions.h"  // [lead405] LeaderUseObjectAction
+#include "UseItemAction.h"    // [lead402] LeaderConsumeAction
 
 class PlayerbotAI;
 class SpellInfo;
@@ -33,6 +35,8 @@ private:
 
 // The external save / buff the leader assigns (spell id, on whom): Innervate, Hymn of Hope, Divine Hymn, Pain
 // Suppression, Power Infusion, the Hand spells, Misdirection, Tricks, Bloodlust / Heroism.
+// [lead401] ... and a resurrection on a dead member (a battle resurrection in a fight, out of one Resurrection /
+// Redemption / Ancestral Spirit / Revive): out of a fight the walk into its range and sight comes first.
 class LeaderExternalAction : public Action
 {
 public:
@@ -40,6 +44,40 @@ public:
 
     bool isUseful() override;
     bool isPossible() override;
+    bool Execute(Event event) override;
+    std::vector<NextAction> getPrerequisites() override;
+};
+
+// [lead400] The leader's Dispel: the dispel spell it names on the member it names (a debuff of a type the spell
+// removes is on it).
+class LeaderDispelAction : public Action
+{
+public:
+    LeaderDispelAction(PlayerbotAI* botAI) : Action(botAI, "leader dispel") {}
+
+    bool isUseful() override;
+    bool isPossible() override;
+    bool Execute(Event event) override;
+};
+
+// [lead402] The leader's Consume of a bag item: a potion on the bot itself, a soulstone on the member it names.
+class LeaderConsumeAction : public UseItemAction
+{
+public:
+    LeaderConsumeAction(PlayerbotAI* botAI) : UseItemAction(botAI, "leader consume", true) {}
+
+    bool isUseful() override;
+    bool isPossible() override;
+    bool Execute(Event event) override;
+};
+
+// [lead405] The leader's Consume of a game object (a Soulwell, a ritual's portal): the walk into its reach, the use.
+class LeaderUseObjectAction : public MovementAction
+{
+public:
+    LeaderUseObjectAction(PlayerbotAI* botAI) : MovementAction(botAI, "leader use object") {}
+
+    bool isUseful() override;
     bool Execute(Event event) override;
 };
 

@@ -22,6 +22,11 @@ void InterruptStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("leader cc", { NextAction("leader cc", ACTION_INTERRUPT + 2.5f) }));
     // [rot3] the leader's PreSave: the bot's best personal save, above everything but the leader's moves
     triggers.push_back(new TriggerNode("leader pre save", { NextAction("leader pre save", ACTION_EMERGENCY + 3) }));
+    // [lead400] the leader's Dispel (the dispel band); [lead402] its Consume of a potion / soulstone (a survival use,
+    // between the external and the PreSave); [lead405] the object it names (Soulwell, ritual portal), out of a fight
+    triggers.push_back(new TriggerNode("leader dispel", { NextAction("leader dispel", ACTION_DISPEL + 2) }));
+    triggers.push_back(new TriggerNode("leader consume", { NextAction("leader consume", ACTION_EMERGENCY + 2) }));
+    triggers.push_back(new TriggerNode("leader use object", { NextAction("leader use object", ACTION_NORMAL + 4) }));
 }
 
 bool InterruptStrategy::IsCoordinating(PlayerbotAI* botAI)

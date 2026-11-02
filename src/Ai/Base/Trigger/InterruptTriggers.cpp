@@ -45,3 +45,26 @@ bool LeaderCcTrigger::IsActive()
 }
 
 bool LeaderPreSaveTrigger::IsActive() { return LeaderCommandState::PreSaveAssigned(bot); }
+
+bool LeaderDispelTrigger::IsActive()
+{
+    uint32 spell = 0;
+    ObjectGuid target;
+    return LeaderCommand::AssignedDispel(bot, spell, target) && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell);
+}
+
+bool LeaderConsumeTrigger::IsActive()
+{
+    uint32 item = 0;
+    ObjectGuid target;
+    ObjectGuid object;
+    return LeaderCommand::AssignedConsume(bot, item, target, object, nullptr) && item;
+}
+
+bool LeaderUseObjectTrigger::IsActive()
+{
+    uint32 item = 0;
+    ObjectGuid target;
+    ObjectGuid object;
+    return LeaderCommand::AssignedConsume(bot, item, target, object, nullptr) && !item && !object.IsEmpty();
+}
