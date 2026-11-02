@@ -124,9 +124,6 @@ namespace TestHarness
         uint32 entryRefusedSinceMs = 0;  // on its entrance, still outside: the core refuses entry since
         std::string entryRefusal;        // the refusal last logged (entry_refused)
         Position noWalkPos;
-        // A walked wing change / regroup exit: this member stays near one spot since (TickWingWalk).
-        uint32 wingStillMs = 0;
-        Position wingStillPos;
         // MemberStranded: no navmesh walk to the leader either way, re-checked every STRANDED_RECHECK_MS.
         bool stranded = false;
         uint32 strandedCheckMs = 0;
@@ -625,7 +622,6 @@ namespace TestHarness
         void SetLeaderWaypoint(Party& party, Player* leader, float x, float y, float z, bool straight = false);
         void ClearMemberWaypoint(Member& member);
         void ClearMemberIntent(Party& party);
-        bool TickWingWalk(Party& party, std::vector<Player*> const& players, Player* leader);
         // Diagnostic at a pull start: no alive healer within PULL_HEALER_RANGE of the tank (pull_without_healer).
         void CheckPullHealer(Party& party, std::vector<Player*> const& players);
         // Breathing: the leader's water watch (RouteWater.h); the group rests on the last dry spot, never in the water

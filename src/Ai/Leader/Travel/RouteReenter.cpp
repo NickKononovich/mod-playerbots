@@ -18,6 +18,7 @@
 #include "RouteLegs.h"
 #include "RouteMeet.h"
 #include "RouteTargets.h"
+#include "SelfTravelActions.h"
 #include "StuckWatchdog.h"
 
 #include <algorithm>
@@ -161,7 +162,8 @@ namespace Leader::Travel
                  STRANDED_REENTER_MAX);
         group.LogEvent("stranded_reenter",
                        JsonObject().Str("name", bot->GetName()).Str("state", "re-entered")
-                           .Str("to", reference->GetName()).Num("noWalkSec", noWalkMs / IN_MILLISECONDS).Real("distance", distance)
+                           .Str("to", reference->GetName()).Num("noWalkSec", noWalkMs / IN_MILLISECONDS)
+                           .Real("distance", distance)
                            .Real("x", from.x).Real("y", from.y).Real("z", from.z)
                            .Num("entrance", int64(route.entranceIdx)).Num("count", reenter.reentries)
                            .Bool("countedAsDeath", true).Bool("respawnZone", respawnZone));
@@ -325,5 +327,115 @@ namespace Leader::Travel
             }
         }
         return false;
+    }
+
+    void ReturnInside(LeaderGroup& group, Player* bot)
+    {
+        GroupRouteState& route = group.Route();
+        ObjectGuid const guid = bot->GetGUID();
+        bool const inside = bot->GetMapId() == group.MapId();
+        bool const ghost = !bot->IsAlive() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+        bool const hasGoal = group.MemberHasPortalGoal(guid);
+        if (inside || bot->IsBeingTeleported() || bot->IsInCombat() || (!ghost && !bot->IsAlive()))
+        {
+            if (inside && hasGoal && !route.wingWalk && !bot->IsBeingTeleported())
+            {
+                SelfTravel::ClearPortalGoal(guid);
+                group.SetMemberHasPortalGoal(guid, false);
+            }
+            return;
+        }
+        if (ghost || hasGoal || route.wingWalk || route.entranceIdx >= route.entrances.size())
+            return;
+        // Back in next to the group (Gundrak heroic 2026-10-25: a revived shaman went in through the run's south
+        // entrance, 1002 yd of walk from the group at the north one, and fell off its ledge): the entrance whose
+        // arrival is nearest the leader inside (FindPortal: the arrival nearest the goal).
+        Player* const inLeader = ObjectAccessor::FindPlayer(group.LeaderGuid());
+        bool const leaderIn =
+            inLeader && inLeader != bot && inLeader->IsAlive() && inLeader->GetMapId() == group.MapId();
+        Position const at = leaderIn ? inLeader->GetPosition() : route.entrances[route.entranceIdx];
+        SelfTravel::PortalGoal goal;
+        goal.mapId = group.MapId();
+        goal.x = at.GetPositionX();
+        goal.y = at.GetPositionY();
+        goal.z = at.GetPositionZ();
+        SelfTravel::SetPortalGoal(guid, goal);
+        group.SetMemberHasPortalGoal(guid, true);
+    }
+
+    bool TickWingWalk(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
+    {
+        GroupRouteState& route = group.Route();
+        if (!route.wingWalk || route.entranceIdx >= route.entrances.size())
+        {
+            route.wingWalk = false;
+            return false;
+        }
+
+        uint32 const now = getMSTime();
+        Position const& entrance = route.entrances[route.entranceIdx];
+        bool everybody = true;
+        for (Player* bot : players)
+        {
+            ObjectGuid const memberGuid = bot->GetGUID();
+            if (!group.MemberHasPortalGoal(memberGuid))
+                continue;
+            MemberWingWalk& wing = route.wingWalkers[memberGuid];
+            if (bot->IsAlive() && bot->GetMapId() == group.MapId() && !bot->IsBeingTeleported() &&
+                bot->GetExactDist2d(&entrance) <= WING_ARRIVE_RANGE)
+            {
+                SelfTravel::ClearPortalGoal(memberGuid);
+                group.SetMemberHasPortalGoal(memberGuid, false);
+                continue;
+            }
+            // Inside and near one spot for WING_MEMBER_STILL_MS: no walk out (Gundrak heroic 2026-10-25, Rtshabe on a
+            // 19-polygon island of the moat floor, 387 s "no walk to the portal"): left out of the walk, logged.
+            if (bot->IsAlive() && bot->GetMapId() == group.MapId())
+            {
+                if (!wing.stillMs || int32(wing.stillMs - route.wingWalkSinceMs) < 0 ||
+                    bot->GetExactDist(&wing.stillPos) > WING_MEMBER_STILL_RANGE)
+                {
+                    wing.stillMs = now ? now : 1;
+                    wing.stillPos = bot->GetPosition();
+                }
+                else if (getMSTimeDiff(wing.stillMs, now) > WING_MEMBER_STILL_MS)
+                {
+                    SelfTravel::ClearPortalGoal(memberGuid);
+                    group.SetMemberHasPortalGoal(memberGuid, false);
+                    wing.stillMs = 0;
+                    group.LogCannotMove(bot, "wing change", "no walk out for 2 minutes: left out of the wing walk",
+                                        entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
+                    continue;
+                }
+            }
+            everybody = false;
+            if (bot->isMoving())
+                group.NoteProgress(now);
+        }
+
+        if (everybody)
+        {
+            route.wingWalk = false;
+            route.nextRetargetMs = now;
+            group.LogEvent("wing_walk_done",
+                           JsonObject().Num("entrance", int64(route.entranceIdx))
+                               .Num("durationSec", getMSTimeDiff(route.wingWalkSinceMs, now) / IN_MILLISECONDS));
+            return false;
+        }
+
+        if (getMSTimeDiff(route.wingWalkSinceMs, now) > WING_WALK_MAX_MS)
+        {
+            for (Player* bot : players)
+                if (group.MemberHasPortalGoal(bot->GetGUID()))
+                    group.LogCannotMove(bot, "wing change", "did not reach the next entrance in 15 minutes",
+                                        entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
+            group.FinishRun("failed", "wing change walk did not finish in 15 minutes");
+            return true;
+        }
+
+        // The members walk on their own (out through the exit, in through the entrance); no route meanwhile.
+        if (leader)
+            group.ClearWaypoint(group.LeaderGuid());
+        return true;
     }
 }

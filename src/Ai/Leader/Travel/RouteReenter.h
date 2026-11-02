@@ -57,6 +57,18 @@ namespace Leader::Travel
     // [b30_reenter] The group's route (everyone with the leader, the goal its target) or a single member far behind
     // is walked from an entrance when that is the much shorter walk; true when the group re-entered now.
     bool TickShortcutReenter(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
+
+    // [lead342] a living member outside the instance is told to come back in (its own "instance portal" walks it):
+    // the portal goal is the leader inside, else the run's entrance; the goal ends once it is inside again
+    void ReturnInside(LeaderGroup& group, Player* bot);
+
+    // [lead342] a walked wing change runs (the members walk out through the exit and in through the next entrance):
+    // over once every member stands within WING_ARRIVE_RANGE of the entrance; a member inside near one spot for
+    // WING_MEMBER_STILL_MS is left out of it (no walk out); the run fails after WING_WALK_MAX_MS. True while it runs.
+    constexpr uint32 WING_WALK_MAX_MS = 15 * MINUTE * IN_MILLISECONDS;
+    constexpr uint32 WING_MEMBER_STILL_MS = 2 * MINUTE * IN_MILLISECONDS;
+    constexpr float WING_MEMBER_STILL_RANGE = 25.0f;
+    bool TickWingWalk(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
 }
 
 #endif

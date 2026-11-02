@@ -421,15 +421,8 @@ namespace TestHarness
         using Leader::Travel::STARTER_GATHER_RETRY_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::STARTER_GATHER_MAX_MS;  // [lead107] RouteEvents.h
         using Leader::Travel::STARTER_GATHER_LOG_MS;  // [lead107] RouteEvents.h
-        // Bots walk by themselves: the same bot_cannot_move (bot, capability, reason) is
-        // logged at most this often; a walked wing change is over once every member stands this close (2D) to the
-        // next entrance (SelfTravel's goal range), and fails after WING_WALK_MAX_MS.
+        // Bots walk by themselves: the same bot_cannot_move (bot, capability, reason) is logged at most this often.
         constexpr uint32 CANNOT_MOVE_LOG_MS = 30 * IN_MILLISECONDS;
-        using Leader::Travel::WING_ARRIVE_RANGE;  // [lead107] RouteMeet.h
-        constexpr uint32 WING_WALK_MAX_MS = 15 * MINUTE * IN_MILLISECONDS;
-        // A member inside, near one spot this long during a wing walk: no walk out, left out of the walk.
-        constexpr uint32 WING_MEMBER_STILL_MS = 2 * MINUTE * IN_MILLISECONDS;
-        constexpr float WING_MEMBER_STILL_RANGE = 25.0f;
 
         using Leader::Travel::PathResult;  // [lead107] RouteLegs.h
 
@@ -3474,6 +3467,7 @@ namespace TestHarness
         // (the portal goal: back in through the entrance the run uses). The harness only watches and logs what
         // the bot cannot do.
         uint32 const now = getMSTime();
+        PartyLeaderGroup group(*this, party);
         // Where the members outside are (wave 13: RFK's ghosts paced under the Great Lift for 20 minutes and the
         // run log had no position outside the instance): every GHOST_POS_MS while anyone is out.
         if (!party.ghostPosMs || getMSTimeDiff(party.ghostPosMs, now) >= GHOST_POS_MS)
@@ -3515,15 +3509,12 @@ namespace TestHarness
             if (!member)
                 continue;
 
+            // [lead342] the come-back-in goal is the leader's (RouteReenter.h); the harness only watches and logs
+            Leader::Travel::ReturnInside(group, bot);
             bool const inside = bot->GetMapId() == party.content->mapId;
             bool const ghost = !bot->IsAlive() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
             if (inside || bot->IsBeingTeleported() || bot->IsInCombat() || (!ghost && !bot->IsAlive()))
             {
-                if (inside && member->hasPortalGoal && !party.wingWalk && !bot->IsBeingTeleported())
-                {
-                    SelfTravel::ClearPortalGoal(member->guid);
-                    member->hasPortalGoal = false;
-                }
                 if (inside)
                 {
                     member->leftOutside = false;
@@ -3534,25 +3525,6 @@ namespace TestHarness
             }
             if (ghost && bot->GetCorpseLocation().GetMapId() != party.content->mapId)
                 continue;
-
-            if (!ghost && !member->hasPortalGoal && !party.wingWalk && party.entranceIdx < party.entrances.size())
-            {
-                // Back in next to the group (Gundrak heroic 2026-10-25: a revived shaman went in through the
-                // run's south entrance, 1002 yd of walk from the group at the north one, and fell off its
-                // ledge): the entrance whose arrival is nearest the leader inside (FindPortal: the arrival
-                // nearest the goal).
-                Player* const inLeader = ObjectAccessor::FindPlayer(party.leader);
-                bool const leaderIn = inLeader && inLeader != bot && inLeader->IsAlive() &&
-                                      inLeader->GetMapId() == party.content->mapId;
-                Position const at = leaderIn ? inLeader->GetPosition() : party.entrances[party.entranceIdx];
-                SelfTravel::PortalGoal goal;
-                goal.mapId = party.content->mapId;
-                goal.x = at.GetPositionX();
-                goal.y = at.GetPositionY();
-                goal.z = at.GetPositionZ();
-                SelfTravel::SetPortalGoal(member->guid, goal);
-                member->hasPortalGoal = true;
-            }
 
             // The portal it is heading for, for the log only.
             AreaTrigger const* best = nullptr;
@@ -4377,85 +4349,6 @@ namespace TestHarness
         for (Member& member : party.members)
             if (member.guid != party.leader && member.hasWaypoint)
                 ClearMemberWaypoint(member);
-    }
-
-    bool TestHarnessMgr::TickWingWalk(Party& party, std::vector<Player*> const& players, Player* leader)
-    {
-        if (!party.wingWalk || party.entranceIdx >= party.entrances.size())
-        {
-            party.wingWalk = false;
-            return false;
-        }
-
-        uint32 const now = getMSTime();
-        Position const& entrance = party.entrances[party.entranceIdx];
-        bool everybody = true;
-        for (Player* bot : players)
-        {
-            Member* member = nullptr;
-            for (Member& candidate : party.members)
-                if (candidate.guid == bot->GetGUID())
-                    member = &candidate;
-            if (!member || !member->hasPortalGoal)
-                continue;
-            if (bot->IsAlive() && bot->GetMapId() == party.content->mapId && !bot->IsBeingTeleported() &&
-                bot->GetExactDist2d(&entrance) <= WING_ARRIVE_RANGE)
-            {
-                SelfTravel::ClearPortalGoal(member->guid);
-                member->hasPortalGoal = false;
-                continue;
-            }
-            // Inside and near one spot for WING_MEMBER_STILL_MS: no walk out (Gundrak heroic 2026-10-25, Rtshabe on a
-            // 19-polygon island of the moat floor, 387 s "no walk to the portal"): left out of the walk, logged.
-            if (bot->IsAlive() && bot->GetMapId() == party.content->mapId)
-            {
-                if (!member->wingStillMs || int32(member->wingStillMs - party.wingWalkSinceMs) < 0 ||
-                    bot->GetExactDist(&member->wingStillPos) > WING_MEMBER_STILL_RANGE)
-                {
-                    member->wingStillMs = now ? now : 1;
-                    member->wingStillPos = bot->GetPosition();
-                }
-                else if (getMSTimeDiff(member->wingStillMs, now) > WING_MEMBER_STILL_MS)
-                {
-                    SelfTravel::ClearPortalGoal(member->guid);
-                    member->hasPortalGoal = false;
-                    member->wingStillMs = 0;
-                    LogCannotMove(party, bot, "wing change", "no walk out for 2 minutes: left out of the wing walk",
-                                  entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
-                    continue;
-                }
-            }
-            everybody = false;
-            if (bot->isMoving())
-                party.lastProgressMs = now;
-        }
-
-        if (everybody)
-        {
-            party.wingWalk = false;
-            party.nextRetargetMs = now;
-            LogEvent(party, "wing_walk_done", JsonObject().Num("entrance", int64(party.entranceIdx))
-                                                  .Num("durationSec",
-                                                       getMSTimeDiff(party.wingWalkSinceMs, now) / IN_MILLISECONDS));
-            return false;
-        }
-
-        if (getMSTimeDiff(party.wingWalkSinceMs, now) > WING_WALK_MAX_MS)
-        {
-            for (Player* bot : players)
-                for (Member const& member : party.members)
-                    if (member.guid == bot->GetGUID() && member.hasPortalGoal)
-                        LogCannotMove(party, bot, "wing change", "did not reach the next entrance in 15 minutes",
-                                      entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
-            Finish(party, "failed", "wing change walk did not finish in 15 minutes");
-            return true;
-        }
-
-        // The members walk on their own (out through the exit, in through the entrance); no route meanwhile.
-        if (leader)
-            TestRunner::ClearWaypoint(party.leader);
-        party.lastEvent = "wing change walk";
-        return true;
     }
 
     // Route visualisation ("playerbots route show <run> [seconds]" / "route hide <run>", user request 2026-10-24: "is

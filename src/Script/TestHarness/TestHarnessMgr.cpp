@@ -3151,9 +3151,16 @@ namespace TestHarness
         // Bots walk by themselves: what their own movement could not do (bot_cannot_move), and a walked wing change.
         DrainMoveReports(party, players);
         DrainOrderReports(party, leader);  // [lead1]
-        bool const wingWalking = TickWingWalk(party, players, leader);
+        // [lead342] the wing walk is the leader's (RouteReenter.h)
+        bool const wingWalking = [&]()
+        {
+            PartyLeaderGroup group(*this, party);
+            return Leader::Travel::TickWingWalk(group, players, leader);
+        }();
         if (IsTerminal(party.phase))
             return;  // Finish() logged the members out
+        if (wingWalking)
+            party.lastEvent = "wing change walk";
 
         // [b30_st_spirit] A death burst not recovered from in DEATH_BURST_RECOVER_MS: a wipe like the full one.
         // Recovered once everybody is alive and inside again (members left outside count as back, as in the away list).

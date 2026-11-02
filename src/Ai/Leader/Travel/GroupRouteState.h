@@ -118,6 +118,13 @@ namespace Leader
         Position pos;
     };
 
+    // [lead342] a member during a walked wing change: near one spot since (TickWingWalk)
+    struct MemberWingWalk
+    {
+        uint32 stillMs = 0;
+        Position stillPos;
+    };
+
     struct GroupRouteState
     {
         std::vector<StarterTrack> starters;
@@ -342,6 +349,7 @@ namespace Leader
         uint32 shortcutEncounterLogMs = 0;  // [b49_hos] the last "encounter in progress, no re-entry" log
         uint32 shortcutReentries = 0;
         std::map<ObjectGuid, MemberReenter> reenter;  // [lead341] per member
+        std::map<ObjectGuid, MemberWingWalk> wingWalkers;  // [lead342] per member
         // [b31_far_threshold] the leader's travel pause for a trailing member: since when, and when the last one ended
         uint32 compactPauseSinceMs = 0;
         uint32 compactPauseEndMs = 0;
