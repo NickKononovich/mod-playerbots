@@ -311,11 +311,6 @@ namespace Leader
             float bossSec = 0.0f;
             float fullSpent = 0.0f;  // [lead234] the same over the fights at least as long as the mean fight
             float fullSec = 0.0f;
-            float low = -1.0f;    // [lead248] the lowest mana of this fight
-            float dipSum = 0.0f;  // [lead248] its deepest drop below the start mana, summed over trash / boss fights
-            uint32 dips = 0;
-            float bossDipSum = 0.0f;
-            uint32 bossDips = 0;
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health

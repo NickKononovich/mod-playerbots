@@ -324,8 +324,6 @@ void NoteManaRate(ObjectGuid member, float pctPerSec);
 // [lead232] ... on boss fights, and over its fights at least as long as this run's mean fight (lead234)
 void NoteBossManaRate(ObjectGuid member, float pctPerSec);
 void NotePeakManaRate(ObjectGuid member, float pctPerSec);
-// [lead248] ... and its mean deepest drop below a fight's start mana (% of max), over trash or boss fights
-void NoteManaDip(ObjectGuid member, float pct, bool boss);
 // [lead88] the leader notes how far a fight's real length was from its estimate (seconds, either way) for its group;
 // FightManaLine's reserve is the spend over that measured uncertainty (the mean of this run's fights)
 void NoteFightLengthError(ObjectGuid group, float errorSec);

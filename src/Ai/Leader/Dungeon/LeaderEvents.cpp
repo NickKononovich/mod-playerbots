@@ -2118,32 +2118,14 @@ namespace Leader::Dungeon
                             RestState::NotePeakManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.fullSpent / spend.fullSec));
                         }
-                        // [lead248] the deepest drop below the fight's start mana (what the fight draws before
-                        // its regains come): the mean over this run's trash fights / boss fights
-                        float const dip =
-                            std::max(0.0f, spend.prev - (spend.low < 0.0f ? pct : std::min(spend.low, pct)));
-                        if (spend.boss)
-                        {
-                            spend.bossDipSum += dip;
-                            ++spend.bossDips;
-                            RestState::NoteManaDip(member->GetGUID(), spend.bossDipSum / float(spend.bossDips), true);
-                        }
-                        else
-                        {
-                            spend.dipSum += dip;
-                            ++spend.dips;
-                            RestState::NoteManaDip(member->GetGUID(), spend.dipSum / float(spend.dips), false);
-                        }
                     }
                     spend.prev = -1.0f;
-                    spend.low = -1.0f;
                     spend.fightSec = 0.0f;
                     spend.boss = false;
                     continue;
                 }
                 if (spend.prev < 0.0f)
                     spend.prev = pct;  // the fight's start
-                spend.low = spend.low < 0.0f ? pct : std::min(spend.low, pct);
                 spend.fightSec += dt;
                 spend.boss |= bossFought;
             }
