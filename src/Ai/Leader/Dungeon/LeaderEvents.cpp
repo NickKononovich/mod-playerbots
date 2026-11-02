@@ -1031,7 +1031,11 @@ namespace Leader::Dungeon
             Unit* mob = looseOn.begin()->second;
             // [lead112] b147 rfc-h 60-78 s: the tank owns its fight, but a mob on a member while the tank fights
             // nothing is the leader's command: the tank attacks it (issued once per change of the mob)
-            if (Leader::LEADER_TANK_OWNS_FIGHT && !tank->IsInCombat() &&
+            // [lead252] b192 rfc-h 5D 1003-1037 s: a Searing Blade Warlock cast at the resto shaman 31 yd from the
+            // bear for 34 s - the bear in combat with no victim ("tank assist", no target), the damage dealers on Stop
+            // (no headroom: 0 tank threat on it). The tank that attacks nothing fights nothing, in combat or not
+            Unit* const tankVictim = tank->GetVictim();
+            if (Leader::LEADER_TANK_OWNS_FIGHT && (!tank->IsInCombat() || !tankVictim || !tankVictim->IsAlive()) &&
                 Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, mob->GetGUID(), {}))
                 logEvent(tank, "Attack", JsonObject().Str("mob", mob->GetName())
                                              .Str("why", "aggro loss: the tank fights nothing"));
@@ -1136,6 +1140,17 @@ namespace Leader::Dungeon
                                 killOrder.end());
             }
         }
+
+        // [lead252] b192 rfc-h 5D 892.9-928.9 s: a Searing Blade Warlock cast at the bear from 25-37 yd for 36 s, the
+        // bear in combat but its AI in the non-combat state ("tank assist" with no target, nothing attacked) and every
+        // damage dealer on Stop (the bear's 19 threat on it). A tank in a fight that attacks nothing gets the fight's
+        // target from the leader (a loose mob: the loose block above)
+        if (Leader::LEADER_TANK_OWNS_FIGHT && fighting && target && looseOn.empty() && tank->IsAlive() &&
+            tank->IsInCombat() && !(tank->GetVictim() && tank->GetVictim()->IsAlive()) &&
+            Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, target->GetGUID(), {}))
+            logEvent(
+                tank, "Attack",
+                JsonObject().Str("mob", target->GetName()).Str("why", "the tank attacks nothing: the fight's target"));
 
         // [lead16] LEADER_CC_ASSIGN: the fight's crowd control - which mob, which member. A mob a member already
         // marked for the pack (the pre-pull plan's claim) stays its; more come from the tail of the kill order (never
