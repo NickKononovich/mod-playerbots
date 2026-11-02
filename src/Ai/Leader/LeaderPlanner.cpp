@@ -8558,7 +8558,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     std::vector<PackOverlap>* overlapsOut = split ? &overlaps : nullptr;
     std::vector<PackOverlap> chosenOverlaps;
     // The fight's length and cost, in every careful mode: the tank's health carries part of the fight.
-    float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), GroupWeaponDps(bot)});  // [lead7] [lead259]
+    // [lead265] the dungeon's measured spread once a fight is measured (MeasuredGroupDps), else the model
+    float const fightsDps = MeasuredGroupDps(bot);
+    float const groupDps =
+        fightsDps > 0.0f ? fightsDps : std::max(PlanGroupDps(), GroupWeaponDps(bot));  // [lead7] [lead259]
     EstimateMode estimateMode;
     estimateMode.measured = measured;
     estimateMode.healHps = support.healHps;  // [lead259]
@@ -12947,7 +12950,8 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     PartyStrength const strength = PlanStrength();
     GroupSupport const support = CountSupport(bot);
     TankKit const kit = PartyStrengthShared::GetTankKit(bot);
-    float const groupDps = std::max({PlanGroupDps(), MeasuredGroupDps(bot), GroupWeaponDps(bot)});  // [lead259]
+    float const fightsDps = MeasuredGroupDps(bot);  // [lead265] as PlanCarefulPull
+    float const groupDps = fightsDps > 0.0f ? fightsDps : std::max(PlanGroupDps(), GroupWeaponDps(bot));
     EstimateMode mode;
     mode.measured = true;
     mode.healHps = support.healHps;  // [lead259]

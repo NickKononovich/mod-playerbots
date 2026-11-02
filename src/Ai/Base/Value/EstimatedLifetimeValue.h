@@ -28,9 +28,9 @@ public:
     float Calculate() override;
 };
 
-// [lifetime-calibrated] The group's damage per second: the rolling average its recent dungeon fights actually dealt
-// (GroupDamage below) once one is measured, else the gear-table model. Re-read every 2 s so the next pull already
-// uses the fight that just ended; the model itself (a gear score per member) is rebuilt every 20 s only.
+// [lifetime-calibrated] The group's damage per second: what this dungeon's fights actually dealt (GroupDamage below)
+// once one is measured, else the members' own model ([lead265] their weapons and spells). Re-read every 2 s so the
+// next pull already uses the fight that just ended; the model itself is rebuilt every 20 s only (a cache).
 class EstimatedGroupDpsValue : public FloatCalculatedValue
 {
 public:
@@ -40,7 +40,7 @@ public:
 public:
     float Calculate() override;
 
-    // The gear-table model alone (each member's basic dps by level and role, scaled by its gear score).
+    // [lead265] The model alone: each member's weapon and best damage spell from its own stats and spells.
     float ModelDps();
 
     // A damage dealer of `level` in the gear expected at it (also read by "next cast threat", ThreatValues.cpp).
@@ -55,9 +55,9 @@ private:
 // [lifetime-calibrated] The damage a group really deals, measured from DealDamage (the death recorder's hook, after
 // armor, resistances and absorbs, overkill cut off): every hit of a member (or its pet / totem) on a creature in a
 // dungeon. A fight is the run of hits without a gap of GROUP_FIGHT_GAP_MS; its length counts the gaps between hits
-// up to GROUP_HIT_GAP_CAP_MS each (a pull back round a corner is no fighting time). A fight of at least
-// GROUP_FIGHT_MIN_MS goes into the group's rolling average (the newest weighs GROUP_DPS_WEIGHT). Kept per group,
-// shared between map threads behind a lock; forgotten after GROUP_DPS_TTL_MS or when the group's size changes.
+// up to GROUP_HIT_GAP_CAP_MS each (a pull back round a corner is no fighting time). [lead265] Every fight goes into
+// the group's average by its seconds (no minimum length, no newest-fight weight, no clock). Kept per group, shared
+// between map threads behind a lock; reset when the dungeon or the group's size changes.
 namespace GroupDamage
 {
     void NoteDealt(Player* owner, uint32 amount);

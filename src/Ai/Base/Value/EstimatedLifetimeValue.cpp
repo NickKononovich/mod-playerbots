@@ -26,7 +26,7 @@
 
 namespace
 {
-    constexpr uint32 GROUP_MODEL_REFRESH_MS = 20 * IN_MILLISECONDS;  // the gear-table model is rebuilt this often
+    constexpr uint32 GROUP_MODEL_REFRESH_MS = 20 * IN_MILLISECONDS;  // the model is rebuilt this often (a cache)
 }
 
 float EstimatedLifetimeValue::Calculate()
@@ -60,6 +60,112 @@ float EstimatedGroupDpsValue::Calculate()
     return calibrated > 0.0f ? calibrated : _modelDps;
 }
 
+namespace
+{
+// [lead265] A member's damage per second from the game's numbers: its weapon (min-max damage over its attack
+// time, melee or ranged, the better) and its best damage spell (school, weapon and periodic damage with its spell
+// power or weapon, at the fastest the spell comes again). A spell with a cast time takes the swings' time (the
+// better of the two counts), an instant one comes on top of them; a healer heals (0). Cached per member while its
+// spells and spell power stay the same (a lookup, no clock).
+float MemberModelDps(Player* member)
+{
+    if (PlayerbotAI::IsHeal(member))
+        return 0.0f;
+
+    float weapon = 0.0f;
+    for (WeaponAttackType type : {BASE_ATTACK, RANGED_ATTACK})
+    {
+        uint32 const attackTime = member->GetAttackTime(type);
+        if (!attackTime)
+            continue;
+        float const hit =
+            type == BASE_ATTACK
+                ? (member->GetFloatValue(UNIT_FIELD_MINDAMAGE) + member->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f
+                : (member->GetFloatValue(UNIT_FIELD_MINRANGEDDAMAGE) +
+                   member->GetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE)) /
+                      2.0f;
+        weapon = std::max(weapon, hit * float(IN_MILLISECONDS) / float(attackTime));
+    }
+
+    struct Cached
+    {
+        size_t spells = 0;
+        int32 power = -1;
+        float dps = 0.0f;
+        bool cast = false;
+    };
+    thread_local std::unordered_map<uint64, Cached> cache;
+    Cached& cached = cache[member->GetGUID().GetRawValue()];
+    int32 const power = member->SpellBaseDamageBonusDone(SPELL_SCHOOL_MASK_ALL);
+    if (cached.spells != member->GetSpellMap().size() || cached.power != power)
+    {
+        float const swing =
+            (member->GetFloatValue(UNIT_FIELD_MINDAMAGE) + member->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
+        Cached fresh;
+        fresh.spells = member->GetSpellMap().size();
+        fresh.power = power;
+        for (auto const& [spellId, known] : member->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive())
+                continue;
+
+            float damage = 0.0f;
+            float durationMs = 0.0f;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                int32 const base = std::max(effect.CalcValue(member), 0);
+                switch (effect.Effect)
+                {
+                    case SPELL_EFFECT_SCHOOL_DAMAGE:
+                        damage += float(member->SpellDamageBonusDone(member, info, uint32(base), SPELL_DIRECT_DAMAGE,
+                                                                     effect.EffectIndex));
+                        break;
+                    case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                        damage += swing * float(base) / 100.0f;
+                        break;
+                    case SPELL_EFFECT_WEAPON_DAMAGE:
+                    case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                    case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                        damage += swing + float(base);
+                        break;
+                    case SPELL_EFFECT_APPLY_AURA:
+                    case SPELL_EFFECT_PERSISTENT_AREA_AURA:
+                        if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
+                        {
+                            durationMs = float(std::max(info->GetMaxDuration(), 0));
+                            damage += durationMs / float(effect.Amplitude) *
+                                      float(member->SpellDamageBonusDone(member, info, uint32(base), DOT,
+                                                                         effect.EffectIndex));
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if (damage <= 0.0f)
+                continue;
+
+            float const castMs =
+                info->IsChanneled() ? float(std::max(info->GetDuration(), 0)) : float(info->CalcCastTime(member));
+            float const everyMs = std::max({castMs, float(info->StartRecoveryTime), float(info->RecoveryTime),
+                                            float(info->CategoryRecoveryTime), durationMs, 1.0f});
+            float const dps = damage * float(IN_MILLISECONDS) / everyMs;
+            if (dps > fresh.dps)
+            {
+                fresh.dps = dps;
+                fresh.cast = castMs > 0.0f;
+            }
+        }
+        cached = fresh;
+    }
+
+    return cached.cast ? std::max(weapon, cached.dps) : weapon + cached.dps;
+}
+}  // namespace
+
 float EstimatedGroupDpsValue::ModelDps()
 {
     float totalDps = 0;
@@ -89,37 +195,11 @@ float EstimatedGroupDpsValue::ModelDps()
             groupPlayer.push_back(member);
         }
     }
+    // [lead265] each member's damage from its own stats and spells (MemberModelDps) instead of the gear-table
+    // model's dps by level, role multipliers (tank 0.3, healer 0.1), gear-score scale (0.75-4, the epic bonus) and
+    // the group buff bonus (1.05-1.2)
     for (Player* player : groupPlayer)
-    {
-        float roleMultiplier;
-        if (PlayerbotAI::IsTank(player))
-            roleMultiplier = 0.3f;
-        else if (PlayerbotAI::IsHeal(player))
-            roleMultiplier = 0.1f;
-        else
-            roleMultiplier = 1.0f;
-        float basicDps = GetBasicDps(player->GetLevel());
-        float basicGs = GetBasicGs(player->GetLevel());
-        uint32 mixedGearScore = PlayerbotAI::GetMixedGearScore(player, true, false, 12);
-        float gs_modifier = (float)mixedGearScore / basicGs;
-        // bonus for wotlk epic gear
-        if (mixedGearScore >= 300)
-        {
-            gs_modifier *= 1 + (mixedGearScore - 300) * 0.01;
-        }
-        if (gs_modifier < 0.75)
-            gs_modifier = 0.75;
-        if (gs_modifier > 4)
-            gs_modifier = 4;
-        totalDps += basicDps * roleMultiplier * gs_modifier;
-    }
-    // Group buff bonus
-    if (groupPlayer.size() >= 25)
-        totalDps *= 1.2;
-    else if (groupPlayer.size() >= 10)
-        totalDps *= 1.1;
-    else if (groupPlayer.size() >= 5)
-        totalDps *= 1.05;
+        totalDps += MemberModelDps(player);
     return totalDps;
 }
 
@@ -332,9 +412,9 @@ namespace
 {
     constexpr uint32 GROUP_FIGHT_GAP_MS = 5 * IN_MILLISECONDS;    // no hit of the group this long: the fight ended
     constexpr uint32 GROUP_HIT_GAP_CAP_MS = 2 * IN_MILLISECONDS;  // a gap between hits counts this much at most
-    constexpr uint32 GROUP_FIGHT_MIN_MS = 5 * IN_MILLISECONDS;    // a shorter fight measures nothing
-    constexpr float GROUP_DPS_WEIGHT = 0.35f;                     // the newest fight's weight in the average
-    constexpr uint32 GROUP_DPS_TTL_MS = 15 * MINUTE * IN_MILLISECONDS;
+    // [lead265] every fight of this dungeon counts by its seconds (no minimum length, no newest-fight weight 0.35,
+    // no 15 min clock): the measurements belong to the group until the dungeon or its size changes
+    constexpr uint32 GROUP_DPS_SWEEP_MS = 15 * MINUTE * IN_MILLISECONDS;  // memory only: a group idle this long
     constexpr size_t GROUP_DPS_MAX_TRACKED = 256;                 // the table is swept of stale groups past this
 
     struct GroupFightTrack
@@ -349,6 +429,7 @@ namespace
         uint32 rollingMembers = 0;
         uint32 updatedMs = 0;
         uint32 lastDealtMs = 0;  // the group's last hit, kept across fights ([combat_no_damage_release])
+        uint32 instanceId = 0;   // [lead265] the dungeon its fights were measured in
         uint64 totalDamage = 0;   // [lead86] every measured fight's damage and seconds (SustainedDps)
         uint64 totalActiveMs = 0;
         std::unordered_map<uint64, uint64> memberDamage;  // [lead271] every hit by member, and their sum
@@ -373,20 +454,21 @@ namespace
     ClosedFight CloseFight(GroupFightTrack& track, uint32 now)
     {
         ClosedFight closed;
-        if (track.activeMs >= GROUP_FIGHT_MIN_MS && track.damage)
+        if (track.activeMs && track.damage)
         {
             float const dps = static_cast<float>(track.damage) * IN_MILLISECONDS / static_cast<float>(track.activeMs);
-            bool const fresh = track.fights && track.rollingMembers == track.members &&
-                               getMSTimeDiff(track.updatedMs, now) < GROUP_DPS_TTL_MS;
-            track.rollingDps = fresh ? track.rollingDps * (1.0f - GROUP_DPS_WEIGHT) + dps * GROUP_DPS_WEIGHT : dps;
-            track.fights = fresh ? track.fights + 1 : 1;
-            if (!fresh)
+            bool const same = track.fights && track.rollingMembers == track.members;  // [lead265] same group size
+            track.fights = same ? track.fights + 1 : 1;
+            if (!same)
             {
                 track.totalDamage = 0;
                 track.totalActiveMs = 0;
             }
             track.totalDamage += track.damage;  // [lead86]
             track.totalActiveMs += track.activeMs;
+            // [lead265] the dungeon's fights by their seconds
+            track.rollingDps =
+                static_cast<float>(track.totalDamage) * IN_MILLISECONDS / static_cast<float>(track.totalActiveMs);
             track.rollingMembers = track.members;
             track.updatedMs = now ? now : 1;
             closed.measured = true;
@@ -433,8 +515,8 @@ namespace GroupDamage
                 for (auto it = groupDamage.begin(); it != groupDamage.end();)
                 {
                     GroupFightTrack const& stale = it->second;
-                    bool const idle = !stale.lastHitMs || getMSTimeDiff(stale.lastHitMs, now) > GROUP_DPS_TTL_MS;
-                    bool const old = !stale.updatedMs || getMSTimeDiff(stale.updatedMs, now) > GROUP_DPS_TTL_MS;
+                    bool const idle = !stale.lastHitMs || getMSTimeDiff(stale.lastHitMs, now) > GROUP_DPS_SWEEP_MS;
+                    bool const old = !stale.updatedMs || getMSTimeDiff(stale.updatedMs, now) > GROUP_DPS_SWEEP_MS;
                     if (idle && old)
                         it = groupDamage.erase(it);
                     else
@@ -443,6 +525,11 @@ namespace GroupDamage
             }
 
             GroupFightTrack& track = groupDamage[group->GetGUID().GetRawValue()];
+            if (track.instanceId != owner->GetInstanceId())  // [lead265] a new dungeon: its own measurements
+            {
+                track = GroupFightTrack();
+                track.instanceId = owner->GetInstanceId();
+            }
             if (track.lastHitMs && getMSTimeDiff(track.lastHitMs, now) > GROUP_FIGHT_GAP_MS)
                 closed = CloseFight(track, now);
 
@@ -513,7 +600,7 @@ namespace GroupDamage
                 closed = CloseFight(track, now);
 
             if (track.fights && track.rollingMembers == group->GetMembersCount() &&
-                getMSTimeDiff(track.updatedMs, now) < GROUP_DPS_TTL_MS)
+                track.instanceId == bot->GetInstanceId())
             {
                 dps = track.rollingDps;
                 if (fights)
@@ -583,7 +670,7 @@ namespace GroupDamage
             {
                 for (auto it = releaseStates.begin(); it != releaseStates.end();)
                 {
-                    if (!it->second.combat && getMSTimeDiff(it->second.evalMs, now) > GROUP_DPS_TTL_MS)
+                    if (!it->second.combat && getMSTimeDiff(it->second.evalMs, now) > GROUP_DPS_SWEEP_MS)
                         it = releaseStates.erase(it);
                     else
                         ++it;
