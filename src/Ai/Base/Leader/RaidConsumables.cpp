@@ -335,10 +335,12 @@ namespace RaidConsumables
         return found;
     }
 
-    uint32 FindRestorePotion(Player* bot, bool mana, uint32& amount)
+    uint32 FindRestorePotion(Player* bot, bool mana, uint32& amount, uint32 withinMs, uint32* readyInMs)
     {
         uint32 best = 0;
         amount = 0;
+        if (readyInMs)
+            *readyInMs = 0;
         // [lead481] b208 rfc-h: 526 "mana potion" Consumes, a fresh one every ~0.3 s (5C's balance druid: its Runic
         // Mana Injector 100 times) after the member drank one this combat - the game keeps that potion's cooldown off
         // until the combat ends (Spell::SendSpellCooldown sets Player::m_lastPotionId instead, Spell::CheckCast
@@ -352,7 +354,12 @@ namespace RaidConsumables
                                return;
                            uint32 const spellId = UseSpellOf(item->GetTemplate());
                            SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
-                           if (!info || bot->HasSpellCooldown(spellId))
+                           if (!info)
+                               return;
+                           // [lead502] its cooldown (the potions' category, Player::GetSpellCooldownDelay) ends
+                           // within `withinMs`
+                           uint32 const cooldownMs = bot->GetSpellCooldownDelay(spellId);
+                           if (bot->HasSpellCooldown(spellId) && (!withinMs || cooldownMs > withinMs))
                                return;
                            uint32 restores = 0;
                            for (SpellEffectInfo const& effect : info->Effects)
@@ -363,6 +370,8 @@ namespace RaidConsumables
                            {
                                amount = restores;
                                best = item->GetEntry();
+                               if (readyInMs)
+                                   *readyInMs = bot->HasSpellCooldown(spellId) ? cooldownMs : 0;
                            }
                        });
         return best;

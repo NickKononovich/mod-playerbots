@@ -1059,17 +1059,28 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // under its need. A mana potion the game lets it drink in this fight counts like a ready cooldown: none drunk this
     // combat and the potions' cooldown ready (RaidConsumables::FindRestorePotion), at most the shortfall; not before a
     // boss pull whose pre-pull potion (the leader's, RaidConsumables::FindBuffPotion) takes the potions' cooldown
+    // [lead502] b210 rfc-h 5E: still "paladin tank at 26-50 % mana (needs 62 % = 1.86 %/s x 33 s ... - 0 cooldowns)"
+    // at 109-127 s, 15 s of loss - the potion it drank at 61.6 s was on the potions' cooldown, which runs from that
+    // combat's end and was over 18 s into the next 33 s fight. A potion whose cooldown ends within the fight counts:
+    // the line then holds at least the mana it spends until the potion is ready
+    float potionFloor = 0.0f;
     if (credits && potion && bot->GetMaxPower(POWER_MANA))
     {
         uint32 amount = 0;
         uint32 buffSpell = 0;
+        uint32 readyMs = 0;
         bool const prepot = boss && !bot->IsInCombat() && RaidConsumables::FindBuffPotion(bot, buffSpell);
-        if (!prepot && RaidConsumables::FindRestorePotion(bot, true, amount))
+        uint32 const withinMs = fightSec > 0.0f ? uint32(fightSec * float(IN_MILLISECONDS)) : 0;
+        if (!prepot && RaidConsumables::FindRestorePotion(bot, true, amount, withinMs, &readyMs))
         {
             float const potionPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                              std::max(need + reserve - returned, 0.0f));
             returned += potionPct;
-            pick += Acore::StringFormat("{}mana potion {:.0f} %", pick.empty() ? "" : "; ", potionPct);
+            potionFloor = rate * float(readyMs) / float(IN_MILLISECONDS);
+            pick += readyMs ? Acore::StringFormat("{}mana potion {:.0f} % (ready in {:.0f} s: {:.0f} % until then)",
+                                                  pick.empty() ? "" : "; ", potionPct,
+                                                  float(readyMs) / float(IN_MILLISECONDS), potionFloor)
+                            : Acore::StringFormat("{}mana potion {:.0f} %", pick.empty() ? "" : "; ", potionPct);
         }
     }
     // [lead251] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
@@ -1078,7 +1089,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // against -34 % with Evocation), drinking 5C 75 -> 160 s, 5B 3 -> 87 s. A measured rate is the fight's own need:
     // no floor over it; the low line guards only the role's estimate (nothing measured yet)
     float const floorPct = measured ? 0.0f : float(sPlayerbotAIConfig.LowMana);
-    float const line = std::clamp(need + reserve - returned, floorPct, 100.0f);
+    float const line = std::clamp(std::max(need + reserve - returned, potionFloor), floorPct, 100.0f);  // [lead502]
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? source : "spell data", fightSec, reserve,
