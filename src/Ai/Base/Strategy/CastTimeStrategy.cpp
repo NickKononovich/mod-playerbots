@@ -89,6 +89,7 @@ float CastTimeMultiplier::GetValue(Action* action)
             float const lifetime = ExpectedLifetime(botAI, target, &estimate);
             if (lands > lifetime)
             {
+                CastLand::Note(bot->GetGUID(), target->GetGUID(), lands);  // [lead451] the fact for the leader's pick
                 thread_local std::unordered_map<ObjectGuid, uint32> logged;
                 uint32 const now = getMSTime();
                 uint32& last = logged[bot->GetGUID()];

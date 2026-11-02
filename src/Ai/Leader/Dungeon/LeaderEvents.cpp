@@ -4086,27 +4086,47 @@ namespace Leader::Dungeon
                         }
                         return true;
                     };
+                    // [lead451] b205 rfc-h 5H / 5C: the fire mages held Fireball on their dying Attack target
+                    // ([cast-short-life] "it lands in 3.5-4.6 s, the target lives 0.1-3.9 s") and wanded it - 139 / 81
+                    // s of their fights on Shoot (wand 3 % of their damage) while the pack's other mobs lived on. A
+                    // ranged member's cast it held on a mob (CastLand: the fact it reports) lands only on a mob that
+                    // lives that long (ExpectedLifetime, the same estimate): such a mob is its pick first; the mobs it
+                    // would not land on stay its pick only when no other mob is
+                    CastLand::Held castHeld;
+                    bool const castNoted = PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot) &&
+                                           CastLand::Get(guid, castHeld) && castHeld.landsSec > 0.0f;
+                    PlayerbotAI* const memberAI = castNoted ? GET_PLAYERBOT_AI(bot) : nullptr;
+                    auto const castLands = [&](Unit* mob)
+                    { return !memberAI || ExpectedLifetime(memberAI, mob) >= castHeld.landsSec; };
                     Unit* mine = nullptr;
-                    // [lead236] b188 rfc-h 5G 125-139 s: the ret paladin's Attack flipped Shaman <-> Trogg every leader
-                    // tick (0.3 s, 30 changes) - lead229's rate moves with every hit, the leader's focus mob passed and
-                    // failed the test in turn, and each switch opened a fresh mob: 16 aggro losses for Rtpalae. The
-                    // mob it attacks now stays its target while it keeps headroom on it (one command per fact)
-                    if (Leader::MemberEvents current;
-                        Leader::Events::Get(guid, current) && current.attack == Leader::AttackEvent::Attack)
-                        if (Unit* held = ObjectAccessor::GetUnit(*tank, current.target);
-                            held && held->IsAlive() && held->IsInCombat() &&
-                            std::find(killOrder.begin(), killOrder.end(), held->GetGUID()) != killOrder.end() &&
-                            (!lead.looseIsTarget || held == target) && pickable(held))  // [lead245] the loose mob first
-                            mine = held;
-                    if (!mine && pickable(target))
-                        mine = target;
-                    for (ObjectGuid const& next : killOrder)
+                    for (bool const needLanding : {true, false})
                     {
-                        if (mine)
+                        if (mine || (!needLanding && !memberAI))
                             break;
-                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
-                            mob && mob->IsAlive() && mob->IsInCombat() && pickable(mob))
-                            mine = mob;
+                        auto const pickHere = [&](Unit* mob)
+                        { return pickable(mob) && (!needLanding || castLands(mob)); };
+                        // [lead236] b188 rfc-h 5G 125-139 s: the ret paladin's Attack flipped Shaman <-> Trogg every
+                        // leader tick (0.3 s, 30 changes) - lead229's rate moves with every hit, the leader's focus mob
+                        // passed and failed the test in turn, and each switch opened a fresh mob: 16 aggro losses for
+                        // Rtpalae. The mob it attacks now stays its target while it keeps headroom on it (one command
+                        // per fact)
+                        if (Leader::MemberEvents current;
+                            Leader::Events::Get(guid, current) && current.attack == Leader::AttackEvent::Attack)
+                            if (Unit* held = ObjectAccessor::GetUnit(*tank, current.target);
+                                held && held->IsAlive() && held->IsInCombat() &&
+                                std::find(killOrder.begin(), killOrder.end(), held->GetGUID()) != killOrder.end() &&
+                                (!lead.looseIsTarget || held == target) && pickHere(held))  // [lead245] loose mob first
+                                mine = held;
+                        if (!mine && pickHere(target))
+                            mine = target;
+                        for (ObjectGuid const& next : killOrder)
+                        {
+                            if (mine)
+                                break;
+                            if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
+                                mob && mob->IsAlive() && mob->IsInCombat() && pickHere(mob))
+                                mine = mob;
+                        }
                     }
                     // [lead136] b162 20261101-121409: the shaman moved 377 s, 48 % of its fight time not acting - 121
                     // "combat spot: behind the target" moves, 63 re-spots "out of melee reach". A melee member out of

@@ -743,3 +743,28 @@ namespace GroupDamage
         return true;
     }
 }
+
+namespace CastLand
+{
+    namespace
+    {
+        std::mutex heldLock;
+        std::unordered_map<uint64, Held> held;
+    }
+
+    void Note(ObjectGuid member, ObjectGuid target, float landsSec)
+    {
+        std::lock_guard<std::mutex> lock(heldLock);
+        held[member.GetRawValue()] = {target, landsSec};
+    }
+
+    bool Get(ObjectGuid member, Held& out)
+    {
+        std::lock_guard<std::mutex> lock(heldLock);
+        auto const found = held.find(member.GetRawValue());
+        if (found == held.end())
+            return false;
+        out = found->second;
+        return true;
+    }
+}

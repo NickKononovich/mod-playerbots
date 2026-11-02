@@ -8,6 +8,7 @@
 #define PLAYERBOTS_ESTIMATEDLIFETIMEVALUE_H
 
 #include "NamedObjectContext.h"
+#include "ObjectGuid.h"
 #include "PossibleTargetsValue.h"
 #include "TargetValue.h"
 #include "Value.h"
@@ -88,5 +89,20 @@ namespace GroupDamage
 // mage held Fireball on it. `source` (optional) names the estimate for the log.
 float ObservedLifetime(Unit* target);
 float ExpectedLifetime(PlayerbotAI* botAI, Unit* target, std::string* source = nullptr);
+
+// [lead451] A member's held cast (CastTimeMultiplier): the target it would not live to the cast's landing on and the
+// seconds the cast needs to land (its cast time, flight and the next tick). The member reports the fact; the leader's
+// target pick reads it (a mob that dies before this member's cast lands goes to the members whose damage lands).
+namespace CastLand
+{
+    struct Held
+    {
+        ObjectGuid target;
+        float landsSec = 0.0f;
+    };
+    void Note(ObjectGuid member, ObjectGuid target, float landsSec);
+    // false when the member never held a cast
+    bool Get(ObjectGuid member, Held& held);
+}
 
 #endif
