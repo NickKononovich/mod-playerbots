@@ -347,6 +347,21 @@ public:
     MaelstromWeaponTrigger(PlayerbotAI* botAI, int stack = 5) : HasAuraStackTrigger(botAI, "maelstrom weapon", stack) {}
 };
 
+// [rot105] wowsims enhancement APLs (default_wf / default_ft), second line: Lightning Bolt at 3+ Maelstrom Weapon
+// stacks when its cast time + 300 ms is shorter than the time to the next auto attack (APLValueAutoTimeToNext: the
+// sooner of the main- and off-hand swing). b211 rfc-h 5A: Lightning Bolt 2.8 casts/min vs the sim's 9.1, the bot cast it
+// only at 5 stacks.
+inline constexpr uint32 MAELSTROM_WEAVE_STACKS = 3;
+inline constexpr uint32 MAELSTROM_WEAVE_MARGIN_MS = 300;
+
+class MaelstromWeaponWeaveTrigger : public MaelstromWeaponTrigger
+{
+public:
+    MaelstromWeaponWeaveTrigger(PlayerbotAI* botAI) : MaelstromWeaponTrigger(botAI, MAELSTROM_WEAVE_STACKS) {}
+
+    bool IsActive() override;
+};
+
 inline constexpr uint32 FLAME_SHOCK_REFRESH_WINDOW_MS = 1 * IN_MILLISECONDS;
 // [b31_sd] Flame Shock (and the Lava Burst crit it sets up) only on a target expected to live this long.
 inline constexpr float FLAME_SHOCK_MIN_LIFETIME_S = 6.0f;

@@ -165,6 +165,7 @@ public:
         creators["maelstrom weapon 3"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_3;
         creators["maelstrom weapon 4"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_4;
         creators["maelstrom weapon 5"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_5;
+        creators["maelstrom weapon weave"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_weave;
         creators["flame shock"] = &ShamanATriggerFactoryInternal::flame_shock;
         creators["flame shock on attacker"] = &ShamanATriggerFactoryInternal::flame_shock_on_attacker;  // [b31_deep]
         creators["fire elemental totem"] = &ShamanATriggerFactoryInternal::fire_elemental_totem;
@@ -218,6 +219,7 @@ private:
     static Trigger* maelstrom_weapon_3(PlayerbotAI* botAI) { return new MaelstromWeaponTrigger(botAI, 3); }
     static Trigger* maelstrom_weapon_4(PlayerbotAI* botAI) { return new MaelstromWeaponTrigger(botAI, 4); }
     static Trigger* maelstrom_weapon_5(PlayerbotAI* botAI) { return new MaelstromWeaponTrigger(botAI, 5); }
+    static Trigger* maelstrom_weapon_weave(PlayerbotAI* botAI) { return new MaelstromWeaponWeaveTrigger(botAI); }
     static Trigger* heroism(PlayerbotAI* botAI) { return new HeroismTrigger(botAI); }
     static Trigger* bloodlust(PlayerbotAI* botAI) { return new BloodlustTrigger(botAI); }
     static Trigger* party_healer_low_mana(PlayerbotAI* botAI) { return new PartyHealerLowManaTrigger(botAI); }

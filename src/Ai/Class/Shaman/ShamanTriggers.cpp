@@ -18,6 +18,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "TargetValue.h"
 #include "Timer.h"
 #include "Totem.h"
@@ -1062,4 +1063,22 @@ bool TidalWavesHealingWaveTrigger::IsActive()
 
     Unit* target = AI_VALUE(Unit*, "party member to heal");
     return target && target->IsAlive() && target->GetHealthPct() < TIDAL_WAVES_HEALING_WAVE_PCT;
+}
+
+// [rot105] See ShamanTriggers.h.
+bool MaelstromWeaponWeaveTrigger::IsActive()
+{
+    if (!MaelstromWeaponTrigger::IsActive())
+        return false;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", "lightning bolt");
+    SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!info)
+        return false;
+
+    int32 nextSwingMs = bot->getAttackTimer(BASE_ATTACK);
+    if (bot->haveOffhandWeapon())
+        nextSwingMs = std::min(nextSwingMs, bot->getAttackTimer(OFF_ATTACK));
+
+    return static_cast<int32>(info->CalcCastTime(bot) + MAELSTROM_WEAVE_MARGIN_MS) < nextSwingMs;
 }

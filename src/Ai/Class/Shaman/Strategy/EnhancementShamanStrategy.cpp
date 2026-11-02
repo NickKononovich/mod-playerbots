@@ -102,6 +102,8 @@ void EnhancementShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+    // [rot105] wowsims second line: Lightning Bolt at 3+ stacks woven before the next auto attack (ShamanTriggers.h).
+    triggers.push_back(new TriggerNode("maelstrom weapon weave", { NextAction("lightning bolt", 19.5f) }));
     triggers.push_back(
         new TriggerNode(
             "flame shock",
