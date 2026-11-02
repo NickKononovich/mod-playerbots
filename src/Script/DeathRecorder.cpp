@@ -142,6 +142,15 @@ namespace
 
     std::mutex takenLock;
     std::unordered_map<ObjectGuid, uint64> takenTotals;  // DamageTaken: from creatures, by player
+    std::unordered_map<ObjectGuid, uint64> takenSpell;   // [lead256] the part of it armor does not reduce
+    std::unordered_map<ObjectGuid, uint64> healedDone;   // [lead256] HealingDone: effective heals, by healer
+
+    // [lead256] a spell's damage armor does not reduce (any school but physical)
+    bool IsMagicDamage(uint32 spellId)
+    {
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        return info && !(info->GetSchoolMask() & SPELL_SCHOOL_MASK_NORMAL);
+    }
 
     void Record(Unit* victim, Unit* source, uint32 spellId, int32 amount, bool heal, bool environment = false)
     {
@@ -150,8 +159,18 @@ namespace
 
         if (!heal && source && source->IsCreature())
         {
+            bool const magic = IsMagicDamage(spellId);
             std::lock_guard<std::mutex> lock(takenLock);
             takenTotals[victim->GetGUID()] += uint64(amount);
+            if (magic)
+                takenSpell[victim->GetGUID()] += uint64(amount);
+        }
+        // [lead256] the heal hook runs before the heal lands: what it restores, overheal cut off
+        if (heal && source && source->IsPlayer() && victim->GetHealth() < victim->GetMaxHealth())
+        {
+            uint64 const missing = uint64(victim->GetMaxHealth() - victim->GetHealth());
+            std::lock_guard<std::mutex> lock(takenLock);
+            healedDone[source->GetGUID()] += std::min<uint64>(uint64(amount), missing);
         }
 
         CombatEvent event{getMSTime(),
@@ -421,6 +440,23 @@ namespace DamageTaken
         std::lock_guard<std::mutex> lock(takenLock);
         auto const found = takenTotals.find(player);
         return found != takenTotals.end() ? found->second : 0;
+    }
+
+    uint64 Spell(ObjectGuid player)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = takenSpell.find(player);
+        return found != takenSpell.end() ? found->second : 0;
+    }
+}
+
+namespace HealingDone
+{
+    uint64 Effective(ObjectGuid healer)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = healedDone.find(healer);
+        return found != healedDone.end() ? found->second : 0;
     }
 }
 
