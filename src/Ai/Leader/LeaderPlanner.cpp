@@ -330,8 +330,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     }
     constexpr float CAREFUL_EXTRA_HEALER_SHARE = 0.5f;   // a second healer adds half again
     constexpr float CAREFUL_NO_HEALER_SHARE = 0.5f;
-    constexpr float CAREFUL_LANDED_SHARE = 0.7f;         // melee that is not dodged, parried, blocked or missed
-    constexpr float CAREFUL_ARMOR_CAP = 0.75f;
     constexpr float CAREFUL_TANK_MANA = 35.0f;           // a paladin tank below this cannot taunt through a pull
     constexpr float CAREFUL_MIN_PULL_RANGE = 8.0f;
     constexpr float CHARGE_MIN_RANGE = 8.0f;   // Charge (warrior): 8-25 yd, out of combat ("[pull plan] ... charge")
@@ -425,18 +423,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // Measured careful pulls (Playerbots.CarefulPullHeroic: heroic or max-level 5-man). The mobs there are rescaled
     // at runtime (raid_rescale), so their level and rank say little: the pack is sized by its real melee and health
     // against the tank's real mitigation and the group's throughput. Waves 6-8: a heroic tank chain pulled 22-32
-    // mobs in Stratholme and Scholomance and the group wiped, while packs of 3-5 went through.
-    constexpr float MEASURED_MAX_AVOIDANCE = 0.75f;      // miss + dodge + parry the estimate trusts at most
-    constexpr float MEASURED_MIN_LANDED = 0.25f;
-    constexpr float LOS_CASTER_SPELL_SHARE = 0.5f;       // a caster round the corner still casts this share
-    // The rescale multiplied mob weapon damage by about 10-12 but their spells only by 4.0-4.5 (Classic) or 2.4-2.8
-    // (TBC) (raid_rescale PLAN.md section 12): a caster's weapon damage overstates its spells about twice there.
-    constexpr float MEASURED_CASTER_SPELL_SCALE = 0.5f;
-    // Outside the rescale a standing caster's weapon damage also overstates what its spells land on the tank (it
-    // casts on others too, is interrupted and controlled): zf-n wave 8 (level 45) Witch Doctor / Shadowcaster packs
-    // took the tank 0.1-0.5 of its health against 1.3 planned (TakenCost), ramps-n wave 8 (level 62) a Bleeding
-    // Hollow Scryer pack 0.2 against 0.66. Both about 3 times; read at the same share as the rescale's.
-    constexpr float CASTER_SPELL_SCALE = 0.5f;
+    // mobs in Stratholme and Scholomance and the group wiped, while packs of 3-5 went through. [lead257] The melee is
+    // read through the game's own attack table and armor (MeleeTakenShare, ArmorReduction) and the spells from the
+    // mob's spell data (GetMobSpells); the rescale's spell factor and what the spells really land on the tank (a
+    // caster casts on others too, is interrupted and controlled) come in by the measured spell ratio of the dungeon.
     // Tank healths one healer heals from the mana above its reserve (a level 80 healer: about 25k mana at 2.5-3
     // health per mana against a 40k tank).
     constexpr float CAREFUL_HEALER_TANK_HEALTHS = 2.0f;
@@ -3857,13 +3847,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return true;
     }
 
-    // What the tank's own stats take off a melee hit that armor already reduced: the miss, dodge and parry of its
-    // character sheet, and the block value of its shield on a blocked hit (measured careful pulls only).
+    // What the tank's own stats take off a melee hit: the miss, dodge, parry and block chances of its character
+    // sheet (percent, as Unit::RollMeleeOutcomeAgainst reads them) and the block value of its shield.
     struct TankMitigation
     {
-        float avoidance = 0.0f;  // share of swings that miss, are dodged or parried
-        float block = 0.0f;      // share of swings that are blocked
+        float miss = 0.0f;
+        float dodge = 0.0f;
+        float parry = 0.0f;
+        float block = 0.0f;
         float blockValue = 0.0f;
+        float avoidance = 0.0f;  // miss + dodge + parry against a mob of the tank's level, share (logged)
     };
 
     // [b32_smpull] A bear tank is planned with its bear's stats. The estimate read the druid as it stood: out of
@@ -3875,7 +3868,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         float health = 0.0f;
         float armor = 0.0f;
-        float avoidance = 0.0f;  // miss + dodge + parry, percent
+        float miss = 0.0f;  // percent, as the character sheet
+        float dodge = 0.0f;
+        float parry = 0.0f;
     };
 
     bool InBearForm(Player* tank)
@@ -3896,8 +3891,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             BearFormStats& stats = seen[key];
             stats.health = float(tank->GetMaxHealth());
             stats.armor = float(tank->GetArmor());
-            stats.avoidance =
-                tank->GetUnitMissChance(BASE_ATTACK) + tank->GetUnitDodgeChance() + tank->GetUnitParryChance();
+            stats.miss = tank->GetUnitMissChance(BASE_ATTACK);
+            stats.dodge = tank->GetUnitDodgeChance();
+            stats.parry = tank->GetUnitParryChance();
             return nullptr;
         }
 
@@ -3921,69 +3917,199 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         TankMitigation mitigation;
         BearFormStats const* bear = BearStatsOutOfForm(tank);  // [b32_smpull]
-        float const avoidance =
-            bear ? bear->avoidance
-                 : tank->GetUnitMissChance(BASE_ATTACK) + tank->GetUnitDodgeChance() + tank->GetUnitParryChance();
-        mitigation.avoidance = std::clamp(avoidance / 100.0f, 0.0f, MEASURED_MAX_AVOIDANCE);
-        mitigation.block = std::clamp(tank->GetUnitBlockChance() / 100.0f, 0.0f, 1.0f - mitigation.avoidance);
+        mitigation.miss = bear ? bear->miss : tank->GetUnitMissChance(BASE_ATTACK);
+        mitigation.dodge = bear ? bear->dodge : tank->GetUnitDodgeChance();
+        mitigation.parry = bear ? bear->parry : tank->GetUnitParryChance();
+        mitigation.block = bear ? 0.0f : tank->GetUnitBlockChance();
         mitigation.blockValue = mitigation.block > 0.0f ? float(tank->GetShieldBlockValue()) : 0.0f;
+        mitigation.avoidance = std::min(mitigation.miss + mitigation.dodge + mitigation.parry, 100.0f) / 100.0f;
         return mitigation;
     }
 
-    // Melee the tank takes per second from this mob after armor and avoidance. Casters (MobRoles: they stand and cast)
-    // hit with spells, which armor does not reduce; their weapon damage is the same order as their spells. A paladin
-    // class mob with mana is not a caster for that alone: wave 12 read Arcatraz Warders, Sunblade Mage Guards and
-    // Bloodwarder Protectors (melee guards) as casters, 2.7 times their measured damage on the tank. With `mitigation`
-    // (measured careful pulls) the avoidance is the tank's own instead of the levelling estimate, `rescaledSpells`
-    // reads a caster's spells at the rescale's lower spell multiplier, and a caster pulled round a corner
-    // (`casterInMelee`) spends part of the fight in melee, where armor and avoidance count.
-    // `spellPart` (optional): the share of the result that is spells, which armor and avoidance do not reduce.
-    float LandedMeleeDps(Unit* mob, Player* tank, TankMitigation const* mitigation = nullptr,
-                         bool casterInMelee = false, bool rescaledSpells = false, float* spellPart = nullptr)
+    // [lead257] The share of a swing's armored damage the tank takes from this mob: the game's attack table
+    // (Unit::RollMeleeOutcomeAgainst, one roll over miss, dodge, parry, block, crushing, crit, hit in that order,
+    // each chance moved by the weapon skill against the tank's defense, 0.04 % a point; the table ends at 100 %),
+    // a blocked hit less the shield's block value, a crushing blow at 150 %, a crit at 200 % (melee crit damage).
+    // `outcome` (optional): the table, logged.
+    float MeleeTakenShare(Unit* mob, Player* tank, TankMitigation const& mitigation, float armoredHit,
+                          std::string* outcome = nullptr)
+    {
+        Creature const* creature = mob->ToCreature();
+        int32 const weaponSkill = int32(mob->GetWeaponSkillValue(BASE_ATTACK, tank));
+        int32 const tankMaxSkill = int32(tank->GetMaxSkillValueForLevel(mob));
+        float const skillBonus = 0.04f * float(weaponSkill - tankMaxSkill);  // percent
+        // the core's miss chance with the skill difference (Unit::MeleeSpellMissChance), from the plan's base miss
+        float const miss = std::max(mob->MeleeSpellMissChance(tank, BASE_ATTACK, weaponSkill - tankMaxSkill, 0) -
+                                        tank->GetUnitMissChance(BASE_ATTACK) + mitigation.miss,
+                                    0.0f);
+        float const expertise = float(mob->GetTotalAuraModifier(SPELL_AURA_MOD_EXPERTISE)) * 0.25f;
+        float const dodge = std::max(mitigation.dodge - expertise - skillBonus, 0.0f);
+        float const parry = std::max(mitigation.parry - expertise - skillBonus, 0.0f);
+        float const block = std::max(mitigation.block - skillBonus, 0.0f);
+        float crush = 0.0f;
+        if (int32(mob->getLevelForTarget(tank)) >= int32(tank->getLevelForTarget(mob)) + 4 &&
+            !(creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS)))
+        {
+            int32 const lacking = int32(mob->GetMaxSkillValueForLevel(tank)) -
+                                  std::min(int32(tank->GetDefenseSkillValue(mob)), tankMaxSkill);
+            if (lacking >= 15)
+                crush = float(lacking) * 2.0f - 15.0f;
+        }
+        float crit = std::max(mob->GetUnitCriticalChance(BASE_ATTACK, tank), 0.0f);
+        if (creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRIT))
+            crit = 0.0f;
+
+        float left = 100.0f;  // the attack table: each outcome takes what the ones before it left
+        auto const take = [&left](float chance)
+        {
+            float const taken = std::clamp(chance, 0.0f, left);
+            left -= taken;
+            return taken / 100.0f;
+        };
+        take(miss);
+        take(dodge);
+        take(parry);
+        float const blocked = take(block);
+        float const crushing = take(crush);
+        float const crits = take(crit);
+        float const hits = left / 100.0f;
+        float const blockKeeps = armoredHit > 0.0f ? 1.0f - std::min(mitigation.blockValue / armoredHit, 1.0f) : 1.0f;
+        float const share = hits + blocked * blockKeeps + 1.5f * crushing + 2.0f * crits;
+        if (outcome)
+            *outcome = Acore::StringFormat(
+                "miss {:.1f} dodge {:.1f} parry {:.1f} block {:.1f} crush {:.1f} crit "
+                "{:.1f} %: {:.2f} of a hit",
+                miss, dodge, parry, block, crush, crit, share);
+        return share;
+    }
+
+    // [lead257] The armor reduction of this mob's melee on the tank: the core's (Unit::CalcArmorReducedDamage, with
+    // its 75 % cap), on the bear's armor while a bear is out of form.
+    float ArmorReduction(Unit* mob, Player* tank)
+    {
+        constexpr uint32 PROBE_DAMAGE = 1000000;  // a hit large enough that the core's rounding does not count
+        float const armor = PlanTankArmor(tank);
+        if (armor <= float(tank->GetArmor()))
+            return 1.0f - float(Unit::CalcArmorReducedDamage(mob, tank, PROBE_DAMAGE, nullptr)) / float(PROBE_DAMAGE);
+
+        constexpr float CORE_ARMOR_REDUCTION_CAP = 0.75f;  // Unit::CalcArmorReducedDamage
+        float level = float(mob->GetLevel());
+        if (level > 59.0f)
+            level += 4.5f * (level - 59.0f);
+        float const value = 0.1f * armor / (8.5f * level + 40.0f);
+        return std::clamp(value / (1.0f + value), 0.0f, CORE_ARMOR_REDUCTION_CAP);
+    }
+
+    // [lead257] What a mob's spells land per second from its spell data: the damage spells of its SmartAI script
+    // (SMART_ACTION_CAST on a repeating in-combat timer, at the timer's mean) or, without one, of its template's
+    // spell list (at the fastest the spell's own cooldown or cast lets it), each cast's school damage and periodic
+    // damage at the mob's level (SpellEffectInfo::CalcValue) in a magic school (a physical one is melee: armor
+    // reduces it). Spells of a fixed count per fight (once, at a health percent) do not repeat and are left out; the
+    // measured spell ratio of this dungeon (LandedCalibration) corrects the rest, the rescale's spell factor too.
+    struct MobSpells
+    {
+        float dps = 0.0f;
+        float castShare = 0.0f;  // the share of the fight it spends casting: no swing meanwhile
+    };
+
+    MobSpells const& GetMobSpells(Creature* creature)
+    {
+        thread_local std::unordered_map<uint64, MobSpells> cache;  // by entry and level, per map thread
+        uint64 const key = (uint64(creature->GetEntry()) << 8) | creature->GetLevel();
+        if (auto const found = cache.find(key); found != cache.end())
+            return found->second;
+
+        MobSpells spells;
+        auto const add = [&](uint32 spellId, float intervalMs)
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPositive() || (info->GetSchoolMask() & SPELL_SCHOOL_MASK_NORMAL))
+                return;
+
+            float damage = 0.0f;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                    damage += float(std::max(effect.CalcValue(creature), 0));
+                else if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                         effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
+                    damage += float(std::max(effect.CalcValue(creature), 0)) *
+                              float(std::max(info->GetMaxDuration(), 0)) / float(effect.Amplitude);
+            }
+            if (damage <= 0.0f)
+                return;
+
+            float const castMs = float(info->CalcCastTime(creature));
+            float const everyMs = std::max({intervalMs, castMs, float(info->StartRecoveryTime), 1.0f});
+            spells.dps += damage * float(IN_MILLISECONDS) / everyMs;
+            spells.castShare += castMs / everyMs;
+        };
+
+        if (creature->GetAIName() == "SmartAI")
+        {
+            SmartAIEventList const scripts =
+                sSmartScriptMgr->GetScript(int32(creature->GetEntry()), SMART_SCRIPT_TYPE_CREATURE);
+            for (SmartScriptHolder const& holder : scripts)
+                if (holder.GetActionType() == SMART_ACTION_CAST && holder.GetEventType() == SMART_EVENT_UPDATE_IC &&
+                    holder.event.minMaxRepeat.repeatMax)
+                    add(holder.action.cast.spell,
+                        float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f);
+        }
+        else if (CreatureTemplate const* proto = creature->GetCreatureTemplate())
+        {
+            for (uint32 spellId : proto->spells)
+            {
+                SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+                if (info)
+                    add(spellId, float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)));
+            }
+        }
+
+        spells.castShare = std::min(spells.castShare, 1.0f);
+        return cache.emplace(key, spells).first->second;
+    }
+
+    // Melee and spells the tank takes per second from this mob: [lead257] its weapon (min-max damage over its
+    // attack time) after the core's armor reduction and the game's attack table against the tank (MeleeTakenShare),
+    // in the share of the fight it does not cast, plus its spells from its spell data (GetMobSpells). A caster
+    // (MobRoles: it stands and casts) only casts, unless it was pulled round a corner (`casterInMelee`): then it
+    // swings between its casts. A paladin class mob with mana is not a caster for that alone: wave 12 read Arcatraz
+    // Warders, Sunblade Mage Guards and Bloodwarder Protectors (melee guards) as casters. A caster whose spells its
+    // data does not give (a C++ script) is read by its weapon, the only damage the game gives for it, until the
+    // dungeon's measured ratio corrects it. `spellPart` (optional): the part of the result that is spells, which
+    // armor and avoidance do not reduce; `why` (optional): the inputs.
+    float LandedMeleeDps(Unit* mob, Player* tank, bool casterInMelee = false, float* spellPart = nullptr,
+                         std::string* why = nullptr)
     {
         if (spellPart)
             *spellPart = 0.0f;
 
+        Creature* creature = mob->ToCreature();
+        MobSpells const spells = creature ? GetMobSpells(creature) : MobSpells();
+        if (spellPart)
+            *spellPart = spells.dps;
+        bool const caster = MobRoles::IsCaster(mob) && spells.dps > 0.0f;
         uint32 const attackTime = mob->GetAttackTime(BASE_ATTACK);
-        if (!attackTime)
-            return 0.0f;
+        if ((caster && !casterInMelee) || !attackTime)
+        {
+            if (why)
+                *why = Acore::StringFormat("spells {:.0f}/s{}", spells.dps, caster ? " (caster at range)" : "");
+            return spells.dps;
+        }
 
         float const hit = (mob->GetFloatValue(UNIT_FIELD_MINDAMAGE) + mob->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
-        float const dps = hit * float(IN_MILLISECONDS) / float(attackTime);
-        bool const caster = MobRoles::IsCaster(mob);
-        float const spell =
-            dps * CAREFUL_LANDED_SHARE * (rescaledSpells ? MEASURED_CASTER_SPELL_SCALE : CASTER_SPELL_SCALE);
-        if (caster && !casterInMelee)
-        {
-            if (spellPart)
-                *spellPart = spell;
-
-            return spell;
-        }
-
-        // armor against an attacker of this level (3.3.5 formula, two bands)
-        float const level = float(mob->GetLevel());
-        float const constant = level < 60.0f ? 400.0f + 85.0f * level : 467.5f * level - 22167.5f;
-        float const armor = PlanTankArmor(tank);  // [b32_smpull] a bear out of form: its bear's armor
-        float const reduction = std::clamp(armor / std::max(armor + constant, 1.0f), 0.0f, CAREFUL_ARMOR_CAP);
-        float share = CAREFUL_LANDED_SHARE;
-        if (mitigation)
-        {
-            float const armoredHit = hit * (1.0f - reduction);
-            float const blocked = armoredHit > 0.0f ? std::min(mitigation->blockValue / armoredHit, 1.0f) : 0.0f;
-            share = std::max(1.0f - mitigation->avoidance - mitigation->block * blocked, MEASURED_MIN_LANDED);
-        }
-
-        float const melee = dps * (1.0f - reduction) * share;
-        if (caster)
-        {
-            if (spellPart)
-                *spellPart = LOS_CASTER_SPELL_SHARE * spell;
-
-            return LOS_CASTER_SPELL_SHARE * spell + (1.0f - LOS_CASTER_SPELL_SHARE) * melee;
-        }
-
-        return melee;
+        float const reduction = ArmorReduction(mob, tank);
+        float const armoredHit = hit * (1.0f - reduction);
+        std::string outcome;
+        float const share = MeleeTakenShare(mob, tank, GetTankMitigation(tank), armoredHit, why ? &outcome : nullptr);
+        float const melee = armoredHit * share * float(IN_MILLISECONDS) / float(attackTime) * (1.0f - spells.castShare);
+        if (why)
+            *why = Acore::StringFormat(
+                "swing {:.0f} / {:.1f} s, armor {:.2f}, {}, casting {:.2f}: melee {:.0f}/s + "
+                "spells {:.0f}/s",
+                hit, float(attackTime) / float(IN_MILLISECONDS), reduction, outcome, spells.castShare, melee,
+                spells.dps);
+        return melee + spells.dps;
     }
 
     struct PackEstimate
@@ -4070,8 +4196,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return weight;
     }
 
-    // How the pack's melee is read: `measured` with the tank's own avoidance and block (a measured careful pull),
-    // `rescaledSpells` with the rescale's lower spell multiplier for casters (heroic or max-level content).
     // [lead256] the measured ratio real / template of a pack's melee and of its spells (LandedCalibration)
     struct LandedScale
     {
@@ -4079,10 +4203,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float spell = 1.0f;
     };
 
+    // How the pack is read: `measured` - a measured careful pull (heroic or max-level content), [lead257] every
+    // mode reads the tank's own attack table and the mob's spell data (LandedMeleeDps).
     struct EstimateMode
     {
         bool measured = false;
-        bool rescaledSpells = false;
         LandedScale landedScale;  // the tank's measured calibration in this dungeon (LandedCalibration)
         // [lead209] the measured ratio of a mob entry measured on its own in this dungeon (else landedScale)
         std::unordered_map<uint32, LandedScale> const* landedByEntry = nullptr;
@@ -4097,7 +4222,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                               bool losPull = false)
     {
         PackEstimate estimate;
-        TankMitigation const mitigation = mode.measured ? GetTankMitigation(tank) : TankMitigation();
         float totalHealth = 0.0f;
         float landedSpell = 0.0f;
         std::vector<std::pair<float, float>> lives;  // landed melee, health
@@ -4135,8 +4259,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (mode.landedByEntry)
                 if (auto const own = mode.landedByEntry->find(mob->GetEntry()); own != mode.landedByEntry->end())
                     scale = own->second;
-            float const templateDps = LandedMeleeDps(mob, tank, mode.measured ? &mitigation : nullptr,
-                                                     mode.measured && losPull, mode.rescaledSpells, &spell);
+            float const templateDps = LandedMeleeDps(mob, tank, losPull, &spell);
             // [lead256] melee and spells by their own measured ratios
             float const landed = (templateDps - spell) * scale.melee + spell * scale.spell;
             spell *= scale.spell;
@@ -6516,7 +6639,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (totalHealth <= 0.0f)
             return;
 
-        TankMitigation const mitigation = GetTankMitigation(tank);
         float const fightSec = float(fightMs) / float(IN_MILLISECONDS);
         float templateMelee = 0.0f;
         float templateSpell = 0.0f;
@@ -6535,7 +6657,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             float const health = float(record.cameHealth[i]);
             float const life = (health + (totalHealth - health) / 2.0f) / totalHealth * fightSec;
             float spell = 0.0f;
-            float const landed = LandedMeleeDps(mob, tank, &mitigation, false, false, &spell);
+            float const landed = LandedMeleeDps(mob, tank, false, &spell);
             templateMelee += (landed - spell) * life;
             templateSpell += spell * life;
         }
@@ -8153,7 +8275,6 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         std::max({PlanGroupDps(), MeasuredGroupDps(bot), CAREFUL_MIN_GROUP_DPS});  // [lead7]
     EstimateMode estimateMode;
     estimateMode.measured = measured;
-    estimateMode.rescaledSpells = measured && rescaled;
     LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
     estimateMode.landedScale = landedRatios.trash;
     estimateMode.landedByEntry = &landedRatios.byEntry;
@@ -8193,8 +8314,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // [b44_packs] A weak pack (WEAK_PACK_*): it dies to the group's AoE within WEAK_PACK_TTK_SEC, the healers keep
     // up with what the whole stack lands meanwhile (the measured peak term with every mob alive: CAREFUL_MAX_DTPS
     // of the tank's health per second per healer), the tank keeps CAREFUL_MAX_DROP of its health in 9 pulls of 10
-    // (DropP90 of that cost) and the healers have the mana (HealerPool). The planner's caps on spell damage stay in
-    // the estimate (MEASURED_CASTER_SPELL_SCALE / the rescale's spell caps): the AoE cost carries the same spell part.
+    // (DropP90 of that cost) and the healers have the mana (HealerPool). The AoE cost carries the same spell part.
     // Not with crowd control planned on the pack (the AoE breaks it) and never a boss.
     auto const weakAoeFits = [&](PackEstimate const& estimate) -> bool
     {
@@ -12042,6 +12162,21 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                         : (fallback ? " (topped-up fallback)" : "")),
               _planLos ? "los pull" : (_planPullBack ? "pull back" : "engage"), _planTarget.ToString(),
               target->GetName(), chosen.mobs, chosen.landedDps, chosen.cost);
+    // [lead257] the inputs of the estimate: each mob kind's melee and spells as the game reads them
+    if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        std::vector<uint32> logged;
+        for (Unit* mob : chosenPack)
+        {
+            if (!mob || std::find(logged.begin(), logged.end(), mob->GetEntry()) != logged.end())
+                continue;
+            logged.push_back(mob->GetEntry());
+            std::string inputs;
+            LandedMeleeDps(mob, bot, _planLos, nullptr, &inputs);
+            LOG_DEBUG("playerbots", "[lead257] {} estimate input {} (level {}): {}", bot->GetName(), mob->GetName(),
+                      mob->GetLevel(), inputs);
+        }
+    }
     if (packWhyRecorder.on && chosen.mobs >= PACK_WHY_MIN_PLAN_MOBS && !chosenPack.empty() &&
         PackWhyDue(_packWhyMs, chosenPack.front()->GetGUID(), now))
         LOG_INFO("playerbots", "{}",
