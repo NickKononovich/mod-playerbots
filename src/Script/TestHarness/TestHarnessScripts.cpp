@@ -103,12 +103,34 @@ public:
             TestHarness::StatsRegistry::Instance().OnSpellAmount(attacker, target, spellInfo, uint32(damage), false);
     }
 
+    // [rot65] A dynamic object's periodic damage (Consecration, Death and Decay, Blizzard, Rain of Fire, Hurricane,
+    // Volley) reaches this hook without the caster's spell power / attack power bonus: AuraEffect::
+    // HandlePeriodicDamageAurasTick adds SpellDamageBonusDone after the hook for DYNOBJ_AURA_TYPE only (a unit aura has
+    // it in its amount). b201 rfc-h 5G: the ret paladin's Consecration logged 1130 a cast = 10 ticks of the bare 113
+    // (sim 4349); the missing part went to the white-swing remainder. The tick is logged with that bonus added, as
+    // every other spell row (before the target's mitigation and the crit).
+    static uint32 DynObjTickWithCasterBonus(Unit* target, Unit* attacker, uint32 damage, SpellInfo const* spellInfo)
+    {
+        if (!target || !attacker || !damage)
+            return damage;
+
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (spellInfo->Effects[i].Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA &&
+                spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE)
+                return attacker->SpellDamageBonusDone(target, spellInfo, damage, DOT, i);
+
+        return damage;
+    }
+
     void ModifyPeriodicDamageAurasTick(Unit* target, Unit* attacker, uint32& damage,
                                        SpellInfo const* spellInfo) override
     {
         // Also called for periodic heals (before ModifyHealReceived): only harmful ticks count as damage.
         if (spellInfo && !spellInfo->IsPositive())
-            TestHarness::StatsRegistry::Instance().OnSpellAmount(attacker, target, spellInfo, damage, false);
+        {
+            uint32 const logged = DynObjTickWithCasterBonus(target, attacker, damage, spellInfo);  // [rot65]
+            TestHarness::StatsRegistry::Instance().OnSpellAmount(attacker, target, spellInfo, logged, false);
+        }
         // [lead111] b143 rfc-h Taragaman: Serpent Sting and Chimera Shot - Serpent dealt about half the sim's while
         // the formulas match (242 + 0.04 RAP a tick); the tick, the caster's ranged attack power and the aura's
         // ticks, once per caster every 10 s, for the check against the sim
