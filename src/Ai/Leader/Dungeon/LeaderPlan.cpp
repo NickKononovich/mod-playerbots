@@ -1375,10 +1375,16 @@ namespace Leader::Dungeon
                     lead.walkWakesFirst.Clear();
                     lead.walkWakesReleased.Clear();
                 }
-                if (blocker)
+                // [lead365] the blocker is a pack the leader must clear (the whole-pack input): with every option
+                // over the budget the planner takes the cheapest (lead208), never a refusal that leaves the group
+                // blocked and the route walk waiting for it (lead77). Unreachable, it falls through (lead43)
+                if (blocker && !skipPick(blocker->GetGUID()))
                 {
                     inputs.pick = blocker->GetGUID();
-                    pickWhy = "it blocks the group's walk";
+                    inputs.wholePack = blocker->GetGUID();
+                    inputs.walkIn = false;
+                    pickWhy = "it blocks the group's walk ([lead208] every option over the budget, the cheapest: the "
+                              "blocker)";
                 }
                 else if (wakesFirst && !skipPick(wakesFirst->GetGUID()))
                 {
@@ -1608,7 +1614,10 @@ namespace Leader::Dungeon
             // [lead108] b141 rfc-h 116.3 s: "held for now: the tank rests (health 100 %, mana 48 %)" refused the route
             // target Earthborer 1, the route skipped it for good and every mob behind it - a readiness hold
             // (Decision::readinessHold) is the group's wait, never a refusal of the mob
-            !decision.readinessHold)
+            !decision.readinessHold &&
+            // [lead365] never the mob that blocks the group's walk: it is the pull the walk waits for (lead208)
+            std::none_of(lead.groupBlockedBy.begin(), lead.groupBlockedBy.end(),
+                         [&decision](auto const& blocked) { return blocked.second == decision.lookTarget; }))
             lead.refusedPicks[decision.lookTarget] = decision.why;  // [lead45] never a boss
         // [lead50] b99 rfc-h 543-608 s: the planner held the boss pick for "Rtpalaa at 76 % mana" and no Rest came
         // (lead46's boss Rest ran only while the boss-pull gate waited). One readiness path: a held answer that

@@ -46,6 +46,7 @@
 #include "AttackerCountValues.h"
 #include "MovementActions.h"
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
+#include "LeaderPlannerShared.h"  // [lead365] the patrol forecast
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
@@ -525,12 +526,32 @@ using namespace Leader::Fight;
                     break;
                 }
                 float const reach = AggroReach(mob, leader) + PATROL_HOLD_MARGIN;
+                // [lead365] b197b rfc-h 5E 863.9-1095 s: "patrol Searing Blade Enforcer 37.3 yd from Rthunab (reach
+                // 38.0): it comes to the group" held the walk 230 s - the Enforcer stood there and never came, and it
+                // was the mob blocking the members' walk the leader pulls (lead364). The hold stands on its facts: no
+                // hold for the group's blocker (the leader's pull has it), nor for a patrol that does not walk its path
+                // now (no forecast: it stopped) or whose forecast walk comes no nearer the member than it stands
+                auto const& blockedBy = group.State().groupBlockedBy;
+                bool const blocksGroup =
+                    std::any_of(blockedBy.begin(), blockedBy.end(),
+                                [mob](auto const& blocked) { return blocked.second == mob->GetGUID(); });
+                std::vector<G3D::Vector3> track;
+                float sampleSec = 0.0f;
+                bool const walksNow = PullPlanning::PatrolForecast(mob, track, sampleSec);
+                auto const comesNearer = [&track, mob](Player* bot)
+                {
+                    float const gap = bot->GetExactDist(mob);
+                    for (G3D::Vector3 const& point : track)
+                        if (bot->GetExactDist(point.x, point.y, point.z) < gap)
+                            return true;
+                    return false;
+                };
                 for (LeaderGroup::MemberInfo const& member : group.Members())
                 {
                     Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                    if (!bot || !bot->IsAlive() || bot->GetMap() != leader->GetMap())
+                    if (!bot || !bot->IsAlive() || bot->GetMap() != leader->GetMap() || blocksGroup || !walksNow)
                         continue;
-                    if (float const gap = bot->GetExactDist(mob); gap <= reach)
+                    if (float const gap = bot->GetExactDist(mob); gap <= reach && comesNearer(bot))
                     {
                         why = Acore::StringFormat(
                             "patrol {} {:.1f} yd from {} (reach {:.1f}): it comes to the group", mob->GetName(),
