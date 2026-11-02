@@ -1684,16 +1684,11 @@ namespace TestHarness
                     return;
                 }
             }
-            // One automatic recovery: drop the current target (the leader's intent). Bots walk by themselves: their
-            // movement and AI are not reset from outside.
-            if (!party.target.IsEmpty())
-                SkipTarget(party, party.target, 10 * MINUTE * IN_MILLISECONDS, "stall");
-            TestRunner::ClearWaypoint(party.leader);
-            party.waitSinceMs = 0;
-            party.nextRetargetMs = now;
+            // [lead343] user: «Стенд никого не двигает»: the harness drops no target and clears no walk of the
+            // leader's - the first stall is a report, the second one ends the run
             party.stallLevel = 1;
             party.lastProgressMs = now;
-            LogEvent(party, "stall_recovery", JsonObject().Str("action", "skip target, clear waypoint"));
+            LogEvent(party, "stall_recovery", JsonObject().Str("action", "report only"));
             return;
         }
 
