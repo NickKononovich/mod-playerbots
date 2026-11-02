@@ -587,10 +587,14 @@ namespace Leader::Fight
             }
             else
             {
-                // [lead127] the member's own reach (LeaderShootReach), not a fixed band: within it, and not nearer
-                // than half of it (out of the target's melee and cleaves)
+                // [lead127] the member's own reach (LeaderShootReach), not a fixed band: within it
+                // [lead463] b207 rfc-h: 39 combat_spot_none, the ring's candidates rejected "out of its band" 4-80
+                // times each - the floor of the band was half the reach (15 yd), in RFC's caves the target's sight
+                // ends nearer than that on every ray, so no spot existed. The floor is the facts it stood for: out of
+                // the target's melee (LeaderRangedMinGap, a hunter's dead zone) - every fight mob's melee reach, the
+                // cleaves and the hazards are their own checks (LeaderOutOfMobsMelee, LeaderSpotSafe)
                 float const reach = LeaderShootReach(bot);
-                if (reach <= 0.0f || gap < std::max(reach / 2.0f, LeaderRangedMinGap(bot, target)) || gap > reach)
+                if (reach <= 0.0f || gap < LeaderRangedMinGap(bot, target) || gap > reach)
                     return "out of its band";
             }
             if (!LeaderSpotSafe(bot, botAI, zones, spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()))
@@ -651,9 +655,8 @@ namespace Leader::Fight
         // none, the rings inside the band are searched too, the search step of LeaderNearestCombatSpot's rings
         constexpr float RING_STEP_YD = 3.0f;
         float const reach = LeaderShootReach(bot);
-        float const inner = melee || PlayerbotAI::IsHeal(bot)
-                                ? distance
-                                : std::max(reach / 2.0f, LeaderRangedMinGap(bot, target)) + 1.0f;
+        float const inner = melee || PlayerbotAI::IsHeal(bot) ? distance
+                                                               : LeaderRangedMinGap(bot, target) + 1.0f;  // [lead463]
         Map* map = target->GetMap();
         for (float ring = distance; ring >= inner || ring == distance; ring -= RING_STEP_YD)
         {
@@ -671,7 +674,10 @@ namespace Leader::Fight
                     NoteSpotReject("ring", "no ground");
                     continue;
                 }
-                if (std::fabs(z - target->GetPositionZ()) > 4.0f)
+                // [lead463] a melee spot is on the target's floor; a ranged / healer one anywhere its ground sees the
+                // target (the sight test below; the walk there is checkedMove's): b207 "ring: off the target's floor"
+                // took 3-19 candidates of a search, on RFC's slopes round the boss ledges
+                if (melee && std::fabs(z - target->GetPositionZ()) > 4.0f)
                 {
                     NoteSpotReject("ring", "off the target's floor");
                     continue;

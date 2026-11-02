@@ -1222,10 +1222,25 @@ namespace Leader::Dungeon
                     return false;
             return true;
         };
+        // [lead463] b207 rfc-h: "heal reach" took 4-57 ring candidates of a combat spot search (the 39
+        // combat_spot_none) - judged from where the healer stands now, while the healer is placed by the leader too
+        // (its heal-reach spot). A spot keeps the heal reach when the healer's place reaches it, or a healer place
+        // the leader can give exists: the line from the tank's fight place to the spot is in sight and short enough
+        // that a point on it lies within LEADER_HEALER_TANK_YD of the tank and LEADER_HEAL_REACH_YD of the spot
+        auto const healerCanReach = [&](Position const& spot)
+        {
+            Position const tankAt = fighting && lead.fightAnchorSerial ? lead.fightAnchor : tank->GetPosition();
+            return spot.GetExactDist(tankAt) <=
+                       Leader::LEADER_HEALER_TANK_YD + Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&
+                   map->isInLineOfSight(tankAt.GetPositionX(), tankAt.GetPositionY(), tankAt.GetPositionZ() + 2.0f,
+                                        spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + 2.0f,
+                                        tank->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                        VMAP::ModelIgnoreFlags::Nothing);
+        };
         auto const keepsHealer = [&](Position const& spot)
         {
             return !Leader::LEADER_HEAL_REACH || !healer || reaches(healerAt, spot) ||
-                   (g_spotAcquireMargin == 0.0f && reaches(healer->GetPosition(), spot));
+                   (g_spotAcquireMargin == 0.0f && reaches(healer->GetPosition(), spot)) || healerCanReach(spot);
         };
 
         // [lead15] the aggro-loss rule (user: «если кто-то кого-то сагрил - подбегай к танку, пусть танк АОЕ делает и
