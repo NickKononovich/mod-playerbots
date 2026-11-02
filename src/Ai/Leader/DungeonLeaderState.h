@@ -305,6 +305,13 @@ namespace Leader
         float fightOverload = 0.0f;
         std::string fightJudged;
         std::string nextBossName;  // the nearest standing boss
+        ObjectGuid nextBossGuid;   // [lead421] the next boss (the route plan's, else the nearest standing)
+        // [lead421] the run's measured stretches between bosses (the run's first tick / a boss fight's end to the
+        // next boss pull): their sum and count, the start of the one under way, a boss fight on
+        float stretchSecSum = 0.0f;
+        uint32 stretches = 0;
+        uint32 stretchFromMs = 0;
+        bool bossFightOn = false;
         uint32 bossJudgedFor = 0;  // the fightStartMs it was judged for
         std::map<std::string, std::string> burnLogged;  // [lead274] burn_decision: the verdict logged per member
         std::string slowestPass;                       // [lead76] the slowest leader pass this minute

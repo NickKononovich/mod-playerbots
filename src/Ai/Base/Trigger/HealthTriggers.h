@@ -297,6 +297,8 @@ float SpellManaRate(Player* bot);
 // [lead417] the cheapest mana cast of the bot's rotation (% of its max mana): an offensive spell, a healer's heal;
 // below it the bot is dry (it cannot cast, its mana spend stops)
 float CheapestCastPct(Player* bot);
+// [lead421] the mana per second (% of max mana) the best drink in the bot's bags gives; 0 without one
+float DrinkPctPerSecOf(Player* bot);
 // [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon
 void NoteFightLength(Player* tank, uint32 mobs, float sec);
 // [lead264] the next fight's length: the plan's estimate, else the group's measured seconds per mob in this dungeon

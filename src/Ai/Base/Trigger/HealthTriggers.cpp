@@ -826,6 +826,8 @@ namespace
     }
 }
 
+float DrinkPctPerSecOf(Player* bot) { return DrinkPctPerSec(bot); }
+
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss)
 {
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data

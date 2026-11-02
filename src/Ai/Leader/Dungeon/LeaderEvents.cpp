@@ -1075,6 +1075,15 @@ namespace Leader::Dungeon
                         bossYd = tank->GetExactDist(boss);
                         nextBoss = boss;
                     }
+            // [lead421] the next boss is the one the route's plan walks to (route_plan), the nearest only without one
+            GroupRouteState const& route = group.Route();
+            if (Creature* planned = route.routePlanBoss.IsEmpty() ? nullptr : map->GetCreature(route.routePlanBoss);
+                planned && planned->IsAlive() && !planned->IsInCombat())
+            {
+                nextBoss = planned;
+                bossYd = tank->GetExactDist(planned);
+            }
+            lead.nextBossGuid = nextBoss ? nextBoss->GetGUID() : ObjectGuid::Empty;
             // [lead274] user: a normal raid leader saves all cooldowns for the boss; on trash only at critical
             // moments, or if the boss is far and everything recharges; in a short dungeon only on bosses, and not on
             // all - on the most needed. Once per fight every living boss is judged like a pull (the planner's
@@ -1083,6 +1092,18 @@ namespace Leader::Dungeon
             if (lead.bossJudgedFor != lead.fightStartMs)
             {
                 lead.bossJudgedFor = lead.fightStartMs;
+                // [lead421] a boss fight ends the run's walk to him: its seconds (the last boss fight's end, or the
+                // run's first tick, to this pull) are a measured stretch between bosses
+                if (Creature const* boss = target->ToCreature(); boss && boss->IsDungeonBoss() && !lead.bossFightOn)
+                {
+                    if (lead.stretchFromMs)
+                    {
+                        lead.stretchSecSum += getMSTimeDiff(lead.stretchFromMs, lead.fightStartMs) / 1000.0f;
+                        ++lead.stretches;
+                    }
+                    lead.stretchFromMs = 0;
+                    lead.bossFightOn = true;
+                }
                 std::map<ObjectGuid, DungeonLeaderState::BossNeed> needs;
                 for (ObjectGuid const& bossGuid : group.BossCreatures())
                     if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive())
@@ -1112,16 +1133,54 @@ namespace Leader::Dungeon
             lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
             // [lead178] the time to the next boss pull: what is left of this fight, the fights of the idle mobs the
             // leader holds on the path (their health over the group's dps) and the walk; no boss left: -1
+            // [lead421] b201 rfc-h 5B: Shadowfiend was held on Oggleflint for Jergosh "his pull in >= 130 s" (the
+            // fight left + the straight line) - he was pulled 667 s later. Along the route's plan now: its stops'
+            // fights (their mobs' health over the group's dps), the rest they cost (each mana user's line for those
+            // fight seconds over its best drink's rate; the group waits for the slowest drinker) and the walk from
+            // stop to stop to the boss; without a plan to him the on-path mobs and the straight walk, as before
             lead.bossPullSec = -1.0f;
-            if (lead.bossWalkSec >= 0.0f)
+            if (nextBoss)
             {
-                float onPathHealth = 0.0f;
-                for (auto const& [mobGuid, verdict] : group.PathVerdicts())
-                    if (verdict.on)
-                        if (Creature* mob = map->GetCreature(mobGuid);
-                            mob && mob->IsAlive() && !mob->IsInCombat() && !mob->IsDungeonBoss() && !mob->isWorldBoss())
-                            onPathHealth += float(mob->GetHealth());
-                lead.bossPullSec = lead.fightSecLeft + onPathHealth / std::max(groupDps, 1.0f) + lead.bossWalkSec;
+                float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                float trashHealth = 0.0f;
+                float walkYd = 0.0f;
+                if (route.routePlanBoss == nextBoss->GetGUID() && !route.routePlan.empty())
+                {
+                    Position at = tank->GetPosition();
+                    for (GroupRouteState::PlannedStop const& stop : route.routePlan)
+                    {
+                        walkYd += at.GetExactDist(stop.spot);
+                        at = stop.spot;
+                        for (ObjectGuid const& mobGuid : stop.mobs)
+                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() && !mob->IsInCombat())
+                                trashHealth += float(mob->GetHealth());
+                    }
+                    walkYd += at.GetExactDist(nextBoss->GetPosition());
+                }
+                else
+                {
+                    for (auto const& [mobGuid, verdict] : group.PathVerdicts())
+                        if (verdict.on)
+                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() &&
+                                                                          !mob->IsInCombat() && !mob->IsDungeonBoss() &&
+                                                                          !mob->isWorldBoss())
+                                trashHealth += float(mob->GetHealth());
+                    walkYd = bossYd;
+                }
+                float const trashSec = trashHealth / std::max(groupDps, 1.0f);
+                float restSec = 0.0f;
+                if (trashSec > 0.0f)
+                {
+                    std::vector<Player*> drinkers = seats;
+                    drinkers.push_back(tank);
+                    for (Player* member : drinkers)
+                        if (member->IsAlive() && member->GetMaxPower(POWER_MANA))
+                            if (float const drink = RestState::DrinkPctPerSecOf(member); drink > 0.0f)
+                                restSec =
+                                    std::max(restSec, RestState::FightManaLine(member, trashSec, 0.0f) / drink);
+                }
+                lead.bossWalkSec = walkYd / speed;
+                lead.bossPullSec = lead.fightSecLeft + trashSec + restSec + lead.bossWalkSec;
             }
         }
 
@@ -2064,8 +2123,22 @@ namespace Leader::Dungeon
                     continue;
                 bool const harder = need.overload > mine.overload ||
                                     (need.overload == mine.overload && need.fightSec > mine.fightSec);
-                float const toHim =
+                // [lead421] the next boss: the route's estimate (bossPullSec); one after him: that, his fight and a
+                // stretch between bosses as this run measured them (their mean; none yet: the straight walk from him)
+                float toHim =
                     lead.fightSecLeft + tank->GetExactDist(later) / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                if (bossGuid == lead.nextBossGuid && lead.bossPullSec >= 0.0f)
+                    toHim = lead.bossPullSec;
+                else if (Creature* next = lead.nextBossGuid.IsEmpty() ? nullptr : map->GetCreature(lead.nextBossGuid);
+                         next && lead.bossPullSec >= 0.0f)
+                {
+                    auto const nextNeed = lead.bossNeeds.find(lead.nextBossGuid);
+                    float const stretch = lead.stretches ? lead.stretchSecSum / float(lead.stretches)
+                                                         : next->GetExactDist(later) /
+                                                               std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                    toHim = lead.bossPullSec +
+                            (nextNeed != lead.bossNeeds.end() ? nextNeed->second.fightSec : 0.0f) + stretch;
+                }
                 if (harder && toHim < rechargeSec)
                 {
                     why = Acore::StringFormat(
@@ -2292,6 +2365,10 @@ namespace Leader::Dungeon
         {
             lead.fightStartMs = 0;
             lead.threatLeadLogged = 0;
+            // [lead421] the walk to the next boss starts at the run's first tick and at each boss fight's end
+            if (lead.bossFightOn || (!lead.stretchFromMs && !lead.stretches))
+                lead.stretchFromMs = now ? now : 1;
+            lead.bossFightOn = false;
         }
         else
         {
