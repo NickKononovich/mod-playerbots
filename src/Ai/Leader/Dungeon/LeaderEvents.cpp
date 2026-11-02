@@ -3058,10 +3058,19 @@ namespace Leader::Dungeon
                     constexpr float HEADROOM_GCD_SEC = 1.5f;
                     float const fightSec =
                         lead.fightStartMs ? std::max(getMSTimeDiff(lead.fightStartMs, now) / 1000.0f, 1.0f) : 1.0f;
+                    // [lead229] b187 rfc-h 5D: the unholy DK took 12 of the 18 mobs off the bear, most 12-29 yd from
+                    // it (a mob the bear had touched once, Icy Touch / Death Coil from range): on a mob it had not
+                    // hit yet its rate there was 0, so its first cast's threat was never counted. The rate is its
+                    // own threat per fight second on the fight mob it has the most on (its single-target rate)
+                    float myMost = 0.0f;
+                    for (ObjectGuid const& other : killOrder)
+                        if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
+                            myMost = std::max(myMost, fought->GetThreatMgr().GetThreat(bot));
                     auto const headroomOn = [&](Unit* mob)
                     {
                         float const mine = mob->GetThreatMgr().GetThreat(bot);
-                        return mine + mine / fightSec * HEADROOM_GCD_SEC < mob->GetThreatMgr().GetThreat(tank);
+                        return mine + std::max(mine, myMost) / fightSec * HEADROOM_GCD_SEC <
+                               mob->GetThreatMgr().GetThreat(tank);
                     };
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
