@@ -619,6 +619,25 @@ namespace
     // burn too: the leader burns them when they pay (the fight outlasts the effect, back before the next boss)
     bool IsBurnCooldown(std::string const& name) { return Leader::IsBurnCooldown(name); }
 
+    // [lead247] b191 rfc-h 5G: 16 losses off the blood DK, 32 of the 47 aggro-loss lines on the ret paladin (Divine
+    // Storm 22 % of its damage) and the arms warrior (Whirlwind 23 %, Sweeping Strikes 12 %), 27 of them while the
+    // leader's AoE rule was Forbidden: those actions are no Aoe action type, the rule never held them. A hostile
+    // spell that hits an area or chains (Divine Storm, Whirlwind, Cleave, Consecration) is area damage by its own
+    // spell data; the self buffs that splash every melee hit onto a second mob are named (no spell data says so)
+    bool HitsSeveral(SpellInfo const* info)
+    {
+        if (!info)
+            return false;
+        if (info->IsAffectingArea())
+            return true;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (info->Effects[i].IsEffect() && info->Effects[i].ChainTarget > 1)
+                return true;
+        return false;
+    }
+
+    bool IsSplashBuff(std::string const& name) { return name == "sweeping strikes" || name == "blade flurry"; }
+
     // [rot2] Where an area action lands and how far it reaches (the rules of ThreatMultiplier::AreaHolds).
     bool AreaFootprint(Player* bot, CastSpellAction* action, SpellInfo const* info, Unit* mainTarget, Position& center,
                        float& radius)
@@ -802,10 +821,16 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     Unit* target = action->GetTarget();
     uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
     SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    // [lead247] a splash buff is the area damage of the melee hits after it
+    if (IsSplashBuff(name) && (stale || stop || !LeaderCommand::AoeAllowed(bot, bot->GetPosition())))
+    {
+        Log(action, stop ? "the leader's Stop" : "the leader forbids AoE");
+        return 0.0f;
+    }
     if (IsFriendlySpell(bot, info, target))
         return 1.0f;
 
-    bool const aoe = action->getThreatType() == Action::ActionThreatType::Aoe;
+    bool const aoe = action->getThreatType() == Action::ActionThreatType::Aoe || HitsSeveral(info);
     bool const hostile = target && target != bot && bot->IsHostileTo(target);
     if (!aoe && !hostile)
         return 1.0f;
