@@ -1596,7 +1596,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     // duplicate check and the guards below see the floor the caller meant. Cheap: one compare within 5 yd.
     if (mapId == bot->GetMapId())
         SnapGridFallbackZ(bot, x, y, z, getName().c_str());
-    if (!dry && IsDuplicateMove(x, y, z))
+    if (!dry && (IsDuplicateMove(x, y, z) || IsDuplicateMove(origX, origY, origZ)))
     {
         return refuse("IsDuplicateMove (the same walk is on)");
     }
@@ -1810,6 +1810,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             delay = std::max(.0f, delay);
             delay = std::min((float)sPlayerbotAIConfig.MaxWaitForMove, delay);
             AI_VALUE(LastMovement&, "last movement").Set(mapId, x, y, z, bot->GetOrientation(), delay, priority);
+            AI_VALUE(LastMovement&, "last movement").lastMoveAsked = WorldPosition(mapId, origX, origY, origZ);
             return true;
         }
     }
@@ -1834,6 +1835,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             delay = std::max(.0f, delay);
             delay = std::min((float)sPlayerbotAIConfig.MaxWaitForMove, delay);
             AI_VALUE(LastMovement&, "last movement").Set(mapId, x, y, z, bot->GetOrientation(), delay, priority);
+            AI_VALUE(LastMovement&, "last movement").lastMoveAsked = WorldPosition(mapId, origX, origY, origZ);
             return true;
         }
     }
@@ -1867,6 +1869,10 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             delay = std::min((float)sPlayerbotAIConfig.MaxWaitForMove, delay);
             AI_VALUE(LastMovement&, "last movement")
                 .Set(mapId, x, y, modifiedZ, bot->GetOrientation(), delay, priority);
+            // [lead280] the duplicate check knows this walk by the end asked too: the floor search's z (modifiedZ) or
+            // a guard's moved end made every repeat of the leader's same spot a new walk, issued every tick (b193 /
+            // b195: 2400 s of combat-spot walks re-issued, the rotation and the Attack starved behind them)
+            AI_VALUE(LastMovement&, "last movement").lastMoveAsked = WorldPosition(mapId, origX, origY, origZ);
             return true;
         }
     }
@@ -2608,11 +2614,13 @@ bool MovementAction::IsDuplicateMove(float x, float y, float z)
     LastMovement& lastMove = *context->GetValue<LastMovement&>("last movement");
 
     // heuristic 5s
-    if (lastMove.msTime + sPlayerbotAIConfig.MaxWaitForMove < getMSTime() ||
-        lastMove.lastMoveShort.GetExactDist(x, y, z) > 0.01f)
+    if (lastMove.msTime + sPlayerbotAIConfig.MaxWaitForMove < getMSTime())
         return false;
+    if (lastMove.lastMoveShort.GetExactDist(x, y, z) <= 0.01f)
+        return true;
 
-    return true;
+    // [lead280] the same end as asked while that walk is still under way (a stopped walk is walked again)
+    return bot->isMoving() && lastMove.lastMoveAsked.GetExactDist(x, y, z) <= 0.01f;
 }
 
 bool MovementAction::IsWaitingForLastMove(MovementPriority priority)

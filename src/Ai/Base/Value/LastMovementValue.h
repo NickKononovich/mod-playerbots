@@ -37,6 +37,7 @@ public:
         lastFollow = other.lastFollow;
         lastAreaTrigger = other.lastAreaTrigger;
         lastMoveShort = other.lastMoveShort;
+        lastMoveAsked = other.lastMoveAsked;
         lastPath = other.lastPath;
         nextTeleport = other.nextTeleport;
         priority = other.priority;
@@ -63,6 +64,8 @@ public:
     float lastMoveToOri;
     float lastdelayTime;
     WorldPosition lastMoveShort;
+    // [lead280] the walk's end as its caller asked it, before a guard or the floor search moved it (lastMoveShort)
+    WorldPosition lastMoveAsked;
     uint32 msTime;
     MovementPriority priority;
     TravelPath lastPath;

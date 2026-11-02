@@ -21,6 +21,7 @@ LastMovement::LastMovement(LastMovement& other)
       lastMoveToOri(other.lastMoveToOri)
 {
     lastMoveShort = other.lastMoveShort;
+    lastMoveAsked = other.lastMoveAsked;
     nextTeleport = other.nextTeleport;
     lastPath = other.lastPath;
     priority = other.priority;
@@ -29,6 +30,7 @@ LastMovement::LastMovement(LastMovement& other)
 void LastMovement::clear()
 {
     lastMoveShort = WorldPosition();
+    lastMoveAsked = WorldPosition();
     lastPath.clear();
     lastMoveToMapId = 0;
     lastMoveToX = 0;
@@ -61,6 +63,7 @@ void LastMovement::Set(uint32 mapId, float x, float y, float z, float ori, float
     lastMoveToOri = ori;
     lastFollow = nullptr;
     lastMoveShort = WorldPosition(mapId, x, y, z, ori);
+    lastMoveAsked = lastMoveShort;
     msTime = getMSTime();
     lastdelayTime = delayTime;
     priority = pri;
@@ -69,6 +72,7 @@ void LastMovement::Set(uint32 mapId, float x, float y, float z, float ori, float
 void LastMovement::setShort(WorldPosition point)
 {
     lastMoveShort = point;
+    lastMoveAsked = point;
     lastFollow = nullptr;
 }
 
