@@ -610,34 +610,18 @@ private:
     std::string lastTrace;
 };
 
-// [b31_sd] Execute Bite on a target about to die, by its time to live (health / "estimated group dps") instead of
-// "below 25 % and below 20000 HP" with 1 point: that picked it 286 times against 67 for "ferocious bite time", 136
-// of them without the energy, and ate the points Rip needed on the level 51-70 bosses (FERAL_CAT_AUDIT.md 2.2.5).
+// [b31_sd] Execute Bite on a target about to die, by its time to live instead of "below 25 % and below 20000 HP" with
+// 1 point: that picked it 286 times against 67 for "ferocious bite time", 136 of them without the energy, and ate the
+// points Rip needed on the level 51-70 bosses (FERAL_CAT_AUDIT.md 2.2.5).
+// [rot71] the fixed 3 points / 5 s by health over the group's dps -> the fact test of the rogues' finisher (rot70): the
+// target dies before one more point could be spent (ExpectedLifetime < ComboFinishHorizon, the builder the cat uses
+// where it stands - Shred behind the target, else Mangle (cat) - and Ferocious Bite, costs from spell data), with the
+// Bite's own energy there (its spell cost) or Clearcasting
 class FerociousBiteExecuteTrigger : public Trigger
 {
 public:
-    static constexpr float EXECUTE_MAX_LIFETIME = 5.0f;
-    static constexpr uint8 EXECUTE_MIN_COMBO = 3;
-    static constexpr uint8 FEROCIOUS_BITE_ENERGY = 35;
-
     FerociousBiteExecuteTrigger(PlayerbotAI* botAI) : Trigger(botAI, "ferocious bite execute") {}
-    bool IsActive() override
-    {
-        Unit* target = AI_VALUE(Unit*, "current target");
-        if (!target || !target->IsAlive())
-            return false;
-
-        if (!botAI->HasSpell("ferocious bite"))
-            return false;
-
-        if (AI_VALUE2(uint8, "combo", "current target") < EXECUTE_MIN_COMBO)
-            return false;
-
-        if (AI_VALUE2(uint8, "energy", "self target") < FEROCIOUS_BITE_ENERGY && !botAI->HasAura("clearcasting", bot))
-            return false;
-
-        return target->GetHealth() / AI_VALUE(float, "estimated group dps") < EXECUTE_MAX_LIFETIME;
-    }
+    bool IsActive() override;
 };
 
 // [b31_sd] Roar / Rip desync (wowsims clipRoar, FERAL_CAT_AUDIT.md 2.2.2): with Rip up, Savage Roar ending no later

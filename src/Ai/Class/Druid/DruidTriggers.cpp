@@ -7,6 +7,7 @@
 #include "DruidTriggers.h"
 #include "DruidActions.h"
 #include "DruidCatActions.h"  // [rot64] CatIsBehind
+#include "EstimatedLifetimeValue.h"  // [rot71] ExpectedLifetime
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "InstanceScript.h"
@@ -611,4 +612,23 @@ bool CatFrontBuilderTrigger::IsActive()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
     return target && !CatIsBehind(bot, target) && ComboPointsNotFullTrigger::IsActive();
+}
+
+bool FerociousBiteExecuteTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || !botAI->HasSpell("ferocious bite"))
+        return false;
+    if (!AI_VALUE2(uint8, "combo", "current target"))
+        return false;
+    // [rot71] the Bite's own energy (spell data), or Clearcasting's free one
+    SpellInfo const* bite = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", "ferocious bite"));
+    if (!bite)
+        return false;
+    if (bot->GetPower(POWER_ENERGY) < int32(bite->CalcPowerCost(bot, bite->GetSchoolMask())) &&
+        !botAI->HasAura("clearcasting", bot))
+        return false;
+    float const horizon =
+        ComboFinishHorizon(botAI, bot, CatIsBehind(bot, target) ? "shred" : "mangle (cat)", "ferocious bite");
+    return horizon > 0.0f && ExpectedLifetime(botAI, target) < horizon;
 }
