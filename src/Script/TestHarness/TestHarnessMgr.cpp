@@ -31,6 +31,7 @@
 #include "LeaderRest.h"       // [lead107] the leader's rest / far wait
 #include "RouteHolds.h"       // [lead107] the leader's route holds after the rest
 #include "RouteReenter.h"     // [lead341] the leader's re-entries
+#include "RouteMeet.h"         // [lead345] the leader's walk to a member under attack
 #include "Log.h"
 #include "Map.h"
 #include "MobRoles.h"
