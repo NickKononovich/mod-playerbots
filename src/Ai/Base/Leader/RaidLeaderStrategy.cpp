@@ -17,6 +17,7 @@
 #include "Group.h"
 #include "LeaderOrders.h"     // [lead15] the leader's member events
 #include "MovementActions.h"  // [lead15]
+#include "ObjectAccessor.h"   // [lead401]
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
 #include "SpellInfo.h"  // [lead188] the dispel types
@@ -165,39 +166,19 @@ namespace
         return false;
     }
 
-    // [lead188] the dispel types (1 << DispelType) a spell removes (its SPELL_EFFECT_DISPEL effects)
-    uint32 DispelMask(uint32 spellId)
+    // [lead400] a member's own dispel (on itself or another member): the leader's Dispel decides who removes what
+    // (lead188's "a damage dealer waits while a healer removes the type" is that rule's healer-first pick now)
+    bool IsOwnDispel(Action* action, std::string const& name)
     {
-        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
-        uint32 mask = 0;
-        if (info)
-            for (SpellEffectInfo const& effect : info->GetEffects())
-                if (effect.Effect == SPELL_EFFECT_DISPEL && effect.MiscValue >= 0 && effect.MiscValue < 32)
-                    mask |= 1u << effect.MiscValue;
-        return mask;
-    }
-
-    // [lead188] b180: the elemental shaman cast Cure Toxins 8.7 times a minute on Bazzalan's poison on the tank with a
-    // holy paladin in the group. A dispel on another member is the healer's while a group healer here removes that
-    // type (its known dispel spells' effects): a damage dealer's own dispel on others waits
-    bool HealerDispels(Player* self, uint32 mask)
-    {
-        // Cleanse, Purify, Dispel Magic, Cure / Abolish Disease, Cleanse Spirit, Cure Toxins, Remove Curse,
-        // Cure / Abolish Poison: what a healer may carry (the types come from the spells' own effects)
-        static constexpr uint32 DISPELS[] = {4987, 1152, 527, 988, 528, 552, 51886, 526, 2782, 8946, 2893};
-        Group* group = self->GetGroup();
-        if (!group || !mask)
+        if (dynamic_cast<CastCureSpellAction*>(action) || dynamic_cast<CurePartyMemberAction*>(action))
+            return true;
+        if (name == "dispel magic on target")  // an enemy's buff: the rotation's
             return false;
-        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-        {
-            Player* healer = ref->GetSource();
-            if (!healer || healer == self || !healer->IsAlive() || healer->GetMap() != self->GetMap() ||
-                !PlayerbotAI::IsHeal(healer))
-                continue;
-            for (uint32 spell : DISPELS)
-                if (healer->HasSpell(spell) && (DispelMask(spell) & mask))
-                    return true;
-        }
+        static constexpr std::string_view dispels[] = {"abolish ", "cleanse", "cure", "purify ", "remove curse",
+                                                       "dispel magic"};
+        for (std::string_view dispel : dispels)
+            if (name.rfind(dispel, 0) == 0)
+                return true;
         return false;
     }
 
@@ -250,17 +231,38 @@ namespace
         return name == "intervene" || name == "intervene on attacked group member" || name == "vigilance";
     }
 
-    // [lead300] a battle resurrection is the leader's (no leader rule yet): off in a fight
+    // [lead300] a battle resurrection is the leader's: off in a fight
+    // [lead401] ... and every resurrection of another member, in and out of a fight: the leader's External names the
+    // caster and the dead member
     bool IsBattleRes(std::string const& name)
     {
         return name == "rebirth" || name == "bear battle res" || name == "raise ally";
     }
 
+    bool IsOwnResurrection(Action* action, std::string const& name)
+    {
+        return IsBattleRes(name) || dynamic_cast<ResurrectPartyMemberAction*>(action) != nullptr;
+    }
+
+    // [lead401] the member's External is a resurrection of a dead member (its walk there is the leader's)
+    bool ResurrectionExternal(Leader::MemberEvents const& events)
+    {
+        SpellInfo const* info = events.externalSpell ? sSpellMgr->GetSpellInfo(events.externalSpell) : nullptr;
+        Player* dead = info && !events.externalTarget.IsEmpty() ? ObjectAccessor::FindPlayer(events.externalTarget)
+                                                                 : nullptr;
+        return dead && !dead->IsAlive() &&
+               (info->HasEffect(SPELL_EFFECT_RESURRECT) || info->HasEffect(SPELL_EFFECT_RESURRECT_NEW) ||
+                info->HasAttribute(SPELL_ATTR2_ALLOW_DEAD_TARGET));
+    }
+
     // [lead300] consumables, pulls and raid marks are the leader's decisions
+    // [lead402] ... the mana / healing potion too (the leader's Consume by its estimate); [lead405] the Ritual of
+    // Souls (the leader's External in the buff pass)
     bool IsLeaderConsumable(std::string const& name)
     {
         return name == "use raid flask" || name == "use food buff" || name == "use pre pull potion" ||
-               name == "use soulwell" || name == "click soul portal";
+               name == "use soulwell" || name == "click soul portal" || name == "mana potion" ||
+               name == "healing potion" || name == "ritual of souls";
     }
 
     bool IsDungeonPull(std::string const& name)
@@ -328,7 +330,8 @@ namespace
                     return true;
             return false;
         };
-        if (in({"leader external", "leader threat", "leader cc"}))
+        if (in({"leader external", "leader threat", "leader cc", "leader dispel", "leader consume",
+                "leader use object"}))  // [lead400] [lead402] [lead405]
             return false;
         // [lead37] b86 rfc-h 20261031-155828 (478-546 s): the hunter's rebuff window never closed - its "ready reply"
         // (the window's end, ForceRebuffStrategy) was vetoed by the walk-only rule below while it had only a Follow,
@@ -338,7 +341,8 @@ namespace
         // [lead300] LEADER_OWNERSHIP_AUDIT.md: the domains the leader owns that the member still decided itself -
         // externals, battle resurrections, the soulstone on others, raid marks, consumables, pulls, the wipe call
         if (IsOwnExternal(name) || IsTankTool(name) || IsRaidMark(name) || IsLeaderConsumable(name) ||
-            IsDungeonPull(name) || IsPullStarter(name) || in({"wipe escape", "mount"}) || (combat && IsBattleRes(name)))
+            IsDungeonPull(name) || IsPullStarter(name) || in({"wipe escape", "mount"}) ||
+            IsOwnResurrection(action, name) || IsOwnDispel(action, name))  // [lead400] [lead401]
             return true;
         if (name == "innervate" && !gate)  // its own mana tool on itself stays (rot38)
             if (Unit* onWhom = action->GetTarget(); onWhom && onWhom != self)
@@ -398,7 +402,8 @@ namespace
                     return false;
                 if (events.loot && in({"move to loot", "loot", "open loot"}))
                     return false;
-                if (prepareCmd && in({"reach party member to resurrect"}))
+                // [lead401] ... and the walk of the leader's resurrection External
+                if ((prepareCmd || ResurrectionExternal(events)) && in({"reach party member to resurrect"}))
                     return false;
                 // [lead23] the rotation's reach toward the leader's Attack target (no leader spot holds it)
                 // [lead66] b111 rfc-h 132.6 s: Rtshaab's own "reach melee" walked it 35 yd to a Trogg (own_decision,
@@ -421,6 +426,10 @@ namespace
         if (dynamic_cast<CastHealingSpellAction*>(action) && Leader::LEADER_HEAL_AFTER_THREAT)
         {
             if (combat && PlayerbotAI::IsHeal(self) && events.attack != Leader::AttackEvent::Heal)
+                return true;
+            // [lead404] out of a fight the healer heals whom the leader's TopUp names ("leader heal target": the most
+            // hurt member, itself included, or the member the boss pull waits for): its own top-up pick is off
+            if (!combat && PlayerbotAI::IsHeal(self))
                 return true;
             if (!combat && !gate)
                 if (Unit* healed = action->GetTarget(); healed && healed->GetHealthPct() >= 100.0f)
@@ -446,20 +455,6 @@ namespace
             else if (Unit* healTarget = action->GetTarget(); healTarget && !OwnUnit(self, healTarget))
                 return true;
         }
-        // [lead188] a damage dealer's dispel on another member waits while a group healer removes that type
-        if (!PlayerbotAI::IsHeal(self) &&
-            (name.find("cure") != std::string::npos || name.find("cleanse") != std::string::npos ||
-             name.find("dispel") != std::string::npos || name.find("purify") != std::string::npos ||
-             name.find("abolish") != std::string::npos || name.find("remove curse") != std::string::npos))
-            if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(self))
-                if (auto* cast = dynamic_cast<CastSpellAction*>(action))
-                    if (Unit* dispelled = gate ? nullptr : action->GetTarget(); dispelled && dispelled != self)
-                    {
-                        uint32 const spell =
-                            selfAI->GetAiObjectContext()->GetValue<uint32>("spell id", cast->getSpell())->Get();
-                        if (HealerDispels(self, DispelMask(spell)))
-                            return true;
-                    }
         // [lead36] ... and the mage handed out food in the fight
         if (combat && in({"give food", "give water"}))
             return true;
@@ -584,7 +579,8 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
     if (!Leader::ExecutorMember(bot))
         return;
     std::string const& name = action->getName();
-    if (name == "leader move order" || name == "leader attack order")
+    if (name == "leader move order" || name == "leader attack order" || name == "leader dispel" ||
+        name == "leader consume" || name == "leader use object")  // [lead400] [lead402] [lead405]
         return;
     Leader::MemberEvents events;
     Leader::Events::Get(bot->GetGUID(), events);
@@ -623,7 +619,7 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
     {
         // the rotation's own range on the commanded target is its "how"
         bool const rotationRange = combat && fights && in({"reach melee", "reach spell", "set behind"});
-        bool const resurrect = prepare && in({"reach party member to resurrect"});
+        bool const resurrect = (prepare || ResurrectionExternal(events)) && in({"reach party member to resurrect"});
         bool const plannedCc = !events.cc.IsEmpty() && in({"pre pull cc"});
         bool const looting = events.loot && in({"move to loot", "loot", "open loot"});
         if (!rotationRange && !resurrect && !plannedCc && !looting && !in({"stand up"}))
@@ -715,8 +711,12 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
     if (Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot))
     {
         std::string const& name = action->getName();
-        if (IsOwnExternal(name) || IsLeaderConsumable(name) || (bot->IsInCombat() && IsBattleRes(name)))
+        // [lead400] [lead401] its resurrections and its dispels on another member are the leader's too
+        if (IsOwnExternal(name) || IsLeaderConsumable(name) || IsOwnResurrection(action, name))
             return 0.0f;
+        if (IsOwnDispel(action, name))
+            if (Unit* dispelled = action->GetTarget(); dispelled && dispelled != bot)
+                return 0.0f;
         if (!bot->IsInCombat() && !botAI->forceRebuff.IsPending() && dynamic_cast<CastBuffSpellAction*>(action))
             if (Unit* buffTarget = action->GetTarget(); buffTarget && !OwnUnit(bot, buffTarget))
                 return 0.0f;
