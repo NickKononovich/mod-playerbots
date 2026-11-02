@@ -25,6 +25,8 @@
 #include "RaidLeaderState.h"
 #include "ReadyCheckAction.h"
 #include "SelfBotControl.h"
+#include "SpellInfo.h"  // [lead396]
+#include "SpellMgr.h"   // [lead396]
 #include "Timer.h"
 
 #include <algorithm>
@@ -968,12 +970,22 @@ bool LeaderHealTargetAction::Execute(Event /*event*/)
     for (char const* heal : {"rejuvenation", "nourish", "healing touch", "regrowth", "renew", "heal", "lesser heal",
                              "greater heal", "flash heal", "healing wave", "lesser healing wave", "holy light",
                              "flash of light"})
+    {
+        // [lead396] b201 rfc-h 5A 1226-1246 s: the pull waited 20 s on "Rtdruaa buffing" - the resto druid's TopUp on
+        // itself (83 %) recast Rejuvenation each global cooldown over its own running Rejuvenation, and its rebuff
+        // window closes only on a tick off the cooldown. A heal over time this healer has running on the member is
+        // healing already: the next heal of the list
+        uint32 const healId = AI_VALUE2(uint32, "spell id", heal);
+        if (SpellInfo const* info = healId ? sSpellMgr->GetSpellInfo(healId) : nullptr;
+            info && info->HasAura(SPELL_AURA_PERIODIC_HEAL) && target->HasAura(healId, bot->GetGUID()))
+            continue;
         if (botAI->CanCastSpell(heal, target) && botAI->CastSpell(heal, target))
         {
             Leader::Events::Ack(bot->GetGUID(), events.seq, "heal", std::string("tops up ") + target->GetName() +
                                                                         " with " + heal);
             return true;
         }
+    }
     return false;
 }
 
