@@ -297,9 +297,14 @@ namespace Leader::Fight
         {
             if (!mob->IsInWorld() || !mob->IsAlive() || mob->IsInCombat())
                 return false;
-            // [lead24] the mob being pulled now and its pack: no reason to keep away from them
-            if (g_leaderExempt && std::find(g_leaderExempt->begin(), g_leaderExempt->end(), mob->GetGUID()) !=
-                                      g_leaderExempt->end())
+            // [lead24] the mob being pulled now and its pack: no reason to keep away from them - for the tank, who
+            // pulls them. [lead500] b210 rfc-h: 22 of the 87 aggro losses were "the tank never had it" (b209: 8), the
+            // victim at 0 threat, most of them melee (5D DK 7, 5H cat 5): 5D 187.8 s the DK got "combat spot: behind
+            // the target" on the Ragefire Shaman the bear had just charged and woke the pack's Trogg on its walk;
+            // 5H 635.8 s the cat got Attack on a pulled-back Cultist still at its pack and woke two Enforcers. A pull's
+            // mob out of combat is an idle mob for every other member (the tank has not got it yet)
+            if (g_leaderExempt && PlayerbotAI::IsTank(bot) &&
+                std::find(g_leaderExempt->begin(), g_leaderExempt->end(), mob->GetGUID()) != g_leaderExempt->end())
                 return false;
             if (IdleMobReachesSpot(bot, mob, spot))
                 return true;
@@ -333,7 +338,6 @@ namespace Leader::Fight
     {
         if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle || !target)
             return nullptr;
-        bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
         // the one the target fights (the tank): it stands where it is, in the fight, without waking the mob
         Unit* const holder = target->GetVictim();
         bool const held = holder && holder != bot && holder->IsAlive() && holder->IsInCombat();
@@ -341,18 +345,15 @@ namespace Leader::Fight
         {
             if (!IdleMobCovers(bot, mob, spot))
                 continue;
-            // the fight already stands in this mob's modelled reach without waking it: the target's victim where it
-            // stands, and for a melee spot the target (the victim's melee place). A spot no nearer the mob than the
-            // nearer of them is no deeper into its reach than the fight itself. A place out of the modelled reach
-            // proves nothing (its sight / height facts differ from the spot's): not counted
+            // the fight already stands in this mob's modelled reach without waking it: the target's victim (a player)
+            // where it stands. A spot no nearer the mob than it is no deeper into its reach than the fight itself. A
+            // place out of the modelled reach proves nothing (its sight / height facts differ from the spot's): not
+            // counted. [lead500] the target itself is no such proof: a mob standing beside its idle pack mates wakes
+            // none of them (b210 5D 187.8 s: the spot behind the charged Shaman, no nearer the Trogg than the Shaman,
+            // was the DK's walk into that Trogg while the bear was still on its way)
             float fightGap = -1.0f;
             if (held && IdleMobCovers(bot, mob, holder->GetPosition()))
                 fightGap = mob->GetExactDist2d(holder);
-            if (melee && IdleMobCovers(bot, mob, target->GetPosition()))
-            {
-                float const targetGap = mob->GetExactDist2d(target);
-                fightGap = fightGap < 0.0f ? targetGap : std::min(fightGap, targetGap);
-            }
             if (fightGap < 0.0f || mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) < fightGap)
                 return mob;
         }

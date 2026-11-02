@@ -186,7 +186,7 @@ namespace Leader::Fight
     // fought it there without waking it. [lead492] ranged too: "ring: an idle mob's aggro reach" x64-112 on
     // Bazzalan, Taragaman, Oggleflint, Searing Blade Warlocks. For a fight spot on `target`: the unpulled mob whose
     // reach covers the spot AND to which the spot lies nearer than the fight already stands in its reach (the
-    // target's victim where it stands; a melee spot: the target too); nullptr: none
+    // target's victim where it stands; [lead500] not the target: a mob beside its idle pack wakes none); nullptr: none
     Creature* LeaderFightAggroAt(Player* bot, Position const& spot, Unit* target);
 
     // the walk to the spot passes no unpulled mob's reach (and there is a walk)
