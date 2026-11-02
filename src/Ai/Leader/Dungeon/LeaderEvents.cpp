@@ -1356,7 +1356,7 @@ namespace Leader::Dungeon
                         Creature* const creature = mob->ToCreature();
                         bool const summon = mob->IsSummon() || !mob->GetOwnerGUID().IsEmpty();
                         uint32 const unitClass = creature ? creature->GetCreatureTemplate()->unit_class : 0;
-                        bool const caster = unitClass == UNIT_CLASS_MAGE || unitClass == UNIT_CLASS_PALADIN;
+                        bool const caster = unitClass == CLASS_MAGE || unitClass == CLASS_PALADIN;
                         Leader::RouteResult const walk = Leader::Route(tank, victim->GetPosition());
                         bool const tankReaches = walk.found && walk.complete;
                         char const* why = "out-threatened the tank on its own target";
