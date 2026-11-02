@@ -4349,11 +4349,67 @@ namespace Leader::Dungeon
                                                             member);
                         bot)
                         tell(bot, spell, member, "a member is attacked and low");
-            if (healer && healerMana < LEADER_SAVE_MANA_PCT)
+            // [lead416] b201 rfc-h 5C / 5B: the balance druid and the elemental shaman ran to 0-5 % mana in boss
+            // fights and got no Innervate (told only for a healer under LEADER_SAVE_MANA_PCT). Innervate goes to the
+            // mana user whose need for the fight's seconds left (FightManaLine, its measured rate) exceeds its mana,
+            // the one it gives the most fight seconds: the mana it returns (225 % of the druid's base mana,
+            // spell_dru_innervate; at most its shortfall and the room in its pool) over that member's spend rate; held
+            // by the cooldown verdict (3 min) like the battle resurrection
+            bool innervated = false;
+            if (auto const [druid, innervate] = withSpell({SPELL_INNERVATE}, nullptr); druid)
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(innervate); info && lead.fightSecLeft > 0.0f)
+                {
+                    float const gainMana = CalculatePct(float(druid->GetCreatePowers(POWER_MANA)),
+                                                        float(info->Effects[EFFECT_0].CalcValue(druid)));
+                    Player* best = nullptr;
+                    float bestSec = 0.0f;
+                    std::string bestWhy;
+                    for (Player* member : everyone)
+                    {
+                        float const maxMana = float(member->GetMaxPower(POWER_MANA));
+                        if (!member->IsAlive() || member->getPowerType() != POWER_MANA || maxMana <= 0.0f ||
+                            member->HasAura(SPELL_INNERVATE))
+                            continue;
+                        float const pct = member->GetPowerPct(POWER_MANA);
+                        float const need = RestState::FightManaLine(member, lead.fightSecLeft, 0.0f, nullptr,
+                                                                    fightBoss != nullptr);
+                        float const ratePct = need / lead.fightSecLeft;  // % of its pool per fight second
+                        if (need <= pct || ratePct <= 0.0f)
+                            continue;
+                        float const durationSec = std::max(info->GetDuration(), 0) / 1000.0f;
+                        float const covered = std::min({gainMana / maxMana * 100.0f, need - pct,
+                                                        100.0f - pct + ratePct * durationSec});
+                        float const gainedSec = covered / ratePct;
+                        if (gainedSec > bestSec)
+                        {
+                            bestSec = gainedSec;
+                            best = member;
+                            bestWhy = Acore::StringFormat(
+                                "{} needs {:.0f} % for the fight's {:.0f} s left, has {:.0f} %: Innervate gives it "
+                                "{:.0f} s of the fight",
+                                member->GetName(), need, lead.fightSecLeft, pct, gainedSec);
+                        }
+                    }
+                    if (best)
+                    {
+                        std::string verdictWhy;
+                        bool const allowed = cooldownVerdict(
+                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f, verdictWhy);
+                        std::string const note = bestWhy + "; " + verdictWhy;
+                        if (note != lead.innervateLogged)
+                        {
+                            lead.innervateLogged = note;
+                            Decisions().Write(run, "leader", "innervate", best->GetGUID(), best->GetName(), allowed,
+                                              JsonObject().Str("caster", druid->GetName()).Bool("allowed", allowed)
+                                                  .Str("why", note));
+                        }
+                        if (allowed)
+                            innervated = tell(druid, innervate, best, bestWhy.c_str());
+                    }
+                }
+            if (healer && healerMana < LEADER_SAVE_MANA_PCT && !innervated)
             {
-                if (auto const [bot, spell] = withSpell({SPELL_INNERVATE}, nullptr); bot)
-                    tell(bot, spell, healer, "the healer is out of mana");
-                else if (auto const [priest, hymn] = withSpell({SPELL_HYMN_OF_HOPE}, nullptr); priest)
+                if (auto const [priest, hymn] = withSpell({SPELL_HYMN_OF_HOPE}, nullptr); priest)
                     tell(priest, hymn, nullptr, "the healer is out of mana");
                 else if (auto const [shaman, tide] = withSpell({SPELL_MANA_TIDE_TOTEM}, nullptr); shaman)
                     tell(shaman, tide, nullptr, "the healer is out of mana");  // [lead300]
