@@ -3247,22 +3247,49 @@ namespace Leader::Dungeon
                         if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
                             if (auto const& seen = seenOn(fought, bot); seen.threat > 0.0f)
                                 freshRate = std::max(freshRate, seen.threat / ThreatSeenSec(seen));
+                    // [lead246] b191 rfc-h: the warrior tanks' threat rate 0-2 s into a pull was 740 / 987 per s
+                    // against 1691 / 1652 at 2-5 s (rage), so the tank's next GCD read from its first hit stopped
+                    // the damage dealers early (5B 129, 5F 118 stops, 31-38 of 46 per member in the first 2 s). Both
+                    // sides read a rate measured over less than a GCD the same way: at least the run's opening rate
+                    float tankOpen = 0.0f;
+                    if (auto const measured = lead.openTps.find(tank->GetGUID());
+                        measured != lead.openTps.end() && measured->second.second)
+                        tankOpen = measured->second.first / float(measured->second.second);
+                    auto const rateOf = [](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
+                    {
+                        float const onMob = seen.threat > 0.0f ? seen.threat / ThreatSeenSec(seen) : 0.0f;
+                        bool const measuredHere =
+                            seen.threat > 0.0f &&
+                            getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
+                        return measuredHere ? onMob : std::max(onMob, opening);
+                    };
+                    struct Projection
+                    {
+                        float mine = 0.0f;
+                        float mineNext = 0.0f;
+                        float tank = 0.0f;
+                        float tankNext = 0.0f;
+                        float share = 1.0f;
+                    };
+                    auto const project = [&](Unit* mob)
+                    {
+                        Projection p;
+                        auto const& mine = seenOn(mob, bot);
+                        p.mine = mine.threat;
+                        p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                        auto const& held = seenOn(mob, tank);
+                        p.tank = held.threat;
+                        p.tankNext =
+                            held.threat > 0.0f ? held.threat + rateOf(held, tankOpen) * HEADROOM_GCD_SEC : 0.0f;
+                        p.share = mob->GetVictim() != tank       ? 1.0f
+                                  : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
+                                                                 : THREAT_OVERTAKE_RANGED;
+                        return p;
+                    };
                     auto const headroomOn = [&](Unit* mob)
                     {
-                        auto const& mine = seenOn(mob, bot);
-                        float const onMob = mine.threat > 0.0f ? mine.threat / ThreatSeenSec(mine) : 0.0f;
-                        bool const measuredHere =
-                            mine.threat > 0.0f &&
-                            getMSTimeDiff(mine.firstMs, mine.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
-                        float const rate = measuredHere ? onMob : std::max(onMob, freshRate);
-                        auto const& held = seenOn(mob, tank);
-                        float const tankNext = held.threat > 0.0f
-                                                   ? held.threat + held.threat / ThreatSeenSec(held) * HEADROOM_GCD_SEC
-                                                   : 0.0f;
-                        float const share = mob->GetVictim() != tank       ? 1.0f
-                                            : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
-                                                                           : THREAT_OVERTAKE_RANGED;
-                        return mine.threat + rate * HEADROOM_GCD_SEC < share * tankNext;
+                        Projection const p = project(mob);
+                        return p.mineNext < p.share * p.tankNext;
                     };
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
@@ -3357,6 +3384,18 @@ namespace Leader::Dungeon
                                 break;
                             }
                     lead.noHeadroom[guid] = !mine;  // no mob with headroom: it waits (Intensity Stop below)
+                    if (!mine)                      // [lead246] the projection on its Attack target, for the Stop's log
+                    {
+                        Projection const p = project(attackOn);
+                        lead.stopProjection[guid] = JsonObject()
+                                                        .Str("mob", attackOn->GetName())
+                                                        .Real("mine", p.mine)
+                                                        .Real("mineNext", p.mineNext)
+                                                        .Real("tank", p.tank)
+                                                        .Real("tankNext", p.tankNext)
+                                                        .Real("share", p.share)
+                                                        .Build();
+                    }
                     bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
                                                                    attackOn->GetGUID(), killOrder);
                     bool const aoeChanged = Leader::Events::SetAoe(guid, memberAoe, attackOn->GetPosition(),
@@ -3513,12 +3552,16 @@ namespace Leader::Dungeon
                         guid, mine, mine == Leader::Intensity::Burn ? burnAllowed : std::vector<std::string>()) &&
                     mine != Leader::Intensity::Normal)
                     logEvent(bot, "Intensity",
-                             JsonObject().Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
+                             JsonObject()
+                                 .Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
                                  .Str("why", victim       ? "aggro loss: the tank takes the mob back"
                                              : overThreat ? std::string("threat: no mob with headroom")
                                              : intensity == Leader::Intensity::Burn
                                                  ? std::string("a dungeon boss")
-                                                 : "trash: the boss fits without them, or they are back for him"));
+                                                 : "trash: the boss fits without them, or they are back for him")
+                                 .Raw("threat", overThreat && lead.stopProjection.count(guid)
+                                                    ? lead.stopProjection[guid]
+                                                    : std::string("null")));  // [lead246]
                 if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())

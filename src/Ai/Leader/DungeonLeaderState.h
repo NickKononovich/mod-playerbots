@@ -323,6 +323,7 @@ namespace Leader
             float threat = 0.0f;
         };
         std::map<ObjectGuid, std::map<ObjectGuid, ThreatSeen>> threatSeen;  // [lead243] fight mob -> who -> seen
+        std::map<ObjectGuid, std::string> stopProjection;        // [lead246] the headroom projection a Stop was read on
         std::map<ObjectGuid, std::pair<float, uint32>> openTps;  // [lead243] its threat / s on each mob it hit: sum, n
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
