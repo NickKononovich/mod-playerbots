@@ -4188,14 +4188,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // 2600 pulls of 3+ kills): the AoE spells' damage per second per mob alive (alive: (kills + 1) / 2) is 4-14 % of
     // the group's damage per second on heroic, median 8.4 % (strat-h 4.2, scholo-h 4.3, mgt-h 4.9, dme-h 8.1, sv-h
     // 8.6, sm-h 8.9, mara-h 10.7, brd-h 14.3), with a tank with AoE threat and 1-3 AoE damage dealers;
-    // WEAK_PACK_AOE_TARGET_SHARE is that median for the usual comp (an AoE tank and two AoE dealers), scaled by how
-    // many the group has here.
-    constexpr float WEAK_PACK_AOE_TARGET_SHARE = 0.08f;
-    constexpr uint32 WEAK_PACK_AOE_MAX_TARGETS = 10;    // a melee stack the AoE covers at once (the rest waits its turn)
-    constexpr float WEAK_PACK_ALIVE_SHARE = 0.75f;      // AoE kills the stack together: most of it lives most of it
-    constexpr float WEAK_PACK_TTK_SEC = 12.0f;          // "dies in 10-15 s to AoE" (user)
-    constexpr uint32 WEAK_PACK_MIN_MOBS = 3;            // fewer is no AoE pack (the normal gates take it)
-    constexpr float WEAK_PACK_MAX_RANGED_SHARE = 0.25f; // casters / shooters stand apart: no stack for the AoE
+    // [lead261] The group's AoE on each stacked mob is its members' area spells from their spell data
+    // (MemberAreaDps, with the spells' own target caps), and the stack's fight is played out kill by kill
+    // (EstimatePack): the focus target takes the group's damage and the AoE, the other stacked mobs the AoE, the
+    // mobs that keep their range none of it. That replaces the 8 % share of the group's dps, the 10-target cap, the
+    // 0.75 alive share, the 3-mob minimum and the 25 % ranged share; the 12 s kill time ("dies in 10-15 s to AoE")
+    // is now "AoE kills the stack faster than one by one".
 
     // CAREFUL_SWARM_CAP_WEIGHT (wave 21, *.bak_w21idle): a non-elite mob with less than CAREFUL_SWARM_HEALTH_SHARE of
     // the tank's health counts this much of a mob against the pull's size cap. The encounter gates of weak adds (the
@@ -4258,6 +4256,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // [lead209] the measured ratio of a mob entry measured on its own in this dungeon (else landedScale)
         std::unordered_map<uint32, LandedScale> const* landedByEntry = nullptr;
         float aoeTargetDps = 0.0f;  // [b44_packs] the group's AoE damage per second on each stacked mob (0: none)
+        uint32 aoeMaxTargets = 0;   // [lead261] the fewest mobs one of the group's area spells hits (0: all)
         bool withBoss = false;      // [lead201] a boss's own health and damage are in the estimate (the boss judge)
         float healHps = 0.0f;       // [lead259] the healers' best rate together (GroupSupport::healHps)
         float healGapSec = 0.0f;    // [lead259] the time between two heals landing (GroupSupport::healGapSec)
@@ -4314,6 +4313,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float summonHealthSum = 0.0f;  // [b36_scholo] the summons' shares of an average mob (ScriptedHelp)
         float summonDamageSum = 0.0f;
         std::vector<bool> quick;  // [b36_scholo] a weak summon: lives its own kill time only
+        std::vector<bool> apart;  // [lead261] the life keeps its range: out of the stack's AoE
         for (Unit* mob : pack)
         {
             estimate.danger += MobDanger(mob, tank);
@@ -4359,6 +4359,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             lives.emplace_back(landed, health);
             spells.push_back(spell);
             quick.push_back(false);
+            Creature* keeps = mob->ToCreature();
+            apart.push_back(keeps && KeepsRange(keeps));
         }
 
         // What the pack summons while it fights, each read as an average mob of the pack, [b36_scholo] scaled by the
@@ -4382,6 +4384,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 lives.emplace_back(landed, health);
                 spells.push_back(spell);
                 quick.push_back(diesAsItComes);
+                apart.push_back(false);
                 estimate.landedDps += landed;
                 landedSpell += spell;
                 totalHealth += health;
@@ -4422,28 +4425,77 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 std::clamp(1.0f - estimate.landedDps * std::max(mode.healGapSec, GCD_SEC) / tankHealth, 0.0f, 1.0f);
         }
 
-        // [b44_packs] The same pack under the group's AoE: the group's damage on its first target plus the AoE on the
-        // other stacked mobs (the melee ones; casters keep their range out of it), at most WEAK_PACK_AOE_MAX_TARGETS
-        // at once; the whole pack lands its melee and spells for WEAK_PACK_ALIVE_SHARE of that time.
+        // [b44_packs] The same pack under the group's AoE, [lead261] played out kill by kill: the focus target (the
+        // first one alive) takes the group's damage plus the AoE, every other stacked mob (up to the area spells'
+        // target cap) the AoE; a mob that keeps its range takes none until it is the focus. Each mob lands its rate
+        // until it dies.
         if (groupDps > 0.0f && mode.aoeTargetDps > 0.0f && !estimate.boss && tank->GetMaxHealth() &&
             totalHealth > 0.0f)
         {
-            uint32 const stacked = estimate.mobs - std::min(estimate.mobs, estimate.rangedMobs);
-            float const hit = float(std::min(stacked, WEAK_PACK_AOE_MAX_TARGETS));
-            float const killDps = groupDps + mode.aoeTargetDps * std::max(hit - 1.0f, 0.0f);
+            std::vector<float> left;
+            for (auto const& life : lives)
+                left.push_back(life.second);
+            std::vector<float> died(lives.size(), 0.0f);
+            std::vector<bool> alive(lives.size(), true);
+            float now = 0.0f;
+            for (size_t kill = 0; kill < lives.size(); ++kill)
+            {
+                std::vector<float> rate(lives.size(), 0.0f);
+                size_t focus = lives.size();
+                uint32 hit = 0;
+                for (size_t i = 0; i < lives.size(); ++i)
+                {
+                    if (!alive[i])
+                        continue;
+                    if (focus == lives.size())
+                    {
+                        focus = i;
+                        rate[i] += groupDps;
+                    }
+                    if (!apart[i] && (!mode.aoeMaxTargets || hit < mode.aoeMaxTargets))
+                    {
+                        rate[i] += mode.aoeTargetDps;
+                        ++hit;
+                    }
+                }
+                float step = -1.0f;
+                for (size_t i = 0; i < lives.size(); ++i)
+                    if (alive[i] && rate[i] > 0.0f && (step < 0.0f || left[i] / rate[i] < step))
+                        step = left[i] / rate[i];
+                if (step < 0.0f)
+                    break;
+                now += step;
+                for (size_t i = 0; i < lives.size(); ++i)
+                {
+                    if (!alive[i])
+                        continue;
+                    left[i] -= rate[i] * step;
+                    if (left[i] <= rate[i] * step * 1e-4f)
+                    {
+                        alive[i] = false;
+                        died[i] = now;
+                    }
+                }
+            }
+
             float const tankHealth = PlanTankHealth(tank);
-            estimate.aoeSec = totalHealth / killDps;
+            estimate.aoeSec = now;
             if (tankHealth > 0.0f)
             {
-                estimate.aoeCost = estimate.landedDps * estimate.aoeSec * WEAK_PACK_ALIVE_SHARE / tankHealth;
-                estimate.aoeSpellCost = landedSpell * estimate.aoeSec * WEAK_PACK_ALIVE_SHARE / tankHealth;
-                // [lead259] the stack lands its whole rate for its alive share of the kill time
+                float damage = 0.0f;
+                float spellDamage = 0.0f;
+                std::vector<std::pair<float, float>> profile;
+                for (size_t i = 0; i < lives.size(); ++i)
+                {
+                    damage += lives[i].first * died[i];
+                    spellDamage += spells[i] * died[i];
+                    profile.emplace_back(lives[i].first, died[i]);
+                }
+                estimate.aoeCost = damage / tankHealth;
+                estimate.aoeSpellCost = spellDamage / tankHealth;
                 float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.aoeSec;
-                estimate.aoeDrop = std::min(DropOver({{estimate.landedDps, estimate.aoeSec * WEAK_PACK_ALIVE_SHARE}},
-                                                     mode.healHps, gapSec) /
-                                                tankHealth,
-                                            estimate.aoeCost) *
-                                   mode.dropScale;
+                estimate.aoeDrop =
+                    std::min(DropOver(profile, mode.healHps, gapSec) / tankHealth, estimate.aoeCost) * mode.dropScale;
             }
         }
 
@@ -7474,6 +7526,94 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                                      421,   8190,  1535,  16914, 62078, 48045, 15237, 51723, 13877,
                                      1680,  845,   46924, 26573, 53385, 43265, 48721, 49184});
     }
+
+    // [lead261] What a member's area spells deal to each mob of a stack per second, from its spell data: the best of
+    // its known area spells (school damage and periodic area damage with its spell power, weapon damage from its own
+    // weapon), each at the fastest the spell lets it come again (cast or channel, global cooldown, cooldown, a ground
+    // effect's duration), with the spell's own target cap (0: every mob in it). Cached per member while its spells and
+    // spell power stay the same (a lookup, no clock).
+    struct AreaDps
+    {
+        float perTarget = 0.0f;
+        uint32 maxTargets = 0;
+        std::string spell;
+    };
+
+    AreaDps MemberAreaDps(Player* member, Unit* victim)
+    {
+        struct Cached
+        {
+            size_t spells = 0;
+            int32 power = -1;
+            AreaDps dps;
+        };
+        thread_local std::unordered_map<uint64, Cached> cache;
+        Cached& cached = cache[member->GetGUID().GetRawValue()];
+        int32 const power = member->SpellBaseDamageBonusDone(SPELL_SCHOOL_MASK_ALL);
+        if (cached.spells == member->GetSpellMap().size() && cached.power == power)
+            return cached.dps;
+
+        AreaDps best;
+        float const weapon =
+            (member->GetFloatValue(UNIT_FIELD_MINDAMAGE) + member->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
+        for (auto const& [spellId, known] : member->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive() || !info->IsAffectingArea())
+                continue;
+
+            float damage = 0.0f;
+            float groundMs = 0.0f;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                bool const area = effect.IsTargetingArea() || effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA;
+                if (!area)
+                    continue;
+                int32 const base = std::max(effect.CalcValue(member), 0);
+                switch (effect.Effect)
+                {
+                    case SPELL_EFFECT_SCHOOL_DAMAGE:
+                        damage += float(member->SpellDamageBonusDone(victim, info, uint32(base), SPELL_DIRECT_DAMAGE,
+                                                                     effect.EffectIndex));
+                        break;
+                    case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                        damage += weapon * float(base) / 100.0f;
+                        break;
+                    case SPELL_EFFECT_WEAPON_DAMAGE:
+                    case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                    case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                        damage += weapon + float(base);
+                        break;
+                    case SPELL_EFFECT_PERSISTENT_AREA_AURA:
+                    case SPELL_EFFECT_APPLY_AURA:
+                        if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
+                        {
+                            groundMs = float(std::max(info->GetMaxDuration(), 0));
+                            damage += groundMs / float(effect.Amplitude) *
+                                      float(member->SpellDamageBonusDone(victim, info, uint32(base), DOT,
+                                                                         effect.EffectIndex));
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if (damage <= 0.0f)
+                continue;
+
+            float const castMs =
+                info->IsChanneled() ? float(std::max(info->GetDuration(), 0)) : float(info->CalcCastTime(member));
+            float const everyMs = std::max({castMs, float(info->StartRecoveryTime), float(info->RecoveryTime),
+                                            float(info->CategoryRecoveryTime), groundMs, 1.0f});
+            float const perTarget = damage * float(IN_MILLISECONDS) / everyMs;
+            if (perTarget > best.perTarget)
+                best = {perTarget, info->MaxAffectedTargets, info->SpellName[0] ? info->SpellName[0] : "?"};
+        }
+        cached = {member->GetSpellMap().size(), power, best};
+        return best;
+    }
 }
 
 namespace AoePull
@@ -8494,8 +8634,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
     estimateMode.landedScale = landedRatios.trash;
     estimateMode.landedByEntry = &landedRatios.byEntry;
-    // [b44_packs] the group's AoE on a stack (WEAK_PACK_AOE_TARGET_SHARE): a tank with AoE threat and at least one
-    // AoE damage dealer here, else no AoE estimate at all
+    // [b44_packs] the group's AoE on a stack: a tank with AoE threat holds it, [lead261] and every member's area
+    // spells (MemberAreaDps, the tank's own too; healers heal) hit each stacked mob
     uint32 weakAoeDealers = 0;
     bool const weakAoeTank = HasAoeThreat(bot);
     if (Group* group = bot->GetGroup(); group && weakAoeTank)
@@ -8503,14 +8643,17 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
-            if (member && member != bot && IsPresent(bot, member) && !PlayerbotAI::IsTank(member) &&
-                !PlayerbotAI::IsHeal(member) && HasAoeDamage(member))
-                ++weakAoeDealers;
+            if (!member || (member != bot && !IsPresent(bot, member)) || PlayerbotAI::IsHeal(member))
+                continue;
+            AreaDps const area = MemberAreaDps(member, bot);
+            if (area.perTarget <= 0.0f)
+                continue;
+            ++weakAoeDealers;
+            estimateMode.aoeTargetDps += area.perTarget;
+            if (area.maxTargets && (!estimateMode.aoeMaxTargets || area.maxTargets < estimateMode.aoeMaxTargets))
+                estimateMode.aoeMaxTargets = area.maxTargets;
         }
     }
-    if (weakAoeTank && weakAoeDealers)
-        estimateMode.aoeTargetDps =
-            groupDps * WEAK_PACK_AOE_TARGET_SHARE * float(std::min<uint32>(weakAoeDealers + 1, 4)) / 3.0f;
     std::vector<Unit*> pack;
     PackEstimate chosen;
     std::vector<Unit*> chosenPack;  // what the chosen plan expects to come (empty: not known, a boss pull)
@@ -8527,15 +8670,16 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // [adaptive_cap] what this group proved it takes in this run (ProvenFor): a pack within it fits whatever the
     // configured cap and the cost model say; the last resort and the guarantee scale with it too (lastResortMobs).
     ProvenCap const proven = ProvenFor(bot);
-    // [b44_packs] A weak pack (WEAK_PACK_*): it dies to the group's AoE within WEAK_PACK_TTK_SEC, the healers keep
+    // [b44_packs] A weak pack: it dies to the group's AoE faster than one by one ([lead261]), the healers keep
     // up with what the whole stack lands meanwhile (the measured peak term with every mob alive: the healers' best
     // rate, HealerThroughput), the tank's drop in 9 pulls of 10 (DropP90 of the stack) is within its most
     // (PackEstimate::maxDrop) and the healers have the mana (HealerPool). The AoE cost carries the same spell part.
     // Not with crowd control planned on the pack (the AoE breaks it) and never a boss.
     auto const weakAoeFits = [&](PackEstimate const& estimate) -> bool
     {
-        if (estimate.boss || estimate.aoeSec <= 0.0f || estimate.mobs < WEAK_PACK_MIN_MOBS ||
-            estimate.aoeSec > 2.0f * WEAK_PACK_TTK_SEC)
+        // [lead261] an AoE pack: the AoE hits more than the focus and kills the stack faster than one by one
+        if (estimate.boss || estimate.aoeSec <= 0.0f ||
+            estimate.mobs - std::min(estimate.mobs, estimate.rangedMobs) < 2)
             return false;
 
         float const tankHealth = PlanTankHealth(bot);
@@ -8550,10 +8694,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         float const pool = HealerPool(support);
         float const mana = pool > 0.0f ? TakenCost(aoe) / pool : 0.0f;  // [lead258] no healer: no healer mana
         char const* why = nullptr;
-        if (estimate.aoeSec > WEAK_PACK_TTK_SEC)
-            why = "too slow";
-        else if (float(estimate.rangedMobs) > WEAK_PACK_MAX_RANGED_SHARE * float(estimate.mobs))
-            why = "casters stand out of the stack";
+        if (estimate.aoeSec >= estimate.fightSec)
+            why = "no faster than one by one";
         else if (peak > 1.0f)
             why = "the healers do not keep up";
         else if (drop > estimate.maxDrop)
@@ -8569,11 +8711,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         if (!logMs || getMSTimeDiff(logMs, now) > 10 * IN_MILLISECONDS)
         {
             logMs = now ? now : 1;
-            LOG_INFO("playerbots", "[b44_packs] {}: {} pack {} mobs ttk {:.1f}s: {} (aoe {:.0f}/s per mob over {} "
-                     "dealers + tank, landed {:.0f}/s, peak {:.2f}, drop {:.2f}, mana {:.2f}, cost {:.2f} vs one by "
-                     "one {:.2f}, {} casters)", bot->GetName(), why ? "not weak:" : "weak", estimate.mobs,
-                     estimate.aoeSec, why ? why : "aoe", estimateMode.aoeTargetDps, weakAoeDealers, estimate.landedDps,
-                     peak, drop, mana, estimate.aoeCost, estimate.cost, estimate.rangedMobs);
+            LOG_INFO("playerbots",
+                     "[b44_packs] {}: {} pack {} mobs ttk {:.1f}s vs {:.1f}s: {} (aoe {:.0f}/s per mob "
+                     "over {} members, cap {}, landed {:.0f}/s, peak {:.2f}, drop {:.2f}, mana {:.2f}, cost {:.2f} vs "
+                     "one by one {:.2f}, {} casters)",
+                     bot->GetName(), why ? "not weak:" : "weak", estimate.mobs, estimate.aoeSec, estimate.fightSec,
+                     why ? why : "aoe", estimateMode.aoeTargetDps, weakAoeDealers, estimateMode.aoeMaxTargets,
+                     estimate.landedDps, peak, drop, mana, estimate.aoeCost, estimate.cost, estimate.rangedMobs);
         }
 
         return !why;
