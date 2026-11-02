@@ -512,7 +512,7 @@ private:
     static Trigger* ComboPoints3Available(PlayerbotAI* botAI) { return new ComboPointsAvailableTrigger(botAI, 3); }
     static Trigger* target_with_combo_points_almost_dead(PlayerbotAI* botAI)
     {
-        return new TargetWithComboPointsLowerHealTrigger(botAI, 3, 3.0f);
+        return new TargetWithComboPointsLowerHealTrigger(botAI);
     }
     static Trigger* ComboPointsNotFull(PlayerbotAI* botAI) { return new ComboPointsNotFullTrigger(botAI); }
     static Trigger* ComboPointsNotFullAndHighEnergy(PlayerbotAI* botAI) { return new TwoTriggers(botAI, "combo points not full", "high energy available"); }

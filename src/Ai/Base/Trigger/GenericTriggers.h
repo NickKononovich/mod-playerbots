@@ -113,17 +113,22 @@ public:
     bool IsActive() override;
 };
 
+// [rot70] The seconds until `bot` could spend one more combo point: the builder once its energy is there (or the
+// global cooldown passed), then the finisher one global cooldown later at the earliest and once the energy for both
+// is there - the costs from spell data (CalcPowerCost: talents in), the regeneration as the core's Player::Regenerate
+// (10 energy a second plus the unit's flat modifier, times the server's energy rate), the global cooldown the
+// builder's StartRecoveryTime. -1 when the bot knows neither spell.
+float ComboFinishHorizon(PlayerbotAI* botAI, Player* bot, std::string const& builder, std::string const& finisher);
+
+// [rot70] A target with this bot's combo points on it dies before one more point could be spent
+// (ExpectedLifetime < ComboFinishHorizon): the finisher now, with the points there are (1 or more), else they die with
+// the target. b205 / b206 rfc-h: the Assassination rogue cast 163 Mutilates (~400 points) and 35 Envenoms, ~140 points
+// lost on dying trash; the Combat rogue ~85. Was: 3 points and a 3.0 s lifetime by health / the group's dps.
 class TargetWithComboPointsLowerHealTrigger : public ComboPointsAvailableTrigger
 {
 public:
-    TargetWithComboPointsLowerHealTrigger(PlayerbotAI* botAI, int32 combo_point = 5, float lifeTime = 8.0f)
-        : ComboPointsAvailableTrigger(botAI, combo_point), lifeTime(lifeTime)
-    {
-    }
+    TargetWithComboPointsLowerHealTrigger(PlayerbotAI* botAI) : ComboPointsAvailableTrigger(botAI, 1) {}
     bool IsActive() override;
-
-private:
-    float lifeTime;
 };
 
 class ComboPointsNotFullTrigger : public StatAvailable

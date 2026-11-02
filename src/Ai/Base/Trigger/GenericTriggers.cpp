@@ -11,6 +11,7 @@
 #include "LeaderOrders.h"  // [lead95] Leader::Orders::IsTracked
 #include "Corpse.h"
 #include "CreatureAI.h"
+#include "EstimatedLifetimeValue.h"  // [rot70] ExpectedLifetime
 #include "GenericBuffUtils.h"
 #include "GenericSpellActions.h"
 #include "InterruptValues.h"
@@ -28,6 +29,8 @@
 #include "SharedDefines.h"
 #include "SpellAuraEffects.h"  // [b44_cos] AuraEffect::GetBase (LossOfControlTrigger)
 #include "SpellAuras.h"
+#include "SpellMgr.h"
+#include "World.h"  // [rot70] RATE_POWER_ENERGY
 #include "TankAoeThreat.h"  // [b32_peel]
 #include "TargetValue.h"
 #include "TemporarySummon.h"
@@ -110,14 +113,45 @@ bool ComboPointsAvailableTrigger::IsActive() { return AI_VALUE2(uint8, "combo", 
 
 bool ComboPointsNotFullTrigger::IsActive() { return AI_VALUE2(uint8, "combo", "current target") < amount; }
 
+float ComboFinishHorizon(PlayerbotAI* botAI, Player* bot, std::string const& builder, std::string const& finisher)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    SpellInfo const* builderInfo = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", builder));
+    SpellInfo const* finisherInfo = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", finisher));
+    if (!builderInfo || !finisherInfo)
+        return -1.0f;
+    constexpr float CORE_ENERGY_REGEN_PER_SEC = 10.0f;  // Player::Regenerate, POWER_ENERGY
+    float const regen = (bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + AsUnderlyingType(POWER_ENERGY)) +
+                         CORE_ENERGY_REGEN_PER_SEC) *
+                        sWorld->getRate(RATE_POWER_ENERGY);
+    if (regen <= 0.0f)
+        return -1.0f;
+    float const energy = float(bot->GetPower(POWER_ENERGY));
+    float const builderCost = float(builderInfo->CalcPowerCost(bot, builderInfo->GetSchoolMask()));
+    float const finisherCost = float(finisherInfo->CalcPowerCost(bot, finisherInfo->GetSchoolMask()));
+    float const gcd = float(builderInfo->StartRecoveryTime) / IN_MILLISECONDS;
+    float const builderAt = std::max(0.0f, (builderCost - energy) / regen);
+    return std::max(builderAt + gcd, (builderCost + finisherCost - energy) / regen);
+}
+
 bool TargetWithComboPointsLowerHealTrigger::IsActive()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
-    if (!target || !target->IsAlive() || !target->IsInWorld())
+    if (!target || !target->IsAlive() || !target->IsInWorld() || !ComboPointsAvailableTrigger::IsActive())
         return false;
 
-    return ComboPointsAvailableTrigger::IsActive() &&
-           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) <= lifeTime;
+    // the builder and the finisher this rogue spends its points with (its talents decide which it knows)
+    std::string builder = "sinister strike";
+    std::string finisher = "eviscerate";
+    if (botAI->HasSpell("mutilate"))  // the Assassination builder, Envenom its finisher
+    {
+        builder = "mutilate";
+        finisher = "envenom";
+    }
+    else if (botAI->HasSpell("hemorrhage"))  // the Subtlety builder
+        builder = "hemorrhage";
+    float const horizon = ComboFinishHorizon(botAI, bot, builder, finisher);
+    return horizon > 0.0f && ExpectedLifetime(botAI, target) < horizon;
 }
 
 bool LoseAggroTrigger::IsActive()
