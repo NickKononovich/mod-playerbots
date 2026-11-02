@@ -349,6 +349,7 @@ namespace Leader
             uint32 firstMs = 0;
             uint32 lastMs = 0;
             float threat = 0.0f;
+            uint32 riseMs = 0;  // [lead432] the last time its threat there grew
         };
         std::map<ObjectGuid, std::map<ObjectGuid, ThreatSeen>> threatSeen;  // [lead243] fight mob -> who -> seen
         std::map<ObjectGuid, std::string> stopProjection;        // [lead246] the headroom projection a Stop was read on

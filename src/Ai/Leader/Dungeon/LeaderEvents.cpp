@@ -3749,6 +3749,8 @@ namespace Leader::Dungeon
                     {
                         if (!seen.firstMs)
                             seen.firstMs = now;
+                        if (threat > seen.threat)
+                            seen.riseMs = now;  // [lead432]
                         seen.lastMs = now;
                         seen.threat = threat;
                     }
@@ -4017,7 +4019,21 @@ namespace Leader::Dungeon
                             return false;
                         if (!splashes || PlayerbotAI::IsHeal(bot) || bot->IsWithinMeleeRange(mob))
                             return true;
-                        if (Creature* idle = LeaderAggroAt(bot, mob->GetPosition()))
+                        // [lead432] b202 rfc-h 5H / 5A: 19 / 13 cat / shaman stops "<boss> stands in Searing Blade
+                        // Cultist's aggro reach" (Jergosh, Taragaman, Bazzalan) while the tank held the boss there -
+                        // the test read the mob's centre, not where the member arrives (lead413's own words). Where
+                        // its walk or charge ends: at the mob's combat reach plus its own, on its side of the mob
+                        Position arrive = bot->GetPosition();
+                        float const gap = bot->GetExactDist2d(mob);
+                        float const reach = mob->GetCombatReach() + bot->GetCombatReach();
+                        if (gap > reach)
+                        {
+                            float const step = reach / gap;
+                            arrive.Relocate(mob->GetPositionX() + (bot->GetPositionX() - mob->GetPositionX()) * step,
+                                            mob->GetPositionY() + (bot->GetPositionY() - mob->GetPositionY()) * step,
+                                            mob->GetPositionZ());
+                        }
+                        if (Creature* idle = LeaderAggroAt(bot, arrive))
                         {
                             if (unpulledNear.empty())
                                 unpulledNear = Acore::StringFormat("{} stands in {}'s aggro reach", mob->GetName(),
@@ -4081,11 +4097,19 @@ namespace Leader::Dungeon
                     // / Pestilence, Blade Flurry) builds threat on fight mobs it does not attack - b201 rfc-h 5D the
                     // unholy DK lost 10 mobs. Its measured threat on such a mob the tank holds projects like any
                     // other (headroomOn); one that overtakes the tank holds its damage (hold the dps to avoid wipes)
+                    // [lead432] b202 rfc-h 5A: Rtshaab held 14 times "its splash threat on Jergosh the Invoker /
+                    // Ragefire Trogg overtakes the tank" - threat it had put on the mob while it attacked it, projected
+                    // on at its average rate there after it had switched away (the projection's rate is its threat
+                    // over the seconds since its first threat there). A mob it does not attack gains its threat only
+                    // while its splash lands: the projection holds it only while its threat there still grows (within
+                    // the game's global cooldown)
                     if (mine && splashes && !PlayerbotAI::IsHeal(bot))
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* splashed = ObjectAccessor::GetUnit(*tank, other);
                                 splashed && splashed != mine && splashed->IsAlive() &&
                                 splashed->GetVictim() == tank && seenOn(splashed, bot).threat > 0.0f &&
+                                getMSTimeDiff(seenOn(splashed, bot).riseMs, now) <=
+                                    uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS) &&
                                 !headroomOn(splashed))
                             {
                                 unpulledNear = Acore::StringFormat("its splash threat on {} overtakes the tank",
