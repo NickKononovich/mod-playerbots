@@ -3961,8 +3961,19 @@ namespace Leader::Dungeon
                          "the threat onto the tank: a mob without its threat or a member without "
                          "headroom");
             if (tank->GetHealthPct() < LEADER_SAVE_HP_PCT)
+            {
+                // [lead300] Guardian Spirit / Lay on Hands are the leader's too (the members' own are off)
                 if (auto const [bot, spell] = withSpell({SPELL_PAIN_SUPPRESSION, SPELL_HAND_OF_SACRIFICE}, tank); bot)
                     tell(bot, spell, tank, "the tank is low");
+                else if (auto const [priest, spirit] = withSpell({SPELL_GUARDIAN_SPIRIT}, tank); priest)
+                    tell(priest, spirit, tank, "the tank is low");
+                else if (auto const [paladin, hands] =
+                             withSpell({SPELL_LAY_ON_HANDS_1, SPELL_LAY_ON_HANDS_2, SPELL_LAY_ON_HANDS_3,
+                                        SPELL_LAY_ON_HANDS_4, SPELL_LAY_ON_HANDS_5},
+                                       tank);
+                         paladin)
+                    tell(paladin, hands, tank, "the tank is low");
+            }
             for (Player* member : seats)
                 if (member != healer && !PlayerbotAI::IsTank(member) && !member->getAttackers().empty() &&
                     member->GetHealthPct() < LEADER_SAVE_HP_PCT)
@@ -3977,6 +3988,8 @@ namespace Leader::Dungeon
                     tell(bot, spell, healer, "the healer is out of mana");
                 else if (auto const [priest, hymn] = withSpell({SPELL_HYMN_OF_HOPE}, nullptr); priest)
                     tell(priest, hymn, nullptr, "the healer is out of mana");
+                else if (auto const [shaman, tide] = withSpell({SPELL_MANA_TIDE_TOTEM}, nullptr); shaman)
+                    tell(shaman, tide, nullptr, "the healer is out of mana");  // [lead300]
             }
             if (hurt >= 3)
                 if (auto const [bot, spell] = withSpell({SPELL_DIVINE_HYMN}, nullptr); bot)

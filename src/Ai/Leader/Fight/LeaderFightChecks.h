@@ -98,6 +98,13 @@ namespace Leader::Fight
     constexpr uint32 SPELL_BLOODLUST = 2825;
     constexpr uint32 SPELL_DIVINE_HYMN = 64843;
     constexpr uint32 SPELL_POWER_INFUSION = 10060;
+    constexpr uint32 SPELL_GUARDIAN_SPIRIT = 47788;  // [lead300]
+    constexpr uint32 SPELL_LAY_ON_HANDS_1 = 633;
+    constexpr uint32 SPELL_LAY_ON_HANDS_2 = 2800;
+    constexpr uint32 SPELL_LAY_ON_HANDS_3 = 10310;
+    constexpr uint32 SPELL_LAY_ON_HANDS_4 = 27154;
+    constexpr uint32 SPELL_LAY_ON_HANDS_5 = 48788;
+    constexpr uint32 SPELL_MANA_TIDE_TOTEM = 16190;
 
     // the first of `spells` the bot knows and has off cooldown (the highest rank listed last); 0: none
     uint32 LeaderReadySpell(Player* bot, std::initializer_list<uint32> spells);
