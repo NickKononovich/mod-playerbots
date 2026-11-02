@@ -21,6 +21,7 @@
 #include "Trigger.h"
 
 #include <algorithm>
+#include <iterator>  // [lead526] std::begin / std::end
 #include <string>
 #include <unordered_map>
 
@@ -112,6 +113,44 @@ inline bool CrowdFirst(PlayerbotAI* botAI)
 {
     AiObjectContext* context = botAI->GetAiObjectContext();
     if (IsBoss(context->GetValue<Unit*>("group member attacker")->Get()) || HealerPeelPending(botAI))
+        return false;
+
+    // [lead526] b211 rfc-h: the ready taunt went unused in ~14 of the 30 real aggro losses, most in 4+ mob trogg /
+    // cultist pulls (5B 65 / 160 / 194 s, 5F 605 / 849 s: 7.2 s with no taunt at all) - "taunt reaction" waited for
+    // the crowd's area threat while that spell was on its cooldown (Thunder Clap, Consecration, Death and Decay), so
+    // neither ran. The area threat goes first only while one of the class's crowd spells is off cooldown
+    Player* bot = botAI->GetBot();
+    static char const* const WARRIOR[] = {"thunder clap"};
+    static char const* const DRUID[] = {"swipe (bear)"};
+    static char const* const PALADIN[] = {"consecration", "avenger's shield"};
+    static char const* const DEATH_KNIGHT[] = {"pestilence", "death and decay", "blood boil"};
+    char const* const* begin = nullptr;
+    char const* const* end = nullptr;
+    switch (bot->getClass())
+    {
+        case CLASS_WARRIOR:
+            begin = std::begin(WARRIOR);
+            end = std::end(WARRIOR);
+            break;
+        case CLASS_DRUID:
+            begin = std::begin(DRUID);
+            end = std::end(DRUID);
+            break;
+        case CLASS_PALADIN:
+            begin = std::begin(PALADIN);
+            end = std::end(PALADIN);
+            break;
+        case CLASS_DEATH_KNIGHT:
+            begin = std::begin(DEATH_KNIGHT);
+            end = std::end(DEATH_KNIGHT);
+            break;
+        default:
+            return false;
+    }
+    bool ready = false;
+    for (char const* const* spell = begin; spell != end && !ready; ++spell)
+        ready = TauntReactionAction::SpellReady(botAI, *spell);
+    if (!ready)
         return false;
 
     Trigger* crowd = context->GetTrigger(CROWD_TRIGGER);

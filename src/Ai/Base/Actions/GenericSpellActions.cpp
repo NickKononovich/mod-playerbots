@@ -855,50 +855,73 @@ std::string TauntReactionAction::ReadyFor(PlayerbotAI* botAI, Unit* mob)
 // mob in), Righteous Defense on the victim, Mocking Blow, the area taunts (Challenging Shout / Roar) with the mob in
 // their reach of the tank; then the gap closers that bring the tank to a mob out of its melee (Intercept, Feral Charge
 // - Bear), where its threat work takes the mob back. Each by the game's own cast checks (Usable)
-bool TauntReactionAction::BackupTaunt(PlayerbotAI* botAI, Unit* mob, Unit* victim, Plan& plan)
+namespace
 {
-    Player* bot = botAI->GetBot();
-    struct Backup
+    struct BackupSpell
     {
         char const* spell;
         bool onVictim;  // cast on the attacked member (Righteous Defense)
         bool onSelf;    // an area taunt round the tank
         bool holds;     // it taunts (the mob is marked peeled)
     };
-    static Backup const PALADIN[] = {{"righteous defense", true, false, true}};
-    static Backup const WARRIOR[] = {{"mocking blow", false, false, true},
-                                     {"challenging shout", false, true, true},
-                                     {"intercept", false, false, false}};
-    static Backup const DRUID[] = {{"challenging roar", false, true, true},
-                                   {"feral charge - bear", false, false, false}};
-    static Backup const DEATH_KNIGHT[] = {{"death grip", false, false, true}};
-    Backup const* begin = nullptr;
-    Backup const* end = nullptr;
-    switch (bot->getClass())
+    // [lead521] the class's backups, the ones that taunt first, then the gap closers
+    void BackupSpells(Player* bot, BackupSpell const*& begin, BackupSpell const*& end)
     {
-        case CLASS_PALADIN:
-            begin = std::begin(PALADIN);
-            end = std::end(PALADIN);
-            break;
-        case CLASS_WARRIOR:
-            begin = std::begin(WARRIOR);
-            end = std::end(WARRIOR);
-            break;
-        case CLASS_DRUID:
-            begin = std::begin(DRUID);
-            end = std::end(DRUID);
-            break;
-        case CLASS_DEATH_KNIGHT:
-            begin = std::begin(DEATH_KNIGHT);
-            end = std::end(DEATH_KNIGHT);
-            break;
-        default:
-            return false;
+        static BackupSpell const PALADIN[] = {{"righteous defense", true, false, true}};
+        static BackupSpell const WARRIOR[] = {{"mocking blow", false, false, true},
+                                              {"challenging shout", false, true, true},
+                                              {"intercept", false, false, false}};
+        static BackupSpell const DRUID[] = {{"challenging roar", false, true, true},
+                                            {"feral charge - bear", false, false, false}};
+        static BackupSpell const DEATH_KNIGHT[] = {{"death grip", false, false, true}};
+        begin = end = nullptr;
+        switch (bot->getClass())
+        {
+            case CLASS_PALADIN:
+                begin = std::begin(PALADIN);
+                end = std::end(PALADIN);
+                break;
+            case CLASS_WARRIOR:
+                begin = std::begin(WARRIOR);
+                end = std::end(WARRIOR);
+                break;
+            case CLASS_DRUID:
+                begin = std::begin(DRUID);
+                end = std::end(DRUID);
+                break;
+            case CLASS_DEATH_KNIGHT:
+                begin = std::begin(DEATH_KNIGHT);
+                end = std::end(DEATH_KNIGHT);
+                break;
+            default:
+                break;
+        }
     }
+}
+
+bool TauntReactionAction::AnyBackupReady(PlayerbotAI* botAI)
+{
+    BackupSpell const* begin = nullptr;
+    BackupSpell const* end = nullptr;
+    BackupSpells(botAI->GetBot(), begin, end);
+    for (BackupSpell const* backup = begin; backup && backup != end; ++backup)
+        if (SpellReady(botAI, backup->spell))
+            return true;
+    return false;
+}
+
+bool TauntReactionAction::BackupTaunt(PlayerbotAI* botAI, Unit* mob, Unit* victim, Plan& plan)
+{
+    Player* bot = botAI->GetBot();
+    BackupSpell const* begin = nullptr;
+    BackupSpell const* end = nullptr;
+    BackupSpells(bot, begin, end);
+    if (!begin)
+        return false;
     if (!mob || !victim)
         return false;
     bool const inMelee = bot->IsWithinMeleeRange(mob);
-    for (Backup const* backup = begin; backup != end; ++backup)
+    for (BackupSpell const* backup = begin; backup != end; ++backup)
     {
         // a gap closer only to a mob out of the tank's melee
         if (!backup->holds && inMelee)

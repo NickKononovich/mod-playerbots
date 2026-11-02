@@ -329,6 +329,8 @@ public:
     // Ready, the target in range (a friend by distance, a mob by combat reach) and in sight, and the cast's own
     // checks (form, stance, global cooldown) pass. The bot itself as target: no range check.
     static bool Usable(PlayerbotAI* botAI, char const* spell, Unit* target);
+    // [lead526] a backup taunt / gap closer of the class is off cooldown (the trigger's test with the main spells)
+    static bool AnyBackupReady(PlayerbotAI* botAI);
 
 private:
     struct Plan

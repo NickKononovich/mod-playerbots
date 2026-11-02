@@ -219,9 +219,11 @@ bool TauntReactionTrigger::IsActive()
     if (TankPeel::CrowdFirst(botAI))
         return false;
 
+    // [lead526] ... or a backup (lead521's plan): with the taunt, the ranged spell and the shout all cooling the
+    // trigger was off and the backups never ran
     return TauntReactionAction::SpellReady(botAI, spells->taunt) ||
            TauntReactionAction::SpellReady(botAI, spells->ranged) ||
-           TauntReactionAction::SpellReady(botAI, spells->swarm);
+           TauntReactionAction::SpellReady(botAI, spells->swarm) || TauntReactionAction::AnyBackupReady(botAI);
 }
 
 bool FleeingMobTrigger::IsActive()
