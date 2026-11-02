@@ -313,6 +313,11 @@ namespace Leader
         uint32 stretches = 0;
         uint32 stretchFromMs = 0;
         bool bossFightOn = false;
+        // [lead513] the run's measured trash fights: the fight mobs of the fight under way (their full health), and
+        // over the finished trash fights the full health of the mobs killed and the fights' seconds
+        std::map<ObjectGuid, float> fightMobHealth;
+        float trashKilledHealth = 0.0f;
+        float trashFightSec = 0.0f;
         uint32 bossJudgedFor = 0;  // the fightStartMs it was judged for
         std::map<std::string, std::string> burnLogged;  // [lead274] burn_decision: the verdict logged per member
         std::string slowestPass;                       // [lead76] the slowest leader pass this minute

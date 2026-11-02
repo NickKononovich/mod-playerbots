@@ -1099,7 +1099,10 @@ namespace Leader::Dungeon
             // the nearest standing boss (its distance over the tank's run speed): what each member's burn is judged by
             float health = 0.0f;
             for (Unit* mob : fightingMobs)
+            {
                 health += float(mob->GetHealth());
+                lead.fightMobHealth[mob->GetGUID()] = float(mob->GetMaxHealth());  // [lead513]
+            }
             PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
             float const groupDps =
                 tankAI ? tankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
@@ -1205,7 +1208,14 @@ namespace Leader::Dungeon
                                 trashHealth += float(mob->GetHealth());
                     walkYd = bossYd;
                 }
-                float const trashSec = trashHealth / std::max(groupDps, 1.0f);
+                // [lead513] b210 rfc-h 5C 944 s: the plan to Bazzalan (5 stops, 232 yd) was estimated 86.6 s, his
+                // pull came 148 s later - its 12 mobs fought 91 s, the estimate gave them about half (the expected
+                // group dps: no run-in, no ramp, no switch). The trash seconds go by the run's measured trash fights
+                // (the full health of the mobs they killed over their seconds) once there is one
+                float const trashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
+                                            ? lead.trashKilledHealth / lead.trashFightSec
+                                            : groupDps;
+                float const trashSec = trashHealth / std::max(trashRate, 1.0f);
                 float restSec = 0.0f;
                 if (trashSec > 0.0f)
                 {
@@ -1219,6 +1229,20 @@ namespace Leader::Dungeon
                 }
                 lead.bossWalkSec = walkYd / speed;
                 lead.bossPullSec = lead.fightSecLeft + trashSec + restSec + lead.bossWalkSec;
+                // [lead513] b210 rfc-h 5C 875.9 s: Starfall / Force of Nature held on Jergosh for Bazzalan "his pull
+                // in >= 78 s" - he was pulled 217 s later. The route plans the way to the next boss only once the boss
+                // fight under way ends (5C route_plan "first plan" to Bazzalan at 922 s, 7 stops 307 yd): until then
+                // the estimate read the current path's on-path mobs and the straight line (no trash between the two
+                // bosses). Without a plan to him the run's measured stretch between bosses (their mean, lead421) less
+                // the part of it already walked is the floor of the estimate
+                if (!(route.routePlanBoss == nextBoss->GetGUID() && !route.routePlan.empty()) && lead.stretches)
+                {
+                    float const walked =
+                        lead.stretchFromMs ? getMSTimeDiff(lead.stretchFromMs, now) / 1000.0f : 0.0f;
+                    float const stretchLeft =
+                        std::max(0.0f, lead.stretchSecSum / float(lead.stretches) - walked);
+                    lead.bossPullSec = std::max(lead.bossPullSec, lead.fightSecLeft + stretchLeft);
+                }
             }
         }
 
@@ -2643,6 +2667,20 @@ namespace Leader::Dungeon
         }
         if (!fighting)
         {
+            // [lead513] a finished trash fight: the full health of its mobs that died, and its seconds
+            if (lead.fightStartMs && !lead.bossFightOn && !lead.fightMobHealth.empty())
+            {
+                float killed = 0.0f;
+                for (auto const& [mobGuid, maxHealth] : lead.fightMobHealth)
+                    if (Creature* mob = map->GetCreature(mobGuid); !mob || !mob->IsAlive())
+                        killed += maxHealth;
+                if (killed > 0.0f)
+                {
+                    lead.trashKilledHealth += killed;
+                    lead.trashFightSec += getMSTimeDiff(lead.fightStartMs, now) / 1000.0f;
+                }
+            }
+            lead.fightMobHealth.clear();
             lead.fightStartMs = 0;
             lead.threatLeadLogged = 0;
             // [lead421] the walk to the next boss starts at the run's first tick and at each boss fight's end
