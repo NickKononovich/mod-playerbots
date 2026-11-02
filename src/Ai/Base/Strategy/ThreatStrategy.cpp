@@ -343,11 +343,7 @@ float ThreatMultiplier::GetValue(Action* action)
             return 1.0f;
     }
 
-    // [lead472] an area by its spell data (HitsSeveral) is read as an area too: Bladestorm, Divine Storm, Whirlwind,
-    // Swipe (Cat), Consecration, Cleave are melee actions by their action type and skipped the area threat rule -
-    // b207 rfc-h: the arms warrior 5, the ret paladin 4 and the cat 6 aggro losses each came in pulls where these
-    // did most of their damage, on pack mobs the tank had no or little threat on
-    if (action->getThreatType() == Action::ActionThreatType::Aoe || (spellAction && HitsSeveral(spellInfo)))
+    if (action->getThreatType() == Action::ActionThreatType::Aoe)
     {
         if (spellAction)
         {
@@ -960,7 +956,21 @@ float LeaderCommandMultiplier::GetValue(Action* action)
 
     // [lead415] the leader's spared mobs: none within this spell's own radius of its centre (the game's area test,
     // the mob's size included)
-    if (Unit* spared = SparedInArea([&](Unit* mob) { return mob->IsWithinDist3d(&center, radius); }))
+    // [lead472] a lasting area (a persistent area aura: Consecration, Death and Decay; a periodic trigger: Bladestorm,
+    // Starfall) also hits the spared mobs that walk into it while it lasts - the ones whose victim stands inside (the
+    // rule ThreatMultiplier::AreaHolds reads for its own lasting areas). b207 rfc-h 5G / 5H / 5C: Bladestorm's
+    // Whirlwind, Consecration and Starfall took pack mobs coming to the tank
+    bool const lasting = info && info->GetDuration() > 0 &&
+                         (info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA) ||
+                          info->HasAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL));
+    if (Unit* spared = SparedInArea(
+            [&](Unit* mob)
+            {
+                if (mob->IsWithinDist3d(&center, radius))
+                    return true;
+                Unit* const mobVictim = lasting ? mob->GetVictim() : nullptr;
+                return mobVictim && mobVictim->IsWithinDist3d(&center, radius);
+            }))
     {
         Log(action, ("the area reaches the leader's spared " + spared->GetName()).c_str());
         return 0.0f;
