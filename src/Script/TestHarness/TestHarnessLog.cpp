@@ -987,6 +987,11 @@ namespace TestHarness
         if (!instanceId || !victim->IsCreature())
             return;
 
+        // [rot66] a member's own summon (Army of the Dead ghouls, a Raise Dead ghoul, treants, Feral Spirits) is no
+        // kill: b201 rfc-h 5D the Taragaman fight (the boss and one add) logged 9 kills with the 8 Army ghouls
+        if (victim->GetCharmerOrOwnerPlayerOrPlayerItself())
+            return;
+
         auto itr = _instanceRun.find(instanceId);
         if (itr != _instanceRun.end())
         {
