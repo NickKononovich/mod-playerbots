@@ -97,17 +97,29 @@ std::vector<Player*> DeadMembers(LeaderGroup& group, Map* map)
             member && member->IsInWorld() && member->GetMap() == map && !member->IsAlive() &&
             member->getDeathState() == DeathState::Corpse && !member->isResurrectRequested())
             dead.push_back(member);
-    // the one who brings back more first: a healer that resurrects, another resurrecter, then the rest
-    std::stable_sort(dead.begin(), dead.end(),
-                     [](Player* a, Player* b)
-                     {
-                         auto const rank = [](Player* p)
-                         {
-                             bool const res = RaidLeader::CanResurrect(p);
-                             return res && PlayerbotAI::IsHeal(p) ? 0 : res ? 1 : PlayerbotAI::IsTank(p) ? 2 : 3;
-                         };
-                         return rank(a) < rank(b);
-                     });
+    // [lead406] user: «Поднимают первыми тех, у кого есть воскрешение. Не важно, танк или дд.» Every member that
+    // can resurrect comes first, whatever its role (it then raises the rest in parallel); among them the one whose
+    // mana pays for the most further resurrections (its max mana over its own resurrection's cost); then the others
+    std::vector<std::pair<Player*, float>> ranked;
+    for (Player* member : dead)
+    {
+        float rezzes = -1.0f;  // no resurrection of its own
+        for (uint32 first : RESURRECT_SPELLS)
+            if (uint32 const rank = KnownRank(member, first))
+            {
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(rank);
+                int32 const cost = info ? info->CalcPowerCost(member, info->GetSchoolMask()) : 0;
+                float const pool = float(member->GetMaxPower(POWER_MANA));
+                rezzes = cost > 0 ? pool / float(cost) : std::max(pool, 1.0f);
+                break;
+            }
+        ranked.emplace_back(member, rezzes);
+    }
+    std::stable_sort(ranked.begin(), ranked.end(),
+                     [](auto const& a, auto const& b) { return a.second > b.second; });
+    dead.clear();
+    for (auto const& [member, rezzes] : ranked)
+        dead.push_back(member);
     return dead;
 }
 
