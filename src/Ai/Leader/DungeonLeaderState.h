@@ -178,6 +178,7 @@ namespace Leader
         // [lead18] the fight's anchor (LEADER_ANCHORED_SPOTS) and each spot's anchor serial
         Position fightAnchor;
         uint32 fightAnchorSerial = 0;
+        bool fightAnchorAhead = false;  // [lead466] the anchor is the tank's stop point it still walks / charges to
         std::map<ObjectGuid, uint32> combatSpotAnchor;
         std::map<ObjectGuid, Position> combatSpotStoppedAt;  // [lead397] where "casts from where it walks" stopped
         // [lead18] the spot guard: cleared ground, idle mobs, the last checked spot per member, reject log

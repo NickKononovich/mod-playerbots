@@ -2321,16 +2321,54 @@ namespace Leader::Dungeon
             lead.combatSpotAnchor.clear();
             lead.combatSpotStoppedAt.clear();  // [lead397]
             lead.fightAnchorSerial = 0;
+            lead.fightAnchorAhead = false;  // [lead466]
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
             lead.healReachAnchor = 0;
             lead.healReachFrom.reset();
             lead.rangeSpots.clear();  // [lead122]
         }
-        else if (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD)
+        else
         {
-            // [lead18] the fight spot: where the tank holds the mobs; a new anchor re-spots every member once
-            lead.fightAnchor = tank->GetPosition();
-            ++lead.fightAnchorSerial;
+            // [lead466] user 2026-11-02 (Q16): the fight is planned where the tank will stand. At the fight's start
+            // the tank may still walk or charge to its stop point - the leader's meeting point of the tank and the
+            // pulled mob (an engage: at the mob, on the tank's side at the two combat reaches, where its charge
+            // lands; a pull back / range pull: the fight spot the mob comes to). The anchor is that point while the
+            // tank goes there; it arrives (within LEADER_ANCHOR_MOVE_YD) or stops elsewhere: the anchor's own rule
+            if (!lead.fightAnchorSerial && lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty())
+            {
+                Position stop = lead.meetPoint;
+                if (lead.commit->kind == "engage")
+                    if (Unit* mob = ObjectAccessor::GetUnit(*tank, lead.commitMob); mob && mob->IsAlive())
+                    {
+                        float const dx = tank->GetPositionX() - mob->GetPositionX();
+                        float const dy = tank->GetPositionY() - mob->GetPositionY();
+                        float const length = std::max(0.1f, std::hypot(dx, dy));
+                        float const contact = std::min(length, mob->GetCombatReach() + tank->GetCombatReach());
+                        stop = Position(mob->GetPositionX() + dx / length * contact,
+                                        mob->GetPositionY() + dy / length * contact, mob->GetPositionZ());
+                    }
+                if (tank->isMoving() && tank->GetExactDist(stop) > Leader::LEADER_ANCHOR_MOVE_YD &&
+                    Acore::IsValidMapCoord(stop.GetPositionX(), stop.GetPositionY(), stop.GetPositionZ()))
+                {
+                    lead.fightAnchor = stop;
+                    lead.fightAnchorAhead = true;
+                    ++lead.fightAnchorSerial;
+                    Decisions().Write(run, "leader", "fight_anchor_ahead", tank->GetGUID(), tank->GetName(), true,
+                                      JsonObject().Str("kind", lead.commit->kind)
+                                          .Real("x", stop.GetPositionX()).Real("y", stop.GetPositionY())
+                                          .Real("z", stop.GetPositionZ()).Real("tankGap", tank->GetExactDist(stop)));
+                }
+            }
+            bool const arrived = tank->GetExactDist(lead.fightAnchor) <= Leader::LEADER_ANCHOR_MOVE_YD;
+            if (lead.fightAnchorAhead && (arrived || !tank->isMoving()))
+                lead.fightAnchorAhead = false;
+            if (!lead.fightAnchorAhead &&
+                (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD))
+            {
+                // [lead18] the fight spot: where the tank holds the mobs; a new anchor re-spots every member once
+                lead.fightAnchor = tank->GetPosition();
+                ++lead.fightAnchorSerial;
+            }
         }
 
         // [lead17] LEADER_ONE_GATHER_OWNER: who the group waits for - a member without a leader spot farther than
@@ -3412,6 +3450,28 @@ namespace Leader::Dungeon
                         moved = true;
                         // [lead137] no "along with the tank" walk in a fight (b162: the shaman 83 s): the member
                         // stays until the mob stands on the tank, then takes its spot
+                        // [lead465] user 2026-11-02 (Q15): a melee member goes at once to where the tank will stop -
+                        // the leader's meeting point of the tank and the pulled mob (an engage: at the mob, the
+                        // tank's charge lands there too; a pull back / range pull: the fight spot the mob runs to) -
+                        // instead of standing at its pull spot until the mob is on the tank (b207: ~4 s a pull). Its
+                        // place there is the meeting place of the engage walk (meleeMeetAt); checkedMove judges the
+                        // spot and the walk against every unpulled mob's reach
+                        if (melee && lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty())
+                        {
+                            std::vector<ObjectGuid> const pulled = LeaderPullMobs(lead.commit, lead.commitMob);
+                            if (target->GetGUID() == lead.commitMob ||
+                                std::find(pulled.begin(), pulled.end(), target->GetGUID()) != pulled.end())
+                            {
+                                Position const stopAt = meleeMeetAt(bot, lead.commitMob);
+                                if (checkedMove(guid, Leader::MoveEvent::MoveTo, stopAt, 3.0f,
+                                                "to the tank's stop point"))
+                                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                             JsonObject().Str("why", "to the tank's stop point")
+                                                 .Str("target", target->GetName())
+                                                 .Real("x", stopAt.GetPositionX()).Real("y", stopAt.GetPositionY())
+                                                 .Real("z", stopAt.GetPositionZ()));
+                            }
+                        }
                     }
                     if (!breaks.empty())
                     {
