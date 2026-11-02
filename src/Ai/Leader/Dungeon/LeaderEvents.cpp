@@ -127,6 +127,24 @@ namespace Leader::Dungeon
         constexpr float THREAT_OVERTAKE_MELEE = 1.1f;
         constexpr float THREAT_OVERTAKE_RANGED = 1.3f;
 
+        // [lead137] a left combat spot keeps the member off the ground this near it
+        constexpr float COMBAT_SPOT_LEFT_YD = 2.0f;
+
+        // [lead254] b194 crash (FreezeDetector, world thread 60 s in combatSpotLeft[guid].push_back): every respot
+        // and every blind / rejected look appended the spot again, never deduped, cleared only at a fight's end, and
+        // each spot search scanned the list per candidate point. A member's left spots are those of its current
+        // target, each place once (a spot within COMBAT_SPOT_LEFT_YD of a listed one is that one)
+        void LeaveCombatSpot(std::vector<std::pair<ObjectGuid, Position>>& left,
+                             std::pair<ObjectGuid, Position> const& spot)
+        {
+            left.erase(std::remove_if(left.begin(), left.end(), [&](std::pair<ObjectGuid, Position> const& was)
+                                      { return was.first != spot.first; }),
+                       left.end());
+            if (std::none_of(left.begin(), left.end(), [&](std::pair<ObjectGuid, Position> const& was)
+                             { return was.second.GetExactDist(spot.second) <= COMBAT_SPOT_LEFT_YD; }))
+                left.push_back(spot);
+        }
+
         // [lead243] the seconds a threat was built in: its first sight to its last, at least the global cooldown
         // its first cast landed in
         float ThreatSeenSec(Leader::DungeonLeaderState::ThreatSeen const& seen)
@@ -2617,7 +2635,7 @@ namespace Leader::Dungeon
                     !MemberCastsHere(bot, target))
                 {
                     blindOnSpot = true;
-                    lead.combatSpotLeft[guid].push_back(held->second);
+                    LeaveCombatSpot(lead.combatSpotLeft[guid], held->second);
                 }
                 // [lead137] never back to the spot it just left for this target
                 auto const left = lead.combatSpotLeft.find(guid);
@@ -2628,7 +2646,7 @@ namespace Leader::Dungeon
                                                           [&](std::pair<ObjectGuid, Position> const& was)
                                                           {
                                                               return was.first == target->GetGUID() &&
-                                                                     was.second.GetExactDist(at) <= 2.0f;
+                                                                     was.second.GetExactDist(at) <= COMBAT_SPOT_LEFT_YD;
                                                           }));
                 };
                 auto found = lead.combatSpots.find(guid);
@@ -2750,7 +2768,7 @@ namespace Leader::Dungeon
                         if (got)
                         {
                             if (found != lead.combatSpots.end())
-                                lead.combatSpotLeft[guid].push_back(found->second);  // [lead137]
+                                LeaveCombatSpot(lead.combatSpotLeft[guid], found->second);  // [lead137]
                             if (breaks != "first spot")
                                 Decisions().Write(
                                     run, "leader", "combat_respot", guid, bot->GetName(), true,
@@ -2928,7 +2946,7 @@ namespace Leader::Dungeon
                              verdict->second.spot.GetExactDist(spot) <= 1.0f &&
                              !(melee ? bot->IsWithinMeleeRange(target) : MemberCastsHere(bot, target)))
                     {
-                        lead.combatSpotLeft[guid].push_back(found->second);
+                        LeaveCombatSpot(lead.combatSpotLeft[guid], found->second);
                         lead.combatSpots.erase(found);
                         found = lead.combatSpots.end();
                     }
@@ -3507,7 +3525,7 @@ namespace Leader::Dungeon
                                                      [&](std::pair<ObjectGuid, Position> const& was)
                                                      {
                                                          return was.first == attackOn->GetGUID() &&
-                                                                was.second.GetExactDist(at) <= 2.0f;
+                                                                was.second.GetExactDist(at) <= COMBAT_SPOT_LEFT_YD;
                                                      }));
                             };
                             Position spot;
@@ -3523,7 +3541,7 @@ namespace Leader::Dungeon
                             if (got && shootsFrom(spot))
                             {
                                 if (kept != lead.combatSpots.end())
-                                    lead.combatSpotLeft[guid].push_back(kept->second);  // [lead137]
+                                    LeaveCombatSpot(lead.combatSpotLeft[guid], kept->second);  // [lead137]
                                 lead.combatSpots[guid] = {attackOn->GetGUID(), spot};
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,
