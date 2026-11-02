@@ -2549,12 +2549,26 @@ namespace Leader::Dungeon
                     RestState::NoteDivinePleaInFight(member->GetGUID());
             }
         }
+        // [lead433] b202 rfc-h 5A 610.9-623.3 s: the boss pull waited for "health 94 % < 95 %" of the tank - the
+        // leader told the tank Rest (it sat and drank at 93 % mana for 10 s) and the healer TopUp (on itself, the
+        // lowest). One fact, one owner: a boss gap on health alone (its mana at its boss line) is the healer's
+        // top-up while the healer stands and heals; the member does not sit for it
+        auto const healerTopsUp = [&](Player* member, Creature* boss)
+        {
+            if (!boss || !healer || !healer->IsAlive() || healer->IsSitState() || RestState::WantsDrink(healer))
+                return false;
+            if (PullReadiness::MemberBossGap(member, boss).rfind("health", 0) != 0)
+                return false;
+            return member->getPowerType() != POWER_MANA ||
+                   member->GetPowerPct(POWER_MANA) >= PullReadiness::MemberBossManaLine(member, boss);
+        };
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(group.LeaderGuid()))
         {
             std::string tankRestWhy;
             Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
-            std::string const tankGap =
-                waitBoss && waitBoss->IsAlive() ? PullReadiness::MemberBossGap(tank, waitBoss) : std::string();
+            std::string const tankGap = waitBoss && waitBoss->IsAlive() && !healerTopsUp(tank, waitBoss)
+                                            ? PullReadiness::MemberBossGap(tank, waitBoss)
+                                            : std::string();
             if (!tankGap.empty())
                 tankRestWhy = "the boss pull waits: " + tankGap;
             bool const plannerWaits = !lead.plannerRestFor.empty() && tank->GetName() == lead.plannerRestFor &&
@@ -2578,12 +2592,35 @@ namespace Leader::Dungeon
             if (tankRests && !tankHurt && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
                 logEvent(tank, "Rest", JsonObject().Str("who", "tank")
                                            .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
+            // [lead433] b202 rfc-h 5A 578.0-582.7 s: "held for now: Rtpalaa sits" - the tank reached the planner's
+            // 50 % line and drank on: its Rest, once out, was never replaced (a member's is, by Prepare), so the
+            // drinking tank decided itself when to stand. The Rest ends where its line is reached
+            if (!tankRests)
+                if (Leader::MemberEvents tankEvents; Leader::Events::Get(tank->GetGUID(), tankEvents) &&
+                                                     tankEvents.ready == Leader::ReadyEvent::Rest &&
+                                                     Leader::Events::SetReady(tank->GetGUID(),
+                                                                              Leader::ReadyEvent::Prepare))
+                    logEvent(tank, "Prepare", JsonObject().Str("who", "tank").Str("why", "its rest line is reached"));
         }
 
         // [lead76] the leader's "top up X": the healer heals the member whose health holds the pull (out of a fight)
         if (!fighting && healer)
         {
             ObjectGuid topUp = lead.topUpFor;
+            // [lead433] the member whose health holds the boss pull first (its gap is the healer's, above)
+            if (topUp.IsEmpty())
+                if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+                    waitBoss && waitBoss->IsAlive())
+                {
+                    std::vector<Player*> all = seats;
+                    all.push_back(tank);
+                    for (Player* member : all)
+                        if (healerTopsUp(member, waitBoss))
+                        {
+                            topUp = member->GetGUID();
+                            break;
+                        }
+                }
             // [lead116] a hurt member with the healer above its own mana line is topped up by the healer (one
             // command per change), not fed: the most hurt one
             if (topUp.IsEmpty() && !RestState::WantsDrink(healer) && !healer->IsSitState())
@@ -2656,8 +2693,9 @@ namespace Leader::Dungeon
                 if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
                     waitBoss && waitBoss->IsAlive())
                 {
-                    std::string const gap = PullReadiness::MemberBossGap(bot, waitBoss);
-                    needsRest = !gap.empty();
+                    std::string const gap =
+                        healerTopsUp(bot, waitBoss) ? std::string() : PullReadiness::MemberBossGap(bot, waitBoss);
+                    needsRest = !gap.empty();  // [lead433] a health gap the healer tops up: no Rest
                     restWhy = gap.empty() ? restWhy : "the boss pull waits: " + gap;
                     lead.restingToFull.erase(guid);
                 }
