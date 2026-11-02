@@ -133,6 +133,7 @@ namespace Leader
         uint32 aoeMs = 0;
         uint8 aoeRule = 0;
         std::string aoeWhy;
+        std::vector<ObjectGuid> aoeSpared;  // [lead415] the mobs every member's AoE spares
         // [lead15] mobs loose on a member: mob -> {victim, since}
         std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> looseMobs;
         // [lead15] own_decision counts: member -> action -> count (the run report's work list)

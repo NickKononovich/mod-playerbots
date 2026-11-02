@@ -148,9 +148,11 @@ namespace Leader::Fight
     bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs,
                               bool whereTheyStand = false);
 
-    // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
-    // unpulled pack) stands within the AoE radius (plus a margin) of it
-    Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, std::string& why);
+    // the AoE rule around the target: AllowedOnPack, with `spared` the mobs no area spell may reach - a crowd-
+    // controlled mob, a mob not in the fight (an unpulled pack) or one without the tank's threat - within `range` of it
+    // ([lead415] each member's AoE checks its own spell's footprint against them)
+    Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, float range, std::string& why,
+                                  std::vector<ObjectGuid>& spared);
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);

@@ -1037,7 +1037,15 @@ namespace Leader::Dungeon
             if (lead.aoeTarget != target->GetGUID() || !lead.aoeMs ||
                 getMSTimeDiff(lead.aoeMs, now) >= LEADER_AOE_RECHECK_MS)
             {
-                lead.aoeRule = uint8(slow([&] { return LeaderAoeRule(tank, target, lead.aoeWhy); }));
+                // [lead415] every member's AoE footprint around the target: its centre at the target, or at the member
+                // for a self-centred one (at most the farthest member's distance away) - plus the rule's radius
+                float range = LEADER_AOE_RADIUS + LEADER_AOE_GUARD_YD;
+                float farthest = tank->GetExactDist(target);
+                for (Player* bot : seats)
+                    farthest = std::max(farthest, bot->GetExactDist(target));
+                range += farthest;
+                lead.aoeRule = uint8(slow([&]
+                                          { return LeaderAoeRule(tank, target, range, lead.aoeWhy, lead.aoeSpared); }));
                 lead.aoeTarget = target->GetGUID();
                 lead.aoeMs = now;
             }
@@ -3960,15 +3968,17 @@ namespace Leader::Dungeon
                     Unit* const attackOn = mine ? mine : target;
                     Leader::AoeRule memberAoe = aoe;
                     std::string memberAoeWhy = aoeWhy;
+                    // [lead415] the fight's mobs this member has no headroom on are spared too: each AoE's own
+                    // footprint (spell data) decides whether it reaches one
+                    std::vector<ObjectGuid> memberSpared = lead.aoeSpared;
                     if (memberAoe != Leader::AoeRule::Forbidden)
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* mob = ObjectAccessor::GetUnit(*tank, other);
-                                mob && mob->IsAlive() && attackOn->GetExactDist(mob) <= LEADER_AOE_RADIUS &&
-                                !headroom(mob))
+                                mob && mob->IsAlive() && !headroom(mob))
                             {
-                                memberAoe = Leader::AoeRule::Forbidden;
-                                memberAoeWhy = "no threat headroom on " + mob->GetName();
-                                break;
+                                if (memberSpared.size() == lead.aoeSpared.size())
+                                    memberAoeWhy = "spares " + mob->GetName() + " (no threat headroom)";
+                                memberSpared.push_back(mob->GetGUID());
                             }
                     lead.noHeadroom[guid] = !mine;  // no mob with headroom: it waits (Intensity Stop below)
                     lead.attackWaitWhy[guid] = !mine ? unpulledNear : std::string();  // [lead413]
@@ -3987,7 +3997,7 @@ namespace Leader::Dungeon
                     bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
                                                                    attackOn->GetGUID(), killOrder);
                     bool const aoeChanged = Leader::Events::SetAoe(guid, memberAoe, attackOn->GetPosition(),
-                                                                   LEADER_AOE_RADIUS);
+                                                                   LEADER_AOE_RADIUS, memberSpared);
                     if (changed || aoeChanged)
                         logEvent(bot, "Attack", JsonObject().Str("target", attackOn->GetName())
                                                     .Num("targetEntry", attackOn->GetEntry())
@@ -3996,6 +4006,7 @@ namespace Leader::Dungeon
                                                                     ? "forbidden"
                                                                     : "allowed-on-pack")
                                                     .Str("aoeWhy", memberAoeWhy)
+                                                    .Num("aoeSpared", int64(memberSpared.size()))  // [lead415]
                                                     .Bool("headroom", mine != nullptr));
                     // [lead122] b156 rfc-h 20261101-105614 91.7-117.5 s: the hunter got Attack 7 times 86 yd from
                     // its target ("the attack refused: no line of sight", nothing ran) and no spot all fight. A

@@ -786,16 +786,18 @@ namespace Leader
         }
 
         // the AoE rule rides on the Attack field's freshness (set together with it)
-        bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius)
+        bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius,
+                    std::vector<ObjectGuid> const& spared)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
             // [lead67] a new AoE command only when its rule changes; the centre follows the target (no re-issue)
-            bool const changed = e.aoe != aoe;
+            bool const changed = e.aoe != aoe || e.aoeSpared != spared;  // [lead415] the spared mobs too
             e.aoe = aoe;
             e.aoeCenter = center;
             e.aoeRadius = radius;
+            e.aoeSpared = spared;
             if (changed)
                 ++e.seq;
             return changed;

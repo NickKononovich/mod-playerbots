@@ -12,6 +12,7 @@
 #include "Strategy.h"
 
 #include <deque>
+#include <functional>  // [lead415]
 #include <string>
 #include <unordered_map>
 
@@ -82,6 +83,8 @@ private:
     void Refresh();
     bool Emergency();
     void Log(Action* action, char const* why);
+    // [lead415] the first of the leader's spared mobs the area reaches (`reaches`); nullptr: none
+    Unit* SparedInArea(std::function<bool(Unit*)> const& reaches);
 
     uint32 _readMs = 0;
     bool _led = false;

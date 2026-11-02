@@ -129,12 +129,17 @@ namespace Leader::Fight
                                                LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
     }
 
-    // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
-    // unpulled pack) stands within the AoE radius (plus a margin) of it
-    Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, std::string& why)
+    // the AoE rule around the target: the mobs to spare (crowd-controlled, not pulled, without the tank's threat)
+    Leader::AoeRule LeaderAoeRule(Player* tank, Unit* target, float range, std::string& why,
+                                  std::vector<ObjectGuid>& spared)
     {
+        // [lead415] b201 rfc-h 5G: the frost DK held Howling Blast with Rime 73 times "the leader forbids AoE" - one
+        // unpulled mob 13 yd from the target forbade every area spell, while Howling Blast hits 10 yd around its
+        // target. The rule names the mobs to spare; each AoE's own centre and radius (its spell data) is checked
+        // against them where it is cast (ThreatStrategy's AreaFootprint)
+        spared.clear();
+        why.clear();
         std::list<Unit*> nearUnits;
-        float const range = LEADER_AOE_RADIUS + LEADER_AOE_GUARD_YD;
         Acore::AnyUnitInObjectRangeCheck check(target, range);
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, nearUnits, check);
         Cell::VisitObjects(target, searcher, range);
@@ -142,29 +147,27 @@ namespace Leader::Fight
         {
             if (unit == target || !unit->ToCreature() || !tank->IsValidAttackTarget(unit))
                 continue;
+            std::string spare;
             if (unit->HasBreakableByDamageCrowdControlAura())
-            {
-                why = Acore::StringFormat("{} is crowd-controlled {:.0f} yd from the target", unit->GetName(),
-                                          target->GetExactDist(unit));
-                return Leader::AoeRule::Forbidden;
-            }
-            if (!unit->IsInCombat())
-            {
-                why = Acore::StringFormat("{} is not pulled, {:.0f} yd from the target", unit->GetName(),
-                                          target->GetExactDist(unit));
-                return Leader::AoeRule::Forbidden;
-            }
+                spare = Acore::StringFormat("{} is crowd-controlled {:.0f} yd from the target", unit->GetName(),
+                                            target->GetExactDist(unit));
+            else if (!unit->IsInCombat())
+                spare = Acore::StringFormat("{} is not pulled, {:.0f} yd from the target", unit->GetName(),
+                                            target->GetExactDist(unit));
             // [lead90] b131 rfc-h 941.9-943.7 s: "allowed-on-pack" while a Searing Blade Warlock of the pulled
             // pack ran round the corner with no tank threat (not attacking anyone yet, so outside the kill
             // order's headroom check) - the mage's AoE took it (84 threat against the tank's 0)
-            if (unit->GetThreatMgr().GetThreat(tank) <= 0.0f)
-            {
-                why = Acore::StringFormat("{} has no tank threat yet, {:.0f} yd from the target", unit->GetName(),
-                                          target->GetExactDist(unit));
-                return Leader::AoeRule::Forbidden;
-            }
+            else if (unit->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                spare = Acore::StringFormat("{} has no tank threat yet, {:.0f} yd from the target", unit->GetName(),
+                                            target->GetExactDist(unit));
+            if (spare.empty())
+                continue;
+            spared.push_back(unit->GetGUID());
+            if (why.empty())
+                why = "spares " + spare;
         }
-        why = "the pack only";
+        if (why.empty())
+            why = "the pack only";
         return Leader::AoeRule::AllowedOnPack;
     }
 

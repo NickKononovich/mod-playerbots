@@ -570,6 +570,8 @@ namespace Leader
         AoeRule aoe = AoeRule::Unset;  // with Attack: the AoE rule around the target
         Position aoeCenter;
         float aoeRadius = 0.0f;
+        // [lead415] the mobs no area spell of this member may reach (each AoE's own centre and radius, spell data)
+        std::vector<ObjectGuid> aoeSpared;
         Intensity intensity = Intensity::Normal;
         uint32 intensityMs = 0;
         // [lead178] a trash Burn: only these burn cooldowns (each one back before the next boss pull); empty: all
@@ -706,7 +708,8 @@ namespace Leader
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder);
         bool SetIntensity(ObjectGuid member, Intensity intensity, std::vector<std::string> const& burnAllowed = {});
-        bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius);
+        bool SetAoe(ObjectGuid member, AoeRule aoe, Position const& center, float radius,
+                    std::vector<ObjectGuid> const& spared = {});
         bool SetCc(ObjectGuid member, ObjectGuid mob);
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster);
         bool SetFleeStop(ObjectGuid member, ObjectGuid mob);  // [lead104]

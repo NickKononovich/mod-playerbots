@@ -690,6 +690,15 @@ namespace
     }
 }
 
+// [lead415] the first of the leader's spared mobs (Leader::MemberEvents::aoeSpared) the area reaches; nullptr: none
+Unit* LeaderCommandMultiplier::SparedInArea(std::function<bool(Unit*)> const& reaches)
+{
+    for (ObjectGuid const& guid : _command.aoeSpared)
+        if (Unit* mob = botAI->GetUnit(guid); mob && mob->IsAlive() && reaches(mob))
+            return mob;
+    return nullptr;
+}
+
 void LeaderCommandMultiplier::Refresh()
 {
     uint32 const now = getMSTime();
@@ -838,7 +847,10 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     uint32 const spellId = AI_VALUE2(uint32, "spell id", spellAction->getSpell());
     SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
     // [lead247] a splash buff is the area damage of the melee hits after it
-    if (IsSplashBuff(name) && (stale || stop || !LeaderCommand::AoeAllowed(bot, bot->GetPosition())))
+    // [lead415] its second target is a mob within the core's NOMINAL_MELEE_RANGE of the bot (SelectNearbyTarget)
+    if (IsSplashBuff(name) &&
+        (stale || stop || !LeaderCommand::AoeAllowed(bot, bot->GetPosition()) ||
+         SparedInArea([this](Unit* spared) { return bot->IsWithinDistInMap(spared, NOMINAL_MELEE_RANGE); })))
     {
         Log(action, stop ? "the leader's Stop" : "the leader forbids AoE");
         return 0.0f;
@@ -886,6 +898,14 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     {
         Log(action,
             _command.aoe == Leader::AoeRule::Forbidden ? "the leader forbids AoE" : "AoE outside the leader's pack");
+        return 0.0f;
+    }
+
+    // [lead415] the leader's spared mobs: none within this spell's own radius of its centre (the game's area test,
+    // the mob's size included)
+    if (Unit* spared = SparedInArea([&](Unit* mob) { return mob->IsWithinDist3d(&center, radius); }))
+    {
+        Log(action, ("the area reaches the leader's spared " + spared->GetName()).c_str());
         return 0.0f;
     }
 
