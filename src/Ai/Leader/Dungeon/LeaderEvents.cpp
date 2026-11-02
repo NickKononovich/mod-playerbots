@@ -3410,11 +3410,15 @@ namespace Leader::Dungeon
                     followRefusal.move == Leader::MoveEvent::Follow)
                 {
                     Creature* woken = followRefusal.mob.IsEmpty() ? nullptr : map->GetCreature(followRefusal.mob);
+                    // [lead369] b200 5G 632-862 s: Rtdekad 1.5 yd from the tank shifted over 1 yd, the report was
+                    // dropped, the Follow went out again and was refused again - 56 Follows in 28 s. The report's
+                    // facts stand while nobody moved off them by the leader's own "moved" measure
                     bool const holds =
-                        bot->GetExactDist(followRefusal.from) <= 1.0f &&
-                        tank->GetExactDist(followRefusal.targetAt) <= 1.0f &&
-                        (followRefusal.mob.IsEmpty() || (woken && woken->IsAlive() && !woken->IsInCombat() &&
-                                                         woken->GetExactDist(followRefusal.mobAt) <= 1.0f));
+                        bot->GetExactDist(followRefusal.from) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                        tank->GetExactDist(followRefusal.targetAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                        (followRefusal.mob.IsEmpty() ||
+                         (woken && woken->IsAlive() && !woken->IsInCombat() &&
+                          woken->GetExactDist(followRefusal.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD));
                     if (!holds)
                         Leader::Events::ClearMoveRefused(guid);
                     else

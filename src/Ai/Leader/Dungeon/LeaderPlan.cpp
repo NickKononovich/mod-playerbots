@@ -62,6 +62,7 @@
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
 #include "PullStrategy.h"
+#include "LeaderPlannerShared.h"  // [lead369] the planner's pack rule
 #include "PullActions.h"  // [b39_strat] FightHold: the opening fight held on the use side of a key gate
 #include "ChooseTargetActions.h"  // [b47_door] PullReadiness::GroupPreparing
 #include "SmartAI.h"
@@ -1139,14 +1140,37 @@ namespace Leader::Dungeon
                 // mobs) waited "a member cannot follow" on Rtpriac / Rthunab / Rtlocab, whose walks along with the
                 // tank would wake a Searing Blade Cultist - of that same pack. A block by a mob of this pull is
                 // resolved by the pull itself (lead364 / lead365): only a block by a mob outside it holds the order
-                auto const ofThisPull = [&committed, &lead](ObjectGuid const& blocker)
+                // [lead369] b200 5G 632-862 s: Rtdekad's walk would wake a Searing Blade Cultist (and a Voidwalker
+                // Minion) beside the committed Searing Blade Warlock - not in the pull's own list, but the same room:
+                // "of this pull" is the pull's mobs and what comes with them by the game's rules - the pack rule
+                // (SpawnsWith), a summon of one of them, the core's call for assistance (Creature::CallAssistance:
+                // CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, in sight, CanAssistTo). 5H 695.8 s: a los pull of the
+                // blocking Cultist itself (its target)
+                std::vector<ObjectGuid> pullGuids = {lead.commitMob, committed.lookTarget, committed.planTarget,
+                                                     committed.attack};
+                pullGuids.insert(pullGuids.end(), committed.pack.begin(), committed.pack.end());
+                pullGuids.insert(pullGuids.end(), committed.verdictPack.begin(), committed.verdictPack.end());
+                pullGuids.insert(pullGuids.end(), committed.losPack.begin(), committed.losPack.end());
+                float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+                auto const ofThisPull = [&](ObjectGuid const& blocker)
                 {
-                    return !blocker.IsEmpty() &&
-                           (blocker == lead.commitMob || blocker == committed.lookTarget ||
-                            blocker == committed.planTarget || blocker == committed.attack ||
-                            std::find(committed.pack.begin(), committed.pack.end(), blocker) != committed.pack.end() ||
-                            std::find(committed.verdictPack.begin(), committed.verdictPack.end(), blocker) !=
-                                committed.verdictPack.end());
+                    if (blocker.IsEmpty())
+                        return false;
+                    Creature* mob = map->GetCreature(blocker);
+                    ObjectGuid const owner = mob ? mob->GetCharmerOrOwnerOrOwnGUID() : blocker;
+                    for (ObjectGuid const& guid : pullGuids)
+                    {
+                        if (guid.IsEmpty())
+                            continue;
+                        if (guid == blocker || guid == owner)
+                            return true;
+                        Creature* pulled = mob ? map->GetCreature(guid) : nullptr;
+                        if (pulled && (PullPlanning::SpawnsWith(mob, pulled) ||
+                                       (assistRadius > 0.0f && mob->IsWithinDistInMap(pulled, assistRadius) &&
+                                        mob->CanAssistTo(pulled, tank) && mob->IsWithinLOSInMap(pulled))))
+                            return true;
+                    }
+                    return false;
                 };
                 bool const blockedOutside =
                     std::any_of(lead.groupBlockedBy.begin(), lead.groupBlockedBy.end(),
