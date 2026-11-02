@@ -271,10 +271,6 @@ constexpr bool PREDICT_DRINK = true;
 // N 778), Prot Paladin tank 1.39 (1.08, N 983). Retribution Paladin and feral druid have no window in these logs (no
 // drink after a [pull check] from full): they take the melee rate. false restores the fixed lines for these roles.
 constexpr bool PREDICT_DRINK_ALL_ROLES = true;
-// A healer's mana per tank health the pack lands over the fight (the planner's cost): 11.0 % (same windows).
-// [lead258] RestState's own lines read HealerPctPerTankHealth (the healer's spells, its measured healing per mana);
-// this stays for the leader's rest computation in LeaderEvents only.
-constexpr float HEALER_PCT_PER_TANK_HEALTH = 11.0f;
 // [lead258] What a healer heals, from its spell data and its measured fights: the best rate of a heal it knows (the
 // heal's amount with its spell power on the target, over the longest of its cast, the global cooldown, its own
 // cooldown and a heal over time's duration), the most health per mana of one, and the time between two heals of
@@ -305,11 +301,6 @@ void NoteFightLength(Player* tank, uint32 mobs, float sec);
 // estimated damage.
 struct NextFight;
 float FightSecOf(Player* bot, NextFight const& fight);
-// Fight length when the plan gives only its mob count: median [pull check] duration by mobs that came, all kept
-// logs of 2026-10-24 (N 4883): 1 -> 10 s, 2 -> 16, 3 -> 19, 4 -> 22, 5 -> 24, 6 -> 27, 7 -> 30. [lead264] RestState
-// and the planner read FightSecOf (measured, else game data); these stay for LeaderEvents' rest sum only.
-constexpr float FIGHT_BASE_SEC = 6.0f;
-constexpr float FIGHT_SEC_PER_MOB = 4.0f;
 // [lead264] Left over after the predicted fight: one more mob's fight at the member's rate (FightManaLine's flat 20 /
 // 25 % and the 75 % trash line cap are gone).
 constexpr float BOSS_TOPUP_PCT = 95.0f;        // before a boss everybody tops up below this

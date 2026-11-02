@@ -1436,9 +1436,7 @@ namespace Leader::Dungeon
             RestState::NextFight next;
             lead.fightLenStartMs = now;
             lead.fightLenEstSec = RestState::PredictNextFight(tank, next)
-                                      ? (next.fightSec > 0.0f ? next.fightSec
-                                                              : RestState::FIGHT_BASE_SEC +
-                                                                    RestState::FIGHT_SEC_PER_MOB * float(next.mobs))
+                                      ? (next.fightSec > 0.0f ? next.fightSec : RestState::FightSecOf(tank, next))
                                       : -1.0f;
         }
         else if (!fighting && lead.lastFighting && lead.fightLenStartMs && lead.fightLenEstSec >= 0.0f)
@@ -2421,7 +2419,7 @@ namespace Leader::Dungeon
                 // [lead179] b179 rfc-h 5H 450-460 s: the disc priest sat at 10 %, stood at its line (15.2 %), was
                 // told to top up the mage (88 %), fell below the line and sat again - 7 drinks in 10 s. A drinking
                 // healer's line holds the top-up heals still to come: it drinks on while its mana is below its line
-                // plus the mana of every member's missing health (HEALER_PCT_PER_TANK_HEALTH per tank health), so
+                // plus the mana of every member's missing health (HealerPctPerTankHealth per tank health), so
                 // it stands once and heals without dropping under the line (one Rest per fact)
                 if (!needsRest && PlayerbotAI::IsHeal(bot) && bot->IsSitState() && RestState::IsDrinking(bot) &&
                     bot->GetMaxPower(POWER_MANA) && tank->GetMaxHealth())
@@ -2465,7 +2463,7 @@ namespace Leader::Dungeon
                                     break;
                                 }
                         float const topUp =
-                            std::max(RestState::HEALER_PCT_PER_TANK_HEALTH * missing / float(tank->GetMaxHealth()),
+                            std::max(RestState::HealerPctPerTankHealth(bot) * missing / float(tank->GetMaxHealth()),
                                      float(hurt) * healPct);
                         if (bot->GetPowerPct(POWER_MANA) < line + topUp)
                         {
