@@ -263,7 +263,13 @@ namespace
     {
         return name == "use raid flask" || name == "use food buff" || name == "use pre pull potion" ||
                name == "use soulwell" || name == "click soul portal" || name == "mana potion" ||
-               name == "healing potion" || name == "ritual of souls";
+               name == "healing potion" || name == "ritual of souls" ||
+               // [lead520] the mana gem is the leader's Consume (TickPotions: the need, the cooldown rule); the
+               // trigger's action names and the actions' own names
+               name == "use mana sapphire" || name == "use mana emerald" || name == "use mana ruby" ||
+               name == "use mana citrine" || name == "use mana jade" || name == "use mana agate" ||
+               name == "mana sapphire" || name == "mana emerald" || name == "mana ruby" || name == "mana citrine" ||
+               name == "mana jade" || name == "mana agate";
     }
 
     bool IsDungeonPull(std::string const& name)

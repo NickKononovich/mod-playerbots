@@ -377,6 +377,34 @@ namespace RaidConsumables
         return best;
     }
 
+    uint32 FindManaGem(Player* bot, uint32& amount)
+    {
+        uint32 best = 0;
+        amount = 0;
+        ForEachBagItem(bot,
+                       [&](Item* item)
+                       {
+                           ItemTemplate const* proto = item->GetTemplate();
+                           if (!CanUse(bot, item) || proto->Class != ITEM_CLASS_CONSUMABLE ||
+                               proto->SubClass == ITEM_SUBCLASS_POTION)
+                               return;
+                           uint32 const spellId = UseSpellOf(proto);
+                           SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+                           if (!info || bot->HasSpellCooldown(spellId))
+                               return;
+                           uint32 restores = 0;
+                           for (SpellEffectInfo const& effect : info->Effects)
+                               if (effect.Effect == SPELL_EFFECT_ENERGIZE && effect.MiscValue == POWER_MANA)
+                                   restores += uint32(std::max(0, effect.BasePoints + (effect.DieSides + 1) / 2));
+                           if (restores > amount)
+                           {
+                               amount = restores;
+                               best = item->GetEntry();
+                           }
+                       });
+        return best;
+    }
+
     uint32 FindBuffPotion(Player* bot, uint32& spell)
     {
         ConsumableRole const role = RoleOf(bot);

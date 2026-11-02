@@ -362,6 +362,17 @@ void NotePeakManaRate(ObjectGuid member, float pctPerSec)
 
 namespace
 {
+    std::unordered_map<uint64, float> actingManaRate;  // [lead520] under manaRateLock
+}
+
+void NoteActingManaRate(ObjectGuid member, float pctPerSec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    actingManaRate[member.GetRawValue()] = pctPerSec;
+}
+
+namespace
+{
     std::unordered_map<uint64, float> healerPctPerCost;  // [lead393] under manaRateLock
 }
 
@@ -799,9 +810,25 @@ namespace
             SpellInfo const* info = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
             if (!info)
                 return;
+            // [lead520] b211 rfc-h 5H: "Evocation in the fight: 2.0 s in the fight vs -1.0 s drinking" - the fire
+            // mage carried 78 drinks and this read 0: the WotLK drinks (43183 and the core's list in
+            // AuraEffect::UpdatePeriodic) carry 0 in their SPELL_AURA_MOD_POWER_REGEN effect, the core moves the
+            // SPELL_AURA_PERIODIC_DUMMY effect's amount into it. Without a drink every mana tool won the comparison
+            float regen = 0.0f;
+            float dummy = 0.0f;
+            bool manaRegen = false;
             for (SpellEffectInfo const& effect : info->GetEffects())
+            {
                 if (effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && effect.MiscValue == POWER_MANA)
-                    best = std::max(best, 100.0f * float(effect.CalcValue(bot)) / 5.0f / float(maxMana));
+                {
+                    manaRegen = true;
+                    regen = std::max(regen, float(effect.CalcValue(bot)));
+                }
+                else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
+                    dummy = std::max(dummy, float(effect.CalcValue(bot)));
+            }
+            if (manaRegen)
+                best = std::max(best, 100.0f * (regen > 0.0f ? regen : dummy) / 5.0f / float(maxMana));
         };
         for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
             consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
@@ -936,6 +963,19 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 measured = true;
                 source = "its full fights";
             }
+            // [lead520] b211 rfc-h 5H: the fire mage came to Oggleflint (the first boss) on "0.45 %/s (its full
+            // fights) x 79 s" and burnt ~1.5 %/s there, dry before the end - its trash fights' seconds were held by
+            // the threat headroom, moved and waited for the first hit. On a boss it runs its rotation the whole fight
+            // (wowsims): before a boss is measured its rate per second it acted, when higher. Not a healer's: it
+            // casts as the fight's damage asks (its heal term below), not a rotation
+            if (!PlayerbotAI::IsHeal(bot) && bossManaRate.find(key) == bossManaRate.end())
+                if (auto const acting = actingManaRate.find(key);
+                    acting != actingManaRate.end() && acting->second > rate)
+                {
+                    rate = acting->second;
+                    measured = true;
+                    source = "its acting seconds";
+                }
         }
     }
     float need = rate * fightSec;
@@ -1069,7 +1109,14 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         uint32 amount = 0;
         uint32 buffSpell = 0;
         uint32 readyMs = 0;
-        bool const prepot = boss && !bot->IsInCombat() && RaidConsumables::FindBuffPotion(bot, buffSpell);
+        // [lead520] b211 rfc-h 5H Oggleflint 336.5 s: the fire mage (11 %) and the MM hunter (31 %) drank their
+        // pre-pull potions (Wild Magic / Speed) and the potions' cooldown then kept the in-fight Runic Mana Potion
+        // from the fight they needed it in (the line jumped to 27 / 75 % after the pull was given). The pre-pull
+        // potion is taken only when the member's mana covers the boss fight without the mana potion; otherwise the
+        // mana potion is its potion for the fight (LeaderSupport TickPotions asks NeedsManaPotion, the same test)
+        float const noPotionFloor = measured ? 0.0f : float(sPlayerbotAIConfig.LowMana);
+        bool const prepot = boss && !bot->IsInCombat() && RaidConsumables::FindBuffPotion(bot, buffSpell) &&
+                            bot->GetPowerPct(POWER_MANA) >= std::max(need + reserve - returned, noPotionFloor);
         uint32 const withinMs = fightSec > 0.0f ? uint32(fightSec * float(IN_MILLISECONDS)) : 0;
         if (!prepot && RaidConsumables::FindRestorePotion(bot, true, amount, withinMs, &readyMs))
         {
@@ -1081,6 +1128,19 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                                   pick.empty() ? "" : "; ", potionPct,
                                                   float(readyMs) / float(IN_MILLISECONDS), potionFloor)
                             : Acore::StringFormat("{}mana potion {:.0f} %", pick.empty() ? "" : "; ", potionPct);
+        }
+    }
+    // [lead520] a mana gem (RaidConsumables::FindManaGem: its own cooldown, no potion slot) in a boss fight: the leader
+    // keeps it for the bosses (TickPotions, the cooldown rule) - it counts like the potion, at most the shortfall
+    if (credits && potion && boss && bot->GetMaxPower(POWER_MANA))
+    {
+        uint32 amount = 0;
+        if (RaidConsumables::FindManaGem(bot, amount))
+        {
+            float const gemPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
+                                          std::max(need + reserve - returned, 0.0f));
+            returned += gemPct;
+            pick += Acore::StringFormat("{}mana gem {:.0f} %", pick.empty() ? "" : "; ", gemPct);
         }
     }
     // [lead251] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
@@ -1101,6 +1161,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
                                     perCostMeasured ? "measured" : "throughput", cost);
     return line;
+}
+
+bool NeedsManaPotion(Player* bot, float fightSec)
+{
+    return bot && bot->GetMaxPower(POWER_MANA) &&
+           bot->GetPowerPct(POWER_MANA) < FightManaLine(bot, fightSec, 0.0f, nullptr, true, true, false);
 }
 
 namespace

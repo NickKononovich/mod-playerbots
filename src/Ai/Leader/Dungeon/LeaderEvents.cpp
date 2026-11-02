@@ -2839,6 +2839,14 @@ namespace Leader::Dungeon
                             RestState::NotePeakManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.fullSpent / spend.fullSec));
                         }
+                        // [lead520] the net use per second it acted (its whole rotation's rate)
+                        if (spend.actingSec > 0.0f)
+                        {
+                            spend.actSpent += used;
+                            spend.actSec += spend.actingSec;
+                            RestState::NoteActingManaRate(member->GetGUID(),
+                                                          std::max(0.0f, spend.actSpent / spend.actSec));
+                        }
                         // [lead393] a healer's net use per tank health the plan costed its fights at
                         if (spend.fightCost > 0.0f)
                         {
@@ -2857,6 +2865,7 @@ namespace Leader::Dungeon
                     spend.lastPct = -1.0f;  // [lead480]
                     spend.toolGain = 0.0f;
                     spend.potion = false;
+                    spend.actingSec = 0.0f;  // [lead520]
                     continue;
                 }
                 if (spend.prev < 0.0f)
@@ -2872,6 +2881,11 @@ namespace Leader::Dungeon
                     spend.toolGain += pct - spend.lastPct;
                 spend.lastPct = pct;
                 spend.fightSec += dt;
+                // [lead520] it acted this tick: a cast or channel on, or its global cooldown running (game state)
+                if (spend.dryPct < 0.0f)
+                    if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+                        member->IsNonMeleeSpellCast(false) || (memberAI && memberAI->GetGlobalCooldownRemaining()))
+                        spend.actingSec += dt;
                 if (spend.dryPct < 0.0f && pct < RestState::CheapestCastPct(member))  // [lead417] it ran dry
                 {
                     spend.dryPct = pct;
@@ -4653,14 +4667,26 @@ namespace Leader::Dungeon
                                                         .Real("share", p.share)
                                                         .Build();
                     }
+                    // [lead520] b211 rfc-h 5H: the fire mage's Living Bomb on the bosses' adds (Oggleflint's Shaman /
+                    // Trogg, the Cultist with Jergosh / Bazzalan) was held by its own threat gate ("[threat-hold]
+                    // holds living bomb on attacker ... 122 %") on mobs the leader's kill order named for it with and
+                    // without headroom. The leader names the mobs it allows this member's multi-DoT / cleave on: its
+                    // Attack target and every kill-order mob it has threat headroom on (the leader's one threat
+                    // verdict, ThreatStrategy follows it); a mob without headroom is not named, so not hit
+                    std::vector<ObjectGuid> named = {attackOn->GetGUID()};
+                    for (ObjectGuid const& other : killOrder)
+                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, other);
+                            mob && mob != attackOn && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
+                            named.push_back(other);
                     bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
-                                                                   attackOn->GetGUID(), killOrder);
+                                                                   attackOn->GetGUID(), named);
                     bool const aoeChanged = Leader::Events::SetAoe(guid, memberAoe, attackOn->GetPosition(),
                                                                    LEADER_AOE_RADIUS, memberSpared);
                     if (changed || aoeChanged)
                         logEvent(bot, "Attack", JsonObject().Str("target", attackOn->GetName())
                                                     .Num("targetEntry", attackOn->GetEntry())
                                                     .Num("killOrder", int64(killOrder.size()))
+                                                    .Num("named", int64(named.size()))  // [lead520]
                                                     .Str("aoe", memberAoe == Leader::AoeRule::Forbidden
                                                                     ? "forbidden"
                                                                     : "allowed-on-pack")

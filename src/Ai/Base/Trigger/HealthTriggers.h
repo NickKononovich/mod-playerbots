@@ -341,6 +341,9 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 // [lead482] `potion` false: without the mana potion the game lets it drink in the fight (the potion verdict itself)
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false,
                     bool credits = true, bool potion = true);
+// [lead520] a boss fight of `fightSec` needs the member's in-fight mana potion: its mana is under the boss line without
+// the potion (then it keeps the potions' cooldown for it and drinks no pre-pull potion)
+bool NeedsManaPotion(Player* bot, float fightSec);
 // [lead423] the mana tools (Innervate, Shadowfiend, Hymn of Hope, Mana Tide Totem, Evocation, Divine Plea, Dispersion)
 constexpr uint32 SPELL_INNERVATE = 29166;
 constexpr uint32 SPELL_SHADOWFIEND = 34433;
@@ -369,6 +372,9 @@ void NoteManaRate(ObjectGuid member, float pctPerSec);
 // [lead232] ... on boss fights, and over its fights at least as long as this run's mean fight (lead234)
 void NoteBossManaRate(ObjectGuid member, float pctPerSec);
 void NotePeakManaRate(ObjectGuid member, float pctPerSec);
+// [lead520] ... per second it acted in its fights (casting, channelling, on its global cooldown): its whole rotation's
+// rate, a boss fight's before one is measured
+void NoteActingManaRate(ObjectGuid member, float pctPerSec);
 // [lead393] the leader notes a healer's measured net mana use (% of max) per tank health of the plan's fight cost:
 // FightManaLine's heal term reads it in place of the throughput model (HealerPctPerTankHealth) once measured
 void NoteHealerPctPerCost(ObjectGuid member, float pctPerCost);

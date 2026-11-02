@@ -11,6 +11,7 @@
 #include <list>
 #include <map>
 
+#include "ChooseTargetActions.h"  // [lead520] PullReadiness::MemberNeedsManaPotion
 #include "Creature.h"
 #include "DamageTaken.h"
 #include "DungeonLeaderState.h"
@@ -18,10 +19,12 @@
 #include "GroupRouteState.h"
 #include "HealthTriggers.h"  // RestState
 #include "Item.h"
+#include "ItemTemplate.h"  // [lead520]
 #include "LeaderFightChecks.h"
 #include "LeaderOrders.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"  // [lead520] the mana gem's item cooldown
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -479,8 +482,13 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
             uint32 spell = 0;
             uint32 const item = RaidConsumables::FindBuffPotion(bot, spell);
             std::string failed;
+            // [lead520] the fight needs its in-fight mana potion (one potion per combat, the pre-pot's cooldown)
+            bool const keepsManaPotion = item && !bot->HasAura(spell) &&
+                                         PullReadiness::MemberNeedsManaPotion(bot, boss);
             char const* done = !item                 ? "no buff potion for its role it can use now"
                                : bot->HasAura(spell) ? "used: its buff is on"
+                               : keepsManaPotion
+                                   ? "kept for the in-fight mana potion: its mana is under the boss line without it"
                                : Leader::Events::TakeConsumeFailed(bot->GetGUID(), item, failed) ? "refused"
                                                                                                  : nullptr;
             if (done)
@@ -554,6 +562,54 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                         bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft, lineWhy);
                 }
             }
+        // [lead520] b211 rfc-h: the mages' own "high mana" trigger used the Mana Gem on trash under 65 % and it was on
+        // its cooldown at the bosses. The gem is the leader's like the potion (the same need: the line without the
+        // potion and the gem), held by the cooldown rule: in a boss fight, on trash only at a critical pull, with no
+        // boss left, or when it is back before the next boss pull
+        if (!item && maxMana)
+            if (uint32 amount = 0; uint32 const gem = RaidConsumables::FindManaGem(bot, amount))
+                if (maxMana - bot->GetPower(POWER_MANA) >= amount)
+                {
+                    std::string lineWhy;
+                    float const line =
+                        RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight, true, false);
+                    if (bot->GetPowerPct(POWER_MANA) < line)
+                    {
+                        float rechargeSec = 0.0f;
+                        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(gem))
+                            for (auto const& use : proto->Spells)
+                                if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                                {
+                                    rechargeSec = std::max({rechargeSec, float(std::max(use.SpellCooldown, 0)),
+                                                            float(std::max(use.SpellCategoryCooldown, 0))}) /
+                                                  1000.0f;
+                                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(uint32(use.SpellId)))
+                                        rechargeSec = std::max(
+                                            rechargeSec,
+                                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f);
+                                }
+                        std::string rule;
+                        if (bossFight)
+                            rule = "a boss fight";
+                        else if (lead.fightOverload >= 1.0f)
+                            rule = Acore::StringFormat("a critical pull: overload {:.2f}", lead.fightOverload);
+                        else if (lead.bossPullSec < 0.0f)
+                            rule = "trash, no boss left";
+                        else if (lead.bossPullSec >= rechargeSec)
+                            rule = Acore::StringFormat(
+                                "trash: back before the pull of {} (in {:.0f} s, recharge {:.0f} s)", lead.nextBossName,
+                                lead.bossPullSec, rechargeSec);
+                        if (!rule.empty())
+                            item = gem;
+                        verdict = Acore::StringFormat(
+                            "mana gem {}: {:.0f} % < the {:.0f} % the fight's {:.0f} s left need ({}); {}",
+                            rule.empty() ? "held" : "used", bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft,
+                            lineWhy,
+                            rule.empty() ? Acore::StringFormat("held for {} (his pull in {:.0f} s, recharge {:.0f} s)",
+                                                               lead.nextBossName, lead.bossPullSec, rechargeSec)
+                                         : rule);
+                    }
+                }
         std::string& logged = st.potionLogged[bot->GetGUID()];
         if (item)
         {

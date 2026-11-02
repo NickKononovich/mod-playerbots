@@ -5858,6 +5858,11 @@ float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
     return member && boss ? RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, nullptr, true) : 0.0f;
 }
 
+bool PullReadiness::MemberNeedsManaPotion(Player* member, Unit* boss)
+{
+    return member && boss && RestState::NeedsManaPotion(member, NextPullSec(member, boss));
+}
+
 namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execution
 {
     // [drift_caster_corner] scholo-n 20261025-150737-7 pull 12: Adepts and Necromancers cast from range and never

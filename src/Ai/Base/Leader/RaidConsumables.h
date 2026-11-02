@@ -63,6 +63,9 @@ namespace RaidConsumables
     // [lead402] the bag potion whose buff serves the bot's role best (the flask scoring on its spell's auras), not a
     // restore: its item entry and its spell; 0: none. Any dungeon (not only where Allowed)
     uint32 FindBuffPotion(Player* bot, uint32& spell);
+    // [lead520] the bag item that restores mana and is no potion (a mage's Mana Gem: its own cooldown, no potion
+    // slot), usable now: its item entry and the mean mana its spell restores; 0: none
+    uint32 FindManaGem(Player* bot, uint32& amount);
     bool IsSoulwell(GameObject* go);
     bool IsSoulPortal(GameObject* go);
     bool IsRefreshmentTable(GameObject* go);

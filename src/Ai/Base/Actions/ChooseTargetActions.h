@@ -335,6 +335,9 @@ namespace PullReadiness
     std::string MemberBossGap(Player* member, Unit* boss);
     // [lead179] that member's boss mana line (the same FightManaLine MemberBossGap reads)
     float MemberBossManaLine(Player* member, Unit* boss);
+    // [lead520] that member's boss fight needs its in-fight mana potion (RestState::NeedsManaPotion on the same fight
+    // seconds): no pre-pull potion for it
+    bool MemberNeedsManaPotion(Player* member, Unit* boss);
 }
 
 class DpsAoeAction : public AttackAction

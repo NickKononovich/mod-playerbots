@@ -377,7 +377,12 @@ float ThreatMultiplier::GetValue(Action* action)
     {
         Leader::MemberEvents events;
         if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack &&
-            events.intensity != Leader::Intensity::Stop && events.target == target->GetGUID())
+            events.intensity != Leader::Intensity::Stop &&
+            (events.target == target->GetGUID() ||
+             // [lead520] ... and on every mob the leader named for it (its kill order: the mobs it has headroom
+             // on, its multi-DoT / cleave targets)
+             std::find(events.killOrder.begin(), events.killOrder.end(), target->GetGUID()) !=
+                 events.killOrder.end()))
             return 1.0f;
     }
 

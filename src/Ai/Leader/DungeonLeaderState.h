@@ -344,6 +344,11 @@ namespace Leader
             float lastPct = -1.0f;   // [lead480] its mana at the last fight tick
             float toolGain = 0.0f;   // [lead480] the mana its tools and potions returned in this fight (until dry)
             bool potion = false;     // [lead480] a potion drunk in this combat (Player::GetLastPotionId) is counted
+            // [lead520] the fight seconds it acted (casting, channelling or on its global cooldown) until dry, and over
+            // its fights the net use per acting second: the rate of its whole rotation, a boss fight's
+            float actingSec = 0.0f;
+            float actSpent = 0.0f;
+            float actSec = 0.0f;
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health
