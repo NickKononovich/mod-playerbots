@@ -3747,15 +3747,31 @@ namespace Leader::Travel
             // plan to Taragaman came back for them from Oggleflint (431-466 s, 233 yd); the dungeon's optimum takes
             // them with the Troggs. The plan's walk goes to its stops: an idle mob off the route within its aggro
             // reach of an on-path mob, in its sight, is on that walk too (once: not the mobs beside it in turn)
+            // [lead228] b187 rfc-h 5C 246-458 s: the side room under the walkway (Ragefire lows 8-18, 12 mobs) came in
+            // one after the other - Shaman 12 ("skip: detour 340 yd for 79 yd") beside a plan stop, then as the plan's
+            // stop the route's target, which is on the path by that alone, and its neighbours beside it in turn: 58
+            // pulls, the tank's route 3352 yd. Beside means beside a mob the route itself needs (a route rule) that
+            // stands at its spot - not the route's target or plan stop, not a mob that fled or walked off - and never
+            // a mob the route skips
+            auto const routeNeedsHere = [&](Creature* on)
+            {
+                auto const ruled = routeWhy.find(on->GetGUID());
+                if (ruled == routeWhy.end() || !ruled->second.rule)
+                    return false;
+                float const wander =
+                    on->GetDefaultMovementType() == RANDOM_MOTION_TYPE ? on->GetWanderDistance() : 0.0f;
+                return on->GetExactDist(PlanSpawnSpot(on)) <= wander + Leader::LEADER_COMMIT_MOVED_YD;
+            };
             std::vector<std::pair<float, Creature*>> beside;
             for (auto const& [distance, creature] : offRouteHostiles)
             {
-                if (creature->IsInCombat() || group.BossOrder(creature) >= 0 || deferred.count(creature->GetGUID()))
+                if (creature->IsInCombat() || group.BossOrder(creature) >= 0 || deferred.count(creature->GetGUID()) ||
+                    group.Route().skipUntil.count(creature->GetGUID()))
                     continue;
                 float const reach = AggroReach(creature, leader);
                 for (auto const& [onDistance, on] : hostiles)
-                    if (on != nextBoss && !on->IsInCombat() && on->GetExactDist(creature) <= reach &&
-                        on->IsWithinLOSInMap(creature))
+                    if (on != nextBoss && !on->IsInCombat() && routeNeedsHere(on) &&
+                        on->GetExactDist(creature) <= reach && on->IsWithinLOSInMap(creature))
                     {
                         beside.emplace_back(distance, creature);
                         group.Route().pathVerdicts[creature->GetGUID()] = {
