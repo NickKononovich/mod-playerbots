@@ -159,6 +159,21 @@ float PrepLeftSec(LeaderGroup& group, Creature* boss, std::vector<Player*> const
     {
         if (!bot->IsAlive())
             continue;
+        // [lead504] b210 rfc-h 5G 230.3 s: Army of the Dead "the preparation is over" at the buff pass end, while
+        // the holy paladin's rebuff window stayed open (boss_prep, Holy Light top-ups) and the leader's "the group
+        // buffs" held Oggleflint to 247 s - the ghouls went for the unpulled boss and were stopped 8 times ("not in
+        // the group's fight"), the same at Bazzalan. A member still buffing (BuffWorkers: its rebuff window open or
+        // casting) holds the pull for an unknown time: the channel waits for it
+        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && botAI->forceRebuff.IsPending())
+        {
+            why = bot->GetName() + " rebuff window open";
+            return -1.0f;
+        }
+        if (bot->IsNonMeleeSpellCast(false) && !ArmyCaster(bot))
+        {
+            why = bot->GetName() + " casting";
+            return -1.0f;
+        }
         // the buff pass's food step: an eater without Well Fed waits for its food's trigger
         if (route.buffStep == 3 && RestState::IsEating(bot))
         {
