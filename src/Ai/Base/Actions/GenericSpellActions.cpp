@@ -402,8 +402,15 @@ bool CastAuraSpellAction::isUseful()
     if (!GetTarget() || !CastSpellAction::isUseful())
         return false;
 
+    // [lead395] b201 rfc-h 5H 1-21 s: the pull waited 20 s on "Rthunad buffing" - in its rebuff window the hunter
+    // recast Mend Pet every global cooldown (the window's refresh rule: an aura that runs out before the next fight
+    // ends is recast) and its Trueshot Aura, the one buff it lacked, failed NOT_READY on that cooldown each tick, so
+    // the window never had a tick without a buff trigger. The window's refresh rule is the buff pass's: a buff
+    // (CastBuffSpellAction) - a heal over time or a debuff is cast while missing, or below its own refresh time
     Aura* aura = botAI->GetAura(spell, GetTarget(), isOwner, checkDuration);
-    return BuffBelowRefreshTarget(botAI, aura, beforeDuration);
+    if (!aura)
+        return true;
+    return beforeDuration && uint32(aura->GetDuration()) < beforeDuration;  // a permanent aura (-1) is no refresh
 }
 
 bool CastBuffSpellAction::isUseful()
