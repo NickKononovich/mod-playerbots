@@ -500,7 +500,7 @@ namespace
         if (name == "heroism" || name == "bloodlust")
             return true;
         if (Leader::IsBurnCooldown(name) && !Leader::BurnAllows(events, name) &&  // [lead178] per cooldown
-            !LeaderCommand::BurnToolUse(self, name, CriticalHealth(self)))         // [lead410]
+            !LeaderCommand::BurnToolUse(self, name, CriticalHealth(self), PlayerbotAI::IsHeal(self)))  // [lead410]
             return true;
         // [lead64] b109 pull 1: Rtshaab's "call of the elements" (Searing / Magma totems) drew the mob before the tank
         // hit it. What makes threat on fight mobs without being an attack (damaging totems, Fire Nova) is gated like
@@ -681,7 +681,8 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
             note("external", "an external without a leader assignment");
         return;
     }
-    if (Leader::IsBurnCooldown(name) && !LeaderCommand::BurnToolUse(bot, name, CriticalHealth(bot)))  // [lead80]
+    if (Leader::IsBurnCooldown(name) &&
+        !LeaderCommand::BurnToolUse(bot, name, CriticalHealth(bot), PlayerbotAI::IsHeal(bot)))  // [lead80] [lead410]
     {
         if (!Leader::BurnAllows(events, name))  // [lead178]
             note("burn", "a burn cooldown without the leader's Intensity burn");

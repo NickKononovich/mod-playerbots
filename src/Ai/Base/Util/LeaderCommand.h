@@ -34,10 +34,11 @@ namespace LeaderCommand
 
     // [lead410] a burn-list action used as no burn, which the leader's cooldown verdict does not gate: Raise Dead
     // with Master of Ghouls (the permanent pet's summon), or the critical-health Raise Dead + Death Pact heal (its
-    // personal save; `critical`: the bot is at its critical health)
-    inline bool BurnToolUse(Player* bot, std::string const& name, bool critical)
+    // personal save; `critical`: the bot is at its critical health); [lead411] a healer's Inner Focus (its heals)
+    inline bool BurnToolUse(Player* bot, std::string const& name, bool critical, bool healer)
     {
-        return name == "raise dead" && (bot->HasAura(SPELL_MASTER_OF_GHOULS) || critical);
+        return (name == "raise dead" && (bot->HasAura(SPELL_MASTER_OF_GHOULS) || critical)) ||
+               (name == "inner focus" && healer);
     }
 
     // May the bot's AoE hit around `pos`? Not led or no rule from the leader: true (the rotation's own choice).

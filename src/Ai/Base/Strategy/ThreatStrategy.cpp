@@ -801,7 +801,8 @@ float LeaderCommandMultiplier::GetValue(Action* action)
         (name == "shadowfiend" && bot->GetPowerPct(POWER_MANA) < static_cast<float>(sPlayerbotAIConfig.MediumMana)) ||
         (name == "mirror image" && AI_VALUE(uint8, "my attacker count") > 0) ||
         LeaderCommand::BurnToolUse(bot, name,
-                                   bot->GetHealthPct() < static_cast<float>(sPlayerbotAIConfig.CriticalHealth));
+                                   bot->GetHealthPct() < static_cast<float>(sPlayerbotAIConfig.CriticalHealth),
+                                   PlayerbotAI::IsHeal(bot));
     if (IsBurnCooldown(name) && !burn && !burnException)
     {
         if (stale)
