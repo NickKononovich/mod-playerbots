@@ -55,6 +55,7 @@
 #include "RouteTargets.h"  // [lead107] the leader's route target choice
 #include "RouteSteer.h"    // [lead107] the leader's route walk
 #include "RouteMeet.h"     // [lead107] the leader's meet
+#include "RouteReenter.h"
 #include "RouteWater.h"    // [lead107] the leader's water rule
 #include "LeaderBuffing.h"  // [lead107] the leader's buffing pass
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
@@ -300,26 +301,11 @@ namespace TestHarness
         // MemberStranded: the navmesh check per far member at most this often; stranded after this long within the
         // still range (Pit of Saron wave 7: Rtshaba on a 7-polygon island 42 yd up the Garfrost wall; Gundrak: the
         // moat floor under Gal'darah's bridge).
-        constexpr uint32 STRANDED_RECHECK_MS = 10 * IN_MILLISECONDS;
+        using Leader::Travel::STRANDED_RECHECK_MS;  // [lead341] RouteReenter.h
         constexpr uint32 STRANDED_AFTER_MS = 30 * IN_MILLISECONDS;
-        constexpr float STRANDED_STILL_RANGE = 20.0f;
+        using Leader::Travel::STRANDED_STILL_RANGE;  // [lead341] RouteReenter.h
         constexpr float STRANDED_LEVEL_DZ = 6.0f;      // REGROUP_PING_PONG_LEVEL_DZ (TestHarnessMgr.cpp)
         constexpr float STRANDED_LEVEL_RANGE = 30.0f;  // REGROUP_PING_PONG_TOGETHER
-        // [b30_topped_up] TickStrandedReenter (user rule 2026-10-25: «если нет пути обратно, то можно перезайти в
-        // данж. Но это будет считаться как смерть»): no walk back to the group for STRANDED_REENTER_MS within the still
-        // range, the follow watchdog stuck at least STRANDED_REENTER_WATCHDOG_S meanwhile; at most
-        // STRANDED_REENTER_MAX per member and run (each one is a death).
-        constexpr uint32 STRANDED_REENTER_MS = 75 * IN_MILLISECONDS;
-        constexpr uint32 STRANDED_REENTER_WATCHDOG_S = 20;
-        constexpr uint32 STRANDED_REENTER_MAX = 3;
-        // [b30_reenter] User rule 2026-10-25: «еще можно перезайти в данж, когда это реально ближе идти будет» - a
-        // re-entry (WotLK's LFG teleport out / in) as a route choice, a death too: the walk to the goal here longer
-        // than SHORTCUT_REENTER_RATIO x the walk from an entrance and by more than SHORTCUT_REENTER_MIN_GAIN.
-        constexpr float SHORTCUT_REENTER_RATIO = 2.0f;
-        using Leader::Travel::SHORTCUT_REENTER_MIN_GAIN;  // [lead107] RouteTargets.h
-        constexpr uint32 SHORTCUT_REENTER_CHECK_MS = 20 * IN_MILLISECONDS;
-        constexpr uint32 SHORTCUT_REENTER_COOLDOWN_MS = 3 * MINUTE * IN_MILLISECONDS;
-        constexpr float SHORTCUT_REENTER_MEMBER_FAR = 100.0f;  // a member this far from the leader re-enters alone
         using Leader::Travel::ENDLESS_SUMMON_KILLS;  // [lead107] RouteTargets.h
         using Leader::Travel::DRIVE_STEP;  // [lead107] RouteSteer.h
         using Leader::Travel::DRIVE_SAME_GOAL;  // [lead107] RouteEvents.h
@@ -779,10 +765,8 @@ namespace TestHarness
         using Leader::Travel::FAST_RESPAWN_MAX_S;  // [lead107] RouteTargets.h
 
         using Leader::Travel::ROUTE_RESPAWN_IGNORE;  // [lead107] RouteTargets.h
-        constexpr float RESPAWN_ZONE_RADIUS = 30.0f;     // a walk this close to a zone point crosses the zone
         using Leader::Travel::RESPAWN_ZONE_MERGE;  // [lead107] RouteTargets.h
         using Leader::Travel::RESPAWN_ZONE_MAX_POINTS;  // [lead107] RouteTargets.h
-        constexpr float RESPAWN_ZONE_WALK_COST = 150.0f;  // yd added to an entrance walk through a zone
         using Leader::Travel::respawnZones;  // [lead107] RouteTargets.h
 
         using Leader::Travel::FastRespawner;  // [lead107] RouteTargets.h
@@ -793,30 +777,7 @@ namespace TestHarness
 
         using Leader::Travel::AddRespawnZonePoint;  // [lead107] RouteTargets.h
 
-        // The walk `points` passes within RESPAWN_ZONE_RADIUS of a respawn zone point of the instance.
-        bool RespawnZoneOnWalk(uint32 instanceId, Movement::PointsArray const& points)
-        {
-            auto const found = respawnZones.find(instanceId);
-            if (!ROUTE_RESPAWN_IGNORE || found == respawnZones.end() || points.empty())
-                return false;
-            for (G3D::Vector3 const& point : found->second)
-                for (size_t index = 0; index < points.size(); ++index)
-                {
-                    G3D::Vector3 closest = points[index];
-                    if (index + 1 < points.size())
-                    {
-                        G3D::Vector3 const segment = points[index + 1] - points[index];
-                        float const lengthSq = segment.squaredLength();
-                        float const t = lengthSq > 0.0f
-                                            ? std::clamp((point - points[index]).dot(segment) / lengthSq, 0.0f, 1.0f)
-                                            : 0.0f;
-                        closest = points[index] + segment * t;
-                    }
-                    if ((closest - point).length() < RESPAWN_ZONE_RADIUS)
-                        return true;
-                }
-            return false;
-        }
+        using Leader::Travel::RespawnZoneOnWalk;  // [lead341] RouteReenter.h
 
         using Leader::Travel::ROUTE_UNSEEN_ROUTE_END_PASS;  // [lead107] RouteSteer.h
         using Leader::Travel::unseenRouteEndUntilMs;  // [lead107] RouteSteer.h
@@ -3109,298 +3070,6 @@ namespace TestHarness
         StatsRegistry::Instance().RecordReentry(bot, killer);
     }
 
-    // [b30_topped_up] A member with no walk back to the group leaves the instance and comes back in at its entrance,
-    // counted as a death (user rule 2026-10-25). dmw-n 20261025-184229-dmw-n-5C-16: Immol'thar's portal put the healer
-    // on a perch over his spawn, a follow later glided it into the pit (a navmesh region of 186 polygons joined to the
-    // rest only by the one-way route link down), StuckWatchdog "needs path fix" for 6 minutes, the group held until
-    // the run was stopped. The leader's reference is its nearest living member. The landing is the entrance the
-    // group came in by (party.entranceIdx), only when a walk from there reaches the group: no content is skipped.
-    bool TestHarnessMgr::TickStrandedReenter(Party& party, Member& member, Player* bot, Player* leader)
-    {
-        auto const reset = [&member]()
-        {
-            member.reenterSinceMs = 0;
-            member.reenterWatchdogSec = 0;
-        };
-
-        Player* reference = bot != leader ? leader : nullptr;
-        if (bot == leader)
-            for (Member const& other : party.members)
-                if (Player* candidate = ObjectAccessor::FindPlayer(other.guid);
-                    candidate && candidate != bot && candidate->IsAlive() && candidate->GetMap() == bot->GetMap() &&
-                    (!reference || bot->GetExactDist(candidate) < bot->GetExactDist(reference)))
-                    reference = candidate;
-
-        Map* map = bot->GetMap();
-        if (!reference || !leader || !bot->IsAlive() || !reference->IsAlive() || !map || !map->IsDungeon() ||
-            reference->GetMap() != map || bot->IsInCombat() || reference->IsInCombat() || bot->IsBeingTeleported() ||
-            bot->GetTransport() || bot->GetVehicle() || bot->IsFlying() || reference->GetTransport() ||
-            reference->GetVehicle() || reference->IsFlying() ||  // a lift, a drake (Oculus): no walk is the plan
-            party.linkIdx >= 0 || !party.escort.IsEmpty() ||
-            party.wingWalk || member.hasPortalGoal || party.entrances.empty() ||
-            party.entranceIdx >= party.entrances.size() || bot->GetExactDist(reference) <= MEET_RANGE ||
-            member.strandedReentries >= STRANDED_REENTER_MAX)
-        {
-            reset();
-            return false;
-        }
-
-        uint32 now = getMSTime();
-        now = now ? now : 1;
-        if (member.reenterCheckMs && getMSTimeDiff(member.reenterCheckMs, now) < STRANDED_RECHECK_MS)
-            return false;
-        member.reenterCheckMs = now;
-
-        PathResult const out = RoutePath(bot, reference->GetPositionX(), reference->GetPositionY(),
-                                         reference->GetPositionZ());
-        if (out.complete)
-        {
-            reset();
-            return false;
-        }
-
-        if (!member.reenterSinceMs || bot->GetExactDist(&member.reenterPos) > STRANDED_STILL_RANGE)
-        {
-            reset();
-            member.reenterSinceMs = now;
-            member.reenterPos = bot->GetPosition();
-            return false;
-        }
-
-        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-            if (auto* watchdog = dynamic_cast<StuckWatchdogValue*>(
-                    botAI->GetAiObjectContext()->GetUntypedValue("stuck watchdog")))
-                member.reenterWatchdogSec = std::max(member.reenterWatchdogSec, watchdog->GetStuckSeconds());
-
-        uint32 const noWalkMs = getMSTimeDiff(member.reenterSinceMs, now);
-        if (noWalkMs < STRANDED_REENTER_MS || member.reenterWatchdogSec < STRANDED_REENTER_WATCHDOG_S)
-            return false;
-
-        Position const& entrance = party.entrances[party.entranceIdx];
-        G3D::Vector3 const entranceAt(entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
-        PathResult const back = RoutePath(bot, reference->GetPositionX(), reference->GetPositionY(),
-                                          reference->GetPositionZ(), &entranceAt);
-        if (!back.complete)
-        {
-            // re-entering would not help: no walk from the entrance either (kept as stranded, logged once)
-            if (member.reenterWatchdogSec != UINT32_MAX)
-                LogEvent(party, "stranded_reenter",
-                         JsonObject().Str("name", bot->GetName()).Str("state", "refused")
-                             .Str("why", "no walk from the entrance to the group either")
-                             .Real("x", bot->GetPositionX()).Real("y", bot->GetPositionY())
-                             .Real("z", bot->GetPositionZ()));
-            member.reenterWatchdogSec = UINT32_MAX;  // logged; the watch restarts when the member moves
-            return false;
-        }
-
-        G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-        float const distance = bot->GetExactDist(reference);
-        RecordReentryDeath(bot, "stranded_reenter: no path back, re-entered the instance",
-                           JsonObject().Str("kind", "stranded").Str("goal", reference->GetName())
-                               .Real("distance", distance).Num("noWalkSec", noWalkMs / IN_MILLISECONDS)
-                               .Real("walk", -1.0f).Real("entranceWalk", back.length)
-                               .Num("entrance", int64(party.entranceIdx)).Real("toX", entrance.GetPositionX())
-                               .Real("toY", entrance.GetPositionY()).Real("toZ", entrance.GetPositionZ()));
-        bot->GetMotionMaster()->Clear();
-        bot->StopMoving();
-        if (!bot->TeleportTo(map->GetId(), entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ(),
-                             entrance.GetOrientation()))
-        {
-            LogEvent(party, "stranded_reenter",
-                     JsonObject().Str("name", bot->GetName()).Str("state", "teleport refused (death recorded)"));
-            reset();
-            return false;
-        }
-
-        ++member.strandedReentries;
-        member.stranded = false;
-        member.strandedSinceMs = 0;
-        member.apartIgnoreUntilMs = 0;
-        // [b32_sh_ooze] The walk from the entrance crosses a respawn zone: the member counts as back in through the
-        // portal (Member::backInMs), so MeetMember's regroup decides - it runs only on a clear walk, else the group
-        // comes to the entrance and walks back with it - instead of a lone walk through the refilled mobs.
-        bool const respawnZone = RespawnZoneOnWalk(party.instanceId, back.points);
-        if (respawnZone)
-            member.backInMs = now;
-        reset();
-        LOG_INFO("playerbots",
-                 "[stranded_reenter] {}: {} had no walk back to {} for {} s (watchdog stuck {} s, {:.0f} yd, at "
-                 "{:.1f} {:.1f} {:.1f}): re-enters the instance at entrance {} - counted as a death ({} of {})",
-                 party.id, bot->GetName(), reference->GetName(), noWalkMs / IN_MILLISECONDS,
-                 member.reenterWatchdogSec, distance, from.x, from.y, from.z, party.entranceIdx,
-                 member.strandedReentries, STRANDED_REENTER_MAX);
-        LogEvent(party, "stranded_reenter",
-                 JsonObject().Str("name", bot->GetName()).Str("state", "re-entered").Str("to", reference->GetName())
-                     .Num("noWalkSec", noWalkMs / IN_MILLISECONDS).Real("distance", distance)
-                     .Real("x", from.x).Real("y", from.y).Real("z", from.z)
-                     .Num("entrance", int64(party.entranceIdx)).Num("count", member.strandedReentries)
-                     .Bool("countedAsDeath", true).Bool("respawnZone", respawnZone));
-        return true;
-    }
-
-    // [b30_reenter] The movers out of the instance and in again at `entrance` (WotLK's LFG teleport out / in): not
-    // a death ([b31_shortcut_not_death]), no harness move. The goal stays the route's; only the way
-    // there changes.
-    void TestHarnessMgr::ShortcutReenter(Party& party, std::vector<Player*> const& movers, size_t entrance,
-                                         char const* why, float walk, float entranceWalk, std::string const& goal)
-    {
-        Position const& at = party.entrances[entrance];
-        std::string names;
-        for (Player* bot : movers)
-        {
-            // [b31_shortcut_not_death] user 2026-10-25: a shortcut re-entry is a route choice, NOT a death (only the
-            // stranded no-path re-entry is); it stays visible in the shortcut_reenter event below.
-            bot->GetMotionMaster()->Clear();
-            bot->StopMoving();
-            if (!bot->TeleportTo(bot->GetMapId(), at.GetPositionX(), at.GetPositionY(), at.GetPositionZ(),
-                                 at.GetOrientation()))
-                continue;
-            names += (names.empty() ? "" : ",") + bot->GetName();
-            if (bot->GetGUID() == party.leader)
-                TestRunner::ClearWaypoint(party.leader);
-        }
-
-        uint32 const now = getMSTime();
-        ++party.shortcutReentries;
-        party.shortcutCooldownUntilMs = now + SHORTCUT_REENTER_COOLDOWN_MS;
-        party.lastProgressMs = now;
-        LOG_INFO("playerbots",
-                 "[shortcut_reenter] {}: {} re-enter at entrance {} ({}): walk to {} {:.0f} yd from here, {:.0f} yd "
-                 "from the entrance - a route choice, not a death",
-                 party.id, names, entrance, why, goal, walk, entranceWalk);
-        LogEvent(party, "shortcut_reenter",
-                 JsonObject().Str("members", names).Str("why", why).Str("goal", goal).Real("walk", walk)
-                     .Real("entranceWalk", entranceWalk).Num("entrance", int64(entrance))
-                     .Real("x", at.GetPositionX()).Real("y", at.GetPositionY()).Real("z", at.GetPositionZ())
-                     .Bool("countedAsDeath", false).Bool("harnessMove", false));
-    }
-
-    bool TestHarnessMgr::TickShortcutReenter(Party& party, std::vector<Player*> const& players, Player* leader)
-    {
-        uint32 now = getMSTime();
-        now = now ? now : 1;
-        Map* map = leader ? leader->GetMap() : nullptr;
-        if (!map || !map->IsDungeon() || party.entrances.empty() || party.content->raid || party.linkIdx >= 0 ||
-            !party.escort.IsEmpty() || party.wingWalk || party.approach || party.guaranteeHolding ||
-            int32(now - party.shortcutCooldownUntilMs) < 0 ||
-            (party.shortcutCheckMs && getMSTimeDiff(party.shortcutCheckMs, now) < SHORTCUT_REENTER_CHECK_MS))
-            return false;
-        // [b35_up] never out of the instance while Skadi's gauntlet runs: leaving the hall resets it
-        if (SkadiGauntletRunning(leader))
-            return false;
-        // [b49_hos] never out of the instance while an encounter runs (a boss slot IN_PROGRESS): an event fought by
-        // an NPC goes on without the group. hos-h 20261026-111724-hos-h-5F-20 (build 47): Brann's Tribunal of Ages
-        // went IN_PROGRESS at 1891 s with the group 56-60 yd from the hold spot; at 1904 s Sjonnir was skipped (closed
-        // door), the fallback target was a Dark Rune Warrior 491 yd off and "shortcut_reenter" put all five at the
-        // entrance (1153,806), 535 yd from Brann. The healer came back first (Protectors on it from 1942 s), the dps
-        // ~2020 s, 4 deaths 2024-2048 s. hos-h 093620-5E-22 (build 45) the same: IN_PROGRESS 1985 s, re-entry 2019 s,
-        // back at 2088-2110 s, 3 deaths 2112-2119 s. Both "Tribunal wipes" were this, not the add DPS.
-        if (InstanceScript* script = leader->GetInstanceScript(); script && script->IsEncounterInProgress())
-        {
-            if (!party.shortcutEncounterLogMs ||
-                getMSTimeDiff(party.shortcutEncounterLogMs, now) >= 30 * IN_MILLISECONDS)
-            {
-                party.shortcutEncounterLogMs = now;
-                LOG_INFO("playerbots", "[b49_hos] {}: no shortcut re-entry, an encounter is in progress",
-                         leader->GetName());
-            }
-            return false;
-        }
-        party.shortcutCheckMs = now;
-
-        auto const canReenter = [](Player* bot)
-        {
-            return bot->IsAlive() && !bot->IsInCombat() && !bot->IsBeingTeleported() && !bot->GetTransport() &&
-                   !bot->GetVehicle() && !bot->IsFlying();
-        };
-        for (Player* bot : players)
-            if (bot->GetMap() == map && (bot->IsInCombat() || bot->GetTransport() || bot->GetVehicle()))
-                return false;  // nobody fights, rides a lift or a vehicle
-        if (!canReenter(leader))
-            return false;
-
-        // The entrance with the shortest complete walk from it to (x, y, z), as `walker` walks; -1 for none.
-        auto const bestEntrance = [&](Player* walker, float x, float y, float z, float& length) -> int32
-        {
-            int32 best = -1;
-            for (size_t i = 0; i < party.entrances.size(); ++i)
-            {
-                Position const& entrance = party.entrances[i];
-                if (entrance.GetExactDist(x, y, z) >= length)
-                    continue;  // even the straight line is no shortcut
-                G3D::Vector3 const from(entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ());
-                PathResult const walk = RoutePath(walker, x, y, z, &from);
-                // [b32_sh_ooze] a walk from the entrance through a respawn zone (refilled behind the group) costs
-                // RESPAWN_ZONE_WALK_COST more: the re-entered side meets its mobs again
-                float const walkCost =
-                    walk.length + (RespawnZoneOnWalk(party.instanceId, walk.points) ? RESPAWN_ZONE_WALK_COST : 0.0f);
-                if (walk.complete && (best < 0 || walkCost < length))
-                {
-                    best = int32(i);
-                    length = walkCost;
-                }
-            }
-            return best;
-        };
-        auto const worth = [](float walk, float entranceWalk)
-        {
-            return walk > SHORTCUT_REENTER_RATIO * entranceWalk && walk - entranceWalk > SHORTCUT_REENTER_MIN_GAIN;
-        };
-
-        // The group's route: everyone in here is with the leader, the goal its target.
-        WorldObject* goal = party.target.IsEmpty() ? nullptr : ObjectAccessor::GetWorldObject(*leader, party.target);
-        std::vector<Player*> group;
-        bool together = true;
-        for (Player* bot : players)
-        {
-            if (bot->GetMap() != map || !bot->IsAlive())
-                continue;
-            if (bot != leader && bot->GetExactDist(leader) > MEET_RANGE)
-                together = false;
-            group.push_back(bot);
-        }
-        if (goal && goal->GetMap() == map && together)
-        {
-            PathResult const here = RoutePath(leader, goal->GetPositionX(), goal->GetPositionY(), goal->GetPositionZ());
-            if (here.complete && here.length > SHORTCUT_REENTER_MIN_GAIN)
-            {
-                float entranceWalk = here.length / SHORTCUT_REENTER_RATIO;
-                int32 const entrance = bestEntrance(leader, goal->GetPositionX(), goal->GetPositionY(),
-                                                    goal->GetPositionZ(), entranceWalk);
-                if (entrance >= 0 && worth(here.length, entranceWalk) &&
-                    std::all_of(group.begin(), group.end(), canReenter))
-                {
-                    ShortcutReenter(party, group, size_t(entrance), "the group's route", here.length, entranceWalk,
-                                    goal->GetName());
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // A single member far behind the group: its walk to the leader against the walk from an entrance.
-        for (Player* bot : players)
-        {
-            if (bot == leader || bot->GetMap() != map || !canReenter(bot) ||
-                bot->GetExactDist(leader) <= SHORTCUT_REENTER_MEMBER_FAR)
-                continue;
-            PathResult const here = RoutePath(bot, leader->GetPositionX(), leader->GetPositionY(),
-                                              leader->GetPositionZ());
-            if (!here.complete || here.length <= SHORTCUT_REENTER_MIN_GAIN)
-                continue;  // no walk at all is TickStrandedReenter's (a death)
-            float entranceWalk = here.length / SHORTCUT_REENTER_RATIO;
-            int32 const entrance =
-                bestEntrance(bot, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), entranceWalk);
-            if (entrance >= 0 && worth(here.length, entranceWalk))
-            {
-                ShortcutReenter(party, {bot}, size_t(entrance), "a member far behind", here.length, entranceWalk,
-                                leader->GetName());
-                return true;
-            }
-        }
-        return false;
-    }
-
     bool TestHarnessMgr::MeetMember(Party& party, std::vector<Player*> const& players, Player* leader)
     {
         // [lead107] the leader's (RouteMeet.h)
@@ -4597,11 +4266,29 @@ namespace TestHarness
                 candidate.apartIgnoreUntilMs = untilMs;
     }
 
-    bool PartyLeaderGroup::StrandedReenter(ObjectGuid member, Player* bot, Player* leader)
+    void PartyLeaderGroup::RecordReentry(Player* bot, std::string const& killer, JsonObject context)
+    {
+        RecordReentryDeath(bot, killer, std::move(context));
+    }
+
+    void PartyLeaderGroup::NoteReentered(ObjectGuid member, bool respawnZone, uint32 now)
     {
         for (Member& candidate : _party.members)
             if (candidate.guid == member)
-                return _mgr.TickStrandedReenter(_party, candidate, bot, leader);
+            {
+                candidate.stranded = false;
+                candidate.strandedSinceMs = 0;
+                candidate.apartIgnoreUntilMs = 0;
+                if (respawnZone)
+                    candidate.backInMs = now;
+            }
+    }
+
+    bool PartyLeaderGroup::MemberHasPortalGoal(ObjectGuid member) const
+    {
+        for (Member const& candidate : _party.members)
+            if (candidate.guid == member)
+                return candidate.hasPortalGoal;
         return false;
     }
 

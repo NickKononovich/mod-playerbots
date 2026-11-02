@@ -132,13 +132,7 @@ namespace TestHarness
         uint32 strandedCheckMs = 0;
         uint32 strandedSinceMs = 0;
         Position strandedPos;
-        // [b30_topped_up] TickStrandedReenter: no walk back to the group since (still near reenterPos), the longest
-        // StuckWatchdog stuck count seen meanwhile, re-entries so far (each a death)
-        uint32 reenterCheckMs = 0;
-        uint32 reenterSinceMs = 0;
-        uint32 reenterWatchdogSec = 0;
-        uint32 strandedReentries = 0;
-        Position reenterPos;
+        // [lead341] the stranded re-entry watch is the leader's (GroupRouteState::reenter, RouteReenter.h)
         // [lead107 stage 5] the rest / far-wait facts are the leader's (GroupRouteState::rest, Leader::MemberRest)
     };
 
@@ -541,12 +535,6 @@ namespace TestHarness
         // Out of combat, farther than MEET_RANGE, no complete navmesh walk to the leader nor back, and staying put:
         // nobody waits for it or walks to it (re-checked, it rejoins when it can walk).
         bool MemberStranded(Party& party, Player* bot, Player* leader);
-        // [b30_topped_up] true: the member was put back at the instance entrance (counted as a death)
-        bool TickStrandedReenter(Party& party, Member& member, Player* bot, Player* leader);
-        // [b30_reenter] re-entry as a route choice (no death): true when the group or a member was put at an entrance
-        bool TickShortcutReenter(Party& party, std::vector<Player*> const& players, Player* leader);
-        void ShortcutReenter(Party& party, std::vector<Player*> const& movers, size_t entrance, char const* why,
-                             float walk, float entranceWalk, std::string const& goal);
         // ROUTE_HARNESS_WALK_GUARD: a harness walk held at the aggro edge of an idle pack (harness_hold_refused_pack),
         // with the tank's careful plan verdict on it; once per 15 s per blocker.
         void LogHarnessHold(Party& party, Player* leader, Creature* blocker, char const* walk, float x, float y,
@@ -796,11 +784,9 @@ namespace TestHarness
         uint8 ContentSize() const override { return _party.content ? _party.content->size : 0; }
         std::vector<uint32> const& ContentBossEntries() const override;
         int32 BossOrder(Creature const* creature) const override { return _mgr.BossOrder(_party, creature); }
-        void ShortcutReenter(std::vector<Player*> const& movers, size_t entrance, char const* why, float walk,
-                             float entranceWalk, std::string const& goal) override
-        {
-            _mgr.ShortcutReenter(_party, movers, entrance, why, walk, entranceWalk, goal);
-        }
+        void RecordReentry(Player* bot, std::string const& killer, JsonObject context) override;
+        void NoteReentered(ObjectGuid member, bool respawnZone, uint32 now) override;
+        bool MemberHasPortalGoal(ObjectGuid member) const override;
         ::InstanceScript* InstanceScript() const override;
         bool BossesOpen() const override;
         bool GroupFullyReady(Player* leader) const override;
@@ -829,7 +815,6 @@ namespace TestHarness
         bool BossEncounterInProgress() const override;
         void NoteActivity(Activity activity) override;
         void SetApartIgnore(ObjectGuid member, uint32 untilMs) override;
-        bool StrandedReenter(ObjectGuid member, Player* bot, Player* leader) override;
         void BuffPassSetup(std::vector<Player*> const& players) override;
         bool UseConsumables(Player* bot, bool food) override;
         std::string MemberBuffJson(Player* bot) override;

@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "RouteTargets.h"
 #include "LeaderReports.h"
+#include "RouteReenter.h"  // [lead341] the wing change's re-entry
 #include "LeaderEvents.h"
 
 #include "AggressiveTargetValue.h"
@@ -5170,7 +5171,7 @@ namespace Leader::Travel
                 group.SetMemberHasPortalGoal(member.guid, true);
             }
         if (!reentering.empty())
-            group.ShortcutReenter(reentering, next,
+            ShortcutReenter(group, reentering, next,
                             insideWalk < 0.0f ? "wing change: no walk inside, out through a portal and in again"
                                               : "wing change: the walk inside is longer",
                             insideWalk, 0.0f, "entrance " + std::to_string(next));

@@ -112,6 +112,7 @@
 #include "RouteSteer.h"
 #include "RouteMeet.h"
 #include "RouteWater.h"
+#include "RouteReenter.h"  // [lead341] the stranded re-entry
 
 namespace Leader::Dungeon
 {
@@ -193,7 +194,7 @@ namespace Leader::Dungeon
             if (!bot || !bot->IsAlive())
                 continue;
             // [b30_topped_up] no walk back to the group: out and in again at the entrance (a death)
-            if (group.StrandedReenter(member.guid, bot, leader))
+            if (Travel::StrandedReenter(group, member.guid, bot, leader))
                 continue;
             bool const mana = member.usesMana && bot->GetMaxPower(POWER_MANA);
             float const manaPct = mana ? bot->GetPowerPct(POWER_MANA) : 100.0f;

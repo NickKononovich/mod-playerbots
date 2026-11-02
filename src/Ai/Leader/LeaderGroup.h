@@ -190,9 +190,11 @@ namespace Leader
         virtual uint8 ContentSize() const = 0;
         virtual std::vector<uint32> const& ContentBossEntries() const = 0;
         virtual int32 BossOrder(Creature const* creature) const = 0;
-        // members out of the instance and in again through `entrance` (a shortcut / wing change)
-        virtual void ShortcutReenter(std::vector<Player*> const& movers, size_t entrance, char const* why, float walk,
-                                     float entranceWalk, std::string const& goal) = 0;
+        // [lead341] the leader re-entered a member (RouteReenter.h): its death record before the teleport, and the
+        // owner's member bookkeeping after it (no longer stranded, back in through the portal on a respawn zone walk)
+        virtual void RecordReentry(Player* bot, std::string const& killer, JsonObject context) = 0;
+        virtual void NoteReentered(ObjectGuid member, bool respawnZone, uint32 now) = 0;
+        virtual bool MemberHasPortalGoal(ObjectGuid member) const = 0;
         // the group stands fully ready for a pull the route makes (its one readiness verdict when the leader leads);
         // an instance script event runs (a boss IN_PROGRESS without its encounter); the run levels (a normal dungeon
         // below the top level); a regroup after a revive runs
@@ -211,9 +213,6 @@ namespace Leader
         virtual void NoteActivity(Activity activity) = 0;
         // the group's apart rule ignores `member` until `untilMs`
         virtual void SetApartIgnore(ObjectGuid member, uint32 untilMs) = 0;
-        // a member with no walk back to the group is put in again at the entrance by the group's owner (true: it was,
-        // counted as a death)
-        virtual bool StrandedReenter(ObjectGuid member, Player* bot, Player* leader) = 0;
         // the owner's test setup of a buffing pass, a member's consumables (true: it used a flask / food) and a
         // member's buff state for the log
         virtual void BuffPassSetup(std::vector<Player*> const& players) = 0;

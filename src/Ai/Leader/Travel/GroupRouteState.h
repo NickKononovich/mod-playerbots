@@ -106,6 +106,18 @@ namespace Leader
         bool regenAboveLineLogged = false;  // regen_wait_below_line logged for this rest (reset by a fight)
     };
 
+    // [lead341] a member's stranded re-entry watch (StrandedReenter), moved out of the harness's member record: the
+    // last navmesh check, no walk back since (still near `pos`), the longest StuckWatchdog stuck count meanwhile,
+    // the re-entries so far (each a death)
+    struct MemberReenter
+    {
+        uint32 checkMs = 0;
+        uint32 sinceMs = 0;
+        uint32 watchdogSec = 0;
+        uint32 reentries = 0;
+        Position pos;
+    };
+
     struct GroupRouteState
     {
         std::vector<StarterTrack> starters;
@@ -329,6 +341,7 @@ namespace Leader
         uint32 shortcutCooldownUntilMs = 0;
         uint32 shortcutEncounterLogMs = 0;  // [b49_hos] the last "encounter in progress, no re-entry" log
         uint32 shortcutReentries = 0;
+        std::map<ObjectGuid, MemberReenter> reenter;  // [lead341] per member
         // [b31_far_threshold] the leader's travel pause for a trailing member: since when, and when the last one ended
         uint32 compactPauseSinceMs = 0;
         uint32 compactPauseEndMs = 0;

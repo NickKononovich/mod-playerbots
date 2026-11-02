@@ -30,6 +30,7 @@
 #include "LeaderCombatEnd.h"  // [lead107] the leader's phantom-combat end / stale-victim drop
 #include "LeaderRest.h"       // [lead107] the leader's rest / far wait
 #include "RouteHolds.h"       // [lead107] the leader's route holds after the rest
+#include "RouteReenter.h"     // [lead341] the leader's re-entries
 #include "Log.h"
 #include "Map.h"
 #include "MobRoles.h"
@@ -3876,7 +3877,7 @@ namespace TestHarness
             else if (compactPause)
                 TestRunner::ClearWaypoint(party.leader);
             // [b30_reenter] out and in again when the entrance is much the shorter way to the goal
-            else if (!TickShortcutReenter(party, players, leader))
+            else if (!Leader::Travel::TickShortcutReenter(group, players, leader))
                 Steer(party, leader);
             if (IsTerminal(party.phase))
                 return true;  // Finish() logged the members out, the pointers above are gone
