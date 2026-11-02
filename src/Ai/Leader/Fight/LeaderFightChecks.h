@@ -181,13 +181,20 @@ namespace Leader::Fight
     // the unpulled mob whose reach (the planner's IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN towards it)
     // covers the spot; nullptr: none
     Creature* LeaderAggroAt(Player* bot, Position const& spot);
+    // [lead490] b209 rfc-h: 16 of 16 "at target" melee candidates rejected "an idle mob's aggro reach" for the enh
+    // shaman, warriors, rogues, DKs, ret, cat - the pulled target stood inside an idle pack's reach, and the tank
+    // fought it there without waking it. For a melee spot at `target`: the unpulled mob whose reach covers the spot
+    // AND to which the spot lies nearer than the fight already stands (the target, its victim in its melee reach)
+    Creature* LeaderMeleeAggroAt(Player* bot, Position const& spot, Unit* target);
 
     // the walk to the spot passes no unpulled mob's reach (and there is a walk)
-    Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath);
+    // [lead490] `meleeTarget`: the walk of a melee member to its spot at that target (LeaderMeleeAggroAt per point)
+    Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath, Unit* meleeTarget = nullptr);
 
     // a candidate of a spot search: 0 rejected (an unpulled mob reaches it), 1 valid on new ground (kept as the
-    // fallback), 2 valid on cleared ground (taken at once)
-    int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback);
+    // fallback), 2 valid on cleared ground (taken at once); `meleeTarget`: a melee spot at it (LeaderMeleeAggroAt)
+    int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback,
+                        Unit* meleeTarget = nullptr);
 
     // a free spot near the healer, out of every cleave cone, from which it reaches everyone (`keeps`)
     bool LeaderHealerRespot(Player* healer, PlayerbotAI* healerAI,

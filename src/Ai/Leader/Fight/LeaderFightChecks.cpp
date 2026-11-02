@@ -290,22 +290,19 @@ namespace Leader::Fight
         return false;
     }
 
-    // the unpulled mob whose reach (the planner's IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN towards it)
-    // covers the spot; nullptr: none
-    Creature* LeaderAggroAt(Player* bot, Position const& spot)
+    namespace
     {
-        if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
-            return nullptr;
-        for (Creature* mob : *g_leaderIdle)
+        // the unpulled mob's reach (IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN towards it) covers the spot
+        bool IdleMobCovers(Player* bot, Creature* mob, Position const& spot)
         {
             if (!mob->IsInWorld() || !mob->IsAlive() || mob->IsInCombat())
-                continue;
+                return false;
             // [lead24] the mob being pulled now and its pack: no reason to keep away from them
             if (g_leaderExempt && std::find(g_leaderExempt->begin(), g_leaderExempt->end(), mob->GetGUID()) !=
                                       g_leaderExempt->end())
-                continue;
+                return false;
             if (IdleMobReachesSpot(bot, mob, spot))
-                return mob;
+                return true;
             float const gap = mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
             if (gap > 0.1f && gap < 60.0f)
             {
@@ -314,14 +311,48 @@ namespace Leader::Fight
                                       spot.GetPositionY() + (mob->GetPositionY() - spot.GetPositionY()) * step,
                                       spot.GetPositionZ());
                 if (IdleMobReachesSpot(bot, mob, closer))
-                    return mob;
+                    return true;
             }
+            return false;
+        }
+    }
+
+    // the unpulled mob whose reach (the planner's IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN towards it)
+    // covers the spot; nullptr: none
+    Creature* LeaderAggroAt(Player* bot, Position const& spot)
+    {
+        if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
+            return nullptr;
+        for (Creature* mob : *g_leaderIdle)
+            if (IdleMobCovers(bot, mob, spot))
+                return mob;
+        return nullptr;
+    }
+
+    Creature* LeaderMeleeAggroAt(Player* bot, Position const& spot, Unit* target)
+    {
+        if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle || !target)
+            return nullptr;
+        // the one the target fights (the tank), when it stands in the target's melee reach
+        Unit* const holder = target->GetVictim();
+        bool const held = holder && holder != bot && holder->IsAlive() && holder->IsWithinMeleeRange(target);
+        for (Creature* mob : *g_leaderIdle)
+        {
+            if (!IdleMobCovers(bot, mob, spot))
+                continue;
+            // the fight already stands there: the target, and its victim in its melee reach, without waking this
+            // mob. A spot no nearer the mob than the nearer of them is no deeper into its reach than the fight itself
+            float fightGap = mob->GetExactDist2d(target);
+            if (held)
+                fightGap = std::min(fightGap, mob->GetExactDist2d(holder));
+            if (mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) < fightGap)
+                return mob;
         }
         return nullptr;
     }
 
     // the walk to the spot passes no unpulled mob's reach (and there is a walk)
-    Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath)
+    Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath, Unit* meleeTarget)
     {
         noPath = false;
         if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
@@ -333,16 +364,19 @@ namespace Leader::Fight
             return nullptr;
         }
         for (G3D::Vector3 const& point : route.points)
-            if (Creature* mob = LeaderAggroAt(bot, Position(point.x, point.y, point.z)))
+        {
+            Position const at(point.x, point.y, point.z);
+            if (Creature* mob = meleeTarget ? LeaderMeleeAggroAt(bot, at, meleeTarget) : LeaderAggroAt(bot, at))
                 return mob;
+        }
         return nullptr;
     }
 
     // a candidate of a spot search: 0 rejected (an unpulled mob reaches it), 1 valid on new ground (kept as the
     // fallback), 2 valid on cleared ground (taken at once)
-    int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback)
+    int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback, Unit* meleeTarget)
     {
-        if (LeaderAggroAt(bot, spot))
+        if (meleeTarget ? LeaderMeleeAggroAt(bot, spot, meleeTarget) != nullptr : LeaderAggroAt(bot, spot) != nullptr)
             return 0;
         if (!Leader::LEADER_PREFER_CLEARED || LeaderOnCleared(spot))
             return 2;
@@ -695,7 +729,9 @@ namespace Leader::Fight
                     NoteSpotReject("ring", "inside a fight mob's melee reach");
                     continue;
                 }
-                if (int const candidate = LeaderCandidate(bot, spot, fallback); candidate != 2)
+                // [lead490] a melee spot is judged by how deep it lies in an idle mob's reach against the fight there
+                if (int const candidate = LeaderCandidate(bot, spot, fallback, melee ? target : nullptr);
+                    candidate != 2)
                 {
                     if (!candidate)
                         NoteSpotReject("ring", "an idle mob's aggro reach");
@@ -1148,7 +1184,8 @@ namespace Leader::Fight
                     NoteSpotReject("near", why);
                     continue;
                 }
-                if (int const candidate = LeaderCandidate(bot, spot, fallback); candidate != 2)
+                if (int const candidate = LeaderCandidate(bot, spot, fallback, melee ? target : nullptr);
+                    candidate != 2)  // [lead490]
                 {
                     if (!candidate)
                         NoteSpotReject("near", "an idle mob's aggro reach");

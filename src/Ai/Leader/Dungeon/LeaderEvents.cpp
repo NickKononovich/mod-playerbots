@@ -561,10 +561,19 @@ namespace Leader::Dungeon
                                       (spot.GetExactDist(tank->GetPosition()) <= 1.0f ||
                                        (ground != lead.tankGroundSpots.end() &&
                                         spot.GetExactDist(ground->second) <= 0.5f));
-                Creature* mob = tankSpot ? nullptr : LeaderAggroAt(bot, spot);
+                // [lead490] a melee member's combat spot at its target, and its walk there, are judged against the
+                // fight at that target (LeaderMeleeAggroAt): no deeper into an idle mob's reach than the fight stands
+                Unit* meleeTarget = nullptr;
+                if (auto const held = lead.combatSpots.find(member);
+                    held != lead.combatSpots.end() && held->second.second.GetExactDist(spot) <= 0.5f &&
+                    !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot) && group.FightOn(tank))
+                    meleeTarget = ObjectAccessor::GetUnit(*bot, held->second.first);
+                Creature* mob = tankSpot ? nullptr
+                                : meleeTarget ? LeaderMeleeAggroAt(bot, spot, meleeTarget)
+                                              : LeaderAggroAt(bot, spot);
                 bool noPath = false;
                 if (!mob && again)
-                    mob = LeaderAggroOnWalk(bot, spot, noPath);
+                    mob = LeaderAggroOnWalk(bot, spot, noPath, meleeTarget);
                 bool const kept = !mob && !again && !checked.reject.empty();
                 if (kept)
                 {
@@ -1246,6 +1255,25 @@ namespace Leader::Dungeon
             // b87 rfc-h 23.6-24.0 s, 6 "heal reach" re-spots in 0.4 s while the counterparts' planned spots moved
             for (Player* other : seats)
                 if (other != healer && !reaches(spot, plannedAt(other)) &&
+                    !(g_spotAcquireMargin == 0.0f && reaches(spot, other->GetPosition())))
+                    return false;
+            return true;
+        };
+        // [lead490] b209 rfc-h: the healers' first combat spots were rejected "heal reach" on every candidate (near
+        // x45-49, ring x5-13, walk x5-20; 5C 128.8 s Rtpriab) - healerKeeps asked the spot to reach where each member
+        // stands while the members still followed the tank round the cave's corners: their fight places were not
+        // given yet. A member's place is the leader's: one with its combat spot is judged at that spot (its
+        // plannedAt), one still to be placed is not - its own spot search keeps the heal reach to the healer's place
+        // (keepsHealer: the healer's planned spot, i.e. this one). The tank's fight place stays the first test
+        auto const healerSpotKeeps = [&](Position const& spot)
+        {
+            Position const tankAt = tankFightAt();
+            if (!reaches(spot, tankAt) ||
+                spot.GetExactDist(tankAt) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
+                return false;
+            for (Player* other : seats)
+                if (other != healer && lead.combatSpots.count(other->GetGUID()) &&
+                    !reaches(spot, plannedAt(other)) &&
                     !(g_spotAcquireMargin == 0.0f && reaches(spot, other->GetPosition())))
                     return false;
             return true;
@@ -2451,7 +2479,14 @@ namespace Leader::Dungeon
             // pulled mob (an engage: at the mob, on the tank's side at the two combat reaches, where its charge
             // lands; a pull back / range pull: the fight spot the mob comes to). The anchor is that point while the
             // tank goes there; it arrives (within LEADER_ANCHOR_MOVE_YD) or stops elsewhere: the anchor's own rule
-            if (!lead.fightAnchorSerial && lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty())
+            // [lead490] b209 rfc-h: 48 of the 77 combat_spot_none came within 15 s of a fight_anchor_ahead set on
+            // another mob than the fight's first attacker, 25 of them 46-104 yd off the tank (5A 95.5 s: 63 yd) - the
+            // walk-in woke another mob (walk_in_wakes "taken along"), it attacked the tank 15-20 yd off and became the
+            // fight's target, while the anchor was set at the stop of the commit's mob ahead. Every healer / ranged
+            // spot was judged against that far point ("heal reach" x45-49), the melee ones too. The tank walks to the
+            // commit's stop only while that mob is the fight's target
+            if (!lead.fightAnchorSerial && lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty() && target &&
+                target->GetGUID() == lead.commitMob)
             {
                 Position stop = lead.meetPoint;
                 if (lead.commit->kind == "engage")
@@ -2477,7 +2512,8 @@ namespace Leader::Dungeon
                 }
             }
             bool const arrived = tank->GetExactDist(lead.fightAnchor) <= Leader::LEADER_ANCHOR_MOVE_YD;
-            if (lead.fightAnchorAhead && (arrived || !tank->isMoving()))
+            if (lead.fightAnchorAhead &&
+                (arrived || !tank->isMoving() || !target || target->GetGUID() != lead.commitMob))  // [lead490]
                 lead.fightAnchorAhead = false;
             if (!lead.fightAnchorAhead &&
                 (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD))
@@ -3340,7 +3376,7 @@ namespace Leader::Dungeon
                 bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                 std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                 std::function<bool(Position const&)> const keepsBase =
-                    bot == healer ? std::function<bool(Position const&)>(healerKeeps)
+                    bot == healer ? std::function<bool(Position const&)>(healerSpotKeeps)  // [lead490]
                                   : std::function<bool(Position const&)>(keepsHealer);
                 // [lead218] b184 rfc-h 5H 892-944 s: the MM hunter stood on its spot 30 yd from Taragaman, every shot
                 // "no line of sight" for 53 s, the spot judged fine. Standing on its spot, the game's own answer
@@ -3701,7 +3737,8 @@ namespace Leader::Dungeon
                                     NoteSpotReject(search, "unsafe (hazard / drop-off / cleave)");
                                     return false;
                                 }
-                                if (LeaderAggroAt(bot, at))
+                                // [lead490] no deeper into an idle mob's reach than the fight at the target stands
+                                if (LeaderMeleeAggroAt(bot, at, target))
                                 {
                                     NoteSpotReject(search, "an idle mob's aggro reach");
                                     return false;
