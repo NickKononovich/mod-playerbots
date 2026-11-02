@@ -161,6 +161,7 @@ class FaerieFireFeralTrigger : public DebuffTrigger
 {
 public:
     static constexpr uint8 CAT_FF_MAX_ENERGY = 87;  // wowsims ffThresh: 107 - 10 (Clearcast special) - 10 (the GCD)
+    static constexpr uint8 CAT_FF_BERSERK_MAX_ENERGY = 15;  // [rot115] wowsims BerserkFfThresh (feral/rotation.go)
     static constexpr uint8 CAT_RIP_ENERGY = 30;     // Rip's energy cost
 
     FaerieFireFeralTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "faerie fire (feral)") {}
@@ -180,14 +181,17 @@ public:
         if (!botAI->HasAura("cat form", bot))
             return false;
 
-        // [b31_sd] Not under Berserk (the guides: every GCD of Berserk goes to the half-cost builders / finishers).
-        if (botAI->HasAura("prowl", bot) || botAI->HasAura("berserk", bot))
+        if (botAI->HasAura("prowl", bot))
             return false;
 
         // [rot25] wowsims feral ffNow: no Clearcasting, energy under CAT_FF_MAX_ENERGY, and not while a due Rip
         // (5 points, no own Rip on the target) has its energy
+        // [rot115] under Berserk the sim's threshold is CAT_FF_BERSERK_MAX_ENERGY (rotation.go BerserkFfThresh 15):
+        // b211 rfc-h 5H Rtdruaf 5.18 Faerie Fire (Feral) a minute vs the sim's 8.85, none in Berserk ([b31_sd] had
+        // blocked it there)
         uint8 const energy = AI_VALUE2(uint8, "energy", "self target");
-        if (botAI->HasAura("clearcasting", bot) || energy >= CAT_FF_MAX_ENERGY)
+        uint8 const maxEnergy = botAI->HasAura("berserk", bot) ? CAT_FF_BERSERK_MAX_ENERGY : CAT_FF_MAX_ENERGY;
+        if (botAI->HasAura("clearcasting", bot) || energy >= maxEnergy)
             return false;
         if (Unit* fought = AI_VALUE(Unit*, "current target"); fought && energy >= CAT_RIP_ENERGY &&
             AI_VALUE2(uint8, "combo", "current target") >= 5 && !botAI->GetAura("rip", fought, true))
