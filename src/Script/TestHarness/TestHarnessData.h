@@ -154,6 +154,10 @@ namespace TestHarness
     // hunter 60 -> 9), i.e. ~52 per 90 min; 80 leaves a margin. Harness grant at run start, replaces farming.
     constexpr uint32 DRINK_COUNT = 80;
     constexpr uint32 REGEN_FOOD_COUNT = 40;
+    // [rot110] a hunter pet's food (TestHarnessPrepare PetFoodFor): Pet::GetCurrentFoodBenefitLevel's full feed, and
+    // two stacks for a run (the pet is fed out of combat whenever it is not Happy)
+    constexpr uint32 PET_FOOD_FULL_BENEFIT = 35000;
+    constexpr uint32 PET_FOOD_COUNT = 40;
 
     std::vector<SpecDef> const& Specs();
     SpecDef const* FindSpec(std::string const& key);

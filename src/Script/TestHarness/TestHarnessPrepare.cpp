@@ -15,6 +15,7 @@
 #include "SpellMgr.h"
 #include "Log.h"
 #include "ObjectMgr.h"
+#include "Pet.h"  // [rot110] PetFoodFor
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -549,6 +550,32 @@ namespace TestHarness
             return applied;
         }
 
+        // [rot110] A hunter's pet food: the vendor food of its diet that feeds it fully at its level (the core's
+        // Pet::HaveInDiet / GetCurrentFoodBenefitLevel), lowest item level then lowest entry. b211 rfc-h: the harness
+        // gave fish and Dalaran Clam Chowder only, so "feed pet" found nothing for a meat eater - Rthunac's Scorpid
+        // ended the run Content (442k happiness, x1.00 damage), Spider / Bat / Ravager pets Unhappy (x0.75); wowsims'
+        // pet is Happy (x1.25, sim/hunter/pet.go).
+        uint32 PetFoodFor(Pet const* pet, uint8 level)
+        {
+            uint32 best = 0;
+            uint32 bestLevel = 0;
+            for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+            {
+                if (proto.Class != ITEM_CLASS_CONSUMABLE || !proto.FoodType || proto.RequiredLevel > level ||
+                    proto.Bonding != NO_BIND || !proto.BuyPrice || proto.HasFlag(ITEM_FLAG_CONJURED) ||
+                    !pet->HaveInDiet(&proto))
+                    continue;
+                if (pet->GetCurrentFoodBenefitLevel(proto.ItemLevel) < PET_FOOD_FULL_BENEFIT)
+                    continue;
+                if (!best || proto.ItemLevel < bestLevel || (proto.ItemLevel == bestLevel && entry < best))
+                {
+                    best = entry;
+                    bestLevel = proto.ItemLevel;
+                }
+            }
+            return best;
+        }
+
         void GiveConsumables(Player* bot, SpecDef const& spec, bool groupHasWarlock, PrepareResult& result)
         {
             uint8 const level = bot->GetLevel();
@@ -560,6 +587,16 @@ namespace TestHarness
                 Give(bot, role.prePot, PREPOT_COUNT, result);
             Give(bot, supplies.healingPotion, HEALING_POTION_COUNT, result);
             Give(bot, supplies.regenFood, REGEN_FOOD_COUNT, result);
+            if (spec.cls == CLASS_HUNTER)
+            {
+                if (Pet* pet = bot->GetPet(); pet && pet->getPetType() == HUNTER_PET)
+                {
+                    if (uint32 const food = PetFoodFor(pet, level))
+                        Give(bot, food, PET_FOOD_COUNT, result);
+                    else
+                        result.perks.push_back("no pet food for " + pet->GetName());
+                }
+            }
 
             if (UsesMana(spec.role, spec.cls))
             {
