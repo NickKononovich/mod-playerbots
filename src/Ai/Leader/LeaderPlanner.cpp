@@ -4929,7 +4929,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
         float const readyMana = realBoss ? BOSS_READY_MANA : MINI_BOSS_READY_MANA;
         float const bossSec = NextPullSec(bot, boss);  // [lead51] [lead78] the one next-pull length
-        auto const gap = [readyHealth, readyMana, boss, bossSec](Player* member) -> std::string
+        auto const gap = [readyHealth, readyMana, boss, bossSec, bot](Player* member) -> std::string
         {
             if (!member->IsAlive())
                 return member->GetName() + " dead";
@@ -4948,7 +4948,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
             // [boss_pull_ready_gate] a member still casting its pre-boss rebuff round (the leader's ready check
             // answers "buffing" for it the same way) is not ready: sh-h w24 pulled Kargath 9 s into the buffing
-            if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member); memberAI && memberAI->forceRebuff.IsPending())
+            // [lead475] b207 rfc-h 5A 1041-1051 s "held for now: Rtpalaa buffing [Bazzalan]": the led tank's own
+            // window (opened by the boss's ready check) - the tank's engine ran its approach every tick, so its
+            // "ready reply" (relevance 6) that closes the window never ran while the hold stood; the leader's buff
+            // pass had ended with every buff present. The planning tank's own buffs are its own engine's: a buff it
+            // still needs runs before its pull, its window is no readiness fact of the group
+            bool const ownWindow = member == bot && Leader::LedBot(bot);
+            if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+                !ownWindow && memberAI && memberAI->forceRebuff.IsPending())
                 return member->GetName() + " buffing";
 
             return std::string();
