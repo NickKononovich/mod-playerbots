@@ -8,6 +8,9 @@
 
 #include "SharedDefines.h"
 #include "SmartScriptMgr.h"  // [lead102] flee for assist
+#include "ObjectMgr.h"       // [lead231] creature template spells
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -1340,6 +1343,35 @@ namespace Leader::Knowledge
                 if (holder.GetEventType() == SMART_EVENT_HEALTH_PCT &&
                     holder.GetActionType() == SMART_ACTION_FLEE_FOR_ASSIST)
                     itr->second = std::max(itr->second, float(holder.event.minMaxRepeat.max));
+        return itr->second;
+    }
+
+    bool HasFrontalAttack(uint32 creatureEntry)
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint32, bool> known;
+        std::lock_guard<std::mutex> guard(lock);
+        auto [itr, fresh] = known.try_emplace(creatureEntry, false);
+        if (!fresh)
+            return itr->second;
+        auto const cone = [](uint32 spellId)
+        {
+            SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+            if (!info)
+                return false;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.TargetA.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE ||
+                    effect.TargetB.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE)
+                    return true;
+            return false;
+        };
+        if (CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(creatureEntry))
+            for (uint32 spell : proto->spells)
+                itr->second = itr->second || cone(spell);
+        for (SmartScriptHolder const& holder :
+             sSmartScriptMgr->GetScript(int32(creatureEntry), SMART_SCRIPT_TYPE_CREATURE))
+            if (holder.GetActionType() == SMART_ACTION_CAST)
+                itr->second = itr->second || cone(holder.action.cast.spell);
         return itr->second;
     }
 }

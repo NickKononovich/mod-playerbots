@@ -66,6 +66,8 @@ bool InFrontalCleave(Player* bot, PlayerbotAI* botAI, float distMargin, float an
 bool SpotInFrontalCleave(Player* bot, PlayerbotAI* botAI, float x, float y, float distMargin, float angleMargin);
 // A cleaving mob is in the fight near the bot (the generic "set behind" must not place the bot).
 bool CleaverNearby(Player* bot, PlayerbotAI* botAI);
+// [lead231] the curated cleave list (FRONTAL_CLEAVES) has this creature on this map.
+bool IsKnownCleaver(uint32 mapId, uint32 entry);
 
 // A ranged damage dealer of the bot's group is alive and near.
 bool RangedDpsAlive(Player* bot);

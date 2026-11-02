@@ -22,6 +22,8 @@
 #include "Group.h"
 #include "LastMovementValue.h"
 #include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
+#include "DungeonTactics.h"   // [lead231] IsKnownCleaver
+#include "LeaderKnowledge.h"  // [lead231] HasFrontalAttack
 #include "LootObjectStack.h"
 #include "HoRTriggers.h"
 #include "InstanceGuid.h"  // [rot44]
@@ -6630,6 +6632,15 @@ bool TankFaceAction::Execute(Event /*event*/)
         return false;
 
     if (!AI_VALUE2(bool, "has aggro", "current target"))
+        return false;
+
+    // [lead231] b187 rfc-h: "tank face" was the tank's biggest in-fight walk, 3271 yd in the 8 runs (410 per run, the
+    // route's optimum is 1886): it circled every mob to turn it from the group. Turning matters only for an attack
+    // that hits in front of the mob (a cone: its spells, the curated cleave list); the members' melee spots are behind
+    // the target already. In a led group a mob without one is not turned
+    if (Leader::LedBot(bot) &&
+        !(target->IsCreature() && (Leader::Knowledge::HasFrontalAttack(target->GetEntry()) ||
+                                   DungeonTactics::IsKnownCleaver(bot->GetMapId(), target->GetEntry()))))
         return false;
 
     float averageAngle = AverageGroupAngle(target, true);

@@ -396,6 +396,10 @@ namespace Leader::Knowledge
     // not. Read once per entry from the loaded SmartAI scripts
     float FleeForAssistHealthPct(uint32 creatureEntry);
 
+    // [lead231] the creature has an attack that hits in front of it (a cone spell: its template spells or a SmartAI
+    // cast); read once per entry. A tank turns such a mob away from the group; any other mob needs no turning
+    bool HasFrontalAttack(uint32 creatureEntry);
+
     std::vector<EventStarterDef const*> EventStarters(uint32 mapId);
     std::vector<EventSpotDef const*> EventSpots(uint32 mapId);
     std::vector<RouteLinkDef const*> RouteLinks(uint32 mapId);

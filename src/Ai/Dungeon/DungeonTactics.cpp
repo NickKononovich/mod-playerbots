@@ -569,6 +569,8 @@ bool InFrontalCleave(Player* bot, PlayerbotAI* botAI, float distMargin, float an
 }
 
 bool CleaverNearby(Player* bot, PlayerbotAI* botAI) { return !CollectCleavers(bot, botAI).empty(); }
+
+bool IsKnownCleaver(uint32 mapId, uint32 entry) { return FindCleave(mapId, entry) != nullptr; }
 }  // namespace DungeonTactics
 
 bool DungeonBossRoomTrashTrigger::IsActive()
