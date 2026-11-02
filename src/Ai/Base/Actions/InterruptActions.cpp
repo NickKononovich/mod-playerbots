@@ -306,6 +306,17 @@ namespace
         return on ? bot->GetItemByEntry(itemId) : nullptr;
     }
 
+    // [rot85] b208 rfc-h: a second potion in one combat. The game keeps a drunk potion's cooldown off until the combat
+    // ends (Spell::SendSpellCooldown sets Player::m_lastPotionId instead) and refuses the next one with
+    // SPELL_FAILED_NOT_READY (Spell::CheckCast); HasSpellCooldown saw no cooldown, the packet went out, the use counted
+    // as done: 5C's balance druid "used" its Runic Mana Injector 100 times (Oggleflint: 25 of 54 s spent on the
+    // repeated Consume, no Wrath / Starfire in between). The same check as the core's: the item is not usable now.
+    bool PotionBlockedThisCombat(Player* bot, Item* item, uint32 spell)
+    {
+        SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        return item && bot->GetLastPotionId() && (item->IsPotion() || (info && info->IsCooldownStartedOnEvent()));
+    }
+
     uint32 OnUseSpell(Item* item)
     {
         ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
@@ -333,6 +344,11 @@ bool LeaderConsumeAction::isPossible()
     uint32 const spell = OnUseSpell(item);
     if (!item || !spell || bot->HasSpellCooldown(spell))
         return false;
+    if (PotionBlockedThisCombat(bot, item, spell))  // [rot85]
+    {
+        Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "one potion per combat: the last one blocks it");
+        return false;
+    }
     if (bot->CanUseItem(item) == EQUIP_ERR_OK)
         return true;
     if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(false))
