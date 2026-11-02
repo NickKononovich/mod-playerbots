@@ -656,7 +656,12 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             (std::hypot(last.lastMoveToX - x, last.lastMoveToY - y) <= tolerance ||
              std::hypot(last.lastMoveAsked.GetPositionX() - x, last.lastMoveAsked.GetPositionY() - y) <= tolerance))
             return false;
-        if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target))
+        // [lead418] b201 rfc-h 5H: the cat druid stood in Oggleflint's front arc in 91 of 91 trace states (Bazzalan
+        // 102 / 103) - Shred impossible: a chased mob in melee reach was no work wherever the member stood. The
+        // leader's place is behind the mob: in reach out of its front arc (the core's HasInArc, where it parries /
+        // blocks) is done, in reach in its front arc the walk behind goes on (the mob's victim stands where it is)
+        if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target) &&
+            (target->GetVictim() == bot || !target->HasInArc(float(M_PI), bot)))
             return false;
         Position const place(x, y, z);
         // [lead370] b200 5G 632-862 s: DryFollow passed Rtdekad's walk, the executor's own GuardIdleMobPath refused
