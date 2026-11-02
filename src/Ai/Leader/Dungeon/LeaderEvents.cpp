@@ -3649,6 +3649,7 @@ namespace Leader::Dungeon
                     float tank = 0.0f;
                     float tankNext = 0.0f;
                     float share = 1.0f;
+                    float redirected = 0.0f;  // [lead412] of the member's next threat, onto the tank
                 };
                 auto const project = [&](Unit* mob)
                 {
@@ -3656,6 +3657,16 @@ namespace Leader::Dungeon
                     auto const& mine = seenOn(mob, bot);
                     p.mine = mine.threat;
                     p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                    // [lead412] user 2026-11-02: the threat a running redirect (Misdirection / Tricks of the Trade,
+                    // registered on the member's ThreatManager until it is spent) moves onto the tank is the tank's
+                    if (auto const redirect = lead.redirectTo.find(guid);
+                        redirect != lead.redirectTo.end() && redirect->second.first == tank->GetGUID() &&
+                        bot->GetThreatMgr().HasRedirects())
+                    {
+                        float const moved = (p.mineNext - p.mine) * redirect->second.second;
+                        p.mineNext -= moved;
+                        p.redirected = moved;
+                    }
                     auto const& held = seenOn(mob, tank);
                     p.tank = held.threat;
                     // [lead391] b201 rfc-h 5D 579.3 s: the unholy DK got Attack with headroom on a Searing Blade
@@ -3666,6 +3677,7 @@ namespace Leader::Dungeon
                                      ? held.threat + rateOf(held, tank->GetVictim() == mob ? tankOpen : 0.0f) *
                                                          HEADROOM_GCD_SEC
                                      : 0.0f;
+                    p.tankNext += p.redirected;
                     p.share = mob->GetVictim() != tank       ? 1.0f
                               : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
                                                              : THREAT_OVERTAKE_RANGED;
@@ -4194,6 +4206,11 @@ namespace Leader::Dungeon
                 if (!caster || !spell || told.count(caster->GetGUID()))
                     return false;
                 told.insert(caster->GetGUID());
+                // [lead412] a threat redirect: onto whom and the share its spell data moves
+                if (SpellInfo const* info = on ? sSpellMgr->GetSpellInfo(spell) : nullptr)
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        if (effect.Effect == SPELL_EFFECT_REDIRECT_THREAT)
+                            lead.redirectTo[caster->GetGUID()] = {on->GetGUID(), effect.CalcValue(caster) / 100.0f};
                 if (Leader::Events::SetExternal(caster->GetGUID(), spell, on ? on->GetGUID() : ObjectGuid::Empty,
                                                 Leader::EXTERNAL_PRECEDENCE_FIGHT_SAVE))  // [lead320]
                     logEvent(caster, "External", JsonObject().Num("spell", spell)
@@ -4250,11 +4267,15 @@ namespace Leader::Dungeon
                 if (Unit* mob = ObjectAccessor::GetUnit(*tank, guid);
                     !threatNeeded && mob && mob->IsAlive() && mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
                     threatNeeded = true;
-            if (threatNeeded)
+            // [lead412] user 2026-11-02: b201 cast Misdirection / Tricks on 2 of 28 boss fights - on a boss whenever
+            // one is ready (its threat is the tank's, the damage dealers keep their headroom); the pull's opening
+            // (a mob without the tank's threat) and a member without headroom as before
+            if (threatNeeded || fightBoss)
                 if (auto const [bot, spell] = withSpell({SPELL_MISDIRECTION, SPELL_TRICKS_OF_THE_TRADE}, tank); bot)
                     tell(bot, spell, tank,
-                         "the threat onto the tank: a mob without its threat or a member without "
-                         "headroom");
+                         fightBoss ? "the threat onto the tank: a boss fight"
+                                   : "the threat onto the tank: a mob without its threat or a member without "
+                                     "headroom");
             if (tank->GetHealthPct() < LEADER_SAVE_HP_PCT)
             {
                 // [lead300] Guardian Spirit / Lay on Hands are the leader's too (the members' own are off)

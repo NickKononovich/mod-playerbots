@@ -329,6 +329,9 @@ namespace Leader
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health
         uint32 manaTickMs = 0;
         std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
+        // [lead412] the threat redirect the leader told a member (Misdirection / Tricks): onto whom, and the share of
+        // its threat the spell's SPELL_EFFECT_REDIRECT_THREAT moves (its base points, %)
+        std::map<ObjectGuid, std::pair<ObjectGuid, float>> redirectTo;
         struct ThreatSeen  // [lead243] a member's / the tank's threat on a fight mob since its first threat there
         {
             uint32 firstMs = 0;
