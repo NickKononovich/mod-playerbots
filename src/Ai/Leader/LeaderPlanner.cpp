@@ -278,13 +278,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // transitive; PACK_MAX_ASSIST_HOPS only bounds it (assist / draws-fight links from a mob that came by itself).
     constexpr float CASTER_KEEP_RANGE = 30.0f;
     constexpr uint8 PACK_MAX_ASSIST_HOPS = 6;
-    constexpr uint32 CAREFUL_SUMMON_FIGHT_MS = 30 * IN_MILLISECONDS;  // the fight a pack mob's summons are counted over
-    constexpr uint32 CAREFUL_MAX_SUMMONS = 8;
-    // [b36_scholo] a summon's stats against its summoner's are read down to this share; one with less than
-    // SUMMON_QUICK_HEALTH_SHARE of its summoner's health dies in the group's area damage at once: it lands its melee
-    // over its own kill time, not in the queue of the pack's kills (EstimatePack)
-    constexpr float SUMMON_MIN_SHARE = 0.05f;
-    constexpr float SUMMON_QUICK_HEALTH_SHARE = 0.3f;
+    // [lead260] a pack mob's summons are counted over the estimated fight (its scripted rate x the pack's kill time);
+    // a summon the group kills within one global cooldown at its damage dies as it comes: it lands its melee over
+    // its own kill time, not in the queue of the pack's kills (EstimatePack)
     constexpr float CAREFUL_MIN_HOLD = 2.0f;
     constexpr float CAREFUL_MAX_HOLD = 8.0f;
     // Share of the tank's health a levelling group heals per second: wave 4 healers did 4% (level 15) to 9% (58).
@@ -2414,12 +2410,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // What the creature's SmartAI does in a fight to bring more: the mobs it summons while fighting (a Gnomeregan
     // Mobile Alert System summons a Leprous Defender and an Assistant every 10 s) and the radius it calls for help
-    // in (SMART_ACTION_CALL_FOR_HELP). A summon on a repeating timer counts once per repeat in
-    // CAREFUL_SUMMON_FIGHT_MS; out-of-combat summons (pets) are already standing there. Read once per entry and map
-    // thread.
+    // in (SMART_ACTION_CALL_FOR_HELP). [lead260] A summon on a repeating in-combat timer is a rate (one per mean
+    // repeat), counted over the estimated fight (EstimatePack); any other in-combat summon comes once; out-of-combat
+    // summons (pets) are already standing there. Read once per entry and map thread.
     struct ScriptedHelp
     {
-        uint32 summons = 0;
+        float summons = 0.0f;        // summons that come once per fight
+        float summonsPerSec = 0.0f;  // [lead260] summons on a repeating timer, per second of fight
         float callRadius = 0.0f;
         // [b36_scholo] a summon's health and damage against its summoner's (creature_template ModHealth /
         // DamageModifier, the summons' average; 1 when the summoned entry is unknown). scholo-h 20261026-034959-
@@ -2496,10 +2493,15 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 event == SMART_EVENT_LINK)
                 continue;
 
-            uint32 times = 1;
-            if (event == SMART_EVENT_UPDATE_IC && trigger->event.minMaxRepeat.repeatMin)
-                times += CAREFUL_SUMMON_FIGHT_MS / std::max(trigger->event.minMaxRepeat.repeatMin, uint32(1000));
-
+            // [lead260] the first one comes once, the repeats at the timer's mean (summons over the fight's seconds)
+            float const times = 1.0f;
+            if (event == SMART_EVENT_UPDATE_IC && trigger->event.minMaxRepeat.repeatMax)
+            {
+                float const everySec =
+                    float(trigger->event.minMaxRepeat.repeatMin + trigger->event.minMaxRepeat.repeatMax) / 2.0f /
+                    float(IN_MILLISECONDS);
+                help.summonsPerSec += 1.0f / std::max(everySec, 0.001f);
+            }
             help.summons += times;
             // [b36_scholo] the summon's own stats against the summoner's (see ScriptedHelp)
             float healthShare = 1.0f;
@@ -2508,19 +2510,18 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             CreatureTemplate const* summon = summonEntry ? sObjectMgr->GetCreatureTemplate(summonEntry) : nullptr;
             if (own && summon && own->ModHealth > 0.0f && own->DamageModifier > 0.0f)
             {
-                healthShare = std::clamp(summon->ModHealth / own->ModHealth, SUMMON_MIN_SHARE, 1.0f);
-                damageShare = std::clamp(summon->DamageModifier / own->DamageModifier, SUMMON_MIN_SHARE, 1.0f);
+                healthShare = summon->ModHealth / own->ModHealth;  // [lead260] the template's own ratio
+                damageShare = summon->DamageModifier / own->DamageModifier;
             }
-            summonHealthSum += healthShare * float(times);
-            summonDamageSum += damageShare * float(times);
+            summonHealthSum += healthShare * times;
+            summonDamageSum += damageShare * times;
         }
 
-        if (help.summons)
+        if (help.summons > 0.0f)
         {
-            help.summonHealth = summonHealthSum / float(help.summons);
-            help.summonDamage = summonDamageSum / float(help.summons);
+            help.summonHealth = summonHealthSum / help.summons;
+            help.summonDamage = summonDamageSum / help.summons;
         }
-        help.summons = std::min(help.summons, CAREFUL_MAX_SUMMONS);
         return cache.emplace(entry, help).first->second;
     }
 
@@ -4308,7 +4309,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float landedSpell = 0.0f;
         std::vector<std::pair<float, float>> lives;  // landed melee, health
         std::vector<float> spells;                   // the spell part of each life's landed damage
-        uint32 summoned = 0;
+        float summonedOnce = 0.0f;                   // [lead260] summons that come once
+        float summonRate = 0.0f;                     // [lead260] and per second of fight
         float summonHealthSum = 0.0f;  // [b36_scholo] the summons' shares of an average mob (ScriptedHelp)
         float summonDamageSum = 0.0f;
         std::vector<bool> quick;  // [b36_scholo] a weak summon: lives its own kill time only
@@ -4331,9 +4333,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (Creature* creature = mob->ToCreature())
             {
                 ScriptedHelp const& help = GetScriptedHelp(creature);
-                summoned += help.summons;
-                summonHealthSum += help.summonHealth * float(help.summons);  // [b36_scholo]
-                summonDamageSum += help.summonDamage * float(help.summons);
+                summonedOnce += help.summons;
+                summonRate += help.summonsPerSec;
+                float const each = help.summons + help.summonsPerSec;  // the shares, by the entry's summons
+                summonHealthSum += help.summonHealth * each;           // [b36_scholo]
+                summonDamageSum += help.summonDamage * each;
             }
 
             float spell = 0.0f;
@@ -4359,20 +4363,25 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         // What the pack summons while it fights, each read as an average mob of the pack, [b36_scholo] scaled by the
         // summon's own health and damage against its summoner's (ScriptedHelp).
-        if (summoned && !lives.empty())
+        // [lead260] the summons over the pack's own kill time at the group's damage (no damage known: the ones that
+        // come once)
+        float const baseSec = groupDps > 0.0f ? totalHealth / groupDps : 0.0f;
+        uint32 const summoned = uint32(std::lround(summonedOnce + summonRate * baseSec));
+        if (summoned && !lives.empty() && summonedOnce + summonRate > 0.0f)
         {
-            float const healthShare = summonHealthSum / float(summoned);
-            float const damageShare = summonDamageSum / float(summoned);
+            float const healthShare = summonHealthSum / (summonedOnce + summonRate);
+            float const damageShare = summonDamageSum / (summonedOnce + summonRate);
             float const share = 1.0f / float(lives.size());
             float const landed = estimate.landedDps * share * damageShare;
             float const spell = landedSpell * share * damageShare;
             float const health = totalHealth * share * healthShare;
             float const danger = estimate.danger / float(estimate.mobs);
+            bool const diesAsItComes = groupDps > 0.0f && health <= groupDps * GCD_SEC;  // [lead260]
             for (uint32 i = 0; i < summoned; ++i)
             {
                 lives.emplace_back(landed, health);
                 spells.push_back(spell);
-                quick.push_back(healthShare < SUMMON_QUICK_HEALTH_SHARE);
+                quick.push_back(diesAsItComes);
                 estimate.landedDps += landed;
                 landedSpell += spell;
                 totalHealth += health;
