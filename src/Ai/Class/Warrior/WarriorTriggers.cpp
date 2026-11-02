@@ -415,3 +415,16 @@ bool ArmsHeroicStrikeTrigger::IsActive()
 
     return FuryHeroicStrikeRageTrigger::IsActive();
 }
+
+// [rot67]
+bool BattleStanceTrigger::IsActive()
+{
+    if (!BuffTrigger::IsActive())
+        return false;
+
+    if (bot->GetShapeshiftForm() != FORM_BERSERKERSTANCE)
+        return true;
+
+    Trigger* recklessness = context->GetTrigger("recklessness ready");
+    return !recklessness || !recklessness->IsActive();
+}

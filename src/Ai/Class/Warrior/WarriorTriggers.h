@@ -34,7 +34,17 @@ public:
     bool IsActive() override;
 };
 
-BUFF_TRIGGER(BattleStanceTrigger, "battle stance");
+// [rot67] Arms' way back to Battle Stance waits while the warrior stands in Berserker Stance for its Recklessness
+// ("recklessness ready": known, off its own and its category's cooldown, the leader's Burn allows it). Recklessness is
+// on the global cooldown (Spell.dbc StartRecoveryCategory 133) and the stance swap is not: inside a global cooldown the
+// Recklessness cast was NOT_READY and the swap back (HIGH + 10) went off at once. b201 rfc-h 5G Rtwarad: Berserker
+// Stance for Recklessness on Taragaman (540 s) and Bazzalan (930 s) with the leader's Burn, Recklessness 0 casts.
+class BattleStanceTrigger : public BuffTrigger
+{
+public:
+    BattleStanceTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "battle stance") {}
+    bool IsActive() override;
+};
 BUFF_TRIGGER(DefensiveStanceTrigger, "defensive stance");
 BUFF_TRIGGER(BerserkerStanceTrigger, "berserker stance");
 BUFF_TRIGGER(ShieldBlockTrigger, "shield block");
