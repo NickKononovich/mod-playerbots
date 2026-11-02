@@ -542,7 +542,9 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 potion && maxMana - bot->GetPower(POWER_MANA) >= amount)
             {
                 std::string lineWhy;
-                float const line = RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight);
+                // [lead482] the line without the potion this verdict decides on
+                float const line =
+                    RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight, true, false);
                 if (bot->GetPowerPct(POWER_MANA) < line)
                 {
                     item = potion;

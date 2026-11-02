@@ -338,8 +338,9 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 // (its whole rotation, lead234), else the rate of all fights
 // [lead423] `credits` false: without the mana its own ready cooldowns return (the leader's mana tools judge the need
 // they would cover)
+// [lead482] `potion` false: without the mana potion the game lets it drink in the fight (the potion verdict itself)
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false,
-                    bool credits = true);
+                    bool credits = true, bool potion = true);
 // [lead423] the mana tools (Innervate, Shadowfiend, Hymn of Hope, Mana Tide Totem, Evocation, Divine Plea, Dispersion)
 constexpr uint32 SPELL_INNERVATE = 29166;
 constexpr uint32 SPELL_SHADOWFIEND = 34433;

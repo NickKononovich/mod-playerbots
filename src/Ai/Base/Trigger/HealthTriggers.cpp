@@ -27,6 +27,7 @@
 #include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
 #include "ObjectMgr.h"        // [lead264] CreatureBaseStats
 #include "PartyMemberToHeal.h"
+#include "RaidConsumables.h"  // [lead482] the mana potion it can drink in the fight
 #include "Playerbots.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -905,7 +906,7 @@ float ManaToolRadius(Player* caster, uint32 spell)
     return tick ? tick->Effects[EFFECT_0].CalcRadius(caster) : 0.0f;
 }
 
-float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits)
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits, bool potion)
 {
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
@@ -1052,6 +1053,25 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                         pick.empty() ? "" : "; ", inFight ? "in the fight" : "drunk before",
                                         viperCostPerPct, drinkCostPerPct);
         }
+    // [lead482] b209 rfc-h 5E: the prot paladin tank stood 257 s and drank 129 s ("53-56 % mana (needs 68 % = 4.07 %/s
+    // (measured) x 10 s + 2") - lead480 took its in-fight potions out of the measured rate (b208 0.6 %/s had them
+    // netted in) and nothing credited them back, while the leader's potion verdict gives one in every trash fight
+    // under its need. A mana potion the game lets it drink in this fight counts like a ready cooldown: none drunk this
+    // combat and the potions' cooldown ready (RaidConsumables::FindRestorePotion), at most the shortfall; not before a
+    // boss pull whose pre-pull potion (the leader's, RaidConsumables::FindBuffPotion) takes the potions' cooldown
+    if (credits && potion && bot->GetMaxPower(POWER_MANA))
+    {
+        uint32 amount = 0;
+        uint32 buffSpell = 0;
+        bool const prepot = boss && !bot->IsInCombat() && RaidConsumables::FindBuffPotion(bot, buffSpell);
+        if (!prepot && RaidConsumables::FindRestorePotion(bot, true, amount))
+        {
+            float const potionPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
+                                             std::max(need + reserve - returned, 0.0f));
+            returned += potionPct;
+            pick += Acore::StringFormat("{}mana potion {:.0f} %", pick.empty() ? "" : "; ", potionPct);
+        }
+    }
     // [lead251] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
     // need 2-12 % - the config's LowMana as the floor (80 s of its drinks); b192's floor at its mean deepest drop in a
     // fight (lead248) went over the computed need in 104 of 152 lines (5E tank 24 % against 4-13 %, the frost mage 47 %
