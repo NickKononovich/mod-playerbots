@@ -4310,11 +4310,16 @@ namespace Leader::Dungeon
             std::vector<Player*> out;
             auto const outOfReach = [&](Position const& at)
             { return !reaches(healerAt, at) && !reaches(healer->GetPosition(), at); };
-            if (outOfReach(tankAt))
+            // [lead380] b200 rfc-h (8 runs): the healers walked 256 s of the fights on "heal reach". A healer that
+            // heals the member where both stand now (its reach and sight) is not moved for it: the member's spot or
+            // the tank's anchor out of its reach is where they will be, not the fact; it moves once they are there
+            auto const healsNow = [&](Player* member) { return reaches(healer->GetPosition(), member->GetPosition()); };
+            if (outOfReach(tankAt) && !healsNow(tank))
                 out.push_back(tank);
             for (Player* other : seats)
                 if (other != healer)
-                    if (std::optional<Position> const& at = assigned[other->GetGUID()]; at && outOfReach(*at))
+                    if (std::optional<Position> const& at = assigned[other->GetGUID()];
+                        at && outOfReach(*at) && !healsNow(other))
                         out.push_back(other);
             // the healer at `spot` reaches the tank where it fights and every assigned spot
             auto const keepsAssigned = [&](Position const& spot)
