@@ -2400,6 +2400,9 @@ namespace Leader::Dungeon
                     spend.prev = pct;  // the fight's start
                 spend.fightSec += dt;
                 spend.boss |= bossFought;
+                // [lead367] the measured fights' Divine Plea uptime (FightManaLine credits it only where none was)
+                if (member->HasAura(RestState::SPELL_DIVINE_PLEA))
+                    RestState::NoteDivinePleaInFight(member->GetGUID());
             }
         }
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(group.LeaderGuid()))

@@ -111,6 +111,16 @@ float MemberModelDps(Player* member)
             SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
             if (!info || info->IsPassive() || info->IsPositive())
                 continue;
+            // [lead367] b197-b199 rfc-h: the plan's first fights were estimated 0.0-0.9 s (24-30 s real), the model
+            // group dps 27-1000x the real one. Auto Shot / Shoot (auto-repeat), Heroic Strike / Rune Strike (on the
+            // next swing) have no cast time, cooldown or global cooldown in Spell.dbc, so "the fastest the spell comes
+            // again" was the 1 ms floor. They come with the weapon's swing: an auto-repeat shot is that swing (the
+            // weapon term has it), a next-swing strike adds its bonus once per main-hand attack time
+            bool const autoRepeat = info->IsAutoRepeatRangedSpell();
+            bool const nextSwing = info->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING) ||
+                                   info->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE);
+            if (autoRepeat)
+                continue;
 
             float damage = 0.0f;
             float durationMs = 0.0f;
@@ -148,10 +158,13 @@ float MemberModelDps(Player* member)
             if (damage <= 0.0f)
                 continue;
 
+            if (nextSwing)  // [lead367] the strike replaces the swing the weapon term counts: its bonus only
+                damage = std::max(0.0f, damage - swing);
             float const castMs =
                 info->IsChanneled() ? float(std::max(info->GetDuration(), 0)) : float(info->CalcCastTime(member));
+            float const swingMs = nextSwing ? float(member->GetAttackTime(BASE_ATTACK)) : 0.0f;
             float const everyMs = std::max({castMs, float(info->StartRecoveryTime), float(info->RecoveryTime),
-                                            float(info->CategoryRecoveryTime), durationMs, 1.0f});
+                                            float(info->CategoryRecoveryTime), durationMs, swingMs, 1.0f});
             float const dps = damage * float(IN_MILLISECONDS) / everyMs;
             if (dps > fresh.dps)
             {

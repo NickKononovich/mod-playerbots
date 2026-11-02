@@ -361,6 +361,17 @@ void NotePeakManaRate(ObjectGuid member, float pctPerSec)
 
 namespace
 {
+    std::unordered_map<uint64, bool> pleaMeasured;  // [lead367] by member, under manaRateLock
+}
+
+void NoteDivinePleaInFight(ObjectGuid member)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    pleaMeasured[member.GetRawValue()] = true;
+}
+
+namespace
+{
     struct FightLengthError
     {
         float sum = 0.0f;
@@ -829,7 +840,6 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     }
     // the mana its own ready cooldowns return in the fight (spell effects: Evocation 60 %, Divine Plea 25 %)
     constexpr uint32 SPELL_EVOCATION = 12051;
-    constexpr uint32 SPELL_DIVINE_PLEA = 54428;
     // [lead177] a cooldown's mana counts only when using it in the fight costs less time than drinking that mana before
     // the pull: its cast (a channel's duration, else the global cooldown) takes this member's share of the group's
     // damage out of the fight (cast x 1 / damage dealers, a healer's the whole cast), the drink costs the group the
@@ -858,7 +868,17 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     credit(SPELL_EVOCATION, 60.0f, "Evocation");
     // [lead224] a measured rate is the net use of fights the paladin keeps Divine Plea up in (rot48, Guarded by the
     // Light): its mana is in that rate already, a credit on top counted it twice
-    if (!measured)
+    // [lead367] b198 rfc-h 5A: the tank's rate came from its opening fight alone, no Divine Plea up yet (first cast
+    // in fight 2), and the credit was skipped as soon as any rate was measured. The credit is skipped only when the
+    // measured fights had Plea up
+    bool pleaInRate = false;
+    if (measured)
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        auto const found = pleaMeasured.find(bot->GetGUID().GetRawValue());
+        pleaInRate = found != pleaMeasured.end() && found->second;
+    }
+    if (!pleaInRate)
         credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
     // [lead361] b196 rfc-h 5E: the BM hunter sat to drink before trash ("Rthunab rests below its line (mana 23 %,
     // need 46 %)") - a WotLK hunter regenerates in the fight with Aspect of the Viper (wowsims: Viper below 10 %,

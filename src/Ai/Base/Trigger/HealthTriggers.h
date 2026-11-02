@@ -337,6 +337,9 @@ void NoteManaRate(ObjectGuid member, float pctPerSec);
 // [lead232] ... on boss fights, and over its fights at least as long as this run's mean fight (lead234)
 void NoteBossManaRate(ObjectGuid member, float pctPerSec);
 void NotePeakManaRate(ObjectGuid member, float pctPerSec);
+// [lead367] the leader notes a measured fight of `member` under Divine Plea: its measured rate has Plea's mana in it
+constexpr uint32 SPELL_DIVINE_PLEA = 54428;
+void NoteDivinePleaInFight(ObjectGuid member);
 // [lead88] the leader notes how far a fight's real length was from its estimate (seconds, either way) for its group;
 // FightManaLine's reserve is the spend over that measured uncertainty (the mean of this run's fights)
 // [lead362] the estimate and the real length: FightSecOf scales the plan's estimate by the group's measured fights
