@@ -3543,11 +3543,17 @@ namespace Leader::Dungeon
                                     if (noneLogged.size() > 4096)
                                         noneLogged.clear();
                                     if (noneLogged.insert({guid, target->GetGUID()}).second)
+                                    {
+                                        // [lead463] user 2026-11-02: a member with no spot is a leader bug - loud
+                                        LOG_ERROR("playerbots",
+                                                  "[lead463] combat_spot_none: {} has no spot on {} ({}): {}",
+                                                  bot->GetName(), target->GetName(), breaks, rejects.Summary());
                                         Decisions().Write(run, "leader", "combat_spot_none", guid, bot->GetName(),
                                                           false,
                                                           JsonObject().Str("member", bot->GetName())
                                                               .Str("why", breaks).Str("target", target->GetName())
                                                               .Str("rejects", rejects.Summary()));
+                                    }
                                 }
                                 else
                                 {
