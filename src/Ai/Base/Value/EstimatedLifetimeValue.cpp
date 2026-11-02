@@ -351,6 +351,8 @@ namespace
         uint32 lastDealtMs = 0;  // the group's last hit, kept across fights ([combat_no_damage_release])
         uint64 totalDamage = 0;   // [lead86] every measured fight's damage and seconds (SustainedDps)
         uint64 totalActiveMs = 0;
+        std::unordered_map<uint64, uint64> memberDamage;  // [lead271] every hit by member, and their sum
+        uint64 memberAll = 0;
     };
 
     struct ClosedFight
@@ -455,9 +457,27 @@ namespace GroupDamage
             track.lastHitMs = now ? now : 1;
             track.lastDealtMs = track.lastHitMs;
             track.damage += amount;
+            track.memberDamage[owner->GetGUID().GetRawValue()] += amount;  // [lead271]
+            track.memberAll += amount;
         }
 
         LogClosedFight(closed);
+    }
+
+    float MemberSustainedDps(Player* member)
+    {
+        float const groupDps = SustainedDps(member);
+        Group* group = member ? member->GetGroup() : nullptr;
+        if (groupDps <= 0.0f || !group)
+            return 0.0f;
+        std::lock_guard<std::mutex> guard(groupDamageLock);
+        auto const found = groupDamage.find(group->GetGUID().GetRawValue());
+        if (found == groupDamage.end() || !found->second.memberAll)
+            return 0.0f;
+        auto const own = found->second.memberDamage.find(member->GetGUID().GetRawValue());
+        if (own == found->second.memberDamage.end())
+            return 0.0f;
+        return groupDps * float(own->second) / float(found->second.memberAll);
     }
 
     float SustainedDps(Player* bot)

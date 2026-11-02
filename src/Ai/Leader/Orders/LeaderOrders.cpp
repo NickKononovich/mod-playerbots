@@ -800,7 +800,8 @@ namespace Leader
                 return 4;
             if (starts("heal reach") || starts("sight"))
                 return 3;
-            if (starts("combat spot") || starts("chase"))  // [lead156] the melee chase is its combat spot
+            // [lead156] the melee chase is its combat spot; [lead271] the trap weave's walk replaces it for a GCD
+            if (starts("combat spot") || starts("chase") || starts("trap weave"))
                 return 2;
             if (starts("its spot for the pull") || starts("along with the tank: to range"))
                 return 1;

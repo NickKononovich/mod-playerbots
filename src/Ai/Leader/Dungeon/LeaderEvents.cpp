@@ -53,6 +53,7 @@
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderPrepull.h"      // [lead270]
+#include "LeaderTrapWeave.h"    // [lead271]
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -2609,6 +2610,21 @@ namespace Leader::Dungeon
                         ownTarget && ownTarget->IsAlive() && ownTarget->IsInCombat())
                         spotTarget = ownTarget;
             }
+            // [lead271] the hunter's trap weave: the leader's computed choice owns its move while it runs
+            if (!moved && combat && spotTarget && spotTarget->IsAlive() && bot->getClass() == CLASS_HUNTER)
+                moved = Leader::TrapWeave::TickMove(
+                    group, bot, tank, spotTarget, seats,
+                    [&](Position const& spot, std::string const& why)
+                    {
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.0f, why))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", why).Str("target", spotTarget->GetName())
+                                         .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
+                                         .Real("z", spot.GetPositionZ()));
+                        Leader::MemberEvents current;
+                        return Leader::Events::Get(guid, current) && current.move == Leader::MoveEvent::MoveTo &&
+                               current.moveWhy == why;
+                    });
             if (!moved && combat && Leader::LEADER_COMBAT_SPOTS && target && target->IsAlive())
             {
                 Unit* const target = spotTarget;  // the block below judges the spot against it
@@ -3806,6 +3822,9 @@ namespace Leader::Dungeon
                 }
             }
         }
+
+        // [lead271] a hunter on its trap spot drops the trap (after the externals above: its one external slot)
+        Leader::TrapWeave::TickDrop(group, seats, fighting, logEvent);
 
         // 4. the heal reach in the fight: a member out of the healer's reach or sight moves the healer (a spot that
         // reaches everyone), else it is reported

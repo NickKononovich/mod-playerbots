@@ -66,6 +66,9 @@ namespace GroupDamage
     // [lead86] the group's measured damage over its measured fighting seconds in this run (every fight weighed by its
     // length: a long fight - a boss - is not pulled down by short trash pulls), 0 when none is known
     float SustainedDps(Player* bot);
+    // [lead271] one member's part of it: the group's sustained dps times the member's share of the group's measured
+    // hits (its pet / totem included); 0 when none is known
+    float MemberSustainedDps(Player* member);
     // [combat_no_damage_release] True while the holds that keep a bot from fighting are lifted: the group of `bot`
     // (in a dungeon) is in combat - a member has a victim or attackers - and no member (nor its pet / totem) has dealt
     // damage for NO_DAMAGE_RELEASE_AFTER_MS; the release lasts NO_DAMAGE_RELEASE_MS, then the clock starts again.

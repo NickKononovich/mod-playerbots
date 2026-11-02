@@ -388,6 +388,18 @@ namespace Leader
             bool done = false;
         };
         std::map<ObjectGuid, ArmyPrepull> armyPrepull;
+        // [lead271] the trap weave per hunter (LeaderTrapWeave.h)
+        struct TrapWeave
+        {
+            ObjectGuid target;
+            uint32 spell = 0;
+            Position spot;         // where the hunter drops the trap
+            float triggerRadius = 0.0f;
+            uint8 step = 0;        // 0 walk, 1 drop
+            uint32 orderedMs = 0;
+        };
+        std::map<ObjectGuid, TrapWeave> trapWeave;
+        std::map<ObjectGuid, std::string> trapWeaveLogged;  // the last verdict logged per hunter
     };
 }
 
