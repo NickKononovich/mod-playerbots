@@ -781,6 +781,11 @@ float FightSecOf(Player* bot, NextFight const& fight)
 
 namespace
 {
+    thread_local bool nestedManaLine = false;  // [lead525] another member's line read inside one: no overlap there
+}
+
+namespace
+{
     // [lead177] the mana per second (% of max mana) the best drink in the bags gives (its SPELL_AURA_MOD_POWER_REGEN
     // amount is mana per 5 s); 0 without one. Cached per bot for a few seconds: the bags do not change in a fight
     float DrinkPctPerSec(Player* bot)
@@ -1029,6 +1034,53 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float returned = 0.0f;
     std::string pick;
     float const drinkRate = DrinkPctPerSec(bot);
+    // [lead525] coordinator 2026-11-03 (Q1): both costs as they are. A tool's cost is the damage it loses in the
+    // fight (its cast / channel seconds x the member's damage share; Viper its damage cut while it runs); drinking's
+    // cost is the wait it adds to the group's wait - nothing while the group waits for someone else anyway (the
+    // slowest other member's drink to its own line). The cheaper one counts. Out of a fight only (in a fight there
+    // is no drinking now: the plain drink seconds, as before); the other members' lines are read without this
+    // overlap (one level, no recursion)
+    float otherWaitSec = 0.0f;
+    std::string waitFor;
+    bool const overlap = drinkRate > 0.0f && !bot->IsInCombat() && !nestedManaLine;
+    if (overlap)
+        if (Group* group = bot->GetGroup())
+        {
+            nestedManaLine = true;
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap() ||
+                    member->IsInCombat() || !member->GetMaxPower(POWER_MANA))
+                    continue;
+                float const memberRate = DrinkPctPerSec(member);
+                if (memberRate <= 0.0f)
+                    continue;
+                float const sec =
+                    std::max(OwnManaLine(member) - member->GetPowerPct(POWER_MANA), 0.0f) / memberRate;
+                if (sec > otherWaitSec)
+                {
+                    otherWaitSec = sec;
+                    waitFor = member->GetName();
+                }
+            }
+            nestedManaLine = false;
+        }
+    // the group wait the drink of `pct` adds (-1: no drink in the bags, the tool it is)
+    auto const drinkCost = [&](float pct) -> float
+    {
+        if (drinkRate <= 0.0f)
+            return -1.0f;
+        if (!overlap)
+            return pct / drinkRate;
+        float const mana = bot->GetPowerPct(POWER_MANA);
+        float const shortfall = std::max(need + reserve - returned, 0.0f);
+        float const withTool = std::max(shortfall - pct - mana, 0.0f) / drinkRate;
+        float const withoutTool = std::max(shortfall - mana, 0.0f) / drinkRate;
+        return std::max(otherWaitSec, withoutTool) - std::max(otherWaitSec, withTool);
+    };
+    if (overlap && otherWaitSec > 0.0f)
+        pick += Acore::StringFormat("the group waits {:.1f} s for {} anyway", otherWaitSec, waitFor);
     auto const credit = [&](uint32 spell, float pct, char const* name)
     {
         if (!credits || !bot->HasSpell(spell) || bot->HasSpellCooldown(spell))
@@ -1040,8 +1092,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                                   : std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(bot)) /
                                                         1000.0f;
         float const fightCost = PlayerbotAI::IsHeal(bot) ? castSec : castSec / float(DamageDealers(bot));
-        float const drinkSec = drinkRate > 0.0f ? pct / drinkRate : -1.0f;
-        bool const inFight = drinkSec < 0.0f || fightCost <= drinkSec;
+        float const drinkSec = drinkCost(pct);  // [lead525]
+        bool const inFight = drinkSec < 0.0f || fightCost < drinkSec;
         if (inFight)
             returned += pct;
         pick += Acore::StringFormat("{}{} {}: {:.1f} s in the fight vs {:.1f} s drinking", pick.empty() ? "" : "; ",
@@ -1084,14 +1136,16 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                     damageCut = std::max(damageCut, -float(effect.CalcValue(bot)) / 100.0f);
             }
             float const viperCostPerPct = damageCut / float(DamageDealers(bot)) / viperPerSec;
-            float const drinkCostPerPct = drinkRate > 0.0f ? 1.0f / drinkRate : -1.0f;
-            bool const inFight = damageCut > 0.0f && (drinkCostPerPct < 0.0f || viperCostPerPct <= drinkCostPerPct);
             float const viperPct = std::min(viperPerSec * fightSec, std::max(need + reserve - returned, 0.0f));
+            // [lead525] the whole shortfall Viper would cover: its damage lost vs the wait its drink adds
+            float const viperCost = viperCostPerPct * viperPct;
+            float const drinkSec = drinkCost(viperPct);
+            bool const inFight = damageCut > 0.0f && viperPct > 0.0f && (drinkSec < 0.0f || viperCost < drinkSec);
             if (inFight)
                 returned += viperPct;
-            pick += Acore::StringFormat("{}Aspect of the Viper {}: {:.2f} s per % in the fight vs {:.2f} s drinking",
+            pick += Acore::StringFormat("{}Aspect of the Viper {}: {:.1f} s in the fight vs {:.1f} s drinking",
                                         pick.empty() ? "" : "; ", inFight ? "in the fight" : "drunk before",
-                                        viperCostPerPct, drinkCostPerPct);
+                                        viperCost, drinkSec);
         }
     // [lead482] b209 rfc-h 5E: the prot paladin tank stood 257 s and drank 129 s ("53-56 % mana (needs 68 % = 4.07 %/s
     // (measured) x 10 s + 2") - lead480 took its in-fight potions out of the measured rate (b208 0.6 %/s had them
