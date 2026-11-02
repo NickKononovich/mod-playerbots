@@ -140,7 +140,16 @@ namespace
         if (info)
             for (SpellEffectInfo const& effect : info->GetEffects())
                 if (effect.IsEffect())
+                {
                     radius = std::max(radius, effect.CalcRadius(bot));
+                    // [lead472] a self aura's periodic area (Bladestorm's Whirlwind): the triggered spell's radius
+                    if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                        effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && effect.TriggerSpell)
+                        if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                            for (SpellEffectInfo const& hit : triggered->GetEffects())
+                                if (hit.IsEffect())
+                                    radius = std::max(radius, hit.CalcRadius(bot));
+                }
 
         return radius > 0.0f ? radius : sPlayerbotAIConfig.AoeRadius;
     }
@@ -253,6 +262,31 @@ namespace
 
         return !damage && info->IsPositive();
     }
+
+    // [lead247] a hostile spell that hits an area or chains (Divine Storm, Whirlwind, Cleave, Consecration) is area
+    // damage by its own spell data
+    // [lead472] and so is a self aura whose periodic trigger is one (Bladestorm's Whirlwind every second): b207 rfc-h
+    // 5G the arms warrior's Bladestorm Whirlwind did 46-62 k a pull in the pulls of its 5 aggro losses, unread by
+    // any area rule (its own effects hit only the warrior)
+    bool HitsSeveral(SpellInfo const* info, uint8 depth = 2)
+    {
+        if (!info || !depth)
+            return false;
+        if (info->IsAffectingArea())
+            return true;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            SpellEffectInfo const& effect = info->Effects[i];
+            if (!effect.IsEffect())
+                continue;
+            if (effect.ChainTarget > 1)
+                return true;
+            if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL &&
+                effect.TriggerSpell && HitsSeveral(sSpellMgr->GetSpellInfo(effect.TriggerSpell), depth - 1))
+                return true;
+        }
+        return false;
+    }
 }
 
 float ThreatMultiplier::GetValue(Action* action)
@@ -309,7 +343,11 @@ float ThreatMultiplier::GetValue(Action* action)
             return 1.0f;
     }
 
-    if (action->getThreatType() == Action::ActionThreatType::Aoe)
+    // [lead472] an area by its spell data (HitsSeveral) is read as an area too: Bladestorm, Divine Storm, Whirlwind,
+    // Swipe (Cat), Consecration, Cleave are melee actions by their action type and skipped the area threat rule -
+    // b207 rfc-h: the arms warrior 5, the ret paladin 4 and the cat 6 aggro losses each came in pulls where these
+    // did most of their damage, on pack mobs the tank had no or little threat on
+    if (action->getThreatType() == Action::ActionThreatType::Aoe || (spellAction && HitsSeveral(spellInfo)))
     {
         if (spellAction)
         {
@@ -666,18 +704,6 @@ namespace
     // leader's AoE rule was Forbidden: those actions are no Aoe action type, the rule never held them. A hostile
     // spell that hits an area or chains (Divine Storm, Whirlwind, Cleave, Consecration) is area damage by its own
     // spell data; the self buffs that splash every melee hit onto a second mob are named (no spell data says so)
-    bool HitsSeveral(SpellInfo const* info)
-    {
-        if (!info)
-            return false;
-        if (info->IsAffectingArea())
-            return true;
-        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-            if (info->Effects[i].IsEffect() && info->Effects[i].ChainTarget > 1)
-                return true;
-        return false;
-    }
-
     bool IsSplashBuff(std::string const& name) { return name == "sweeping strikes" || name == "blade flurry"; }
 
     // [rot2] Where an area action lands and how far it reaches (the rules of ThreatMultiplier::AreaHolds).

@@ -1298,12 +1298,74 @@ namespace Leader::Dungeon
                 {
                     lead.looseMobs[mob->GetGUID()] = {victimGuid, now};
                     Player* victim = ObjectAccessor::FindPlayer(victimGuid);
+                    // [lead472] the loss's cause from the facts of this moment: the victim's command and what it hits,
+                    // its threat against the tank's on the mob, whether the tank has the mob on its threat list or
+                    // attacks it, a heal (the victim a healer / casting a heal) or damage, the mob's kind (a summon,
+                    // a caster) and whether the tank has a walk to the victim
+                    JsonObject cause;
+                    if (victim)
+                    {
+                        ThreatManager& threat = mob->GetThreatMgr();
+                        float const victimThreat = threat.GetThreat(victim);
+                        float const tankThreat = threat.GetThreat(tank);
+                        bool const tankListed = threat.IsThreatenedBy(tank);
+                        bool const tankHits = tank->GetVictim() == mob;
+                        Leader::MemberEvents command;
+                        bool const commanded = Leader::Events::Get(victimGuid, command);
+                        Unit* const commandTarget = commanded && command.attack == Leader::AttackEvent::Attack
+                                                        ? ObjectAccessor::GetUnit(*tank, command.target)
+                                                        : nullptr;
+                        bool const toldToHit = commandTarget == mob;
+                        bool const hitsIt = victim->GetVictim() == mob;
+                        Spell const* casting = victim->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                        if (!casting)
+                            casting = victim->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+                        SpellInfo const* castInfo = casting ? casting->GetSpellInfo() : nullptr;
+                        bool const healing = castInfo && castInfo->IsPositive() &&
+                                             (castInfo->HasEffect(SPELL_EFFECT_HEAL) ||
+                                              castInfo->HasAura(SPELL_AURA_PERIODIC_HEAL));
+                        bool const healer = PlayerbotAI::IsHeal(victim);
+                        Creature* const creature = mob->ToCreature();
+                        bool const summon = mob->IsSummon() || !mob->GetOwnerGUID().IsEmpty();
+                        uint32 const unitClass = creature ? creature->GetCreatureTemplate()->unit_class : 0;
+                        bool const caster = unitClass == UNIT_CLASS_MAGE || unitClass == UNIT_CLASS_PALADIN;
+                        Leader::RouteResult const walk = Leader::Route(tank, victim->GetPosition());
+                        bool const tankReaches = walk.found && walk.complete;
+                        char const* why = "out-threatened the tank on its own target";
+                        if (!tankListed)
+                            why = summon ? "a summon the tank has no threat on"
+                                         : "the tank never had it (not on its threat list)";
+                        else if (tankThreat <= 0.0f)
+                            why = "no tank threat on it";
+                        else if (healer || healing)
+                            why = "heal threat over the tank's";
+                        else if (!toldToHit && !hitsIt)
+                            why = "threat on a mob it was not told to hit (area / splash / dot)";
+                        else if (!toldToHit)
+                            why = "it attacks a mob it was not told to";
+                        cause.Str("cause", why)
+                            .Str("victimCommand", commanded ? std::string(commandTarget ? "Attack " +
+                                                                                              commandTarget->GetName()
+                                                                                        : "no Attack")
+                                                            : std::string("none"))
+                            .Bool("victimHitsIt", hitsIt)
+                            .Str("victimCasts", castInfo ? castInfo->SpellName[0] : "-")
+                            .Real("victimThreat", victimThreat)
+                            .Real("tankThreat", tankThreat)
+                            .Bool("tankListed", tankListed)
+                            .Bool("tankHits", tankHits)
+                            .Bool("healer", healer)
+                            .Bool("summon", summon)
+                            .Bool("caster", caster)
+                            .Bool("tankReaches", tankReaches);
+                    }
                     Decisions().Write(run, "leader", "leader_aggro_loss", mob->GetGUID(), mob->GetName(),
                                                   true,
                                                   JsonObject().Str("mob", mob->GetName()).Num("entry", mob->GetEntry())
                                                       .Str("victim", victim ? victim->GetName() : "?")
                                                       .Real("tankDistance",
-                                                            victim ? victim->GetExactDist(tank) : -1.0f));
+                                                            victim ? victim->GetExactDist(tank) : -1.0f)
+                                                      .Merge(cause));
                 }
         }
         for (auto it = lead.looseMobs.begin(); it != lead.looseMobs.end();)
