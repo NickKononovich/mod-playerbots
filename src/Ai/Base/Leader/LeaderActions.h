@@ -170,7 +170,7 @@ public:
     // run dry - "" when it would walk there (or needs no walk), else the refusal the member would report, and the
     // idle mob its walk would wake in `mob`
     // [lead491] `chase`: the leader's melee chase of its fight target - the idle reach is the leader's melee test
-    // (LeaderMeleeAggroOnWalk: no deeper into an idle mob's reach than the fight there), not the member's guard
+    // (LeaderAggroOnWalk on the target: no deeper into an idle mob's reach than the fight there), not its guard
     std::string DryFollow(Unit* target, uint8 index, ObjectGuid& mob, bool chase = false);
 
 private:

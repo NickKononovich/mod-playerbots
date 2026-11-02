@@ -562,19 +562,19 @@ namespace Leader::Dungeon
                                       (spot.GetExactDist(tank->GetPosition()) <= 1.0f ||
                                        (ground != lead.tankGroundSpots.end() &&
                                         spot.GetExactDist(ground->second) <= 0.5f));
-                // [lead490] a melee member's combat spot at its target, and its walk there, are judged against the
-                // fight at that target (LeaderMeleeAggroAt): no deeper into an idle mob's reach than the fight stands
-                Unit* meleeTarget = nullptr;
+                // [lead490] [lead492] a member's combat spot on its target, and its walk there, are judged against
+                // the fight at that target (LeaderFightAggroAt): no deeper into an idle mob's reach than it stands
+                Unit* fightTarget = nullptr;
                 if (auto const held = lead.combatSpots.find(member);
                     held != lead.combatSpots.end() && held->second.second.GetExactDist(spot) <= 0.5f &&
-                    !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot) && group.FightOn(tank))
-                    meleeTarget = ObjectAccessor::GetUnit(*bot, held->second.first);
-                Creature* mob = tankSpot ? nullptr
-                                : meleeTarget ? LeaderMeleeAggroAt(bot, spot, meleeTarget)
+                    group.FightOn(tank))
+                    fightTarget = ObjectAccessor::GetUnit(*bot, held->second.first);
+                Creature* mob = tankSpot      ? nullptr
+                                : fightTarget ? LeaderFightAggroAt(bot, spot, fightTarget)
                                               : LeaderAggroAt(bot, spot);
                 bool noPath = false;
                 if (!mob && again)
-                    mob = LeaderAggroOnWalk(bot, spot, noPath, meleeTarget);
+                    mob = LeaderAggroOnWalk(bot, spot, noPath, fightTarget);
                 bool const kept = !mob && !again && !checked.reject.empty();
                 if (kept)
                 {
@@ -3740,7 +3740,7 @@ namespace Leader::Dungeon
                                     return false;
                                 }
                                 // [lead490] no deeper into an idle mob's reach than the fight at the target stands
-                                if (LeaderMeleeAggroAt(bot, at, target))
+                                if (LeaderFightAggroAt(bot, at, target))
                                 {
                                     NoteSpotReject(search, "an idle mob's aggro reach");
                                     return false;

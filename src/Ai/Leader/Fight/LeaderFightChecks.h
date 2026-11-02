@@ -183,18 +183,20 @@ namespace Leader::Fight
     Creature* LeaderAggroAt(Player* bot, Position const& spot);
     // [lead490] b209 rfc-h: 16 of 16 "at target" melee candidates rejected "an idle mob's aggro reach" for the enh
     // shaman, warriors, rogues, DKs, ret, cat - the pulled target stood inside an idle pack's reach, and the tank
-    // fought it there without waking it. For a melee spot at `target`: the unpulled mob whose reach covers the spot
-    // AND to which the spot lies nearer than the fight already stands (the target, its victim in its melee reach)
-    Creature* LeaderMeleeAggroAt(Player* bot, Position const& spot, Unit* target);
+    // fought it there without waking it. [lead492] ranged too: "ring: an idle mob's aggro reach" x64-112 on
+    // Bazzalan, Taragaman, Oggleflint, Searing Blade Warlocks. For a fight spot on `target`: the unpulled mob whose
+    // reach covers the spot AND to which the spot lies nearer than the fight already stands in its reach (the
+    // target's victim where it stands; a melee spot: the target too); nullptr: none
+    Creature* LeaderFightAggroAt(Player* bot, Position const& spot, Unit* target);
 
     // the walk to the spot passes no unpulled mob's reach (and there is a walk)
-    // [lead490] `meleeTarget`: the walk of a melee member to its spot at that target (LeaderMeleeAggroAt per point)
-    Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath, Unit* meleeTarget = nullptr);
+    // [lead490] `fightTarget`: the walk of a member to its fight spot on that target (LeaderFightAggroAt per point)
+    Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath, Unit* fightTarget = nullptr);
 
     // a candidate of a spot search: 0 rejected (an unpulled mob reaches it), 1 valid on new ground (kept as the
-    // fallback), 2 valid on cleared ground (taken at once); `meleeTarget`: a melee spot at it (LeaderMeleeAggroAt)
+    // fallback), 2 valid on cleared ground (taken at once); `fightTarget`: a fight spot on it (LeaderFightAggroAt)
     int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback,
-                        Unit* meleeTarget = nullptr);
+                        Unit* fightTarget = nullptr);
 
     // a free spot near the healer, out of every cleave cone, from which it reaches everyone (`keeps`)
     bool LeaderHealerRespot(Player* healer, PlayerbotAI* healerAI,
