@@ -1568,6 +1568,9 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
 {
     bool const dry = s_dryRun;  // [lead70]
     s_moveRefusal.clear();
+    float const origX = x;  // [lead238] the destination as asked, before a guard picks another
+    float const origY = y;
+    float const origZ = z;
     auto const refuse = [](char const* guard)
     {
         s_moveRefusal = guard;
@@ -1675,10 +1678,20 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     }
 
     // [lead93] a led bot never walks into the instance's exit areatrigger (it would port the bot out mid-run)
+    // [lead238] b189 rfc-h 5A: Rtshaab's "combat spot: behind the target - InInstanceExit" x2: the leader's spot was out
+    // of the exit (its spot check tests it), a guard above (the fight hold, the safe zone, a melee spot out of a ground
+    // effect) moved the walk's end into it. Such a moved end goes back to the spot as asked
     if (Map* exitMap = bot->GetMap(); exitMap && exitMap->IsDungeon() && mapId == bot->GetMapId() &&
                                       Leader::LedBot(bot) &&
                                       InInstanceExit(mapId, x, y, z, bot->GetCombatReach()))
-        return refuse("InInstanceExit (the instance's exit)");
+    {
+        if ((x == origX && y == origY && z == origZ) ||
+            InInstanceExit(mapId, origX, origY, origZ, bot->GetCombatReach()))
+            return refuse("InInstanceExit (the instance's exit)");
+        x = origX;
+        y = origY;
+        z = origZ;
+    }
 
     // No walk through a closed door, grouped or not, tank included (the forge walls of flame, Utgarde Keep).
     if (Map* map = bot->GetMap(); map && map->IsDungeon() && mapId == bot->GetMapId() && !bot->GetVehicle() &&
