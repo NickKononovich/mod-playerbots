@@ -712,6 +712,59 @@ namespace Leader::Fight
             if (ring < inner)
                 break;
         }
+        // [lead471] b208 rfc-h: combat_spot_none "ring: out of its band x105" / "ring: no ground x91" for hunters on a
+        // Ragefire Trogg in RFC's tunnels - every straight ray from the target hit the tunnel wall inside the band's
+        // floor (the hunter's dead zone), so no ring point was left in it. The ground the member walks to the target
+        // on is a band too: the member's own route to the target, point by point at the ring step from its end, the
+        // first point that fits (the shortest walk); the same checks as a ring point
+        if (!melee)
+        {
+            Leader::RouteResult const route = Leader::Route(bot, target->GetPosition());
+            if (!route.found || route.points.empty())
+                NoteSpotReject("walk", "no route to the target");
+            else
+            {
+                std::vector<G3D::Vector3> along;
+                along.push_back(route.points.front());
+                for (size_t i = 1; i < route.points.size(); ++i)
+                {
+                    G3D::Vector3 const from = route.points[i - 1];
+                    G3D::Vector3 const leg = route.points[i] - from;
+                    float const length = leg.length();
+                    for (float step = RING_STEP_YD; step < length; step += RING_STEP_YD)
+                        along.push_back(from + leg * (step / length));
+                    along.push_back(route.points[i]);
+                }
+                for (G3D::Vector3 const& point : along)
+                {
+                    Position const spot(point.x, point.y, point.z);
+                    if (std::string const why = CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, true);
+                        !why.empty())
+                    {
+                        NoteSpotReject("walk", why);
+                        continue;
+                    }
+                    if (fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
+                    {
+                        NoteSpotReject("walk", "inside a fight mob's melee reach");
+                        continue;
+                    }
+                    if (int const candidate = LeaderCandidate(bot, spot, fallback); candidate != 2)
+                    {
+                        if (!candidate)
+                            NoteSpotReject("walk", "an idle mob's aggro reach");
+                        continue;
+                    }
+                    out = spot;
+                    return true;
+                }
+                if (fallback)
+                {
+                    out = *fallback;
+                    return true;
+                }
+            }
+        }
         return false;
     }
 

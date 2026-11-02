@@ -1227,15 +1227,42 @@ namespace Leader::Dungeon
         // (its heal-reach spot). A spot keeps the heal reach when the healer's place reaches it, or a healer place
         // the leader can give exists: the line from the tank's fight place to the spot is in sight and short enough
         // that a point on it lies within LEADER_HEALER_TANK_YD of the tank and LEADER_HEAL_REACH_YD of the spot
+        // [lead471] b208 rfc-h: "heal reach" still took 7-93 ring candidates of the combat_spot_none searches - the
+        // healer place the leader can give was only a point on the straight line from the tank to the spot (its sight
+        // needed). The healer places the leader can give are the healer's planned spot, where it stands, the tank's
+        // fight place and the healer's band round it (LEADER_HEALER_YD, the 16 directions of the healer searches) on
+        // the tank's floor in heal reach and sight of the tank: a spot keeps the heal reach when one of them reaches it
+        std::optional<std::vector<Position>> healerPlaces;
         auto const healerCanReach = [&](Position const& spot)
         {
             Position const tankAt = fighting && lead.fightAnchorSerial ? lead.fightAnchor : tank->GetPosition();
-            return spot.GetExactDist(tankAt) <=
-                       Leader::LEADER_HEALER_TANK_YD + Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&
-                   map->isInLineOfSight(tankAt.GetPositionX(), tankAt.GetPositionY(), tankAt.GetPositionZ() + 2.0f,
-                                        spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + 2.0f,
-                                        tank->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
-                                        VMAP::ModelIgnoreFlags::Nothing);
+            if (spot.GetExactDist(tankAt) >
+                Leader::LEADER_HEALER_TANK_YD + Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin)
+                return false;
+            if (!healerPlaces)
+            {
+                healerPlaces.emplace();
+                healerPlaces->push_back(tankAt);
+                constexpr uint32 DIRECTIONS = 16;
+                for (uint32 i = 0; i < DIRECTIONS; ++i)
+                {
+                    float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                    float x = tankAt.GetPositionX() + std::cos(angle) * LEADER_HEALER_YD;
+                    float y = tankAt.GetPositionY() + std::sin(angle) * LEADER_HEALER_YD;
+                    float z = tankAt.GetPositionZ();
+                    if (!map->CheckCollisionAndGetValidCoords(tank, tankAt.GetPositionX(), tankAt.GetPositionY(),
+                                                              tankAt.GetPositionZ(), x, y, z) ||
+                        std::fabs(z - tankAt.GetPositionZ()) > 4.0f)
+                        continue;
+                    Position const place(x, y, z);
+                    if (place.GetExactDist(tankAt) <= Leader::LEADER_HEALER_TANK_YD && reaches(place, tankAt))
+                        healerPlaces->push_back(place);
+                }
+            }
+            for (Position const& place : *healerPlaces)
+                if (reaches(place, spot))
+                    return true;
+            return false;
         };
         auto const keepsHealer = [&](Position const& spot)
         {
