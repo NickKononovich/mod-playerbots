@@ -168,7 +168,12 @@ namespace Leader::Dungeon
             // [lead69] b114 376-427 s: 13 commit_failed "the tank's walk in for sight refused" with the order left
             // Issued. The tank's refusal is the walk verdict: the mob is unreachable from here (lead.unreachable,
             // logged once), the order ends and the commitment with it, the route moves on
-            if (report.what == "commit_failed" && !report.target.IsEmpty() &&
+            // [lead244] b190 rfc-h 5C 246 s: "refused by IsWaitingForLastMove" (the tank's last walk's clock) made the
+            // boss unreachable, and a boss is never skipped: the route stood 114 s. The tank's own walk state (its
+            // last walk's clock, the same walk on) is no verdict on the way: the order stays open for its next look
+            bool const walkState = report.why.find("IsWaitingForLastMove") != std::string::npos ||
+                                   report.why.find("IsDuplicateMove") != std::string::npos;
+            if (report.what == "commit_failed" && !report.target.IsEmpty() && !walkState &&
                 !group.State().unreachable.count(report.target))
             {
                 Creature* refusedMob = leader->GetMap()->GetCreature(report.target);

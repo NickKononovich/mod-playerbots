@@ -300,6 +300,16 @@ bool AggressiveTargetAction::Execute(Event event)
                 // outside its aggro reach the tank stops there, else it walks the route on (the opener goes as soon
                 // as the mob is in its range and sight: TankIncomingMob, live each tick); no route at all is the
                 // only unreachable
+                // [lead244] b190 rfc-h 5C 245.7-360 s: the boss engage's walk was "refused by IsWaitingForLastMove"
+                // with the tank standing (its last walk's clock still ran), the leader took Oggleflint as unreachable
+                // and the route stood 114 s at him (a boss is never skipped). A tank that stands walks no walk: the
+                // leader's order replaces the last one's clock at once (lead36)
+                if (!bot->isMoving() && IsWaitingForLastMove(MovementPriority::MOVEMENT_IDLE))
+                {
+                    LastMovement& last = *context->GetValue<LastMovement&>("last movement");
+                    last.lastdelayTime = 0.0f;
+                    last.msTime = 0;
+                }
                 float const opener = OpenerRange(target);
                 if (opener > 0.0f && !target->IsInCombat() &&
                     MoveToSight(target, opener, "engage: to its opener's range"))
