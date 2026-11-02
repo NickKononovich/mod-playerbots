@@ -63,14 +63,9 @@ void MarksmanshipHunterStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "low mana",
-            {
-                NextAction("viper sting", 17.5f)
-            }
-        )
-    );
+    // [rot95] no "low mana" -> Viper Sting: wowsims mm.apl never casts it (its mana is Aspect of the Viper below 10 %).
+    // One sting per hunter: b211 rfc-h 5H Rthunad Jergosh cast it twice, it replaced Serpent Sting (4988 vs the sim's
+    // 10718 damage) and Chimera Shot's serpent burst (4266 vs 14188) - 67 % of the sim in that fight
     triggers.push_back(
         new TriggerNode(
             "no stings",
