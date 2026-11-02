@@ -171,6 +171,24 @@ public:
     bool IsActive() override;
 };
 
+// [rot63] wowsims arms: Heroic Strike at 40+ rage only at the main-hand swing (autoTimeToNext <= 1 ms), so the GCD
+// strikes (Mortal Strike, Overpower, Slam) spend the rage between swings. The bot queues it once the swing lands before
+// it could press a GCD strike: the swing timer (getAttackTimer) within the global cooldown left, or within the bot's
+// next look (its react delay). b201 rfc-h 5G Rtwarad on Oggleflint: Heroic Strike 5.4 a minute vs the sim's 1.6, Slam
+// 0 vs 7.6 - queued any time at 40 rage, it took the rage during each global cooldown.
+class ArmsHeroicStrikeTrigger : public FuryHeroicStrikeRageTrigger
+{
+public:
+    static constexpr int32 ARMS_HEROIC_STRIKE_RAGE = 40;  // wowsims warrior__arms
+
+    ArmsHeroicStrikeTrigger(PlayerbotAI* botAI)
+        : FuryHeroicStrikeRageTrigger(botAI, "arms heroic strike rage", ARMS_HEROIC_STRIKE_RAGE)
+    {
+    }
+
+    bool IsActive() override;
+};
+
 // [b31_deep] Shattering Throw as a boss cooldown (wowsims arms / fury APL MCD, Warcraft Tavern Arms): engaged boss
 // after 6 s, not while the burst waits for Bloodlust, target lives 15 s more, no Shattering Throw on it yet, Battle
 // Stance (no dance), its rage on hand. It was only cast on Divine Shield / Ice Block / Hand of Protection: 0 in PvE.

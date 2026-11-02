@@ -405,3 +405,13 @@ bool FuryHeroicStrikeRageTrigger::IsActive()
 {
     return RageAvailable::IsActive() && WarriorLeavesRageForStrike(botAI, bot, "heroic strike");
 }
+
+// [rot63]
+bool ArmsHeroicStrikeTrigger::IsActive()
+{
+    uint32 const swingMs = bot->getAttackTimer(BASE_ATTACK);
+    if (swingMs > std::max(botAI->GetGlobalCooldownRemaining(), botAI->GetReactDelay()))
+        return false;
+
+    return FuryHeroicStrikeRageTrigger::IsActive();
+}
