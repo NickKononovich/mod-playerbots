@@ -312,6 +312,19 @@ namespace Leader::Dungeon
             if (Leader::Events::MoveBarred(member, why) ||
                 (why.rfind("along with the tank", 0) == 0 && group.FightOn(tank)))
                 return false;
+            // [lead236] b188 rfc-h 5G 126.1 s: "combat spot: behind the target" issued at (1.06e24, 4.6e30, 4.0e24) -
+            // a spot off every map grid is no spot (a broken source; logged once per member and reason)
+            if (move != Leader::MoveEvent::Hold &&
+                !Acore::IsValidMapCoord(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ()))
+            {
+                thread_local std::set<std::pair<ObjectGuid, std::string>> invalidLogged;
+                if (invalidLogged.size() > 4096)
+                    invalidLogged.clear();
+                if (invalidLogged.insert({member, why}).second)
+                    LOG_ERROR("playerbots", "[lead236] invalid_spot: {} for {} at ({},{},{}) not issued", why,
+                              member.ToString(), spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
+                return false;
+            }
             if (bot && move != Leader::MoveEvent::Hold && Leader::LEADER_SPOT_AGGRO_GUARD)
             {
                 auto& checked = lead.spotChecked[member];
@@ -3186,7 +3199,20 @@ namespace Leader::Dungeon
                     // its area damage, which the AoE rule below forbids on such a neighbour. The pick and the Stop
                     // read the member's headroom on the mob it attacks
                     auto const pickable = [&](Unit* mob) { return headroomOn(mob); };
-                    Unit* mine = pickable(target) ? target : nullptr;
+                    Unit* mine = nullptr;
+                    // [lead236] b188 rfc-h 5G 125-139 s: the ret paladin's Attack flipped Shaman <-> Trogg every leader
+                    // tick (0.3 s, 30 changes) - lead229's rate moves with every hit, the leader's focus mob passed and
+                    // failed the test in turn, and each switch opened a fresh mob: 16 aggro losses for Rtpalae. The
+                    // mob it attacks now stays its target while it keeps headroom on it (one command per fact)
+                    if (Leader::MemberEvents current;
+                        Leader::Events::Get(guid, current) && current.attack == Leader::AttackEvent::Attack)
+                        if (Unit* held = ObjectAccessor::GetUnit(*tank, current.target);
+                            held && held->IsAlive() && held->IsInCombat() &&
+                            std::find(killOrder.begin(), killOrder.end(), held->GetGUID()) != killOrder.end() &&
+                            pickable(held))
+                            mine = held;
+                    if (!mine && pickable(target))
+                        mine = target;
                     for (ObjectGuid const& next : killOrder)
                     {
                         if (mine)
