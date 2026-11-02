@@ -107,7 +107,10 @@ bool DrinkAction::isUseful()
 
     // [lead150] user: rest is the leader's decision - a led executor member drinks only under the leader's Rest
     // (b170 356-428 s: the hunter's own last-resort drink at 1-7 % mana against the leader's Follow)
-    if (Leader::ExecutorMember(bot))
+    // [lead473] the led tank too: the leader's Rest covers it (its lines, "who": "tank"); b207 rfc-h 5B 1047-1059 s and
+    // 1111-1120 s the warrior tank ate on its own line ("hp 97 % < 100 %, healer mana 29 %") with no Rest from the
+    // leader, its meal held the pull ("held for now: the tank eats ...") - two deciders for one rest
+    if (Leader::ExecutorMember(bot) || Leader::LedBot(bot))
         return RestState::LeaderRests(bot);
 
     // Below the low line the old last-resort drink, even with the group fighting close by; above it only by the
@@ -162,7 +165,7 @@ bool EatAction::isUseful()
 
     if (PatrolKeepsStanding(bot, "eat"))  // [b46_patrol]
         return false;
-    if (Leader::ExecutorMember(bot))  // [lead150] the leader's Rest only
+    if (Leader::ExecutorMember(bot) || Leader::LedBot(bot))  // [lead150] [lead473] the leader's Rest only
         return RestState::LeaderRests(bot);
 
     // By the rest lines only ("rest health" decides when): a hurt bot with a healer close by gets healed, for free.
