@@ -167,7 +167,7 @@ namespace PullEstimate
 
     // The tank's last finished planned pull, when its id is not `afterId`.
     bool Take(ObjectGuid tank, uint32 afterId, Result& out);
-    bool Proven(Player* tank, float& weighted, float& mobs);
+    bool Proven(Player* tank, float& cost, float& mobs);  // [lead262] the proof: its cost cap and its mobs
     // [pull_label] when the tank's planner last carried out a plan (PullCheck::Planned: its pull plan, spot and
     // readiness were judged), getMSTime; 0: never
     uint32 LastPlannedMs(ObjectGuid tank);

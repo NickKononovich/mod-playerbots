@@ -4163,9 +4163,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // The count held against the size cap (withinCap): a weak swarm add (CapWeight) counts less than a full mob;
         // the cost above still has every mob in full.
         float capMobs = 0.0f;
-        // [adaptive_cap] the count held against the group's proven strength in this run (ProvenWeight): a caster or
-        // a rare elite counts more than a melee elite, a weak or non-elite mob less
-        float provenMobs = 0.0f;
         uint32 rangedMobs = 0;  // [adaptive_cap_b29] mobs that keep their range (KeepsRange)
         bool boss = false;
         // [b44_packs] the pack fought as one stack under the group's AoE (EstimateMode::aoeTargetDps > 0): its kill
@@ -4210,34 +4207,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return float(mob->GetMaxHealth()) < CAREFUL_SWARM_HEALTH_SHARE * PlanTankHealth(tank)  // [b32_smpull]
                    ? CAREFUL_SWARM_CAP_WEIGHT
                    : 1.0f;
-    }
-
-    // [adaptive_cap] User 2026-10-25 (scholo-h 153805: «тупят, излишне ждут» - 26 and 16 mobs per pull with no death,
-    // yet a lone Adept refused at the cap 9): the weight of one mob in the group's proven strength, the same for
-    // what it fought (ProvenStrength) and what a plan brings (PackEstimate::provenMobs). An elite melee mob is 1; a
-    // caster or shooter (KeepsRange: it stands and casts, the healer cannot outrange it) PROVEN_CASTER_WEIGHT; a rare
-    // elite PROVEN_RARE_WEIGHT; a non-elite mob PROVEN_NORMAL_WEIGHT and a weak swarm add CAREFUL_SWARM_CAP_WEIGHT.
-    constexpr float PROVEN_CASTER_WEIGHT = 1.3f;
-    constexpr float PROVEN_RARE_WEIGHT = 1.5f;
-    constexpr float PROVEN_NORMAL_WEIGHT = 0.75f;
-    constexpr float PROVEN_SUMMON_WEIGHT = 0.5f;  // a summoned add read as an average mob (EstimatePack)
-
-    float ProvenWeight(Unit* mob, Player* tank)
-    {
-        Creature* creature = mob->ToCreature();
-        if (!creature)
-            return 1.0f;
-
-        float weight = 1.0f;
-        if (!creature->isElite() && !creature->IsDungeonBoss())
-            weight = CapWeight(mob, tank) < 1.0f ? CAREFUL_SWARM_CAP_WEIGHT : PROVEN_NORMAL_WEIGHT;
-        else if (creature->GetCreatureTemplate()->rank == CREATURE_ELITE_RAREELITE)
-            weight = PROVEN_RARE_WEIGHT;
-
-        if (KeepsRange(creature))
-            weight *= PROVEN_CASTER_WEIGHT;
-
-        return weight;
     }
 
     // [lead256] the measured ratio real / template of a pack's melee and of its spells (LandedCalibration)
@@ -4320,7 +4289,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             ++estimate.mobs;
             float const chainWeight = ChainStepWeight(pack, mob);  // [chain_step_weight]
             estimate.capMobs += CapWeight(mob, tank) * chainWeight;
-            estimate.provenMobs += ProvenWeight(mob, tank) * chainWeight;
             if (Creature* ranged = mob->ToCreature(); ranged && KeepsRange(ranged))
                 ++estimate.rangedMobs;
             if (IsBossMob(mob))
@@ -4391,7 +4359,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 estimate.danger += danger;
                 ++estimate.mobs;
                 estimate.capMobs += 1.0f;
-                estimate.provenMobs += PROVEN_SUMMON_WEIGHT;
             }
         }
 
@@ -7058,65 +7025,53 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // [adaptive_cap] User 2026-10-25 (scholo-h 20261025-153805-scholo-h-5A-4, «тупят, излишне ждут»): the group
     // killed 26 and 16 mobs per pull without a death while the planner held the cap at 9 (x1.5 = 14) and stood 64 s
-    // before a lone Adept. Every fight of the tank's group (planned or not) is recorded here: what came (weighted by
-    // ProvenWeight), the deaths, the lowest tank health, the lowest healer mana at the end and the damage per second.
-    // A clean fight proves the group takes that much here: its weighted size times a headroom read from what the
-    // fight left (PROVEN_HEADROOM_*: a healer at 80 % mana and a tank that never fell under 50 % may take a little
-    // more next time, a healer at 20 % less). A fight with a death caps the proof at PROVEN_DEATH_SCALE of it. The
-    // proof is scaled down when the group's damage now is under that fight's (a damage dealer dead or gone). Per tank
-    // and instance, under pullCheckLock.
-    constexpr uint32 PROVEN_MIN_FIGHT_MS = 5 * IN_MILLISECONDS;
-    constexpr float PROVEN_HEADROOM_BASE = 0.55f;
-    constexpr float PROVEN_HEADROOM_MANA = 0.5f;     // times the lowest healer's mana share at the end
-    constexpr float PROVEN_HEADROOM_HEALTH = 0.25f;  // times the tank's lowest health share in the fight
-    constexpr float PROVEN_HEADROOM_MIN = 0.75f;
-    constexpr float PROVEN_HEADROOM_MAX = 1.25f;
-    constexpr float PROVEN_DEATH_SCALE = 0.8f;
-    constexpr float PROVEN_DPS_FLOOR = 0.7f;
-    constexpr float PROVEN_MAX_CAP_SCALE = 3.0f;  // the last resort's cap rises to at most this times the configured
+    // before a lone Adept. Every fight of the tank's group (planned or not) is recorded here: what came, the most
+    // mobs (and ranged mobs) on the group at once, the deaths, the tank's health and the lowest healer mana at its
+    // start and end, and the damage per second. [lead262] A clean fight proves the group takes that much here times
+    // what the fight left: the healers' mana above their low line over the mana the fight took, and the tank's health
+    // at the start over the health it dropped - the fewer of the two is the damage the group could carry (k); a pack's
+    // damage grows with its mobs times their kill time, so its mobs grow by sqrt(k) and its cost by k. A fight that
+    // used neither proves itself (k 1). A fight with a death caps the proof one mob under its peak. The proof is
+    // scaled by the group's damage now against that fight's (sqrt of the ratio, never above 1). Per tank and
+    // instance, under pullCheckLock.
     constexpr size_t PROVEN_MAX_TRACKED = 96;  // mobs one fight record keeps
     // [adaptive_cap_b29] Build-29 wipe (slabs-h 5A, pull 10 at 681 s, Rtpalba): "[adaptive cap] 14 mobs (14.9
     // weighted, cost 5.63) within the proven 21.7 weighted / 17.2 mobs: taken" - 9 attackers at +2 s, 15 at +10 s,
     // the healer died to Cabal Acolyte melee at +5 s, then all. The proof came from fights whose mobs arrived one by
     // one (a los pull, the Hellmaw event), counted by their total, and it overrode the cost model. Now:
-    // - only an ordinary planned trash pull taken as one pack (plan "engage" or "pull back", no encounter in
-    //   progress, no boss) proves anything, and it proves its PEAK: the most mobs (weighted) on the group at once;
-    //   a fight whose peak stayed under PROVEN_ONE_PACK_SHARE of what came arrived staggered and proves nothing;
-    // - the proof never overrides the cost: a pack within it is taken only at a cost of at most
-    //   PROVEN_COST_SCALE x the highest planned cost of a proving fight;
-    // - a heroic caster pack (PROVEN_CASTER_SHARE of it keeps its range, at least PROVEN_CASTER_MIN_MOBS) keeps the
+    // - only an ordinary planned trash pull (plan "engage" or "pull back", no encounter in progress, no boss) proves
+    //   anything, and it proves its PEAK: the most mobs on the group at once;
+    // - the proof never overrides the cost: a pack within it is taken only at its measured cost cap (k);
+    // - [lead262] a pack with more mobs keeping their range than a proving fight had on the group at once keeps the
     //   planner's own los / split plan whatever the proof (Cabal Shadow Priests / Acolytes / Deathsworn).
-    constexpr float PROVEN_ONE_PACK_SHARE = 0.75f;
-    constexpr float PROVEN_COST_SCALE = 1.25f;
-    constexpr float PROVEN_CASTER_SHARE = 0.5f;
-    constexpr uint32 PROVEN_CASTER_MIN_MOBS = 3;
 
     struct FightTrack
     {
         uint32 startMs = 0;
         uint32 lastMs = 0;
         GuidVector came;
-        float weighted = 0.0f;
         float health = 0.0f;  // the maximum health of what came
         uint32 deadAtStart = 0;
         uint32 deaths = 0;  // most members dead at once, over those dead at the start
         float lowestTankHealth = 100.0f;
+        float tankStartHealth = 100.0f;  // [lead262]
+        float manaStart = -1.0f;         // [lead262] the lowest healer mana when it began (-1: no healer)
         bool boss = false;
-        bool encounter = false;     // [adaptive_cap_b29] an encounter of the instance ran during it
-        float peakWeighted = 0.0f;  // [adaptive_cap_b29] the most (weighted) mobs on the group at once
-        uint32 peakMobs = 0;
+        bool encounter = false;  // [adaptive_cap_b29] an encounter of the instance ran during it
+        uint32 peakMobs = 0;     // [adaptive_cap_b29] the most mobs on the group at once
+        uint32 peakRanged = 0;   // [lead262] ... and of them keeping their range
     };
     std::unordered_map<uint64, FightTrack> fightTracks;  // by tank
 
     struct ProvenEntry
     {
         uint32 instanceId = 0;
-        float weighted = 0.0f;  // the biggest clean fight, its headroom applied
-        float mobs = 0.0f;      // the same in plain mobs
+        float mobs = 0.0f;      // the biggest clean fight's peak, its headroom applied
         float dps = 0.0f;       // that fight's health per second
         float deathCap = 0.0f;  // 0: no death yet
         uint32 cleanFights = 0;
-        float cost = 0.0f;      // [adaptive_cap_b29] the highest planned cost of a proving fight
+        float cost = 0.0f;  // [lead262] the highest planned cost of a proving fight times its k
+        uint32 ranged = 0;  // [lead262] the most ranged mobs a proving fight had on the group at once
     };
     std::unordered_map<uint64, ProvenEntry> provenStrength;  // by tank
 
@@ -7140,27 +7095,27 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 track = FightTrack();
                 track.startMs = now ? now : 1;
                 track.deadAtStart = CountDeadMembers(tank);
+                track.tankStartHealth = tank->GetHealthPct();
+                track.manaStart = LowestHealerMana(tank);
             }
 
             track.lastMs = now;
             if (InstanceScript* script = tank->GetInstanceScript(); script && script->IsEncounterInProgress())
                 track.encounter = true;
-            // [adaptive_cap_b29] the mobs on the group now (alive), weighted: the fight's peak
-            float nowWeighted = 0.0f;
+            // [adaptive_cap_b29] the mobs on the group now (alive): the fight's peak
             uint32 nowMobs = 0;
+            uint32 nowRanged = 0;
             for (ObjectGuid const& guid : attackers)
             {
                 Unit* mob = botAI->GetUnit(guid);
                 if (!mob || !mob->IsAlive())
                     continue;
-                nowWeighted += ProvenWeight(mob, tank);
                 ++nowMobs;
+                if (Creature* creature = mob->ToCreature(); creature && KeepsRange(creature))
+                    ++nowRanged;
             }
-            if (nowWeighted > track.peakWeighted)
-            {
-                track.peakWeighted = nowWeighted;
-                track.peakMobs = nowMobs;
-            }
+            track.peakMobs = std::max(track.peakMobs, nowMobs);
+            track.peakRanged = std::max(track.peakRanged, nowRanged);
             for (ObjectGuid const& guid : attackers)
             {
                 if (track.came.size() >= PROVEN_MAX_TRACKED ||
@@ -7172,7 +7127,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     continue;
 
                 track.came.push_back(guid);
-                track.weighted += ProvenWeight(mob, tank);
                 track.health += float(mob->GetMaxHealth());
                 if (IsBossMob(mob))
                     track.boss = true;
@@ -7191,15 +7145,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         FightTrack const track = found->second;
         fightTracks.erase(found);
         uint32 const fightMs = track.lastMs && track.startMs ? getMSTimeDiff(track.startMs, track.lastMs) : 0;
-        if (fightMs < PROVEN_MIN_FIGHT_MS || track.boss || track.came.empty())
+        if (!fightMs || track.boss || track.came.empty())
             return;
 
-        // [adaptive_cap_b29] what may prove: the tank's own planned pull of one pack, taken at once
+        // [adaptive_cap_b29] what may prove: the tank's own planned pull
         auto const planned = pullChecks.find(key);
         bool const plannedPull = planned != pullChecks.end() && planned->second.startMs &&
                                  (planned->second.kind.rfind("engage", 0) == 0 ||
                                   planned->second.kind.rfind("pull back", 0) == 0);
-        bool const atOnce = track.peakWeighted >= PROVEN_ONE_PACK_SHARE * track.weighted;
         std::string notProving;
         if (track.encounter)
             notProving = "an encounter was in progress";
@@ -7207,16 +7160,20 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             notProving = planned == pullChecks.end() || !planned->second.startMs
                              ? "no planned pull"
                              : "plan " + planned->second.kind.substr(0, planned->second.kind.find(" ("));
-        else if (!atOnce)
-            notProving = Acore::StringFormat("staggered: peak {:.1f} of {:.1f} weighted", track.peakWeighted,
-                                             track.weighted);
 
+        // [lead262] what the fight left: the healers' mana and the tank's health against what it took of each
         float const mana = LowestHealerMana(tank);
-        float const manaShare = mana < 0.0f ? 0.5f : mana / 100.0f;
-        float const headroom =
-            std::clamp(PROVEN_HEADROOM_BASE + PROVEN_HEADROOM_MANA * manaShare +
-                           PROVEN_HEADROOM_HEALTH * track.lowestTankHealth / 100.0f,
-                       PROVEN_HEADROOM_MIN, PROVEN_HEADROOM_MAX);
+        float k = -1.0f;
+        if (track.manaStart >= 0.0f && mana >= 0.0f && track.manaStart > mana)
+            k = std::max(track.manaStart - float(sPlayerbotAIConfig.LowMana), 0.0f) / (track.manaStart - mana);
+        if (track.tankStartHealth > track.lowestTankHealth)
+        {
+            float const byHealth = track.tankStartHealth / (track.tankStartHealth - track.lowestTankHealth);
+            k = k < 0.0f ? byHealth : std::min(k, byHealth);
+        }
+        if (k < 0.0f)
+            k = 1.0f;  // it took neither: it proves itself
+        float const headroom = std::sqrt(k);
         ProvenEntry& entry = provenStrength[key];
         if (entry.instanceId != tank->GetInstanceId())
         {
@@ -7227,10 +7184,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (!track.deaths && notProving.empty())
         {
             ++entry.cleanFights;
-            entry.cost = std::max(entry.cost, planned->second.cost);
-            if (track.peakWeighted * headroom > entry.weighted)
+            entry.cost = std::max(entry.cost, planned->second.cost * k);
+            entry.ranged = std::max(entry.ranged, track.peakRanged);
+            if (float(track.peakMobs) * headroom > entry.mobs)
             {
-                entry.weighted = track.peakWeighted * headroom;
                 entry.mobs = float(track.peakMobs) * headroom;
                 entry.dps = track.health * float(IN_MILLISECONDS) / float(fightMs);
             }
@@ -7240,27 +7197,26 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // 0.8" after a clean 1-mob fight with "no planned pull", crushing the proven 2.2 to 0.8.
         else if (track.deaths)
         {
-            float const cap = track.weighted * PROVEN_DEATH_SCALE;
+            float const cap = std::max(float(track.peakMobs) - 1.0f, 0.0f);  // [lead262] one mob under its peak
             entry.deathCap = entry.deathCap > 0.0f ? std::min(entry.deathCap, cap) : cap;
         }
 
         LOG_INFO("playerbots",
-                 "[adaptive cap] {}: fight of {} mobs ({:.1f} weighted, peak {} / {:.1f}) in {} s, deaths {}, tank "
-                 "low {:.0f} %, healer mana {:.0f} %: headroom {:.2f}{}; proven {:.1f} weighted / {:.1f} mobs, cost "
-                 "{:.2f}, over {} clean fights{}",
-                 tank->GetName(), track.came.size(), track.weighted, track.peakMobs, track.peakWeighted,
-                 fightMs / IN_MILLISECONDS, track.deaths, track.lowestTankHealth, mana, headroom,
-                 notProving.empty() ? std::string() : " (proves nothing: " + notProving + ")", entry.weighted,
-                 entry.mobs, entry.cost, entry.cleanFights,
+                 "[adaptive cap] {}: fight of {} mobs (peak {}, {} ranged) in {} s, deaths {}, tank {:.0f} -> low "
+                 "{:.0f} %, healer mana {:.0f} -> {:.0f} %: k {:.2f}, headroom {:.2f}{}; proven {:.1f} mobs, cost "
+                 "{:.2f}, {} ranged, over {} clean fights{}",
+                 tank->GetName(), track.came.size(), track.peakMobs, track.peakRanged, fightMs / IN_MILLISECONDS,
+                 track.deaths, track.tankStartHealth, track.lowestTankHealth, track.manaStart, mana, k, headroom,
+                 notProving.empty() ? std::string() : " (proves nothing: " + notProving + ")", entry.mobs, entry.cost,
+                 entry.ranged, entry.cleanFights,
                  entry.deathCap > 0.0f ? Acore::StringFormat(", death cap {:.1f}", entry.deathCap) : std::string());
     }
 
     struct ProvenCap
     {
-        float weighted = 0.0f;  // 0: nothing proven
-        float mobs = 0.0f;
-        float cost = 0.0f;      // [adaptive_cap_b29] the highest planned cost of a proving fight
-        bool heroic = false;
+        float mobs = 0.0f;  // 0: nothing proven
+        float cost = 0.0f;  // [lead262] the cost the proving fights carried, times what they left (k)
+        uint32 ranged = 0;  // [lead262] the most ranged mobs a proving fight had at once
     };
 
     // The tank's proven strength in this instance, scaled by its group's damage now against the proving fight's.
@@ -7276,40 +7232,31 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         }
 
         ProvenCap cap;
-        if (entry.weighted <= 0.0f || entry.cost <= 0.0f)
+        if (entry.mobs <= 0.0f || entry.cost <= 0.0f)
             return cap;
 
-        cap.cost = entry.cost;
-        cap.heroic = tank->GetMap() && tank->GetMap()->IsHeroic();
-
-        float scale = 1.0f;
+        float scale = 1.0f;  // [lead262] the mobs a group carries grow with the root of its damage (see above)
         float const current = MeasuredGroupDps(tank, true);
         if (current > 0.0f && entry.dps > 0.0f)
-            scale = std::clamp(current / entry.dps, PROVEN_DPS_FLOOR, 1.0f);
+            scale = std::sqrt(std::min(current / entry.dps, 1.0f));
 
-        cap.weighted = entry.weighted * scale;
         cap.mobs = entry.mobs * scale;
-        if (entry.deathCap > 0.0f && cap.weighted > entry.deathCap)
-        {
-            cap.mobs *= entry.deathCap / cap.weighted;
-            cap.weighted = entry.deathCap;
-        }
+        cap.cost = entry.cost * scale * scale;
+        cap.ranged = entry.ranged;
+        if (entry.deathCap > 0.0f && cap.mobs > entry.deathCap)
+            cap.mobs = entry.deathCap;
 
         return cap;
     }
 
-    // A pack no bigger than what the group proved it takes in this run, at no more than PROVEN_COST_SCALE x the
-    // proving fights' planned cost ([adaptive_cap_b29]: the proof lifts the size cap, never the cost model). Never a
-    // boss, never a heroic caster pack (its los / split plan stays).
+    // A pack no bigger than what the group proved it takes in this run, at no more than the cost it proved it
+    // carries ([adaptive_cap_b29]: the proof lifts the size cap, never the cost model). Never a boss, never more
+    // ranged mobs than a proving fight had (their los / split plan stays).
     bool ProvenFits(PackEstimate const& estimate, ProvenCap const& proven)
     {
-        if (estimate.boss || proven.weighted <= 0.0f || proven.cost <= 0.0f)
+        if (estimate.boss || proven.mobs <= 0.0f || proven.cost <= 0.0f || estimate.rangedMobs > proven.ranged)
             return false;
-        if (proven.heroic && estimate.mobs >= PROVEN_CASTER_MIN_MOBS &&
-            float(estimate.rangedMobs) >= PROVEN_CASTER_SHARE * float(estimate.mobs))
-            return false;
-        return estimate.provenMobs <= proven.weighted + 0.01f && estimate.capMobs <= proven.mobs + 0.5f &&
-               estimate.cost <= proven.cost * PROVEN_COST_SCALE;
+        return estimate.capMobs <= proven.mobs + 0.5f && estimate.cost <= proven.cost;
     }
 
     void LogPullCheck(Player* tank, PullRecord const& record, uint32 now)
@@ -7684,12 +7631,12 @@ namespace PullEstimate
         return found == lastPlannedMs.end() ? 0 : found->second;
     }
 
-    bool Proven(Player* tank, float& weighted, float& mobs)
+    bool Proven(Player* tank, float& cost, float& mobs)
     {
         ProvenCap const cap = ProvenFor(tank);
-        weighted = cap.weighted;
+        cost = cap.cost;  // [lead262] the cost the proof carries (no weighted count any more)
         mobs = cap.mobs;
-        return cap.weighted > 0.0f;
+        return cap.mobs > 0.0f;
     }
 }
 
@@ -8734,9 +8681,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         if (!provenLogMs || getMSTimeDiff(provenLogMs, now) > 10 * IN_MILLISECONDS)
         {
             provenLogMs = now ? now : 1;
-            LOG_INFO("playerbots", "[adaptive cap] {}: {} mobs ({:.1f} weighted, cost {:.2f}) within the proven {:.1f} "
-                     "weighted / {:.1f} mobs: taken", bot->GetName(), estimate.mobs, estimate.provenMobs,
-                     estimate.cost, proven.weighted, proven.mobs);
+            LOG_INFO("playerbots",
+                     "[adaptive cap] {}: {} mobs ({:.1f} counted, cost {:.2f}, {} ranged) within the "
+                     "proven {:.1f} mobs, cost {:.2f}, {} ranged: taken",
+                     bot->GetName(), estimate.mobs, estimate.capMobs, estimate.cost, estimate.rangedMobs, proven.mobs,
+                     proven.cost, proven.ranged);
         }
         return true;
     };
@@ -10402,10 +10351,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // 20261026-034959: every corner peel "4 come, cost 1.51" (search cap 3.0) was dropped by "fallback plan costs
     // 1.51 tank hp, over 0.80" whenever the crossing patrol was away, so the overlap wait restarted forever.
     bool splitPlan = false;
-    // [adaptive_cap] at least what the group proved in this run, at most PROVEN_MAX_CAP_SCALE x the cap
+    // [adaptive_cap] at least what the group proved in this run ([lead262] the proof is its own bound: its cost cap)
     uint32 const baseLastResortMobs = maxMobs ? maxMobs : CAREFUL_LAST_RESORT_DEFAULT_CAP;
-    uint32 const lastResortMobs = std::max(
-        baseLastResortMobs, std::min(uint32(proven.mobs), uint32(float(baseLastResortMobs) * PROVEN_MAX_CAP_SCALE)));
+    uint32 const lastResortMobs = std::max(baseLastResortMobs, uint32(proven.mobs));
     // the over-cap scale stays on the configured cap: a proven size is taken as it is, not x2 again
     size_t const overCapMobs = std::max<size_t>(
         size_t(std::ceil(float(baseLastResortMobs) * GUARANTEE_OVER_CAP_SCALE)), lastResortMobs);
@@ -11620,11 +11568,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     if (logDue)
                     {
                         memo.logMs = now ? now : 1;
-                        LOG_INFO("playerbots", "[b33_aoepull] aoe_pull_plan: {}: {} ({} mobs, required route blocker): "
-                                 "predicted {}, proven {:.1f} ({:.1f} weighted), cap {}, spot {} "
-                                 "({:.1f} {:.1f} {:.1f}) {:.0f} yd back, pulled {} at range, tank aoe {}, aoe dps {}, cost {:.2f}",
+                        LOG_INFO("playerbots",
+                                 "[b33_aoepull] aoe_pull_plan: {}: {} ({} mobs, required route blocker): "
+                                 "predicted {}, proven {:.1f} (cost {:.2f}), cap {}, spot {} "
+                                 "({:.1f} {:.1f} {:.1f}) {:.0f} yd back, pulled {} at range, tank aoe {}, aoe dps {}, "
+                                 "cost {:.2f}",
                                  bot->GetName(), target->GetName(), adds.size() + 1, choice.predicted, proven.mobs,
-                                 proven.weighted, overCapMobs, choice.corner ? "corner" : "back pull",
+                                 proven.cost, overCapMobs, choice.corner ? "corner" : "back pull",
                                  choice.spot.GetPositionX(), choice.spot.GetPositionY(), choice.spot.GetPositionZ(),
                                  back, choice.mob->GetName(), tankAoe ? "yes" : "no", aoeDps, chosen.cost);
                     }
@@ -13758,9 +13708,7 @@ namespace PullPlanner
                 : 0;
         ProvenCap const proven = ProvenFor(tank);
         uint32 const baseLastResortMobs = maxMobs ? maxMobs : CAREFUL_LAST_RESORT_DEFAULT_CAP;
-        uint32 const lastResortMobs =
-            std::max(baseLastResortMobs,
-                     std::min(uint32(proven.mobs), uint32(float(baseLastResortMobs) * PROVEN_MAX_CAP_SCALE)));
+        uint32 const lastResortMobs = std::max(baseLastResortMobs, uint32(proven.mobs));  // [lead262]
         return std::max<uint32>(uint32(std::ceil(float(baseLastResortMobs) * GUARANTEE_OVER_CAP_SCALE)),
                                 lastResortMobs);
     }
