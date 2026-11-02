@@ -308,8 +308,11 @@ namespace Leader
             bool boss = false;         // [lead232] a boss fought in this fight
             float bossSpent = 0.0f;    // [lead232] the same over boss fights only
             float bossSec = 0.0f;
+            float fullSpent = 0.0f;  // [lead234] the same over the fights at least as long as the mean fight
+            float fullSec = 0.0f;
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
+        std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health
         uint32 manaTickMs = 0;
         std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob

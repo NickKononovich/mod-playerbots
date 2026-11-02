@@ -79,6 +79,7 @@
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
 #include "TerrainHazard.h"
+#include "LeaderKnowledge.h"  // [lead234] boss kills
 #include "Transport.h"
 #include "UKTriggers.h"
 #include "UPTriggers.h"
@@ -1318,12 +1319,28 @@ namespace Leader::Dungeon
         {
             float const realSec = getMSTimeDiff(lead.fightLenStartMs, now) / 1000.0f;
             if (Group* group = tank->GetGroup())
+            {
                 RestState::NoteFightLengthError(group->GetGUID(), std::fabs(realSec - lead.fightLenEstSec));
+                // [lead234] a boss kill: the group's damage on the boss over the fight's seconds
+                float health = 0.0f;
+                bool killed = !lead.fightBosses.empty();
+                for (auto const& [guid, maxHealth] : lead.fightBosses)
+                {
+                    Creature const* boss = map->GetCreature(guid);
+                    killed &= !boss || !boss->IsAlive();
+                    health += maxHealth;
+                }
+                if (killed)
+                    Leader::Knowledge::NoteBossKill(group->GetGUID(), health, realSec);
+            }
+            lead.fightBosses.clear();
             Decisions().Write(run, "leader", "fight_length", ObjectGuid(), tank->GetName(), false,
                                           JsonObject().Real("estimatedSec", lead.fightLenEstSec)
                                               .Real("realSec", realSec));
             lead.fightLenStartMs = 0;
         }
+        if (!fighting && lead.lastFighting)
+            lead.fightBosses.clear();
         lead.lastFighting = fighting;
         // [lead84] b127 rfc-h 206-306 s: a Ragefire Trogg 5.5 yd below on Rtdruaa (not evading, the tank out of its
         // sight, the attacks refused "no line of sight") kept the tank flagged in combat with nobody on it; the
@@ -1999,6 +2016,13 @@ namespace Leader::Dungeon
                         if (Creature const* mob = attacker ? attacker->ToCreature() : nullptr;
                             mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
                             bossFought = true;
+            // [lead234] the fight's bosses (their max health); a fight that ends with them dead is a boss kill
+            if (fighting)
+                for (Player* side : spenders)
+                    for (Unit* attacker : side->getAttackers())
+                        if (Creature const* mob = attacker ? attacker->ToCreature() : nullptr;
+                            mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+                            lead.fightBosses[mob->GetGUID()] = float(mob->GetMaxHealth());
             for (Player* member : spenders)
             {
                 if (!member->GetMaxPower(POWER_MANA))
@@ -2028,9 +2052,15 @@ namespace Leader::Dungeon
                             RestState::NoteBossManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.bossSpent / spend.bossSec));
                         }
+                        // [lead234] b188: the highest single fight was an outlier (a hunter's 1.38 %/s); the net use
+                        // over all the full-length fights
                         if (spend.fightSec > 0.0f && spend.fightSec >= spend.sec / float(spend.fights))
+                        {
+                            spend.fullSpent += spend.prev - pct;
+                            spend.fullSec += spend.fightSec;
                             RestState::NotePeakManaRate(member->GetGUID(),
-                                                        std::max(0.0f, (spend.prev - pct) / spend.fightSec));
+                                                        std::max(0.0f, spend.fullSpent / spend.fullSec));
+                        }
                     }
                     spend.prev = -1.0f;
                     spend.fightSec = 0.0f;

@@ -1380,6 +1380,33 @@ namespace Leader::Knowledge
 {
     namespace
     {
+        std::mutex bossDpsLock;
+        std::unordered_map<ObjectGuid, std::pair<float, float>> bossKills;  // group: health, seconds
+    }
+
+    void NoteBossKill(ObjectGuid group, float bossHealth, float fightSec)
+    {
+        if (bossHealth <= 0.0f || fightSec <= 0.0f)
+            return;
+        std::lock_guard<std::mutex> guard(bossDpsLock);
+        auto& kills = bossKills[group];
+        kills.first += bossHealth;
+        kills.second += fightSec;
+    }
+
+    float BossDps(ObjectGuid group)
+    {
+        std::lock_guard<std::mutex> guard(bossDpsLock);
+        auto const found = bossKills.find(group);
+        return found != bossKills.end() && found->second.second > 0.0f ? found->second.first / found->second.second
+                                                                       : 0.0f;
+    }
+}
+
+namespace Leader::Knowledge
+{
+    namespace
+    {
         std::mutex doorCutLock;
         std::unordered_set<ObjectGuid> doorCut;
     }

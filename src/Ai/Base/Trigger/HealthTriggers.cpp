@@ -372,8 +372,7 @@ void NoteBossManaRate(ObjectGuid member, float pctPerSec)
 void NotePeakManaRate(ObjectGuid member, float pctPerSec)
 {
     std::lock_guard<std::mutex> lock(manaRateLock);
-    float& peak = peakManaRate[member.GetRawValue()];
-    peak = std::max(peak, pctPerSec);
+    peakManaRate[member.GetRawValue()] = pctPerSec;
 }
 
 namespace
@@ -481,7 +480,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             {
                 rate = peak->second;
                 measured = true;
-                source = "its highest full fight";
+                source = "its full fights";
             }
         }
     }

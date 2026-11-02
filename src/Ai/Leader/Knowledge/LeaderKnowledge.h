@@ -400,6 +400,11 @@ namespace Leader::Knowledge
     // cast); read once per entry. A tank turns such a mob away from the group; any other mob needs no turning
     bool HasFrontalAttack(uint32 creatureEntry);
 
+    // [lead234] the group's measured damage per second on the bosses it killed in this run (their max health over
+    // the fights' seconds, all its boss kills together); 0 before its first boss kill
+    void NoteBossKill(ObjectGuid group, float bossHealth, float fightSec);
+    float BossDps(ObjectGuid group);
+
     std::vector<EventStarterDef const*> EventStarters(uint32 mapId);
     std::vector<EventSpotDef const*> EventSpots(uint32 mapId);
     std::vector<RouteLinkDef const*> RouteLinks(uint32 mapId);

@@ -4678,9 +4678,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         // [lead86] b129 rfc-h: Taragaman's fight was estimated at 100 s (the rolling dps, pulled down by short trash
         // pulls) and died in 54 s in b128 (11988 dps): the group's sustained measured dps when it is higher
+        // [lead234] b188 rfc-h: every boss estimated at 101-106 s, killed in 36-64 s - the run's sustained dps is
+        // the trash pulls' (ramp-up, few targets in reach); the group's measured dps on its earlier boss kills when
+        // there is one. The boss lines (mana x seconds) asked 100 % of the hunters and the paladin tank
         float const groupDps =
-            std::max(botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f,
-                     GroupDamage::SustainedDps(bot));
+            std::max({botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f,
+                      GroupDamage::SustainedDps(bot),
+                      bot->GetGroup() ? Leader::Knowledge::BossDps(bot->GetGroup()->GetGUID()) : 0.0f});
         return boss ? float(boss->GetHealth()) / std::max(groupDps, 1.0f) : 0.0f;
     }
 
