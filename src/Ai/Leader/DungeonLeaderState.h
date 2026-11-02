@@ -412,6 +412,8 @@ namespace Leader
         };
         std::map<ObjectGuid, TrapWeave> trapWeave;
         std::map<ObjectGuid, std::string> trapWeaveLogged;  // the last verdict logged per hunter
+        // [lead276] a hunter's refused trap walk (its target and spot): no new weave until either changes
+        std::map<ObjectGuid, std::pair<ObjectGuid, Position>> trapWeaveRefused;
     };
 }
 

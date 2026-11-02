@@ -152,6 +152,20 @@ void End(LeaderGroup& group, Player* hunter, char const* why)
     plans.erase(found);
 }
 
+// the trap spot: the trap's trigger radius off the target, toward the hunter (the shortest walk)
+Position TrapSpot(Player* hunter, Unit* target, float triggerRadius)
+{
+    float const dx = hunter->GetPositionX() - target->GetPositionX();
+    float const dy = hunter->GetPositionY() - target->GetPositionY();
+    float const apart = std::hypot(dx, dy);
+    if (apart <= triggerRadius)
+        return hunter->GetPosition();
+    float const x = target->GetPositionX() + dx / apart * triggerRadius;
+    float const y = target->GetPositionY() + dy / apart * triggerRadius;
+    float const z = hunter->GetMap()->GetHeight(hunter->GetPhaseMask(), x, y, target->GetPositionZ() + 2.0f);
+    return Position(x, y, z > INVALID_HEIGHT ? z : target->GetPositionZ());
+}
+
 // The computed choice: the spot and its verdict for this hunter and target; false: no trap now (why)
 bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> const& seats, uint32 trapSpell,
             Position& spot, JsonObject& facts, std::string& why)
@@ -162,19 +176,7 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
         why = "no trap data";
         return false;
     }
-    // the spot: the trap's trigger radius off the target, toward the hunter (the shortest walk)
-    float const dx = hunter->GetPositionX() - target->GetPositionX();
-    float const dy = hunter->GetPositionY() - target->GetPositionY();
-    float const apart = std::hypot(dx, dy);
-    if (apart <= data.triggerRadius)
-        spot = hunter->GetPosition();
-    else
-    {
-        float const x = target->GetPositionX() + dx / apart * data.triggerRadius;
-        float const y = target->GetPositionY() + dy / apart * data.triggerRadius;
-        float const z = hunter->GetMap()->GetHeight(hunter->GetPhaseMask(), x, y, target->GetPositionZ() + 2.0f);
-        spot = Position(x, y, z > INVALID_HEIGHT ? z : target->GetPositionZ());
-    }
+    spot = TrapSpot(hunter, target, data.triggerRadius);
     float const walkSec = hunter->GetExactDist(spot) / std::max(hunter->GetSpeed(MOVE_RUN), 0.1f);
     float const hunterDps = GroupDamage::MemberSustainedDps(hunter);
     float const groupDps = GroupDamage::SustainedDps(tank);
@@ -256,40 +258,53 @@ bool TickMove(LeaderGroup& group, Player* hunter, Player* tank, Unit* target, st
         return false;
     auto& plans = group.State().trapWeave;
     uint32 const now = getMSTime() ? getMSTime() : 1;
+    auto& refused = group.State().trapWeaveRefused;
+    // [lead276] b196 rfc-h 5A / 5E: the weave ended on every step of its target ("left the trap spot's reach") and on
+    // its death, the combat spot took the hunter back for a tick and the next tick decided the weave again
+    // (command_repeat combat spot <-> trap weave). One decision per fact: the spot follows its target while the plan
+    // stands, and a plan whose target died is judged again on the hunter's next target at once, from where it walks
+    bool retarget = false;
     auto found = plans.find(hunter->GetGUID());
     if (found != plans.end())
     {
         DungeonLeaderState::TrapWeave& plan = found->second;
         Unit* planned = ObjectAccessor::GetUnit(*hunter, plan.target);
-        if (!planned || !planned->IsAlive())
-        {
-            End(group, hunter, "the target died");
-            return false;
-        }
-        if (planned->GetExactDist(plan.spot) > planned->GetCombatReach() + plan.triggerRadius)
-        {
-            End(group, hunter, "the target left the trap spot's reach");
-            return false;
-        }
         if (hunter->HasSpellCooldown(plan.spell))
         {
             End(group, hunter, "the trap is down");
             return false;
         }
-        if (!move(plan.spot, "trap weave"))
+        if (!planned || !planned->IsAlive() || planned->GetVictim() != tank)
         {
-            End(group, hunter, "the walk to the trap spot is refused");
-            return false;
+            End(group, hunter, !planned || !planned->IsAlive() ? "the target died" : "the target left the tank");
+            retarget = true;
         }
-        if (!plan.step && hunter->GetExactDist2d(plan.spot.GetPositionX(), plan.spot.GetPositionY()) <= 1.0f)
-            plan.step = 1;
-        return true;
+        else
+        {
+            // the target stepped off the spot's trigger reach: the spot follows it once it stands again
+            if (!planned->isMoving() &&
+                planned->GetExactDist(plan.spot) > planned->GetCombatReach() + plan.triggerRadius)
+            {
+                plan.spot = TrapSpot(hunter, planned, plan.triggerRadius);
+                plan.step = 0;
+            }
+            if (!move(plan.spot, "trap weave"))
+            {
+                refused[hunter->GetGUID()] = {plan.target, plan.spot};
+                End(group, hunter, "the walk to the trap spot is refused");
+                return false;
+            }
+            if (!plan.step && hunter->GetExactDist2d(plan.spot.GetPositionX(), plan.spot.GetPositionY()) <= 1.0f)
+                plan.step = 1;
+            return true;
+        }
     }
 
-    // a new weave: the target on the tank and standing, the trap ready, the hunter not under way
+    // a new weave: the target on the tank and standing, the trap ready, the hunter not under way (unless its weave
+    // walk is what moves it: the next target is judged from there)
     uint32 const trapSpell = TrapSpell(hunter);
-    if (!trapSpell || hunter->HasSpellCooldown(trapSpell) || hunter->isMoving() || target->isMoving() ||
-        target->GetVictim() != tank)
+    if (!trapSpell || hunter->HasSpellCooldown(trapSpell) || (hunter->isMoving() && !retarget) ||
+        target->isMoving() || target->GetVictim() != tank)
         return false;
     Position spot;
     JsonObject facts;
@@ -306,6 +321,13 @@ bool TickMove(LeaderGroup& group, Player* hunter, Player* tank, Unit* target, st
     }
     if (!pays)
         return false;
+    // a refused walk stands until a fact changes: another target, or the spot moved off the refused one
+    if (auto const was = refused.find(hunter->GetGUID()); was != refused.end())
+    {
+        if (was->second.first == target->GetGUID() && was->second.second.GetExactDist(spot) <= 1.0f)
+            return false;
+        refused.erase(was);
+    }
     TrapData data;
     ReadTrap(hunter, trapSpell, data);
     DungeonLeaderState::TrapWeave& plan = plans[hunter->GetGUID()];
@@ -317,6 +339,7 @@ bool TickMove(LeaderGroup& group, Player* hunter, Player* tank, Unit* target, st
     plan.orderedMs = now;
     if (!move(spot, "trap weave"))
     {
+        refused[hunter->GetGUID()] = {plan.target, spot};
         End(group, hunter, "the walk to the trap spot is refused");
         return false;
     }
