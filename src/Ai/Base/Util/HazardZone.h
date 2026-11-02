@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_HAZARDZONE_H
 #define _PLAYERBOT_HAZARDZONE_H
 
+#include "ObjectGuid.h"
 #include "Position.h"
 
 #include <string>
@@ -19,6 +20,7 @@ struct HazardZone
     Position centre;
     float radius = 0.0f;
     std::string what;
+    ObjectGuid source;  // [lead460] the mob whose area cast it is (empty for every other kind)
 };
 
 #endif

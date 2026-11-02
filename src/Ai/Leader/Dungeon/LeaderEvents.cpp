@@ -2248,6 +2248,55 @@ namespace Leader::Dungeon
                          return true;
                      });
         }
+
+        // 3b. interrupts: one kicker per casting mob, the member with an interrupt ready (kept while it holds).
+        // [lead460] decided before the members' moves: the hazard step below reads it
+        std::set<ObjectGuid> kicked;  // the casters whose cast a kicker in reach of its interrupt stops this tick
+        if (fighting && Leader::LEADER_ATTACK_EVENTS)
+        {
+            std::set<ObjectGuid> busy;
+            for (Unit* caster : casters)
+            {
+                Player* kicker = nullptr;
+                if (auto const kept = lead.kickers.find(caster->GetGUID()); kept != lead.kickers.end())
+                    if (Player* bot = ObjectAccessor::FindPlayer(kept->second);
+                        bot && bot->IsAlive() && LeaderReadyInterrupt(bot))
+                        kicker = bot;
+                for (Player* bot : seats)
+                {
+                    if (kicker)
+                        break;
+                    // [lead90] b131 946.1 s: Rtmagaa's Counterspell on a Searing Blade Warlock the tank had no threat
+                    // on - a kicker only while it has threat headroom on the caster (its threat below the tank's)
+                    if (bot != healer && !busy.count(bot->GetGUID()) && LeaderReadyInterrupt(bot) &&
+                        bot->GetExactDist(caster) <= 30.0f &&
+                        caster->GetThreatMgr().GetThreat(bot) < caster->GetThreatMgr().GetThreat(tank))
+                        kicker = bot;
+                }
+                if (!kicker || busy.count(kicker->GetGUID()))
+                    continue;
+                busy.insert(kicker->GetGUID());
+                lead.kickers[caster->GetGUID()] = kicker->GetGUID();
+                if (LeaderInterruptReaches(kicker, caster))
+                    kicked.insert(caster->GetGUID());
+                if (Leader::Events::SetInterrupt(kicker->GetGUID(), caster->GetGUID()))
+                    logEvent(kicker, "Interrupt", JsonObject().Str("caster", caster->GetName())
+                                                      .Num("casterEntry", caster->GetEntry())
+                                                      .Num("spell", LeaderReadyInterrupt(kicker)));
+            }
+        }
+        else
+            lead.kickers.clear();
+        // [lead460] b207 rfc-h, all 8 runs: every "hazard: area cast of Taragaman the Hungerer" escape (42, 107 member
+        // seconds; 5E's rogue 12 of its 60 s on the boss) came with the leader's Interrupt on the same cast, and every
+        // one was kicked: the members walked out of a cast that never landed and back (the leader against itself).
+        // A cast the leader's kicker stops from where it stands is no hazard; one nobody stops this tick stays one
+        if (!kicked.empty())
+            for (auto& [member, zones] : lead.hazardZones)
+                zones.erase(std::remove_if(zones.begin(), zones.end(),
+                                           [&kicked](HazardZone const& zone)
+                                           { return !zone.source.IsEmpty() && kicked.count(zone.source); }),
+                            zones.end());
         if (!fighting)
         {
             lead.combatSpots.clear();
@@ -4471,41 +4520,6 @@ namespace Leader::Dungeon
                 }
             }
         }
-
-        // 3b. interrupts: one kicker per casting mob, the member with an interrupt ready (kept while it holds)
-        if (fighting && Leader::LEADER_ATTACK_EVENTS)
-        {
-            std::set<ObjectGuid> busy;
-            for (Unit* caster : casters)
-            {
-                Player* kicker = nullptr;
-                if (auto const kept = lead.kickers.find(caster->GetGUID()); kept != lead.kickers.end())
-                    if (Player* bot = ObjectAccessor::FindPlayer(kept->second);
-                        bot && bot->IsAlive() && LeaderReadyInterrupt(bot))
-                        kicker = bot;
-                for (Player* bot : seats)
-                {
-                    if (kicker)
-                        break;
-                    // [lead90] b131 946.1 s: Rtmagaa's Counterspell on a Searing Blade Warlock the tank had no threat
-                    // on - a kicker only while it has threat headroom on the caster (its threat below the tank's)
-                    if (bot != healer && !busy.count(bot->GetGUID()) && LeaderReadyInterrupt(bot) &&
-                        bot->GetExactDist(caster) <= 30.0f &&
-                        caster->GetThreatMgr().GetThreat(bot) < caster->GetThreatMgr().GetThreat(tank))
-                        kicker = bot;
-                }
-                if (!kicker || busy.count(kicker->GetGUID()))
-                    continue;
-                busy.insert(kicker->GetGUID());
-                lead.kickers[caster->GetGUID()] = kicker->GetGUID();
-                if (Leader::Events::SetInterrupt(kicker->GetGUID(), caster->GetGUID()))
-                    logEvent(kicker, "Interrupt", JsonObject().Str("caster", caster->GetName())
-                                                      .Num("casterEntry", caster->GetEntry())
-                                                      .Num("spell", LeaderReadyInterrupt(kicker)));
-            }
-        }
-        else
-            lead.kickers.clear();
 
         // [lead426] user 2026-11-02 (rest / drink / food and Viper are the leader's, in a fight too): a led hunter's
         // aspect switch is the leader's External. In a fight ([lead440]): Viper below wowsims' 10 % line while its

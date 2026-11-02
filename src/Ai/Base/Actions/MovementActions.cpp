@@ -5114,7 +5114,8 @@ void AvoidAoeAction::CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& o
     Position centre;
     float radius = 0.0f;
     if (Unit* caster = FindCasterAoe(botAI, bot, AI_VALUE(GuidVector, "attackers"), centre, radius))
-        out.push_back({centre, radius + CASTER_AOE_EXIT_MARGIN, "area cast of " + caster->GetName()});
+        out.push_back({centre, radius + CASTER_AOE_EXIT_MARGIN, "area cast of " + caster->GetName(),
+                       caster->GetGUID()});
 }
 
 // Case #4: a mob casting a point-blank / ground area spell with a cast bar (Blast Wave 23039, War Stomp 38750) or

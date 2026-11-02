@@ -113,6 +113,10 @@ namespace Leader::Fight
     // Freeze, Silence); 0: none
     uint32 LeaderReadyInterrupt(Player* bot);
 
+    // [lead460] the bot's ready interrupt reaches `caster` from where the bot stands (the spell's own range: melee
+    // reach for Kick / Pummel / Shield Bash / Mind Freeze, its yards for Counterspell / Wind Shear / Silence)
+    bool LeaderInterruptReaches(Player* bot, Unit* caster);
+
     // the healer at `from` heals `to`: in range (LEADER_HEAL_REACH_YD) and in sight
     // [lead36] LEADER_SPOT_ACQUIRE_MARGIN while a new spot is picked (SpotAcquire), 0 for a held spot's check
     extern float g_spotAcquireMargin;

@@ -53,6 +53,17 @@ namespace Leader::Fight
         return ready;
     }
 
+    bool LeaderInterruptReaches(Player* bot, Unit* caster)
+    {
+        uint32 const spell = LeaderReadyInterrupt(bot);
+        SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (!info || !caster)
+            return false;
+        if (info->RangeEntry && (info->RangeEntry->Flags & SPELL_RANGE_MELEE))
+            return bot->IsWithinMeleeRange(caster);
+        return bot->IsWithinCombatRange(caster, info->GetMaxRange(false, bot)) && bot->IsWithinLOSInMap(caster);
+    }
+
     float g_spotAcquireMargin = 0.0f;
 
     float LeaderShootReach(Player* bot)
