@@ -1452,6 +1452,17 @@ namespace Leader::Dungeon
                     pickWhy = "it blocks the group's walk ([lead208] every option over the budget, the cheapest: the "
                               "blocker)";
                 }
+                // [lead503] b210 rfc-h 5F 120.2-130.6 s: the patrol rule broke the walk-wakes-first Shaman commit
+                // 11 times ("the patrol first: its own pull", the Shaman + the patrol Trogg over the budget) and the
+                // next look picked the Shaman again ahead of the patrol - 11 s of loss, a commit / release flip every
+                // second. The patrol the leader chose as its own pull is the pick; the pack the walk to it wakes the
+                // planner puts first with the patrol in the plan (131.3 s: "the way to Ragefire Trogg wakes Ragefire
+                // Shaman: Ragefire Shaman is the pull", committed)
+                else if (intercept && intercept->GetGUID() == lead.patrolTarget && !skipPick(intercept->GetGUID()))
+                {
+                    inputs.pick = intercept->GetGUID();
+                    pickWhy = "patrol pull: " + lead.interceptWhy;
+                }
                 else if (wakesFirst && !skipPick(wakesFirst->GetGUID()))
                 {
                     inputs.pick = wakesFirst->GetGUID();
