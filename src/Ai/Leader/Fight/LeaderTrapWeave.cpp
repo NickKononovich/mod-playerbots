@@ -294,7 +294,14 @@ bool TickMove(LeaderGroup& group, Player* hunter, Player* tank, Unit* target, st
                 End(group, hunter, "the walk to the trap spot is refused");
                 return false;
             }
-            if (!plan.step && hunter->GetExactDist2d(plan.spot.GetPositionX(), plan.spot.GetPositionY()) <= 1.0f)
+            // [lead523] b211 rfc-h 5E: approved weaves ran 1.5-8 s and ended "the target died" with 0 Explosive Traps -
+            // the hunter's walk stopped short of the 1 yd it waited for (the walk's own arrival), Execute "on the
+            // spot". The trap drops at its feet: it is down where the target stands in its trigger reach (the
+            // same reach the spot is kept by above)
+            if (!plan.step &&
+                (hunter->GetExactDist2d(plan.spot.GetPositionX(), plan.spot.GetPositionY()) <= 1.0f ||
+                 (!hunter->isMoving() &&
+                  planned->GetExactDist(hunter) <= planned->GetCombatReach() + plan.triggerRadius)))
                 plan.step = 1;
             return true;
         }

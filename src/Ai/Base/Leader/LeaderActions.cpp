@@ -645,12 +645,19 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // [lead44] b93 rfc-h 313-362 s: Rtshaab's Follow fired "leader move order -> 0.0 yd" every tick at 94 and its
         // "ready reply" never ran - the leader waited 50 s for its rebuff. A walk already under way (or done) is no
         // live work: not executed, the member's other actions run
-        if (IsDuplicateMove(x, y, z))
+        // [lead523] b211 rfc-h 5A 655-705 s: the enhancement shaman stood 6.4 yd from Taragaman under "chase: behind
+        // the target", out of the game's melee range (both combat reaches + 4/3), Execute false every tick: its
+        // place (Taragaman's reach behind him) was 2.6 yd off, inside the follow's 3 yd tolerance, so "standing at
+        // its place" ended the walk. A chase is done only in the mob's melee range (the game's IsWithinMeleeRange,
+        // the reach-behind stop below); out of it, stopped, the walk to the place is walked again
+        bool const chase = bot->IsValidAttackTarget(target);
+        bool const chaseShort = chase && !bot->isMoving() && !bot->IsWithinMeleeRange(target);
+        if (!chaseShort && IsDuplicateMove(x, y, z))
             return false;
         // [lead154] b173 281-366 s: Rtshaab stood at its follow place, the tank still; the walk there was refused and
         // re-issued as a MovePoint every tick (executed, nothing moved) - the rebuff window never closed. Standing at
         // its place (the follow's own tolerance) is no work
-        if (!target->isMoving() &&
+        if (!chase && !target->isMoving() &&
             bot->GetExactDist2d(x, y) <= std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE))
             return false;
         // [lead159] b176 20261101-163239: "leader move order" executed in 20 % of the shaman's fight samples and
@@ -742,7 +749,10 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     // [lead162] a cast / channel under way that reaches its target (in range and sight) is not broken for a spot move
     // of combat-spot rank or lower (Mind Flay, Arcane Missiles, Drain Soul were cut by re-spots); a hazard, an aggro
     // loss or the heal reach moves it at once
-    if (bot->IsNonMeleeSpellCast(false) && Leader::Events::MovePrecedence(events.moveWhy) <= 2)
+    // [lead523] b211 rfc-h 5E: the BM hunter's approved trap weaves never took a step (13 weaves, 0 yd walked, 0
+    // Explosive Traps): Auto Shot is an autorepeat spell, IsNonMeleeSpellCast(false) read it as a cast under way every
+    // tick. The autorepeat shot is no cast this check keeps (the walk pauses it, the core resumes it)
+    if (bot->IsNonMeleeSpellCast(false, false, true) && Leader::Events::MovePrecedence(events.moveWhy) <= 2)
         if (Unit* victim = AI_VALUE(Unit*, "current target");
             victim && victim->IsAlive() && bot->GetExactDist(victim) <= botAI->GetRange("spell") &&
             bot->IsWithinLOSInMap(victim))
