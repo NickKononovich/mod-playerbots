@@ -4832,6 +4832,12 @@ namespace Leader::Dungeon
                 SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
                 if (!info || to.empty())
                     return;
+                // [lead461] b207 rfc-h 5H 911-1073 s: the cat druid's Innervate was the pick (the most fight seconds)
+                // in 134 verdicts and never cast - the game refuses it in Cat Form (its isPossible false 30 times) -
+                // so the mage's ready Evocation was never told and Jergosh ran with the mage at 0-3 % mana (485 dps).
+                // A tool its caster's form forbids (the spell's own shapeshift check) is no tool now
+                if (info->CheckShapeshift(caster->GetShapeshiftForm()) != SPELL_CAST_OK)
+                    return;
                 float const durationSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
                 float sec = 0.0f;
                 std::string names;
