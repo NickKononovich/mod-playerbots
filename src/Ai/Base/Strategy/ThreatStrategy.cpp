@@ -170,12 +170,42 @@ namespace
     // holds nourish ... limit 30 %", "holds regrowth on party: the leader's Stop"; every heal action is Aoe-typed,
     // CastHealingSpellAction::getThreatType). Classified by the spell itself, for every class: a heal effect (direct,
     // percent, periodic, absorb), a positive spell that deals no damage, or a cast on a friendly unit.
+    // [lead431] a spell whose effects trigger a damage spell (two deep, as LeaderMaxAreaRadius reads Starfall's stars)
+    bool TriggersDamage(SpellInfo const* info, uint8 depth)
+    {
+        if (!info || !depth)
+            return false;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (!effect.IsEffect() || !effect.TriggerSpell)
+                continue;
+            SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell);
+            if (!triggered)
+                continue;
+            for (SpellEffectInfo const& hit : triggered->GetEffects())
+                if (hit.Effect == SPELL_EFFECT_SCHOOL_DAMAGE || hit.Effect == SPELL_EFFECT_WEAPON_DAMAGE ||
+                    hit.Effect == SPELL_EFFECT_HEALTH_LEECH ||
+                    (hit.Effect == SPELL_EFFECT_APPLY_AURA && hit.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE))
+                    return true;
+            if (TriggersDamage(triggered, depth - 1))
+                return true;
+        }
+        return false;
+    }
+
     bool IsFriendlySpell(Player* bot, SpellInfo const* info, Unit* target)
     {
         if (target && target != bot && bot->IsFriendlyTo(target))
             return true;
 
         if (!info)
+            return false;
+
+        // [lead431] b202 rfc-h 5C 304.9-311.8 s: the leader's burn let Rtdruab's Starfall go, its stars (30 yd round
+        // the druid) took a Ragefire Shaman and Trogg off the ledge 18 yd below (unpulled, the leader's spared mobs):
+        // 10 of the run's 17 aggro losses. Starfall is a positive self aura with no damage effect of its own, so it
+        // passed here as a friendly spell before the AoE rule read it. Its stars are damage
+        if (TriggersDamage(info, 2))
             return false;
 
         bool damage = false;
