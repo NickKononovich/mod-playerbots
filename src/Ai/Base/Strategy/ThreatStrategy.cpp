@@ -11,6 +11,7 @@
 #include "Group.h"
 #include "LeaderCommand.h"  // [rot2]
 #include "LeaderCommandState.h"  // [rot3]
+#include "LeaderOrders.h"        // [lead282] the leader's Attack
 #include "Log.h"
 #include "Map.h"
 #include "PartyStrengthValue.h"
@@ -304,6 +305,17 @@ float ThreatMultiplier::GetValue(Action* action)
         target = actionTarget;
     if (target && target->GetVictim() == bot)
         return 1.0f;
+
+    // [lead282] b193 / b195 rfc-h (16 runs): 590 s of damage dealers' fight time held here on the leader's own Attack
+    // target, 270 s of it under the leader's Normal / Burn. The leader's headroom rule (the game's overtake after the
+    // next GCD, lead243) is the one threat verdict on that target: its Stop holds the casts, nothing else does
+    if (target && Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack &&
+            events.intensity != Leader::Intensity::Stop && events.target == target->GetGUID())
+            return 1.0f;
+    }
 
     // [flee_stop] A mob running at low health is burst before it brings the next pack: its threat table no longer
     // matters (it hits nobody). strat-h build 29: "[threat-hold] Rtmagae holds frostbolt on Crimson Initiate 10420:
