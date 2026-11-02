@@ -336,6 +336,9 @@ namespace Leader
             float costSum = 0.0f;    // [lead393] ... and their planned costs
             float dryPct = -1.0f;    // [lead417] its mana when it first ran dry in this fight (-1: not dry)
             float drySec = 0.0f;     // [lead417] ... and the fight's seconds until then
+            float lastPct = -1.0f;   // [lead480] its mana at the last fight tick
+            float toolGain = 0.0f;   // [lead480] the mana its tools and potions returned in this fight (until dry)
+            bool potion = false;     // [lead480] a potion drunk in this combat (Player::GetLastPotionId) is counted
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health

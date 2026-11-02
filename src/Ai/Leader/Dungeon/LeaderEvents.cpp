@@ -118,6 +118,34 @@ namespace Leader::Dungeon
     // "three members under half health")
     constexpr float LEADER_DANGER_HEALTH_PCT = 50.0f;
 
+    // [lead425] a mana tool of `caster` whose return is still coming: its cooldown started within its duration (a
+    // Shadowfiend that is out, a Mana Tide Totem that is down - the core's cooldown, spell data)
+    bool ManaToolOut(Player* caster, uint32 spell)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+        if (!info || !caster->HasSpell(spell) || info->GetMaxDuration() <= 0)
+            return false;
+        uint32 const recovery = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
+        uint32 const delay = caster->GetSpellCooldownDelay(spell);
+        return delay && recovery > uint32(info->GetMaxDuration()) && delay > recovery - uint32(info->GetMaxDuration());
+    }
+
+    // [lead425] a tool's return still comes to `member`: under Innervate, Hymn of Hope's tick, Evocation, Dispersion's
+    // mana (and Divine Plea when `plea`), its Shadowfiend out, in reach of a Mana Tide Totem that is down
+    bool ManaToolReturning(Player* member, std::vector<Player*> const& everyone, bool plea)
+    {
+        if (member->HasAura(SPELL_INNERVATE) || member->HasAura(RestState::SPELL_HYMN_OF_HOPE_TICK) ||
+            member->HasAura(RestState::SPELL_EVOCATION) || member->HasAura(RestState::SPELL_DISPERSION_MANA) ||
+            (plea && member->HasAura(RestState::SPELL_DIVINE_PLEA)) ||
+            ManaToolOut(member, RestState::SPELL_SHADOWFIEND))
+            return true;
+        for (Player* shaman : everyone)
+            if (ManaToolOut(shaman, SPELL_MANA_TIDE_TOTEM) &&
+                member->GetExactDist(shaman) <= RestState::ManaToolRadius(shaman, SPELL_MANA_TIDE_TOTEM))
+                return true;
+        return false;
+    }
+
     // [lead274] the burn verdict of one member (`kind`: its cooldowns, or the group's Heroism / Bloodlust), logged
     // when which cooldowns are allowed / held changes (the reasons' running numbers are no change)
     void LogBurnDecision(DecisionRun const& run, DungeonLeaderState& lead, Player* bot, char const* kind,
@@ -2682,12 +2710,19 @@ namespace Leader::Dungeon
                     bool const dry = spend.dryPct >= 0.0f;
                     float const endPct = dry ? spend.dryPct : pct;
                     float const usedSec = dry ? spend.drySec : spend.fightSec;
+                    // [lead480] b208 rfc-h: the casters came to Taragaman short - 5D's arcane mage at ~1 % passed the
+                    // boss gate (Oggleflint began at 3 %, its Evocation's 60 % in that fight made the boss net use
+                    // negative: boss rate 0, line 0), 5B's elemental shaman stood up at 30 % ("0.35 %/s measured on
+                    // bosses x 76 s + 3": Oggleflint's mana potion netted in) and was dry 57 s in. The rate is the
+                    // spend without the mana its tools and potions returned: FightManaLine credits a tool only where
+                    // it is ready for the fight (its cooldown, the potion the last combat or the pre-pull blocks)
+                    float const used = spend.prev - endPct + spend.toolGain;
                     if (spend.prev >= 0.0f && !(dry && spend.dryPct >= spend.prev))  // its net use counts
                     {
                         // [lead222] signed: a fight that ends with more mana than it began (Divine Plea, Judgement
-                        // of Wisdom, Spiritual Attunement, a potion in the fight) lowers the net use; the clamp at 0
-                        // per fight counted such fights as zero use and raised the rate
-                        spend.spent += spend.prev - endPct;
+                        // of Wisdom, Spiritual Attunement) lowers the net use; the clamp at 0 per fight counted such
+                        // fights as zero use and raised the rate
+                        spend.spent += used;
                         spend.sec += usedSec;
                         ++spend.fights;
                         if (spend.sec > 0.0f)
@@ -2696,7 +2731,7 @@ namespace Leader::Dungeon
                         // run's mean fight: its whole rotation, not a few casts on a short pull)
                         if (spend.boss && usedSec > 0.0f)
                         {
-                            spend.bossSpent += spend.prev - endPct;
+                            spend.bossSpent += used;
                             spend.bossSec += usedSec;
                             RestState::NoteBossManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.bossSpent / spend.bossSec));
@@ -2705,7 +2740,7 @@ namespace Leader::Dungeon
                         // over all the full-length fights
                         if (spend.fightSec > 0.0f && spend.fightSec >= spend.sec / float(spend.fights))
                         {
-                            spend.fullSpent += spend.prev - endPct;
+                            spend.fullSpent += used;
                             spend.fullSec += usedSec;
                             RestState::NotePeakManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.fullSpent / spend.fullSec));
@@ -2713,7 +2748,7 @@ namespace Leader::Dungeon
                         // [lead393] a healer's net use per tank health the plan costed its fights at
                         if (spend.fightCost > 0.0f)
                         {
-                            spend.costSpent += spend.prev - endPct;
+                            spend.costSpent += used;
                             spend.costSum += spend.fightCost;
                             RestState::NoteHealerPctPerCost(member->GetGUID(),
                                                             std::max(0.0f, spend.costSpent / spend.costSum));
@@ -2725,10 +2760,23 @@ namespace Leader::Dungeon
                     spend.fightCost = 0.0f;
                     spend.dryPct = -1.0f;  // [lead417]
                     spend.drySec = 0.0f;
+                    spend.lastPct = -1.0f;  // [lead480]
+                    spend.toolGain = 0.0f;
+                    spend.potion = false;
                     continue;
                 }
                 if (spend.prev < 0.0f)
                     spend.prev = pct;  // the fight's start
+                // [lead480] the mana a tool or a potion returned this tick (its rise while the return comes: under
+                // Evocation / Innervate / Hymn / Dispersion / Viper, a Shadowfiend or Mana Tide out, the tick the
+                // game marks the combat's potion), counted until it runs dry. Divine Plea stays in the rate (lead224)
+                bool const potionNow = member->GetLastPotionId() && !spend.potion;
+                spend.potion |= member->GetLastPotionId() != 0;
+                if (spend.lastPct >= 0.0f && pct > spend.lastPct && spend.dryPct < 0.0f &&
+                    (potionNow || member->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER) ||
+                     ManaToolReturning(member, spenders, false)))
+                    spend.toolGain += pct - spend.lastPct;
+                spend.lastPct = pct;
                 spend.fightSec += dt;
                 if (spend.dryPct < 0.0f && pct < RestState::CheapestCastPct(member))  // [lead417] it ran dry
                 {
@@ -4925,28 +4973,7 @@ namespace Leader::Dungeon
             // Innervate, Hymn of Hope's tick, Evocation, Dispersion's mana, Divine Plea; a priest whose Shadowfiend is
             // out, a member in reach of a Mana Tide Totem that is down (the caster's cooldown started within its
             // summon's duration: the core's cooldown, spell data)
-            auto const toolOut = [](Player* caster, uint32 spell)
-            {
-                SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
-                if (!info || !caster->HasSpell(spell) || info->GetMaxDuration() <= 0)
-                    return false;
-                uint32 const recovery = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
-                uint32 const delay = caster->GetSpellCooldownDelay(spell);
-                return delay && recovery > uint32(info->GetMaxDuration()) &&
-                       delay > recovery - uint32(info->GetMaxDuration());
-            };
-            auto const receiving = [&](Player* member)
-            {
-                if (member->HasAura(SPELL_INNERVATE) || member->HasAura(RestState::SPELL_HYMN_OF_HOPE_TICK) ||
-                    member->HasAura(RestState::SPELL_EVOCATION) || member->HasAura(RestState::SPELL_DISPERSION_MANA) ||
-                    member->HasAura(RestState::SPELL_DIVINE_PLEA) || toolOut(member, RestState::SPELL_SHADOWFIEND))
-                    return true;
-                for (Player* shaman : everyone)
-                    if (toolOut(shaman, SPELL_MANA_TIDE_TOTEM) &&
-                        member->GetExactDist(shaman) <= RestState::ManaToolRadius(shaman, SPELL_MANA_TIDE_TOTEM))
-                        return true;
-                return false;
-            };
+            auto const receiving = [&](Player* member) { return ManaToolReturning(member, everyone, true); };
             std::vector<ManaUser> manaUsers;
             if (lead.fightSecLeft > 0.0f)
                 for (Player* member : everyone)
