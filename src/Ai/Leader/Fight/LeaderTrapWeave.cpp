@@ -184,13 +184,13 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
         return false;
     }
     // the mobs the trap covers; none crowd-controlled, none unpulled within its radius
-    std::list<Unit*> near;
+    std::list<Unit*> nearUnits;
     Acore::AnyUnfriendlyUnitInObjectRangeCheck check(target, hunter, data.radius + data.triggerRadius);
-    Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(target, near, check);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(target, nearUnits, check);
     Cell::VisitObjects(target, searcher, data.radius + data.triggerRadius);
     std::vector<Unit*> const fight = FightMobs(tank, seats);
     std::vector<Unit*> covered;
-    for (Unit* unit : near)
+    for (Unit* unit : nearUnits)
     {
         if (!unit->IsAlive() || unit->GetExactDist(spot) > data.radius)
             continue;

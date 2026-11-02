@@ -3975,7 +3975,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         Creature const* creature = mob->ToCreature();
         int32 const weaponSkill = int32(mob->GetWeaponSkillValue(BASE_ATTACK, tank));
-        int32 const tankMaxSkill = int32(tank->GetMaxSkillValueForLevel(mob));
+        int32 const tankMaxSkill = int32(static_cast<Unit const*>(tank)->GetMaxSkillValueForLevel(mob));
         float const skillBonus = 0.04f * float(weaponSkill - tankMaxSkill);  // percent
         // the core's miss chance with the skill difference (Unit::MeleeSpellMissChance), from the plan's base miss
         float const miss = std::max(mob->MeleeSpellMissChance(tank, BASE_ATTACK, weaponSkill - tankMaxSkill, 0) -
