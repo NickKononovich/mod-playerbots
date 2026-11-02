@@ -11,6 +11,7 @@
 #include "ItemTemplate.h"
 #include "InterruptValues.h"
 #include "LeaderCommandState.h"  // [rot2] [rot3]
+#include "LeaderConsumables.h"   // [lead407] Leader::Dungeon::UseItem
 #include "Log.h"
 #include "ObjectAccessor.h"  // [lead401]
 #include "RtiValue.h"        // [rot2] FindCrowdControl
@@ -348,13 +349,34 @@ bool LeaderConsumeAction::Execute(Event /*event*/)
     if (!item)
         return false;
     std::string const name = item->GetTemplate()->Name1;
-    // the item's spell takes the selection as its unit target (a soulstone on another member)
-    bot->SetSelection(on->GetGUID());
-    if (!UseItem(item, ObjectGuid::Empty, nullptr, on))
+    // [lead407] b198 rfc-h 5G-7 603.0 s: the tank's pre-pull potion went through UseItemAction::UseItem, which stops a
+    // walking bot and clears its chase - the tank's engage walk to Taragaman stopped, its pull lost its target and the
+    // order stood Issued for 221 s ("use failed" reported after the stop). An instant item on the bot itself is used
+    // as the client sends it, the walk and the chase go on; one with a cast time or another target waits for the bot
+    // to stand (no report: the walk is the leader's, not a refusal)
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(OnUseSpell(item));
+    if (on == bot && spellInfo && !spellInfo->CalcCastTime())
     {
-        if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(false))
-            Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "the use failed");
-        return false;
+        if (!Leader::Dungeon::UseItem(bot, itemId))
+        {
+            if (!bot->IsNonMeleeSpellCast(false))
+                Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "the use failed");
+            return false;
+        }
+    }
+    else
+    {
+        if (bot->isMoving())
+            return false;
+        // the item's spell takes the selection as its unit target (a soulstone on another member)
+        if (on != bot)
+            bot->SetSelection(on->GetGUID());
+        if (!UseItem(item, ObjectGuid::Empty, nullptr, on))
+        {
+            if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(false))
+                Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "the use failed");
+            return false;
+        }
     }
     LOG_INFO("playerbots", "[lead402] [leader consume] {} uses {} ({}) on {}: {}", bot->GetName(), name, itemId,
              on->GetName(), why);
