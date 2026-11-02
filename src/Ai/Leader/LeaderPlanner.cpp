@@ -283,15 +283,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // its own kill time, not in the queue of the pack's kills (EstimatePack)
     constexpr float CAREFUL_MIN_HOLD = 2.0f;
     constexpr float CAREFUL_MAX_HOLD = 8.0f;
-    // Share of the tank's health a levelling group heals per second: wave 4 healers did 4% (level 15) to 9% (58).
-    constexpr float CAREFUL_SUSTAIN_PER_SECOND = 0.045f;
-    // The tank's own health carries part of the fight: the healers keep it above half, they need not out-heal the
-    // pack. Waves 10-12 5-man normals (levels 15-80, about 5,500 survived pulls): the tank lost 0.6-1.3 of its health
-    // over a pull (p90) while its healers healed 3-4% of it per second (p90).
-    constexpr float CAREFUL_TANK_POOL = 0.5f;
-    // Melee on the tank before the first mob dies, in tank health per second: the median over the level bands of the
-    // highest average a survived pull put on the tank (5-10%, waves 10-12).
-    constexpr float CAREFUL_PEAK_PER_SECOND = 0.07f;
     // Mobs over what the tank's spells hold that the damage dealers still kill off it (the kill order takes them
     // first). Waves 10-12 levelling normals, tank kits of 2-3: 1-7% of pulls of 1-5 mobs lost someone, 8% at 6,
     // 15% at 7, 33% at 8.
@@ -4443,13 +4434,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // 0.33 cost^0.73 read the uncalibrated plan).
     float TakenCost(PackEstimate const& estimate) { return std::max(estimate.cost, 0.0f); }
 
-    // [lead258] The healers in healer-equivalents of the strongest (the levelling terms' share): each by its rate
-    // against the strongest one's (HealerThroughput); no healer: 0.
-    float HealerShare(GroupSupport const& support)
-    {
-        return support.strongestHps > 0.0f ? support.healHps / support.strongestHps : 0.0f;
-    }
-
     // Tank healths the group's healers restore from full mana, above the mana each keeps back: [lead258] their max
     // mana times their health per mana (spell data, or this dungeon's measured healing per mana spent), less their
     // low mana line (the config's), over the tank's health.
@@ -4535,8 +4519,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         terms.size = measured
                          ? (pool > 0.0f ? TakenCost(estimate) / pool : 0.0f)
                          : SwarmDanger(estimate.danger, estimate.mobs, strength) / PackCapacity(bot, strength, support);
-        if (measured)  // [lead259] a lone mob's drop too: it is no limit there, but its fight measures the drop ratio
-            terms.drop = DropP90(estimate);
+        // [lead259] a lone mob's drop too: it is no limit there, but its fight measures the drop ratio
+        terms.drop = DropP90(estimate);
         if (estimate.mobs > 1)
         {
             terms.holdMobs =
@@ -4545,29 +4529,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             terms.hold = float(estimate.mobs) / terms.holdMobs;
 
             float const maxHealth = PlanTankHealth(bot);  // [b32_smpull]
+            // [lead259] the drop against the most the tank may drop (EstimatePack::maxDrop); the comfort (measured):
+            // against half of it, a pull that still fits when an equal pack joins it. [lead266] Levelling reads the
+            // same two terms (the 7 % / 4.5 % of the tank's health per second and the half tank health pool of
+            // waves 4-12 are gone).
+            terms.drain = estimate.maxDrop > 0.0f ? terms.drop / estimate.maxDrop : 99.0f;
             if (measured)
-            {
-                // [lead259] the drop against the most the tank may drop (EstimatePack::maxDrop); the comfort: against
-                // half of it, a pull that still fits when an equal pack joins it
-                terms.drain = estimate.maxDrop > 0.0f ? terms.drop / estimate.maxDrop : 99.0f;
                 terms.comfort = 2.0f * terms.drain;
-                // [lead258] the pack's average damage per second against the healers' best rate together (their
-                // spells and spell power: the gear is in it); without a healer the drop term alone
-                if (support.healHps > 0.0f)
-                    terms.peak = AverageDtps(estimate, maxHealth) / support.healHps;
-            }
-            else
-            {
-                float const share = strength.PullScale() * HealerShare(support);
-                if (maxHealth > 0.0f && share > 0.0f)
-                {
-                    terms.peak = estimate.landedDps / (maxHealth * CAREFUL_PEAK_PER_SECOND * share);
-                    terms.drain =
-                        estimate.cost / (CAREFUL_SUSTAIN_PER_SECOND * share * estimate.fightSec + CAREFUL_TANK_POOL);
-                }
-                else if (maxHealth > 0.0f)  // [lead258] no healer: the tank's own health carries the whole fight
-                    terms.drain = estimate.cost;
-            }
+            // [lead258] the pack's average damage per second against the healers' best rate together (their spells
+            // and spell power: the gear is in it); without a healer the drop term alone
+            if (support.healHps > 0.0f)
+                terms.peak = AverageDtps(estimate, maxHealth) / support.healHps;
         }
 
         if (out)
@@ -11606,7 +11578,6 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     {
         // The inputs of the smallest plan against what the group takes (temporary diagnostics, wave 12 calibration).
         float const maxHealth = PlanTankHealth(bot);  // [b32_smpull]
-        float const share = strength.PullScale() * HealerShare(support);
         TankMitigation const mitigation = GetTankMitigation(bot);
         LOG_DEBUG("playerbots",
                   "{} careful pull: no manageable pull around {} ({} mobs; best {} mobs{}: landed {:.0f}/s of {:.0f} "
@@ -11615,12 +11586,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                   "peak {:.2f} drain {:.2f}; drop {:.2f} comfort {:.2f} spell {:.2f}; measured dps {:.0f}, landed "
                   "scale {:.2f} melee / {:.2f} spell)",
                   bot->GetName(), target->GetName(), adds.size() + 1, best.estimate.mobs,
-                  best.pullBack ? " pull back" : "", best.estimate.landedDps,
-                  maxHealth * CAREFUL_PEAK_PER_SECOND * share, best.estimate.cost, best.estimate.fightSec, groupDps,
-                  maxHealth * CAREFUL_SUSTAIN_PER_SECOND * share, maxHealth, PlanTankArmor(bot), mitigation.avoidance,
-                  mitigation.block, mitigation.blockValue, best.terms.holdMobs, maxMobs, best.terms.size,
-                  best.terms.hold, best.terms.peak, best.terms.drain, best.terms.drop, best.terms.comfort,
-                  best.estimate.spellCost, MeasuredGroupDps(bot), estimateMode.landedScale.melee,
+                  best.pullBack ? " pull back" : "", best.estimate.landedDps, AverageDtps(best.estimate, maxHealth),
+                  best.estimate.cost, best.estimate.fightSec, groupDps, support.healHps, maxHealth, PlanTankArmor(bot),
+                  mitigation.avoidance, mitigation.block, mitigation.blockValue, best.terms.holdMobs, maxMobs,
+                  best.terms.size, best.terms.hold, best.terms.peak, best.terms.drain, best.terms.drop,
+                  best.terms.comfort, best.estimate.spellCost, MeasuredGroupDps(bot), estimateMode.landedScale.melee,
                   estimateMode.landedScale.spell);
         if (packWhyRecorder.on && !targetPack.empty() && PackWhyDue(_packWhyMs, target->GetGUID(), now))
             LOG_INFO("playerbots", "{}",
