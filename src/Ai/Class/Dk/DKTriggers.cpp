@@ -173,8 +173,17 @@ void RuneStrikeTrigger::TraceTankBoss()
 
 bool RuneStrikeHeldForRuneWeapon(Player* bot)
 {
-    return bot->GetPower(POWER_RUNIC_POWER) < RUNE_STRIKE_RUNE_WEAPON_POOL_RUNIC_POWER &&
-           bot->HasSpell(SPELL_DK_DANCING_RUNE_WEAPON) && !bot->HasSpellCooldown(SPELL_DK_DANCING_RUNE_WEAPON);
+    if (bot->GetPower(POWER_RUNIC_POWER) >= RUNE_STRIKE_RUNE_WEAPON_POOL_RUNIC_POWER ||
+        !bot->HasSpell(SPELL_DK_DANCING_RUNE_WEAPON) || bot->HasSpellCooldown(SPELL_DK_DANCING_RUNE_WEAPON))
+        return false;
+
+    // [rot61] "ready" is castable now (wowsims spellIsReady): a led tank's rune weapon the leader holds for another
+    // boss is not. b201 rfc-h 5C / 5G rot51 trace: rune weapon off cooldown without the leader's Burn in 23 of 244
+    // (Rtdekaa) and 40 of 168 (Rtdekac) boss states, Rune Strike held below 80 runic power all along (5.7 / 7.2 a
+    // minute vs the sim's 8.8)
+    Leader::MemberEvents command;
+    LeaderCommandState::State const state = LeaderCommandState::Read(bot, command);
+    return state == LeaderCommandState::State::NotLed || Leader::BurnAllows(command, "dancing rune weapon");
 }
 
 bool RuneStrikeTrigger::IsActive()
