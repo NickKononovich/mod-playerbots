@@ -622,6 +622,25 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         float z = 0.0f;
         if (!FollowPlace(target, events.followIndex, x, y, z))
             return false;
+        float const tolerance = std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE);
+        LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
+        // [lead249] b191 rfc-h (8 runs): each melee damage dealer walked 37-65 s of its fights within 5 yd of the
+        // tank's target and already behind it (out of its front arc, where the game parries / blocks) - the walk to
+        // the chase's place, started when the mob turned, carried on to that place. In reach behind the mob that walk
+        // has nothing left to reach: it stops (a walk to elsewhere, a hazard's, is not this one)
+        // [lead453] b205 / b206 rfc-h: still 47-49 s a run of the rogue's / cat's fights walking under the chase while
+        // already behind the mob and in its reach, the tank standing: a standing mob's follow place is the same
+        // point every tick, so the duplicate-move check below returned first and this stop never ran, and the walk
+        // ended at the follow place (two rows behind the mob) beyond its reach plus the tolerance. Checked first now;
+        // a mob that stands leaves nothing for that walk to reach: in reach behind it the member stops
+        if (bot->isMoving() && bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target) &&
+            !target->HasInArc(float(M_PI), bot) &&
+            (!target->isMoving() || target->GetExactDist2d(last.lastMoveToX, last.lastMoveToY) <=
+                                        target->GetCombatReach() + bot->GetCombatReach() + tolerance))
+        {
+            bot->StopMoving();
+            return false;
+        }
         // [lead44] b93 rfc-h 313-362 s: Rtshaab's Follow fired "leader move order -> 0.0 yd" every tick at 94 and its
         // "ready reply" never ran - the leader waited 50 s for its rebuff. A walk already under way (or done) is no
         // live work: not executed, the member's other actions run
@@ -637,20 +656,6 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // pre-empted Stormstrike 60x, Earth Shock 54x, Lava Lash 40x - the chase (lead156) re-walked every tick. A walk
         // already heading for the place (within the follow's tolerance), or a chased mob already in melee reach, is no
         // work: the core movement carries it, the rotation runs
-        float const tolerance = std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE);
-        LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
-        // [lead249] b191 rfc-h (8 runs): each melee damage dealer walked 37-65 s of its fights within 5 yd of the
-        // tank's target and already behind it (out of its front arc, where the game parries / blocks) - the walk to
-        // the chase's place, started when the mob turned, carried on to that place. In reach behind the mob that walk
-        // has nothing left to reach: it stops (a walk to elsewhere, a hazard's, is not this one)
-        if (bot->isMoving() && bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target) &&
-            !target->HasInArc(float(M_PI), bot) &&
-            target->GetExactDist2d(last.lastMoveToX, last.lastMoveToY) <=
-                target->GetCombatReach() + bot->GetCombatReach() + tolerance)
-        {
-            bot->StopMoving();
-            return false;
-        }
         // [lead281] the walk under way is known by its end as asked too (a guard may have moved the end it walks to)
         if (bot->isMoving() &&
             (std::hypot(last.lastMoveToX - x, last.lastMoveToY - y) <= tolerance ||
