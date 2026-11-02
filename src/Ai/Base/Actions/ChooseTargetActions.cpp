@@ -465,9 +465,21 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         std::vector<char const*> const openers =
             takeBack ? std::vector<char const*>(std::begin(TANK_OPENERS), std::end(TANK_OPENERS))
                      : TankEngageOpeners(bot, !TankWalkIntoIdlePack(botAI, bot, mob));
+        // [lead237] b188 rfc-h: "tank open incoming" was the tank's second walk in fights (about 1900 yd in the 8 runs
+        // with its "reach melee" walks), "move fight spot back" (936 yd) walked it back. CanCastSpell passes an out of
+        // range opener and the cast walks to it: a mob already coming at the tank (its victim) is opened on only
+        // with an opener that reaches it from where the tank stands - it walks into the tank's melee anyway
+        bool const comes = !takeBack && victim == bot;
         for (char const* name : openers)
             if (botAI->CanCastSpell(name, mob))
             {
+                if (comes)
+                {
+                    uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+                    SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+                    if (!info || !bot->IsWithinCombatRange(mob, info->GetMaxRange(false)))
+                        continue;
+                }
                 if (opener)
                     *opener = name;
                 return mob;
