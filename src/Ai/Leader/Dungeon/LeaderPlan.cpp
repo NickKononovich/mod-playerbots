@@ -1708,9 +1708,17 @@ namespace Leader::Dungeon
             // [lead82] b125 rfc-h 526.8-543.4 s: the answer flipped "Rthunaa at 56 % mana (needs 68 %)" <-> "the
             // leader: Rthunaa sits" and the Rest with it - Rthunaa stood up and sat down again 6 times on the way to
             // its line. The hold on the member's own rest is the same wait: its Rest goes on
+            // [lead514] b210 rfc-h 5E 1030.4-1040.4 s: the boss hold "boss pull: Jergosh the Invoker comes with it,
+            // Rtpalac at 61 % mana (needs 83 %)" put the tank under Rest with its 83 % line; the planner's next look
+            // read that Rest as "held for now: the tank rests (health 100 %, mana 61 %)" - no member name, no line:
+            // the Rest's member and line were dropped, the tank's own line was reached and the leader told it Prepare
+            // ("its rest line is reached" at 55 / 61 / 66 %), the boss hold the Rest again - 7 Rest / Prepare flips
+            // in 7 s. The planner's "the tank rests" while the leader's Rest is on the tank is that same wait
             bool const restHold = !lead.plannerRestFor.empty() &&
                                   (decision.why.find(lead.plannerRestFor + " sits") != std::string::npos ||
-                                   decision.why.find(lead.plannerRestFor + " rests") != std::string::npos);
+                                   decision.why.find(lead.plannerRestFor + " rests") != std::string::npos ||
+                                   (lead.plannerRestFor == tank->GetName() &&
+                                    decision.why.find("the tank rests") != std::string::npos));
             float restLine = -1.0f;
             if (decision.verdict == PullPlanner::Verdict::Held && restHold)
             {
@@ -1749,6 +1757,19 @@ namespace Leader::Dungeon
             if (decision.verdict == PullPlanner::Verdict::Held && lineHold && !decision.lookTarget.IsEmpty() &&
                 IsBossLook(tank, decision.lookTarget))
                 lead.bossWaitFor = decision.lookTarget;
+            // [lead514] a trash pull that brings a boss is his pull: the planner's hold "boss pull: <boss> comes with
+            // it, <member> at N % mana (needs M %)" is the wait for that boss, every member below its boss line rests
+            // at once (lead85), the tank's Rest holds to its boss line (MemberBossGap)
+            else if (decision.verdict == PullPlanner::Verdict::Held && lineHold &&
+                     decision.why.rfind("boss pull: ", 0) == 0)
+                for (ObjectGuid const& bossGuid : group.BossCreatures())
+                    if (Creature* boss = tank->GetMap()->GetCreature(bossGuid);
+                        boss && boss->IsAlive() && !boss->IsInCombat() &&
+                        decision.why.compare(std::strlen("boss pull: "), boss->GetName().size(), boss->GetName()) == 0)
+                    {
+                        lead.bossWaitFor = bossGuid;
+                        break;
+                    }
             if (restFor != lead.plannerRestFor)
             {
                 lead.plannerRestFor = restFor;
