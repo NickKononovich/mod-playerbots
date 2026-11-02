@@ -673,6 +673,42 @@ float SpellManaRate(Player* bot)
     return rate;
 }
 
+float CheapestCastPct(Player* bot)
+{
+    float const maxMana = float(bot->GetMaxPower(POWER_MANA));
+    if (maxMana <= 0.0f)
+        return 0.0f;
+
+    // the spell scan is cached per bot while its spells and mana pool stay the same (a lookup, no clock)
+    struct Cached
+    {
+        size_t spells = 0;
+        uint32 mana = 0;
+        float pct = 0.0f;
+    };
+    thread_local std::unordered_map<uint64, Cached> cache;
+    Cached& cached = cache[bot->GetGUID().GetRawValue()];
+    if (cached.spells == bot->GetSpellMap().size() && cached.mana == bot->GetMaxPower(POWER_MANA))
+        return cached.pct;
+
+    bool const healer = PlayerbotAI::IsHeal(bot);
+    int32 cheapest = 0;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->IsPassive() || info->PowerType != POWER_MANA ||
+            (healer ? !(info->IsPositive() && IsHealSpell(info)) : info->IsPositive()))
+            continue;
+        int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
+        if (cost > 0 && (!cheapest || cost < cheapest))
+            cheapest = cost;
+    }
+    cached = {bot->GetSpellMap().size(), bot->GetMaxPower(POWER_MANA), 100.0f * float(cheapest) / maxMana};
+    return cached.pct;
+}
+
 namespace
 {
 struct FightLengths

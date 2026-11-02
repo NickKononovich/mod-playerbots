@@ -294,6 +294,9 @@ float HealerPctPerTankHealth(Player* healer);
 // per second of its best heal (a healer) or of its best damage spell that costs mana, each cast at the fastest the
 // spell comes again; 0 for a bot whose spells cost no mana.
 float SpellManaRate(Player* bot);
+// [lead417] the cheapest mana cast of the bot's rotation (% of its max mana): an offensive spell, a healer's heal;
+// below it the bot is dry (it cannot cast, its mana spend stops)
+float CheapestCastPct(Player* bot);
 // [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon
 void NoteFightLength(Player* tank, uint32 mobs, float sec);
 // [lead264] the next fight's length: the plan's estimate, else the group's measured seconds per mob in this dungeon

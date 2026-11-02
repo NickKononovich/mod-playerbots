@@ -2398,22 +2398,29 @@ namespace Leader::Dungeon
                 // paladin tank for 100 % before Taragaman from its gross spend (it regains much of it in the fight)
                 if (!fighting)
                 {
-                    if (spend.prev >= 0.0f)  // the fight just ended: its net use counts
+                    // [lead417] b201 rfc-h 5C: the balance druid's boss rate read 0.64 %/s - Oggleflint 43 -> 0 % with
+                    // its last seconds dry, the net use capped at what it had: the boss line (37 %) let it start
+                    // Jergosh short, dry again 40 s into 55 s. A fight's use counts until the member ran dry (below
+                    // its cheapest cast: no more spend); a fight it began dry tells nothing of its rate
+                    bool const dry = spend.dryPct >= 0.0f;
+                    float const endPct = dry ? spend.dryPct : pct;
+                    float const usedSec = dry ? spend.drySec : spend.fightSec;
+                    if (spend.prev >= 0.0f && !(dry && spend.dryPct >= spend.prev))  // its net use counts
                     {
                         // [lead222] signed: a fight that ends with more mana than it began (Divine Plea, Judgement
                         // of Wisdom, Spiritual Attunement, a potion in the fight) lowers the net use; the clamp at 0
                         // per fight counted such fights as zero use and raised the rate
-                        spend.spent += spend.prev - pct;
-                        spend.sec += spend.fightSec;
+                        spend.spent += spend.prev - endPct;
+                        spend.sec += usedSec;
                         ++spend.fights;
                         if (spend.sec > 0.0f)
                             RestState::NoteManaRate(member->GetGUID(), std::max(0.0f, spend.spent / spend.sec));
                         // [lead232] the boss fights' own rate, and a full fight's rate (one at least as long as the
                         // run's mean fight: its whole rotation, not a few casts on a short pull)
-                        if (spend.boss && spend.fightSec > 0.0f)
+                        if (spend.boss && usedSec > 0.0f)
                         {
-                            spend.bossSpent += spend.prev - pct;
-                            spend.bossSec += spend.fightSec;
+                            spend.bossSpent += spend.prev - endPct;
+                            spend.bossSec += usedSec;
                             RestState::NoteBossManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.bossSpent / spend.bossSec));
                         }
@@ -2421,15 +2428,15 @@ namespace Leader::Dungeon
                         // over all the full-length fights
                         if (spend.fightSec > 0.0f && spend.fightSec >= spend.sec / float(spend.fights))
                         {
-                            spend.fullSpent += spend.prev - pct;
-                            spend.fullSec += spend.fightSec;
+                            spend.fullSpent += spend.prev - endPct;
+                            spend.fullSec += usedSec;
                             RestState::NotePeakManaRate(member->GetGUID(),
                                                         std::max(0.0f, spend.fullSpent / spend.fullSec));
                         }
                         // [lead393] a healer's net use per tank health the plan costed its fights at
                         if (spend.fightCost > 0.0f)
                         {
-                            spend.costSpent += spend.prev - pct;
+                            spend.costSpent += spend.prev - endPct;
                             spend.costSum += spend.fightCost;
                             RestState::NoteHealerPctPerCost(member->GetGUID(),
                                                             std::max(0.0f, spend.costSpent / spend.costSum));
@@ -2439,11 +2446,18 @@ namespace Leader::Dungeon
                     spend.fightSec = 0.0f;
                     spend.boss = false;
                     spend.fightCost = 0.0f;
+                    spend.dryPct = -1.0f;  // [lead417]
+                    spend.drySec = 0.0f;
                     continue;
                 }
                 if (spend.prev < 0.0f)
                     spend.prev = pct;  // the fight's start
                 spend.fightSec += dt;
+                if (spend.dryPct < 0.0f && pct < RestState::CheapestCastPct(member))  // [lead417] it ran dry
+                {
+                    spend.dryPct = pct;
+                    spend.drySec = spend.fightSec;
+                }
                 spend.boss |= bossFought;
                 // [lead393] the fight's planned cost (the open order's): the unit FightManaLine's healer term reads
                 if (PlayerbotAI::IsHeal(member))
