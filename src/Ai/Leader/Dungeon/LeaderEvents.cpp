@@ -231,6 +231,23 @@ namespace Leader::Dungeon
         {
             return LeaderCastsFrom(bot, target, bot->GetPosition()) && bot->IsWithinLOSInMap(target);
         }
+
+        // [lead380] why a ranged member does not cast on `target` from where it stands (the checks of LeaderCastsFrom,
+        // the mobs where they stand now, then the game's sight), for the re-spot record
+        std::string MemberCastsFails(Player* bot, Unit* target, std::vector<ObjectGuid> const& fightMobs)
+        {
+            Position const at = bot->GetPosition();
+            float const gap = at.GetExactDist(target->GetPosition());
+            if (gap > std::max(LeaderShootReach(bot), LeaderSpellReach(bot)))
+                return "out of spell range of the target";
+            if (bot->getClass() == CLASS_HUNTER && gap < LeaderRangedMinGap(bot, target))
+                return "inside its minimum range of the target";
+            if (!LeaderSeesFrom(bot, target, at) || !bot->IsWithinLOSInMap(target))
+                return "no line of sight to the target";
+            if (!LeaderOutOfMobsMelee(bot, at, fightMobs, true))
+                return "inside a fight mob's melee reach";
+            return "";
+        }
     }
 
     void TickLeaderEvents(LeaderGroup& group, Player* tank)
@@ -2906,15 +2923,64 @@ namespace Leader::Dungeon
                 }
                 // [lead137] never back to the spot it just left for this target
                 auto const left = lead.combatSpotLeft.find(guid);
-                std::function<bool(Position const&)> const keeps = [&](Position const& at)
+                auto const notLeft = [&](Position const& at)
                 {
-                    return keepsBase(at) && !(left != lead.combatSpotLeft.end() &&
-                                              std::any_of(left->second.begin(), left->second.end(),
-                                                          [&](std::pair<ObjectGuid, Position> const& was)
-                                                          {
-                                                              return was.first == target->GetGUID() &&
-                                                                     was.second.GetExactDist(at) <= COMBAT_SPOT_LEFT_YD;
-                                                          }));
+                    return !(left != lead.combatSpotLeft.end() &&
+                             std::any_of(left->second.begin(), left->second.end(),
+                                         [&](std::pair<ObjectGuid, Position> const& was)
+                                         {
+                                             return was.first == target->GetGUID() &&
+                                                    was.second.GetExactDist(at) <= COMBAT_SPOT_LEFT_YD;
+                                         }));
+                };
+                std::function<bool(Position const&)> const keeps = [&](Position const& at)
+                { return keepsBase(at) && notLeft(at); };
+                // [lead380] the healer's own place keeps it when it heals the tank from there where the tank stands
+                // (its reach and sight, within LEADER_HEALER_TANK_YD); the other members' reach is the heal-reach
+                // rule's, on its facts
+                std::function<bool(Position const&)> const keepsHere =
+                    bot != healer ? keeps
+                                  : std::function<bool(Position const&)>(
+                                        [&](Position const& at)
+                                        {
+                                            Position const tankNow = tank->GetPosition();
+                                            return reaches(at, tankNow) &&
+                                                   at.GetExactDist(tankNow) <=
+                                                       Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin &&
+                                                   notLeft(at);
+                                        });
+                // [lead380] b200 rfc-h (8 runs): ranged members and healers walked 1543 s / 554 s of the fights to
+                // combat spots, most of them from a place they cast from. Where a ranged member or a healer stands is
+                // its spot when it fits there as a new spot would (SpotAcquire's margin): its Attack target in its
+                // spells' range and its sight (the game's own), out of every fight mob's melee reach where the mobs
+                // stand now, safe, in heal reach (a healer: the tank in its reach), not a spot it just left. It casts
+                // there, no walk
+                auto const standsFit = [&]() -> bool
+                {
+                    if (melee)
+                        return false;
+                    bool fits = false;
+                    {
+                        SpotAcquire const acquire;
+                        fits = LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(), false, zones, keepsHere,
+                                                      true, &killOrder, true)
+                                   .empty();
+                    }
+                    return fits && (bot == healer || PlayerbotAI::IsHeal(bot) || MemberCastsHere(bot, target));
+                };
+                // [lead380] why it does not (logged with its walks): the same checks, "" when it fits
+                auto const standsFails = [&]() -> std::string
+                {
+                    std::string why;
+                    {
+                        SpotAcquire const acquire;
+                        why = LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(), melee, zones,
+                                                     melee ? keeps : keepsHere, true, &killOrder, true);
+                    }
+                    if (why.empty() && !melee && bot != healer && !PlayerbotAI::IsHeal(bot) &&
+                        !MemberCastsHere(bot, target))
+                        why = "the game's sight / range to the target";
+                    return why;
                 };
                 auto found = lead.combatSpots.find(guid);
                 uint32& losMs = lead.combatSpotLosMs[guid];
@@ -3009,8 +3075,12 @@ namespace Leader::Dungeon
                         // a run. A held spot is left only when its Attack target is out of its reach or sight from it
                         // (melee: out of melee reach), or a hazard / cleave / drop-off covers it - not because the
                         // fight's anchor or the target moved a little, nor for the heal reach (its own rule)
+                        // [lead380] the held spot under a ranged member's / healer's feet is judged by the facts
+                        // (the mobs where they stand now), one it still walks to by where the mobs will be
+                        bool const onHeld = !melee && bot->GetExactDist2d(found->second.second.GetPositionX(),
+                                                                          found->second.second.GetPositionY()) <= 2.0f;
                         breaks = LeaderCombatSpotBreaks(bot, botAI, target, found->second.second, melee, zones,
-                                                        keeps, sight, &killOrder);  // [lead210]
+                                                        keeps, sight, &killOrder, onHeld);  // [lead210]
                         if (breaks == "heal reach")
                             breaks.clear();
                         if (breaks.empty() && blindOnSpot)  // [lead218]
@@ -3049,11 +3119,17 @@ namespace Leader::Dungeon
                         Position spot;
                         // [lead137] where the member stands is its spot when it fits there (reaches and sees its
                         // target, safe, in heal reach): no walk
-                        bool const here = !melee && breaks == "first spot" &&
-                                          LeaderCombatSpotValid(bot, botAI, target, bot->GetPosition(), melee, zones,
-                                                                keeps, true);
+                        // [lead380] for every break, not only the first spot, by the cast facts (standsFit), not by the
+                        // band of LeaderCombatSpotValid (b200: 107 healer and 41 caster first spots walked 1-2 yd
+                        // from a place that fit)
+                        bool const here = standsFit();
                         if (here)
+                        {
                             spot = bot->GetPosition();
+                            Decisions().Write(run, "leader", "combat_spot_here", guid, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                                  .Str("target", target->GetName()));
+                        }
                         bool const got =
                             here || slow([&]
                                          {
@@ -3067,13 +3143,16 @@ namespace Leader::Dungeon
                         {
                             // [lead137] [lead375] left for the target it was judged against (the held spot may
                             // still name the one before: b197b 5H the mage went back to the spot it had left)
+                            // [lead380] what its own place fails, judged before the spot it leaves is marked left
+                            std::string const hereFails = here || melee ? std::string("-") : standsFails();
                             if (found != lead.combatSpots.end())
                                 LeaveCombatSpot(lead.combatSpotLeft[guid], {target->GetGUID(), found->second.second});
-                            if (breaks != "first spot")
+                            if (!here && breaks != "first spot")
                                 Decisions().Write(
                                     run, "leader", "combat_respot", guid, bot->GetName(), true,
                                     JsonObject().Str("member", bot->GetName()).Str("why", breaks)
                                         .Str("target", target->GetName())
+                                        .Str("hereFails", hereFails)
                                         .Real("walk", bot->GetExactDist(spot)));
                             // [lead250] b191: the ranged "combat spot" walks were 2439 s of the 8 runs' in-fight
                             // moving; a first spot away from where the member stands logs what its own place fails
@@ -3083,8 +3162,7 @@ namespace Leader::Dungeon
                                     JsonObject()
                                         .Str("member", bot->GetName())
                                         .Str("target", target->GetName())
-                                        .Str("hereFails", LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(),
-                                                                                 melee, zones, keeps, true, &killOrder))
+                                        .Str("hereFails", hereFails)
                                         .Real("walk", bot->GetExactDist(spot))
                                         .Real("targetGap", bot->GetExactDist(target)));
                             lead.combatSpots[guid] = {target->GetGUID(), spot};
@@ -3200,6 +3278,21 @@ namespace Leader::Dungeon
                             lead.combatSpots.erase(guid);
                         found = lead.combatSpots.find(guid);
                     }
+                }
+                // [lead380] a ranged member / healer still walking to its spot that casts from where it stands now (the
+                // mob came within its reach, the tank stopped) stops there: the walk has no reason left
+                if (!melee && found != lead.combatSpots.end() && found->second.first == target->GetGUID() &&
+                    bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
+                        2.0f &&
+                    standsFit())
+                {
+                    Decisions().Write(run, "leader", "combat_spot_here", guid, bot->GetName(), true,
+                                      JsonObject().Str("member", bot->GetName())
+                                          .Str("why", "it casts from where it walks")
+                                          .Str("target", target->GetName())
+                                          .Real("walkLeft", bot->GetExactDist(found->second.second)));
+                    found->second.second = bot->GetPosition();
+                    lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                 }
                 // [lead20] user: «когда танк захватил уже всех с этого радиуса, хил может зайти» - a walk to the
                 // combat spot only once the tank holds every fight mob near the spot and the walk (else it stays)
@@ -3830,8 +3923,13 @@ namespace Leader::Dungeon
                         { return LeaderCastsFrom(bot, judgedOn, at, &killOrder); };
                         // [lead218] where it stands: the game's own sight too (MemberCastsHere); its kept spot under
                         // its feet shoots only if it does
-                        bool const castsNow = LeaderCastsFrom(bot, attackOn, bot->GetPosition(), &killOrder) &&
-                                              bot->IsWithinLOSInMap(attackOn);
+                        // [lead380] b200 rfc-h (8 runs): 296 re-spots "the tank its Attack target runs to" and 144 "its
+                        // Attack target", 104 and 29 of them within 8 yd of the tank - a mob running to the tank was
+                        // judged in its melee reach already. Whether it casts where it stands is judged by the mobs
+                        // where they stand now
+                        bool const castsNow =
+                            LeaderCastsFrom(bot, attackOn, bot->GetPosition(), &killOrder, true) &&
+                            bot->IsWithinLOSInMap(attackOn);
                         auto const kept = lead.combatSpots.find(guid);
                         bool const onKept = kept != lead.combatSpots.end() &&
                                             bot->GetExactDist2d(kept->second.second.GetPositionX(),
@@ -3888,6 +3986,7 @@ namespace Leader::Dungeon
                                                                             : "out of its reach / sight of its "
                                                                               "Attack target")
                                                       .Str("target", attackOn->GetName())
+                                                      .Str("hereFails", MemberCastsFails(bot, attackOn, killOrder))
                                                       .Real("walk", bot->GetExactDist(spot)));
                             }
                         }

@@ -137,11 +137,16 @@ namespace Leader::Fight
     // combat spot rules leave a spot by
     // [lead210] `fightMobs`: and out of the melee reach of every one of them (the game takes a mob off its victim for
     // a member in its melee reach at 110 % of the victim's threat, at range only at 130 %: ThreatManager)
+    // [lead380] `whereTheyStand`: every mob judged where it stands now (the fact for a member standing at `at`), not
+    // where a moving one runs to
     bool LeaderCastsFrom(Player* bot, Unit* target, Position const& at,
-                         std::vector<ObjectGuid> const* fightMobs = nullptr);
+                         std::vector<ObjectGuid> const* fightMobs = nullptr, bool whereTheyStand = false);
     // [lead210] `at` is out of the melee reach (LeaderRangedMinGap) of every living mob of `fightMobs` ([lead214] a
-    // mob on `bot` itself left out, a moving one judged at its victim)
-    bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs);
+    // mob on `bot` itself left out, a moving one judged at its victim - [lead380] or where it stands now when
+    // `whereTheyStand`: the spot under the member's feet is judged by the facts, a spot it walks to by where the
+    // mobs will be)
+    bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs,
+                              bool whereTheyStand = false);
 
     // the AoE rule around the target: forbidden when a crowd-controlled mob or a mob not in the fight (an
     // unpulled pack) stands within the AoE radius (plus a margin) of it
@@ -276,10 +281,12 @@ namespace Leader::Fight
 
     // [lead18] why a held combat spot no longer fits ("" = it does): out of the member's reach of the target
     // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
+    // [lead380] `whereTheyStand`: the fight mobs' melee reach judged where they stand now (LeaderOutOfMobsMelee)
     std::string LeaderCombatSpotBreaks(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot,
                                        bool melee, std::vector<HazardZone> const& zones,
                                        std::function<bool(Position const&)> const& keeps, bool sight,
-                                       std::vector<ObjectGuid> const* fightMobs = nullptr);
+                                       std::vector<ObjectGuid> const* fightMobs = nullptr,
+                                       bool whereTheyStand = false);
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
