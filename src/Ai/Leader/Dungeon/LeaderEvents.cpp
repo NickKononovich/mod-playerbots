@@ -4580,7 +4580,11 @@ namespace Leader::Dungeon
                 if (hunter->IsInCombat())
                     continue;
                 std::string why;
-                if (uint32 const aspect = viperSwitch(hunter, false, why))
+                // [lead456] coordinator 2026-11-02 (Q5): once the leader issued the pull order the fight's rule
+                // judges the aspect (out of Viper at wowsims' 30 % line), so the switch lands before the pull, not
+                // as a GCD in the hunter's opener
+                bool const pullOrdered = lead.commit && lead.commitIssued;
+                if (uint32 const aspect = viperSwitch(hunter, pullOrdered, why))
                     if (Leader::Events::SetExternal(hunter->GetGUID(), aspect, ObjectGuid::Empty))
                         logEvent(hunter, "External", JsonObject().Num("spell", aspect).Str("on", hunter->GetName())
                                                          .Str("why", why));
