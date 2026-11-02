@@ -304,6 +304,10 @@ namespace Leader
             float spent = 0.0f;
             float sec = 0.0f;
             float fightSec = 0.0f;
+            uint32 fights = 0;         // [lead232] fights counted
+            bool boss = false;         // [lead232] a boss fought in this fight
+            float bossSpent = 0.0f;    // [lead232] the same over boss fights only
+            float bossSec = 0.0f;
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
         uint32 manaTickMs = 0;

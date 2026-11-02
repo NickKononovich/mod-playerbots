@@ -316,9 +316,14 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 // in this run's fights, NoteManaRate; else its role's burn rate above) x the fight's seconds (a healer: at least its
 // share of the tank health the fight costs), plus the reserve, minus the mana its own ready cooldowns return
 // (Evocation, Divine Plea). One line for the boss gate, the boss rest and the trash rest; why: the terms
-float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr);
+// [lead232] `boss`: a boss fight - the member's rate measured on boss fights, else its highest rate of one full-length
+// fight (its whole rotation), else the rate of all fights
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false);
 // [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
 void NoteManaRate(ObjectGuid member, float pctPerSec);
+// [lead232] ... on boss fights, and its highest rate of one fight at least as long as this run's mean fight
+void NoteBossManaRate(ObjectGuid member, float pctPerSec);
+void NotePeakManaRate(ObjectGuid member, float pctPerSec);
 // [lead88] the leader notes how far a fight's real length was from its estimate (seconds, either way) for its group;
 // FightManaLine's reserve is the spend over that measured uncertainty (the mean of this run's fights)
 void NoteFightLengthError(ObjectGuid group, float errorSec);

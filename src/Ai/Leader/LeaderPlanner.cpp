@@ -4708,7 +4708,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 return Acore::StringFormat("{} at {:.0f} % health", member->GetName(), member->GetHealthPct());
 
             // [lead51] the mana THIS boss fight takes from this member (FightManaLine), not a fixed line
-            float const manaLine = boss ? RestState::FightManaLine(member, bossSec, 0.0f) : readyMana;
+            float const manaLine = boss ? RestState::FightManaLine(member, bossSec, 0.0f, nullptr, true) : readyMana;
             if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < manaLine)
                 return Acore::StringFormat("{} at {:.0f} % mana (needs {:.0f} %)", member->GetName(),
                                            member->GetPowerPct(POWER_MANA), manaLine);
@@ -5603,7 +5603,7 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
     if (!member || !member->IsAlive())
         return std::string();
     std::string terms;
-    float const readyMana = RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, &terms);
+    float const readyMana = RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, &terms, true);
     if (member->GetHealthPct() < readyHealth)
         return Acore::StringFormat("health {:.0f} % < {:.0f} % for {}", member->GetHealthPct(), readyHealth,
                                    boss->GetName());
@@ -5615,7 +5615,7 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
 
 float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
 {
-    return member && boss ? RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f) : 0.0f;
+    return member && boss ? RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, nullptr, true) : 0.0f;
 }
 
 namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execution
@@ -8015,8 +8015,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             float const nextSec = next.fightSec > 0.0f
                                       ? next.fightSec
                                       : RestState::FIGHT_BASE_SEC + RestState::FIGHT_SEC_PER_MOB * float(next.mobs);
-            float const line = bossPull ? RestState::FightManaLine(healer, NextPullSec(healer, target), 0.0f, &terms)
-                                        : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
+            float const line = bossPull
+                                   ? RestState::FightManaLine(healer, NextPullSec(healer, target), 0.0f, &terms, true)
+                                   : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
             if (healer->GetPowerPct(POWER_MANA) < line)
             {
                 _planNotReadyWhy = Acore::StringFormat("{} at {:.0f} % mana (needs {})", healer->GetName(),

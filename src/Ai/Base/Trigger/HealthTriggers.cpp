@@ -359,6 +359,25 @@ void NoteManaRate(ObjectGuid member, float pctPerSec)
 
 namespace
 {
+    std::unordered_map<uint64, float> bossManaRate;  // [lead232] under manaRateLock
+    std::unordered_map<uint64, float> peakManaRate;  // [lead232] under manaRateLock
+}
+
+void NoteBossManaRate(ObjectGuid member, float pctPerSec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    bossManaRate[member.GetRawValue()] = pctPerSec;
+}
+
+void NotePeakManaRate(ObjectGuid member, float pctPerSec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    float& peak = peakManaRate[member.GetRawValue()];
+    peak = std::max(peak, pctPerSec);
+}
+
+namespace
+{
     struct FightLengthError
     {
         float sum = 0.0f;
@@ -434,16 +453,36 @@ namespace
     }
 }
 
-float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss)
 {
     float rate = RoleManaRate(bot);
     bool measured = false;
+    char const* source = "measured";
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
-        if (auto const found = measuredManaRate.find(bot->GetGUID().GetRawValue()); found != measuredManaRate.end())
+        uint64 const key = bot->GetGUID().GetRawValue();
+        if (auto const found = measuredManaRate.find(key); found != measuredManaRate.end())
         {
             rate = found->second;
             measured = true;
+        }
+        // [lead232] b187 rfc-h: the arcane mage's boss gate "mana 26 % < 26 % = 0.23 %/s (measured) x 105 s" - the
+        // trash rate (few casts per pull) while on a boss it runs its whole rotation (Arcane Blast 14/min vs the sim's
+        // 27). A boss fight reads the rate measured on boss fights, else its highest full-length fight's rate
+        if (boss)
+        {
+            if (auto const found = bossManaRate.find(key); found != bossManaRate.end())
+            {
+                rate = found->second;
+                measured = true;
+                source = "measured on bosses";
+            }
+            else if (auto const peak = peakManaRate.find(key); peak != peakManaRate.end() && peak->second > rate)
+            {
+                rate = peak->second;
+                measured = true;
+                source = "its highest full fight";
+            }
         }
     }
     float need = rate * fightSec;
@@ -503,7 +542,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why)
     float const line = std::clamp(need + reserve - returned, float(sPlayerbotAIConfig.LowMana), 100.0f);
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
-                                   line, rate, measured ? "measured" : "role", fightSec, reserve,
+                                   line, rate, measured ? source : "role", fightSec, reserve,
                                    uncertainSec >= 0.0f && measured
                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
                                        : std::string("flat"),
@@ -594,7 +633,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
             std::string terms;
             // [lead74] the tank: its line with the pick-ups (the same as the planner's tank hold)
             line = PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, &terms)
-                                            : FightManaLine(bot, fightSec, fight.cost, &terms);
+                                            : FightManaLine(bot, fightSec, fight.cost, &terms, fight.boss);
             fightNote = Acore::StringFormat("need {} for the next fight ({}{} mobs)", terms,
                                             fight.boss ? "a boss, " : "", fight.mobs);
         }
@@ -703,7 +742,8 @@ float OwnManaLine(Player* bot, std::string* why)
     {
         float const fightSec =
             fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
-        return PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, why) : FightManaLine(bot, fightSec, fight.cost, why);
+        return PlayerbotAI::IsTank(bot) ? TankManaLine(bot, fight, why)
+                                        : FightManaLine(bot, fightSec, fight.cost, why, fight.boss);
     }
     float const line = PlayerbotAI::IsHeal(bot) ? HEALER_REST_MANA_PCT : REST_MANA_PCT;
     if (why)

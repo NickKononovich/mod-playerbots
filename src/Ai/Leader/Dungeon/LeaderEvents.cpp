@@ -1992,6 +1992,13 @@ namespace Leader::Dungeon
             lead.manaTickMs = fighting ? now : 0;
             std::vector<Player*> spenders = seats;
             spenders.push_back(tank);
+            bool bossFought = false;  // [lead232] a boss among the fight's attackers
+            if (fighting)
+                for (Player* side : spenders)
+                    for (Unit* attacker : side->getAttackers())
+                        if (Creature const* mob = attacker ? attacker->ToCreature() : nullptr;
+                            mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+                            bossFought = true;
             for (Player* member : spenders)
             {
                 if (!member->GetMaxPower(POWER_MANA))
@@ -2009,16 +2016,31 @@ namespace Leader::Dungeon
                         // per fight counted such fights as zero use and raised the rate
                         spend.spent += spend.prev - pct;
                         spend.sec += spend.fightSec;
+                        ++spend.fights;
                         if (spend.sec > 0.0f)
                             RestState::NoteManaRate(member->GetGUID(), std::max(0.0f, spend.spent / spend.sec));
+                        // [lead232] the boss fights' own rate, and a full fight's rate (one at least as long as the
+                        // run's mean fight: its whole rotation, not a few casts on a short pull)
+                        if (spend.boss && spend.fightSec > 0.0f)
+                        {
+                            spend.bossSpent += spend.prev - pct;
+                            spend.bossSec += spend.fightSec;
+                            RestState::NoteBossManaRate(member->GetGUID(),
+                                                        std::max(0.0f, spend.bossSpent / spend.bossSec));
+                        }
+                        if (spend.fightSec > 0.0f && spend.fightSec >= spend.sec / float(spend.fights))
+                            RestState::NotePeakManaRate(member->GetGUID(),
+                                                        std::max(0.0f, (spend.prev - pct) / spend.fightSec));
                     }
                     spend.prev = -1.0f;
                     spend.fightSec = 0.0f;
+                    spend.boss = false;
                     continue;
                 }
                 if (spend.prev < 0.0f)
                     spend.prev = pct;  // the fight's start
                 spend.fightSec += dt;
+                spend.boss |= bossFought;
             }
         }
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(group.LeaderGuid()))
