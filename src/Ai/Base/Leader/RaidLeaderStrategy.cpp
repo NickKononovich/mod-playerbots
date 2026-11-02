@@ -6,21 +6,22 @@
 
 #include "RaidLeaderStrategy.h"
 
+#include <algorithm>
+#include <map>
+#include <mutex>
+#include <string_view>
+
 #include "Action.h"
-#include "Group.h"
 #include "AttackAction.h"         // [lead15] the own-decision check
 #include "GenericSpellActions.h"  // [lead15] CastBuffSpellAction / CastCrowdControlSpellAction
-#include "MovementActions.h"      // [lead15]
-#include "TestRunnerStrategy.h"   // [lead17] the harness's waypoint for a member
-#include "LeaderOrders.h"  // [lead15] the leader's member events
+#include "Group.h"
+#include "LeaderOrders.h"     // [lead15] the leader's member events
+#include "MovementActions.h"  // [lead15]
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
 #include "SpellInfo.h"  // [lead188] the dispel types
 #include "SpellMgr.h"
-
-#include <map>
-#include <mutex>
-#include <string_view>
+#include "TestRunnerStrategy.h"  // [lead17] the harness's waypoint for a member
 
 namespace
 {
@@ -200,6 +201,121 @@ namespace
         return false;
     }
 
+    // [lead300] a cast on another member that is the leader's External (its "leader external" executes it): the
+    // member's own pick of these is off. The leader issues Misdirection / Tricks, Pain Suppression / Hand of
+    // Sacrifice, Hand of Protection, Innervate, Hymn of Hope, Divine Hymn, Heroism / Bloodlust, Power Infusion; the
+    // others here have no leader rule yet (LEADER_OWNERSHIP_AUDIT.md) and stay off.
+    bool IsOwnExternal(std::string const& name)
+    {
+        static constexpr std::string_view externals[] = {"power infusion",
+                                                         "power infusion on party",
+                                                         "pain suppression",
+                                                         "pain suppression on party",
+                                                         "pain suppression on spiking tank",
+                                                         "guardian spirit on party",
+                                                         "guardian spirit on spiking tank",
+                                                         "hand of sacrifice on main tank",
+                                                         "hand of sacrifice on spiking tank",
+                                                         "hand of protection on party",
+                                                         "hand of salvation on party",
+                                                         "hand of freedom on party",
+                                                         "misdirection on main tank",
+                                                         "tricks of the trade on main tank",
+                                                         "hymn of hope",
+                                                         "divine hymn",
+                                                         "lay on hands on party",
+                                                         "focus magic on party",
+                                                         "divine sacrifice",
+                                                         "aura mastery",
+                                                         "mana tide totem",
+                                                         "tranquility",
+                                                         "innervate on healer",
+                                                         "soulstone master",
+                                                         "soulstone tank",
+                                                         "soulstone healer",
+                                                         "soulstone auto",
+                                                         "ss master",
+                                                         "ss tank",
+                                                         "ss healer",
+                                                         "ss auto"};
+        for (std::string_view external : externals)
+            if (name == external)
+                return true;
+        return false;
+    }
+
+    // [lead300] the tank's own protection tools on a member (LEADER_TANK_OWNS_FIGHT): no leader External
+    bool IsTankTool(std::string const& name)
+    {
+        return name == "intervene" || name == "intervene on attacked group member" || name == "vigilance";
+    }
+
+    // [lead300] a battle resurrection is the leader's (no leader rule yet): off in a fight
+    bool IsBattleRes(std::string const& name)
+    {
+        return name == "rebirth" || name == "bear battle res" || name == "raise ally";
+    }
+
+    // [lead300] consumables, pulls and raid marks are the leader's decisions
+    bool IsLeaderConsumable(std::string const& name)
+    {
+        return name == "use raid flask" || name == "use food buff" || name == "use pre pull potion" ||
+               name == "use soulwell" || name == "click soul portal";
+    }
+
+    bool IsDungeonPull(std::string const& name)
+    {
+        static constexpr std::string_view pulls[] = {
+            "dungeon boss room pull out", "krik'thir watcher pull", "novos pull",
+            "mechanar bridge pull",       "mgt selin room pull",    "oc pull boss",
+            "toc pull argent soldiers"};
+        for (std::string_view pull : pulls)
+            if (name == pull)
+                return true;
+        return false;
+    }
+
+    bool IsRaidMark(std::string const& name)
+    {
+        static constexpr std::string_view marks[] = {"mark rti",
+                                                     "clear auto cc mark",
+                                                     "tank kill marks",
+                                                     "gargolmar mark hellfire watchers",
+                                                     "omor mark fiendish hound",
+                                                     "vazruden mark boss",
+                                                     "time-lost controller mark charming totem",
+                                                     "darkweaver syth mark elementals",
+                                                     "anzu alternate marks on boss",
+                                                     "mgt delrissa cc mark"};
+        for (std::string_view mark : marks)
+            if (name == mark)
+                return true;
+        return false;
+    }
+
+    // [lead300] the bot itself or its own pet / guardian / totem
+    bool OwnUnit(Player* self, Unit* unit)
+    {
+        return unit && (unit == self || unit->GetOwnerGUID() == self->GetGUID() ||
+                        unit->GetCharmerOrOwnerGUID() == self->GetGUID());
+    }
+
+    bool OwnTargetName(Action* action)
+    {
+        std::string const target = action->GetTargetName();
+        return target == "self target" || target == "pet target";
+    }
+
+    // [lead300] a hostile unit the leader named for this member: its Attack target, the kill order after it, its
+    // interrupt / CC / flee stop / threat assignment
+    bool LeaderNamed(Leader::MemberEvents const& events, ObjectGuid guid)
+    {
+        if (guid == events.target || guid == events.interrupt || guid == events.cc || guid == events.fleeStop ||
+            guid == events.threatTarget)
+            return true;
+        return std::find(events.killOrder.begin(), events.killOrder.end(), guid) != events.killOrder.end();
+    }
+
     bool OwnDecisionOff(Player* self, Action* action, std::string const& name, Leader::MemberEvents const& events,
                         bool combat, bool gate = false)
     {
@@ -219,6 +335,40 @@ namespace
         // and the leader's readiness held the Oggleflint pull on "Rthunaa buffing". Closing the window is no decision
         if (in({"ready reply", "finish ready check"}))
             return false;
+        // [lead300] LEADER_OWNERSHIP_AUDIT.md: the domains the leader owns that the member still decided itself -
+        // externals, battle resurrections, the soulstone on others, raid marks, consumables, pulls, the wipe call
+        if (IsOwnExternal(name) || IsTankTool(name) || IsRaidMark(name) || IsLeaderConsumable(name) ||
+            IsDungeonPull(name) || IsPullStarter(name) || in({"wipe escape", "mount"}) || (combat && IsBattleRes(name)))
+            return true;
+        if (name == "innervate" && !gate)  // its own mana tool on itself stays (rot38)
+            if (Unit* onWhom = action->GetTarget(); onWhom && onWhom != self)
+                return true;
+        // [lead300] the leader's live Attack target is not dropped
+        if (name == "drop target" && events.attack == Leader::AttackEvent::Attack)
+            if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(self))
+                if (Unit* current = selfAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+                    current && current->IsAlive() && current->GetGUID() == events.target)
+                    return true;
+        // [lead300] a spell on an enemy the leader did not name for this member (a multi-DoT, a group member's
+        // attacker) or on its DontAttack mob: the target is the leader's
+        if (!gate && events.attack == Leader::AttackEvent::Attack && dynamic_cast<CastSpellAction*>(action) &&
+            !dynamic_cast<CastHealingSpellAction*>(action) && !dynamic_cast<CastBuffSpellAction*>(action))
+            if (Unit* onWhom = action->GetTarget();
+                onWhom && onWhom != self && !onWhom->GetGUID().IsPlayer() && self->IsHostileTo(onWhom) &&
+                !OwnUnit(self, onWhom) &&
+                (onWhom->GetGUID() == events.dontAttack || !LeaderNamed(events, onWhom->GetGUID())))
+                return true;
+        // [lead300] a damage dealer's buff on another member in a fight: the leader's (Prepare / its External)
+        if (combat && !PlayerbotAI::IsHeal(self) && dynamic_cast<CastBuffSpellAction*>(action))
+        {
+            if (gate)
+            {
+                if (!OwnTargetName(action))
+                    return true;
+            }
+            else if (Unit* buffTarget = action->GetTarget(); buffTarget && !OwnUnit(self, buffTarget))
+                return true;
+        }
         // [lead20] Rest is eat / drink only: a buff stands the drinker up
         bool const prepareCmd = events.ready == Leader::ReadyEvent::Prepare ||
                                 events.ready == Leader::ReadyEvent::ReadyCheck;
@@ -285,15 +435,15 @@ namespace
         // [lead36] b85 rfc-h: the enhancement shaman cast "lesser healing wave on party" for long stretches under
         // the leader's Attack - a damage dealer heals another member only on a leader Heal command (none exists for a
         // damage dealer yet): its own heal on itself stays (an emergency personal save)
-        if (combat && !PlayerbotAI::IsHeal(self) && events.attack == Leader::AttackEvent::Attack &&
-            dynamic_cast<CastHealingSpellAction*>(action))
+        // [lead300] ... in and out of a fight, under any command (its own pet stays its own)
+        if (!PlayerbotAI::IsHeal(self) && dynamic_cast<CastHealingSpellAction*>(action))
         {
             if (gate)
             {
-                if (action->GetTargetName() != "self target")
+                if (!OwnTargetName(action))
                     return true;
             }
-            else if (Unit* healTarget = action->GetTarget(); healTarget && healTarget != self)
+            else if (Unit* healTarget = action->GetTarget(); healTarget && !OwnUnit(self, healTarget))
                 return true;
         }
         // [lead188] a damage dealer's dispel on another member waits while a group healer removes that type
@@ -384,8 +534,16 @@ namespace
             else if (Unit* buffTarget = action->GetTarget(); buffTarget && buffTarget != self)
                 return true;
         }
+        // [lead300] out of combat with no command at all (the engine still runs in water, PlayerbotAI's idle skip):
+        // nothing of its own, the leader's buff pass (forceRebuff) aside
+        if (!combat && events.move == Leader::MoveEvent::None && events.ready == Leader::ReadyEvent::None &&
+            events.attack == Leader::AttackEvent::None && !events.loot && !events.externalSpell && !in({"stand up"}))
+            if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(self); selfAI && !selfAI->forceRebuff.IsPending())
+                return true;
         // out of combat a member told only to walk / stand does just that
+        // [lead300] a Hard move (lead371) has no side goal; a Soft one allows the leader's other rules
         if (!combat && !prepare && !events.loot && events.attack == Leader::AttackEvent::None &&
+            events.moveMode == Leader::MoveMode::Hard &&
             (events.move == Leader::MoveEvent::MoveTo || events.move == Leader::MoveEvent::StandAt ||
              events.move == Leader::MoveEvent::Hold || events.move == Leader::MoveEvent::Follow) &&
             !in({"stand up", "reach party member to resurrect"}) &&
@@ -481,9 +639,9 @@ void RaidLeader::CheckOwnDecision(PlayerbotAI* botAI, Action* action, Unit* vict
             note("cc", "crowd control without a leader CC assignment");
         return;
     }
-    if (in({"innervate", "power infusion", "pain suppression", "hand of sacrifice", "hand of protection",
-            "misdirection", "misdirection on party", "tricks of the trade", "tricks of the trade on main tank",
-            "hymn of hope", "divine hymn", "hand of salvation", "hand of freedom"}))
+    if (IsOwnExternal(name) || IsBattleRes(name) ||  // [lead300] the gate's one list
+        in({"innervate", "hand of sacrifice", "hand of protection", "misdirection", "misdirection on party",
+            "tricks of the trade", "hand of salvation", "hand of freedom"}))
     {
         // [lead169] b179 rfc-h 5F 650.5 s: the resto druid's Innervate on itself (its own mana tool, kept by rot38
         // like Evocation) counted as an external - an external is a cast on another member
@@ -545,6 +703,23 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
                 if (!startOn || !startOn->IsInCombat())
                     return 0.0f;
             }
+        // [lead300] ... and the dungeon tactics' own boss / room pulls and the chat pulls
+        std::string const& pull = action->getName();
+        if (IsDungeonPull(pull) || pull == "pull my target" || pull == "pull rti target" || pull == "pull start" ||
+            pull == "reach pull")
+            return 0.0f;
+    }
+
+    // [lead300] LEADER_OWNERSHIP_AUDIT.md: the led tank's externals (not its own protection tools), consumables and
+    // its buffs on others out of a fight outside the leader's buff pass (forceRebuff) are the leader's
+    if (Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot))
+    {
+        std::string const& name = action->getName();
+        if (IsOwnExternal(name) || IsLeaderConsumable(name) || (bot->IsInCombat() && IsBattleRes(name)))
+            return 0.0f;
+        if (!bot->IsInCombat() && !botAI->forceRebuff.IsPending() && dynamic_cast<CastBuffSpellAction*>(action))
+            if (Unit* buffTarget = action->GetTarget(); buffTarget && !OwnUnit(bot, buffTarget))
+                return 0.0f;
     }
 
     // [lead17] LEADER_TANK_OWN_PICKS_OFF: the led tank's own next pack and own hazard step are off in every state
