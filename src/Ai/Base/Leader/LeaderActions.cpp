@@ -641,6 +641,18 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // work: the core movement carries it, the rotation runs
         float const tolerance = std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE);
         LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
+        // [lead249] b191 rfc-h (8 runs): each melee damage dealer walked 37-65 s of its fights within 5 yd of the
+        // tank's target and already behind it (out of its front arc, where the game parries / blocks) - the walk to
+        // the chase's place, started when the mob turned, carried on to that place. In reach behind the mob that walk
+        // has nothing left to reach: it stops (a walk to elsewhere, a hazard's, is not this one)
+        if (bot->isMoving() && bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target) &&
+            !target->HasInArc(float(M_PI), bot) &&
+            target->GetExactDist2d(last.lastMoveToX, last.lastMoveToY) <=
+                target->GetCombatReach() + bot->GetCombatReach() + tolerance)
+        {
+            bot->StopMoving();
+            return false;
+        }
         if (bot->isMoving() && std::hypot(last.lastMoveToX - x, last.lastMoveToY - y) <= tolerance)
             return false;
         if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target))
