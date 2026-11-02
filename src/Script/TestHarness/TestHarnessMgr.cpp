@@ -1267,7 +1267,9 @@ namespace TestHarness
         bool mixed = false;
         for (Member const& member : party.members)
         {
-            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            // [lead443] FindPlayer is null while a member is out of the world in a far teleport (the homebind hop out
+            // of a stale instance above): that is not offline, the check below waits for it
+            Player* bot = ObjectAccessor::FindConnectedPlayer(member.guid);
             if (!bot)
             {
                 Finish(party, "failed", member.name + " offline before entering");
