@@ -723,9 +723,10 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             bot->StopMoving();
             bot->GetMotionMaster()->Clear();
         }
+        std::string const guard = LastMoveRefusal();  // [lead235] the MoveTo guard that refused, by name
         refusal = WalkRefusal(events.spot);
         if (refusal.empty())
-            refusal = "another guard (ledge, ground effect)";
+            refusal = guard.empty() ? std::string("another guard (ledge, ground effect)") : guard;
         // [lead29] a member never refuses a leader command: the leader validated the spot, the member walks the plain
         // path to it; the refusal is a blocker (member_refusal) - the leader's model and the member's disagree
         // honest play: never through a closed door (that one stays refused - the leader's check missed it)
