@@ -9,6 +9,7 @@
 #include "LeaderConsumables.h"  // [lead344]
 #include "LeaderRest.h"  // CountRestItems
 #include "LeaderPrepull.h"  // [lead270]
+#include "LeaderSupport.h"  // [lead403]
 
 #include "LeaderReports.h"
 #include "LeaderEvents.h"
@@ -435,17 +436,21 @@ namespace Leader::Dungeon
                         if (Leader::MemberEvents events;
                             Leader::Events::Get(order.caster, events) && events.externalSpell == order.spell)
                             workers += (workers.empty() ? "" : ", ") + std::string("a buff order");
+                    // [lead403] [lead405] the leader's soulstone / Ritual of Souls / Soulwell orders still work
+                    std::string const support = Leader::Support::BuffPassWork(group);
+                    if (!support.empty())
+                        workers += (workers.empty() ? "" : ", ") + support;
                     waitingFor(workers.empty() ? missing : workers);
                     // [lead136] b162 20261101-121409 (271 s: 12 s "every buff the group can give is present",
                     // waited for "Rtdruaa rebuff window open"; 73 s over the run): every buff present (lasting the
                     // next fight) ends the step at once - an open rebuff window with nothing missing to cast is no
                     // work; with a buff missing the step waits for the casters' passes
                     std::string why;
-                    if (missing.empty())
+                    if (missing.empty() && support.empty())
                         why = "every buff the group can give is present";
                     else if (workers.empty())
                         why = "every caster's buff pass ended, missing: " + missing;
-                    if (missing.empty())
+                    if (missing.empty() && support.empty())
                         wait.waitedFor.clear();
                     if (why.empty())
                         break;
@@ -553,6 +558,12 @@ namespace Leader::Dungeon
                     }
                     if (why.empty())
                         break;
+                    // [lead403] [lead405] the leader's soulstone / Ritual of Souls / Soulwell orders end first
+                    if (std::string const support = Leader::Support::BuffPassWork(group); !support.empty())
+                    {
+                        waitingFor(support);
+                        break;
+                    }
                     // [lead270] the pass is the boss's preparation and the group walks to the pull after it: a prepull
                     // Army not timed into it yet starts now, and its channel ends before the pass does
                     if (Creature* boss = route.targetIsBoss && !route.target.IsEmpty()

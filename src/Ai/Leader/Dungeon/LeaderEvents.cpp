@@ -54,6 +54,7 @@
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderPrepull.h"      // [lead270]
 #include "LeaderTrapWeave.h"    // [lead271]
+#include "LeaderSupport.h"      // [lead400] .. [lead405]
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -2414,6 +2415,10 @@ namespace Leader::Dungeon
                                               .Str("why", "a readiness gap on health"));
         }
 
+        // [lead400] .. [lead405] dispels, the resurrections out of a fight, the potions, the buff pass's soulstone /
+        // Ritual of Souls / Soulwell: the leader's (the members' own are off)
+        Leader::Support::Tick(group, tank, seats, healer, fighting, logEvent);
+
         uint32 seat = 0;
         for (Player* bot : seats)
         {
@@ -3940,6 +3945,28 @@ namespace Leader::Dungeon
             uint32 hurt = 0;
             for (Player* bot : everyone)
                 hurt += bot->GetHealthPct() < 50.0f ? 1 : 0;
+            // [lead401] a battle resurrection: at once when the fight cannot go on without the dead member (the only
+            // healer), else by the verdict the burn cooldowns get (its recharge against the next boss that needs it)
+            if (Leader::Support::BattleRes res; Leader::Support::PickBattleRes(group, tank, seats, healer, told, res))
+            {
+                std::string why = res.why;
+                bool allowed = res.needed;
+                if (!allowed)
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(res.spell))
+                        allowed = cooldownVerdict(
+                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f, why);
+                std::string const note = "battle resurrection of " + res.dead->GetName() + ": " + why;
+                std::string& logged = lead.support.battleResLogged[res.dead->GetGUID()];
+                if (logged != note)
+                {
+                    logged = note;
+                    Decisions().Write(run, "leader", "battle_res", res.dead->GetGUID(), res.dead->GetName(), allowed,
+                                      JsonObject().Str("dead", res.dead->GetName()).Str("caster", res.caster->GetName())
+                                          .Num("spell", res.spell).Bool("allowed", allowed).Str("why", why));
+                }
+                if (allowed)
+                    tell(res.caster, res.spell, res.dead, note.c_str());
+            }
             // [lead197] b181 5E: Tricks of the Trade held 223 times "waiting for the leader's assignment" - the
             // leader told it only in the pull's opening window. Misdirection / Tricks put the caster's threat on the
             // tank (headroom for everyone): on the tank whenever one is ready in the fight

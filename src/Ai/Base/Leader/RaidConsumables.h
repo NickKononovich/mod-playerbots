@@ -53,6 +53,13 @@ namespace RaidConsumables
     ObjectGuid FindPrePullPotion(Player* bot);
 
     Item* FindHealthstone(Player* bot);
+
+    // [lead402] the bag potion that restores mana (`mana`) or health most per use and can be used now: its item
+    // entry and the mean amount its spell restores (base points plus half the dice); 0: none
+    uint32 FindRestorePotion(Player* bot, bool mana, uint32& amount);
+    // [lead402] the bag potion whose buff serves the bot's role best (the flask scoring on its spell's auras), not a
+    // restore: its item entry and its spell; 0: none. Any dungeon (not only where Allowed)
+    uint32 FindBuffPotion(Player* bot, uint32& spell);
     bool IsSoulwell(GameObject* go);
     bool IsSoulPortal(GameObject* go);
     bool IsRefreshmentTable(GameObject* go);

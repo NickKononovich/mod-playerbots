@@ -414,6 +414,29 @@ namespace Leader
         std::map<ObjectGuid, std::string> trapWeaveLogged;  // the last verdict logged per hunter
         // [lead276] a hunter's refused trap walk (its target and spot): no new weave until either changes
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> trapWeaveRefused;
+        // [lead400] .. [lead405] the leader's support decisions (Fight/LeaderSupport.h)
+        struct Support
+        {
+            std::map<std::pair<ObjectGuid, uint32>, ObjectGuid> dispellers;  // (member, debuff spell) -> dispeller
+            std::set<std::pair<ObjectGuid, uint32>> dispelFailed;  // (dispeller, debuff spell): it reported a refusal
+            std::set<std::pair<ObjectGuid, uint32>> dispelNoneLogged;  // (member, debuff spell) nobody can remove
+            std::map<ObjectGuid, ObjectGuid> resurrecters;  // dead member -> its resurrecter (out of a fight)
+            std::set<std::pair<ObjectGuid, ObjectGuid>> resFailed;  // (resurrecter, dead) refused for this death
+            std::set<ObjectGuid> resNoneLogged;  // dead members nobody can raise, logged once per death
+            ObjectGuid prepotBoss;                // the boss the pre-pull potions are for
+            std::set<ObjectGuid> prepotDone;      // members done (used it, have none, or refused) for that boss
+            std::map<ObjectGuid, std::string> potionLogged;  // the last in-fight potion verdict logged per member
+            uint32 fightStartMs = 0;               // the fight's start (the members' measured damage taken rate)
+            std::map<ObjectGuid, uint64> takenAtStart;
+            std::set<std::pair<ObjectGuid, ObjectGuid>> wellTried;  // (member, Soulwell) it used without a stone
+            std::set<ObjectGuid> wellClose;  // members told to use the well that stood in its reach last tick
+            uint32 soulstonePass = 0;  // the buff pass (its start) the soulstone was given or given up in
+            uint32 ritualPass = 0;     // the buff pass the Ritual of Souls was given up in (refused)
+            std::map<ObjectGuid, std::string> battleResLogged;  // the last battle resurrection verdict per dead
+            std::string buffWork;  // what the soulwell / soulstone orders still do (the buff pass waits for it)
+            std::string supportLogged;  // the last buff-pass support verdict logged
+        };
+        Support support;
     };
 }
 

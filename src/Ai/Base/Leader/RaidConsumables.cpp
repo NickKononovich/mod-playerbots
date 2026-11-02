@@ -6,6 +6,8 @@
 
 #include "RaidConsumables.h"
 
+#include <algorithm>
+
 #include "Bag.h"
 #include "GameObject.h"
 #include "Group.h"
@@ -331,6 +333,61 @@ namespace RaidConsumables
                        });
 
         return found;
+    }
+
+    uint32 FindRestorePotion(Player* bot, bool mana, uint32& amount)
+    {
+        uint32 best = 0;
+        amount = 0;
+        ForEachBagItem(bot,
+                       [&](Item* item)
+                       {
+                           if (!CanUse(bot, item) || item->GetTemplate()->SubClass != ITEM_SUBCLASS_POTION)
+                               return;
+                           uint32 const spellId = UseSpellOf(item->GetTemplate());
+                           SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+                           if (!info || bot->HasSpellCooldown(spellId))
+                               return;
+                           uint32 restores = 0;
+                           for (SpellEffectInfo const& effect : info->Effects)
+                               if ((mana && effect.Effect == SPELL_EFFECT_ENERGIZE && effect.MiscValue == POWER_MANA) ||
+                                   (!mana && effect.Effect == SPELL_EFFECT_HEAL))
+                                   restores += uint32(std::max(0, effect.BasePoints + (effect.DieSides + 1) / 2));
+                           if (restores > amount)
+                           {
+                               amount = restores;
+                               best = item->GetEntry();
+                           }
+                       });
+        return best;
+    }
+
+    uint32 FindBuffPotion(Player* bot, uint32& spell)
+    {
+        ConsumableRole const role = RoleOf(bot);
+        Item* best = nullptr;
+        int32 bestScore = 0;
+        spell = 0;
+        ForEachBagItem(bot,
+                       [&](Item* item)
+                       {
+                           if (!CanUse(bot, item) || item->GetTemplate()->SubClass != ITEM_SUBCLASS_POTION)
+                               return;
+                           uint32 const spellId = UseSpellOf(item->GetTemplate());
+                           SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+                           if (!info || bot->HasSpellCooldown(spellId) || info->HasEffect(SPELL_EFFECT_HEAL) ||
+                               info->HasEffect(SPELL_EFFECT_ENERGIZE))
+                               return;
+                           int32 const score = SpellScore(info, role);
+                           if (score > bestScore || (score == bestScore && best && score > 0 &&
+                                                     item->GetTemplate()->ItemLevel > best->GetTemplate()->ItemLevel))
+                           {
+                               best = item;
+                               bestScore = score;
+                               spell = spellId;
+                           }
+                       });
+        return best ? best->GetEntry() : 0;
     }
 
     bool IsSoulwell(GameObject* go)
