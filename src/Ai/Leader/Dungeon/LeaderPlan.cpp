@@ -1135,7 +1135,23 @@ namespace Leader::Dungeon
                 if (gate)
                     waitFor = LeaderSpotsWait(group, tank);
                 // [lead77] pull readiness includes positions: no order while a member trails or is blocked
-                if (waitFor.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
+                // [lead368] b200 rfc-h 5E 630.8-870 s: the committed engage of Searing Blade Enforcer 77's pack (8
+                // mobs) waited "a member cannot follow" on Rtpriac / Rthunab / Rtlocab, whose walks along with the
+                // tank would wake a Searing Blade Cultist - of that same pack. A block by a mob of this pull is
+                // resolved by the pull itself (lead364 / lead365): only a block by a mob outside it holds the order
+                auto const ofThisPull = [&committed, &lead](ObjectGuid const& blocker)
+                {
+                    return !blocker.IsEmpty() &&
+                           (blocker == lead.commitMob || blocker == committed.lookTarget ||
+                            blocker == committed.planTarget || blocker == committed.attack ||
+                            std::find(committed.pack.begin(), committed.pack.end(), blocker) != committed.pack.end() ||
+                            std::find(committed.verdictPack.begin(), committed.verdictPack.end(), blocker) !=
+                                committed.verdictPack.end());
+                };
+                bool const blockedOutside =
+                    std::any_of(lead.groupBlockedBy.begin(), lead.groupBlockedBy.end(),
+                                [&ofThisPull](auto const& blocked) { return !ofThisPull(blocked.second); });
+                if (waitFor.empty() && (!lead.trailing.empty() || blockedOutside))
                     waitFor = "a member cannot follow (trailing / its walk blocked)";
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),

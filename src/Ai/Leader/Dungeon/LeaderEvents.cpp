@@ -1652,7 +1652,13 @@ namespace Leader::Dungeon
         for (auto it = lead.groupBlockedBy.begin(); it != lead.groupBlockedBy.end();)
         {
             Leader::MemberEvents blocked;
-            bool const holds = Leader::Events::Get(it->first, blocked) && blocked.move == Leader::MoveEvent::StandAt &&
+            // [lead368] ... and while the mob in the way is there to wake: idle and alive (dead, gone or fighting,
+            // the walk it blocked is clear of it)
+            Creature const* blocker = it->second.IsEmpty() ? nullptr : map->GetCreature(it->second);
+            bool const blockerStands =
+                it->second.IsEmpty() || (blocker && blocker->IsAlive() && !blocker->IsInCombat());
+            bool const holds = blockerStands && Leader::Events::Get(it->first, blocked) &&
+                               blocked.move == Leader::MoveEvent::StandAt &&
                                blocked.moveWhy.rfind("along with the tank", 0) == 0 &&
                                blocked.moveWhy.find(": stays (") != std::string::npos;
             if (holds)
