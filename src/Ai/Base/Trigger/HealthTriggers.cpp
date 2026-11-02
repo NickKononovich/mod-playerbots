@@ -365,15 +365,18 @@ namespace
     {
         float sum = 0.0f;
         uint32 fights = 0;
-        float estimatedSum = 0.0f;  // [lead362] the plan's estimates of these fights
-        float realSum = 0.0f;       // [lead362] their real lengths
+        float estimatedSq = 0.0f;  // [lead363] the sum of estimate x estimate over these fights
+        float crossSum = 0.0f;     // [lead363] the sum of estimate x real length
     };
     std::unordered_map<uint64, FightLengthError> fightLengthErrors;  // [lead88] by group, under manaRateLock
 
     // [lead362] the group's real / estimated fight seconds so far (1 before a fight is measured); under manaRateLock
+    // [lead363] b197: real / estimated sums let one near-zero estimate decide it - the first fight estimated 0.02 s
+    // and lasted 13.2 s, the scale went to ~770, the next fight's error 4334 s, "x 2173.6 s uncertainty", every member
+    // held to 100 %. The least-squares scale (real ~ scale x estimate): a fight without an estimate weighs nothing
     float EstimateScale(FightLengthError const& error)
     {
-        return error.estimatedSum > 0.0f && error.realSum > 0.0f ? error.realSum / error.estimatedSum : 1.0f;
+        return error.estimatedSq > 0.0f && error.crossSum > 0.0f ? error.crossSum / error.estimatedSq : 1.0f;
     }
 }
 
@@ -385,10 +388,12 @@ void NoteFightLengthError(ObjectGuid group, float estimatedSec, float realSec)
 {
     std::lock_guard<std::mutex> lock(manaRateLock);
     FightLengthError& error = fightLengthErrors[group.GetRawValue()];
-    error.sum += std::fabs(realSec - estimatedSec * EstimateScale(error));
+    // [lead363] the reserve covers a fight that runs longer than its scaled estimate - a shorter one needs no mana
+    // beyond the estimate's: the mean overrun, never more than the seconds the fights really ran past it
+    error.sum += std::max(0.0f, realSec - estimatedSec * EstimateScale(error));
     ++error.fights;
-    error.estimatedSum += estimatedSec;
-    error.realSum += realSec;
+    error.estimatedSq += estimatedSec * estimatedSec;
+    error.crossSum += estimatedSec * realSec;
 }
 
 namespace
