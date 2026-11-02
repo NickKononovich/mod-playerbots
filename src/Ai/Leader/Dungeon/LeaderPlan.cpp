@@ -1293,8 +1293,16 @@ namespace Leader::Dungeon
                     auto const found = group.PathVerdicts().find(guid);
                     // the route's target, the patrol the leader pulls and the pack it must clear are the path's
                     // [lead167] and the mob the walk in to the pull wakes (the walk crosses it)
+                    // [lead364] b197 rfc-h 5E 847-1095 s: Rtlocab / Rthunab's walk along with the tank was refused
+                    // ("the walk would wake Searing Blade Enforcer"), lead77 made the Enforcer the pick - and this
+                    // verdict, "off the route", dropped it: "every pick here is refused or unreachable: the route
+                    // walk goes on", while the route walk waits for the blocked members (lead77) and the patrol
+                    // pull halts it. The mob that blocks the group's walk is on the group's path by that fact
+                    bool const blocksGroup =
+                        std::any_of(lead.groupBlockedBy.begin(), lead.groupBlockedBy.end(),
+                                    [&guid](auto const& blocked) { return blocked.second == guid; });
                     bool const on = guid == group.RouteTarget() || guid == lead.intercept || guid == lead.wholePack ||
-                                    guid == lead.walkWakesFirst ||
+                                    guid == lead.walkWakesFirst || blocksGroup ||
                                     (found != group.PathVerdicts().end() && found->second.on);
                     auto const logged = group.PathVerdictLogged().find(guid);
                     if (found != group.PathVerdicts().end() &&
@@ -1306,7 +1314,8 @@ namespace Leader::Dungeon
                                                 : guid == lead.wholePack ? std::string("the pack the route must clear")
                                                 : guid == lead.walkWakesFirst
                                                     ? std::string("the walk in to the pull wakes it")
-                                                    : found->second.why;
+                                                : blocksGroup ? std::string("it blocks the group's walk")  // [lead364]
+                                                              : found->second.why;
                         Decisions().Write(run, "leader", "path_verdict", guid,
                                                       mob ? mob->GetName() : std::string("?"), true,
                                                       JsonObject().Str("verdict", on ? "on_path" : "off_path")
