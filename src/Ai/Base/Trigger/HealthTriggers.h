@@ -278,7 +278,27 @@ constexpr float HUNTER_BURN_PCT_PER_SEC = 1.5f;
 constexpr float MELEE_BURN_PCT_PER_SEC = 1.5f;  // a melee mana user (enhancement shaman, retribution paladin)
 constexpr float TANK_BURN_PCT_PER_SEC = 1.4f;   // a tank on mana (protection paladin)
 // A healer's mana per tank health the pack lands over the fight (the planner's cost): 11.0 % (same windows).
+// [lead258] RestState's own lines read HealerPctPerTankHealth (the healer's spells, its measured healing per mana);
+// this stays for the leader's rest computation in LeaderEvents only.
 constexpr float HEALER_PCT_PER_TANK_HEALTH = 11.0f;
+// [lead258] What a healer heals, from its spell data and its measured fights: the best rate of a heal it knows (the
+// heal's amount with its spell power on the target, over the longest of its cast, the global cooldown, its own
+// cooldown and a heal over time's duration), the most health per mana of one, and the time between two heals of
+// that rate landing. `healPerMana`: the dungeon's measured effective healing per mana spent once a fight measured it.
+struct HealerFacts
+{
+    float hps = 0.0f;
+    float healPerMana = 0.0f;
+    float gapSec = 0.0f;
+    float maxMana = 0.0f;
+    bool measured = false;  // healPerMana (and hps, if higher) from this dungeon's fights
+    std::string spell;      // the best rate's heal (logged)
+};
+HealerFacts HealerThroughput(Player* healer, Unit* target);
+// [lead258] the leader notes a healer's effective healing and its net mana spent over a fight in this dungeon
+void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec);
+// [lead258] a healer's mana (% of its max) per tank health it heals: the group tank's health over its health per mana
+float HealerPctPerTankHealth(Player* healer);
 // Fight length when the plan gives only its mob count: median [pull check] duration by mobs that came, all kept
 // logs of 2026-10-24 (N 4883): 1 -> 10 s, 2 -> 16, 3 -> 19, 4 -> 22, 5 -> 24, 6 -> 27, 7 -> 30.
 constexpr float FIGHT_BASE_SEC = 6.0f;

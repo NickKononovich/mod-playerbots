@@ -311,7 +311,7 @@ float PredictedManaNeed(Player* bot, NextFight const& fight, float& fightSec)
 {
     fightSec = fight.fightSec > 0.0f ? fight.fightSec : FIGHT_BASE_SEC + FIGHT_SEC_PER_MOB * float(fight.mobs);
     if (PlayerbotAI::IsHeal(bot))
-        return std::max(HEALER_BURN_PCT_PER_SEC * fightSec, HEALER_PCT_PER_TANK_HEALTH * fight.cost);
+        return std::max(HEALER_BURN_PCT_PER_SEC * fightSec, HealerPctPerTankHealth(bot) * fight.cost);
     if (PlayerbotAI::IsCaster(bot))
         return CASTER_BURN_PCT_PER_SEC * fightSec;
     if (!PREDICT_DRINK_ALL_ROLES)
@@ -391,6 +391,149 @@ void NoteFightLengthError(ObjectGuid group, float errorSec)
     FightLengthError& error = fightLengthErrors[group.GetRawValue()];
     error.sum += errorSec;
     ++error.fights;
+}
+
+namespace
+{
+struct MeasuredHealing
+{
+    uint32 instanceId = 0;
+    float healed = 0.0f;
+    float mana = 0.0f;
+    float bestHps = 0.0f;  // the most a fight of this dungeon measured per second
+};
+std::unordered_map<uint64, MeasuredHealing> measuredHealing;  // [lead258] by healer, under manaRateLock
+
+bool IsHealSpell(SpellInfo const* info)
+{
+    for (SpellEffectInfo const& effect : info->GetEffects())
+        if (effect.Effect == SPELL_EFFECT_HEAL ||
+            (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL))
+            return true;
+    return false;
+}
+}  // namespace
+
+void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec)
+{
+    if (!healer || healed <= 0.0f)
+        return;
+
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    MeasuredHealing& entry = measuredHealing[healer->GetGUID().GetRawValue()];
+    if (entry.instanceId != healer->GetInstanceId())
+        entry = MeasuredHealing();  // this dungeon's fights only
+    entry.instanceId = healer->GetInstanceId();
+    if (manaSpent > 0.0f)
+    {
+        entry.healed += healed;
+        entry.mana += manaSpent;
+    }
+    if (fightSec > 0.0f)
+        entry.bestHps = std::max(entry.bestHps, healed / fightSec);
+}
+
+HealerFacts HealerThroughput(Player* healer, Unit* target)
+{
+    HealerFacts facts;
+    if (!healer || !target)
+        return facts;
+
+    facts.maxMana = float(healer->GetMaxPower(POWER_MANA));
+    // the spell scan is cached per healer while its spells, spell power and mana stay the same (a lookup, no clock)
+    struct Cached
+    {
+        size_t spells = 0;
+        int32 power = 0;
+        uint32 mana = 0;
+        HealerFacts facts;
+    };
+    thread_local std::unordered_map<uint64, Cached> cache;
+    Cached& cached = cache[healer->GetGUID().GetRawValue()];
+    int32 const power = healer->SpellBaseHealingBonusDone(SPELL_SCHOOL_MASK_ALL);
+    if (cached.spells != healer->GetSpellMap().size() || cached.power != power ||
+        cached.mana != healer->GetMaxPower(POWER_MANA))
+    {
+        HealerFacts game;
+        game.maxMana = facts.maxMana;
+        for (auto const& [spellId, known] : healer->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || !info->IsPositive() || info->PowerType != POWER_MANA ||
+                !IsHealSpell(info))
+                continue;
+
+            float amount = 0.0f;
+            float durationMs = 0.0f;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                int32 const base = effect.CalcValue(healer);
+                if (base <= 0)
+                    continue;
+                if (effect.Effect == SPELL_EFFECT_HEAL)
+                    amount += float(target->SpellHealingBonusTaken(
+                        healer, info,
+                        healer->SpellHealingBonusDone(target, info, uint32(base), HEAL, effect.EffectIndex), HEAL));
+                else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL &&
+                         effect.Amplitude)
+                {
+                    durationMs = float(std::max(info->GetMaxDuration(), 0));
+                    float const ticks = durationMs / float(effect.Amplitude);
+                    amount +=
+                        ticks *
+                        float(target->SpellHealingBonusTaken(
+                            healer, info,
+                            healer->SpellHealingBonusDone(target, info, uint32(base), DOT, effect.EffectIndex), DOT));
+                }
+            }
+            if (amount <= 0.0f)
+                continue;
+
+            float const castMs = float(info->CalcCastTime(healer));
+            float const gapMs = std::max(castMs, float(info->StartRecoveryTime));
+            float const everyMs =
+                std::max({gapMs, float(info->RecoveryTime), float(info->CategoryRecoveryTime), durationMs, 1.0f});
+            float const hps = amount * float(IN_MILLISECONDS) / everyMs;
+            int32 const cost = info->CalcPowerCost(healer, info->GetSchoolMask());
+            if (cost > 0)
+                game.healPerMana = std::max(game.healPerMana, amount / float(cost));
+            if (hps > game.hps)
+            {
+                game.hps = hps;
+                game.gapSec = std::max(gapMs, 1.0f) / float(IN_MILLISECONDS);
+                game.spell = info->SpellName[0] ? info->SpellName[0] : "?";
+            }
+        }
+        cached = {healer->GetSpellMap().size(), power, healer->GetMaxPower(POWER_MANA), game};
+    }
+    facts = cached.facts;
+
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    if (auto const found = measuredHealing.find(healer->GetGUID().GetRawValue());
+        found != measuredHealing.end() && found->second.instanceId == healer->GetInstanceId())
+    {
+        if (found->second.mana > 0.0f)
+        {
+            facts.healPerMana = found->second.healed / found->second.mana;
+            facts.measured = true;
+        }
+        facts.hps = std::max(facts.hps, found->second.bestHps);
+    }
+    return facts;
+}
+
+float HealerPctPerTankHealth(Player* healer)
+{
+    Group* group = healer ? healer->GetGroup() : nullptr;
+    Player* tank = group ? ObjectAccessor::FindPlayer(PlayerbotAI::GetMainTankGuid(group)) : nullptr;
+    if (!tank || tank->GetMap() != healer->GetMap())
+        tank = healer;  // no tank here: a tank health is read as the healer's own
+    HealerFacts const facts = HealerThroughput(healer, tank);
+    if (facts.healPerMana <= 0.0f || facts.maxMana <= 0.0f)
+        return 0.0f;
+    return 100.0f * float(tank->GetMaxHealth()) / (facts.healPerMana * facts.maxMana);
 }
 
 namespace
@@ -485,8 +628,9 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         }
     }
     float need = rate * fightSec;
+    float const perTankHealth = PlayerbotAI::IsHeal(bot) ? HealerPctPerTankHealth(bot) : 0.0f;  // [lead258]
     if (PlayerbotAI::IsHeal(bot))
-        need = std::max(need, HEALER_PCT_PER_TANK_HEALTH * cost);
+        need = std::max(need, perTankHealth * cost);
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
     // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
     // those seconds. The flat 20 / 25 % only while no fight is measured
@@ -503,7 +647,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     {
         reserve = rate * uncertainSec;
         if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
-            reserve += HEALER_PCT_PER_TANK_HEALTH * cost * uncertainSec / fightSec;
+            reserve += perTankHealth * cost * uncertainSec / fightSec;
     }
     // the mana its own ready cooldowns return in the fight (spell effects: Evocation 60 %, Divine Plea 25 %)
     constexpr uint32 SPELL_EVOCATION = 12051;
@@ -552,6 +696,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
                                        : std::string("flat"),
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
+    if (why && perTankHealth > 0.0f)  // [lead258]
+        *why += Acore::StringFormat("; heals {:.1f} % per tank health x {:.2f} cost", perTankHealth, cost);
     return line;
 }
 

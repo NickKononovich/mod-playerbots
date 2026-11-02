@@ -231,7 +231,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr float PULL_PATH_HEIGHT = 5.0f;           // a mob this far above/below the way in is on another floor
     // Tempo (heroic or max-level 5-man): the healer's mana is a budget of packs, and the tank chains pulls while
     // that budget lasts instead of waiting for everyone to drink up.
-    constexpr float TEMPO_MANA_RESERVE = 20.0f;        // healer mana kept back for a pull that goes wrong
+    // [lead258] the healer mana kept back for a pull that goes wrong is the config's low mana line (LowMana)
     constexpr float TEMPO_MANA_PER_DANGER = 4.0f;      // healer mana one point of pack danger costs
     constexpr float TEMPO_HEALTH_BASE = 30.0f;
     constexpr float TEMPO_HEALTH_PER_DANGER = 4.0f;
@@ -328,8 +328,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         return mobs <= CAREFUL_SMALL_PACK_MOBS ? std::max(cap, CAREFUL_SMALL_PACK_MAX_COST) : cap;
     }
-    constexpr float CAREFUL_EXTRA_HEALER_SHARE = 0.5f;   // a second healer adds half again
-    constexpr float CAREFUL_NO_HEALER_SHARE = 0.5f;
     constexpr float CAREFUL_TANK_MANA = 35.0f;           // a paladin tank below this cannot taunt through a pull
     constexpr float CAREFUL_MIN_PULL_RANGE = 8.0f;
     constexpr float CHARGE_MIN_RANGE = 8.0f;   // Charge (warrior): 8-25 yd, out of combat ("[pull plan] ... charge")
@@ -427,9 +425,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // read through the game's own attack table and armor (MeleeTakenShare, ArmorReduction) and the spells from the
     // mob's spell data (GetMobSpells); the rescale's spell factor and what the spells really land on the tank (a
     // caster casts on others too, is interrupted and controlled) come in by the measured spell ratio of the dungeon.
-    // Tank healths one healer heals from the mana above its reserve (a level 80 healer: about 25k mana at 2.5-3
-    // health per mana against a 40k tank).
-    constexpr float CAREFUL_HEALER_TANK_HEALTHS = 2.0f;
+    // [lead258] What the healers heal (rate, health per mana, the gap between two heals) is read from their spells
+    // and the dungeon's measured healing per mana (RestState::HealerThroughput, GroupSupport).
     constexpr float CAREFUL_MIN_GROUP_DPS = 100.0f;
     // Measured careful pulls, calibrated on wave 13 (380 executed plans with their outcome) and checked on wave 15:
     // the planned cost overstates large packs (the group kills them faster than one by one, stuns and area damage
@@ -448,14 +445,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // the content's target gear (wave 13: cost 0.70). A tank with more health or mitigation, or a pack of softer
     // mobs, fits more mobs in it; a soft tank fewer.
     constexpr float CAREFUL_COMFORT_DROP = 0.28f;
-    // (b) The healers keep up: the pack's average melee on the tank (0.71 of the planned landed melee over the
-    // fight, median of wave 13) within 8% of the tank's health per second per healer, the most a survived pull
-    // put on its tank (waves 13-15; the Steamvault tank that took 10%/s died).
-    constexpr float CAREFUL_DTPS_SHARE = 0.71f;
-    constexpr float CAREFUL_MAX_DTPS = 0.08f;
-    // Healer mana the pull takes: the damage the tank really took against the plan (wave 13 median 0.33 cost^0.73).
-    constexpr float CAREFUL_TAKEN_SCALE = 0.33f;
-    constexpr float CAREFUL_TAKEN_EXPONENT = 0.73f;
+    // (b) The healers keep up: [lead258] the pack's average damage on the tank (AverageDtps: the estimate's own
+    // lives) within the healers' best rate together (HealerThroughput), and the healer mana it takes (TakenCost:
+    // the calibrated cost) within their pool (HealerPool).
     // A pack at most this much of what the group takes is weak: it may be pulled with a damage dealer down.
     constexpr float CAREFUL_WEAK_PACK_OVERLOAD = 0.5f;
     // The tank waits this long at most for a buff the group can give before a pull of its own.
@@ -747,7 +739,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // How many packs of this danger the weakest healer can still carry before it has to drink.
     float HealerPackBudget(float healerMana, float danger)
     {
-        return std::max(0.0f, healerMana - TEMPO_MANA_RESERVE) / (TEMPO_MANA_PER_DANGER * std::max(danger, 1.0f));
+        return std::max(0.0f, healerMana - float(sPlayerbotAIConfig.LowMana)) /
+               (TEMPO_MANA_PER_DANGER * std::max(danger, 1.0f));
     }
 
     // The core's proximity aggro of an idle `mob` on `bot` standing at (x, y, z): MovementAction::IdleAggroBlocker,
@@ -804,11 +797,23 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         uint32 helpers = 0;  // living members on the map besides the tank
         uint32 healers = 0;
+        // [lead258] the healers' facts on this tank (RestState::HealerThroughput: their spells, spell power and the
+        // dungeon's measured healing per mana)
+        float healHps = 0.0f;  // health per second the healers heal at their best rate together
+        float strongestHps = 0.0f;
+        float healMana = 0.0f;     // health their full mana heals (max mana x health per mana, summed)
+        float healReserve = 0.0f;  // health of the mana each keeps back (the config's low mana line)
+        float healGapSec = 0.0f;   // the shortest time between two heals of one healer landing (0: no healer)
+        float tankHealth = 0.0f;   // the health the healers heal (PlanTankHealth)
+        std::string healerFacts;   // per healer, logged
     };
+
+    float PlanTankHealth(Player* tank);
 
     GroupSupport CountSupport(Player* bot)
     {
         GroupSupport support;
+        support.tankHealth = PlanTankHealth(bot);
         if (Group* group = bot->GetGroup())
         {
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
@@ -819,8 +824,22 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     continue;
 
                 ++support.helpers;
-                if (PlayerbotAI::IsHeal(member))
-                    ++support.healers;
+                if (!PlayerbotAI::IsHeal(member))
+                    continue;
+
+                ++support.healers;
+                RestState::HealerFacts const facts = RestState::HealerThroughput(member, bot);
+                support.healHps += facts.hps;
+                support.strongestHps = std::max(support.strongestHps, facts.hps);
+                support.healMana += facts.maxMana * facts.healPerMana;
+                support.healReserve += facts.maxMana * float(sPlayerbotAIConfig.LowMana) / 100.0f * facts.healPerMana;
+                if (facts.gapSec > 0.0f)
+                    support.healGapSec =
+                        support.healGapSec > 0.0f ? std::min(support.healGapSec, facts.gapSec) : facts.gapSec;
+                support.healerFacts += Acore::StringFormat(
+                    "{}{} {} {:.0f}/s every {:.1f} s, {:.2f} hp per mana ({}) x {:.0f} mana",
+                    support.healerFacts.empty() ? "" : "; ", member->GetName(), facts.spell, facts.hps, facts.gapSec,
+                    facts.healPerMana, facts.measured ? "measured" : "spell data", facts.maxMana);
             }
         }
 
@@ -4341,29 +4360,42 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return estimate;
     }
 
-    // Tank healths the pull really costs the healers (see CAREFUL_TAKEN_SCALE).
-    float TakenCost(PackEstimate const& estimate)
-    {
-        return estimate.cost > 0.0f ? CAREFUL_TAKEN_SCALE * std::pow(estimate.cost, CAREFUL_TAKEN_EXPONENT) : 0.0f;
-    }
+    // Tank healths the pull really costs the healers: [lead258] the planned cost itself - the dungeon's measured
+    // landed ratios (LandedCalibration) already make it what the tank really takes (the wave 13 power law
+    // 0.33 cost^0.73 read the uncalibrated plan).
+    float TakenCost(PackEstimate const& estimate) { return std::max(estimate.cost, 0.0f); }
 
+    // [lead258] The healers in healer-equivalents of the strongest (the levelling terms' share): each by its rate
+    // against the strongest one's (HealerThroughput); no healer: 0.
     float HealerShare(GroupSupport const& support)
     {
-        return support.healers ? 1.0f + CAREFUL_EXTRA_HEALER_SHARE * float(support.healers - 1)
-                               : CAREFUL_NO_HEALER_SHARE;
+        return support.strongestHps > 0.0f ? support.healHps / support.strongestHps : 0.0f;
     }
 
-    // Tank healths the group's healers restore from full mana, above the reserve kept for a pull that goes wrong.
+    // Tank healths the group's healers restore from full mana, above the mana each keeps back: [lead258] their max
+    // mana times their health per mana (spell data, or this dungeon's measured healing per mana spent), less their
+    // low mana line (the config's), over the tank's health.
     float HealerPool(GroupSupport const& support)
     {
-        return CAREFUL_HEALER_TANK_HEALTHS * HealerShare(support) * (100.0f - TEMPO_MANA_RESERVE) / 100.0f;
+        return support.tankHealth > 0.0f ? std::max(support.healMana - support.healReserve, 0.0f) / support.tankHealth
+                                         : 0.0f;
     }
 
-    // Healer mana (percent) a measured careful pull of this cost needs before it starts.
+    // Healer mana (percent) a measured careful pull of this cost needs before it starts: [lead258] the low mana line
+    // plus the mana its cost takes at the healers' health per mana; -1 without a healer.
     float HealerManaNeed(PackEstimate const& estimate, GroupSupport const& support)
     {
-        float const perCent = CAREFUL_HEALER_TANK_HEALTHS * HealerShare(support) / 100.0f;
-        return std::min(TEMPO_MANA_RESERVE + TakenCost(estimate) / perCent, 100.0f);
+        if (support.healMana <= 0.0f)
+            return -1.0f;
+        return std::min(100.0f * (support.healReserve + TakenCost(estimate) * support.tankHealth) / support.healMana,
+                        100.0f);
+    }
+
+    // [lead258] The pack's average damage on the tank per second: what it lands over the fight (the estimate's
+    // lives: each mob its kill time plus half the others') over the fight's length.
+    float AverageDtps(PackEstimate const& estimate, float tankHealth)
+    {
+        return estimate.fightSec > 0.0f ? estimate.cost * tankHealth / estimate.fightSec : estimate.landedDps;
     }
 
     // Each limit a pack is held against, as a share of it (1.0: just fits).
@@ -4411,9 +4443,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                           OverloadTerms* out = nullptr)
     {
         OverloadTerms terms;
-        terms.size = measured ? TakenCost(estimate) / HealerPool(support)
-                              : SwarmDanger(estimate.danger, estimate.mobs, strength) /
-                                    PackCapacity(bot, strength, support);
+        // [lead258] measured without a healer: no healer mana to run out of (the drop term holds the tank's health)
+        float const pool = HealerPool(support);
+        terms.size = measured
+                         ? (pool > 0.0f ? TakenCost(estimate) / pool : 0.0f)
+                         : SwarmDanger(estimate.danger, estimate.mobs, strength) / PackCapacity(bot, strength, support);
         if (estimate.mobs > 1)
         {
             terms.holdMobs =
@@ -4427,10 +4461,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 terms.drop = DropP90(estimate);
                 terms.drain = terms.drop / CAREFUL_MAX_DROP;
                 terms.comfort = terms.drop / CAREFUL_COMFORT_DROP;
-                float const healing = maxHealth * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
-                float const mobs = float(estimate.mobs);
-                if (healing > 0.0f)
-                    terms.peak = CAREFUL_DTPS_SHARE * estimate.landedDps * (mobs + 1.0f) / (2.0f * mobs) / healing;
+                // [lead258] the pack's average damage per second against the healers' best rate together (their
+                // spells and spell power: the gear is in it); without a healer the drop term alone
+                if (support.healHps > 0.0f)
+                    terms.peak = AverageDtps(estimate, maxHealth) / support.healHps;
             }
             else
             {
@@ -4441,6 +4475,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     terms.drain =
                         estimate.cost / (CAREFUL_SUSTAIN_PER_SECOND * share * estimate.fightSec + CAREFUL_TANK_POOL);
                 }
+                else if (maxHealth > 0.0f)  // [lead258] no healer: the tank's own health carries the whole fight
+                    terms.drain = estimate.cost;
             }
         }
 
@@ -6553,6 +6589,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         std::vector<uint32> cameHealth;  // parallel to `came`: its maximum health when first seen
         uint64 takenAtStart = 0;         // the tank's DamageTaken total when the fight began
         uint64 spellAtStart = 0;         // [lead256] ... and its DamageTaken::Spell part
+        struct HealerStart
+        {
+            ObjectGuid healer;
+            uint64 healed = 0;  // HealingDone::Effective
+            float mana = 0.0f;
+        };
+        std::vector<HealerStart> healers;  // [lead258] the healers present when the fight began
     };
 
     std::mutex pullCheckLock;
@@ -6697,6 +6740,30 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                   "{:.1f} s ({} mobs{})",
                   tank->GetName(), realMelee, realSpell, templateMelee, templateSpell, fightSec, record.came.size(),
                   boss ? ", a boss" : "");
+    }
+
+    // [lead258] The fight is over: each healer's effective healing and net mana spent over it, its measured health
+    // per mana and best rate in this dungeon (RestState::NoteHealing). Under pullCheckLock.
+    void NoteMeasuredHealing(Player* tank, PullRecord const& record, uint32 now)
+    {
+        uint32 const fightMs = record.startMs ? getMSTimeDiff(record.startMs, now) : 0;
+        if (!fightMs)
+            return;
+
+        for (PullRecord::HealerStart const& start : record.healers)
+        {
+            Player* healer = ObjectAccessor::FindPlayer(start.healer);
+            if (!healer || healer->GetMap() != tank->GetMap())
+                continue;
+            uint64 const healed = HealingDone::Effective(start.healer);
+            if (healed < start.healed)
+                continue;
+            float const spent = start.mana - float(healer->GetPower(POWER_MANA));
+            RestState::NoteHealing(healer, float(healed - start.healed), spent,
+                                   float(fightMs) / float(IN_MILLISECONDS));
+            LOG_DEBUG("playerbots", "[lead258] {}: healer {} healed {} with {:.0f} mana over {:.1f} s", tank->GetName(),
+                      healer->GetName(), healed - start.healed, spent, float(fightMs) / float(IN_MILLISECONDS));
+        }
     }
 
     // [lead209] the landed scales of this tank in this dungeon: the trash ratio and the entries measured alone (the
@@ -7169,6 +7236,13 @@ namespace PullCheck
                 record.startMs = now;
                 record.takenAtStart = DamageTaken::Total(bot->GetGUID());
                 record.spellAtStart = DamageTaken::Spell(bot->GetGUID());
+                if (Group* group = bot->GetGroup())  // [lead258] the healers' healing and mana at the start
+                    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        if (Player* member = ref->GetSource(); member && member->IsAlive() &&
+                                                               member->GetMap() == bot->GetMap() &&
+                                                               PlayerbotAI::IsHeal(member))
+                            record.healers.push_back({member->GetGUID(), HealingDone::Effective(member->GetGUID()),
+                                                      float(member->GetPower(POWER_MANA))});
                 if (record.method.empty())
                 {
                     // Nothing cast first: a pet opened, or a mob came by itself.
@@ -7199,6 +7273,7 @@ namespace PullCheck
         LogPullCheck(bot, record, now);
         NoteMeasuredDps(botAI, bot, record, now);
         NoteMeasuredTaken(botAI, bot, record, now);
+        NoteMeasuredHealing(bot, record, now);
         pullChecks.erase(found);
     }
 
@@ -8312,8 +8387,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // configured cap and the cost model say; the last resort and the guarantee scale with it too (lastResortMobs).
     ProvenCap const proven = ProvenFor(bot);
     // [b44_packs] A weak pack (WEAK_PACK_*): it dies to the group's AoE within WEAK_PACK_TTK_SEC, the healers keep
-    // up with what the whole stack lands meanwhile (the measured peak term with every mob alive: CAREFUL_MAX_DTPS
-    // of the tank's health per second per healer), the tank keeps CAREFUL_MAX_DROP of its health in 9 pulls of 10
+    // up with what the whole stack lands meanwhile (the measured peak term with every mob alive: the healers' best
+    // rate, HealerThroughput), the tank keeps CAREFUL_MAX_DROP of its health in 9 pulls of 10
     // (DropP90 of that cost) and the healers have the mana (HealerPool). The AoE cost carries the same spell part.
     // Not with crowd control planned on the pack (the AoE breaks it) and never a boss.
     auto const weakAoeFits = [&](PackEstimate const& estimate) -> bool
@@ -8323,15 +8398,15 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             return false;
 
         float const tankHealth = PlanTankHealth(bot);
-        float const healing = tankHealth * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
         PackEstimate aoe = estimate;
         aoe.cost = estimate.aoeCost;
         aoe.spellCost = estimate.aoeSpellCost;
-        float const peak =
-            healing > 0.0f ? CAREFUL_DTPS_SHARE * estimate.landedDps * WEAK_PACK_ALIVE_SHARE / healing : 99.0f;
+        aoe.fightSec = estimate.aoeSec;
+        // [lead258] what the stack lands per second on average against the healers' best rate (HealerThroughput)
+        float const peak = support.healHps > 0.0f ? AverageDtps(aoe, tankHealth) / support.healHps : 0.0f;
         float const drop = DropP90(aoe);
         float const pool = HealerPool(support);
-        float const mana = pool > 0.0f ? TakenCost(aoe) / pool : 99.0f;
+        float const mana = pool > 0.0f ? TakenCost(aoe) / pool : 0.0f;  // [lead258] no healer: no healer mana
         char const* why = nullptr;
         if (estimate.aoeSec > WEAK_PACK_TTK_SEC)
             why = "too slow";
@@ -9270,7 +9345,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             Position castSpot = bot->GetPosition();
             PullBackSpot(candidate, castSpot);
             // [lead215] the healers' healing rate turns a loose caster's damage into seconds (CarefulOverload's)
-            float const healRate = PlanTankHealth(bot) * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
+            float const healRate = support.healHps;  // [lead258] the healers' best rate (HealerThroughput)
             Position const pullBackKill = _planKill;
             CornerCost const cost =
                 CornerVsStand(botAI, bot, candidate, castSpot, corner, gather, losSeen, losEstimate.fightSec,
@@ -12165,6 +12240,12 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // [lead257] the inputs of the estimate: each mob kind's melee and spells as the game reads them
     if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
     {
+        // [lead258] and the healers' facts the mana and healing terms read
+        LOG_DEBUG("playerbots",
+                  "[lead258] {} estimate healers: {:.0f}/s together, pool {:.2f} tank hp, mana need "
+                  "{:.0f} %; {}",
+                  bot->GetName(), support.healHps, HealerPool(support), HealerManaNeed(chosen, support),
+                  support.healerFacts.empty() ? std::string("none") : support.healerFacts);
         std::vector<uint32> logged;
         for (Unit* mob : chosenPack)
         {
@@ -12695,17 +12776,19 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     }
     if (estimate.boss && estimate.mobs == 1)  // a lone boss: CarefulOverload's peak term is a pack's (mobs > 1)
     {
-        float const healing = PlanTankHealth(bot) * CAREFUL_MAX_DTPS * HealerShare(support) * strength.healer;
-        if (healing > 0.0f)
-            terms.peak = CAREFUL_DTPS_SHARE * estimate.landedDps / healing;
+        // [lead258] his average damage per second against the healers' best rate (HealerThroughput)
+        if (support.healHps > 0.0f)
+            terms.peak = AverageDtps(estimate, PlanTankHealth(bot)) / support.healHps;
     }
     overload = terms.Max();
     bool const fits = !estimate.boss && overload <= 1.0f;
     why = Acore::StringFormat("{} mobs, cost {:.2f} tank hp, fight {:.0f} s, overload {:.2f} of 1.00{}", estimate.mobs,
                               estimate.cost, estimate.fightSec, overload, estimate.boss ? ", a boss" : "");
     if (estimate.boss)
-        why += Acore::StringFormat(" (healer mana {:.2f}, healing {:.2f}, group dps {:.0f}, landed {:.0f}/s)",
-                                   terms.size, terms.peak, groupDps, estimate.landedDps);
+        why += Acore::StringFormat(
+            " (healer mana {:.2f}, healing {:.2f}, group dps {:.0f}, landed {:.0f}/s; "
+            "healers: {})",
+            terms.size, terms.peak, groupDps, estimate.landedDps, support.healerFacts);
     return fits;
 }
 
