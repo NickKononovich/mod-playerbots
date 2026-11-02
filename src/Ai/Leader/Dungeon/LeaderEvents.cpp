@@ -372,6 +372,103 @@ namespace Leader::Dungeon
         } guardReset;
         // [lead18] every MoveTo / StandAt the leader issues: the spot and the walk out of every unpulled mob's reach;
         // a rejected one is not issued (the member stays) and logged as spot_rejected_aggro
+        // [lead76] user: the leader computes, bigger pulls are better if survivable - a fight whose spots or walks an
+        // idle pack's reach blocks: once per pack, the capacity model (JudgePack) on the fight plus that pack decides -
+        // it fits: the pack joins the pull (its mobs count, no longer block); it does not: the fight moves away from
+        // it (the tank to a spot out of its reach, on the group's side). [lead374] one judge for checkedMove's spots
+        // and the chase's walk
+        auto const judgeBlockingPack = [&](Player* bot, Creature* mob)
+        {
+            if (!mob || !group.FightOn(tank) || lead.joinedPack.count(mob->GetGUID()))
+                return;
+            std::vector<ObjectGuid> combined;
+            for (Unit* attacker : tank->getAttackers())
+                if (attacker && attacker->IsAlive())
+                    combined.push_back(attacker->GetGUID());
+            std::list<Creature*> pack;
+            IdleAggroCheck packCheck{tank};
+            Acore::CreatureListSearcher<IdleAggroCheck> packSearcher(mob, pack, packCheck);
+            float const packReach = mob->GetAggroRange(tank);
+            Cell::VisitObjects(mob, packSearcher, packReach);
+            std::vector<ObjectGuid> packMobs{mob->GetGUID()};
+            for (Creature* other : pack)
+                if (other != mob && other->GetExactDist(mob) <= packReach)
+                    packMobs.push_back(other->GetGUID());
+            combined.insert(combined.end(), packMobs.begin(), packMobs.end());
+            float overload = 0.0f;
+            std::string judged;
+            bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+            lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
+            if (fits)
+            {
+                lead.joinedMobs.insert(packMobs.begin(), packMobs.end());
+                if (Group* group = tank->GetGroup())
+                {
+                    std::vector<ObjectGuid> all = LeaderPullMobs(lead.commit, lead.commitMob);
+                    all.insert(all.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
+                    Leader::PullPack::Set(group->GetGUID(), all);
+                }
+            }
+            else
+            {
+                // away from the pack, out of its reach (its aggro range + the spot guard's margin)
+                float const dx = tank->GetPositionX() - mob->GetPositionX();
+                float const dy = tank->GetPositionY() - mob->GetPositionY();
+                float const length = std::max(0.1f, std::hypot(dx, dy));
+                float const away = packReach + Leader::LEADER_SPOT_AGGRO_MARGIN;
+                float x = mob->GetPositionX() + dx / length * std::max(away, length);
+                float y = mob->GetPositionY() + dy / length * std::max(away, length);
+                float z = tank->GetPositionZ();
+                if (tank->GetMap()->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
+                                                                    tank->GetPositionZ(), x, y, z))
+                    lead.fightMoveTo = Position(x, y, z);
+            }
+            Decisions().Write(run, "leader", fits ? "pack_joins" : "fight_moves_away", mob->GetGUID(), mob->GetName(),
+                              true,
+                              JsonObject()
+                                  .Num("packMobs", int64(packMobs.size()))
+                                  .Real("overload", overload)
+                                  .Str("judged", judged)
+                                  .Str("blocked", bot->GetName()));
+        };
+        // [lead374] b197b rfc-h (8 runs): 50 "chase: behind the target" and 8 "along with the tank" Follows refused by
+        // the members' own idle-path guard - the leader issued Follows it never judged. Every Follow is judged before
+        // it goes out by the member's own walk to its place (LeaderMoveOrderAction::DryFollow: the executor's place,
+        // its guards run dry); "" - it walks there, else what its walk would meet and the idle mob it would wake
+        auto const followRefusal = [&](Player* bot, Unit* target, uint8 index, ObjectGuid& mob) -> std::string
+        {
+            mob.Clear();
+            PlayerbotAI* memberAI = bot && target ? GET_PLAYERBOT_AI(bot) : nullptr;
+            auto* mover = memberAI ? dynamic_cast<LeaderMoveOrderAction*>(
+                                         memberAI->GetAiObjectContext()->GetAction("leader move order"))
+                                   : nullptr;
+            return mover ? mover->DryFollow(target, index, mob) : std::string();
+        };
+        // [lead374] the walk along with the tank: a Follow the member's walk takes is issued; one it cannot take
+        // safely is not - the member stays and the group holds for it (group_blocked: the tank walks on only where
+        // the group follows, lead77), the idle mob in the way is the next pull (lead364). Returns the command changed
+        auto const followTank = [&](Player* bot, uint8 index, std::string const& why) -> bool
+        {
+            ObjectGuid mob;
+            std::string const refusal = followRefusal(bot, tank, index, mob);
+            if (refusal.empty())
+                return Leader::Events::SetFollow(bot->GetGUID(), tank->GetGUID(), index, why);
+            Creature* woken = mob.IsEmpty() ? nullptr : map->GetCreature(mob);
+            std::string const stay = "along with the tank: stays (" +
+                                     (woken ? "its walk would wake " + woken->GetName() : std::string("no safe walk")) +
+                                     ")";
+            bool const changed =
+                Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay);
+            if (!lead.groupBlockedBy.count(bot->GetGUID()))
+                Decisions().Write(run, "leader", "group_blocked", bot->GetGUID(), bot->GetName(), true,
+                                  JsonObject()
+                                      .Str("member", bot->GetName())
+                                      .Str("why", refusal)
+                                      .Str("mob", woken ? woken->GetName() : "-")
+                                      .Str("walk", why));
+            lead.groupBlockedBy[bot->GetGUID()] = mob;
+            return changed;
+        };
         auto const checkedMove = [&](ObjectGuid member, Leader::MoveEvent move, Position const& spot, float tolerance,
                                      std::string const& why) -> bool
         {
@@ -476,68 +573,14 @@ namespace Leader::Dungeon
                                                           .Real("aggroRange", mob ? mob->GetAggroRange(bot) : -1.0f)
                                                           .Real("margin", Leader::LEADER_SPOT_AGGRO_MARGIN));
                     }
-                    // [lead76] user: the leader computes, bigger pulls are better if survivable - a fight whose spots
-                    // an idle pack's reach blocks: once per pack, the capacity model (JudgePack) on the fight plus that
-                    // pack decides - it fits: the pack joins the pull (its mobs count, no longer block); it does not:
-                    // the fight moves away from it (the tank to a spot out of its reach, on the group's side)
-                    if (mob && group.FightOn(tank) && !lead.joinedPack.count(mob->GetGUID()))
-                    {
-                        std::vector<ObjectGuid> combined;
-                        for (Unit* attacker : tank->getAttackers())
-                            if (attacker && attacker->IsAlive())
-                                combined.push_back(attacker->GetGUID());
-                        std::list<Creature*> pack;
-                        IdleAggroCheck packCheck{tank};
-                        Acore::CreatureListSearcher<IdleAggroCheck> packSearcher(mob, pack, packCheck);
-                        float const packReach = mob->GetAggroRange(tank);
-                        Cell::VisitObjects(mob, packSearcher, packReach);
-                        std::vector<ObjectGuid> packMobs{mob->GetGUID()};
-                        for (Creature* other : pack)
-                            if (other != mob && other->GetExactDist(mob) <= packReach)
-                                packMobs.push_back(other->GetGUID());
-                        combined.insert(combined.end(), packMobs.begin(), packMobs.end());
-                        float overload = 0.0f;
-                        std::string judged;
-                        bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
-                        lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
-                        if (fits)
-                        {
-                            lead.joinedMobs.insert(packMobs.begin(), packMobs.end());
-                            if (Group* group = tank->GetGroup())
-                            {
-                                std::vector<ObjectGuid> all = LeaderPullMobs(lead.commit, lead.commitMob);
-                                all.insert(all.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
-                                Leader::PullPack::Set(group->GetGUID(), all);
-                            }
-                        }
-                        else
-                        {
-                            // away from the pack, out of its reach (its aggro range + the spot guard's margin)
-                            float const dx = tank->GetPositionX() - mob->GetPositionX();
-                            float const dy = tank->GetPositionY() - mob->GetPositionY();
-                            float const length = std::max(0.1f, std::hypot(dx, dy));
-                            float const away = packReach + Leader::LEADER_SPOT_AGGRO_MARGIN;
-                            float x = mob->GetPositionX() + dx / length * std::max(away, length);
-                            float y = mob->GetPositionY() + dy / length * std::max(away, length);
-                            float z = tank->GetPositionZ();
-                            if (tank->GetMap()->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(),
-                                                                                tank->GetPositionY(),
-                                                                                tank->GetPositionZ(), x, y, z))
-                                lead.fightMoveTo = Position(x, y, z);
-                        }
-                        Decisions().Write(run, "leader", fits ? "pack_joins" : "fight_moves_away",
-                                                      mob->GetGUID(), mob->GetName(), true,
-                                                      JsonObject().Num("packMobs", int64(packMobs.size()))
-                                                          .Real("overload", overload).Str("judged", judged)
-                                                          .Str("blocked", bot->GetName()));
-                    }
+                    judgeBlockingPack(bot, mob);  // [lead76]
                     // [lead99] b138 rfc-h 339-427 s: the engage's range / meeting spots on the ledge had no walk
                     // ("no walk to the spot"), the members stayed and blocked the group - the order stood open and
                     // nobody could execute it. A walk-along spot with no walk at all (the route search found none) is
                     // no spot: the member follows the tank on the tank's own way (a fact, not a wait)
                     if (noPath && member != tank->GetGUID() && why.rfind("along with the tank", 0) == 0)
                     {
-                        if (Leader::Events::SetFollow(member, tank->GetGUID(), 0, "along with the tank"))
+                        if (followTank(bot, 0, "along with the tank"))
                             Decisions().Write(run, "leader", "spot_no_walk_follow", member, bot->GetName(),
                                                           true,
                                                           JsonObject().Str("member", bot->GetName()).Str("why", why));
@@ -581,12 +624,26 @@ namespace Leader::Dungeon
             if (changed && hadMove && bot)
             {
                 auto const prev = lead.prevMoves.find(member);
+                // [lead375] the member's Attack target the command before the current one was left under
+                thread_local std::map<ObjectGuid, ObjectGuid> prevMoveAttack;
+                if (prevMoveAttack.size() > 4096)
+                    prevMoveAttack.clear();
+                ObjectGuid const attackNow =
+                    before.attack == Leader::AttackEvent::Attack ? before.target : ObjectGuid::Empty;
+                auto const ruleOf = [](std::string const& text) { return text.substr(0, text.find(':')); };
                 // [lead64] A -> B -> A after a higher-precedence B ended (a run to the tank done) is no ping-pong
                 // [lead65] ... and only within one phase (b110: engage -> follow -> a NEW pull's engage was flagged)
+                // [lead375] b197b rfc-h: 3 "combat spot" was "trap weave" - the weave ended on its own fact (its target
+                // died, trap_weave_end) and the hunter went back to its spot; 2 "combat spot" was "combat spot" - the
+                // mage went back to a spot it had left, filed under the held spot's old target (fixed below). Since
+                // lead320 a different rule's live command is never replaced at equal rank (leader_contradiction logs
+                // the tries): a repeat is one rule reversing itself under the same facts - the same phase and the same
+                // Attack target (a spot left for one target may fit the next)
                 if (prev != lead.prevMoves.end() && prev->second.second == why &&
                     lead.prevMovePhase[member] == lead.movePhase &&
                     prev->second.first.GetExactDist(spot) <= std::max(tolerance, 1.0f) &&
-                    Leader::Events::MovePrecedence(before.moveWhy) <= Leader::Events::MovePrecedence(why))
+                    Leader::Events::MovePrecedence(before.moveWhy) <= Leader::Events::MovePrecedence(why) &&
+                    ruleOf(before.moveWhy) == ruleOf(why) && prevMoveAttack[member] == attackNow)
                 {
                     uint32& repeats = lead.commandRepeats[bot->GetName() + "|" + why];
                     if (!repeats++)
@@ -596,6 +653,7 @@ namespace Leader::Dungeon
                 }
                 lead.prevMoves[member] = {before.spot, before.moveWhy};
                 lead.prevMovePhase[member] = lead.movePhase;
+                prevMoveAttack[member] = attackNow;
             }
             if (changed && hadMove && bot &&
                 (before.moveWhy != why || before.spot.GetExactDist(spot) > 8.0f))
@@ -2871,8 +2929,39 @@ namespace Leader::Dungeon
                 bool const chasing = melee && Leader::Events::Get(guid, chaseNow) &&
                                      chaseNow.move == Leader::MoveEvent::Follow &&
                                      chaseNow.followTarget == target->GetGUID();
-                bool const chases =
-                    melee && target->GetVictim() == tank && (chasing || tank->IsWithinMeleeRange(target));
+                // [lead374] the chase only when the member's walk behind the mob takes no idle mob's reach (DryFollow);
+                // a chase it cannot walk is no chase: its combat spot (checked spots) holds it, and the pack in the
+                // way is judged for the fight (lead76)
+                std::optional<bool> chaseBlocked;
+                auto const chaseRefused = [&]() -> bool
+                {
+                    if (chaseBlocked)
+                        return *chaseBlocked;
+                    ObjectGuid mob;
+                    std::string const refusal = followRefusal(bot, target, uint8(index % 2), mob);
+                    chaseBlocked = !refusal.empty();
+                    if (!*chaseBlocked)
+                        return false;
+                    Creature* woken = mob.IsEmpty() ? nullptr : map->GetCreature(mob);
+                    thread_local std::map<ObjectGuid, std::pair<ObjectGuid, ObjectGuid>> chaseLogged;
+                    if (chaseLogged.size() > 4096)
+                        chaseLogged.clear();
+                    auto& logged = chaseLogged[guid];
+                    if (logged != std::make_pair(target->GetGUID(), mob))
+                    {
+                        logged = {target->GetGUID(), mob};
+                        Decisions().Write(run, "leader", "chase_refused", guid, bot->GetName(), true,
+                                          JsonObject()
+                                              .Str("member", bot->GetName())
+                                              .Str("target", target->GetName())
+                                              .Str("why", refusal)
+                                              .Str("mob", woken ? woken->GetName() : "-"));
+                    }
+                    judgeBlockingPack(bot, woken);
+                    return true;
+                };
+                bool const chases = melee && target->GetVictim() == tank &&
+                                    (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused();
                 if (chases)
                 {
                     if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
@@ -2885,7 +2974,7 @@ namespace Leader::Dungeon
                 // [lead190] the chase of a walked-off target holds until the member is in its melee reach again
                 else if (auto const chase = lead.meleeChase.find(guid);
                          melee && chase != lead.meleeChase.end() && chase->second == target->GetGUID() &&
-                         !bot->IsWithinMeleeRange(target))
+                         !bot->IsWithinMeleeRange(target) && !chaseRefused())
                 {
                     Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2), "chase: behind the target");
                     moved = true;
@@ -2924,7 +3013,7 @@ namespace Leader::Dungeon
                         // its target. A melee member's held spot for this target that the target walked away from is
                         // the chase: one Follow behind that mob (lead156), the spot again once it stands
                         if (melee && found->second.first == target->GetGUID() &&
-                            breaks.rfind("out of melee reach", 0) == 0)
+                            breaks.rfind("out of melee reach", 0) == 0 && !chaseRefused())
                         {
                             if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
                                                           "chase: behind the target"))
@@ -2967,8 +3056,10 @@ namespace Leader::Dungeon
                                          });
                         if (got)
                         {
+                            // [lead137] [lead375] left for the target it was judged against (the held spot may
+                            // still name the one before: b197b 5H the mage went back to the spot it had left)
                             if (found != lead.combatSpots.end())
-                                LeaveCombatSpot(lead.combatSpotLeft[guid], found->second);  // [lead137]
+                                LeaveCombatSpot(lead.combatSpotLeft[guid], {target->GetGUID(), found->second.second});
                             if (breaks != "first spot")
                                 Decisions().Write(
                                     run, "leader", "combat_respot", guid, bot->GetName(), true,
@@ -3146,7 +3237,7 @@ namespace Leader::Dungeon
                              verdict->second.spot.GetExactDist(spot) <= 1.0f &&
                              !(melee ? bot->IsWithinMeleeRange(target) : MemberCastsHere(bot, target)))
                     {
-                        LeaveCombatSpot(lead.combatSpotLeft[guid], found->second);
+                        LeaveCombatSpot(lead.combatSpotLeft[guid], {target->GetGUID(), found->second.second});
                         lead.combatSpots.erase(found);
                         found = lead.combatSpots.end();
                     }
@@ -3345,7 +3436,7 @@ namespace Leader::Dungeon
                        gap > LEADER_FOLLOW_START_YD || !bot->IsWithinLOSInMap(tank)))))
                 {
                     lead.following.insert(guid);
-                    if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))
+                    if (followTank(bot, uint8(index % 4), "along with the tank"))
                         logEvent(bot, "Follow", JsonObject().Str("why", "along with the tank").Real("gap", gap));
                     moved = true;
                 }
@@ -3364,7 +3455,7 @@ namespace Leader::Dungeon
                                                       .Str("why", "the group walks and no command fit: Follow")
                                                       .Real("gap", bot->GetExactDist(tank)));
                 }
-                if (Leader::Events::SetFollow(guid, tank->GetGUID(), uint8(index % 4), "along with the tank"))
+                if (followTank(bot, uint8(index % 4), "along with the tank"))
                     logEvent(bot, "Follow", JsonObject().Str("why", "fallback: no other command fit"));
                 moved = true;
             }
@@ -3772,8 +3863,9 @@ namespace Leader::Dungeon
                                 });
                             if (got && shootsFrom(spot))
                             {
-                                if (kept != lead.combatSpots.end())
-                                    LeaveCombatSpot(lead.combatSpotLeft[guid], kept->second);  // [lead137]
+                                if (kept != lead.combatSpots.end())  // [lead137] [lead375] for this target
+                                    LeaveCombatSpot(lead.combatSpotLeft[guid],
+                                                    {attackOn->GetGUID(), kept->second.second});
                                 lead.combatSpots[guid] = {attackOn->GetGUID(), spot};
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,

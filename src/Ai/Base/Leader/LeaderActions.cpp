@@ -615,35 +615,10 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     if (events.move == Leader::MoveEvent::Follow)
     {
         Unit* target = botAI->GetUnit(events.followTarget);
-        if (!target || !target->IsAlive())
-            return false;
-        float back = 3.0f + 2.5f * float((events.followIndex / 2) % 2);
-        float side = events.followIndex % 2 ? 1.5f : -1.5f;
-        // [lead219] the chase of a mob: behind it within its melee reach (LeaderCombatSpot's melee distance, the two
-        // places a little apart), not the follow rows behind a walking member (3-5.5 yd: out of melee of a small mob)
-        if (bot->IsValidAttackTarget(target))
-        {
-            float const reach = std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f);
-            float const turn = events.followIndex % 2 ? 0.35f : -0.35f;
-            back = reach * std::cos(turn);
-            side = reach * std::sin(turn);
-        }
-        float const o = target->GetOrientation();
-        float x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
-        float y = target->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;
-        float z = target->GetPositionZ();
-        // [lead161] a non-finite place (an orientation or a collision answer that is no number) is no place: the
-        // target's own position, and none when that is not finite either
-        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
-            !bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
-                                                             target->GetPositionZ(), x, y, z) ||
-            !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
-        {
-            x = target->GetPositionX();
-            y = target->GetPositionY();
-            z = target->GetPositionZ();
-        }
-        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        if (!FollowPlace(target, events.followIndex, x, y, z))
             return false;
         // [lead44] b93 rfc-h 313-362 s: Rtshaab's Follow fired "leader move order -> 0.0 yd" every tick at 94 and its
         // "ready reply" never ran - the leader waited 50 s for its rebuff. A walk already under way (or done) is no
@@ -817,6 +792,67 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     return true;
 }
 
+bool LeaderMoveOrderAction::FollowPlace(Unit* target, uint8 index, float& x, float& y, float& z)
+{
+    if (!target || !target->IsAlive())
+        return false;
+    float back = 3.0f + 2.5f * float((index / 2) % 2);
+    float side = index % 2 ? 1.5f : -1.5f;
+    // [lead219] the chase of a mob: behind it within its melee reach (LeaderCombatSpot's melee distance, the two
+    // places a little apart), not the follow rows behind a walking member (3-5.5 yd: out of melee of a small mob)
+    if (bot->IsValidAttackTarget(target))
+    {
+        float const reach = std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f);
+        float const turn = index % 2 ? 0.35f : -0.35f;
+        back = reach * std::cos(turn);
+        side = reach * std::sin(turn);
+    }
+    float const o = target->GetOrientation();
+    x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
+    y = target->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;
+    z = target->GetPositionZ();
+    // [lead161] a non-finite place (an orientation or a collision answer that is no number) is no place: the
+    // target's own position, and none when that is not finite either
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+        !bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                        target->GetPositionZ(), x, y, z) ||
+        !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+    {
+        x = target->GetPositionX();
+        y = target->GetPositionY();
+        z = target->GetPositionZ();
+    }
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+}
+
+std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGuid& mob)
+{
+    mob.Clear();
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    if (!FollowPlace(target, index, x, y, z))
+        return std::string();
+    // the executor's own no-walk facts: a chased mob in melee reach, the member at its place
+    if ((bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target)) ||
+        bot->GetExactDist2d(x, y) <= Leader::LEADER_SPOT_TOLERANCE)
+        return std::string();
+    MovementAction::s_dryRun = true;
+    _dryFollow = true;
+    bool const goes =
+        MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
+    _dryFollow = false;
+    MovementAction::s_dryRun = false;
+    mob = MovementAction::s_moveMob;
+    // the executor's verdicts (Execute's Follow branch): a guard that ends the walk elsewhere, a lasting refusal
+    if (goes && !MovementAction::s_moveSubstitute.empty())
+        return MovementAction::s_moveSubstitute;
+    if (!goes && !TransientRefusal(MovementAction::s_moveRefusal))
+        return MovementAction::s_moveRefusal;
+    mob.Clear();
+    return std::string();
+}
+
 void LeaderMoveOrderAction::ReportRefusal(Leader::MemberEvents const& events, Position const& spot,
                                           std::string const& reason, ObjectGuid mob)
 {
@@ -847,6 +883,8 @@ bool LeaderMoveOrderAction::SkipsIdleGuard()
     // [lead373] the leader's dry check judges the move it is about to issue, not the member's current one
     if (_dryWhy)
         return Leader::LedBot(bot) && *_dryWhy != "route walk";
+    if (_dryFollow)  // [lead374] a follow place is the member's own path: its guards run
+        return false;
     Leader::MemberEvents events;
     bool const got = Leader::Events::Get(bot->GetGUID(), events);
     return Leader::LedBot(bot) &&
