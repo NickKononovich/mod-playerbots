@@ -633,6 +633,15 @@ bool DancingRuneWeaponReadyTrigger::IsActive()
         bot->GetPower(POWER_RUNIC_POWER) < DANCING_RUNE_WEAPON_RUNIC_POWER)
         return false;
 
+    // [rot90] a led knight's rune weapon by the leader's verdict on it (LeaderBurnRule), like Hysteria and Raise Dead:
+    // the led tank's own fight rules (LEADER_TANK_OWNS_FIGHT) skip the command gate, so this trigger fired on any
+    // trash pack. b210 rfc-h 5C Rtdekaa: "dancing rune weapon: held for Taragaman / Jergosh / Bazzalan (his pull in
+    // 74 / 23 / 8 s)" and cast 4-16 s later on the last trash pull, on cooldown for 30-60 s of all three counted
+    // boss fights; 5G Rtdekac the same before Taragaman (cooldown 60+ s at the pull of a 53 s fight)
+    bool burn = false;
+    if (LeaderBurnRule(bot, burn, "dancing rune weapon") && !burn)
+        return false;
+
     Unit* target = AI_VALUE(Unit*, "current target");
     return target && target->IsAlive() && bot->IsWithinMeleeRange(target);
 }
