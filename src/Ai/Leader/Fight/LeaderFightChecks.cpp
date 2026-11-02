@@ -654,7 +654,6 @@ namespace Leader::Fight
         // (LeaderCombatSpotValid: half its reach .. its reach, out of the target's melee): when the outer ring has
         // none, the rings inside the band are searched too, the search step of LeaderNearestCombatSpot's rings
         constexpr float RING_STEP_YD = 3.0f;
-        float const reach = LeaderShootReach(bot);
         float const inner = melee || PlayerbotAI::IsHeal(bot) ? distance
                                                                : LeaderRangedMinGap(bot, target) + 1.0f;  // [lead463]
         Map* map = target->GetMap();
