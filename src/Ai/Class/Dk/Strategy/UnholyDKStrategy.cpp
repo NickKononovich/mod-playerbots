@@ -148,6 +148,11 @@ void UnholyDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // Blood Tap -> Ghoul Frenzy sequence sits under Death Coil (5.1), not above Scourge Strike
     triggers.push_back(new TriggerNode("ghoul frenzy", {NextAction("blood tap", ACTION_DEFAULT + 0.07f),
                                                         NextAction("ghoul frenzy", ACTION_DEFAULT + 0.06f)}));
+    // [rot62] the sequence's second half right after the Blood Tap, above every rune spender (Death and Decay HIGH + 5,
+    // the disease refreshes HIGH + 5.3 / 5.2): b201 rfc-h 5D Rtdekab Blood Tap 16 casts, Ghoul Frenzy 2 - the Death
+    // rune went to the next spender and Ghoul Frenzy (DEFAULT + 0.06) never got one (wowsims: 2.5 a minute)
+    triggers.push_back(
+        new TriggerNode("ghoul frenzy after blood tap", {NextAction("ghoul frenzy", ACTION_HIGH + 5.35f)}));
 
     // [b31_deep] no Death and Decay coupling (was "dd cd and no desolation")
     triggers.push_back(

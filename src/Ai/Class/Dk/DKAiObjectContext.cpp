@@ -108,6 +108,7 @@ public:
         creators["frost pestilence"] = &DeathKnightTriggerFactoryInternal::frost_pestilence;
         creators["frost strike runic power"] = &DeathKnightTriggerFactoryInternal::frost_strike_runic_power;
         creators["ghoul frenzy"] = &DeathKnightTriggerFactoryInternal::ghoul_frenzy;
+        creators["ghoul frenzy after blood tap"] = &DeathKnightTriggerFactoryInternal::ghoul_frenzy_after_blood_tap;
         creators["raise dead boost"] = &DeathKnightTriggerFactoryInternal::raise_dead_boost;
         // [rot1]
         creators["dancing rune weapon ready"] = &DeathKnightTriggerFactoryInternal::dancing_rune_weapon_ready;
@@ -193,6 +194,10 @@ private:
     static Trigger* frost_pestilence(PlayerbotAI* botAI) { return new FrostPestilenceTrigger(botAI); }
     static Trigger* frost_strike_runic_power(PlayerbotAI* botAI) { return new FrostStrikeRunicPowerTrigger(botAI); }
     static Trigger* ghoul_frenzy(PlayerbotAI* botAI) { return new GhoulFrenzyTrigger(botAI); }
+    static Trigger* ghoul_frenzy_after_blood_tap(PlayerbotAI* botAI)  // [rot62]
+    {
+        return new GhoulFrenzyAfterBloodTapTrigger(botAI);
+    }
     static Trigger* raise_dead_boost(PlayerbotAI* botAI) { return new RaiseDeadBoostTrigger(botAI); }
     // [rot1]
     static Trigger* dancing_rune_weapon_ready(PlayerbotAI* botAI) { return new DancingRuneWeaponReadyTrigger(botAI); }

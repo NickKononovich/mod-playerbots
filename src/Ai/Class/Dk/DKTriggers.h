@@ -143,6 +143,17 @@ public:
     bool IsActive() override;
 };
 
+// [rot62] wowsims unholy_dw_ss casts Blood Tap -> Ghoul Frenzy as a strictSequence: the Ghoul Frenzy right after the
+// Blood Tap, before any other spender takes the Death rune. Active while the last spell cast was Blood Tap and our
+// ghoul lacks our Ghoul Frenzy (the spell off cooldown).
+class GhoulFrenzyAfterBloodTapTrigger : public Trigger
+{
+public:
+    GhoulFrenzyAfterBloodTapTrigger(PlayerbotAI* botAI) : Trigger(botAI, "ghoul frenzy after blood tap") {}
+
+    bool IsActive() override;
+};
+
 // [b31_deep] Raise Dead as Frost's damage cooldown (wowsims frost_bl_pesti: in the opener and on cooldown) in a fight
 // Summon Gargoyle would be used in (IsGargoyleFight: boss, player, burst window, long elite). Only with the Glyph of
 // Raise Dead (60200, the Frost template's minor glyph): without a corpse the spell otherwise takes Corpse Dust, which

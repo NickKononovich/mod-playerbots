@@ -7,6 +7,7 @@
 #include "DKTriggers.h"
 #include "GenericTriggers.h"
 #include "Group.h"  // [rot10]
+#include "LastSpellCastValue.h"  // [rot62]
 #include "LeaderCommand.h"  // [rot2]
 #include "LeaderCommandState.h"  // [rot3]
 #include "Map.h"  // [b35_uh] IsGargoyleFight
@@ -226,6 +227,19 @@ bool GhoulFrenzyTrigger::IsActive()
     // [rot22] only through Blood Tap (wowsims unholy_dw_ss: the Blood Tap -> Ghoul Frenzy sequence): a real Unholy rune
     // stays for Scourge Strike
     return bot->HasSpell(SPELL_DK_BLOOD_TAP) && !bot->HasSpellCooldown(SPELL_DK_BLOOD_TAP);
+}
+
+// [rot62]
+bool GhoulFrenzyAfterBloodTapTrigger::IsActive()
+{
+    if (context->GetValue<LastSpellCast&>("last spell cast")->Get().id != SPELL_DK_BLOOD_TAP)
+        return false;
+
+    Pet* pet = bot->GetPet();
+    if (!pet || !pet->IsAlive() || !bot->IsInCombat() || pet->HasAura(SPELL_DK_GHOUL_FRENZY, bot->GetGUID()))
+        return false;
+
+    return bot->HasSpell(SPELL_DK_GHOUL_FRENZY) && !bot->HasSpellCooldown(SPELL_DK_GHOUL_FRENZY);
 }
 
 bool RaiseDeadBoostTrigger::IsActive()
