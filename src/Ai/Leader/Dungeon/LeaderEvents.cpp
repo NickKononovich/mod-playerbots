@@ -3868,7 +3868,28 @@ namespace Leader::Dungeon
                     // hit yet (0 against 0). Its single-target attack lands on its target only; what splashes is
                     // its area damage, which the AoE rule below forbids on such a neighbour. The pick and the Stop
                     // read the member's headroom on the mob it attacks
-                    auto const pickable = [&](Unit* mob) { return headroomOn(mob); };
+                    // [lead413] user 2026-11-02 (lead392 reverted, gap closers allowed): b201 5H 606.1 s the cat got
+                    // Attack on a Cultist the bear had just growled in a LoS pull, still at its pack 9 yd from unpulled
+                    // Enforcers - its Feral Charge landed in the pack. A melee member not yet in melee reach of the mob
+                    // takes it only when the mob, where the member reaches it (its walk's or charge's end at the
+                    // mob), is out of every unpulled mob's aggro reach (the spot guard's IdleMobReachesSpot): in a LoS
+                    // pull it waits until the mob came to the tank
+                    std::string unpulledNear;
+                    auto const pickable = [&](Unit* mob)
+                    {
+                        if (!headroomOn(mob))
+                            return false;
+                        if (!splashes || PlayerbotAI::IsHeal(bot) || bot->IsWithinMeleeRange(mob))
+                            return true;
+                        if (Creature* idle = LeaderAggroAt(bot, mob->GetPosition()))
+                        {
+                            if (unpulledNear.empty())
+                                unpulledNear = Acore::StringFormat("{} stands in {}'s aggro reach", mob->GetName(),
+                                                                   idle->GetName());
+                            return false;
+                        }
+                        return true;
+                    };
                     Unit* mine = nullptr;
                     // [lead236] b188 rfc-h 5G 125-139 s: the ret paladin's Attack flipped Shaman <-> Trogg every leader
                     // tick (0.3 s, 30 changes) - lead229's rate moves with every hit, the leader's focus mob passed and
@@ -3934,6 +3955,7 @@ namespace Leader::Dungeon
                                 break;
                             }
                     lead.noHeadroom[guid] = !mine;  // no mob with headroom: it waits (Intensity Stop below)
+                    lead.attackWaitWhy[guid] = !mine ? unpulledNear : std::string();  // [lead413]
                     if (!mine)                      // [lead246] the projection on its Attack target, for the Stop's log
                     {
                         Projection const p = project(attackOn);
@@ -4103,6 +4125,8 @@ namespace Leader::Dungeon
                              JsonObject()
                                  .Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
                                  .Str("why", victim       ? "aggro loss: the tank takes the mob back"
+                                             : overThreat && !lead.attackWaitWhy[guid].empty()  // [lead413]
+                                                 ? "waits: " + lead.attackWaitWhy[guid]
                                              : overThreat ? std::string("threat: no mob with headroom")
                                                           : allowedNote)
                                  .Raw("threat", overThreat && lead.stopProjection.count(guid)
