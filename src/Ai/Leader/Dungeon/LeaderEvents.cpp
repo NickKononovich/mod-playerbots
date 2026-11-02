@@ -4173,6 +4173,13 @@ namespace Leader::Dungeon
                     {
                         if (!seen.firstMs)
                             seen.firstMs = now;
+                        // [lead501] the rise since a sight within one global cooldown: threat it adds at once
+                        if (seen.lastMs && threat > seen.threat &&
+                            getMSTimeDiff(seen.lastMs, now) <= uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS))
+                        {
+                            float& step = lead.threatStep[who->GetGUID()];
+                            step = std::max(step, threat - seen.threat);
+                        }
                         if (threat > seen.threat)
                             seen.riseMs = now;  // [lead432]
                         seen.lastMs = now;
@@ -4219,6 +4226,13 @@ namespace Leader::Dungeon
                     auto const& mine = seenOn(mob, bot);
                     p.mine = mine.threat;
                     p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                    // [lead501] b210 rfc-h: 21 of the 87 aggro losses "out-threatened the tank on its own target" with
+                    // headroom on the tick before - 5B 834.1 s the elemental shaman had headroom on a Cultist (tank
+                    // 2007), at 834.4 s 7802 threat on it: one Lightning Bolt, far over its average rate x one GCD
+                    // (the rate spreads a cast's threat over its cast time; the core moves the mob the moment it
+                    // lands). Its next GCD adds at least the largest threat it was seen to add within one GCD
+                    if (auto const step = lead.threatStep.find(bot->GetGUID()); step != lead.threatStep.end())
+                        p.mineNext = std::max(p.mineNext, mine.threat + step->second);
                     // [lead412] user 2026-11-02: the threat a running redirect (Misdirection / Tricks of the Trade,
                     // registered on the member's ThreatManager until it is spent) moves onto the tank is the tank's
                     if (auto const redirect = lead.redirectTo.find(guid);
