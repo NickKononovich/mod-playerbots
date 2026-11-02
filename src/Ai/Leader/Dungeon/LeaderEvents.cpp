@@ -3941,6 +3941,22 @@ namespace Leader::Dungeon
                                 }
                             }
                     }
+                    // [lead414] user 2026-11-02: a melee member's passive splash (diseases spread by Wandering Plague
+                    // / Pestilence, Blade Flurry) builds threat on fight mobs it does not attack - b201 rfc-h 5D the
+                    // unholy DK lost 10 mobs. Its measured threat on such a mob the tank holds projects like any
+                    // other (headroomOn); one that overtakes the tank holds its damage (hold the dps to avoid wipes)
+                    if (mine && splashes && !PlayerbotAI::IsHeal(bot))
+                        for (ObjectGuid const& other : killOrder)
+                            if (Unit* splashed = ObjectAccessor::GetUnit(*tank, other);
+                                splashed && splashed != mine && splashed->IsAlive() &&
+                                splashed->GetVictim() == tank && seenOn(splashed, bot).threat > 0.0f &&
+                                !headroomOn(splashed))
+                            {
+                                unpulledNear = Acore::StringFormat("its splash threat on {} overtakes the tank",
+                                                                   splashed->GetName());
+                                mine = nullptr;
+                                break;
+                            }
                     Unit* const attackOn = mine ? mine : target;
                     Leader::AoeRule memberAoe = aoe;
                     std::string memberAoeWhy = aoeWhy;
