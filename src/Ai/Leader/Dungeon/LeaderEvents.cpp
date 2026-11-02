@@ -2760,6 +2760,18 @@ namespace Leader::Dungeon
                                     JsonObject().Str("member", bot->GetName()).Str("why", breaks)
                                         .Str("target", target->GetName())
                                         .Real("walk", bot->GetExactDist(spot)));
+                            // [lead250] b191: the ranged "combat spot" walks were 2439 s of the 8 runs' in-fight
+                            // moving; a first spot away from where the member stands logs what its own place fails
+                            else if (!here && !melee)
+                                Decisions().Write(
+                                    run, "leader", "combat_first_spot", guid, bot->GetName(), false,
+                                    JsonObject()
+                                        .Str("member", bot->GetName())
+                                        .Str("target", target->GetName())
+                                        .Str("hereFails", LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(),
+                                                                                 melee, zones, keeps, true, &killOrder))
+                                        .Real("walk", bot->GetExactDist(spot))
+                                        .Real("targetGap", bot->GetExactDist(target)));
                             lead.combatSpots[guid] = {target->GetGUID(), spot};
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         }
