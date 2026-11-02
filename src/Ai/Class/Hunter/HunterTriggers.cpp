@@ -5,6 +5,7 @@
  */
 
 #include "HunterTriggers.h"
+#include <algorithm>
 #include "HealthTriggers.h"  // [lead85] RestState::OwnManaLine
 #include "LeaderOrders.h"    // [lead85] Leader::LedGroup
 #include "DynamicObject.h"  // [guide_b31_dead]
@@ -101,8 +102,10 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
     {
         uint8 const mana = AI_VALUE2(uint8, "mana", "self target");
         // [rot8] out of a led group's fight the leader's rest line (the regen in Viper costs no damage)
+        // [lead361] and at least wowsims' Dragonhawk line: the line counts Viper's mana in the fight now, so the walk
+        // between pulls regenerates in Viper below it rather than the group waiting for a drink
         if (Leader::LedGroup(bot) && !bot->IsInCombat())
-            return float(mana) >= RestState::OwnManaLine(bot);
+            return float(mana) >= std::max(RestState::OwnManaLine(bot), float(ASPECT_OF_THE_DRAGONHAWK_MANA_PCT));
         return mana > ASPECT_OF_THE_DRAGONHAWK_MANA_PCT;
     }
 
@@ -204,8 +207,8 @@ bool HunterAspectOfTheViperTrigger::IsActive()
     // [rot8] in a fight wowsims' line (Viper below 10 %, Dragonhawk again above 30 %): Viper halves the shots, the
     // next fight's mana is the leader's rest. Out of a led group's fight while below the leader's rest line (the
     // regen costs no damage).
-    if (Leader::LedGroup(bot) && !bot->IsInCombat())
-        return float(mana) < RestState::OwnManaLine(bot);
+    if (Leader::LedGroup(bot) && !bot->IsInCombat())  // [lead361] Viper on the walk below wowsims' Dragonhawk line
+        return float(mana) < std::max(RestState::OwnManaLine(bot), float(ASPECT_OF_THE_DRAGONHAWK_MANA_PCT));
     return mana < ASPECT_OF_THE_VIPER_MANA_PCT;
 }
 

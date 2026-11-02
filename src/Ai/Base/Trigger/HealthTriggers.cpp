@@ -806,6 +806,37 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // Light): its mana is in that rate already, a credit on top counted it twice
     if (!measured)
         credit(SPELL_DIVINE_PLEA, 25.0f, "Divine Plea");
+    // [lead361] b196 rfc-h 5E: the BM hunter sat to drink before trash ("Rthunab rests below its line (mana 23 %,
+    // need 46 %)") - a WotLK hunter regenerates in the fight with Aspect of the Viper (wowsims: Viper below 10 %,
+    // Dragonhawk again above 30 %). Viper's mana counts in the fight when a Viper second costs the group less than
+    // drinking its mana before the pull, as a cooldown's does above: its damage cut (the aura's
+    // SPELL_AURA_MOD_DAMAGE_PERCENT_DONE) of this member's share of the group's damage, per % of mana it returns -
+    // the aura's own power tick (SPELL_AURA_OBS_MOD_POWER) plus the hit energize spell_hun_ascpect_of_the_viper casts:
+    // the ranged attack time in seconds as % of max mana per ranged hit, 1 % per second of Auto Shot
+    constexpr uint32 SPELL_ASPECT_OF_THE_VIPER = 34074;
+    if (bot->HasSpell(SPELL_ASPECT_OF_THE_VIPER) && fightSec > 0.0f)
+        if (SpellInfo const* viper = sSpellMgr->GetSpellInfo(SPELL_ASPECT_OF_THE_VIPER))
+        {
+            float viperPerSec = 1.0f;  // the hit energize over Auto Shot
+            float damageCut = 0.0f;
+            for (SpellEffectInfo const& effect : viper->GetEffects())
+            {
+                if (effect.ApplyAuraName == SPELL_AURA_OBS_MOD_POWER && effect.MiscValue == POWER_MANA &&
+                    effect.Amplitude > 0)
+                    viperPerSec += float(effect.CalcValue(bot)) * float(IN_MILLISECONDS) / float(effect.Amplitude);
+                else if (effect.ApplyAuraName == SPELL_AURA_MOD_DAMAGE_PERCENT_DONE && effect.CalcValue(bot) < 0)
+                    damageCut = std::max(damageCut, -float(effect.CalcValue(bot)) / 100.0f);
+            }
+            float const viperCostPerPct = damageCut / float(DamageDealers(bot)) / viperPerSec;
+            float const drinkCostPerPct = drinkRate > 0.0f ? 1.0f / drinkRate : -1.0f;
+            bool const inFight = damageCut > 0.0f && (drinkCostPerPct < 0.0f || viperCostPerPct <= drinkCostPerPct);
+            float const viperPct = std::min(viperPerSec * fightSec, std::max(need + reserve - returned, 0.0f));
+            if (inFight)
+                returned += viperPct;
+            pick += Acore::StringFormat("{}Aspect of the Viper {}: {:.2f} s per % in the fight vs {:.2f} s drinking",
+                                        pick.empty() ? "" : "; ", inFight ? "in the fight" : "drunk before",
+                                        viperCostPerPct, drinkCostPerPct);
+        }
     // [lead251] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
     // need 2-12 % - the config's LowMana as the floor (80 s of its drinks); b192's floor at its mean deepest drop in a
     // fight (lead248) went over the computed need in 104 of 152 lines (5E tank 24 % against 4-13 %, the frost mage 47 %

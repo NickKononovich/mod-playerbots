@@ -24,6 +24,10 @@ void GenericHunterNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& tri
     triggers.push_back(new TriggerNode("no ammo", { NextAction("equip upgrades packet action", ACTION_HIGH + 1) }));
     // K6 pre-pull: Misdirection on the tank that is about to pull
     triggers.push_back(new TriggerNode("pull imminent", { NextAction("misdirection on main tank", ACTION_HIGH + 2) }));
+    // [lead361] the walk between pulls regenerates in Aspect of the Viper (the trigger's out-of-fight line; the
+    // "bdps" Dragonhawk trigger takes it back at that line): out of a fight it costs no damage, and the mana line
+    // counts Viper's mana in the fight, so the hunter is no reason to drink
+    triggers.push_back(new TriggerNode("aspect of the viper", { NextAction("aspect of the viper", ACTION_HIGH) }));
 }
 
 void HunterPetStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
