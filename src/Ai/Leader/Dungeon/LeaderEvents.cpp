@@ -1912,11 +1912,13 @@ namespace Leader::Dungeon
         {
             float const sec = std::max(getMSTimeDiff(lead.fightStartMs, now) / 1000.0f, 1.0f);
             std::map<std::string, float> perMember;
+            std::map<std::string, float> topMob;  // [lead240] the threat on its top mob of the fight
             JsonArray tankMobs;
             for (auto const& [mob, byMember] : lead.threatMax)
                 for (auto const& [who, threat] : byMember)
                 {
                     perMember[who] += threat;
+                    topMob[who] = std::max(topMob[who], threat);
                     if (who == tank->GetName())
                         tankMobs.Raw(JsonObject().Num("low", mob.GetCounter()).Real("tps", threat / sec).Build());
                 }
@@ -1933,6 +1935,13 @@ namespace Leader::Dungeon
             Decisions().Write(run, "leader", "threat_tps", tank->GetGUID(), tank->GetName(), false,
                                           JsonObject().Real("fightSec", sec).Raw("tps", members.Build())
                                               .Raw("tankPerMob", tankMobs.Build()).Raw("margin", marginsJson.Build()));
+            for (auto const& [who, threat] : topMob)
+                if (threat > 0.0f)
+                {
+                    auto& tps = lead.memberMobTps[who];
+                    tps.first += threat / sec;
+                    ++tps.second;
+                }
             lead.threatMax.clear();
             lead.threatMargins.clear();
         }
@@ -3170,11 +3179,19 @@ namespace Leader::Dungeon
                     for (ObjectGuid const& other : killOrder)
                         if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
                             myMost = std::max(myMost, fought->GetThreatMgr().GetThreat(bot));
+                    // [lead240] b189 rfc-h 5C: the fury warrior took 24 mobs, 30 of the run's 49 losses 8-35 yd from
+                    // the tank - early in a fight its rate here is still 0 (nothing hit yet), the first hits of a
+                    // fury warrior land on a mob the tank holds by a Blood Boil tick. Its rate is at least its own
+                    // measured single-target threat per second of this run's earlier fights
+                    float runTps = 0.0f;
+                    if (auto const measured = lead.memberMobTps.find(bot->GetName());
+                        measured != lead.memberMobTps.end() && measured->second.second)
+                        runTps = measured->second.first / float(measured->second.second);
                     auto const headroomOn = [&](Unit* mob)
                     {
                         float const mine = mob->GetThreatMgr().GetThreat(bot);
-                        return mine + std::max(mine, myMost) / fightSec * HEADROOM_GCD_SEC <
-                               mob->GetThreatMgr().GetThreat(tank);
+                        float const rate = std::max(std::max(mine, myMost) / fightSec, runTps);
+                        return mine + rate * HEADROOM_GCD_SEC < mob->GetThreatMgr().GetThreat(tank);
                     };
                     // [lead67] b112: Rtshaab out-threatened the tank on the OTHER Earthborer (procs, totems, cleave):
                     // a mob is attackable only while the member has headroom on it AND on every fight mob its damage
