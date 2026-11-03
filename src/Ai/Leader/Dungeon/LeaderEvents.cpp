@@ -55,6 +55,7 @@
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderPrepull.h"      // [lead270]
 #include "LeaderTrapWeave.h"    // [lead271]
+#include "LeaderHazardVerdict.h"  // [lead780]
 #include "LeaderSupport.h"      // [lead400] .. [lead405]
 #include "RaidConsumables.h"    // [lead610] FindManaGem
 #include "Pet.h"  // [lead38] the pet redirect
@@ -3002,6 +3003,57 @@ namespace Leader::Dungeon
                                            [&kicked](HazardZone const& zone)
                                            { return !zone.source.IsEmpty() && kicked.count(zone.source); }),
                             zones.end());
+        // [lead780] user rule (hazard-stay-or-leave): every hazard a member stands in is a computed stay or leave -
+        // the damage it would not deal out of it (the walk out and back, the wait for the cast / area, its rotation)
+        // against the damage it takes, and it stays only when it survives and the healers cover it. A zone it stays
+        // in is no hazard for it this tick (no escape, its fight spot may lie in it). b220 rfc-h 5H Taragaman: the cat
+        // walked out of Fire Nova twice (681.7 / 721.7 s, 3-4 s out of melee each, Savage Roar dropped)
+        Leader::HazardVerdict::Facts const verdictFacts{&group, tank, &seats, target, lead.fightSecLeft,
+                                                        lead.bossFightOn, fighting};
+        auto const judged = [&](Player* bot, std::string const& key, Leader::HazardVerdict::Verdict const& verdict,
+                                std::set<std::string>& seen)
+        {
+            seen.insert(key);
+            lead.hazardVerdictWhy[bot->GetGUID()] = verdict.why;
+            auto& stays = lead.hazardStays[bot->GetGUID()];
+            if (auto const was = stays.find(key); was != stays.end() && was->second == verdict.stays)
+                return;
+            stays[key] = verdict.stays;
+            Decisions().Write(run, "leader", "hazard_verdict", bot->GetGUID(), bot->GetName(), true,
+                              JsonObject().Str("hazard", key).Str("verdict", verdict.stays ? "stays" : "leaves")
+                                  .Str("why", verdict.why));
+        };
+        if (Leader::LEADER_HAZARD_STAY_OR_LEAVE)
+            for (auto& [member, zones] : lead.hazardZones)
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member);
+                std::set<std::string> seen;
+                if (bot && bot->IsAlive())
+                    zones.erase(std::remove_if(zones.begin(), zones.end(),
+                                               [&](HazardZone const& zone)
+                                               {
+                                                   if (std::fabs(zone.centre.GetPositionZ() - bot->GetPositionZ()) >
+                                                           LEADER_HAZARD_DZ ||
+                                                       zone.centre.GetExactDist2d(bot->GetPositionX(),
+                                                                                  bot->GetPositionY()) >=
+                                                           zone.radius + 0.5f)
+                                                       return false;
+                                                   Leader::HazardVerdict::Verdict const verdict =
+                                                       Leader::HazardVerdict::JudgeZone(verdictFacts, bot, zone);
+                                                   judged(bot, zone.what, verdict, seen);
+                                                   return verdict.stays;
+                                               }),
+                                zones.end());
+                // on a rescan (every zone back in the list): the hazards it no longer stands in are judged anew when
+                // it does again
+                if (auto stays = lead.hazardStays.find(member);
+                    lead.hazardScanMs == now && stays != lead.hazardStays.end())
+                    for (auto it = stays->second.begin(); it != stays->second.end();)
+                    {
+                        bool const cleave = it->first.rfind("cleave: ", 0) == 0;  // judged in the member's moves
+                        it = seen.count(it->first) || (fighting && cleave) ? std::next(it) : stays->second.erase(it);
+                    }
+            }
         if (!fighting)
         {
             lead.combatSpots.clear();
@@ -3779,13 +3831,30 @@ namespace Leader::Dungeon
                                                        : std::function<bool(Position const&)>(keepsHealer));
                                  }))
                 {
-                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, exit, 1.5f, "out of a cleave cone"))
-                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                 JsonObject().Str("why", "out of a cleave cone").Real("x", exit.GetPositionX())
-                                     .Real("y", exit.GetPositionY()).Real("z", exit.GetPositionZ()));
-                    if (bot == healer)
-                        healerAt = exit;
-                    moved = true;
+                    // [lead780] the cleave is a hazard like any other: stay or leave by the computation (the side
+                    // step's seconds x its dps vs the cone spell's hits over the fight, survival, the heals)
+                    Leader::HazardVerdict::Verdict verdict;
+                    if (Leader::LEADER_HAZARD_STAY_OR_LEAVE)
+                        if (Unit* cleaver = DungeonTactics::FrontalCleaverAt(bot, botAI, 1.0f,
+                                                                              20.0f * float(M_PI) / 180.0f))
+                        {
+                            verdict = Leader::HazardVerdict::JudgeCleave(verdictFacts, bot, cleaver,
+                                                                         bot->GetExactDist2d(exit));
+                            std::set<std::string> seen;
+                            judged(bot, "cleave: " + cleaver->GetName(), verdict, seen);
+                        }
+                    // stays in the cone: no move, its fight spot holds
+                    if (!verdict.stays)
+                    {
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, exit, 1.5f, "out of a cleave cone"))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", "out of a cleave cone").Str("verdict", verdict.why)
+                                         .Real("x", exit.GetPositionX()).Real("y", exit.GetPositionY())
+                                         .Real("z", exit.GetPositionZ()));
+                        if (bot == healer)
+                            healerAt = exit;
+                        moved = true;
+                    }
                 }
                 else if (Leader::LEADER_HEAL_REACH && healer)
                     LogHealReach(group, bot, bot == healer ? tank : healer, "no cleave exit keeps the heal reach",
@@ -3849,8 +3918,9 @@ namespace Leader::Dungeon
                             why = current.moveWhy;
                         if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.0f, why))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                     JsonObject().Str("why", why).Real("x", spot.GetPositionX())
-                                         .Real("y", spot.GetPositionY()).Real("z", spot.GetPositionZ()));
+                                     JsonObject().Str("why", why).Str("verdict", lead.hazardVerdictWhy[guid])
+                                         .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
+                                         .Real("z", spot.GetPositionZ()));
                         if (bot == healer)
                             healerAt = spot;
                         moved = true;
@@ -6341,6 +6411,7 @@ namespace Leader::Dungeon
                 {
                     logEvent(tank, MoveEventName(Leader::MoveEvent::MoveTo),
                              JsonObject().Str("why", std::string("hazard: ") + in->what).Str("who", "tank")
+                                 .Str("verdict", lead.hazardVerdictWhy[tank->GetGUID()])
                                  .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
                                  .Real("z", spot.GetPositionZ()));
                     LogFightDrag(run, tank, spot, lead.meetPoint, "hazard");

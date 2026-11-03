@@ -298,6 +298,9 @@ namespace Leader
     // NPCs, area casts, DungeonHazard circles, lava / drop-offs as a spot filter): the members' own dodges are off
     constexpr bool LEADER_NO_OWN_AOE_DODGE = true;        // "avoid aoe", "avoid dungeon hazard"
     constexpr bool LEADER_HAZARD_SPOTS = true;            // the leader's hazard MoveTo (off: no leader dodge)
+    // [lead780] user rule (hazard-stay-or-leave): every avoidable damage source (area cast, ground area, trap,
+    // trigger NPC, frontal cleave) is a computed stay or leave per member (LeaderHazardVerdict); false: always leave
+    constexpr bool LEADER_HAZARD_STAY_OR_LEAVE = true;
     // [lead16] combat positions: the leader's StandAt for every member in the fight (ranged / healer at a distance in
     // sight of the target, melee behind it, out of cleaves and hazards, in heal reach); the members' own range moves
     // ("reach melee" / "reach spell") yield to a leader spot

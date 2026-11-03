@@ -5062,7 +5062,16 @@ void AvoidAoeAction::CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& o
         aura->GetSpellInfo() && !whitelisted(aura->GetSpellInfo()->Id))
         if (DynamicObject* dynOwner = aura->GetDynobjOwner(); dynOwner && dynOwner->IsInWorld())
             if (float const radius = dynOwner->GetRadius(); radius > 0.0f && radius <= maxRadius)
-                out.push_back({dynOwner->GetPosition(), radius, aura->GetSpellInfo()->SpellName[LOCALE_enUS]});
+            {
+                // [lead780] its spell, caster, time left and tick for the leader's stay-or-leave verdict
+                uint32 periodMs = 0;
+                for (SpellEffectInfo const& effect : aura->GetSpellInfo()->GetEffects())
+                    if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude > 0)
+                        periodMs = uint32(effect.Amplitude);
+                out.push_back({dynOwner->GetPosition(), radius, aura->GetSpellInfo()->SpellName[LOCALE_enUS],
+                               ObjectGuid::Empty, aura->GetSpellInfo()->Id, aura->GetCasterGUID(),
+                               dynOwner->GetDuration(), periodMs});
+            }
 
     // #2 damage traps
     for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest trap with damage"))
@@ -5078,7 +5087,8 @@ void AvoidAoeAction::CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& o
             continue;
         float const radius = float(goInfo->trap.diameter) / 2.0f + go->GetCombatReach();
         if (radius > 0.0f && radius <= maxRadius)
-            out.push_back({go->GetPosition(), radius, spellInfo->SpellName[LOCALE_enUS]});
+            out.push_back({go->GetPosition(), radius, spellInfo->SpellName[LOCALE_enUS], ObjectGuid::Empty,
+                           spellInfo->Id, ObjectGuid::Empty, -1, 0});  // [lead780] one hit per trigger
     }
 
     // #3 invisible trigger NPCs with a pulsing damage aura
@@ -5104,7 +5114,10 @@ void AvoidAoeAction::CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& o
                     {
                         float const radius = trigger->Effects[j].CalcRadius();
                         if (radius > 0.0f && radius <= maxRadius)
-                            out.push_back({unit->GetPosition(), radius, trigger->SpellName[LOCALE_enUS]});
+                            out.push_back({unit->GetPosition(), radius, trigger->SpellName[LOCALE_enUS],
+                                           ObjectGuid::Empty, trigger->Id, unit->GetGUID(),
+                                           aurEff->GetBase() ? aurEff->GetBase()->GetDuration() : -1,
+                                           uint32(std::max(aurEff->GetAmplitude(), 0))});  // [lead780]
                         break;
                     }
             }
@@ -5114,8 +5127,29 @@ void AvoidAoeAction::CollectZones(PlayerbotAI* botAI, std::vector<HazardZone>& o
     Position centre;
     float radius = 0.0f;
     if (Unit* caster = FindCasterAoe(botAI, bot, AI_VALUE(GuidVector, "attackers"), centre, radius))
+    {
+        // [lead780] the cast's spell and its remaining time (a channel: its time left, ticking)
+        uint32 spellId = 0;
+        int32 leftMs = -1;
+        uint32 periodMs = 0;
+        if (Spell* spell = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL); spell && spell->GetSpellInfo())
+        {
+            spellId = spell->GetSpellInfo()->Id;
+            leftMs = int32(spell->GetCastTimeRemaining());
+        }
+        else if (Spell* channel = caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL); channel && channel->GetSpellInfo())
+        {
+            spellId = channel->GetSpellInfo()->Id;
+            leftMs = channel->GetSpellInfo()->GetDuration();
+            if (Aura const* aura = caster->GetAura(spellId, caster->GetGUID()))
+                leftMs = aura->GetDuration();
+            for (SpellEffectInfo const& effect : channel->GetSpellInfo()->GetEffects())
+                if (effect.Amplitude > 0)
+                    periodMs = uint32(effect.Amplitude);
+        }
         out.push_back({centre, radius + CASTER_AOE_EXIT_MARGIN, "area cast of " + caster->GetName(),
-                       caster->GetGUID()});
+                       caster->GetGUID(), spellId, caster->GetGUID(), leftMs, periodMs});
+    }
 }
 
 // Case #4: a mob casting a point-blank / ground area spell with a cast bar (Blast Wave 23039, War Stomp 38750) or

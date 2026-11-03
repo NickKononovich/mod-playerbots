@@ -568,6 +568,14 @@ bool InFrontalCleave(Player* bot, PlayerbotAI* botAI, float distMargin, float an
     return SpotInFrontalCleave(bot, botAI, bot->GetPositionX(), bot->GetPositionY(), distMargin, angleMargin);
 }
 
+Unit* FrontalCleaverAt(Player* bot, PlayerbotAI* botAI, float distMargin, float angleMargin)
+{
+    for (auto const& [mob, spec] : CollectCleavers(bot, botAI))
+        if (SpotInCleave(bot, mob, *spec, bot->GetPositionX(), bot->GetPositionY(), distMargin, angleMargin))
+            return mob;
+    return nullptr;
+}
+
 bool CleaverNearby(Player* bot, PlayerbotAI* botAI) { return !CollectCleavers(bot, botAI).empty(); }
 
 bool IsKnownCleaver(uint32 mapId, uint32 entry) { return FindCleave(mapId, entry) != nullptr; }

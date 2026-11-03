@@ -64,6 +64,8 @@ void AppendKillFirstExclusions(PlayerbotAI* botAI, GuidSet& exclusions);
 // The bot stands in reach of a cleaving mob's cone (or inside its body) and the mob is on somebody else.
 bool InFrontalCleave(Player* bot, PlayerbotAI* botAI, float distMargin, float angleMargin);
 bool SpotInFrontalCleave(Player* bot, PlayerbotAI* botAI, float x, float y, float distMargin, float angleMargin);
+// [lead780] the cleaving mob whose cone holds the bot (the first one), nullptr: none
+Unit* FrontalCleaverAt(Player* bot, PlayerbotAI* botAI, float distMargin, float angleMargin);
 // A cleaving mob is in the fight near the bot (the generic "set behind" must not place the bot).
 bool CleaverNearby(Player* bot, PlayerbotAI* botAI);
 // [lead231] the curated cleave list (FRONTAL_CLEAVES) has this creature on this map.

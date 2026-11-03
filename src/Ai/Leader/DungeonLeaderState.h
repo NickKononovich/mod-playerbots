@@ -143,6 +143,10 @@ namespace Leader
         std::map<ObjectGuid, std::vector<HazardZone>> hazardZones;
         uint32 hazardScanMs = 0;
         std::map<ObjectGuid, Position> hazardSpots;
+        // [lead780] the stay-or-leave verdict per member and hazard it stands in (logged on a change), and the
+        // numbers of the member's last verdict (its hazard MoveTo carries them)
+        std::map<ObjectGuid, std::map<std::string, bool>> hazardStays;
+        std::map<ObjectGuid, std::string> hazardVerdictWhy;
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpots;  // member -> {target, spot}
         // [lead137] the combat spots a member left in this fight, for their targets: not chosen again for that target
         // (A -> B -> A); [lead239] every one of the fight, not only the last (A -> B -> A came back over B)

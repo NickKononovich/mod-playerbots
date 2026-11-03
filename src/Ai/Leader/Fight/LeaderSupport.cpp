@@ -1015,4 +1015,9 @@ bool PickBattleRes(LeaderGroup& group, Player* tank, std::vector<Player*> const&
 }
 
 std::string BuffPassWork(LeaderGroup& group) { return group.State().support.buffWork; }
+
+float MemberTakenPerSec(LeaderGroup& group, Player* member)
+{
+    return member ? TakenPerSec(group.State().support, member, getMSTime() ? getMSTime() : 1) : 0.0f;
+}
 }  // namespace Leader::Support

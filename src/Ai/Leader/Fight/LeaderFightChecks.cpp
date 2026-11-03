@@ -588,7 +588,15 @@ namespace Leader::Fight
                 continue;
             float const radius = dyn->GetRadius();
             if (radius > 0.0f && radius <= sPlayerbotAIConfig.MaxAoeAvoidRadius)
-                out.push_back({dyn->GetPosition(), radius, info->SpellName[LOCALE_enUS]});
+            {
+                // [lead780] its spell, caster, time left and tick for the leader's stay-or-leave verdict
+                uint32 periodMs = 0;
+                for (SpellEffectInfo const& effect : info->GetEffects())
+                    if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude > 0)
+                        periodMs = uint32(effect.Amplitude);
+                out.push_back({dyn->GetPosition(), radius, info->SpellName[LOCALE_enUS], ObjectGuid::Empty, info->Id,
+                               caster->GetGUID(), dyn->GetDuration(), periodMs});
+            }
         }
         for (DungeonHazard::Circle const& circle : DungeonHazard::Collect(bot))
             if (!circle.chasing)

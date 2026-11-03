@@ -52,6 +52,10 @@ bool PickBattleRes(LeaderGroup& group, Player* tank, std::vector<Player*> const&
 
 // [lead405] What the buff pass's support orders still do (empty: nothing); the pass's buff step waits for it.
 std::string BuffPassWork(LeaderGroup& group);
+
+// [lead780] the member's measured damage taken per second in the fight under way (DamageTaken since its start); 0:
+// none measured (out of a fight, nothing taken yet)
+float MemberTakenPerSec(LeaderGroup& group, Player* member);
 }  // namespace Leader::Support
 
 #endif
