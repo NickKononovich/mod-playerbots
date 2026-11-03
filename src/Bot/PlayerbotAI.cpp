@@ -7582,9 +7582,13 @@ void PlayerbotAI::NoteIdleDiagAction(Action* action, std::string const& source)
 // the casts / regen in the harness numbers). One debug line per cast on a dungeon boss: energy and combo points right
 // after the cast, the action and its trigger, the ms since the previous cast and the energy then, so the energy
 // budget (regen, Relentless Strikes / Focused Attacks / Overkill returns, pooling) can be summed from the log.
+// [rot321] b220 rfc-h 5H Rtdruaf: Shred 12.6 / 19.0, Rip 1.65 / 2.14 and Rake 4.7 / 5.8 a minute of the sim with no
+// per-cast times in the logs: the cat (a druid in Cat Form) gets the same line, with Clearcasting, Berserk, Tiger's
+// Fury, its own Rip / Rake (seconds) and Savage Roar left and whether it stands behind the target.
 void PlayerbotAI::TraceRogueGcd(Action* action, std::string const& source)
 {
-    if (bot->getClass() != CLASS_ROGUE || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    bool const cat = bot->getClass() == CLASS_DRUID && bot->GetShapeshiftForm() == FORM_CAT;
+    if ((bot->getClass() != CLASS_ROGUE && !cat) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
 
     Unit* target = aiObjectContext->GetValue<Unit*>("current target")->Get();
@@ -7598,14 +7602,44 @@ void PlayerbotAI::TraceRogueGcd(Action* action, std::string const& source)
     uint32 const now = getMSTime();
     uint32 const energy = bot->GetPower(POWER_ENERGY);
     uint32 const sinceMs = rogueGcdLastMs ? getMSTimeDiff(rogueGcdLastMs, now) : 0;
+    if (cat)
+    {
+        Aura const* rip = GetAura("rip", boss, true);
+        Aura const* rake = GetAura("rake", boss, true);
+        Aura const* roar = GetAura("savage roar", bot);
+        LOG_DEBUG("playerbots",
+                  "[cat gcd] {} on {}: after the cast energy {} cp {} -> {} (trigger {}) | {} ms after the last cast "
+                  "(energy {}) | clearcasting {}, berserk {}, tiger's fury {} | rip {} s, rake {} s, savage roar {} s "
+                  "| melee {}, behind {}, swinging {}",
+                  bot->GetName(), boss->GetName(), energy, bot->GetComboPoints(target), action->getName(),
+                  source.empty() ? "default" : source, sinceMs, rogueGcdLastEnergy, HasAura("clearcasting", bot),
+                  HasAura("berserk", bot), HasAura("tiger's fury", bot),
+                  rip ? rip->GetDuration() / IN_MILLISECONDS : 0, rake ? rake->GetDuration() / IN_MILLISECONDS : 0,
+                  roar ? roar->GetDuration() / IN_MILLISECONDS : 0, bot->IsWithinMeleeRange(target),
+                  boss->isInBack(bot), bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING));
+        rogueGcdLastMs = now;
+        rogueGcdLastEnergy = energy;
+        return;
+    }
+
     Aura const* snd = GetAura("slice and dice", bot);
+    // [rot320] b220 5E: Deadly Poison 69 % and Envenom 72 % a cast of the sim with Master Poisoner (core613) in, which
+    // only fits fewer than 5 doses on the boss; the doses (own Deadly Poison, SpellFamilyFlags 0x10000 as
+    // spell_rog_deadly_poison), the Envenom buff (57993: +75 % Instant Poison) and Overkill (58427) are logged too
+    AuraEffect const* deadly = boss->GetAuraEffect(SPELL_AURA_PERIODIC_DAMAGE, SPELLFAMILY_ROGUE, 0x10000, 0, 0,
+                                                   bot->GetGUID());
+    Aura const* envenom = bot->GetAura(57993);
+    Aura const* overkill = bot->GetAura(58427);
     LOG_DEBUG("playerbots",
               "[rogue gcd] {} on {}: after the cast energy {} cp {} -> {} (trigger {}) | {} ms after the last cast "
-              "(energy {}) | slice and dice {} s, melee {}, swinging {}",
+              "(energy {}) | slice and dice {} s, melee {}, swinging {} | deadly poison {} doses {} s, envenom {} ms, "
+              "overkill {} s",
               bot->GetName(), boss->GetName(), energy, bot->GetComboPoints(target), action->getName(),
               source.empty() ? "default" : source, sinceMs, rogueGcdLastEnergy,
               snd ? snd->GetDuration() / IN_MILLISECONDS : 0, bot->IsWithinMeleeRange(target),
-              bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING));
+              bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING), deadly ? deadly->GetBase()->GetStackAmount() : 0,
+              deadly ? deadly->GetBase()->GetDuration() / IN_MILLISECONDS : 0, envenom ? envenom->GetDuration() : 0,
+              overkill ? overkill->GetDuration() / IN_MILLISECONDS : 0);
     rogueGcdLastMs = now;
     rogueGcdLastEnergy = energy;
 }
