@@ -6099,7 +6099,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return loss;
     }
 
-    // [lead206] the farthest walk of a living member (not the tank) to `to`, straight
+    // [lead206] the farthest walk of a living member (not the tank) to `to` ([lead804] its navmesh walk)
     float GroupWalkTo(Player* tank, Position const& to)
     {
         float farthest = 0.0f;
@@ -6107,7 +6107,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 if (Player* member = ref->GetSource();
                     member && member != tank && member->IsAlive() && member->GetMap() == tank->GetMap())
-                    farthest = std::max(farthest, member->GetExactDist(to));
+                    farthest = std::max(farthest, Leader::WalkYd(member, to));
         return farthest;
     }
 
@@ -6158,18 +6158,19 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         CornerCost cost;
         float const speed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
-        float const tankCorner = tank->GetExactDist(castSpot) + castSpot.GetExactDist(corner);
+        float const tankCorner = Leader::WalkYd(tank, castSpot) + Leader::WalkYd(tank, castSpot, corner);  // [lead804]
         float casterSec = 0.0f;
         std::vector<Unit*> losRanged;
         for (Unit* mob : losPack)
             if (RangedMob(mob))
             {
                 losRanged.push_back(mob);
-                casterSec = std::max(casterSec, mob->GetExactDist(corner) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
+                casterSec =
+                    std::max(casterSec, Leader::WalkYd(mob, corner) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
             }
         // [lead212] ... and the walk back from the corner to where the pack stood: the route goes on from there, where
         // the fight without the corner ends (b184 rfc-h 5F: the corner cost ended at the corner)
-        float const walkBack = corner.GetExactDist(candidate->GetPosition());
+        float const walkBack = Leader::WalkYd(tank, corner, candidate->GetPosition());  // [lead804]
         // [lead215] b184 rfc-h 5D: 99 s of aggro off the tank in corner pulls - the casters that come round are the
         // tank's tools' too
         float const cornerLoose = TankRangedHolds(tankAI, tank, corner, losRanged, true, groupDps, healRate).lossSec;
@@ -6205,15 +6206,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         {
             float mobSec = 0.0f;
             for (Unit* mob : standPack)
-                mobSec = std::max(mobSec, mob->GetExactDist(*pullBackKill) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
-            float const walk = std::max(tank->GetExactDist(castSpot), GroupWalkTo(tank, castSpot)) +
-                               pullBackKill->GetExactDist(candidate->GetPosition());
+                mobSec = std::max(mobSec,
+                                  Leader::WalkYd(mob, *pullBackKill) / std::max(mob->GetSpeed(MOVE_RUN), 0.1f));
+            float const walk = std::max(Leader::WalkYd(tank, castSpot), GroupWalkTo(tank, castSpot)) +
+                               Leader::WalkYd(tank, *pullBackKill, candidate->GetPosition());  // [lead804]
             cost.standSec = walk / speed + mobSec + standFightSec + cost.lossSec;
         }
         else
         {
             float const standWalk =
-                std::max(tank->GetExactDist(candidate), GroupWalkTo(tank, candidate->GetPosition()));
+                std::max(Leader::WalkYd(tank, candidate->GetPosition()), GroupWalkTo(tank, candidate->GetPosition()));
             cost.standSec = standWalk / speed + standFightSec + cost.lossSec;
         }
         return cost;
@@ -8466,7 +8468,8 @@ ObjectGuid AggressiveTargetAction::FindApproachTarget()
             }
 
             Position const end(points.back().x, points.back().y, points.back().z);
-            float const walk = bot->GetExactDist(end) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+            float const walk = std::max(path.getPathLength(), bot->GetExactDist(end)) /  // [lead804] the path walked
+                               std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
             size_t const samples = size_t((walk + PATROL_GROUP_HORIZON) / PATROL_SAMPLE_SEC) + 1;
             Unit* patrolBlocker = nullptr;
             for (PatrolGroup const& patrol : patrols)
@@ -9372,7 +9375,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // User, RFC 2026-10-24: a mob that walks (a wanderer, a patrol) and can come to the mob's spot while the
         // fight lasts moves the fight back (WalksIntoFight).
         float const engageSec =
-            FightWindowSec(estimate) + bot->GetExactDist(candidate) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+            FightWindowSec(estimate) +
+            Leader::WalkYd(bot, candidate->GetPosition()) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);  // [lead804]
         FightIntruder intruder;
         bool const engageCrossed = engageFits && engageSeen && !estimate.boss &&
                                    WalksIntoFight(botAI, bot, possible, candidate, candidate->GetPosition(),
@@ -12330,7 +12334,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                       : (_planFightFor == planned->GetGUID() ? _planFight : planned->GetPosition()));
         float const walkIn = _planLos || _planPullBack
                                  ? 0.0f
-                                 : bot->GetExactDist(planned) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+                                 : Leader::WalkYd(bot, planned->GetPosition()) /  // [lead804]
+                                       std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
         float const fight = (chosen.boss ? PATROL_BOSS_FIGHT_SEC
                                          : std::clamp(chosen.fightSec, PATROL_MIN_FIGHT_SEC, PATROL_MAX_FIGHT_SEC)) *
                             PATROL_FIGHT_MARGIN;
@@ -12485,7 +12490,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                       : engageAt);
         float const walkIn = _planLos || _planPullBack
                                  ? 0.0f
-                                 : bot->GetExactDist(plannedMob) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+                                 : Leader::WalkYd(bot, plannedMob->GetPosition()) /  // [lead804]
+                                       std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
         float const fightSec = PATROL_PULL_LEAD_SEC + walkIn +
                                std::clamp(chosen.fightSec, PATROL_MIN_FIGHT_SEC, PATROL_MAX_FIGHT_SEC) *
                                    PATROL_FIGHT_MARGIN;

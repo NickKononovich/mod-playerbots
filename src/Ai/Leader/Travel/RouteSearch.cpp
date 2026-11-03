@@ -13,6 +13,8 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapDefines.h"
+#include "StringFormat.h"
+#include "Timer.h"
 #include "Unit.h"
 #include <algorithm>
 #include <cmath>
@@ -457,6 +459,104 @@ namespace Leader
     {
         return Route(walker, G3D::Vector3(walker->GetPositionX(), walker->GetPositionY(), walker->GetPositionZ()),
                      G3D::Vector3(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()));
+    }
+
+    // [lead804] b221 rfc-h 5A / 5D / 5H: the Ragefire Trogg ramp engage was priced as a 44 yd straight walk, the route
+    // up the ramp was 86-130 yd - every walk in the leader's estimates (CornerVsStand, the engage and pull-back walks,
+    // GroupWalkTo, the seconds to a boss) read GetExactDist. They read the navmesh walk now
+    float WalkYd(Unit* walker, Position const& from, Position const& to)
+    {
+        float const straight = from.GetExactDist(to);
+        Map* map = walker ? walker->GetMap() : nullptr;
+        if (!map || straight <= 0.5f || !map->GetMapCollisionData().GetMMapData().GetNavMesh())
+            return straight;
+        struct Key
+        {
+            uint32 map;
+            uint8 kind;
+            int32 bin;
+            int32 c[6];
+            bool operator==(Key const& o) const
+            {
+                return map == o.map && kind == o.kind && bin == o.bin && std::equal(c, c + 6, o.c);
+            }
+        };
+        struct KeyHash
+        {
+            size_t operator()(Key const& k) const
+            {
+                size_t h = std::hash<uint32>()(k.map) ^ (size_t(k.kind) << 1) ^ (size_t(k.bin) << 3);
+                for (int32 v : k.c)
+                    h = h * 1000003u ^ std::hash<int32>()(v);
+                return h;
+            }
+        };
+        struct Stats
+        {
+            uint32 routes = 0;
+            uint32 longer = 0;
+            float worstRatio = 0.0f;
+            std::string worst;
+            uint32 loggedMs = 0;
+        };
+        thread_local std::unordered_map<Key, float, KeyHash> cache;
+        thread_local Stats stats;
+        if (cache.size() > 8192)
+            cache.clear();
+        float const binYd = std::max(2.0f, straight * 0.05f);
+        int32 const bin = int32(std::ceil(std::log2(binYd)));  // the bin size class (a pair keeps one class)
+        float const size = std::exp2(float(bin));
+        auto const q = [&](float v) { return int32(std::floor(v / size)); };
+        Key const key{map->GetId(),
+                      uint8(walker->IsPlayer() ? 0 : 1),
+                      bin,
+                      {q(from.GetPositionX()), q(from.GetPositionY()), q(from.GetPositionZ()), q(to.GetPositionX()),
+                       q(to.GetPositionY()), q(to.GetPositionZ())}};
+        if (auto const found = cache.find(key); found != cache.end())
+            return std::max(found->second, straight);
+        RouteResult const route =
+            Route(walker, G3D::Vector3(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ()),
+                  G3D::Vector3(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()));
+        float length = straight;
+        if (route.found && !route.corners.empty())
+        {
+            G3D::Vector3 const& last = route.corners.back();
+            length = route.length +
+                     (route.complete ? 0.0f : (G3D::Vector3(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()) -
+                                               last).length());
+        }
+        length = std::max(length, straight);
+        cache.emplace(key, length);
+        ++stats.routes;
+        if (length > straight + size)
+        {
+            ++stats.longer;
+            if (length / straight > stats.worstRatio)
+            {
+                stats.worstRatio = length / straight;
+                stats.worst = Acore::StringFormat("{} {:.0f} yd for {:.0f} straight ({:.1f},{:.1f},{:.1f} -> "
+                                                  "{:.1f},{:.1f},{:.1f})",
+                                                  walker->GetName(), length, straight, from.GetPositionX(),
+                                                  from.GetPositionY(), from.GetPositionZ(), to.GetPositionX(),
+                                                  to.GetPositionY(), to.GetPositionZ());
+            }
+        }
+        uint32 const now = getMSTime();
+        if (!stats.loggedMs)
+            stats.loggedMs = now;
+        else if (getMSTimeDiff(stats.loggedMs, now) >= MINUTE * IN_MILLISECONDS && stats.routes)
+        {
+            LOG_INFO("playerbots", "[lead804] walk estimates this minute: {} routes, {} longer than straight; the "
+                     "most: {}", stats.routes, stats.longer, stats.longer ? stats.worst : std::string("-"));
+            stats = Stats{};
+            stats.loggedMs = now;
+        }
+        return length;
+    }
+
+    float WalkYd(Unit* walker, Position const& to)
+    {
+        return walker ? WalkYd(walker, walker->GetPosition(), to) : 0.0f;
     }
 }
 

@@ -513,6 +513,12 @@ namespace Leader
     };
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to);
     RouteResult Route(Unit* walker, Position const& to);  // from where the walker stands
+    // [lead804] the walk's length in yards for the leader's time estimates: the route's (Route) when it has a complete
+    // walk, a partial one plus the straight rest, the straight line when there is none or the map has no navmesh.
+    // Cached per walker kind and pair of ends (each end binned to 5 % of the straight gap, at least 2 yd: the
+    // estimate's error stays within that share of the walk) on the calling thread
+    float WalkYd(Unit* walker, Position const& from, Position const& to);
+    float WalkYd(Unit* walker, Position const& to);  // from where the walker stands
 
     // [lead15] The leader -> member event channel. One record per member, written by the leader (world thread) every
     // LEADER_EVENT_TICK_MS while it holds, read by the member on its own tick (map thread): behind a lock. A field

@@ -617,7 +617,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                                                             boss->GetCombatReach());
                     break;
                 }
-        float const tankEta = std::max(0.0f, tank->GetExactDist(boss) - pullReach) / speed;
+        float const tankEta =
+            std::max(0.0f, Leader::WalkYd(tank, boss->GetPosition()) - pullReach) / speed;  // [lead804]
         bool laterBoss = false;
         for (ObjectGuid const& bossGuid : group.BossCreatures())
             if (Creature* other = bossGuid == boss->GetGUID() ? nullptr : map->GetCreature(bossGuid);

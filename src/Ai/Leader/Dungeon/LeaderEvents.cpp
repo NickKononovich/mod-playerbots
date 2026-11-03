@@ -2678,7 +2678,8 @@ namespace Leader::Dungeon
         // straight walk from him); without an estimate this fight's rest and the straight walk to him
         auto const secToBoss = [&](Creature* later) -> float
         {
-            float toHim = lead.fightSecLeft + tank->GetExactDist(later) / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+            float toHim = lead.fightSecLeft + Leader::WalkYd(tank, later->GetPosition()) /  // [lead804]
+                                                     std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
             if (later->GetGUID() == lead.nextBossGuid && lead.bossPullSec >= 0.0f)
                 toHim = lead.bossPullSec;
             else if (Creature* next = lead.nextBossGuid.IsEmpty() ? nullptr : map->GetCreature(lead.nextBossGuid);
@@ -2772,8 +2773,9 @@ namespace Leader::Dungeon
                     at = boss->GetGUID() == lead.nextBossGuid && lead.bossPullSec >= 0.0f ? lead.bossPullSec
                                                                                           : secToBoss(boss);
                 else
-                    at += uses.back().fightSec + (lead.stretches ? lead.stretchSecSum / float(lead.stretches)
-                                                                 : prev->GetExactDist(boss) / speed);
+                    at += uses.back().fightSec +
+                          (lead.stretches ? lead.stretchSecSum / float(lead.stretches)
+                                          : Leader::WalkYd(tank, prev->GetPosition(), boss->GetPosition()) / speed);
                 auto const need = lead.bossNeeds.find(boss->GetGUID());
                 uses.push_back({boss->GetName(), at, need != lead.bossNeeds.end() ? need->second.fightSec : 0.0f});
                 prev = boss;
