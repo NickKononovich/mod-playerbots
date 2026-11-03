@@ -368,14 +368,10 @@ namespace Leader
             // there counts from it)
             float base = 0.0f;
             bool taunted = false;  // [lead561] its taunt aura was on the mob at the last look
-            uint32 lookedMs = 0;   // [lead560] the leader's last look at its threat there (with or without threat)
         };
         std::map<ObjectGuid, std::map<ObjectGuid, ThreatSeen>> threatSeen;  // [lead243] fight mob -> who -> seen
         std::map<ObjectGuid, std::string> stopProjection;        // [lead246] the headroom projection a Stop was read on
         std::map<ObjectGuid, std::pair<float, uint32>> openTps;  // [lead243] its threat / s on each mob it hit: sum, n
-        // [lead560] a member's largest threat rise on one mob between two leader looks within one global cooldown:
-        // the threat one of its casts lands (the DK's Icy Touch x7, a crit, a heal's split threat), measured this run
-        std::map<ObjectGuid, float> threatBurst;
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
         std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived
