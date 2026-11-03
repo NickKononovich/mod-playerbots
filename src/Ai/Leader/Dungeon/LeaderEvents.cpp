@@ -1271,7 +1271,13 @@ namespace Leader::Dungeon
                 float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
                 float trashHealth = 0.0f;
                 float walkYd = 0.0f;
-                if (route.routePlanBoss == nextBoss->GetGUID() && !route.routePlan.empty())
+                // [lead632] b218 rfc-h 5G 714 s: the route's plan to Jergosh had no stop left ("stops":0, 52.5 yd)
+                // and read as no plan: the stretch floor (lead513) made his pull "110 s" at 722.7 s and "76 s" at
+                // 756.8 s - he was pulled at 758 s; the blood DK tank's Dancing Rune Weapon (90 s) went on that trash
+                // as "back before the pull". A plan the route made to him (routePlanBoss) with no stop left is the way
+                // to him with no trash on it: its walk alone
+                bool const planToHim = route.routePlanBoss == nextBoss->GetGUID();
+                if (planToHim)
                 {
                     Position at = tank->GetPosition();
                     for (GroupRouteState::PlannedStop const& stop : route.routePlan)
@@ -1321,7 +1327,7 @@ namespace Leader::Dungeon
                 // the estimate read the current path's on-path mobs and the straight line (no trash between the two
                 // bosses). Without a plan to him the run's measured stretch between bosses (their mean, lead421) less
                 // the part of it already walked is the floor of the estimate
-                if (!(route.routePlanBoss == nextBoss->GetGUID() && !route.routePlan.empty()) && lead.stretches)
+                if (!planToHim && lead.stretches)
                 {
                     float const walked =
                         lead.stretchFromMs ? getMSTimeDiff(lead.stretchFromMs, now) / 1000.0f : 0.0f;
