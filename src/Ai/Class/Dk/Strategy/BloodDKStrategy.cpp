@@ -283,9 +283,10 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     // Peel: take back a mob hitting the healer or a damage dealer, also when it is not the current target.
     // Above "set facing" (ACTION_MOVE + 7) and "tank face" (ACTION_MOVE), as the warrior's taunt.
+    // [rot151] every step needs the mob in reach and sight: the trigger fires on the mob, not on the friend alone
     triggers.push_back(
         new TriggerNode(
-            "mob attacking group member",
+            "mob in reach attacking group member",
             {
                 NextAction("dark command on group member attacker", ACTION_INTERRUPT + 0.5f),
                 // [b32_peel] Death Grip brings the mob (a caster at range too) to the tank: no gap-closer gate

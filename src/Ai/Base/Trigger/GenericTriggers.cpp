@@ -168,8 +168,8 @@ bool MobAttackingGroupMemberTrigger::IsActive()
 {
     // Also for a mob beyond taunt range on a friend within Righteous Defense range (wave 6 Utgarde Keep: Forge
     // Masters out of taunt range killed casters 20-29 yd from the tank six times).
-    return PlayerbotAI::IsTank(bot) &&
-           (AI_VALUE(Unit*, "group member attacker") || AI_VALUE(Unit*, "attacked group member"));
+    return PlayerbotAI::IsTank(bot) && (AI_VALUE(Unit*, "group member attacker") ||
+                                        (friendTarget && AI_VALUE(Unit*, "attacked group member")));
 }
 
 bool MobsAttackingGroupMembersTrigger::IsActive()

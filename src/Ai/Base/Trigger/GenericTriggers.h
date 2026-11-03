@@ -152,12 +152,24 @@ public:
 
 // Tank only: a mob is hitting a healer or damage dealer of the group ("group member attacker" value), or a
 // friend within Righteous Defense range is hit by a mob out of taunt range ("attacked group member").
+// [rot151] "mob in reach attacking group member" (friendTarget false): the mob alone, for a tank with no spell cast on
+// the friend (Dark Command, Death Grip, Growl, Feral Charge all need the mob in reach and sight). b212 rfc-h 5C
+// 364-385 s: a Ragefire Shaman 53 yd off and then 24 yd off out of sight hit the balance druid, the Blood DK's peel
+// fired on the friend alone and its four actions found no mob every tick ("dark command on group member attacker
+// (isUseful false: no target)"), eating the tick's action budget.
 class MobAttackingGroupMemberTrigger : public Trigger
 {
 public:
-    MobAttackingGroupMemberTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mob attacking group member") {}
+    MobAttackingGroupMemberTrigger(PlayerbotAI* botAI, std::string const name = "mob attacking group member",
+                                   bool friendTarget = true)
+        : Trigger(botAI, name), friendTarget(friendTarget)
+    {
+    }
 
     bool IsActive() override;
+
+private:
+    bool friendTarget;  // the friend alone ("attacked group member") is enough: Righteous Defense, Intervene
 };
 
 // Tank only: `minAttackers` (PEEL_AOE_MIN_ATTACKERS) or more mobs on non-tank members within `range` yards of the

@@ -140,6 +140,7 @@ public:
         creators["lose aggro"] = &TriggerContext::LoseAggro;
         creators["has aggro"] = &TriggerContext::HasAggro;
         creators["mob attacking group member"] = &TriggerContext::mob_attacking_group_member;
+        creators["mob in reach attacking group member"] = &TriggerContext::mob_in_reach_attacking_group_member;
         creators["mobs attacking group members"] = &TriggerContext::mobs_attacking_group_members;
         creators["mobs attacking group members nearby"] = &TriggerContext::mobs_attacking_group_members_nearby;
         creators["group member attackers far"] = &TriggerContext::group_member_attackers_far;
@@ -414,6 +415,10 @@ private:
     static Trigger* LoseAggro(PlayerbotAI* botAI) { return new LoseAggroTrigger(botAI); }
     static Trigger* HasAggro(PlayerbotAI* botAI) { return new HasAggroTrigger(botAI); }
     static Trigger* mob_attacking_group_member(PlayerbotAI* botAI) { return new MobAttackingGroupMemberTrigger(botAI); }
+    static Trigger* mob_in_reach_attacking_group_member(PlayerbotAI* botAI)  // [rot151]
+    {
+        return new MobAttackingGroupMemberTrigger(botAI, "mob in reach attacking group member", false);
+    }
     static Trigger* mobs_attacking_group_members(PlayerbotAI* botAI)
     {
         return new MobsAttackingGroupMembersTrigger(botAI, "mobs attacking group members", "30");

@@ -244,7 +244,8 @@ void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // Peel: take back a mob hitting the healer or a damage dealer, also when it is not the current target.
     // Above "set facing" (ACTION_MOVE + 7) and "tank face" (ACTION_MOVE), as the warrior's taunt; Swipe first,
     // Challenging Roar when it is not possible.
-    triggers.push_back(new TriggerNode("mob attacking group member",
+    // [rot151] every step needs the mob in reach and sight: the trigger fires on the mob, not on the friend alone
+    triggers.push_back(new TriggerNode("mob in reach attacking group member",
         {
             NextAction("growl on group member attacker", ACTION_INTERRUPT + 0.5f),
             // Growl on cooldown: Feral Charge puts the bear on the mob (8-25 yd), Swipe and Maul take it then.
