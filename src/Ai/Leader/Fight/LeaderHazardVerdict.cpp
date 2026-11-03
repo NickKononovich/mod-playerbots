@@ -27,6 +27,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "Timer.h"
 #include "UnitScript.h"
 
 namespace Leader::HazardVerdict
@@ -220,11 +221,14 @@ float RotationTerm(Player* member, Unit* target, float awaySec, float dps, std::
 }
 
 // The verdict from the two costs: `burst` the first hit, `perSec` the hazard's ticks while it stays in, `taken`
-// all it deals over the stay; `awaySec` the member's seconds without damage when it leaves
-Verdict Decide(Facts const& facts, Player* member, Unit* target, std::string const& what, float burst, float perSec,
-               float taken, float awaySec)
+// all it deals over the stay; `awaySec` the member's seconds without damage when it leaves. [lead820] `toCome` the
+// damage of the hazard's hits still to come in the fight (`toComeWhy` their count and cadence): the healer's mana
+// heals them all, with the other stays' heals (`key`: the hazard, Facts::stayHeals)
+Verdict Decide(Facts const& facts, Player* member, Unit* target, std::string const& key, std::string const& what,
+               float burst, float perSec, float taken, float awaySec, float toCome, std::string const& toComeWhy)
 {
     Verdict verdict;
+    verdict.heal = taken + toCome;
     float const dps = facts.fighting ? GroupDamage::MemberSustainedDps(member) : 0.0f;
     std::string rotation;
     float const lostDps = dps * awaySec;
@@ -266,18 +270,31 @@ Verdict Decide(Facts const& facts, Player* member, Unit* target, std::string con
     bool const healRate = mainHealer && spare > 0.0f;
     float const coverSec = healRate ? taken / spare : 0.0f;
     // the main healer's mana after healing it back, against its line for the fight's seconds left
+    // [lead820] every hit still to come in the fight, not the next one only, and the heal the other stays ask (the
+    // other members' and its own other hazards'): one mana pool heals them all
     bool manaHolds = true;
     std::string mana;
     if (mainHealer && mainFacts.maxMana > 0.0f)
     {
+        float others = 0.0f;
+        if (facts.stayHeals)
+            for (auto const& [guid, heals] : *facts.stayHeals)
+                for (auto const& [hazard, heal] : heals)
+                    if (guid != member->GetGUID() || hazard != key)
+                        others += heal;
         float const nowPct = mainHealer->GetPowerPct(POWER_MANA);
         float const afterPct =
-            mainFacts.healPerMana > 0.0f ? nowPct - taken / mainFacts.healPerMana / mainFacts.maxMana * 100.0f : 0.0f;
+            mainFacts.healPerMana > 0.0f
+                ? nowPct - (verdict.heal + others) / mainFacts.healPerMana / mainFacts.maxMana * 100.0f
+                : 0.0f;
         float const line =
             Leader::Fight::LeaderMoveManaLine(mainHealer, true, facts.fightSecLeft, facts.bossFight, nullptr);
         manaHolds = mainFacts.healPerMana > 0.0f && (line < 0.0f || afterPct >= line);
-        mana = Acore::StringFormat(", {} mana {:.0f} % -> {:.0f} % (line {:.0f} %)", mainHealer->GetName(), nowPct,
-                                   afterPct, line);
+        mana = Acore::StringFormat(", [lead820] {} mana {:.0f} % -> {:.0f} % (line {:.0f} %) healing {} ({} now + "
+                                   "{} {}{})",
+                                   mainHealer->GetName(), nowPct, afterPct, line, Amount(verdict.heal + others),
+                                   Amount(taken), Amount(toCome), toComeWhy,
+                                   others > 0.0f ? " + " + Amount(others) + " the other stays" : "");
     }
     bool const cheaper = lost > taken;
     verdict.stays = dps > 0.0f && cheaper && survives && healRate && manaHolds;
@@ -334,7 +351,120 @@ SpellInfo const* ConeSpell(Creature* creature, float& everySec)
             }
     return nullptr;
 }
+
+// [lead820] the seconds between two of `caster`'s casts of `info`: its encounter timer (the SmartAI in-combat event
+// that casts it: the mean of its repeat), else the measured interval of its casts seen in this fight, else the
+// spell's cooldown; 0: not known (`source` says which)
+float CadenceSec(Facts const& facts, Unit* caster, SpellInfo const* info, std::string& source)
+{
+    if (Creature* creature = caster ? caster->ToCreature() : nullptr; creature && creature->GetAIName() == "SmartAI")
+        for (int32 const id : {-int32(creature->GetSpawnId()), int32(creature->GetEntry())})
+        {
+            if (!id)
+                continue;
+            for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(id, SMART_SCRIPT_TYPE_CREATURE))
+                if (holder.GetActionType() == SMART_ACTION_CAST && holder.action.cast.spell == info->Id &&
+                    holder.GetEventType() == SMART_EVENT_UPDATE_IC && holder.event.minMaxRepeat.repeatMax)
+                {
+                    source = Acore::StringFormat("its encounter timer {:.0f}-{:.0f} s",
+                                                 holder.event.minMaxRepeat.repeatMin / 1000.0f,
+                                                 holder.event.minMaxRepeat.repeatMax / 1000.0f);
+                    return float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f /
+                           1000.0f;
+                }
+        }
+    if (facts.casts && caster)
+        if (auto const seen = facts.casts->find({caster->GetGUID(), info->Id});
+            seen != facts.casts->end() && seen->second.count >= 2)
+        {
+            source = Acore::StringFormat("measured over its {} casts", seen->second.count);
+            return getMSTimeDiff(seen->second.firstMs, seen->second.lastMs) / 1000.0f /
+                   float(seen->second.count - 1);
+        }
+    if (uint32 const cooldownMs = std::max(info->RecoveryTime, info->CategoryRecoveryTime))
+    {
+        source = "its cooldown";
+        return cooldownMs / 1000.0f;
+    }
+    return 0.0f;
+}
+
+// [lead820] the damage of the zone's hits still to come in the fight after the one in front of the member: a cast's
+// next casts from its landing on at its cadence, an area's next areas (each its ticks over its duration, the fight's
+// end cutting the last); a trap or an area for good (counted whole already) has none
+float HitsToCome(Facts const& facts, Unit* caster, SpellInfo const* info, HazardZone const& zone, float burst,
+                 float perSec, float leftSec, std::string& why)
+{
+    if (!caster || zone.leftMs < 0)
+    {
+        why = !caster ? "(no caster: this hit only)" : "(it lasts the fight: counted whole)";
+        return 0.0f;
+    }
+    float const fightSec = std::max(facts.fightSecLeft, 0.0f);
+    std::string source;
+    float const everySec = CadenceSec(facts, caster, info, source);
+    // a cadence below the hazard scan's step is none the leader can count casts by
+    if (everySec * IN_MILLISECONDS < float(Leader::Fight::LEADER_HAZARD_SCAN_MS))
+    {
+        why = "(no cadence known: this hit only)";
+        return 0.0f;
+    }
+    uint32 hits = 0;
+    float damage = 0.0f;
+    if (!zone.periodMs)
+    {
+        hits = uint32(std::max(fightSec - leftSec, 0.0f) / everySec);
+        damage = float(hits) * burst;
+    }
+    else
+    {
+        float const durationSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
+        float const goneSec = std::max(durationSec - zone.leftMs / 1000.0f, 0.0f);
+        for (float startSec = std::max(everySec - goneSec, 0.0f); startSec < fightSec; startSec += everySec)
+        {
+            ++hits;
+            damage += perSec * std::min(durationSec, fightSec - startSec);
+        }
+    }
+    why = Acore::StringFormat("for {} more every {:.1f} s ({}) in the fight's {:.0f} s left", hits, everySec, source,
+                              fightSec);
+    return damage;
+}
 }  // namespace
+
+void NoteCasts(CastLog& log, Player* viewer, std::vector<HazardZone> const& zones, uint32 nowMs)
+{
+    for (HazardZone const& zone : zones)
+    {
+        if (!zone.spellId || zone.caster.IsEmpty() || zone.leftMs < 0)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(zone.spellId);
+        if (!info)
+            continue;
+        // an area's / a channel's length; a cast bar's own cast time
+        int32 fullMs = info->GetMaxDuration();
+        int32 leftMs = zone.leftMs;
+        if (!zone.source.IsEmpty())
+            if (Unit* caster = ObjectAccessor::GetUnit(*viewer, zone.caster))
+                if (Spell* spell = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                    spell && spell->GetSpellInfo() && spell->GetSpellInfo()->Id == zone.spellId)
+                {
+                    fullMs = spell->GetCastTime();
+                    leftMs = spell->GetCastTimeRemaining();
+                }
+        if (fullMs <= 0)
+            continue;
+        uint32 const startMs = nowMs - uint32(std::clamp(fullMs - leftMs, 0, fullMs));
+        CastSeen& seen = log[{zone.caster, zone.spellId}];
+        // the same cast (another member's view of it, a cast pushed back): within its own length of the last start
+        if (seen.count && int32(startMs - seen.lastMs) <= fullMs)
+            continue;
+        if (!seen.count)
+            seen.firstMs = startMs;
+        seen.lastMs = startMs;
+        ++seen.count;
+    }
+}
 
 Verdict JudgeZone(Facts const& facts, Player* member, HazardZone const& zone)
 {
@@ -385,6 +515,7 @@ Verdict JudgeZone(Facts const& facts, Player* member, HazardZone const& zone)
     if (cast && outSec > leftSec)
     {
         verdict.stays = true;
+        verdict.heal = taken;
         verdict.why = Acore::StringFormat("stays: {} {} lands in {:.1f} s, the walk out takes {:.1f} s ({:.1f} yd)",
                                           Amount(taken), zone.what, leftSec, outSec, outYd);
         return verdict;
@@ -394,7 +525,10 @@ Verdict JudgeZone(Facts const& facts, Player* member, HazardZone const& zone)
     bool const targetIn =
         target && zone.centre.GetExactDist2d(target->GetPositionX(), target->GetPositionY()) < zone.radius;
     float const awaySec = IsMelee(member) && targetIn ? std::max(outSec, leftSec) + outSec : outSec;
-    return Decide(facts, member, target, zone.what, burst, perSec, taken, awaySec);
+    // [lead820] the hazard's hits still to come in the fight: the healer heals them all
+    std::string toComeWhy;
+    float const toCome = HitsToCome(facts, caster, info, zone, burst, perSec, leftSec, toComeWhy);
+    return Decide(facts, member, target, zone.what, zone.what, burst, perSec, taken, awaySec, toCome, toComeWhy);
 }
 
 Verdict JudgeCleave(Facts const& facts, Player* member, Unit* cleaver, float exitYd)
@@ -415,9 +549,10 @@ Verdict JudgeCleave(Facts const& facts, Player* member, Unit* cleaver, float exi
     float const taken = std::max(burst, perSec * std::max(facts.fightSecLeft, 0.0f));
     float const awaySec = exitYd / std::max(member->GetSpeed(MOVE_RUN), 0.1f);
     Unit* target = member->GetVictim() ? member->GetVictim() : facts.fightTarget;
-    return Decide(facts, member, target,
+    // its casts over the fight's rest are in `taken` already (lead780): none more to come
+    return Decide(facts, member, target, "cleave: " + cleaver->GetName(),
                   std::string(info->SpellName[LOCALE_enUS]) + " of " + cleaver->GetName() + " every " +
                       Acore::StringFormat("{:.1f} s", everySec),
-                  burst, perSec, taken, awaySec);
+                  burst, perSec, taken, awaySec, 0.0f, "(its casts in the fight's rest counted)");
 }
 }  // namespace Leader::HazardVerdict

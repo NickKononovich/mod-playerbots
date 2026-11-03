@@ -12,6 +12,7 @@
 
 #include "G3D/Vector3.h"
 #include "HazardZone.h"
+#include "LeaderHazardVerdict.h"  // [lead820]
 #include "ObjectGuid.h"
 #include "Position.h"
 #include <map>
@@ -147,6 +148,10 @@ namespace Leader
         // numbers of the member's last verdict (its hazard MoveTo carries them)
         std::map<ObjectGuid, std::map<std::string, bool>> hazardStays;
         std::map<ObjectGuid, std::string> hazardVerdictWhy;
+        // [lead820] the hazard casts seen in this fight (their cadence, measured) and the heal each member's stay asks
+        // of the main healer per hazard (every hit to come): the healer's mana is judged on them all
+        HazardVerdict::CastLog hazardCasts;
+        HazardVerdict::StayHeals hazardStayHeals;
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> combatSpots;  // member -> {target, spot}
         // [lead137] the combat spots a member left in this fight, for their targets: not chosen again for that target
         // (A -> B -> A); [lead239] every one of the fight, not only the last (A -> B -> A came back over B)

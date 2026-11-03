@@ -2982,16 +2982,23 @@ namespace Leader::Dungeon
         {
             lead.hazardScanMs = now;
             lead.hazardZones.clear();
+            // [lead820] the hazard casts seen are noted for their cadence (the healer's mana over every hit to come)
             for (Player* bot : seats)
                 slow([&]
                      {
                          LeaderCollectHazards(bot, lead.hazardZones[bot->GetGUID()]);
+                         if (fighting)
+                             Leader::HazardVerdict::NoteCasts(lead.hazardCasts, bot, lead.hazardZones[bot->GetGUID()],
+                                                              now);
                          return true;
                      });
             if (tank->IsAlive())  // [lead17] the tank's hazards too
                 slow([&]
                      {
                          LeaderCollectHazards(tank, lead.hazardZones[tank->GetGUID()]);
+                         if (fighting)
+                             Leader::HazardVerdict::NoteCasts(lead.hazardCasts, tank, lead.hazardZones[tank->GetGUID()],
+                                                              now);
                          return true;
                      });
         }
@@ -3062,13 +3069,20 @@ namespace Leader::Dungeon
         // against the damage it takes, and it stays only when it survives and the healers cover it. A zone it stays
         // in is no hazard for it this tick (no escape, its fight spot may lie in it). b220 rfc-h 5H Taragaman: the cat
         // walked out of Fire Nova twice (681.7 / 721.7 s, 3-4 s out of melee each, Savage Roar dropped)
+        // [lead820] with the casts seen (their cadence) and the other stays' heals: the healer's mana over them all
         Leader::HazardVerdict::Facts const verdictFacts{&group, tank, &seats, target, lead.fightSecLeft,
-                                                        lead.bossFightOn, fighting};
+                                                        lead.bossFightOn, fighting, &lead.hazardCasts,
+                                                        &lead.hazardStayHeals, now};
         auto const judged = [&](Player* bot, std::string const& key, Leader::HazardVerdict::Verdict const& verdict,
                                 std::set<std::string>& seen)
         {
             seen.insert(key);
             lead.hazardVerdictWhy[bot->GetGUID()] = verdict.why;
+            // [lead820] the heal its stay asks (every hit to come), counted against the healer's mana by the others
+            if (verdict.stays)
+                lead.hazardStayHeals[bot->GetGUID()][key] = verdict.heal;
+            else if (auto heals = lead.hazardStayHeals.find(bot->GetGUID()); heals != lead.hazardStayHeals.end())
+                heals->second.erase(key);
             auto& stays = lead.hazardStays[bot->GetGUID()];
             if (auto const was = stays.find(key); was != stays.end() && was->second == verdict.stays)
                 return;
@@ -3105,11 +3119,19 @@ namespace Leader::Dungeon
                     for (auto it = stays->second.begin(); it != stays->second.end();)
                     {
                         bool const cleave = it->first.rfind("cleave: ", 0) == 0;  // judged in the member's moves
-                        it = seen.count(it->first) || (fighting && cleave) ? std::next(it) : stays->second.erase(it);
+                        if (seen.count(it->first) || (fighting && cleave))
+                        {
+                            ++it;
+                            continue;
+                        }
+                        lead.hazardStayHeals[member].erase(it->first);  // [lead820] no stay, no heal asked
+                        it = stays->second.erase(it);
                     }
             }
         if (!fighting)
         {
+            lead.hazardCasts.clear();      // [lead820] the cadence measured is this fight's
+            lead.hazardStayHeals.clear();  // [lead820]
             lead.combatSpots.clear();
             lead.combatSpotLeft.clear();  // [lead239] the fight's left spots end with it
             lead.tankGroundSpots.clear();  // [lead152]
