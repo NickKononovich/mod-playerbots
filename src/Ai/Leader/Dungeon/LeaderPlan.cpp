@@ -430,7 +430,8 @@ namespace Leader::Dungeon
                 }
                 if (healer)
                 {
-                    if (HealReaches(tank, here, fight) && here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD)
+                    if (HealReaches(tank, here, fight, bot) &&
+                        here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD)
                         lead.spots[member.guid] = here;
                     continue;
                 }
@@ -439,7 +440,7 @@ namespace Leader::Dungeon
             // fight spot within LEADER_HEALER_TANK_YD; a ranged member: in range of it; melee: anywhere safe)
             {
                 Position const here = bot->GetPosition();
-                bool const fits = healer ? (HealReaches(tank, here, fight) &&
+                bool const fits = healer ? (HealReaches(tank, here, fight, bot) &&
                                             here.GetExactDist(fight) <= Leader::LEADER_HEALER_TANK_YD)
                                          : (!ranged || castsAtFight(bot, here));  // [lead464]
                 if (fits && !LeaderAggroAt(bot, here))
@@ -523,7 +524,7 @@ namespace Leader::Dungeon
             {
                 Position const here = bot->GetPosition();
                 Creature* mob = LeaderAggroAt(bot, here);
-                bool const fits = healer ? HealReaches(tank, here, fight)
+                bool const fits = healer ? HealReaches(tank, here, fight, bot)
                                          : (!ranged || castsAtFight(bot, here));  // [lead464]
                 if (!mob && fits)
                     lead.spots[member.guid] = here;
@@ -553,11 +554,11 @@ namespace Leader::Dungeon
         {
             auto const keeps = [&](Position const& from, std::vector<ObjectGuid>* out)
             {
-                bool all = HealReaches(tank, from, fight);
+                bool all = HealReaches(tank, from, fight, healer);
                 if (!all && out)
                     out->push_back(tank->GetGUID());
                 for (auto const& [guid, spot] : lead.spots)
-                    if (guid != healer->GetGUID() && !HealReaches(tank, from, spot))
+                    if (guid != healer->GetGUID() && !HealReaches(tank, from, spot, healer))
                     {
                         all = false;
                         if (out)

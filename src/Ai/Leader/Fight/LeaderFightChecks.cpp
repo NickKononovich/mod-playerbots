@@ -207,17 +207,23 @@ namespace Leader::Fight
                (!fightMobs || LeaderOutOfMobsMelee(bot, at, *fightMobs, whereTheyStand));
     }
 
-    bool HealReaches(Player* tank, Position const& from, Position const& to)
+    bool HealReaches(Player* tank, Position const& from, Position const& to, Unit const* healer)
     {
         // [lead723] the game's heal reach (Spell::CheckRange -> Unit::IsWithinCombatRange): the 3D gap between the
         // centres under the heal's range plus both combat reaches - healer and healed are players, the tank's reach
         // stands for both (b219 rfc-h: 107 of the 225 heal_reach re-spots at 30-40 yd, under the 43 yd the heals
         // land from; the healers walked 339 s of "heal reach" with the tank in 40 yd and sight)
+        // [lead950] b227 5C-11 95-115 s (the wipe): the priest stood 30.5 yd off the blood DK under 7 attackers,
+        // out of its sight (the bot's own cast test, WorldObject::IsWithinLOSInMap: each player's eyes at its body's
+        // collision height), while this model judged the sight 2 yd over each foot - the eyes are the game's
+        // collision heights now (the healer's at `from` when it is known, the tank's at `to`)
         float const reach = Leader::LEADER_HEAL_REACH_YD + 2.0f * tank->GetCombatReach();
+        float const fromEyes = (healer ? healer : tank)->GetCollisionHeight();
+        float const toEyes = tank->GetCollisionHeight();
         return from.GetExactDist(to) <= reach - g_spotAcquireMargin &&
                tank->GetMap()->isInLineOfSight(from.GetPositionX(), from.GetPositionY(),
-                                               from.GetPositionZ() + 2.0f, to.GetPositionX(), to.GetPositionY(),
-                                               to.GetPositionZ() + 2.0f, tank->GetPhaseMask(),
+                                               from.GetPositionZ() + fromEyes, to.GetPositionX(), to.GetPositionY(),
+                                               to.GetPositionZ() + toEyes, tank->GetPhaseMask(),
                                                LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
     }
 

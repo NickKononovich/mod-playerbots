@@ -135,7 +135,9 @@ namespace Leader::Fight
         ~SpotAcquire() { g_spotAcquireMargin = 0.0f; }
     };
 
-    bool HealReaches(Player* tank, Position const& from, Position const& to);
+    // [lead950] `healer`: whose eyes stand at `from` (the game's line of sight runs from each body's collision
+    // height); none: the tank's own height at both ends
+    bool HealReaches(Player* tank, Position const& from, Position const& to, Unit const* healer = nullptr);
 
     // [lead124] the member's own attack reach: the range its rotation positions by (PlayerbotAI::GetRange "spell":
     // the configured spell distance, a hunter's weapon range); 0 for no bot AI

@@ -1826,7 +1826,9 @@ namespace Leader::Dungeon
             return true;
         };
         Position healerAt = healer ? plannedAt(healer) : Position();
-        auto const reaches = [tank](Position const& from, Position const& to) { return HealReaches(tank, from, to); };
+        // [lead950] the healer's eyes at `from`
+        auto const reaches = [tank, healer](Position const& from, Position const& to)
+        { return HealReaches(tank, from, to, healer); };
         // [lead120] where the tank fights: its fight anchor in a fight (moved on with it, LEADER_ANCHOR_MOVE_YD), else
         // where it stands - a heal-reach spot is judged against it, not against the tank's every step
         auto const tankFightAt = [&]()
@@ -5077,7 +5079,8 @@ namespace Leader::Dungeon
                                                     live.move == Leader::MoveEvent::Follow &&
                                                     live.moveWhy.rfind("along with the tank", 0) == 0;
                             bool const healing = bot == healer || PlayerbotAI::IsHeal(bot);
-                            bool const actsHere = healing ? HealReaches(tank, bot->GetPosition(), tank->GetPosition())
+                            bool const actsHere = healing ? HealReaches(tank, bot->GetPosition(),
+                                                                        tank->GetPosition(), bot)
                                                           : MemberCastsHere(bot, target);
                             if (walksAlong && actsHere &&
                                 Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
@@ -7423,7 +7426,26 @@ namespace Leader::Dungeon
             (!lead.healReachMs || getMSTimeDiff(lead.healReachMs, now) >= 0))
         {
             lead.healReachMs = now;
-            Position const tankAt = tankFightAt();  // [lead120]
+            // [lead950] b227 5C-11 95-115 s (the wipe): the blood DK stood under 7 attackers, the priest 30.5 yd off
+            // on its "heal reach" spot without sight of it (losTank false, the bot's own cast test), cast nothing and
+            // the tank died at 115 s - with no heal_reach record in those 20 s: the rule judged the tank's fight
+            // anchor (up to LEADER_ANCHOR_MOVE_YD off the tank) by its own sight model and found it reached, so no
+            // re-spot, no lead909 tank walk and no lead830 join ever ran. b227 (16 runs): 373 of the 666 s a healer
+            // was out of reach / sight of the tank under attack had no heal_reach verdict (231 s both standing). The
+            // tank under attack is judged by the game's own test where it stands: in the heal's reach
+            // (Unit::IsWithinCombatRange, Spell::CheckRange) and the healer's sight (IsWithinLOSInMap); while it
+            // stands there that is where it fights, and a healer standing still where that test fails is no spot
+            // that keeps it (its own spot included)
+            bool const tankUnderAttack = tank->IsAlive() && !tank->getAttackers().empty();
+            bool const healsTankNow = healer->IsWithinCombatRange(tank, Leader::LEADER_HEAL_REACH_YD) &&
+                                      healer->IsWithinLOSInMap(tank);
+            bool const tankUnhealed = tankUnderAttack && !healsTankNow;
+            bool const tankStands = tankUnhealed && !tank->isMoving();
+            std::optional<Position> const failsHere =
+                tankStands && !healer->isMoving() ? std::optional<Position>(healer->GetPosition()) : std::nullopt;
+            auto const provenOut = [&failsHere](Position const& spot)
+            { return failsHere && spot.GetExactDist(*failsHere) <= 2.0f; };
+            Position const tankAt = tankStands ? tank->GetPosition() : tankFightAt();  // [lead120]
             // [lead121] b155 rfc-h 20261101-103820 610.9-616.0 s: A -> B -> A heal-reach spots (command_repeat), each
             // time a member walking in drifted out of reach for a moment. The heal reach judges the members where the
             // leader put them (their MoveTo / StandAt spot), never a member on its way; one decision per fact: the
@@ -7449,8 +7471,23 @@ namespace Leader::Dungeon
             // heals the member where both stand now (its reach and sight) is not moved for it: the member's spot or
             // the tank's anchor out of its reach is where they will be, not the fact; it moves once they are there
             auto const healsNow = [&](Player* member) { return reaches(healer->GetPosition(), member->GetPosition()); };
-            if (outOfReach(tankAt) && !healsNow(tank))
+            if (tankUnderAttack ? tankUnhealed : (outOfReach(tankAt) && !healsNow(tank)))  // [lead950]
                 out.push_back(tank);
+            // [lead950] logged where the old judgement (the anchor by the model's sight) found it reached: once per
+            // tank, healer and fight anchor
+            if (tankUnhealed && !(outOfReach(tankFightAt()) && !healsNow(tank)))
+            {
+                thread_local std::set<std::string> missLogged;
+                if (missLogged.size() > 4096)
+                    missLogged.clear();
+                if (missLogged.insert(tank->GetName() + "|" + healer->GetName() + "|" +
+                                      std::to_string(lead.fightAnchorSerial)).second)
+                    LOG_INFO("playerbots",
+                             "[lead950] {}: {} under {} attackers is out of {}'s heal ({:.1f} yd, sight {}) where the "
+                             "fight anchor read it reached: judged where it stands",
+                             run.runId, tank->GetName(), tank->getAttackers().size(), healer->GetName(),
+                             healer->GetExactDist(tank), healer->IsWithinLOSInMap(tank) ? "yes" : "no");
+            }
             for (Player* other : seats)
                 if (other != healer)
                     if (std::optional<Position> const& at = assigned[other->GetGUID()];
@@ -7459,7 +7496,7 @@ namespace Leader::Dungeon
             // the healer at `spot` reaches the tank where it fights and every assigned spot
             auto const keepsAssigned = [&](Position const& spot)
             {
-                if (!reaches(spot, tankAt) ||
+                if (provenOut(spot) || !reaches(spot, tankAt) ||
                     spot.GetExactDist(tankAt) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
                     return false;
                 for (auto const& [member, at] : assigned)
@@ -7482,7 +7519,8 @@ namespace Leader::Dungeon
                             was->second.has_value() == at.has_value() &&
                             (!at || was->second->GetExactDist(*at) <= 1.0f);
             }
-            bool const keepsOwn = ownSpot && (keepsAssigned(healerEvents.spot) || sameFacts);
+            bool const keepsOwn =
+                ownSpot && !provenOut(healerEvents.spot) && (keepsAssigned(healerEvents.spot) || sameFacts);
             // [lead72] b116: the kept heal-reach spot was not re-asserted (the tick ended it), the combat spot took the
             // healer back the next tick ("was -") and the heal reach respotted again - the held spot is asserted
             // every tick while it still keeps the group (its end condition), so a lower rule cannot take it
@@ -7531,7 +7569,7 @@ namespace Leader::Dungeon
                                                                                tankAt.GetPositionZ(), x, y, z))
                                          continue;
                                      Position const spot(x, y, z);
-                                     if (!reaches(spot, tankAt) || backAgain(spot) ||
+                                     if (provenOut(spot) || !reaches(spot, tankAt) || backAgain(spot) ||
                                          !tankHolds(healer->GetPosition(), spot))
                                          continue;
                                      uint32 kept = 0;
@@ -7612,7 +7650,11 @@ namespace Leader::Dungeon
                             Leader::WalkYd(healer, candidates.empty() ? tankAt : candidates.front().first);
                         if (tankWalk >= 0.0f && tankWalk < healerWalk)
                         {
-                            std::string const why = "the fight moves to the blocked healer " + healer->GetName();
+                            // [lead950] a heal-reach move (MovePrecedence 3): the stay the tank's refused walk left
+                            // this tick ("the tank goes to its mob out of its sight: stays", rank 0) held it at equal
+                            // rank - b227's one "its walk is refused by the move guards"
+                            std::string const why =
+                                "heal reach: the fight moves to the blocked healer " + healer->GetName();
                             if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, toward, 2.0f, why))
                             {
                                 tankComes = true;

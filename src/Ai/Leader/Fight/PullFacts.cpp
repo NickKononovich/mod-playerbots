@@ -225,7 +225,7 @@ namespace Leader::Fight
             if (!healer || healer == tank || !healer->IsAlive() || healer->GetMap() != tank->GetMap() ||
                 !PlayerbotAI::IsHeal(healer))
                 continue;
-            if (HealReaches(tank, healer->GetPosition(), landing))
+            if (HealReaches(tank, healer->GetPosition(), landing, healer))
                 return std::string();
             // its walk into heal reach of the landing: the walk less the heal's reach, the whole walk where the
             // landing is in range but out of its sight (it walks round the corner)
