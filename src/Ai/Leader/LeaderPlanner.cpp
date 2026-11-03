@@ -5870,7 +5870,33 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool done = false;    // this fight's spot is settled: no further walk
         uint32 cornerLookMs = 0;  // [drift_caster_corner] its last look for casters that keep their range
         bool cornerDone = false;  // this fight went round a corner once already
+        GuidVector cornerCasters;  // [lead681] the casters the corner walk is for (empty: no corner walk)
     };
+
+    // [lead681] b218 rfc-h 5F 1148-1156 s: the prot warrior charged the one Searing Blade Cultist (33 yd), the caster
+    // corner was judged in the charge ("1 casters cast from range ... round the corner to (-325.9,240.0) 6 yd away")
+    // and the tank, in melee of the Cultist at 1149.3 s, walked it 28 yd back to that corner under "move fight spot
+    // back" (walkback.py: 3-7 unjustified walk-backs a run, 39-134 yd). The corner is for casters that keep their
+    // range; once every one of them alive stands in the tank's melee reach there is nothing left to bring round it:
+    // the walk ends there (entry locked by the caller)
+    bool CornerCastersReached(Player* tank, FightSpotEntry& entry)
+    {
+        if (entry.cornerCasters.empty() || !entry.walkMs)
+            return false;
+        for (ObjectGuid const& guid : entry.cornerCasters)
+        {
+            Unit* caster = ObjectAccessor::GetUnit(*tank, guid);
+            if (caster && caster->IsAlive() && caster->IsInWorld() && caster->GetMap() == tank->GetMap() &&
+                !tank->IsWithinMeleeRange(caster))
+                return false;
+        }
+        LOG_INFO("playerbots", "[lead681] {}: the corner's casters are in its melee reach, no walk round the corner "
+                 "({:.0f} yd left)", tank->GetName(), tank->GetExactDist(entry.spot));
+        entry.walkMs = 0;
+        entry.done = true;
+        entry.cornerCasters.clear();
+        return true;
+    }
 
     std::mutex fightSpotLock;
     std::unordered_map<uint64, FightSpotEntry> fightSpots;
@@ -6250,6 +6276,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 mob->IsRooted() || tank->GetExactDist(mob) <= CasterCorner::OFF_TANK || !mob->IsWithinLOSInMap(tank))
                 continue;
 
+            // [lead681] the tank's charge (UNIT_STATE_CHARGING) lands it at its victim: that caster keeps no range
+            if (tank->HasUnitState(UNIT_STATE_CHARGING) && tank->GetVictim() == mob)
+                continue;
+
             if (TankRangedTool(botAI, tank, mob))
                 continue;  // the tank takes it from where it stands (a grip brings it in)
 
@@ -6346,6 +6376,7 @@ namespace FightSpot
                 entry.done = entry.chosenMs && getMSTimeDiff(entry.chosenMs, now) <= FIGHT_SPOT_PLAN_MS;
                 entry.cornerLookMs = 0;
                 entry.cornerDone = false;
+                entry.cornerCasters.clear();  // [lead681]
                 if (entry.planMs && getMSTimeDiff(entry.planMs, now) <= FIGHT_SPOT_PLAN_MS)
                 {
                     entry.walkMs = now;
@@ -6359,6 +6390,7 @@ namespace FightSpot
             }
 
             entry.seenMs = now;
+            CornerCastersReached(tank, entry);  // [lead681]
             if (entry.walkMs)
             {
                 if (getMSTimeDiff(entry.walkMs, now) < FIGHT_SPOT_WALK_MS &&
@@ -6425,6 +6457,7 @@ namespace FightSpot
             entry.reason = "casters keep their range";
             entry.walkMs = now ? now : 1;
             entry.cornerDone = true;
+            entry.cornerCasters = pack;  // [lead681]
             FightHold::Move(tank, corner);
             spot = corner;
             return true;
@@ -6507,7 +6540,8 @@ namespace FightSpot
         std::lock_guard<std::mutex> guard(fightSpotLock);
         auto const found = fightSpots.find(tank->GetGUID().GetRawValue());
         if (found == fightSpots.end() || !found->second.walkMs ||
-            getMSTimeDiff(found->second.walkMs, getMSTime()) >= FIGHT_SPOT_WALK_MS)
+            getMSTimeDiff(found->second.walkMs, getMSTime()) >= FIGHT_SPOT_WALK_MS ||
+            CornerCastersReached(tank, found->second))  // [lead681]
             return false;
 
         spot = found->second.spot;
