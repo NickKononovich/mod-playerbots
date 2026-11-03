@@ -166,6 +166,20 @@ Position TrapSpot(Player* hunter, Unit* target, float triggerRadius)
     return Position(x, y, z > INVALID_HEIGHT ? z : target->GetPositionZ());
 }
 
+// [lead534] the first mob within the trap's radius of `spot` the leader spares from this hunter's area damage (its
+// AoE verdict, the hunter's Attack event: no threat headroom on it), nullptr: none
+Unit* SparedInRadius(Player* hunter, Position const& spot, float radius)
+{
+    Leader::MemberEvents events;
+    if (!Leader::Events::Get(hunter->GetGUID(), events))
+        return nullptr;
+    for (ObjectGuid const& guid : events.aoeSpared)
+        if (Unit* mob = ObjectAccessor::GetUnit(*hunter, guid);
+            mob && mob->IsAlive() && mob->GetExactDist(spot) <= radius)
+            return mob;
+    return nullptr;
+}
+
 // The computed choice: the spot and its verdict for this hunter and target; false: no trap now (why)
 bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> const& seats, uint32 trapSpell,
             Position& spot, JsonObject& facts, std::string& why)
@@ -214,6 +228,15 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
     }
     if (std::find(covered.begin(), covered.end(), target) == covered.end())
         covered.push_back(target);
+    // [lead534] b212 rfc-h 5H 555.0-560.7 s: the weave went to a 7-mob pull's Enforcers the leader spared from the
+    // hunter's area damage ("spares Searing Blade Enforcer (no threat headroom)" on every Attack of it); the trap's
+    // threat took three of them off the tank (5711 vs 3721, "threat on a mob it was not told to hit"). The trap is the
+    // hunter's area damage: one that reaches a spared mob is no trap
+    if (Unit* spared = SparedInRadius(hunter, spot, data.radius))
+    {
+        why = spared->GetName() + " is spared (no threat headroom), in the trap's radius";
+        return false;
+    }
     // the group kills them one after another: each lives its own health and the ones before it over the
     // group's measured dps; the trap goes off after the walk and its arming
     std::sort(covered.begin(), covered.end(), [](Unit* a, Unit* b) { return a->GetHealth() < b->GetHealth(); });
@@ -287,6 +310,13 @@ bool TickMove(LeaderGroup& group, Player* hunter, Player* tank, Unit* target, st
             {
                 plan.spot = TrapSpot(hunter, planned, plan.triggerRadius);
                 plan.step = 0;
+            }
+            // [lead534] ... and a mob spared since the weave was ordered ends it before the trap drops
+            TrapData data;
+            if (ReadTrap(hunter, plan.spell, data) && SparedInRadius(hunter, plan.spot, data.radius))
+            {
+                End(group, hunter, "a spared mob (no threat headroom) in the trap's radius");
+                return false;
             }
             if (!move(plan.spot, "trap weave"))
             {
