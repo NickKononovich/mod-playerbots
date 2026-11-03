@@ -484,10 +484,24 @@ public:
     CastIncinerateAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "incinerate") {}
 };
 
+// [rot350] wowsims warlock__affliction.apl.json row 15: Haunt is recast when the warlock's own Haunt debuff on the
+// target has less than Haunt's cast time + travel time + 2 s left (and the fight more than 5 s), not on its cooldown:
+// the debuff (12 s) outlasts the cooldown (8 s). b223 rfc-h 5D Rtlocaa: Haunt 6.2 a minute vs the sim's 5.3, and every
+// execute-phase Drain Soul was clipped the moment Haunt came off cooldown ("drain soul clip"): 0-2 ticks per channel,
+// 3537 damage a cast vs the sim's 22892.
+inline constexpr uint32 HAUNT_REFRESH_SLACK_MS = 2000;  // the APL row's "+ 2s"
+inline constexpr float HAUNT_MIN_FIGHT_LEFT = 5.0f;     // the APL row's remainingTime > 5s
+// The ms the own Haunt debuff on the target may still lose before Haunt must be recast (<= 0: due now); INT32_MAX
+// when the warlock has no Haunt.
+int32 HauntRefreshInMs(PlayerbotAI* botAI, Player* bot, Unit* target);
+bool HauntDue(PlayerbotAI* botAI, Player* bot, Unit* target);
+
 class CastHauntAction : public CastSpellAction
 {
 public:
     CastHauntAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "haunt") {}
+
+    bool isUseful() override;  // [rot350]
 };
 
 class CastSoulFireAction : public CastSpellAction

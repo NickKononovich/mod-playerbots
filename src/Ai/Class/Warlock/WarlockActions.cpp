@@ -5,6 +5,7 @@
  */
 
 #include "WarlockActions.h"
+#include "EstimatedLifetimeValue.h"  // [rot350]
 #include "Event.h"
 #include "Item.h"
 #include "KillOrder.h"  // [b44_hos]
@@ -15,10 +16,13 @@
 #include "RaidLeaderState.h"
 #include "RtiValue.h"     // [b44_hos]
 #include "ServerFacade.h"
+#include "SpellAuras.h"  // [rot350]
+#include "SpellMgr.h"    // [rot350]
 #include "Strategy.h"     // [b44_hos] TargetValueExclusionType
 #include "TargetValue.h"  // [b44_hos]
 #include "Timer.h"
 #include "Unit.h"
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -75,6 +79,34 @@ bool AfflictionSeedWaits(PlayerbotAI* botAI, Unit* seedTarget)
     bool const lives = groupDps > 0.0f && main->GetHealth() / groupDps >= CORRUPTION_MIN_TARGET_LIFETIME;
     return lives && !botAI->HasAura("corruption", main, false, true) &&
            !botAI->HasAura("seed of corruption", main, false, true) && botAI->CanCastSpell("corruption", main);
+}
+
+// [rot350] wowsims affliction APL row 15: own Haunt debuff left < Haunt cast time + travel time + 2 s
+int32 HauntRefreshInMs(PlayerbotAI* botAI, Player* bot, Unit* target)
+{
+    uint32 const hauntId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "haunt")->Get();
+    SpellInfo const* haunt = hauntId ? sSpellMgr->GetSpellInfo(hauntId) : nullptr;
+    if (!haunt || !target)
+        return INT32_MAX;
+
+    int32 const castMs = int32(haunt->CalcCastTime(bot));
+    int32 const travelMs = haunt->Speed > 0.0f ? int32(bot->GetDistance(target) / haunt->Speed * IN_MILLISECONDS) : 0;
+    Aura* debuff = botAI->GetAura("haunt", target, true, false);
+    int32 const left = debuff ? debuff->GetDuration() : 0;
+    return left - castMs - travelMs - int32(HAUNT_REFRESH_SLACK_MS);
+}
+
+bool HauntDue(PlayerbotAI* botAI, Player* bot, Unit* target)
+{
+    if (!target || !target->IsAlive() || HauntRefreshInMs(botAI, bot, target) >= 0)
+        return false;
+
+    return ExpectedLifetime(botAI, target) > HAUNT_MIN_FIGHT_LEFT;
+}
+
+bool CastHauntAction::isUseful()
+{
+    return CastSpellAction::isUseful() && HauntDue(botAI, bot, GetTarget());
 }
 
 // Checks if the bot has less than 26 soul shards, and if so, allows casting Drain Soul

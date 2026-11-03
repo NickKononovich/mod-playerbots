@@ -306,12 +306,17 @@ public:
     }
 };
 
-// Haunt is used on cooldown: its debuff outlasts the cooldown and it refreshes Corruption
+// [rot350] Haunt off cooldown and due by the wowsims affliction APL (HauntDue: the own debuff about to fall off), not
+// on every cooldown: its debuff (12 s) outlasts the cooldown (8 s)
 class HauntTrigger : public SpellNoCooldownTrigger
 {
 public:
     HauntTrigger(PlayerbotAI* botAI) : SpellNoCooldownTrigger(botAI, "haunt") {}
-    bool IsActive() override { return GetTarget() && SpellNoCooldownTrigger::IsActive(); }
+    bool IsActive() override
+    {
+        Unit* target = GetTarget();
+        return target && SpellNoCooldownTrigger::IsActive() && HauntDue(botAI, bot, target);
+    }
 };
 
 // [guide_b31_dead] Destruction: Conflagrate consumes the bot's own Immolate or Shadowflame DoT, so it needs one
@@ -557,7 +562,11 @@ protected:
 };
 
 // Execute phase: a Drain Soul channel lasts 15 s, longer than Haunt's cooldown and Unstable Affliction's refresh.
-// Clip it when Haunt is ready or Unstable Affliction is about to drop (Corruption is rolled by Drain Soul itself).
+// Clip it when Haunt is due or Unstable Affliction is about to drop (Corruption is rolled by Drain Soul itself).
+// [rot350] Haunt by the APL's debuff rule (HauntDue), not its cooldown; and the clip waits for the channel's next
+// tick while the debuff still outlasts that tick plus the recast (wowsims channels Drain Soul with interruptIf: the
+// rotation is looked at again only at a tick, so no tick in progress is thrown away). b223 rfc-h 5D Rtlocaa: 9 Drain
+// Souls on the 4 bosses for 6 ticks (0 on Oggleflint from 2 casts).
 class DrainSoulClipTrigger : public Trigger
 {
 public:

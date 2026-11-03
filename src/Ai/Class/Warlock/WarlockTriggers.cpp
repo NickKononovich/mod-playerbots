@@ -15,6 +15,9 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "RaidConsumables.h"
+#include "SpellAuraEffects.h"  // [rot350]
+#include "SpellAuras.h"        // [rot350]
+#include "SpellMgr.h"          // [rot350]
 #include "TargetValue.h"
 
 static const uint32 SOUL_SHARD_ITEM_ID = 6265;
@@ -479,16 +482,46 @@ bool DrainSoulClipTrigger::IsActive()
     if (!target || !target->IsAlive() || AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana)
         return false;
 
+    // [rot350] ms until the channel's next tick (the Drain Soul aura on the target, AuraEffect::m_periodicTimer)
+    int32 nextTickMs = 0;
+    if (Aura* drain = target->GetAura(channel->m_spellInfo->Id, bot->GetGUID()))
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (AuraEffect const* effect = drain->GetEffect(i); effect && effect->GetAmplitude() > 0)
+            {
+                nextTickMs = effect->GetPeriodicTimer();
+                break;
+            }
+
     uint32 const hauntId = AI_VALUE2(uint32, "spell id", "haunt");
-    if (hauntId && !bot->HasSpellCooldown(hauntId))
-        return true;
+    if (hauntId && !bot->HasSpellCooldown(hauntId) && HauntDue(botAI, bot, target))
+    {
+        // the debuff left after the next tick still covers Haunt's cast and travel: the tick first
+        int32 const refreshInMs = HauntRefreshInMs(botAI, bot, target);
+        if (nextTickMs > refreshInMs + int32(HAUNT_REFRESH_SLACK_MS))
+        {
+            LOG_DEBUG("playerbots", "[rot350] {} clips Drain Soul on {} for Haunt: next tick in {} ms, the debuff's "
+                      "slack {} ms", bot->GetName(), target->GetName(), nextTickMs, refreshInMs);
+            return true;
+        }
+    }
 
     if (!AI_VALUE2(uint32, "spell id", "unstable affliction") ||
         target->GetHealth() / AI_VALUE(float, "estimated group dps") < UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME)
         return false;
 
     Aura* unstableAffliction = botAI->GetAura("unstable affliction", target, true);
-    return !unstableAffliction || unstableAffliction->GetDuration() < int32(UNSTABLE_AFFLICTION_REFRESH_MS);
+    if (!unstableAffliction)
+        return true;
+
+    int32 const uaLeft = unstableAffliction->GetDuration();
+    if (uaLeft >= int32(UNSTABLE_AFFLICTION_REFRESH_MS))
+        return false;
+
+    // [rot350] the tick first while Unstable Affliction outlasts it plus its own cast
+    uint32 const uaId = AI_VALUE2(uint32, "spell id", "unstable affliction");
+    SpellInfo const* ua = sSpellMgr->GetSpellInfo(uaId);
+    int32 const uaCastMs = ua ? int32(ua->CalcCastTime(bot)) : 0;
+    return nextTickMs > uaLeft - uaCastMs;
 }
 
 bool RainOfFireChannelCheckTrigger::IsActive()
