@@ -1119,10 +1119,22 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     };
     if (overlap && otherWaitSec > 0.0f)
         pick += Acore::StringFormat("the group waits {:.1f} s for {} anyway", otherWaitSec, waitFor);
+    // [lead634] b218 rfc-h 5D 232.3-247.5 s: Oggleflint's pull held for "Rtmagac at 1 % mana (needs 60 %)" - its
+    // Evocation (cast 162.1 s, 120 s recharge) was back at 282 s, 33 s into his 45 s fight (pulled 249.3 s; the leader
+    // told it there at 282.7 s), and the line counted none of its 60 %: the mage drank 15 s. A cooldown that is back
+    // within the fight counts like a potion's (lead502): the line then holds at least the mana it spends until then
+    float cooldownFloor = 0.0f;
     auto const credit = [&](uint32 spell, float pct, char const* name)
     {
-        if (!credits || !bot->HasSpell(spell) || bot->HasSpellCooldown(spell))
+        if (!credits || !bot->HasSpell(spell))
             return;
+        uint32 readyMs = 0;
+        if (bot->HasSpellCooldown(spell))
+        {
+            readyMs = bot->GetSpellCooldownDelay(spell);
+            if (!readyMs || fightSec <= 0.0f || float(readyMs) >= fightSec * float(IN_MILLISECONDS))
+                return;
+        }
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
         if (!info)
             return;
@@ -1133,9 +1145,16 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         float const drinkSec = drinkCost(pct);  // [lead525]
         bool const inFight = drinkSec < 0.0f || fightCost < drinkSec;
         if (inFight)
+        {
             returned += pct;
+            if (readyMs)
+                cooldownFloor = std::max(cooldownFloor, rate * float(readyMs) / float(IN_MILLISECONDS));
+        }
         pick += Acore::StringFormat("{}{} {}: {:.1f} s in the fight vs {:.1f} s drinking", pick.empty() ? "" : "; ",
                                     name, inFight ? "in the fight" : "drunk before", fightCost, drinkSec);
+        if (readyMs)
+            pick += Acore::StringFormat(" (ready in {:.0f} s: {:.0f} % until then)", float(readyMs) / 1000.0f,
+                                        rate * float(readyMs) / float(IN_MILLISECONDS));
     };
     credit(SPELL_EVOCATION, ManaToolPct(bot, bot, SPELL_EVOCATION), "Evocation");
     credit(SPELL_SHADOWFIEND, ManaToolPct(bot, bot, SPELL_SHADOWFIEND), "Shadowfiend");  // [lead423]
@@ -1247,7 +1266,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // against -34 % with Evocation), drinking 5C 75 -> 160 s, 5B 3 -> 87 s. A measured rate is the fight's own need:
     // no floor over it; the low line guards only the role's estimate (nothing measured yet)
     float const floorPct = measured ? 0.0f : float(sPlayerbotAIConfig.LowMana);
-    float const line = std::clamp(std::max(need + reserve - returned, potionFloor), floorPct, 100.0f);  // [lead502]
+    float const line = std::clamp(std::max({need + reserve - returned, potionFloor, cooldownFloor}), floorPct,
+                                  100.0f);  // [lead502] [lead634]
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? source : "spell data", fightSec, reserve,
