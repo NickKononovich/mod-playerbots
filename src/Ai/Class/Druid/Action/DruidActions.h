@@ -190,16 +190,32 @@ public:
     CastMarkOfTheWildOnPartyAction(PlayerbotAI* botAI) : GroupBuffOnPartyAction(botAI, "mark of the wild") {}
 };
 
+// [rot371] Survival Instincts and Frenzied Regeneration of a led bear tank are the leader's (user 2026-11-03: only as
+// its health drops, the leader decides): its External ("leader external", the spell by id) or its PreSave ("leader pre
+// save") casts them; the bear's own triggers (medium health, damage spike, tank pressure, the set bonus) do not.
+// Out of a led group the bear's own health rules stay.
+bool BearSaveLeaderOwned(Player* bot, char const* spell);
+
 class CastSurvivalInstinctsAction : public CastBuffSpellAction
 {
 public:
     CastSurvivalInstinctsAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "survival instincts") {}
+
+    bool isUseful() override
+    {
+        return !BearSaveLeaderOwned(bot, "Survival Instincts") && CastBuffSpellAction::isUseful();
+    }
 };
 
 class CastFrenziedRegenerationAction : public CastBuffSpellAction
 {
 public:
     CastFrenziedRegenerationAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "frenzied regeneration") {}
+
+    bool isUseful() override
+    {
+        return !BearSaveLeaderOwned(bot, "Frenzied Regeneration") && CastBuffSpellAction::isUseful();
+    }
 };
 
 class CastThornsAction : public CastBuffSpellAction

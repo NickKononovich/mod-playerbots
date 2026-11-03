@@ -14,7 +14,9 @@
 #include "ServerFacade.h"
 #include "TargetValue.h"
 #include "Timer.h"  // [rot1]
-#include "LeaderOrders.h"  // [rot38] Leader::ExecutorMember
+#include "LeaderOrders.h"  // [rot38] Leader::ExecutorMember, [rot371] Leader::LedBot
+
+#include <unordered_map>  // [rot371]
 
 constexpr uint32 SPELL_ECLIPSE_SOLAR = 48517;
 constexpr uint32 SPELL_ECLIPSE_LUNAR = 48518;
@@ -126,6 +128,25 @@ bool CastInnervateAction::isUseful()
         return false;
 
     return CastSpellAction::isUseful();
+}
+
+bool BearSaveLeaderOwned(Player* bot, char const* spell)
+{
+    if (!PlayerbotAI::IsTank(bot) || !Leader::LedBot(bot))
+        return false;
+
+    // one line per bot and 10 s (the log only; the hold itself is the led state)
+    constexpr uint32 LOG_MS = 10 * IN_MILLISECONDS;
+    thread_local std::unordered_map<ObjectGuid, uint32> logged;
+    uint32 const now = getMSTime();
+    uint32& last = logged[bot->GetGUID()];
+    if (!last || getMSTimeDiff(last, now) >= LOG_MS)
+    {
+        last = now ? now : 1;
+        LOG_DEBUG("playerbots", "[rot371] {}: {} held at {:.0f} % health: a led bear's save is the leader's External",
+                  bot->GetName(), spell, bot->GetHealthPct());
+    }
+    return true;
 }
 
 bool DruidHasEclipseTalent(Player* bot) { return HasEclipseTalent(bot); }

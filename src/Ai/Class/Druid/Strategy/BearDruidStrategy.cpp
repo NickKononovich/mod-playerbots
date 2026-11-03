@@ -204,6 +204,8 @@ void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             NextAction("dire bear form", ACTION_EMERGENCY + 5),
             NextAction("bear form",      ACTION_EMERGENCY + 4.9f)
         }));
+    // [rot371] Frenzied Regeneration and Survival Instincts below run for a bear out of a led group only; a led bear's
+    // are the leader's External / PreSave (BearSaveLeaderOwned, DruidActions.h)
     triggers.push_back(
         new TriggerNode(
             "medium health",
