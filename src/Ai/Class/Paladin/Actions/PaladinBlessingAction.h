@@ -29,8 +29,15 @@ namespace ai::blessing
         PaladinBlessingPlanner(PlayerbotAI* botAI);
 
         PendingBlessing Plan();
+        // [lead982] the leader's buff pass: the same assignment, the post-login grace not waited out (the leader
+        // orders blessings only after every caster's own pass ended); IntendedFor reads it per member (BASE_NONE:
+        // this paladin owes it none)
+        void PlanAssignments();
+        ai::blessing::BaseBlessingCategory IntendedFor(ObjectGuid member) const;
 
     private:
+        PendingBlessing Run(bool waitLoginGrace);
+
         struct ClassGroup
         {
             uint8 cls = 0;

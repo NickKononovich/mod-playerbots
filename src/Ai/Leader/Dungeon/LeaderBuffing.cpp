@@ -69,6 +69,8 @@
 #include "Playerbots.h"
 #include "PullStrategy.h"
 #include "PullActions.h"  // [b39_strat] FightHold: the opening fight held on the use side of a key gate
+#include "PaladinBlessingAction.h"    // [lead982] the blessing planner
+#include "PaladinBlessingRegistry.h"  // [lead982] HighestKnownBlessingRank
 #include "ChooseTargetActions.h"  // [b47_door] PullReadiness::GroupPreparing
 #include "SmartAI.h"
 #include "SmartScriptMgr.h"
@@ -127,7 +129,6 @@ namespace Leader::Dungeon
         }
         return false;
     }
-
 
     bool HasWellFed(Player* bot) { return HasAuraNamed(bot, "Well Fed"); }
 
@@ -249,6 +250,67 @@ namespace Leader::Dungeon
             std::string what;  // [lead975] "<caster> <spell name> on <target>" ("<target> <buff>" for spell 0)
         };
 
+        // [lead982] the aura name of a blessing category (its single and greater forms both carry it)
+        char const* BlessingAuraName(ai::blessing::BaseBlessingCategory category)
+        {
+            switch (category)
+            {
+                case ai::blessing::BASE_MIGHT:
+                    return "Blessing of Might";
+                case ai::blessing::BASE_WISDOM:
+                    return "Blessing of Wisdom";
+                case ai::blessing::BASE_KINGS:
+                    return "Blessing of Kings";
+                case ai::blessing::BASE_SANCTUARY:
+                    return "Blessing of Sanctuary";
+                default:
+                    return nullptr;
+            }
+        }
+
+        // [lead982] every member's blessing from each paladin in range, as that paladin's blessing planner assigns
+        // it (PaladinBlessingPlanner::PlanAssignments): missing when the member lacks it for the next fight; the
+        // order is the paladin's highest known single rank of it on the member
+        void MissingBlessings(std::vector<Player*> const& players, Player* leader, int32 needMs, std::string& missing,
+                              std::vector<BuffOrder>* orders)
+        {
+            static std::vector<uint32> const BLESSINGS = {ai::blessing::SPELL_BLESSING_OF_MIGHT,
+                                                          ai::blessing::SPELL_BLESSING_OF_WISDOM,
+                                                          ai::blessing::SPELL_BLESSING_OF_KINGS,
+                                                          ai::blessing::SPELL_BLESSING_OF_SANCTUARY};
+            for (Player* paladin : players)
+            {
+                PlayerbotAI* paladinAI = paladin->getClass() == CLASS_PALADIN ? GET_PLAYERBOT_AI(paladin) : nullptr;
+                if (!paladinAI || !InBuffRange(paladin, leader) || !CanGive(paladin, BLESSINGS))
+                    continue;
+                ai::blessing::PaladinBlessingPlanner planner(paladinAI);
+                planner.PlanAssignments();
+                for (Player* bot : players)
+                {
+                    if (!InBuffRange(bot, leader))
+                        continue;
+                    ai::blessing::BaseBlessingCategory const category = planner.IntendedFor(bot->GetGUID());
+                    char const* const aura = BlessingAuraName(category);
+                    if (!aura || HasAuraLasting(bot, aura, needMs))
+                        continue;
+                    missing += (missing.empty() ? "" : ", ") + bot->GetName() + " " + aura;
+                    if (!orders)
+                        continue;
+                    if (std::optional<uint32> const rank =
+                            ai::blessing::HighestKnownBlessingRank(paladin, category, false))
+                    {
+                        SpellInfo const* info = sSpellMgr->GetSpellInfo(*rank);
+                        orders->push_back({paladin->GetGUID(), *rank, bot->GetGUID(),
+                                           paladin->GetName() + " " +
+                                               (info ? std::string(info->SpellName[LOCALE_enUS]) : "?") + " (" +
+                                               std::to_string(*rank) + ") on " + bot->GetName()});
+                    }
+                    else  // [lead976] no order for it
+                        orders->push_back({paladin->GetGUID(), 0, bot->GetGUID(), bot->GetName() + " " + aura});
+                }
+            }
+        }
+
         std::string MissingGivableBuffs(LeaderGroup& group, std::vector<Player*> const& players, Player* leader,
                                         std::vector<BuffOrder>* orders = nullptr)
         {
@@ -262,6 +324,17 @@ namespace Leader::Dungeon
             std::string missing;
             for (GroupBuffDef const& def : groupBuffs)
             {
+                // [lead982] b228: the blessing def's order was the paladin's first known rank of its list (Might),
+                // given by the first paladin only, and "Blessing of" anything counted as present - every member got
+                // Blessing of Might (the priest, the mage, the warlock, the healers; 23 orders, 21 never cast). Each
+                // paladin gives what the game's blessing planner assigns it per member (PaladinBlessingPlanner: the
+                // role's blessing priorities - Might for physical damage, Kings / Wisdom for casters, Sanctuary for a
+                // paladin tank - one distinct blessing per paladin, the human paladin's own blessings respected)
+                if (def.casterClass == CLASS_PALADIN)
+                {
+                    MissingBlessings(players, leader, needMs, missing, orders);
+                    continue;
+                }
                 bool givable = false;
                 Player* giver = nullptr;
                 for (Player* caster : players)

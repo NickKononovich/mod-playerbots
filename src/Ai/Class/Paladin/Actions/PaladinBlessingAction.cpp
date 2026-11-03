@@ -67,7 +67,17 @@ PaladinBlessingPlanner::PaladinBlessingPlanner(PlayerbotAI* botAI)
 {
 }
 
-PendingBlessing PaladinBlessingPlanner::Plan()
+PendingBlessing PaladinBlessingPlanner::Plan() { return Run(true); }
+
+void PaladinBlessingPlanner::PlanAssignments() { Run(false); }
+
+BaseBlessingCategory PaladinBlessingPlanner::IntendedFor(ObjectGuid member) const
+{
+    auto const it = _intended.find(member);
+    return it == _intended.end() ? BASE_NONE : it->second;
+}
+
+PendingBlessing PaladinBlessingPlanner::Run(bool waitLoginGrace)
 {
     if (!_bot->IsAlive())
         return {};
@@ -89,7 +99,7 @@ PendingBlessing PaladinBlessingPlanner::Plan()
         ProcessMember(_bot, constraints, classGroups, renewedHopePresent, recentLogin);
     }
 
-    if (recentLogin)
+    if (recentLogin && waitLoginGrace)
         return {};
 
     return SelectCast(constraints, classGroups, renewedHopePresent);
