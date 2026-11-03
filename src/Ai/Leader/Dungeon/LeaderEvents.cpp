@@ -402,6 +402,82 @@ namespace Leader::Dungeon
             return std::max(0.0f, seen.threat - seen.base) / ThreatSeenSec(seen);
         }
 
+        // [lead900] a spell's threat for the member by the game's rules: the spell threat data's multiplier
+        // (spell_threat, ThreatManager::CalculateModifiedThreat), its talents' threat spell mods and its school's
+        // threat auras (presence, Salvation)
+        float SpellThreatFor(Player* who, SpellInfo const* info, float amount)
+        {
+            if (info->HasAttribute(SPELL_ATTR1_NO_THREAT))
+                return 0.0f;
+            if (SpellThreatEntry const* entry = sSpellMgr->GetSpellThreatEntry(info->Id))
+                amount *= entry->pctMod;
+            who->ApplySpellMod(info->Id, SPELLMOD_THREAT, amount);
+            return amount * who->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_THREAT, info->GetSchoolMask());
+        }
+
+        // [lead900] user 2026-11-03: the threat a member's first cast puts on a mob it has not hit yet. Of its ready
+        // damage spells whose spell threat data multiplies their threat (Icy Touch x7), the largest: its direct
+        // damage with its bonuses, the data's multiplier, flat and attack power threat, its threat mods. The spells
+        // come from the game's threat data, not a list; the member's known ones are read again when its spells change
+        float FirstCastThreat(Player* who, Unit* mob, uint32& spellOut)
+        {
+            struct Known
+            {
+                size_t spells = 0;
+                uint8 spec = 0;
+                std::vector<uint32> raised;
+            };
+            thread_local std::unordered_map<uint64, Known> known;
+            Known& mine = known[who->GetGUID().GetRawValue()];
+            if (mine.spells != who->GetSpellMap().size() || mine.spec != who->GetActiveSpec())
+            {
+                mine.spells = who->GetSpellMap().size();
+                mine.spec = who->GetActiveSpec();
+                mine.raised.clear();
+                for (auto const& [id, spell] : who->GetSpellMap())
+                {
+                    if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active ||
+                        !spell->IsInSpec(who->GetActiveSpec()))
+                        continue;
+                    SpellThreatEntry const* entry = sSpellMgr->GetSpellThreatEntry(id);
+                    if (!entry || entry->pctMod <= 1.0f)
+                        continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+                    if (info && !info->IsPassive() && !info->IsPositive() &&
+                        info->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE))
+                        mine.raised.push_back(id);
+                }
+            }
+            float best = 0.0f;
+            spellOut = 0;
+            for (uint32 id : mine.raised)
+            {
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+                if (!info || who->HasSpellCooldown(id))
+                    continue;
+                if (info->PowerType != POWER_RUNE && info->PowerType < MAX_POWERS &&
+                    info->CalcPowerCost(who, info->GetSchoolMask()) > int32(who->GetPower(Powers(info->PowerType))))
+                    continue;
+                float damage = 0.0f;
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    if (info->Effects[i].Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                        damage += float(who->SpellDamageBonusDone(
+                            mob, info, uint32(std::max(0, who->CalculateSpellDamage(mob, info, i))),
+                            SPELL_DIRECT_DAMAGE, i));
+                float threat = SpellThreatFor(who, info, damage);
+                if (SpellThreatEntry const* entry = sSpellMgr->GetSpellThreatEntry(id))
+                    threat += SpellThreatFor(who, info,
+                                             float(entry->flatMod) +
+                                                 entry->apPctMod * who->GetTotalAttackPowerValue(BASE_ATTACK));
+                if (threat > best)
+                {
+                    best = threat;
+                    spellOut = id;
+                }
+            }
+            return best;
+        }
+
         // [lead221] the planner's held answer named this mana line for the member (lead.plannerRestLine): its Rest
         // holds below it; without a named line (a health gap) the Rest holds as before, until the member is full
         bool BelowPlannerLine(Player* bot, float line)
@@ -5553,6 +5629,22 @@ namespace Leader::Dungeon
                     auto const& mine = seenOn(mob, bot);
                     p.mine = mine.threat;
                     p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                    // [lead900] user 2026-11-03: before its first hit on the mob, its first cast's threat by the
+                    // spell threat data (Icy Touch x7) counts when it is more than its rate over the GCD (b187 lead229:
+                    // the unholy DK's opening Icy Touch from range took the bear's mobs)
+                    if (mine.threat <= 0.0f)
+                    {
+                        uint32 spell = 0;
+                        if (float const first = FirstCastThreat(bot, mob, spell); first > p.mineNext - p.mine)
+                        {
+                            thread_local std::set<std::pair<uint64, uint32>> firstLogged;
+                            if (firstLogged.insert({bot->GetGUID().GetRawValue(), spell}).second)
+                                LOG_INFO("playerbots", "[lead900] {}: its first {} on {} counts {:.0f} threat before "
+                                         "its hit (rate over the GCD {:.0f})",
+                                         bot->GetName(), spell, mob->GetName(), first, p.mineNext - p.mine);
+                            p.mineNext = p.mine + first;
+                        }
+                    }
                     // [lead412] user 2026-11-02: the threat a running redirect (Misdirection / Tricks of the Trade,
                     // registered on the member's ThreatManager until it is spent) moves onto the tank is the tank's
                     if (auto const redirect = lead.redirectTo.find(guid);
