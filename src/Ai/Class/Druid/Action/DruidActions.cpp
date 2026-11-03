@@ -341,7 +341,15 @@ bool CastStarfallAction::isUseful()
             return false;
     }
 
-    // Suppress if any unengaged hostile unit is within 40 yards — Starfall's 36-yard radius would pull them.
+    // Suppress if an unengaged hostile unit is in the stars' reach - casting would pull it.
+    // [rot190] The reach is the core's, not 40 yd in 2D: the stars come from the dummy 50286 (rank 1; every rank's
+    // dummy the same), effect 0 TARGET_UNIT_SRC_AREA_ENEMY, radius index 10 = 30 yd round the caster, and
+    // WorldObjectSpellAreaTargetCheck (Spell.cpp) hits a creature whose exact 3D distance is within that radius plus
+    // its combat reach. b218 rfc-h 5C Taragaman (661-711 s): Starfall ready (last cast in pull 27, <= 548 s, 60 s
+    // glyphed) and never cast in the 51 s fight - the Searing Blade Cultist / Warlock spawns 34 / 38 yd from the
+    // druid's spot (-221.2, 152.1, -19.1), pulled only after the boss (pulls 34-35), held it; sim Starfall 11 % of
+    // the fight's damage (489 DPS)
+    constexpr float STARFALL_STAR_RADIUS = 30.0f;
     Unit* currentTarget = AI_VALUE(Unit*, "current target");
     GuidVector const& nearbyNpcs = AI_VALUE(GuidVector, "possible targets");
     for (ObjectGuid const& guid : nearbyNpcs)
@@ -356,8 +364,8 @@ bool CastStarfallAction::isUseful()
         // Safety net for any hostile-faction trigger creature that carries NON_ATTACKABLE flags.
         if (!bot->IsValidAttackTarget(unit))
             continue;
-        // Outside Starfall's actual radius; no pull risk.
-        if (ServerFacade::instance().GetDistance2d(bot, unit) > 40.0f)
+        // Outside the stars' reach; no pull risk.
+        if (bot->GetExactDist(unit) > STARFALL_STAR_RADIUS + unit->GetCombatReach())
             continue;
         // Unengaged mob within range — casting would pull it.
         if (!unit->IsInCombat())
