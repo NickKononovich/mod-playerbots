@@ -22,6 +22,7 @@
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StringFormat.h"  // [lead970]
 #include "WorldPacket.h"   // [lead405]
 #include "WorldSession.h"
 
@@ -395,8 +396,18 @@ bool LeaderConsumeAction::isPossible()
     Unit* on = nullptr;
     Item* item = ConsumeItem(bot, itemId, on, botAI);
     uint32 const spell = OnUseSpell(item);
-    if (!item || !spell || bot->HasSpellCooldown(spell))
+    if (!item || !spell)
         return false;
+    // [lead970] b228 rfc-h 5E-13: the soulstone ordered while its 15 min cooldown ran stood IMPOSSIBLE for 265 s
+    // with no report, the buff pass waited on it until the stall. A cooldown is the game refusing the item now:
+    // reported, the leader drops the order instead of waiting on it
+    if (bot->HasSpellCooldown(spell))
+    {
+        Leader::Events::NoteConsumeFailed(
+            bot->GetGUID(), itemId,
+            Acore::StringFormat("its cooldown runs ({:.0f} s left)", bot->GetSpellCooldownDelay(spell) / 1000.0f));
+        return false;
+    }
     if (PotionBlockedThisCombat(bot, item, spell))  // [rot85]
     {
         Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "one potion per combat: the last one blocks it");

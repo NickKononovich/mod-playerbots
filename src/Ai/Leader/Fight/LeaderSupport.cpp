@@ -912,6 +912,18 @@ bool HasSoulstoneAura(Player* bot)
     return false;
 }
 
+// [lead970] the ms the item's on-use spell is still on the bot's cooldown (0: usable now; game data: the
+// player's spell cooldowns, saved across logouts)
+uint32 ItemUseCooldownMs(Player* bot, uint32 entry)
+{
+    uint32 left = 0;
+    if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry))
+        for (auto const& use : proto->Spells)
+            if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                left = std::max(left, bot->GetSpellCooldownDelay(uint32(use.SpellId)));
+    return left;
+}
+
 // [lead403] [lead405] The buff pass's support (while the pass runs; it ends only once this is done): the soulstone
 // before a boss on the healer that raises the others (else the healer, else the tank); the Ritual of Souls when a
 // member lacks a healthstone and no Soulwell stands; the two clicks a ritual's portal needs (the members nearest to
@@ -938,12 +950,25 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
         bool stoned = false;
         for (Player* bot : members)
             stoned |= HasSoulstoneAura(bot);
+        // [lead970] b228 rfc-h 5E-13 (20261103-224151) 251.4-516 s: Rtlocab's Demonic Soulstone, used on Rtpriac in
+        // the wave's earlier run (5E-5, 22:36), was still on its 15 min cooldown; the order stood, the warlock's
+        // "leader consume" was IMPOSSIBLE each tick without a report, and the buff pass waited on "soulstone:
+        // Rtlocab on Rtpriac" until the stall. The leader checks the stone is usable now before it orders it: a
+        // stone on its cooldown is no stone for this pass
         Player* warlock = nullptr;
         uint32 stone = 0;
+        std::string cooling;
         for (Player* bot : seats)
             for (uint32 item : SOULSTONE_ITEMS)
                 if (!warlock && bot->IsAlive() && bot->HasItemCount(item, 1))
                 {
+                    if (uint32 const leftMs = ItemUseCooldownMs(bot, item))
+                    {
+                        if (cooling.empty())
+                            cooling = Acore::StringFormat("{}'s soulstone is on its cooldown ({:.0f} s left)",
+                                                          bot->GetName(), leftMs / 1000.0f);
+                        continue;
+                    }
                     warlock = bot;
                     stone = item;
                 }
@@ -955,7 +980,11 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
             on = healer ? healer : tank;
         std::string failed;
         if (stoned || !warlock || !on)
+        {
             st.soulstonePass = pass;  // nothing to do for this pass
+            if (!stoned && !warlock && !cooling.empty())
+                verdicts.push_back("soulstone dropped: " + cooling);
+        }
         else if (Leader::Events::TakeConsumeFailed(warlock->GetGUID(), stone, failed))
         {
             st.soulstonePass = pass;
