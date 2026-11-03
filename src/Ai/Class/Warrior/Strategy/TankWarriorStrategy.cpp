@@ -307,6 +307,12 @@ void TankWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot172] "untagged tank mob" (TankAoeThreat.h): a pack mob out of the area reach, on the tank by its first aggro
+    // only, below the area-threat floor -> the ranged threat spell tags it before the first heal's split threat takes
+    // it (b215 rfc-h 5D: Searing Blade Warlocks 23-25 yd off at 3 / 34 bear threat went to the shaman). Below the
+    // area threat and the peel steps, above "tank assist".
+    triggers.push_back(new TriggerNode(
+        "untagged tank mob", { NextAction("heroic throw on untagged mob", ACTION_INTERRUPT + 0.12f) }));
     // [b32_tank_aoe] "tank aoe pack" (TankAoeThreat.h): 3+ mobs in reach and one without a safe threat lead -> the area
     // spell above the single-target builders until the lead is safe; then the single-target order below resumes.
     // Above Shield Slam (ACTION_HIGH + 5) and Revenge (+4); below the stance, shouts and the loose-mob steps.

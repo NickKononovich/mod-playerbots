@@ -90,6 +90,7 @@ public:
         creators["tank aoe threat"] = &DeathKnightTriggerFactoryInternal::tank_aoe_threat;
         creators["tank aoe pack"] = &DeathKnightTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
         creators["tank aoe crowd"] = &DeathKnightTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
+        creators["untagged tank mob"] = &DeathKnightTriggerFactoryInternal::untagged_tank_mob;  // [rot172]
         creators["army of the dead"] = &DeathKnightTriggerFactoryInternal::army_of_the_dead;
         creators["hysteria no cd"] = &DeathKnightTriggerFactoryInternal::hysteria_no_cd;
         creators["summon gargoyle"] = &DeathKnightTriggerFactoryInternal::summon_gargoyle;
@@ -171,6 +172,7 @@ private:
     static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 10.0f); }  // [b32_tank_aoe]
     // [b32_peel]
     static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 10.0f); }
+    static Trigger* untagged_tank_mob(PlayerbotAI* botAI) { return new UntaggedTankMobTrigger(botAI); }  // [rot172]
     static Trigger* army_of_the_dead(PlayerbotAI* botAI) { return new ArmyOfTheDeadTrigger(botAI); }
     static Trigger* hysteria_no_cd(PlayerbotAI* botAI) { return new HysteriaNoCooldownTrigger(botAI); }
     static Trigger* summon_gargoyle(PlayerbotAI* botAI) { return new SummonGargoyleTrigger(botAI); }
@@ -294,6 +296,9 @@ public:
             &DeathKnightAiObjectContextInternal::death_grip_on_group_member_attacker;
         creators["icy touch on group member attacker"] =
             &DeathKnightAiObjectContextInternal::icy_touch_on_group_member_attacker;
+        // [rot172]
+        creators["icy touch on untagged mob"] =
+            &DeathKnightAiObjectContextInternal::icy_touch_on_untagged_mob;
         creators["heart strike on group member attacker"] =
             &DeathKnightAiObjectContextInternal::heart_strike_on_group_member_attacker;
         // [b31_deep] the "mind freeze on enemy healer" trigger (GenericDKStrategy) queued an unregistered action
@@ -367,6 +372,10 @@ private:
     static Action* icy_touch_on_group_member_attacker(PlayerbotAI* botAI)
     {
         return new CastSpellOnGroupMemberAttackerAction(botAI, "icy touch");
+    }
+    static Action* icy_touch_on_untagged_mob(PlayerbotAI* botAI)  // [rot172]
+    {
+        return new CastSpellOnUntaggedTankMobAction(botAI, "icy touch");
     }
     static Action* heart_strike_on_group_member_attacker(PlayerbotAI* botAI)
     {

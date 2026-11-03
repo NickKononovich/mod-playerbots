@@ -434,4 +434,42 @@ private:
     std::string _name;
 };
 
+// [rot172] "untagged tank mob" (UntaggedTankMobValue): a pack mob out of the tank's area reach, still on the tank by
+// its first aggro only, with less tank threat than the area-threat floor. The tank's ranged threat spell tags it
+// before the first heal's split threat takes it (b215 rfc-h 5D 551 / 667 s: Searing Blade Warlocks 23-25 yd off at
+// 3 / 34 bear threat went to the shaman). Cost: the cached value (CHECK_INTERVAL_MS).
+class UntaggedTankMobTrigger : public Trigger
+{
+public:
+    UntaggedTankMobTrigger(PlayerbotAI* botAI) : Trigger(botAI, "untagged tank mob") {}
+
+    bool IsActive() override { return AI_VALUE(Unit*, "untagged tank mob") != nullptr; }
+};
+
+class CastSpellOnUntaggedTankMobAction : public CastSpellAction
+{
+public:
+    CastSpellOnUntaggedTankMobAction(PlayerbotAI* botAI, std::string const spell)
+        : CastSpellAction(botAI, spell), _name(spell + " on untagged mob")
+    {
+    }
+
+    std::string const GetTargetName() override { return "untagged tank mob"; }
+    std::string const getName() override { return _name; }
+    bool isUseful() override
+    {
+        if (!PlayerbotAI::IsTank(bot) || !CastSpellAction::isUseful())
+            return false;
+
+        // an out-of-range cast passes CanCastSpell and fails every tick (Icy Touch reaches 20 yd, the value 30)
+        uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+        SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        Unit* target = GetTarget();
+        return spellInfo && target && bot->IsWithinCombatRange(target, spellInfo->GetMaxRange(false, bot));
+    }
+
+private:
+    std::string _name;
+};
+
 #endif

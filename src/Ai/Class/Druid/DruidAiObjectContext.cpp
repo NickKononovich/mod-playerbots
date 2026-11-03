@@ -124,6 +124,7 @@ public:
         creators["tank aoe threat"] = &DruidTriggerFactoryInternal::tank_aoe_threat;
         creators["tank aoe pack"] = &DruidTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
         creators["tank aoe crowd"] = &DruidTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
+        creators["untagged tank mob"] = &DruidTriggerFactoryInternal::untagged_tank_mob;  // [rot172]
         creators["bear battle res"] = &DruidTriggerFactoryInternal::bear_battle_res;                  // [b32_brez]
         creators["bear battle res reshift"] = &DruidTriggerFactoryInternal::bear_battle_res_reshift;  // [b32_brez]
         creators["mangle (cat)"] = &DruidTriggerFactoryInternal::mangle_cat;
@@ -203,6 +204,7 @@ private:
     static Trigger* tank_aoe_threat(PlayerbotAI* botAI) { return new TankAoeThreatTrigger(botAI, 8.0f); }
     static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 8.0f); }  // [b32_tank_aoe]
     static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
+    static Trigger* untagged_tank_mob(PlayerbotAI* botAI) { return new UntaggedTankMobTrigger(botAI); }  // [rot172]
     static Trigger* bear_battle_res(PlayerbotAI* botAI) { return new BearBattleResTrigger(botAI); }  // [b32_brez]
     static Trigger* bear_battle_res_reshift(PlayerbotAI* botAI)  // [b32_brez]
     {
@@ -292,6 +294,9 @@ public:
             &DruidAiObjectContextInternal::feral_charge_bear_on_group_member_attacker;
         creators["faerie fire (feral) on group member attacker"] =
             &DruidAiObjectContextInternal::faerie_fire_feral_on_group_member_attacker;
+        // [rot172]
+        creators["faerie fire (feral) on untagged mob"] =
+            &DruidAiObjectContextInternal::faerie_fire_feral_on_untagged_mob;
         creators["mangle (bear) on group member attacker"] =
             &DruidAiObjectContextInternal::mangle_bear_on_group_member_attacker;
         creators["challenging roar"] = &DruidAiObjectContextInternal::challenging_roar;
@@ -410,6 +415,10 @@ private:
     static Action* faerie_fire_feral_on_group_member_attacker(PlayerbotAI* botAI)
     {
         return new CastSpellOnGroupMemberAttackerAction(botAI, "faerie fire (feral)");
+    }
+    static Action* faerie_fire_feral_on_untagged_mob(PlayerbotAI* botAI)  // [rot172]
+    {
+        return new CastSpellOnUntaggedTankMobAction(botAI, "faerie fire (feral)");
     }
     static Action* mangle_bear_on_group_member_attacker(PlayerbotAI* botAI)
     {

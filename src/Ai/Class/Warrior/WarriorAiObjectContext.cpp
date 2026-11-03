@@ -66,6 +66,7 @@ public:
         creators["tank aoe threat"] = &WarriorTriggerFactoryInternal::tank_aoe_threat;
         creators["tank aoe pack"] = &WarriorTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
         creators["tank aoe crowd"] = &WarriorTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
+        creators["untagged tank mob"] = &WarriorTriggerFactoryInternal::untagged_tank_mob;  // [rot172]
         creators["shield bash"] = &WarriorTriggerFactoryInternal::shield_bash;
         creators["tank bloodrage"] = &WarriorTriggerFactoryInternal::tank_bloodrage;                    // [rot20]
         creators["prot heroic strike rage"] = &WarriorTriggerFactoryInternal::prot_heroic_strike_rage;  // [rot20]
@@ -156,6 +157,7 @@ private:
     static Trigger* tank_aoe_threat(PlayerbotAI* botAI) { return new TankAoeThreatTrigger(botAI, 8.0f); }
     static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 8.0f); }  // [b32_tank_aoe]
     static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
+    static Trigger* untagged_tank_mob(PlayerbotAI* botAI) { return new UntaggedTankMobTrigger(botAI); }  // [rot172]
     static Trigger* shield_bash(PlayerbotAI* botAI) { return new ShieldBashInterruptSpellTrigger(botAI); }
     static Trigger* tank_bloodrage(PlayerbotAI* botAI) { return new BloodrageTankTrigger(botAI); }
     // wowsims protection_warrior__default: Heroic Strike at 30+ rage. [rot36] keeping the rage of a Shield Slam due
@@ -307,6 +309,9 @@ public:
             &WarriorAiObjectContextInternal::mocking_blow_on_group_member_attacker;
         creators["heroic throw on group member attacker"] =
             &WarriorAiObjectContextInternal::heroic_throw_on_group_member_attacker;
+        // [rot172]
+        creators["heroic throw on untagged mob"] =
+            &WarriorAiObjectContextInternal::heroic_throw_on_untagged_mob;
         creators["shield slam on group member attacker"] =
             &WarriorAiObjectContextInternal::shield_slam_on_group_member_attacker;
         creators["revenge"] = &WarriorAiObjectContextInternal::revenge;
@@ -372,6 +377,10 @@ private:
     static Action* heroic_throw_on_group_member_attacker(PlayerbotAI* botAI)
     {
         return new CastSpellOnGroupMemberAttackerAction(botAI, "heroic throw");
+    }
+    static Action* heroic_throw_on_untagged_mob(PlayerbotAI* botAI)  // [rot172]
+    {
+        return new CastSpellOnUntaggedTankMobAction(botAI, "heroic throw");
     }
     static Action* shield_slam_on_group_member_attacker(PlayerbotAI* botAI)
     {

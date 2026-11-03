@@ -20,6 +20,7 @@
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "Strategy.h"
+#include "TankAoeThreat.h"  // [rot172] the area-threat floor
 #include "TargetValue.h"
 #include "ThreatManager.h"
 #include "Timer.h"
@@ -271,6 +272,49 @@ Unit* BalancePercentValue::GetTarget()
 {
     AiObjectContext* ctx = AiObject::context;
     return ctx->GetValue<Unit*>(qualifier)->Get();
+}
+
+Unit* UntaggedTankMobValue::Calculate()
+{
+    if (!bot->IsInCombat() || !PlayerbotAI::IsTank(bot))
+        return nullptr;
+
+    float const floor = bot->GetLevel() * TankAoeThreatTrigger::THREAT_FLOOR_PER_LEVEL;
+    Unit* best = nullptr;
+    float bestThreat = floor;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "attackers"))
+    {
+        Unit* mob = botAI->GetUnit(guid);
+        if (!mob || !mob->IsAlive() || mob->IsPlayer() || !mob->IsInWorld() || mob->GetMap() != bot->GetMap() ||
+            !mob->CanHaveThreatList() || IsCrowdControlled(mob))
+            continue;
+
+        // on the tank (or on nobody yet): a mob on a member is the peel's ("group member attacker")
+        Unit* victim = mob->GetVictim();
+        if (victim && victim != bot)
+            continue;
+
+        // inside the area reach the tank's Swipe / Thunder Clap / Consecration / Blood Boil tag it
+        float const distance = bot->GetDistance(mob);
+        if (distance <= GroupMemberAttackerValue::TAUNT_AREA_REACH || distance > RANGE)
+            continue;
+
+        float mine = 0.0f;
+        for (ThreatReference const* ref : mob->GetThreatMgr().GetUnsortedThreatList())
+            if (ref->GetVictim() == bot)
+            {
+                mine = ref->GetThreat();
+                break;
+            }
+
+        if (mine >= bestThreat || !bot->IsWithinLOSInMap(mob))
+            continue;
+
+        best = mob;
+        bestThreat = mine;
+    }
+
+    return best;
 }
 
 Unit* GroupMemberAttackerValue::Calculate()

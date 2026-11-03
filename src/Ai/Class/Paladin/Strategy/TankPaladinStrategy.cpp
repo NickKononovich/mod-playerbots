@@ -241,6 +241,12 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot172] "untagged tank mob" (TankAoeThreat.h): a pack mob out of the area reach, on the tank by its first aggro
+    // only, below the area-threat floor -> the ranged threat spell tags it before the first heal's split threat takes
+    // it (b215 rfc-h 5D: Searing Blade Warlocks 23-25 yd off at 3 / 34 bear threat went to the shaman). Below the
+    // area threat and the threat-by-hand peel steps (+0.1..0.15), above "tank assist".
+    triggers.push_back(new TriggerNode(
+        "untagged tank mob", { NextAction("avenger's shield on untagged mob", ACTION_INTERRUPT + 0.09f) }));
     // [b34_pal] 969 AoE: Holy Wrath on its 30 s cooldown on an undead / demon pack (2+ within 8 yd), around the tank
     // whatever its target. Its 3 s stun holds the pack too. Above the area threat of "tank aoe threat" (+0.17..0.19)
     // and the threat-by-hand peel steps (+0.1..0.15), below Hammer of the Righteous peel (+0.2) and every taunt.

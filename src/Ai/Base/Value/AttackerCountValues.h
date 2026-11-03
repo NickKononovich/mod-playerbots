@@ -50,6 +50,24 @@ public:
     bool Calculate() override;
 };
 
+// [rot172] A mob in the tank's fight that stands out of its area reach and is still on the tank by its first
+// (proximity / body-pull) aggro only: the tank's own threat on it is below the area-threat floor (level x
+// TankAoeThreatTrigger::THREAT_FLOOR_PER_LEVEL). The core splits heal threat over every mob in combat with the healed
+// member, so the first HoT / Earth Shield charge takes such a mob (b215 rfc-h 5D: Searing Blade Warlocks 23-25 yd
+// off with 3 / 34 tank threat turned to the shaman at 551 / 667 s; the bear's Swipe never reaches a caster that
+// stays back).
+// The one with the least tank threat, within RANGE and in sight; nullptr for a non-tank.
+class UntaggedTankMobValue : public UnitCalculatedValue
+{
+public:
+    static constexpr uint32 CHECK_INTERVAL_MS = 300;
+    static constexpr float RANGE = 30.0f;  // the tanks' ranged threat spells (Faerie Fire, Avenger's Shield, ...)
+
+    UntaggedTankMobValue(PlayerbotAI* botAI) : UnitCalculatedValue(botAI, "untagged tank mob", CHECK_INTERVAL_MS) {}
+
+    Unit* Calculate() override;
+};
+
 // A mob hitting a non-tank group member in the tank's line of sight, for the tank to take back: healer victims
 // first, then the most hurt victim, then the nearest mob. A mob the tank's peel already took within
 // PEEL_SPREAD_MS ranks below every other victim's mob, so two taunts in a row cover two victims (wave 10

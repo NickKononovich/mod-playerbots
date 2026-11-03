@@ -192,6 +192,7 @@ public:
         creators["my attacker count"] = &ValueContext::my_attacker_count;
         creators["has aggro"] = &ValueContext::has_aggro;
         creators["group member attacker"] = &ValueContext::group_member_attacker;
+        creators["untagged tank mob"] = &ValueContext::untagged_tank_mob;  // [rot172]
         creators["fleeing mob"] = &ValueContext::fleeing_mob;
         creators["fled survivor"] = &ValueContext::fled_survivor;
         creators["group member attacker count"] = &ValueContext::group_member_attacker_count;
@@ -460,6 +461,7 @@ private:
     static UntypedValue* my_attacker_count(PlayerbotAI* botAI) { return new MyAttackerCountValue(botAI); }
     static UntypedValue* has_aggro(PlayerbotAI* botAI) { return new HasAggroValue(botAI); }
     static UntypedValue* group_member_attacker(PlayerbotAI* botAI) { return new GroupMemberAttackerValue(botAI); }
+    static UntypedValue* untagged_tank_mob(PlayerbotAI* botAI) { return new UntaggedTankMobValue(botAI); }
     static UntypedValue* fleeing_mob(PlayerbotAI* botAI) { return new FleeingMobValue(botAI); }
     static UntypedValue* fled_survivor(PlayerbotAI* botAI) { return new FledSurvivorValue(botAI); }
     static UntypedValue* group_member_attacker_count(PlayerbotAI* botAI)

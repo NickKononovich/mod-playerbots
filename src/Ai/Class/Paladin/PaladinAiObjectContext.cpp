@@ -136,6 +136,7 @@ public:
         creators["tank aoe threat"] = &PaladinTriggerFactoryInternal::tank_aoe_threat;
         creators["tank aoe pack"] = &PaladinTriggerFactoryInternal::tank_aoe_pack;  // [b32_tank_aoe]
         creators["tank aoe crowd"] = &PaladinTriggerFactoryInternal::tank_aoe_crowd;  // [b32_peel]
+        creators["untagged tank mob"] = &PaladinTriggerFactoryInternal::untagged_tank_mob;  // [rot172]
         creators["hammer of justice on enemy healer"] =
             &PaladinTriggerFactoryInternal::hammer_of_justice_on_enemy_target;
         creators["hammer of justice on snare target"] =
@@ -190,6 +191,7 @@ private:
     static Trigger* tank_aoe_threat(PlayerbotAI* botAI) { return new TankAoeThreatTrigger(botAI, 8.0f, 6.0f); }
     static Trigger* tank_aoe_pack(PlayerbotAI* botAI) { return new TankAoePackTrigger(botAI, 8.0f); }  // [b32_tank_aoe]
     static Trigger* tank_aoe_crowd(PlayerbotAI* botAI) { return new TankAoeCrowdTrigger(botAI, 8.0f); }  // [b32_peel]
+    static Trigger* untagged_tank_mob(PlayerbotAI* botAI) { return new UntaggedTankMobTrigger(botAI); }  // [rot172]
     static Trigger* righteous_fury(PlayerbotAI* botAI) { return new RighteousFuryTrigger(botAI); }
     static Trigger* judgement(PlayerbotAI* botAI) { return new JudgementTrigger(botAI); }
     static Trigger* judgement_of_wisdom(PlayerbotAI* botAI) { return new JudgementOfWisdomTrigger(botAI); }
@@ -367,6 +369,9 @@ public:
             &PaladinAiObjectContextInternal::hand_of_reckoning_on_group_member_attacker;
         creators["avenger's shield on group member attacker"] =
             &PaladinAiObjectContextInternal::avengers_shield_on_group_member_attacker;
+        // [rot172]
+        creators["avenger's shield on untagged mob"] =
+            &PaladinAiObjectContextInternal::avengers_shield_on_untagged_mob;
         creators["hammer of justice on group member attacker"] =
             &PaladinAiObjectContextInternal::hammer_of_justice_on_group_member_attacker;
         creators["hammer of the righteous on group member attacker"] =
@@ -490,6 +495,10 @@ private:
     static Action* avengers_shield_on_group_member_attacker(PlayerbotAI* botAI)
     {
         return new CastSpellOnGroupMemberAttackerAction(botAI, "avenger's shield");
+    }
+    static Action* avengers_shield_on_untagged_mob(PlayerbotAI* botAI)  // [rot172]
+    {
+        return new CastSpellOnUntaggedTankMobAction(botAI, "avenger's shield");
     }
     static Action* hammer_of_justice_on_group_member_attacker(PlayerbotAI* botAI)
     {
