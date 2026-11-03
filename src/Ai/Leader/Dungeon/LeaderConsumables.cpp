@@ -132,12 +132,12 @@ namespace Leader::Dungeon
             boss = nullptr;
             for (ObjectGuid const& bossGuid : group.BossCreatures())
             {
-                Creature* near = map->GetCreature(bossGuid);
-                if (!near || !near->IsAlive() || near->IsInCombat() || !near->IsDungeonBoss())
+                Creature* nearBoss = map->GetCreature(bossGuid);
+                if (!nearBoss || !nearBoss->IsAlive() || nearBoss->IsInCombat() || !nearBoss->IsDungeonBoss())
                     continue;
-                float const yd = leader->GetExactDist(near);
+                float const yd = leader->GetExactDist(nearBoss);
                 if (yd < Travel::BOSS_BUFF_DISTANCE && (!boss || yd < leader->GetExactDist(boss)))
-                    boss = near;
+                    boss = nearBoss;
             }
         }
         if (!boss)
