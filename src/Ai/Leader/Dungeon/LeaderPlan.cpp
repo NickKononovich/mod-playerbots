@@ -839,6 +839,22 @@ namespace Leader::Dungeon
             // healer fought (Earthborer 4 had jumped it); the tank, in no fight, stopped. The order ends with the
             // tank's own fight (a mob on it or its victim); the mob on a member is the tank's take-back (lead112)
             bool const tankFights = tank->IsInCombat() && (tank->GetVictim() || !tank->getAttackers().empty());
+            // [lead908] a mob of none of this pull's mobs (the plan's, the walkers taken along) on a member
+            Unit* unplanned = nullptr;
+            if (group.FightOn(tank) && !tankFights)
+            {
+                std::vector<ObjectGuid> planned = LeaderPullMobs(lead.commit, lead.commitMob);
+                planned.insert(planned.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
+                for (LeaderGroup::MemberInfo const& member : group.Members())
+                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid); bot && bot->IsAlive() && !unplanned)
+                        for (Unit* attacker : bot->getAttackers())
+                            if (attacker && attacker->IsAlive() && LeaderFightMob(tank, attacker) &&
+                                std::find(planned.begin(), planned.end(), attacker->GetGUID()) == planned.end())
+                            {
+                                unplanned = attacker;
+                                break;
+                            }
+            }
             if (group.FightOn(tank) && tankFights)
             {
                 broken = "the fight is on";
@@ -861,6 +877,24 @@ namespace Leader::Dungeon
                                         .Real("fightX", lead.meetPoint.GetPositionX())
                                         .Real("fightY", lead.meetPoint.GetPositionY()));
                             }
+            }
+            // [lead908] user 2026-11-03 (42): an unplanned fight cancels the open pull - a mob of none of this pull's
+            // mobs (the plan's, the walkers taken along) attacks a member while the tank is not yet in its own fight:
+            // the tank stops walking to the planned pull and finishes the running fight first (its take-back, lead112);
+            // the planned mob stays the leader's next pick (lead101)
+            else if (unplanned)
+            {
+                broken = "an unplanned fight: " + unplanned->GetName() + " attacks the group, finished first";
+                if (Leader::Orders::Close(group.LeaderGuid(), Leader::OrderState::Aborted, broken,
+                                          tank->GetPosition(), nullptr))
+                    LOG_INFO("playerbots", "[lead908] {}: the open pull on {} cancelled: {}", tank->GetName(),
+                             mob ? mob->GetName() : std::string("?"), broken);
+                if (Creature* own = mob ? mob->ToCreature() : nullptr;
+                    own && Leader::Fight::OrderMobStaysPick(tank, own))
+                {
+                    lead.keptPick = own->GetGUID();
+                    lead.keptPickWhy = "its pull was cancelled by an unplanned fight";
+                }
             }
             else if (!mob || !mob->IsAlive())
                 broken = "the mob is dead";
