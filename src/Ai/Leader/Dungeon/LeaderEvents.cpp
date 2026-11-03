@@ -6249,16 +6249,16 @@ namespace Leader::Dungeon
                         // tank)
                         for (auto const& [mobGuid, ref] : member->GetThreatMgr().GetThreatenedByMeList())
                         {
-                            Unit* const near = ref ? ref->GetOwner() : nullptr;
+                            Unit* const nearMob = ref ? ref->GetOwner() : nullptr;
                             // a mob the tank holds is no danger to the melee beside it (its victim stays the tank)
-                            if (!near || !near->IsAlive() || near->GetVictim() == member || near->GetVictim() == tank ||
-                                near->HasUnitState(UNIT_STATE_CONTROLLED) || !near->IsWithinMeleeRange(member))
+                            if (!nearMob || !nearMob->IsAlive() || nearMob->GetVictim() == member ||
+                                nearMob->GetVictim() == tank || nearMob->HasUnitState(UNIT_STATE_CONTROLLED) || !nearMob->IsWithinMeleeRange(member))
                                 continue;
                             float spellPart = 0.0f;
                             // its swings only: the spell it casts now goes to its victim
-                            float const dps = AttackerDps(near, member, spellPart) - spellPart;
+                            float const dps = AttackerDps(nearMob, member, spellPart) - spellPart;
                             incoming += dps;
-                            byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f} (in reach)", near->GetName(),
+                            byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f} (in reach)", nearMob->GetName(),
                                                                               dps));
                         }
                         if (incoming <= 0.0f)
