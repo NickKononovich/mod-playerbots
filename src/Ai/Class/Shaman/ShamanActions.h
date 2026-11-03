@@ -489,6 +489,11 @@ public:
         CastSpellAction(botAI, "call of the elements") {}
 
     bool isUseful() override;
+    // [rot300] A self cast that needs no target: on "current target" a healer with none (the resto shaman heals
+    // the group, no enemy picked) never cast it, and the single drops wait for it while 2+ slots are empty
+    // (DefersToCallOfTheElements). b218 rfc-h 5D: Rtshaad 0 totems in 4 boss fights except Mana Tide, while the
+    // enh / ele shamans cast it "-> Earthborer" (their current target).
+    std::string const GetTargetName() override { return "self target"; }
 };
 
 class CastTotemicRecallAction : public CastSpellAction
