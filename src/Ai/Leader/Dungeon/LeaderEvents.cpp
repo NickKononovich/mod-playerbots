@@ -4524,6 +4524,14 @@ namespace Leader::Dungeon
                 if (auto const measured = lead.openTps.find(tank->GetGUID());
                     measured != lead.openTps.end() && measured->second.second)
                     tankOpen = measured->second.first / float(measured->second.second);
+                // [lead683] b218 rfc-h (8 runs): 149 of the 590 "threat: no mob with headroom" Stops read the tank's
+                // threat flat at its pull (5A 51 / 116 / 148.5 / 173.3 / 303.6 s: tank 41.2 -> tankNext 41.2 on the
+                // mob it had just pulled, every damage dealer stopped) - the tank's opening rate projected only onto
+                // its victim, and the tank opening on the mob it pulled (its selection, its opener landed, the mob
+                // running in) has no victim yet. The mob the tank attacks or has selected is the one its opening
+                // rate builds on
+                auto const tankOpensOn = [&](Unit* mob)
+                { return tank->GetVictim() == mob || (mob && tank->GetTarget() == mob->GetGUID()); };
                 auto const rateOf = [](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
                 {
                     float const onMob = seen.threat > 0.0f ? ThreatSeenRate(seen) : 0.0f;
@@ -4564,7 +4572,7 @@ namespace Leader::Dungeon
                     // was read at its opening single-target rate on a mob it did not attack. The tank's opening rate
                     // projects onto the mob it attacks; on another its threat grows only by what it measured there
                     p.tankNext = held.threat > 0.0f
-                                     ? held.threat + rateOf(held, tank->GetVictim() == mob ? tankOpen : 0.0f) *
+                                     ? held.threat + rateOf(held, tankOpensOn(mob) ? tankOpen : 0.0f) *
                                                          HEADROOM_GCD_SEC
                                      : 0.0f;
                     p.tankNext += p.redirected;
@@ -4714,7 +4722,7 @@ namespace Leader::Dungeon
                         float const tankNext =
                             held.threat > 0.0f
                                 ? held.threat +
-                                      rateHere(held, tank->GetVictim() == mob ? tankOpen : 0.0f) * HEADROOM_GCD_SEC
+                                      rateHere(held, tankOpensOn(mob) ? tankOpen : 0.0f) * HEADROOM_GCD_SEC
                                 : 0.0f;
                         float const share = mob->GetVictim() != tank       ? 1.0f
                                             : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
