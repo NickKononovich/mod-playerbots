@@ -806,6 +806,9 @@ namespace Leader::Fight
         Map* map = target->GetMap();
         for (float ring = distance; ring >= inner || ring == distance; ring -= RING_STEP_YD)
         {
+            // [lead902] user 2026-11-03: of the ring's fitting points the one nearest by the member's real walk
+            std::optional<Position> best;
+            float bestWalk = 0.0f;
             for (float turn : TURNS)
             {
                 if (melee && std::fabs(turn) > 1.2f)
@@ -829,6 +832,8 @@ namespace Leader::Fight
                     continue;
                 }
                 Position const spot(x, y, z);
+                if (best && bot->GetExactDist(spot) >= bestWalk)  // [lead902] no walk to it can be shorter
+                    continue;
                 if (std::string const why = CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, true);
                     !why.empty())
                 {
@@ -851,7 +856,15 @@ namespace Leader::Fight
                         NoteSpotReject("ring", "an idle mob's aggro reach");
                     continue;
                 }
-                out = spot;
+                if (float const walk = Leader::WalkYd(bot, spot); !best || walk < bestWalk)
+                {
+                    best = spot;
+                    bestWalk = walk;
+                }
+            }
+            if (best)
+            {
+                out = *best;
                 return true;
             }
             if (fallback)
@@ -2125,6 +2138,8 @@ namespace Leader::Fight
     }
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
+    // [lead902] user 2026-11-03: nearest by the member's real walk (navmesh, Leader::WalkYd), not the straight line:
+    // every fitting spot whose straight distance from the member is below the best walk found is priced
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
                                  std::vector<HazardZone> const& zones,
                                  std::function<bool(Position const&)> const& keeps, Position& out,
@@ -2134,6 +2149,9 @@ namespace Leader::Fight
         constexpr float RINGS[] = {0.0f, 3.0f, 6.0f, 9.0f, 12.0f};
         constexpr uint32 DIRECTIONS = 12;
         Map* map = bot->GetMap();
+        std::optional<Position> best;  // [lead902]
+        float bestWalk = 0.0f;
+        float firstWalk = -1.0f;
         for (float ring : RINGS)
             for (uint32 i = 0; i < (ring > 0.0f ? DIRECTIONS : 1u); ++i)
             {
@@ -2150,6 +2168,8 @@ namespace Leader::Fight
                     continue;
                 }
                 Position const spot(x, y, z);
+                if (best && bot->GetExactDist(spot) >= bestWalk)  // [lead902] no walk to it can be shorter
+                    continue;
                 if (!melee && target->GetExactDist2d(x, y) < std::max(8.0f, LeaderRangedMinGap(bot, target)))
                 {
                     NoteSpotReject("near", "inside its minimum gap to the target");
@@ -2169,9 +2189,28 @@ namespace Leader::Fight
                         NoteSpotReject("near", "an idle mob's aggro reach");
                     continue;
                 }
-                out = spot;
-                return true;
+                float const walk = Leader::WalkYd(bot, spot);
+                if (firstWalk < 0.0f)
+                    firstWalk = walk;
+                if (!best || walk < bestWalk)
+                {
+                    best = spot;
+                    bestWalk = walk;
+                }
             }
+        if (best)
+        {
+            if (bestWalk + 1.0f < firstWalk)
+            {
+                thread_local uint32 shorterLogged = 0;
+                if (shorterLogged++ % 50 == 0)
+                    LOG_INFO("playerbots", "[lead902] {}: the combat spot by its real walk {:.1f} yd against {:.1f} yd "
+                             "to the first fitting spot by straight distance ({} such picks)",
+                             bot->GetName(), bestWalk, firstWalk, shorterLogged);
+            }
+            out = *best;
+            return true;
+        }
         if (fallback)
         {
             out = *fallback;
