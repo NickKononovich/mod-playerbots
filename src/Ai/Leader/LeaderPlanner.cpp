@@ -12376,6 +12376,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // counts already too (the pull after it is smaller); one that cannot be waited out is pulled first if the group
     // takes it alone, else counted in the plan, which must still fit.
     Unit* planned = botAI->GetUnit(_planCached);
+    Unit* countedPatrol = nullptr;  // [lead907] a patrol the plan counts in (its nearest walker)
     if (!patrolFirst && planned && map && !patrols.empty())
     {
         Position const fightSpot =
@@ -12425,7 +12426,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 PackEstimate const togetherEstimate = EstimatePack(together, bot, groupDps, estimateMode, _planLos);
                 OverloadTerms togetherTerms;
                 CarefulOverload(bot, togetherEstimate, strength, support, kit, measured, &togetherTerms);
-                if (togetherEstimate.boss || (withinCap(togetherEstimate) && togetherTerms.Max() <= limit))
+                // [lead907] user 2026-11-03 (29): a fallback plan taken along must stay what the tank carries
+                // (the fallback hold's own TankCarries below), else the patrol is pulled first
+                if (togetherEstimate.boss ||
+                    (withinCap(togetherEstimate) && togetherTerms.Max() <= limit &&
+                     (!fallback || TankCarries(togetherEstimate, support))))
                 {
                     chosenPack = together;
                     chosen = togetherEstimate;
@@ -12450,6 +12455,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 return false;
             }
 
+            if (counted)
+                countedPatrol = member;  // [lead907]
             if (counted || lastResort || chosenPack.empty())
                 continue;
 
@@ -12489,6 +12496,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 return false;
             }
 
+            countedPatrol = member;  // [lead907]
             LogPatrol(bot, Acore::StringFormat(
                                "[pull patrol] {}: patrol {} ({:.1f} yd, eta {:.0f} s) counted in the fight at {}: {} "
                                "mobs, cost {:.2f}{}",
@@ -12507,6 +12515,31 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 return false;
             }
 
+            CarefulOverload(bot, chosen, strength, support, kit, measured, &chosenTerms);
+        }
+    }
+
+    // [lead907] user 2026-11-03 (29): a patrol that inflates the fallback plan past what the tank carries is pulled
+    // first (its own plan) instead of the hold below waiting for it
+    if (std::string carries; fallback && countedPatrol && !patrolFirst && !patrolFits && !chosen.boss &&
+                             !_planGuaranteed && !TankCarries(chosen, support, &carries))
+    {
+        uint32 const before = chosen.mobs;
+        if (tryPlan(countedPatrol, false, !measured ? CAREFUL_FALLBACK_OVERLOAD : 1.0f, false, false))
+        {
+            patrolFirst = true;
+            _planSingle = false;
+            LOG_INFO("playerbots", "[lead907] {}: the patrol {} makes the fallback plan ({} mobs) more than the tank "
+                     "carries ({}): pulls it first, {} mobs, cost {:.2f}",
+                     bot->GetName(), countedPatrol->GetName(), before, carries, chosen.mobs, chosen.cost);
+            float const need = measured && !chosen.boss ? HealerManaNeed(chosen, support) : -1.0f;
+            if (!IsGroupReadyToPull(bot, chosen.danger, strength, need))
+            {
+                _planNotReadyWhy = Acore::StringFormat("group not ready for the patrol {} first ({} mobs, danger "
+                                                       "{:.2f})",
+                                                       countedPatrol->GetName(), chosen.mobs, chosen.danger);
+                return false;
+            }
             CarefulOverload(bot, chosen, strength, support, kit, measured, &chosenTerms);
         }
     }
