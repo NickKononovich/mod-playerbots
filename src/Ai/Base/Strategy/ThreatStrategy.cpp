@@ -18,7 +18,8 @@
 #include "Playerbots.h"
 #include "RtiValue.h"  // [rot1] CrowdControlWouldBreak
 #include "Spell.h"
-#include "SpellAuras.h"  // [rot47]
+#include "SpellAuraEffects.h"  // [lead601]
+#include "SpellAuras.h"        // [rot47]
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "ThreatManager.h"
@@ -766,6 +767,52 @@ void LeaderCommandMultiplier::Refresh()
     LeaderCommandState::State const state = LeaderCommandState::Read(bot, _command);
     _led = state != LeaderCommandState::State::NotLed;
     _hasCommand = state == LeaderCommandState::State::Fresh;
+
+    // [lead601] b217 rfc-h 5C 541 s / 818 s: Rtdruab's Starfall passed the cast gate (no spared mob in its 30 yd then)
+    // and its stars went on hitting for 10 s while the leader spared the pack's mobs it reached (no threat headroom:
+    // "spares Searing Blade Cultist / Enforcer"): 7 of the run's 31 aggro losses "threat on a mob it was not told to
+    // hit (area / splash / dot)" within 5 s of the two casts (542.5-546.1, 822.4, 826.3). A lasting area of the
+    // member's own on itself (a periodic trigger that deals damage: Starfall's stars, Bladestorm's Whirlwind) is the
+    // area spell the leader's AoE rule holds as long as it hits: the leader's Stop, its AoE rule forbidding the area,
+    // or a spared mob in its reach (lead472's lasting rule: the mob or its victim inside) ends it, as the cast gate
+    // would hold its next cast
+    if (_hasCommand && bot->IsInCombat() && !PlayerbotAI::IsTank(bot))
+    {
+        bool const stop = _command.attack == Leader::AttackEvent::StopDps ||
+                          _command.intensity == Leader::Intensity::Stop;
+        for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_TRIGGER_SPELL))
+        {
+            SpellInfo const* info = effect ? effect->GetSpellInfo() : nullptr;
+            if (!info || effect->GetCasterGUID() != bot->GetGUID() || info->GetMaxRange(false, bot) > 0.0f ||
+                !TriggersDamage(info, 2))
+                continue;
+            std::string spell = info->SpellName[0] ? info->SpellName[0] : "";
+            std::transform(spell.begin(), spell.end(), spell.begin(), ::tolower);
+            float const radius = AreaRadius(bot, info, spell);
+            Position const center = bot->GetPosition();
+            std::string why;
+            if (stop)
+                why = "the leader's Stop";
+            else if (!LeaderCommand::AoeAllowed(bot, center))
+                why = _command.aoe == Leader::AoeRule::Forbidden ? "the leader forbids AoE"
+                                                                 : "AoE outside the leader's pack";
+            else if (Unit* spared = SparedInArea(
+                         [&](Unit* mob)
+                         {
+                             if (mob->IsWithinDist3d(&center, radius))
+                                 return true;
+                             Unit* const mobVictim = mob->GetVictim();
+                             return mobVictim && mobVictim->IsWithinDist3d(&center, radius);
+                         }))
+                why = "the area reaches the leader's spared " + spared->GetName();
+            if (why.empty())
+                continue;
+            uint32 const id = info->Id;
+            bot->RemoveAurasDueToSpell(id);
+            LOG_INFO("playerbots", "[lead601] {} cancels its {} ({}): {}", bot->GetName(), spell, id, why);
+            break;
+        }
+    }
 
     // [rot3] the bot's health over the last EMERGENCY_WINDOW_MS, for the "big hit landing" test
     while (!_health.empty() && getMSTimeDiff(_health.front().first, _readMs) > EMERGENCY_WINDOW_MS)
