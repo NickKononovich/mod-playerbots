@@ -1177,17 +1177,37 @@ namespace Leader::Dungeon
                 bossYd = tank->GetExactDist(planned);
             }
             lead.nextBossGuid = nextBoss ? nextBoss->GetGUID() : ObjectGuid::Empty;
-            // [lead274] user: a normal raid leader saves all cooldowns for the boss; on trash only at critical
-            // moments, or if the boss is far and everything recharges; in a short dungeon only on bosses, and not on
-            // all - on the most needed. Once per fight every living boss is judged like a pull (the planner's
-            // estimate: JudgePack's overload of tank health / healer mana, and his length over the group's dps) - the
-            // cooldowns go to the boss that needs them most - and the fight itself (a critical pull: overload >= 1)
-            if (lead.bossJudgedFor != lead.fightStartMs)
+            // [lead421] a boss fight ends the run's walk to him: its seconds (the last boss fight's end, or the
+            // run's first tick, to this pull) are a measured stretch between bosses
+            // [lead631] b218 rfc-h 5C Oggleflint (pull 15, 267.7 s): the fight's target on its first tick was a
+            // Ragefire Shaman of his pack, the once-per-fight judgement saw no boss and the stretch was never noted
+            // (no stretch measured, bossFightOn false: the boss fight counted as trash, the walk to Taragaman ran from
+            // the run's start); Hysteria / Force of Nature held for Taragaman "his pull in >= 101 s" (pulled 391 s
+            // later), Army of the Dead / Empower Rune Weapon for Bazzalan ">= 219 s" (806 s later) - all back long
+            // before. A dungeon boss in this fight on any tick (the target, or engaged by / on a member: lead541's
+            // test) is the boss fight
+            if (!lead.bossFightOn)
             {
-                lead.bossJudgedFor = lead.fightStartMs;
-                // [lead421] a boss fight ends the run's walk to him: its seconds (the last boss fight's end, or the
-                // run's first tick, to this pull) are a measured stretch between bosses
-                if (Creature const* boss = target->ToCreature(); boss && boss->IsDungeonBoss() && !lead.bossFightOn)
+                Creature const* inFight = target->ToCreature();
+                if (!inFight || !inFight->IsDungeonBoss())
+                {
+                    inFight = nullptr;
+                    for (ObjectGuid const& bossGuid : group.BossCreatures())
+                    {
+                        Creature* boss = map->GetCreature(bossGuid);
+                        if (!boss || !boss->IsAlive() || !boss->IsInCombat() || !boss->IsDungeonBoss())
+                            continue;
+                        bool engaged = boss->IsEngagedBy(tank) || boss->GetVictim() == tank;
+                        for (Player* bot : seats)
+                            engaged = engaged || boss->IsEngagedBy(bot) || boss->GetVictim() == bot;
+                        if (engaged)
+                        {
+                            inFight = boss;
+                            break;
+                        }
+                    }
+                }
+                if (inFight)
                 {
                     // [lead541] b212 rfc-h: "his pull in 4294931 s" / "2147153 s" - on a fight's first tick
                     // fightStartMs is still 0 here (set further down the tick), getMSTimeDiff(stretchFromMs, 0)
@@ -1202,6 +1222,15 @@ namespace Leader::Dungeon
                     lead.stretchFromMs = 0;
                     lead.bossFightOn = true;
                 }
+            }
+            // [lead274] user: a normal raid leader saves all cooldowns for the boss; on trash only at critical
+            // moments, or if the boss is far and everything recharges; in a short dungeon only on bosses, and not on
+            // all - on the most needed. Once per fight every living boss is judged like a pull (the planner's
+            // estimate: JudgePack's overload of tank health / healer mana, and his length over the group's dps) - the
+            // cooldowns go to the boss that needs them most - and the fight itself (a critical pull: overload >= 1)
+            if (lead.bossJudgedFor != lead.fightStartMs)
+            {
+                lead.bossJudgedFor = lead.fightStartMs;
                 std::map<ObjectGuid, DungeonLeaderState::BossNeed> needs;
                 for (ObjectGuid const& bossGuid : group.BossCreatures())
                     if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive())
