@@ -149,7 +149,8 @@ public:
 };
 
 // [b31_deep] wowsims MM fires Silencing Shot on cooldown as a damage shot. The bot holds it for interrupts, which a
-// boss that its silence and interrupt cannot affect makes pointless: there it is spent on cooldown.
+// boss that its silence and interrupt cannot affect makes pointless: there it is spent on cooldown. [rot135] A led
+// hunter spends it on cooldown on every target: its interrupts are the leader's orders on the ready interrupts.
 class CastSilencingShotOnCooldownAction : public CastSilencingShotAction
 {
 public:

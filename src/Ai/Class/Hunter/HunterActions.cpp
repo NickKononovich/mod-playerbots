@@ -9,6 +9,7 @@
 #include "GenericSpellActions.h"
 #include "HunterTriggers.h"         // [b31_deep] SPELL_LOCK_AND_LOAD_PROC
 #include "InterruptValues.h"        // [b31_deep] InterruptCoordination::CanStopCast
+#include "LeaderOrders.h"           // [rot135] Leader::ExecutorMember
 #include "Pet.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -112,7 +113,15 @@ bool CastSilencingShotOnCooldownAction::isUseful()
     if (!spellInfo || target->IsImmunedToSpell(spellInfo))
         return false;
 
-    // Still able to silence this target: keep it for its casts (the "silencing shot" trigger).
+    // [rot135] A led hunter fires it on cooldown like wowsims hunter__mm (priority 3, no condition). Its interrupts are
+    // the leader's orders (InterruptCoordination::Update [rot2]: a led bot kicks only the cast the leader assigns),
+    // and the leader picks the member whose interrupt is ready (PickOrderedInterrupter), so a held shot only waits for
+    // an order another member's ready interrupt takes. b212 rfc-h 5A Rthunaa: 0 Silencing Shots and 0 interrupts in
+    // 4 boss fights (sim 4.3 casts/min, 62 DPS).
+    if (Leader::ExecutorMember(bot))
+        return true;
+
+    // Unled and still able to silence this target: keep it for its casts (the "silencing shot" trigger).
     return !InterruptCoordination::CanStopCast(target, spellInfo);
 }
 

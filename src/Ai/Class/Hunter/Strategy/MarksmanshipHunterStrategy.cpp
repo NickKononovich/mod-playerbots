@@ -17,7 +17,8 @@ std::vector<NextAction> MarksmanshipHunterStrategy::getDefaultActions()
 {
     return {
         NextAction("kill command", 5.8f),
-        // [b31_deep] off the GCD, on cooldown only on a boss it cannot silence (wowsims mm.apl uses it on cooldown)
+        // [b31_deep] off the GCD, on cooldown on a target it cannot silence (wowsims mm.apl uses it on cooldown);
+        // [rot135] a led hunter on cooldown on every target
         NextAction("silencing shot on cooldown", 5.75f),
         NextAction("kill shot", 5.7f),
         NextAction("serpent sting", 5.6f),
