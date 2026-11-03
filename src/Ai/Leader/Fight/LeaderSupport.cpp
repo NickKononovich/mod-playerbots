@@ -548,7 +548,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
     {
         for (Player* bot : members)
             if (bot->getClass() == CLASS_ROGUE && bot->IsAlive() && !bot->IsInCombat() &&
-                bot->HasSpell(SPELL_OVERKILL_TALENT) && bot->HasSpell(SPELL_STEALTH) &&
+                // [lead670] a passive talent is no spell the bot has (HasSpell false): b218 never stealthed for it
+                bot->HasTalent(SPELL_OVERKILL_TALENT, bot->GetActiveSpec()) && bot->HasSpell(SPELL_STEALTH) &&
                 !bot->HasAura(SPELL_STEALTH) && !bot->HasSpellCooldown(SPELL_STEALTH) &&
                 Leader::Events::SetExternal(bot->GetGUID(), SPELL_STEALTH, bot->GetGUID()))
                 logEvent(bot, "External",
