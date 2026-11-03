@@ -1644,7 +1644,10 @@ namespace TestHarness
         JsonObject event;
         event.Raw("m", members.Build());
         if (tankTarget)
+            // [lead765] the tank's target by its GUID low too (b220: the entry alone could not tell two Troggs apart)
             event.Raw("tt", JsonObject().Num("entry", tankTarget->IsCreature() ? tankTarget->GetEntry() : 0)
+                                .Num("low", int64(tankTarget->GetGUID().GetCounter()))
+                                .Bool("moving", tankTarget->isMoving())
                                 .Real("x", tankTarget->GetPositionX()).Real("y", tankTarget->GetPositionY())
                                 .Real("z", tankTarget->GetPositionZ()).Real("o", tankTarget->GetOrientation())
                                 .Build());

@@ -21,6 +21,7 @@
 #include "ObjectDefines.h"
 #include "Opcodes.h"
 #include "PartyMemberToHeal.h"
+#include "PullFacts.h"  // [lead760] TankWalkMovesFight
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -351,6 +352,13 @@ bool CastSpellAction::isUseful()
     Unit* spellTarget = GetTarget();
     if (!spellTarget || !spellTarget->IsInWorld() || spellTarget->GetMapId() != bot->GetMapId())
         return false;
+
+    // [lead760] b220 rfc-h: Intervene moved a led tank 211 yd after its first hits, to a friend whose mob a ready
+    // taunt reached from where the tank stood - the jump only where the leader's fight is planned to stand
+    if (spell == "intervene" && spellTarget != bot && PlayerbotAI::IsTank(bot) && bot->IsInCombat())
+        for (Unit* attacker : spellTarget->getAttackers())
+            if (!Leader::Fight::TankWalkMovesFight(bot, attacker).empty())
+                return false;
 
     // float combatReach = bot->GetCombatReach() + target->GetCombatReach();
     // if (!PlayerbotAI::IsRanged(bot))
@@ -925,6 +933,9 @@ bool TauntReactionAction::BackupTaunt(PlayerbotAI* botAI, Unit* mob, Unit* victi
     {
         // a gap closer only to a mob out of the tank's melee
         if (!backup->holds && inMelee)
+            continue;
+        // [lead760] ... and only where the leader's fight is planned to stand (TankWalkMovesFight)
+        if (!backup->holds && !Leader::Fight::TankWalkMovesFight(bot, mob).empty())
             continue;
         if (backup->onSelf && !bot->IsWithinDistInMap(mob, AOE_TAUNT_RADIUS))
             continue;

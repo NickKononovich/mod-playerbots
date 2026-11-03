@@ -18,6 +18,10 @@
 #include "Playerbots.h"
 #include "LeaderOrders.h"  // [lead108] Leader::Route
 #include "RouteSteer.h"  // [lead167] BossBroughtBy
+#include "ChooseTargetActions.h"  // [lead760] FightSpot
+#include "LeaderFightChecks.h"   // [lead760] TANK_TAUNTS
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include <algorithm>
 
 namespace Leader::Fight
@@ -122,5 +126,57 @@ namespace Leader::Fight
             return false;
         Creature* creature = mob->ToCreature();
         return !creature || !creature->CanNotReachTarget();
+    }
+
+    uint32 TauntReachesFromHere(Player* tank, Unit* mob)
+    {
+        if (!tank || !mob || !mob->IsAlive())
+            return 0;
+        constexpr uint32 SPELL_RIGHTEOUS_DEFENSE = 31789;
+        for (uint32 spell : TANK_TAUNTS)
+        {
+            if (!tank->HasSpell(spell) || tank->HasSpellCooldown(spell))
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+            // Righteous Defense goes on the attacked friend, the others on the mob
+            Unit* on = spell == SPELL_RIGHTEOUS_DEFENSE ? mob->GetVictim() : mob;
+            if (info && on && on != tank && tank->IsWithinCombatRange(on, info->GetMaxRange(on->IsFriendlyTo(tank))) &&
+                tank->IsWithinLOSInMap(on))
+                return spell;
+        }
+        return 0;
+    }
+
+    std::string TankWalkMovesFight(Player* tank, Unit* target)
+    {
+        if (!tank || !target || !target->IsAlive() || !Leader::LedBot(tank) || tank->IsWithinMeleeRange(target))
+            return std::string();
+        Creature* creature = target->ToCreature();
+        // a mob that cannot reach its victim evades every hit: only a walk to it ends that (b39_hos)
+        if (!creature || creature->CanNotReachTarget())
+            return std::string();
+        // [lead760] b220 rfc-h: 48 pulls walked back by "move fight spot back" (519 yd) after the tank met its mob
+        // forward first (reach melee 190 yd, tank open incoming 108, charges 33, aggressive target 26 before the
+        // walk back): an engage with a fight spot back is fought there - the tank goes there and the mob comes
+        Position back;
+        if (FightSpot::Ahead(tank, back) &&
+            target->GetExactDist(back) > tank->GetCombatReach() + target->GetCombatReach() + NOMINAL_MELEE_RANGE)
+            return "the plan's fight spot back is not where the mob is";
+        if (!target->IsInCombat())
+            return std::string();
+        if (MobComesToTank(tank, target))
+            return "it comes to the tank";
+        Unit* victim = target->GetVictim();
+        if (victim && victim != tank && victim->GetCharmerOrOwnerPlayerOrPlayerItself() &&
+            TauntReachesFromHere(tank, target))
+            return "a ready taunt reaches it from here";
+        // [lead760] b220: "reach melee" to a mob on the tank standing at range (a caster) 75 s - the walk drags the
+        // mobs the tank holds; while the tank holds another fight mob in its melee it stays, the ranged hit the caster
+        if (victim == tank && !target->isMoving())
+            for (Unit* attacker : tank->getAttackers())
+                if (attacker && attacker != target && attacker->IsAlive() && attacker->GetVictim() == tank &&
+                    tank->IsWithinMeleeRange(attacker))
+                    return "a caster at range while the tank holds " + attacker->GetName() + " in its melee";
+        return std::string();
     }
 }

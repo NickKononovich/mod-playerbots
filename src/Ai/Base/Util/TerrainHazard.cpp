@@ -11,6 +11,8 @@
 #include "BotMoveEvents.h"
 #include "PathGenerator.h"
 #include "SafeZone.h"  // [lead9] GapCloserLeavesZone
+#include "PlayerbotAI.h"  // [lead760]
+#include "PullFacts.h"  // [lead760] TankWalkMovesFight
 #include <array>
 #include "GameObject.h"
 #include "GameObjectModel.h"
@@ -1144,6 +1146,13 @@ bool GapCloserLeavesGround(Unit* caster, Unit* target, char const* what)
     // pull of its own between the leader's orders (SafeZone.h, C:/WoW/LEADER_REFACTOR_PLAN.md step 9)
     if (Leader::FightZone::GapCloserLeavesZone(caster, target, what))
         return true;
+
+    // [lead760] b220 rfc-h: Charge / Intercept / Feral Charge moved a led tank ~390 yd after its first hits, most onto
+    // a mob already coming at it or one a ready taunt reached - a charge only where the leader's fight is planned to
+    // stand (Leader::Fight::TankWalkMovesFight)
+    if (Player* tank = caster->ToPlayer(); tank && PlayerbotAI::IsTank(tank))
+        if (std::string const moves = Leader::Fight::TankWalkMovesFight(tank, target); !moves.empty())
+            return true;
 
     // a target in the air: the charge ends on whatever ground lies under it
     float level = target->GetMapWaterOrGroundLevel(target->GetPositionX(), target->GetPositionY(),

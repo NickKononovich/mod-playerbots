@@ -11,6 +11,7 @@
 // leader judges before it issues an engage and in a fight; the harness only calls them and logs.
 
 #include "ObjectGuid.h"
+#include <string>
 #include <vector>
 
 class Creature;
@@ -38,6 +39,15 @@ namespace Leader::Fight
     // [lead146] the mob runs to the tank: alive, in combat, its victim the tank, moving, not rooted and not out of
     // its reach - the fight is where the tank took it, the tank does not walk to meet it
     bool MobComesToTank(Player* tank, Unit* mob);
+    // [lead760] user 2026-11-03 (top priority: in-fight walking): after the tank's opener the fight stands where the
+    // leader planned it. Why a led tank's walk or gap closer to `target` would move the fight off that place (empty:
+    // it does not): the plan's fight spot back is not where the mob is (the mob comes there), the mob comes to the
+    // tank, a ready taunt reaches it from where the tank stands, a caster on the tank at range while the tank holds
+    // other fight mobs in its melee (the ranged and the caster corner take it there)
+    std::string TankWalkMovesFight(Player* tank, Unit* target);
+    // [lead760] the tank's taunt that is ready and reaches `mob` (or Righteous Defense its victim) from where the tank
+    // stands, in sight (spell data, the game's combat range); 0: none
+    uint32 TauntReachesFromHere(Player* tank, Unit* mob);
 }
 
 #endif

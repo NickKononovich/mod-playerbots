@@ -20,6 +20,7 @@
 #include "TerrainHazard.h"  // [lead19] closed doors
 #include "Log.h"
 #include "MotionMaster.h"
+#include "MoveSpline.h"  // [lead762]
 #include "ObjectAccessor.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -743,6 +744,22 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         bot->SetStandState(UNIT_STAND_STATE_STAND);
     if (bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) <= events.tolerance)
     {
+        // [lead762] b220 rfc-h (8 runs): "aggro loss: the tank goes to the member" / "... to the mob" walked the tank
+        // ~650 yd after its first hits - its tolerance is the taunt's reach (the leader's arrival: in reach and in
+        // sight), but the walk went on to the member's own spot (5A 85.8 s: 44.3 yd off, 36 yd walked in 8 s where 14
+        // reached the taunt). A MoveTo arrives at its tolerance: the walk to the spot stops there once the spot is in
+        // sight (the leader's tolerance for a spot in reach out of sight is the melee one, lead572)
+        if (events.move == Leader::MoveEvent::MoveTo && bot->isMoving() && !bot->movespline->Finalized())
+        {
+            G3D::Vector3 const end = bot->movespline->FinalDestination();
+            if (events.spot.GetExactDist2d(end.x, end.y) <= Leader::LEADER_SPOT_TOLERANCE &&
+                bot->IsWithinLOS(events.spot.GetPositionX(), events.spot.GetPositionY(),
+                                 events.spot.GetPositionZ() + bot->GetCollisionHeight()))
+            {
+                bot->StopMoving();
+                bot->GetMotionMaster()->Clear();
+            }
+        }
         Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
                             "on the spot");
         // [lead159] standing on the spot is no work: the tick is the rotation's (it was executed every tick)

@@ -6000,7 +6000,21 @@ namespace Leader::Dungeon
                 uint32 spell = 0;
                 Unit* on = nullptr;  // nullptr: the caster itself / its group
                 float sec = 0.0f;
+                float damage = 0.0f;  // [lead761] the fight damage its seconds gained are worth
                 std::string why;
+            };
+            // [lead761] user 2026-11-03: a mana tool goes where it gains the most damage - each receiver's fight
+            // seconds gained times that member's own measured dps (GroupDamage::MemberSustainedDps), not the seconds
+            // alone (a healer's seconds keep the whole group's damage going: the group's sustained dps). A member with
+            // no measured damage yet counts the group's per-member average
+            float const groupDamage = GroupDamage::SustainedDps(tank);
+            float const memberAverage = groupDamage / float(std::max<size_t>(everyone.size(), 1));
+            auto const damageWeight = [&](Player* member) -> float
+            {
+                if (PlayerbotAI::IsHeal(member))
+                    return groupDamage > 0.0f ? groupDamage : 1.0f;
+                float const own = GroupDamage::MemberSustainedDps(member);
+                return own > 0.0f ? own : (memberAverage > 0.0f ? memberAverage : 1.0f);
             };
             // [lead440] b203 rfc-h: the burn verdict held every mana tool for a boss "that needs it more" (overload)
             // - 5H's fire mage came to Oggleflint at 3 % mana, Innervate / Hymn "held for Taragaman (his pull in
@@ -6074,6 +6088,7 @@ namespace Leader::Dungeon
                     return;
                 float const durationSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
                 float sec = 0.0f;
+                float damage = 0.0f;
                 std::string names;
                 for (ManaUser const* user : to)
                 {
@@ -6088,6 +6103,7 @@ namespace Leader::Dungeon
                     if (float const gained = gainedSec(*user, gainPct, durationSec); gained > 0.0f)
                     {
                         sec += gained;
+                        damage += gained * damageWeight(user->who);
                         names += Acore::StringFormat("{}{} {:.0f} % < {:.0f} %", names.empty() ? "" : ", ",
                                                      user->who->GetName(), user->pct, user->need);
                     }
@@ -6100,21 +6116,24 @@ namespace Leader::Dungeon
                     info->IsChanneled()
                         ? std::max(info->GetDuration(), 0) / 1000.0f
                         : std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(caster)) / 1000.0f;
-                if (sec <= castSec)
+                // [lead761] ... in damage: the caster's own damage over its cast against the receivers' gained damage
+                if (sec <= castSec || damage <= castSec * damageWeight(caster))
                     return;
                 // [lead440] the most fight seconds among the tools the verdict allows: a held tool no longer keeps
                 // another one out (5H: Innervate / Hymn held for Taragaman kept the mage's Evocation from the test)
-                if (sec <= 0.0f || (sec <= best.sec && sec <= heldTool.sec))
+                // [lead761] the most damage gained
+                if (damage <= 0.0f || (damage <= best.damage && damage <= heldTool.damage))
                     return;
                 std::string verdictWhy;
                 bool const allowed = manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), durationSec,
                                                      verdictWhy);  // [lead541] [lead651]
                 ManaTool& slot = allowed ? best : heldTool;
-                if (sec > slot.sec)
+                if (damage > slot.damage)
                 {
-                    slot = {caster, spell, on, sec,
-                            Acore::StringFormat("{}: {} for the fight's {:.0f} s left - {:.0f} fight s gained",
-                                                info->SpellName[0], names, lead.fightSecLeft, sec)};
+                    slot = {caster, spell, on, sec, damage,
+                            Acore::StringFormat("{}: {} for the fight's {:.0f} s left - {:.0f} fight s gained, {:.0f} "
+                                                "damage",
+                                                info->SpellName[0], names, lead.fightSecLeft, sec, damage)};
                     (allowed ? bestVerdict : heldVerdict) = verdictWhy;
                 }
             };

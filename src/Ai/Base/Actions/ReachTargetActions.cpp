@@ -518,6 +518,23 @@ bool ReachMeleeAction::isUseful()
     // ranged / healer spot followed. The mob runs to the tank: the fight is where the tank took it
     if (PlayerbotAI::IsTank(bot) && Leader::LedBot(bot) && Leader::Fight::MobComesToTank(bot, target))
         return false;
+    // [lead760] the fight stands where the leader planned it after the tank's opener: no walk to a mob away from the
+    // plan's fight spot back, to a mob a ready taunt reaches from here, to a caster on the tank at range while it
+    // holds other mobs in its melee (TankWalkMovesFight)
+    if (PlayerbotAI::IsTank(bot) && bot->IsInCombat() && Leader::LedBot(bot))
+        if (std::string const moves = Leader::Fight::TankWalkMovesFight(bot, target); !moves.empty())
+        {
+            thread_local std::unordered_map<ObjectGuid, uint32> stillLog;
+            uint32 const now = getMSTime();
+            uint32& last = stillLog[bot->GetGUID()];
+            if (!last || getMSTimeDiff(last, now) >= TANK_REACH_LOG_MS)
+            {
+                last = now ? now : 1;
+                LOG_INFO("playerbots", "[lead760] {}: no walk to {} ({:.1f} yd, low {}): {}", bot->GetName(),
+                         target->GetName(), bot->GetExactDist(target), target->GetGUID().GetCounter(), moves);
+            }
+            return false;
+        }
 
     // [reach_idle_waits_ready] The tank's walk in to a mob that fights nobody yet is a pull: it waits while the group
     // still gets ready (a member buffing, a sitter below its line) and, for a boss, until the group is ready for

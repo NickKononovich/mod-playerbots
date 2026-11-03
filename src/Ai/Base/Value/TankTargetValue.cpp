@@ -334,7 +334,10 @@ public:
             return GetIntervalLevel(new_unit) > GetIntervalLevel(old_unit);
 
         int32_t interval = GetIntervalLevel(new_unit);
-        if (interval >= 2)
+        // [lead764] b220 rfc-h: "reach melee" to the tank's next target out of its melee walked 91 s after its first
+        // hits - among the mobs on the tank beyond its melee the lowest threat won, wherever it stood. The nearest
+        // one: it comes or the walk is the shortest (the fight stays where it is)
+        if (interval >= 2 || interval == 0)
             return new_dis < old_dis;
 
         return new_threat < old_threat;

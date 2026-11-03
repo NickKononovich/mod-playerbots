@@ -5,6 +5,8 @@
  */
 
 #include "ChooseTargetActions.h"
+#include "PullFacts.h"  // [lead760] TankWalkMovesFight
+#include "TankAoeThreat.h"  // [lead760] TankPeel::IsGapCloser
 
 #include <mutex>
 #include <unordered_map>
@@ -462,7 +464,19 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         bool const untouched = mob->GetThreatMgr().GetThreat(bot) <= 0.0f && !bot->IsWithinMeleeRange(mob);
         if (takeBack ? !onOther : (onOther || !untouched))
             continue;
-        if (onOther && botAI->CanCastSpell("righteous defense", victim))
+        // [lead763] b220 rfc-h: "tank open incoming" walked the tank 206 yd after its first hits - CanCastSpell passes
+        // an out of range opener and the cast walks to it. A mob in the fight is opened on or taken back only from
+        // where the tank stands (in range and sight: the leader's aggro-loss rule walks the tank to its taunt's reach
+        // when none reaches); only the open order's mob not yet in combat keeps the engage's walk to its range
+        bool const fromHere = mob->IsInCombat();
+        auto const reachesFromHere = [&](char const* name, Unit* on)
+        {
+            uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+            SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+            return info && bot->IsWithinCombatRange(on, info->GetMaxRange(on->IsFriendlyTo(bot)));
+        };
+        if (onOther && botAI->CanCastSpell("righteous defense", victim) &&
+            (!fromHere || reachesFromHere("righteous defense", victim)))
         {
             if (opener)
                 *opener = "righteous defense";
@@ -483,13 +497,13 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         for (char const* name : openers)
             if (botAI->CanCastSpell(name, mob))
             {
-                if (comes)
-                {
-                    uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
-                    SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
-                    if (!info || !bot->IsWithinCombatRange(mob, info->GetMaxRange(false)))
-                        continue;
-                }
+                if ((comes || fromHere) && !reachesFromHere(name, mob))
+                    continue;
+                // [lead760] a gap closer only where the leader's fight is planned to stand (TankWalkMovesFight)
+                if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+                    TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr) &&
+                    !Leader::Fight::TankWalkMovesFight(bot, mob).empty())
+                    continue;
                 if (opener)
                     *opener = name;
                 return mob;
