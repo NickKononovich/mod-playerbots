@@ -37,11 +37,15 @@ namespace
 {
 using Leader::Fight::SPELL_ARMY_OF_THE_DEAD;
 
-// a death knight that casts Army before a pull in wowsims: Blood (tank and dps) and Frost, not Unholy
+// a death knight that casts Army before a pull in wowsims: Blood and Frost, not Unholy
+// [lead725] and not the tank: b219 rfc-h 5C (the blood tank the comp's only DK) Oggleflint 279.0 s "not on the tank
+// with the tank's threat (on Army of the Dead Ghoul, tank threat 108366)", 5G (blood tank + frost DK, both channelled
+// at 281-287 s) 7 such heal waits on Oggleflint / Bazzalan - the ghouls reach the boss and hit it before the tank's
+// threat holds it, and the boss is the tank's to hold (aggro off the tank: 0). The damage DK's Army stays
 bool ArmyCaster(Player* bot)
 {
     return bot && bot->IsAlive() && bot->getClass() == CLASS_DEATH_KNIGHT && bot->HasSpell(SPELL_ARMY_OF_THE_DEAD) &&
-           AiFactory::GetPlayerSpecTab(bot) != DEATH_KNIGHT_TAB_UNHOLY;
+           AiFactory::GetPlayerSpecTab(bot) != DEATH_KNIGHT_TAB_UNHOLY && !PlayerbotAI::IsTank(bot);
 }
 
 Spell* ArmyChannel(Player* dk)
