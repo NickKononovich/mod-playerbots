@@ -22,7 +22,13 @@
 #include "LeaderFightChecks.h"   // [lead760] TANK_TAUNTS
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "HealthTriggers.h"  // [lead925] RestState::HealerThroughput
+#include "Log.h"             // [lead925]
+#include "StringFormat.h"    // [lead925]
 #include <algorithm>
+#include <mutex>          // [lead925]
+#include <set>            // [lead925]
+#include <unordered_map>  // [lead925]
 
 namespace Leader::Fight
 {
@@ -147,7 +153,7 @@ namespace Leader::Fight
         return 0;
     }
 
-    std::string TankWalkMovesFight(Player* tank, Unit* target)
+    std::string TankWalkMovesFight(Player* tank, Unit* target, bool gapCloser)
     {
         if (!tank || !target || !target->IsAlive() || !Leader::LedBot(tank) || tank->IsWithinMeleeRange(target))
             return std::string();
@@ -164,7 +170,7 @@ namespace Leader::Fight
             return "the plan's fight spot back is not where the mob is";
         if (!target->IsInCombat())
             return std::string();
-        if (MobComesToTank(tank, target))
+        if (!gapCloser && MobComesToTank(tank, target))  // [lead925]
             return "it comes to the tank";
         Unit* victim = target->GetVictim();
         if (victim && victim != tank && victim->GetCharmerOrOwnerPlayerOrPlayerItself() &&
@@ -178,5 +184,133 @@ namespace Leader::Fight
                     tank->IsWithinMeleeRange(attacker))
                     return "a caster at range while the tank holds " + attacker->GetName() + " in its melee";
         return std::string();
+    }
+
+    namespace
+    {
+        // [lead925] the tank's defensives a gap closer's landing may wait for: up, or ready for the leader to tell
+        constexpr uint32 SPELL_SURVIVAL_INSTINCTS = 61336;
+        constexpr uint32 SPELL_BARKSKIN = 22812;
+        constexpr uint32 SPELL_SHIELD_WALL = 871;
+        constexpr uint32 SPELL_LAST_STAND = 12975;
+        constexpr uint32 SPELL_LAST_STAND_AURA = 12976;
+
+        std::mutex gapSaveLock;
+        std::unordered_map<uint64, ObjectGuid> gapSaveAsked;  // [lead925] under gapSaveLock: tank -> target
+    }
+
+    std::string TankGapCloserRisk(Player* tank, Unit* target, uint32* save)
+    {
+        if (save)
+            *save = 0;
+        if (!tank || !target || !target->IsAlive() || !Leader::LedBot(tank) || tank->IsWithinMeleeRange(target))
+            return std::string();
+        std::vector<uint32> defensives;
+        if (tank->getClass() == CLASS_DRUID)
+            defensives = {SPELL_SURVIVAL_INSTINCTS, SPELL_BARKSKIN};
+        else if (tank->getClass() == CLASS_WARRIOR)
+            defensives = {SPELL_SHIELD_WALL, SPELL_LAST_STAND};
+        for (uint32 spell : defensives)
+            if (GapCloserSaveUp(tank, spell))
+                return std::string();
+        Group* group = tank->GetGroup();
+        if (!group)
+            return std::string();
+        Position const landing = target->GetPosition();
+        Player* nearest = nullptr;
+        float nearestSec = -1.0f;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* healer = ref->GetSource();
+            if (!healer || healer == tank || !healer->IsAlive() || healer->GetMap() != tank->GetMap() ||
+                !PlayerbotAI::IsHeal(healer))
+                continue;
+            if (HealReaches(tank, healer->GetPosition(), landing))
+                return std::string();
+            // its walk into heal reach of the landing: the walk less the heal's reach, the whole walk where the
+            // landing is in range but out of its sight (it walks round the corner)
+            float const walk = Leader::WalkYd(healer, landing);
+            float const reach = Leader::LEADER_HEAL_REACH_YD + 2.0f * tank->GetCombatReach();
+            float const into = healer->GetExactDist(landing) > reach ? std::max(walk - reach, 0.0f) : walk;
+            float const speed = std::max(healer->GetSpeed(MOVE_RUN), 0.1f);
+            float const sec = into / speed + RestState::HealerThroughput(healer, tank).gapSec;
+            if (nearestSec < 0.0f || sec < nearestSec)
+            {
+                nearest = healer;
+                nearestSec = sec;
+            }
+        }
+        if (!nearest)
+            return std::string();  // no healer to wait for: no wait changes the landing
+        float dps = 0.0f;
+        float spellPart = 0.0f;
+        bool counted = false;
+        for (Unit* attacker : tank->getAttackers())
+            if (attacker && attacker->IsAlive())
+            {
+                dps += AttackerDps(attacker, tank, spellPart);
+                counted |= attacker == target;
+            }
+        if (!counted)
+            dps += AttackerDps(target, tank, spellPart);
+        float const health = float(tank->GetHealth());
+        if (dps <= 0.0f || health > dps * nearestSec)
+            return std::string();
+        for (uint32 spell : defensives)
+            if (save && !*save && tank->HasSpell(spell) && !tank->HasSpellCooldown(spell))
+                *save = spell;
+        return Acore::StringFormat("no heal reaches its landing at {}: {} needs {:.1f} s to heal it there, it takes "
+                                   "{:.0f}/s against {:.0f} health",
+                                   target->GetName(), nearest->GetName(), nearestSec, dps, health);
+    }
+
+    bool IsGapCloserSave(uint32 spell)
+    {
+        return spell && (spell == SPELL_SURVIVAL_INSTINCTS || spell == SPELL_BARKSKIN || spell == SPELL_SHIELD_WALL ||
+                         spell == SPELL_LAST_STAND);
+    }
+
+    bool GapCloserSaveUp(Player* tank, uint32 spell)
+    {
+        return tank->HasAura(spell) || (spell == SPELL_LAST_STAND && tank->HasAura(SPELL_LAST_STAND_AURA));
+    }
+
+    void AskGapCloserSave(Player* tank, Unit* target)
+    {
+        std::lock_guard<std::mutex> lock(gapSaveLock);
+        gapSaveAsked[tank->GetGUID().GetRawValue()] = target->GetGUID();
+    }
+
+    bool GapCloserSaveAsked(Player* tank, ObjectGuid& target)
+    {
+        std::lock_guard<std::mutex> lock(gapSaveLock);
+        auto const found = gapSaveAsked.find(tank->GetGUID().GetRawValue());
+        if (found == gapSaveAsked.end())
+            return false;
+        target = found->second;
+        return true;
+    }
+
+    void ClearGapCloserSave(Player* tank)
+    {
+        std::lock_guard<std::mutex> lock(gapSaveLock);
+        gapSaveAsked.erase(tank->GetGUID().GetRawValue());
+    }
+
+    bool TankGapCloserAllowed(Player* tank, Unit* target, char const* what)
+    {
+        uint32 save = 0;
+        std::string const risk = TankGapCloserRisk(tank, target, &save);
+        if (risk.empty())
+            return true;
+        if (save)
+            AskGapCloserSave(tank, target);
+        thread_local std::set<std::pair<uint64, uint64>> logged;
+        if (logged.insert({tank->GetGUID().GetRawValue(), target->GetGUID().GetRawValue()}).second)
+            LOG_INFO("playerbots", "[lead925] {}: no {} on {} ({:.1f} yd) - {}{}", tank->GetName(), what,
+                     target->GetName(), tank->GetExactDist(target), risk,
+                     save ? Acore::StringFormat("; its save {} asked for first", save)
+                          : std::string("; no save ready"));
+        return false;
     }
 }

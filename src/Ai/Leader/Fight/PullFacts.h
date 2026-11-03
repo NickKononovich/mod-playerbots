@@ -44,7 +44,29 @@ namespace Leader::Fight
     // it does not): the plan's fight spot back is not where the mob is (the mob comes there), the mob comes to the
     // tank, a ready taunt reaches it from where the tank stands, a caster on the tank at range while the tank holds
     // other fight mobs in its melee (the ranged and the caster corner take it there)
-    std::string TankWalkMovesFight(Player* tank, Unit* target);
+    // [lead925] `gapCloser`: the move is a gap closer (Charge, Intercept, Feral Charge): a mob that comes to the tank
+    // is charged (user 2026-11-03 q50: landing earlier starts its threat earlier), judged by TankGapCloserRisk instead
+    std::string TankWalkMovesFight(Player* tank, Unit* target, bool gapCloser = false);
+    // [lead925] user 2026-11-03 (q50, item 5): one check for every led tank's gap closer onto `target` - it lands the
+    // tank at the target. Allowed (empty) when a living healer's heals reach that landing (HealReaches), or the tank
+    // outlives the nearest healer's way there - its health over the expected damage per second it takes there
+    // (AttackerDps of its attackers and the target) times the healer's walk into heal reach (Leader::WalkYd at its
+    // run speed) plus its gap between two heals (HealerThroughput) -, or a defensive cooldown of its own is up
+    // (Survival Instincts / Barkskin, Shield Wall / Last Stand). Else why not; `save`: its ready defensive the leader
+    // may tell first (0: none - no gap closer)
+    std::string TankGapCloserRisk(Player* tank, Unit* target, uint32* save = nullptr);
+    // [lead925] a led tank's gap closer the risk held: the tank's request for its save (the leader's fight-save
+    // External tells it while TankGapCloserRisk still names one). One request per tank: the latest target
+    void AskGapCloserSave(Player* tank, Unit* target);
+    bool GapCloserSaveAsked(Player* tank, ObjectGuid& target);
+    void ClearGapCloserSave(Player* tank);
+    // [lead925] `spell` is one of the defensives a gap closer's landing waits for
+    bool IsGapCloserSave(uint32 spell);
+    // [lead925] the tank's defensive `spell` is up (its own aura, Last Stand's 12976)
+    bool GapCloserSaveUp(Player* tank, uint32 spell);
+    // [lead925] a led tank's gap closer passes TankGapCloserRisk; when it does not, its save is asked for. `what`: the
+    // spell's name, logged once per tank and target
+    bool TankGapCloserAllowed(Player* tank, Unit* target, char const* what);
     // [lead760] the tank's taunt that is ready and reaches `mob` (or Righteous Defense its victim) from where the tank
     // stands, in sight (spell data, the game's combat range); 0: none
     uint32 TauntReachesFromHere(Player* tank, Unit* mob);

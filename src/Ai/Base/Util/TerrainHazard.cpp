@@ -1150,9 +1150,17 @@ bool GapCloserLeavesGround(Unit* caster, Unit* target, char const* what)
     // [lead760] b220 rfc-h: Charge / Intercept / Feral Charge moved a led tank ~390 yd after its first hits, most onto
     // a mob already coming at it or one a ready taunt reached - a charge only where the leader's fight is planned to
     // stand (Leader::Fight::TankWalkMovesFight)
+    // [lead925] user 2026-11-03 (q50, item 5): a mob already coming at the tank is charged again (it lands earlier,
+    // its threat starts earlier); every led tank's gap closer passes the leader's landing check instead
+    // (Leader::Fight::TankGapCloserAllowed: in a healer's heal reach, or the tank outlives the healer's way there,
+    // else its defensive first or no charge)
     if (Player* tank = caster->ToPlayer(); tank && PlayerbotAI::IsTank(tank))
-        if (std::string const moves = Leader::Fight::TankWalkMovesFight(tank, target); !moves.empty())
+    {
+        if (std::string const moves = Leader::Fight::TankWalkMovesFight(tank, target, true); !moves.empty())
             return true;
+        if (!Leader::Fight::TankGapCloserAllowed(tank, target, what))
+            return true;
+    }
 
     // a target in the air: the charge ends on whatever ground lies under it
     float level = target->GetMapWaterOrGroundLevel(target->GetPositionX(), target->GetPositionY(),

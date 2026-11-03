@@ -935,7 +935,10 @@ bool TauntReactionAction::BackupTaunt(PlayerbotAI* botAI, Unit* mob, Unit* victi
         if (!backup->holds && inMelee)
             continue;
         // [lead760] ... and only where the leader's fight is planned to stand (TankWalkMovesFight)
-        if (!backup->holds && !Leader::Fight::TankWalkMovesFight(bot, mob).empty())
+        if (!backup->holds && !Leader::Fight::TankWalkMovesFight(bot, mob, true).empty())
+            continue;
+        // [lead925] ... and where its landing passes the leader's check (a healer's heal reach, or it lives till then)
+        if (!backup->holds && !Leader::Fight::TankGapCloserAllowed(bot, mob, backup->spell))
             continue;
         if (backup->onSelf && !bot->IsWithinDistInMap(mob, AOE_TAUNT_RADIUS))
             continue;

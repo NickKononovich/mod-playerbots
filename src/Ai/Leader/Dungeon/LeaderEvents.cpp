@@ -6889,6 +6889,44 @@ namespace Leader::Dungeon
                     }
                 }
             }
+            // [lead925] user 2026-11-03 (q50): a led tank's gap closer whose landing no heal reaches in time
+            // (Fight::TankGapCloserRisk) waits for its defensive (Survival Instincts / Barkskin, Shield Wall / Last
+            // Stand): the leader tells it while the risk still names one, held by the cooldown verdict (no save: no
+            // charge). The order ends once its aura is up or the tank reports it cannot cast it
+            if (tank->IsAlive())
+            {
+                Leader::MemberEvents saveOrder;
+                if (Leader::Events::Get(tank->GetGUID(), saveOrder) &&
+                    Leader::Fight::IsGapCloserSave(saveOrder.externalSpell))
+                {
+                    std::string failed;
+                    bool const reported =
+                        Leader::Events::TakeExternalFailed(tank->GetGUID(), saveOrder.externalSpell, failed);
+                    if (reported || Leader::Fight::GapCloserSaveUp(tank, saveOrder.externalSpell))
+                        Leader::Events::SetExternal(tank->GetGUID(), 0, ObjectGuid::Empty);
+                }
+                ObjectGuid asked;
+                if (Leader::Fight::GapCloserSaveAsked(tank, asked))
+                {
+                    Unit* mob = ObjectAccessor::GetUnit(*tank, asked);
+                    uint32 save = 0;
+                    std::string const risk =
+                        mob && mob->IsAlive() ? Leader::Fight::TankGapCloserRisk(tank, mob, &save) : std::string();
+                    std::string why;
+                    if (risk.empty() || !save)
+                        Leader::Fight::ClearGapCloserSave(tank);
+                    else if (cooldownVerdict(RechargeAfterCastSec(tank, save), 0.0f, why))
+                    {
+                        std::string const note = "its gap closer onto " + mob->GetName() + ": " + risk + "; " + why;
+                        if (tell(tank, save, tank, note.c_str()))
+                        {
+                            thread_local std::set<std::pair<uint64, uint64>> gapLogged;
+                            if (gapLogged.insert({tank->GetGUID().GetRawValue(), asked.GetRawValue()}).second)
+                                LOG_INFO("playerbots", "[lead925] {}: {} told, {}", tank->GetName(), save, note);
+                        }
+                    }
+                }
+            }
             for (Player* member : seats)
                 if (member != healer && !PlayerbotAI::IsTank(member) && !member->getAttackers().empty() &&
                     member->GetHealthPct() < LEADER_SAVE_HP_PCT)
