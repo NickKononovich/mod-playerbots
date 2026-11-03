@@ -1559,6 +1559,26 @@ namespace Leader::Dungeon
                                 }
                             }
                             plannedPick = leaderPick && bestRank < group.Route().routePlan.size();
+                            // [lead860] b224 rfc-h 5F 580.7-811 s: the route target Taragaman (a boss: never skipped)
+                            // was unreachable from the tank's walk, no idle mob within the look's 60 yd was left, and
+                            // the leader picked no mob for 230 s ("the route target out of the pick") with three
+                            // bosses alive. A route target out of the pick leads to another target: the route plan's
+                            // next stop the leader does not refuse, at any distance
+                            if (!leaderPick && routeMob && routeMob->IsAlive())
+                                for (auto const& stop : group.Route().routePlan)
+                                {
+                                    for (ObjectGuid const& guid : stop.mobs)
+                                        if (Creature* mob = idleAlive(guid); mob && !skipPick(guid))
+                                        {
+                                            leaderPick = mob;
+                                            break;
+                                        }
+                                    if (leaderPick)
+                                    {
+                                        plannedPick = true;
+                                        break;
+                                    }
+                                }
                         }
                     }
                     Unit* ownPick =

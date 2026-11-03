@@ -43,6 +43,7 @@
 #include "EstimatedLifetimeValue.h"
 #include "Random.h"
 #include "SafeZone.h"  // [lead9] the fight's safe zone
+#include "SelfTravelActions.h"  // [lead860] IslandStepDown
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Spell.h"
@@ -1734,8 +1735,29 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         // [lead141] b165 rfc-h 60-138 s: every engage walk refused on the route's 6 yd step into the water by the
         // first cave (landing joined to the rest, a safe fall) - the group follows a drop with a way back; an
         // island (no ground path back) stays refused
+        // [lead860] b224 rfc-h 5F 524.7-811 s: every engage and route walk of Rtwarac was refused here - the tank stood
+        // on a 5-polygon rock top at (-122.1,43.2,-14.4), 3.5 yd over the floor (its 5108-polygon part at
+        // (-118.5,39.0,-17.4), where the rogue and the hunter stood), its sides steep: no ground path led off it, so
+        // every landing on the floor read "an island" (no way back up to the rock) though the island was the tank's
+        // own spot. A tank on a navmesh island takes the step down to the floor beside it (SelfTravel::
+        // IslandStepDown: a larger part within reach, no fall damage, in sight) - the group's floor, the members
+        // there and the route's way on - and walks on from there
         if (ledge.drop && !ledge.connected && PlayerbotAI::IsTank(bot) && Leader::Orders::IsTracked(bot->GetGUID()))
-            return refuse("a led tank's ledge drop onto an island");
+        {
+            G3D::Vector3 step;
+            if (ledge.groundPath || !SelfTravel::IslandStepDown(bot, step))
+                return refuse("a led tank's ledge drop onto an island");
+            s_moveSubstitute = "the step down off the tank's navmesh island ([lead860])";
+            if (dry)
+                return true;
+            LOG_INFO("playerbots",
+                     "[lead860] island_step_down: {}: {} to ({:.1f},{:.1f},{:.1f}) from its navmesh island: the step "
+                     "down to ({:.1f},{:.1f},{:.1f}) first",
+                     bot->GetName(), getName(), x, y, z, step.x, step.y, step.z);
+            if (!JumpTo(mapId, step.x, step.y, step.z, priority))
+                return refuse("the step down off the tank's navmesh island (the jump's own guards)");
+            return true;
+        }
 
         // [b33_sp] an allowed water drop no ground path carries: from the brink, a jump into the water, together
         // (JudgeWaterDrop)
