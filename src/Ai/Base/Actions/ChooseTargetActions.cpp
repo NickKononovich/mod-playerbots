@@ -322,8 +322,19 @@ bool AggressiveTargetAction::Execute(Event event)
                                       "engage: no route to the order mob", commitMobs, commitCost, single);
                 // [lead143] b166 64.0 s: "the route walk refused by IsWaitingForLastMove" turned the pick unreachable
                 // while the tank's walk was on - a walk already under way is the route walk
+                // [lead1000] b229 rfc-h 5H-16 724.0-724.8 s: the tank, stunned by a Searing Blade Enforcer's Shield
+                // Slam (8242, aura 12) as the fight ended, refused the boss engage 67 times: ReachCombatTo and
+                // MoveToLOS stop at IsMovingAllowed before MoveTo names a guard, so the reason read was the thread's
+                // last MoveTo of another bot ("its chase guard" / "IsDuplicateMove") and Taragaman became
+                // unreachable for good. The refusal is this walk's own: cleared first, the bot's own control state
+                // named
+                MovementAction::s_moveRefusal.clear();
                 bool walked = ReachCombatTo(target, 0.0f) || MoveToLOS(target);
-                std::string const refusal = LastMoveRefusal().empty() ? "its chase guard" : LastMoveRefusal();
+                std::string refusal = LastMoveRefusal();
+                if (!walked && refusal.empty() && !IsMovingAllowed(target))
+                    refusal = "IsMovingAllowed (a hold, root, cast or dead state)";
+                if (refusal.empty())
+                    refusal = "its chase guard";
                 if (!walked && bot->isMoving() &&
                     (refusal.rfind("IsWaitingForLastMove", 0) == 0 || refusal.rfind("IsDuplicateMove", 0) == 0))
                     walked = true;

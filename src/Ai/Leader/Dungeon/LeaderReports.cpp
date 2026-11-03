@@ -171,8 +171,12 @@ namespace Leader::Dungeon
             // [lead244] b190 rfc-h 5C 246 s: "refused by IsWaitingForLastMove" (the tank's last walk's clock) made the
             // boss unreachable, and a boss is never skipped: the route stood 114 s. The tank's own walk state (its
             // last walk's clock, the same walk on) is no verdict on the way: the order stays open for its next look
+            // [lead1000] b229 rfc-h 5H-16 724.8 s: the boss Taragaman stored unreachable while the tank stood
+            // stunned (Shield Slam) - the route held "the route target out of the pick" for 240 s, the run stalled.
+            // A stun, root or charge state (IsMovingAllowed) is the tank's own state too, no verdict on the way
             bool const walkState = report.why.find("IsWaitingForLastMove") != std::string::npos ||
-                                   report.why.find("IsDuplicateMove") != std::string::npos;
+                                   report.why.find("IsDuplicateMove") != std::string::npos ||
+                                   report.why.find("IsMovingAllowed") != std::string::npos;
             if (report.what == "commit_failed" && !report.target.IsEmpty() && !walkState &&
                 !group.State().unreachable.count(report.target))
             {

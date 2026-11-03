@@ -2655,11 +2655,17 @@ bool MovementAction::IsDuplicateMove(float x, float y, float z)
     // heuristic 5s
     if (lastMove.msTime + sPlayerbotAIConfig.MaxWaitForMove < getMSTime())
         return false;
-    if (lastMove.lastMoveShort.GetExactDist(x, y, z) <= 0.01f)
-        return true;
 
-    // [lead280] the same end as asked while that walk is still under way (a stopped walk is walked again)
-    return bot->isMoving() && lastMove.lastMoveAsked.GetExactDist(x, y, z) <= 0.01f;
+    // [lead1000] b229 rfc-h 5H-16 724.7 s: "the route walk refused by IsDuplicateMove (the same walk is on)" with the
+    // tank standing - the walk's end was still in LastMovement after the walk had stopped (a MoveStop: lead960
+    // StopPullWalkInFight, lead792 StopOwnWalkToMob, a stun). Only a walk under way is the same walk: a stopped one is
+    // walked again (the [lead280] rule below, now for the walk's own end too)
+    if (!bot->isMoving())
+        return false;
+
+    // [lead280] the same end as asked while that walk is still under way
+    return lastMove.lastMoveShort.GetExactDist(x, y, z) <= 0.01f ||
+           lastMove.lastMoveAsked.GetExactDist(x, y, z) <= 0.01f;
 }
 
 bool MovementAction::IsWaitingForLastMove(MovementPriority priority)
