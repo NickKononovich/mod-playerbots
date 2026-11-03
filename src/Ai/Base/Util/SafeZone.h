@@ -51,7 +51,8 @@ namespace Leader
 
     // The zone's radius per role round the fight spot. Tank and melee are FightHold::RADIUS (15) and RADIUS +
     // MELEE_SLACK (23), the radius authority they replace; ranged and healers were never held: their discs keep the
-    // spell / heal range of a pack held at the spot.
+    // spell / heal range of a pack held at the spot. [lead530] Contains / Clamp apply no tank disc (the holes are what
+    // it stood for: the tank reaches every mob of the fight); the radius is the escape room's for a tank only.
     constexpr float SAFE_ZONE_TANK_RADIUS = 15.0f;
     constexpr float SAFE_ZONE_MELEE_RADIUS = 23.0f;
     constexpr float SAFE_ZONE_RANGED_RADIUS = 30.0f;

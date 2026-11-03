@@ -322,7 +322,12 @@ namespace Leader
 
         float const fromD = from ? Dist2d(from->GetPositionX(), from->GetPositionY(), cx, cy) : 0.0f;
         float const radius = RadiusFor(role);
-        if (d > radius && !inLane && !(from && d <= fromD + fromSlack))
+        // [lead530] b212 rfc-h 5A 949-1256 s: a Voidwalker Minion on the healer (it had no path to her, the core
+        // evaded every hit on it) stood 27 yd from the fight spot; the tank's "reach melee" to it was clamped at the
+        // 15 yd tank disc ~170 times (to the disc's edge and back), it never reached it: 300 s of fight, 21 aggro
+        // losses. The tank disc stood for "the fight is not dragged into an idle pack" - the holes below are that
+        // fact; the tank, which must reach every mob of the fight, has no disc
+        if (role != ZoneRole::Tank && d > radius && !inLane && !(from && d <= fromD + fromSlack))
         {
             if (why)
                 *why = Acore::StringFormat("{:.0f} yd from the fight spot (the {} disc is {:.0f})", d,
@@ -503,7 +508,7 @@ namespace Leader
         float const cy = centre.GetPositionY();
         float const d = Dist2d(want.GetPositionX(), want.GetPositionY(), cx, cy);
         float const radius = RadiusFor(role) - 0.5f;
-        if (d > radius && d > 0.0f && paths)
+        if (role != ZoneRole::Tank && d > radius && d > 0.0f && paths)  // [lead530] no tank disc
         {
             float const scale = radius / d;
             float ex = cx + (want.GetPositionX() - cx) * scale;
