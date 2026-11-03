@@ -214,7 +214,7 @@ class CastDevouringPlagueAction : public CastPriestDotAction
 {
 public:
     CastDevouringPlagueAction(PlayerbotAI* botAI)
-        : CastPriestDotAction(botAI, "devouring plague", ai::priest::DOT_REFRESH_MS,
+        : CastPriestDotAction(botAI, "devouring plague", ai::priest::DEVOURING_PLAGUE_REFRESH_MS,  // [rot351]
                               ai::priest::DEVOURING_PLAGUE_MIN_LIFETIME) {}
 
     // [rot210] also while it is up when the fight ends within the APL's 1.75 s (DevouringPlagueFinalCast)

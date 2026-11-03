@@ -60,7 +60,7 @@ uint32 VampiricTouchRefreshMs(Player* bot, uint32 spellId)
     if (!spellInfo)
         return VAMPIRIC_TOUCH_REFRESH_MS;
 
-    return spellInfo->CalcCastTime(bot) + VAMPIRIC_TOUCH_REFRESH_MARGIN_MS;
+    return spellInfo->CalcCastTime(bot);  // [rot351]
 }
 
 bool DevouringPlagueFinalCast(PlayerbotAI* botAI, Unit* target)
@@ -92,7 +92,13 @@ bool ShadowWordPainTrigger::IsActive()
 bool VampiricTouchTrigger::IsActive()
 {
     beforeDuration = ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", spell));
-    return PriestDotTrigger::IsActive();
+    if (!PriestDotTrigger::IsActive())
+        return false;
+
+    if (Aura* dot = botAI->GetAura(spell, GetTarget(), true, false))
+        LOG_DEBUG("playerbots", "[rot351] {} refreshes Vampiric Touch on {}: {} ms left (<= the cast's {} ms)",
+                  bot->GetName(), GetTarget()->GetName(), dot->GetDuration(), beforeDuration);
+    return true;
 }
 
 bool DevouringPlagueTrigger::IsActive()
@@ -264,7 +270,8 @@ bool MindFlayClipTrigger::IsActive()
         (DotDue(target, "vampiric touch",
                 ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", "vampiric touch")),
                 ai::priest::VAMPIRIC_TOUCH_MIN_LIFETIME) ||
-         DotDue(target, "devouring plague", ai::priest::DOT_REFRESH_MS, ai::priest::DEVOURING_PLAGUE_MIN_LIFETIME) ||
+         DotDue(target, "devouring plague", ai::priest::DEVOURING_PLAGUE_REFRESH_MS,
+                ai::priest::DEVOURING_PLAGUE_MIN_LIFETIME) ||
          (AI_VALUE2(uint32, "spell id", "devouring plague") &&
           ai::priest::DevouringPlagueFinalCast(botAI, target)));
 

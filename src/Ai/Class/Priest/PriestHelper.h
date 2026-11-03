@@ -15,9 +15,15 @@ class Unit;
 
 namespace ai::priest
 {
-static constexpr uint32 VAMPIRIC_TOUCH_REFRESH_MS = 2000; // 1.5s cast plus margin so the dot never drops
-static constexpr uint32 VAMPIRIC_TOUCH_REFRESH_MARGIN_MS = 500; // added to the hasted cast time
+static constexpr uint32 VAMPIRIC_TOUCH_REFRESH_MS = 1500; // [rot351] the unhasted cast time (no spell id known)
 static constexpr uint32 DOT_REFRESH_MS = 1000;
+// [rot351] wowsims shadow_priest__default.apl.json: Vampiric Touch when its dot has <= its hasted cast time left
+// (row 6), Devouring Plague only once it is gone (row 7, "not dotIsActive"). A recast that lands before the dot's
+// last tick costs that tick in the core (Aura::RefreshTimers keeps the periodic timer and resets the tick count: the
+// pending tick becomes the new dot's first and the old one ends a tick short). b223 rfc-h 5B Rtpriaa: Vampiric Touch
+// 5.7 a minute vs the sim's 5.0 at 6436 a cast vs 8687 (74 %), refreshed at cast time + 500 ms; Devouring Plague
+// 4530 a cast vs 5149 (88 %), refreshed at 1 s left.
+static constexpr uint32 DEVOURING_PLAGUE_REFRESH_MS = 0;
 static constexpr float DOT_MIN_LIFETIME = 8.0f;
 // [rot210] wowsims shadow_priest__default: Vampiric Touch while the fight has >= 3 s left; Devouring Plague whenever
 // it is not up (no lifetime condition) and once more while the fight has <= 1.75 s left (the Improved Devouring
@@ -52,7 +58,7 @@ bool ShadowWeavingReady(PlayerbotAI* botAI, Player* bot, Unit* target);
 float FightRemainingSec(PlayerbotAI* botAI, Unit* target);
 // Refresh window of Shadow Word: Pain: 0 (never re-cast while up) when Mind Flay keeps it rolling.
 uint32 ShadowWordPainRefreshMs(Player* bot);
-// Refresh window of Vampiric Touch: its hasted cast time plus a margin, so the new cast lands before expiry.
+// Refresh window of Vampiric Touch: its hasted cast time ([rot351] the APL's row 6, no margin).
 uint32 VampiricTouchRefreshMs(Player* bot, uint32 spellId);
 // [rot210] The APL's "remainingTime <= 1.75 s" Devouring Plague: the fight ends within DEVOURING_PLAGUE_FINAL_CAST_SEC
 // - `target` dies by then (ExpectedLifetime) and no other attacker of the group outlives it.
