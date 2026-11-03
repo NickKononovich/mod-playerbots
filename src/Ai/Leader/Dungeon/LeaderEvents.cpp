@@ -49,6 +49,7 @@
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PartyMemberToHeal.h"  // [lead945] [lead946] HealTriage
 #include "PathGenerator.h"
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
@@ -2470,7 +2471,35 @@ namespace Leader::Dungeon
             lead.fightLenStartMs = 0;
         }
         if (!fighting && lead.lastFighting)
+        {
             lead.fightBosses.clear();
+            lead.peaceSinceMs = now;  // [lead940] a heal over time cast after this is an out-of-fight one
+        }
+        // [lead940] the heals over time running on the members as the fight starts, by whom, and whether one was cast
+        // out of the last fight (a top-up's): their ticks forward threat to the caster from the start (triage
+        // heal_gate "pre-pull HoT")
+        if (fighting && !lead.lastFighting)
+        {
+            std::vector<Player*> all = seats;
+            all.push_back(tank);
+            for (Player* member : all)
+                for (AuraEffect const* effect : member->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
+                {
+                    Aura const* aura = effect->GetBase();
+                    if (aura->GetCasterGUID() == member->GetGUID() || !aura->GetCasterGUID().IsPlayer())
+                        continue;
+                    Player* caster = ObjectAccessor::FindPlayer(aura->GetCasterGUID());
+                    int32 const ranMs = aura->GetMaxDuration() - aura->GetDuration();
+                    bool const outOfFight = !lead.peaceSinceMs || ranMs < int32(getMSTimeDiff(lead.peaceSinceMs, now));
+                    Decisions().Write(run, "leader", "pull_hot", member->GetGUID(), member->GetName(), false,
+                                      JsonObject().Str("member", member->GetName())
+                                          .Str("healer", caster ? caster->GetName() : std::string("-"))
+                                          .Num("spell", aura->GetId())
+                                          .Str("spellName", aura->GetSpellInfo()->SpellName[0])
+                                          .Real("leftSec", aura->GetDuration() / 1000.0f)
+                                          .Bool("tank", member == tank).Bool("outOfFight", outOfFight));
+                }
+        }
         lead.lastFighting = fighting;
         // [lead84] b127 rfc-h 206-306 s: a Ragefire Trogg 5.5 yd below on Rtdruaa (not evading, the tank out of its
         // sight, the attacks refused "no line of sight") kept the tank flagged in combat with nobody on it; the
@@ -4063,8 +4092,30 @@ namespace Leader::Dungeon
                 std::vector<Player*> all = seats;
                 all.push_back(tank);
                 float lowest = 100.0f;
+                // [lead945] logged once per member and stretch above its line
+                thread_local std::set<ObjectGuid> drainLogged;
                 for (Player* member : all)
-                    if (member->IsAlive() && member->GetHealthPct() < lowest)
+                    if (HealTriage::DrainsOwnHealth(member) && member->IsAlive())
+                    {
+                        float const line = RestState::HealthLine(member);
+                        if (member->GetHealthPct() >= 100.0f || member->GetHealthPct() < line)
+                            drainLogged.erase(member->GetGUID());
+                        else if (drainLogged.insert(member->GetGUID()).second)
+                            LOG_INFO("playerbots", "[lead945] {}: {} drains its own health ({:.0f} %, its line "
+                                     "{:.0f} %): no top-up until its next fight needs it", run.runId,
+                                     member->GetName(), member->GetHealthPct(), line);
+                    }
+                for (Player* member : all)
+                    if (member->IsAlive() && member->GetHealthPct() < lowest &&
+                        // [lead945] user 2026-11-03 (b226 5F-6: 24 of the tree's 36 TopUps were the demonology
+                        // warlock, "a readiness gap on health" after each Life Tap): a member that drains its own
+                        // health by design is topped up when its next fight needs it - below its health line
+                        // (RestState::HealthLine) or named by a readiness hold (topUpFor, the boss gap above) - not
+                        // after every tap; no healer fixes on it
+                        (!HealTriage::DrainsOwnHealth(member) ||
+                         member->GetHealthPct() < RestState::HealthLine(member)) &&
+                        // [lead946] nor a member the heal cannot land on / that cannot lose health now
+                        !HealTriage::IsHealImmune(healer, member) && !HealTriage::CannotLoseHealth(healer, member))
                     {
                         lowest = member->GetHealthPct();
                         topUp = member->GetGUID();

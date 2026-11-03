@@ -19,6 +19,7 @@
 #include "LeaderOrders.h"     // [lead15] the leader's member events
 #include "Log.h"  // [lead524] the burn hold line
 #include "MovementActions.h"  // [lead15]
+#include "PartyMemberToHeal.h"  // [lead940] HealTriage::IsThreatHeal
 #include "ObjectAccessor.h"   // [lead401]
 #include "Playerbots.h"
 #include "RaidLeaderState.h"
@@ -464,7 +465,22 @@ namespace
         // [lead61] user: «хил, начинай хилить» is the leader's command - a led healer heals in a fight only under the
         // leader's Heal (issued once every fight mob is on the tank, or when the tank is about to die); out of a fight
         // no heal on a full target (no pre-pull HoT)
-        if (dynamic_cast<CastHealingSpellAction*>(action) && Leader::LEADER_HEAL_AFTER_THREAT)
+        // [lead940] b226: the resto druid's "lifebloom on main tank" ran 344 times, "rejuvenation on main tank" 101,
+        // the priests' "prayer of mending" / "renew on main tank", the shaman's "riptide on main tank" - buff
+        // actions (BuffOnMainTankAction), not CastHealingSpellAction, so they passed this gate in a fight without
+        // the leader's Heal and out of a fight under Prepare. A spell whose healing makes threat (IsThreatHeal: a
+        // heal effect or a heal over time, no SPELL_ATTR1_NO_THREAT - Earth Shield's and Prayer of Mending's heals
+        // have it) is a heal here, whatever its action class
+        bool threatHeal = dynamic_cast<CastHealingSpellAction*>(action) != nullptr;
+        if (!threatHeal && PlayerbotAI::IsHeal(self))
+            if (CastSpellAction* cast = dynamic_cast<CastSpellAction*>(action))
+                if (PlayerbotAI* selfAI = GET_PLAYERBOT_AI(self))
+                {
+                    AiObjectContext* context = selfAI->GetAiObjectContext();
+                    if (uint32 const id = context->GetValue<uint32>("spell id", cast->getSpell())->Get())
+                        threatHeal = HealTriage::IsThreatHeal(sSpellMgr->GetSpellInfo(id));
+                }
+        if (threatHeal && Leader::LEADER_HEAL_AFTER_THREAT)
         {
             if (combat && PlayerbotAI::IsHeal(self) && events.attack != Leader::AttackEvent::Heal)
                 return true;

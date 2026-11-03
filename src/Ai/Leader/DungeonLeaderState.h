@@ -164,6 +164,7 @@ namespace Leader
         ObjectGuid looter;          // [lead16] the member told to loot after the last fight, and since when
         uint32 lootSinceMs = 0;
         bool lastFighting = false;
+        uint32 peaceSinceMs = 0;  // [lead940] the last fight's end (getMSTime; 0: none fought yet)
         uint32 fightLenStartMs = 0;    // [lead88] the fight's start and its estimated length (-1: none)
         float fightLenEstSec = -1.0f;
         std::map<std::string, uint32> staleCommands;  // [lead16] member -> stale_command ticks

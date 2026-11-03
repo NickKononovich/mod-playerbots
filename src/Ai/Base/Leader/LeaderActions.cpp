@@ -16,6 +16,7 @@
 #include "LeaderFightChecks.h"  // [lead491] the leader's melee idle-reach test
 #include "LeaderValues.h"
 #include "LeaderOrders.h"  // [lead15]
+#include "PartyMemberToHeal.h"  // [lead940] [lead946] HealTriage
 #include "PathGenerator.h"  // [lead19]
 #include "TerrainHazard.h"  // [lead19] closed doors
 #include "Log.h"
@@ -34,6 +35,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <map>
 
 using namespace RaidLeader;
 
@@ -1055,24 +1057,61 @@ bool LeaderHealTargetAction::Execute(Event /*event*/)
     Unit* target = botAI->GetUnit(events.healTarget);
     if (!target || !target->IsAlive() || target->GetHealthPct() >= 100.0f)
         return false;
-    // the healer's own heals, the most efficient it can cast on the member now (a top-up, not a burst)
-    for (char const* heal : {"rejuvenation", "nourish", "healing touch", "regrowth", "renew", "heal", "lesser heal",
-                             "greater heal", "flash heal", "healing wave", "lesser healing wave", "holy light",
-                             "flash of light"})
+    // [lead946] a heal that cannot land (Cyclone, Banish: the core's own test with this healer as the caster) or on a
+    // member that cannot lose health now (Ice Block, Divine Shield: immune to every school's damage past this global
+    // cooldown) waits - it heals nothing the member could lose before the immunity ends
+    if (bool const immune = HealTriage::IsHealImmune(bot, target);
+        immune || HealTriage::CannotLoseHealth(bot, target))
     {
-        // [lead396] b201 rfc-h 5A 1226-1246 s: the pull waited 20 s on "Rtdruaa buffing" - the resto druid's TopUp on
-        // itself (83 %) recast Rejuvenation each global cooldown over its own running Rejuvenation, and its rebuff
-        // window closes only on a tick off the cooldown. A heal over time this healer has running on the member is
-        // healing already: the next heal of the list
-        uint32 const healId = AI_VALUE2(uint32, "spell id", heal);
-        if (SpellInfo const* info = healId ? sSpellMgr->GetSpellInfo(healId) : nullptr;
-            info && info->HasAura(SPELL_AURA_PERIODIC_HEAL) && target->HasAura(healId, bot->GetGUID()))
-            continue;
-        if (botAI->CanCastSpell(heal, target) && botAI->CastSpell(heal, target))
+        thread_local std::map<ObjectGuid, ObjectGuid> waitLogged;  // healer -> the member its top-up waits for
+        if (waitLogged[bot->GetGUID()] != target->GetGUID())
         {
-            Leader::Events::Ack(bot->GetGUID(), events.seq, "heal", std::string("tops up ") + target->GetName() +
-                                                                        " with " + heal);
-            return true;
+            waitLogged[bot->GetGUID()] = target->GetGUID();
+            LOG_INFO("playerbots", "[lead946] {} holds its top-up of {} ({:.0f} %): {}", bot->GetName(),
+                     target->GetName(), target->GetHealthPct(),
+                     immune ? "no heal lands on it" : "it cannot lose health until its immunity ends");
+        }
+        return false;
+    }
+    // the healer's own heals, the most efficient it can cast on the member now (a top-up, not a burst)
+    static constexpr char const* TOP_UP_HEALS[] = {"rejuvenation", "nourish",     "healing touch", "regrowth",
+                                                   "renew",        "heal",        "lesser heal",   "greater heal",
+                                                   "flash heal",   "healing wave", "lesser healing wave",
+                                                   "holy light",   "flash of light"};
+    // [lead940] user 2026-11-03 (b226 5F: the tree's TopUp Rejuvenation on the tank and the warlock 1-15 s before the
+    // pull ticked into it - 32 of 127 healer heal-threat losses had such a top-up HoT running, the game splits each
+    // tick's threat over every mob with the healed member on its threat list, ThreatManager::
+    // ForwardThreatForAssistingMe, and a mob the tank has 0 on goes to the druid). Out of a fight a direct heal tops
+    // the member up within its cast time, a heal over time only over its whole duration - always the slower way to
+    // the same health and its ticks run into the pull. Out of a fight the direct heals go first; a heal over time
+    // only when no direct heal can be cast, and the leader's readiness holds the pull until it ends (LeaderReadyWhy)
+    bool const outOfFight = !bot->IsInCombat();
+    for (bool const hots : {false, true})
+    {
+        if (hots && !outOfFight)
+            break;  // in a fight one pass, the list's order (the leader's Heal gate judges the threat)
+        for (char const* heal : TOP_UP_HEALS)
+        {
+            uint32 const healId = AI_VALUE2(uint32, "spell id", heal);
+            SpellInfo const* info = healId ? sSpellMgr->GetSpellInfo(healId) : nullptr;
+            bool const periodic = HealTriage::IsPeriodicHeal(info);
+            if (outOfFight && periodic != hots)
+                continue;
+            // [lead396] b201 rfc-h 5A 1226-1246 s: the pull waited 20 s on "Rtdruaa buffing" - the resto druid's TopUp
+            // on itself (83 %) recast Rejuvenation each global cooldown over its own running Rejuvenation, and its
+            // rebuff window closes only on a tick off the cooldown. A heal over time this healer has running on the
+            // member is healing already: the next heal of the list
+            if (periodic && target->HasAura(healId, bot->GetGUID()))
+                continue;
+            if (botAI->CanCastSpell(heal, target) && botAI->CastSpell(heal, target))
+            {
+                if (outOfFight && periodic)
+                    LOG_INFO("playerbots", "[lead940] {} tops up {} with {}: no direct heal can be cast, the pull "
+                             "waits for its end", bot->GetName(), target->GetName(), heal);
+                Leader::Events::Ack(bot->GetGUID(), events.seq, "heal", std::string("tops up ") + target->GetName() +
+                                                                            " with " + heal);
+                return true;
+            }
         }
     }
     return false;

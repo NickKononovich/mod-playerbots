@@ -7,8 +7,10 @@
 #include "PartyMemberToHeal.h"
 
 #include <algorithm>
+#include <limits>
 
 #include "BattlegroundWS.h"
+#include "SpellAuraEffects.h"
 #include "Group.h"
 #include "HealAssignmentValues.h"
 #include "Playerbots.h"
@@ -81,7 +83,58 @@ namespace HealTriage
         }
 
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(probeSpell);
-        return spellInfo && target->IsImmunedToSpell(spellInfo);
+        // [lead946] the healer is the caster: the core's friendly-caster rule (IgnoresSchoolImmunityFromFriendlyCaster)
+        // decides, as it does for the real cast - without a caster every school immunity read as "immune"
+        return spellInfo && target->IsImmunedToSpell(spellInfo, healer);
+    }
+
+    bool CannotLoseHealth(Player* healer, Unit* target)
+    {
+        if (!target || !target->IsImmunedToDamage(SPELL_SCHOOL_MASK_ALL))
+            return false;
+        // the immunity's end: the longest of the auras that give it (a permanent one has no end)
+        int32 left = 0;
+        for (AuraType type : {SPELL_AURA_SCHOOL_IMMUNITY, SPELL_AURA_DAMAGE_IMMUNITY})
+            for (AuraEffect const* effect : target->GetAuraEffectsByType(type))
+            {
+                int32 const duration = effect->GetBase()->GetDuration();
+                left = duration < 0 ? std::numeric_limits<int32>::max() : std::max(left, duration);
+            }
+        // the healer's global cooldown: a heal's start recovery (1.5 s) under its haste, never under the game's 1 s
+        constexpr float GCD_FLOOR_MS = 1000.0f;
+        SpellInfo const* probe = sSpellMgr->GetSpellInfo(2050);  // Lesser Heal: the heals' global cooldown
+        float const haste = healer ? healer->GetFloatValue(UNIT_MOD_CAST_SPEED) : 1.0f;
+        float const gcd = probe ? std::max(GCD_FLOOR_MS, float(probe->StartRecoveryTime) * haste) : GCD_FLOOR_MS;
+        return float(left) > gcd;
+    }
+
+    bool IsPeriodicHeal(SpellInfo const* info)
+    {
+        return info && info->HasAura(SPELL_AURA_PERIODIC_HEAL);
+    }
+
+    bool IsThreatHeal(SpellInfo const* info)
+    {
+        if (!info || info->HasAttribute(SPELL_ATTR1_NO_THREAT))
+            return false;
+        for (SpellEffectInfo const& effect : info->Effects)
+            if (effect.Effect == SPELL_EFFECT_HEAL || effect.Effect == SPELL_EFFECT_HEAL_PCT ||
+                effect.Effect == SPELL_EFFECT_HEAL_MAX_HEALTH ||
+                (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL))
+                return true;
+        return false;
+    }
+
+    bool DrainsOwnHealth(Player* member)
+    {
+        constexpr uint32 SPELL_LIFE_TAP_RANK_1 = 1454;
+        if (!member || member->getClass() != CLASS_WARLOCK)
+            return false;
+        for (uint32 rank = sSpellMgr->GetLastSpellInChain(SPELL_LIFE_TAP_RANK_1); rank;
+             rank = sSpellMgr->GetPrevSpellInChain(rank))
+            if (member->HasSpell(rank))
+                return true;
+        return member->HasSpell(SPELL_LIFE_TAP_RANK_1);
     }
 
     bool TankUpkeepYields(PlayerbotAI* botAI, Unit* tank)
@@ -114,7 +167,7 @@ namespace HealTriage
                 bot->GetDistance(member) > sPlayerbotAIConfig.HealDistance * 2)
                 continue;
 
-            if (IsHealImmune(bot, member))
+            if (IsHealImmune(bot, member) || CannotLoseHealth(bot, member))  // [lead946]
                 return true;
         }
 
@@ -313,7 +366,8 @@ bool PartyMemberToHeal::Check(Unit* player)
     // 27), the Ice Blocked mage at 18-29 % stayed "party member to heal" for 10 s, every "... on party" heal failed
     // with "target immune", and the resto druid rolled HoTs on a 96 % tank while the hunter and shaman sat at 39 %.
     return player->GetMapId() == bot->GetMapId() && !player->IsCharmed() &&
-           bot->GetDistance2d(player) < sPlayerbotAIConfig.HealDistance * 2 && !HealTriage::IsHealImmune(bot, player);
+           bot->GetDistance2d(player) < sPlayerbotAIConfig.HealDistance * 2 && !HealTriage::IsHealImmune(bot, player) &&
+           !HealTriage::CannotLoseHealth(bot, player);  // [lead946] its heal waits for the immunity's end
 }
 
 Unit* HealerLowMana::Calculate()

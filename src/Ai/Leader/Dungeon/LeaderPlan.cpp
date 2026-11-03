@@ -48,6 +48,7 @@
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PartyMemberToHeal.h"  // [lead940] HealTriage
 #include "PathGenerator.h"
 #include "RouteLegs.h"  // [lead110] PackMobCheck
 #include "RouteSearch.h"  // [lead99] the leader's route search
@@ -68,6 +69,7 @@
 #include "SmartAI.h"
 #include "SmartScriptMgr.h"
 #include "Spell.h"
+#include "SpellAuraEffects.h"  // [lead940]
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -174,6 +176,36 @@ namespace Leader::Dungeon
         }
         if (group.NeedBuff())
             return "the group buffs";
+        // [lead940] a heal over time another member cast out of the last fight (a top-up with no direct heal to cast)
+        // still runs: its ticks would forward threat to its caster from the pull's first second (ThreatManager::
+        // ForwardThreatForAssistingMe over every mob with the healed member on its threat list) - the pull waits for
+        // its end (game data: the aura's duration). One cast in the last fight is the fight's heal, not held
+        if (!leader->IsInCombat())
+        {
+            uint32 const now = getMSTime() ? getMSTime() : 1;
+            uint32 const peace = group.State().peaceSinceMs;
+            for (LeaderGroup::MemberInfo const& member : group.Members())
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                if (!bot || !bot->IsAlive() || bot->IsInCombat())
+                    continue;
+                for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
+                {
+                    Aura const* aura = effect->GetBase();
+                    if (aura->GetCasterGUID() == bot->GetGUID() || !aura->GetCasterGUID().IsPlayer() ||
+                        aura->GetDuration() <= 0)
+                        continue;
+                    int32 const ranMs = aura->GetMaxDuration() - aura->GetDuration();
+                    if (peace && ranMs >= int32(getMSTimeDiff(peace, now)))
+                        continue;  // cast in the fight
+                    if (!HealTriage::IsThreatHeal(aura->GetSpellInfo()))
+                        continue;
+                    // no seconds in the text: the verdict changes on a fact, not on each tick of its clock
+                    return Acore::StringFormat("[lead940] {} has {} ticking (an out-of-fight heal over time)",
+                                               member.name, aura->GetSpellInfo()->SpellName[0]);
+                }
+            }
+        }
         if (MagistersTerrace::SelinRoom::EntryHolds(leader))
             return "a member is outside Selin's room";
         std::string preparing;
