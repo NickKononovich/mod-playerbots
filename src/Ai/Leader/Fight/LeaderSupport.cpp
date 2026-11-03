@@ -465,8 +465,12 @@ void TickResurrect(LeaderGroup& group, Player* tank, std::vector<Player*> const&
 // not crowd-controlled (Unit::EnergizeBySpell -> ThreatManager::ForwardThreatForAssistingMe). The mob where that share
 // takes the member past the share the game moves it at over the tank's threat (110 % in its melee, 130 % out of it,
 // a mob on another member at 100 %); empty: none
-std::string ManaSplitOvertakes(Player* bot, Player* tank, uint32 mana)
+// [lead931] `gainer`: the one the threat goes to (the energize's caster: the druid of an Innervate on another member,
+// AuraEffect::HandlePeriodicEnergizeAuraTick); nullptr: `bot` itself (a potion, a gem)
+std::string ManaSplitOvertakes(Player* bot, Player* tank, uint32 mana, Player* gainer = nullptr)
 {
+    if (!gainer)
+        gainer = bot;
     std::vector<Creature*> listing;
     for (auto const& [guid, ref] : bot->GetThreatMgr().GetThreatenedByMeList())
         if (Creature* mob = ref ? ref->GetOwner() : nullptr;
@@ -477,16 +481,17 @@ std::string ManaSplitOvertakes(Player* bot, Player* tank, uint32 mana)
     float const perMob = mana / 2.0f / float(listing.size());
     for (Creature* mob : listing)
     {
-        if (mob->GetVictim() == bot)
+        if (mob->GetVictim() == gainer)
             continue;  // already on it: the aggro loss's, not this potion's
-        float const mine = mob->GetThreatMgr().GetThreat(bot) + perMob;
+        float const mine = mob->GetThreatMgr().GetThreat(gainer) + perMob;
         float const tankThreat = mob->GetThreatMgr().GetThreat(tank);
-        float const share = mob->GetVictim() != tank      ? 1.0f
-                            : mob->IsWithinMeleeRange(bot) ? 1.1f
-                                                           : 1.3f;
+        float const share = mob->GetVictim() != tank         ? 1.0f
+                            : mob->IsWithinMeleeRange(gainer) ? 1.1f
+                                                              : 1.3f;
         if (mine >= share * tankThreat)
             return Acore::StringFormat("its split threat on {} ({:.0f} + {:.0f}) overtakes the tank's {:.0f} x {:.1f}",
-                                       mob->GetName(), mob->GetThreatMgr().GetThreat(bot), perMob, tankThreat, share);
+                                       mob->GetName(), mob->GetThreatMgr().GetThreat(gainer), perMob, tankThreat,
+                                       share);
     }
     return std::string();
 }
@@ -1087,6 +1092,11 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
     }
 }
 }  // namespace
+
+std::string EnergizeSplitOvertakes(Player* receiver, Player* caster, Player* tank, uint32 mana)
+{
+    return receiver && caster ? ManaSplitOvertakes(receiver, tank, mana, caster) : std::string();
+}
 
 void Tick(LeaderGroup& group, Player* tank, std::vector<Player*> const& seats, Player* healer, bool fighting,
           LogFn const& logEvent)

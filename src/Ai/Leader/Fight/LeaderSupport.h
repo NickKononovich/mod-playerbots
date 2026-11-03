@@ -61,6 +61,11 @@ float MemberTakenPerSec(LeaderGroup& group, Player* member);
 // `members` whose mana is under the line the fight's `fightSecLeft` need (FightManaLine, its own mana cooldowns and the
 // potion credited) - it cannot heal this fight to its end. Empty: none; else the reason
 std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft);
+
+// [lead931] an energize of `mana` on `receiver` cast by `caster` (Innervate): the mob where the threat the game
+// forwards to the caster (half the mana, split over every mob listing the receiver) takes the caster past its share
+// of the tank's threat (lead884's rule); empty: none
+std::string EnergizeSplitOvertakes(Player* receiver, Player* caster, Player* tank, uint32 mana);
 }  // namespace Leader::Support
 
 #endif

@@ -7159,8 +7159,34 @@ namespace Leader::Dungeon
                 if (damage <= 0.0f || (damage <= best.damage && damage <= heldTool.damage))
                     return;
                 std::string verdictWhy;
-                bool const allowed = manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), durationSec,
-                                                     verdictWhy);  // [lead541] [lead651]
+                bool allowed = manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), durationSec,
+                                               verdictWhy);  // [lead541] [lead651]
+                // [lead931] b226 rfc-h: 9 of the 98 healer "cast in flight" aggro losses came 0.2-3.3 s after
+                // the leader's Innervate (5A-9 132.0 s on Rthunaa, the restoration druid Rtdruaa at 186 threat on a
+                // Ragefire Trogg against the bear's 83 at 134.7 s): each Innervate tick forwards half the mana it gives
+                // to the druid over every mob that has the receiver on its threat list (AuraEffect::
+                // HandlePeriodicEnergizeAuraTick -> ForwardThreatForAssistingMe). The potion's / gem's rule (lead884):
+                // the Innervate waits while that share takes the druid past the tank's threat on such a mob
+                if (Player* receiver = on ? on->ToPlayer() : nullptr; allowed && spell == SPELL_INNERVATE && receiver)
+                {
+                    uint32 const mana = uint32(RestState::ManaToolPct(caster, receiver, spell) / 100.0f *
+                                               float(receiver->GetMaxPower(POWER_MANA)));
+                    if (std::string const overtakes =
+                            Leader::Support::EnergizeSplitOvertakes(receiver, caster, tank, mana);
+                        !overtakes.empty())
+                    {
+                        allowed = false;
+                        verdictWhy = "waits: " + overtakes + " [lead931]";
+                        thread_local std::map<uint64, std::string> waitLogged;
+                        std::string const key = overtakes.substr(0, overtakes.find(" ("));
+                        if (std::string& logged = waitLogged[caster->GetGUID().GetRawValue()]; logged != key)
+                        {
+                            logged = key;
+                            LOG_INFO("playerbots", "[lead931] {}: Innervate on {} waits: {}", caster->GetName(),
+                                     receiver->GetName(), overtakes);
+                        }
+                    }
+                }
                 ManaTool& slot = allowed ? best : heldTool;
                 if (damage > slot.damage)
                 {
