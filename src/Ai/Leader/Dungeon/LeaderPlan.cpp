@@ -1710,6 +1710,13 @@ namespace Leader::Dungeon
             // target Earthborer 1, the route skipped it for good and every mob behind it - a readiness hold
             // (Decision::readinessHold) is the group's wait, never a refusal of the mob
             !decision.readinessHold &&
+            // [lead621] b218 rfc-h 5E 399.6 s: "held for pre-pull cc" on the route target Ragefire Trogg 18 went into
+            // refusedPicks, the route skipped it (pick_route_conflict "refusedPicks: held for pre-pull cc") and the
+            // tank walked 83 yd north to Earthborer 60, then 82 yd back south for the patrol Shaman and 97 yd north
+            // again (pulls 17-20: 313 yd for ~160 yd of ground; the same store in 5A 323.6, 5D 383.5, 5F 1117.0 s).
+            // The crowd control is the first step of this mob's own pull (5F 899.2 -> 900.9 s, 969.3 -> 970.3 s: the
+            // plan followed the hold), never a refusal of the mob
+            decision.why.find("pre-pull cc") == std::string::npos &&
             // [lead365] never the mob that blocks the group's walk: it is the pull the walk waits for (lead208)
             std::none_of(lead.groupBlockedBy.begin(), lead.groupBlockedBy.end(),
                          [&decision](auto const& blocked) { return blocked.second == decision.lookTarget; }))
