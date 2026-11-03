@@ -7541,7 +7541,9 @@ namespace Leader::Dungeon
                                 G3D::Vector3 const from = way.points[i - 1];
                                 G3D::Vector3 const leg = way.points[i] - from;
                                 float const length = leg.length();
-                                for (float step = 0.0f; step <= length && tankWalk < 0.0f; step += STEP_YD)
+                                // [lead932] the leg's end is sampled too (a leg not a multiple of 3 yd never reached
+                                // its end: the route's last point, the healer's own place, was never judged)
+                                for (float step = 0.0f; step < length + STEP_YD && tankWalk < 0.0f; step += STEP_YD)
                                 {
                                     G3D::Vector3 const at =
                                         length > 0.0f ? from + leg * (std::min(step, length) / length) : from;
@@ -7573,6 +7575,26 @@ namespace Leader::Dungeon
                                          tank->GetName(), tank->getAttackers().size(), healer->GetName(), tankWalk,
                                          healerWalk);
                             }
+                        }
+                        // [lead932] b226: the check ran before every lead830 join (8 in 16 runs) and never walked the
+                        // tank, with no line saying why: the verdict not taken is logged (once per tank, healer and
+                        // reason)
+                        if (!tankComes)
+                        {
+                            std::string const reason =
+                                !way.found || !way.complete ? std::string("no complete route to the healer")
+                                : tankWalk < 0.0f           ? std::string("no point of its route in the healer's reach")
+                                : tankWalk >= healerWalk    ? std::string("the healer's walk is no longer")
+                                                            : std::string("its walk is refused by the move guards");
+                            thread_local std::set<std::string> notTakenLogged;
+                            if (notTakenLogged.size() > 4096)
+                                notTakenLogged.clear();
+                            if (notTakenLogged.insert(tank->GetName() + "|" + healer->GetName() + "|" + reason).second)
+                                LOG_INFO("playerbots",
+                                         "[lead909] {}: no heal reaches it under {} attackers; the tank does not walk "
+                                         "to {}: {} (its walk {:.0f} yd, the healer's {:.0f} yd)",
+                                         tank->GetName(), tank->getAttackers().size(), healer->GetName(), reason,
+                                         tankWalk, healerWalk);
                         }
                     }
                     if (!issued && !tankComes && tank->IsAlive() && !tank->getAttackers().empty() &&
