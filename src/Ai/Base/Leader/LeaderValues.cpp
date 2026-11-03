@@ -772,6 +772,8 @@ bool PullCountdownValue::Calculate()
     if (PlayerbotAI::IsTank(bot))
         return false;
 
+    // [lead543] the config value only switches the countdown on (0: off); its seconds hold nothing (no-forcing-timers:
+    // b212 rfc-h, the dps waited the fixed 3 s (+2 s careful) after a boss engage whatever the tank's lead)
     uint32 const holdMs = sPlayerbotAIConfig.RaidLeaderPullHoldSecs * IN_MILLISECONDS;
     uint32 const now = getMSTime();
     ObjectGuid engaged;
@@ -792,20 +794,27 @@ bool PullCountdownValue::Calculate()
     if (GroupDamage::NoDamageRelease(bot))
         return false;
 
-    // A tank soft for the content, or outgeared by its dps (party strength), gets longer to build its lead.
-    constexpr uint32 CAREFUL_EXTRA_HOLD_MS = 2 * IN_MILLISECONDS;
+    // [lead543] A member the dungeon leader leads opens by the leader's Attack and its threat-headroom rule (the
+    // boss's own threat table, LeaderEvents' Intensity stop): that is the one decider, no countdown of its own.
+    if (Leader::LedBot(bot))
+        return false;
+
+    // A tank soft for the content, or outgeared by its dps (party strength), opens under a stricter share.
     bool const careful = AI_VALUE(PartyStrength, "party strength").CarefulThreat();
-    uint32 const careHoldMs = careful ? CAREFUL_EXTRA_HOLD_MS : 0;
     if (engaged)
     {
-        if (getMSTimeDiff(engageMs, now) >= holdMs + careHoldMs)
-            return false;
-
-        // [threat-open] The hold is the longest wait, not a fixed one: a dps opens on the boss as soon as the tank
-        // holds a safe threat lead on it (its threat after the next cast under ThreatLead's open share, the boss'
-        // own threat table), the way a player opens when Omen shows the tank ahead.
+        // [threat-open] a dps opens on the boss as soon as the tank holds a safe threat lead on it (its threat
+        // after the next cast under ThreatLead's open share, the boss' own threat table), the way a player opens
+        // when Omen shows the tank ahead. [lead543] No elapsed-time end: the fact the hold waits for is that lead;
+        // a boss that is not on a tank (the tank dead, the boss on someone else) has no lead to wait for
         Unit* boss = AI_VALUE(Unit*, "current target");
-        if (boss && boss->GetGUID() == engaged && ThreatLead::SafeToOpen(botAI, boss, careful))
+        if (!boss || boss->GetGUID() != engaged)
+            return false;  // [lead543] the countdown is the boss's lead only
+        Unit* victim = boss->GetVictim();
+        Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+        if (victim && !(victimPlayer && PlayerbotAI::IsTank(victimPlayer)))
+            return false;
+        if (ThreatLead::SafeToOpen(botAI, boss, careful))
         {
             if (_openedOn != engaged)
             {
