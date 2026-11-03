@@ -93,6 +93,19 @@ public:
     bool IsActive() override;
 };
 
+// [rot160] b214 rfc-h 5H / 5A: Readiness was never cast in a run (the MM hunters, sim 0.69 casts/min: a second Rapid
+// Fire per boss) - it was only the "rapid fire" node's alternative, and that node runs only while Rapid Fire is ready.
+// wowsims hunter/talents.go registerReadinessCD: cast while Rapid Fire is on cooldown (ExtraCastCondition), not when
+// Rapid Fire comes back by itself within 10 s, and while Rapid Fire's aura is off or under 10 s. The leader's burn
+// verdict gates the cast like every burn cooldown (Leader::BURN_COOLDOWNS)
+class ReadinessTrigger : public Trigger
+{
+public:
+    ReadinessTrigger(PlayerbotAI* botAI) : Trigger(botAI, "readiness", 1) {}
+
+    bool IsActive() override;
+};
+
 class BestialWrathTrigger : public BoostTrigger
 {
 public:

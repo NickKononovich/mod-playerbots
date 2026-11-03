@@ -332,6 +332,24 @@ bool MisdirectionOnMainTankTrigger::IsActive()
            AI_VALUE2(uint8, "threat", "current target") >= MISDIRECTION_THREAT_PCT;
 }
 
+// [rot160] see the header: wowsims' Readiness rule
+bool ReadinessTrigger::IsActive()
+{
+    // wowsims ShouldActivate: Rapid Fire coming back within 10 s by itself is not reset, its aura is off or ends within
+    // 10 s (two Rapid Fire windows, not one refreshed)
+    constexpr uint32 RAPID_FIRE_BACK_MS = 10 * IN_MILLISECONDS;
+    uint32 const readiness = AI_VALUE2(uint32, "spell id", "readiness");
+    uint32 const rapidFire = AI_VALUE2(uint32, "spell id", "rapid fire");
+    if (!readiness || !rapidFire || !bot->HasSpell(readiness) || bot->HasSpellCooldown(readiness) ||
+        !bot->HasSpellCooldown(rapidFire) || bot->GetSpellCooldownDelay(rapidFire) < RAPID_FIRE_BACK_MS)
+        return false;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive())
+        return false;
+    Aura* aura = botAI->GetAura("rapid fire", bot);
+    return !aura || aura->GetDuration() < int32(RAPID_FIRE_BACK_MS);
+}
+
 // [b35_bal] see the header: Rapid Fire on the boss, not on instance trash (same pacing as Bloodlust/Heroism)
 bool RapidFireTrigger::IsActive()
 {

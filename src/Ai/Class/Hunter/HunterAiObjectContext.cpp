@@ -71,6 +71,7 @@ public:
         creators["hunter's mark"] = &HunterTriggerFactoryInternal::hunters_mark;
         creators["freezing trap"] = &HunterTriggerFactoryInternal::freezing_trap;
         creators["rapid fire"] = &HunterTriggerFactoryInternal::rapid_fire;
+        creators["readiness"] = &HunterTriggerFactoryInternal::readiness;  // [rot160]
         creators["bestial wrath"] = &HunterTriggerFactoryInternal::bestial_wrath;
         creators["aspect of the pack"] = &HunterTriggerFactoryInternal::aspect_of_the_pack;
         creators["aspect of the dragonhawk"] = &HunterTriggerFactoryInternal::aspect_of_the_dragonhawk;
@@ -119,6 +120,7 @@ private:
     static Trigger* freezing_trap(PlayerbotAI* botAI) { return new FreezingTrapTrigger(botAI); }
     static Trigger* aspect_of_the_pack(PlayerbotAI* botAI) { return new HunterAspectOfThePackTrigger(botAI); }
     static Trigger* rapid_fire(PlayerbotAI* botAI) { return new RapidFireTrigger(botAI); }
+    static Trigger* readiness(PlayerbotAI* botAI) { return new ReadinessTrigger(botAI); }  // [rot160]
     static Trigger* bestial_wrath(PlayerbotAI* botAI) { return new BestialWrathTrigger(botAI); }
     static Trigger* aspect_of_the_dragonhawk(PlayerbotAI* botAI) { return new HunterAspectOfTheDragonhawkTrigger(botAI); }
     static Trigger* aspect_of_the_wild(PlayerbotAI* botAI) { return new HunterAspectOfTheWildTrigger(botAI); }
