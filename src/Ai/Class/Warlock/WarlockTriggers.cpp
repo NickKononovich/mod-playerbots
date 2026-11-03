@@ -513,15 +513,9 @@ bool DrainSoulClipTrigger::IsActive()
     if (!unstableAffliction)
         return true;
 
-    int32 const uaLeft = unstableAffliction->GetDuration();
-    if (uaLeft >= int32(UNSTABLE_AFFLICTION_REFRESH_MS))
-        return false;
-
-    // [rot350] the tick first while Unstable Affliction outlasts it plus its own cast
-    uint32 const uaId = AI_VALUE2(uint32, "spell id", "unstable affliction");
-    SpellInfo const* ua = sSpellMgr->GetSpellInfo(uaId);
-    int32 const uaCastMs = ua ? int32(ua->CalcCastTime(bot)) : 0;
-    return nextTickMs > uaLeft - uaCastMs;
+    // [rot352] due at its hasted cast time left (the APL's row 18): the recast then lands as the dot ends, so
+    // waiting for the next tick would only let it lapse
+    return unstableAffliction->GetDuration() < int32(UnstableAfflictionRefreshMs(botAI, bot));
 }
 
 bool RainOfFireChannelCheckTrigger::IsActive()

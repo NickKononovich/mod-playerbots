@@ -270,7 +270,12 @@ public:
 
 // DoTs are refreshed this long before expiry: about the cast time plus a margin
 constexpr uint32 CORRUPTION_REFRESH_MS = 1000;
-constexpr uint32 UNSTABLE_AFFLICTION_REFRESH_MS = 2000;
+constexpr uint32 UNSTABLE_AFFLICTION_REFRESH_MS = 1500;  // [rot352] the unhasted cast time (no spell id known)
+// [rot352] wowsims warlock__affliction.apl.json row 18: Unstable Affliction when its dot has less than its (hasted)
+// cast time left - the bot recast it at 2 s, so the new cast landed ~0.5 s before the last tick, which the core then
+// loses (Aura::RefreshTimers keeps the periodic timer and resets the tick count). b223 rfc-h 5D Rtlocaa: 3.9 a minute
+// vs the sim's 3.3, 4704 a cast vs 8971.
+uint32 UnstableAfflictionRefreshMs(PlayerbotAI* botAI, Player* bot);
 constexpr uint32 IMMOLATE_REFRESH_MS = 2500;
 
 // A DoT is only applied when the target lives long enough (seconds, "estimated group dps") for it to out-damage
@@ -357,6 +362,8 @@ public:
     {
         beforeDuration = UNSTABLE_AFFLICTION_REFRESH_MS;
     }
+
+    bool isUseful() override;  // [rot352] the refresh at the hasted cast time
 };
 
 class CastUnstableAfflictionOnAttackerAction : public CastDebuffSpellOnAttackerAction

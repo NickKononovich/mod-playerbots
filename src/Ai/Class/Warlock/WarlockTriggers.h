@@ -274,6 +274,13 @@ public:
     UnstableAfflictionTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "unstable affliction", 1, true, UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME,
                         UNSTABLE_AFFLICTION_REFRESH_MS) {}
+
+    // [rot352] the refresh at the hasted cast time (UnstableAfflictionRefreshMs)
+    bool IsActive() override
+    {
+        beforeDuration = UnstableAfflictionRefreshMs(botAI, bot);
+        return DebuffTrigger::IsActive();
+    }
 };
 
 class UnstableAfflictionOnAttackerTrigger : public DebuffOnAttackerTrigger

@@ -109,6 +109,20 @@ bool CastHauntAction::isUseful()
     return CastSpellAction::isUseful() && HauntDue(botAI, bot, GetTarget());
 }
 
+// [rot352] the APL's row 18: Unstable Affliction's hasted cast time
+uint32 UnstableAfflictionRefreshMs(PlayerbotAI* botAI, Player* bot)
+{
+    uint32 const id = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "unstable affliction")->Get();
+    SpellInfo const* ua = id ? sSpellMgr->GetSpellInfo(id) : nullptr;
+    return ua ? ua->CalcCastTime(bot) : UNSTABLE_AFFLICTION_REFRESH_MS;
+}
+
+bool CastUnstableAfflictionAction::isUseful()
+{
+    beforeDuration = UnstableAfflictionRefreshMs(botAI, bot);
+    return CastDebuffSpellAction::isUseful();
+}
+
 // Checks if the bot has less than 26 soul shards, and if so, allows casting Drain Soul
 bool CastDrainSoulAction::isUseful()
 {
