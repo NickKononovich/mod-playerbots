@@ -3946,10 +3946,20 @@ namespace Leader::Dungeon
                 // 0.3 s later it broke "inside a fight mob's melee reach" (the Shaman / Trogg passing it on its run to
                 // the tank) - command_repeat "combat spot". The stop holds only where both facts let it cast: the mobs
                 // where they run to and where they stand now
+                // [lead533] b212 rfc-h: 10 command_repeat "combat spot" in 4 runs (5B 454.2-456.3 s Rtpriaa /
+                // Rtshaac, 5H 650.1-652.2 s Rthunad, ...) - still this flip: the stop 2-3 yd short ("it casts from
+                // where it walks") came while the target ran in (5B: Earthborer 15 yd from the tank at 453.9 s, 1 yd at
+                // 454.8 s; 5H: the Enforcer still walking onto the casters, "inside a fight mob's melee reach" at 650.1
+                // and 651.9 s), and 1 s later the stop point failed (no sight, inside the minimum range) and the walk
+                // went back near the spot it had left. The spot was chosen for the fight where it will stand; where the
+                // member walks is judged only once the fight stands there: the target and the tank still (5B: the
+                // tank walked the fight to its anchor ahead, 12.8 yd), the target on the tank in its reach
+                bool const fightStands = !target->isMoving() && !tank->isMoving() && target->GetVictim() == tank &&
+                                         tank->IsWithinMeleeRange(target);
                 auto const stopped = lead.combatSpotStoppedAt.find(guid);
                 bool const stoppedHere = found != lead.combatSpots.end() && stopped != lead.combatSpotStoppedAt.end() &&
                                          stopped->second.GetExactDist(found->second.second) <= 0.1f;
-                if (!melee && !stoppedHere && found != lead.combatSpots.end() &&
+                if (!melee && fightStands && !stoppedHere && found != lead.combatSpots.end() &&
                     found->second.first == target->GetGUID() &&
                     bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
                         2.0f &&
