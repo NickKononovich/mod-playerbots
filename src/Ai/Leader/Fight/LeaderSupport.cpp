@@ -234,6 +234,25 @@ void TickDispels(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
             std::pair<ObjectGuid, uint32> const key{target->GetGUID(), auraInfo->Id};
             if (!seen.insert(key).second)
                 continue;
+            // [lead630] b218 rfc-h 5C Bazzalan (1082.7-1110.6 s): Abolish Poison told on the tank's Deadly Poison 7
+            // times in 28 s (casts 2.5-7.8 s apart, 13 % base mana each) while the last one still ran - its aura
+            // (2893: a 12 s periodic trigger every 3 s of 3137, a poison dispel) removes the poison by itself, the
+            // balance druid ran dry in that fight. An aura on the member whose periodic trigger dispels this type
+            // (spell data: Abolish Poison / Abolish Disease) is the dispel already under way: no new order
+            bool abolishing = false;
+            for (auto const& [otherSlot, otherApp] : *visible)
+            {
+                Aura const* other = otherApp ? otherApp->GetBase() : nullptr;
+                SpellInfo const* otherInfo = other ? other->GetSpellInfo() : nullptr;
+                if (!otherInfo || other->IsRemoved())
+                    continue;
+                for (SpellEffectInfo const& effect : otherInfo->GetEffects())
+                    if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && effect.TriggerSpell &&
+                        (DispelMask(sSpellMgr->GetSpellInfo(effect.TriggerSpell)) & (1u << auraInfo->Dispel)))
+                        abolishing = true;
+            }
+            if (abolishing)
+                continue;
             // the spell `caster` removes this debuff with now (0: none): known, off cooldown, its power, its reach,
             // and the game's own dispel list has the aura for it
             auto const dispelWith = [&](Player* caster) -> uint32
