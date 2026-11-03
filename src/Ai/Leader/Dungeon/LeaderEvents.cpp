@@ -4874,12 +4874,31 @@ namespace Leader::Dungeon
                 // the aggro-loss victim stops its damage until the tank has the mob back; the others leave the
                 // loose mob alone
                 // [lead18] a healer is never stopped: Stop is no offensive cast, its heals go on
-                bool const victim = loose != looseOn.end() && bot != healer && !PlayerbotAI::IsHeal(bot);
+                // [lead544] b212 rfc-h 5C 364.1-384.6 s: a Ragefire Shaman cast at the balance druid from 21 yd off
+                // the tank ("the tank never had it"); the tank's walk to it was refused (an idle Trogg's reach), its
+                // taunt did not reach - the druid stood stopped 20.5 s for a take-back that could not come. The stop
+                // waits for the tank only while the tank can take the mob back: a pick-up ready (lead54's
+                // tankCannotTake: no taunt / AoE threat off cooldown) with the mob in its taunt's reach and sight, or
+                // the tank under the leader's walk to it
+                bool tankTakesBack = false;
+                if (loose != looseOn.end())
+                {
+                    float const takeReach = LeaderTauntReach(tank);
+                    Leader::MemberEvents tankEvents;
+                    tankTakesBack =
+                        (!lead.tankCannotTake && takeReach > 0.0f && tank->GetExactDist(loose->second) <= takeReach &&
+                         tank->IsWithinLOSInMap(loose->second)) ||
+                        (Leader::Events::Get(tank->GetGUID(), tankEvents) &&
+                         tankEvents.move == Leader::MoveEvent::MoveTo &&
+                         tankEvents.moveWhy.rfind("aggro loss: the tank goes to", 0) == 0);
+                }
+                bool const looseVictim = loose != looseOn.end() && bot != healer && !PlayerbotAI::IsHeal(bot);
+                bool const victim = looseVictim && tankTakesBack;
                 // [lead52] the tank's threat lead before the damage: a damage dealer whose threat on its target
                 // reaches the tank's stops until the tank leads again (the tank's lead is the game's own measure, no
                 // number of ours); the start of a pull too - nobody out-threats a tank that has not hit yet
                 // [lead53] only when no fight mob leaves it headroom (it was every member at the tank's threat)
-                bool const overThreat = !victim && bot != healer && !PlayerbotAI::IsHeal(bot) && target &&
+                bool const overThreat = !looseVictim && bot != healer && !PlayerbotAI::IsHeal(bot) && target &&
                                         lead.noHeadroom[guid];
                 // [lead80] a trash burn when it pays: the member's burn cooldown's effect fits in the fight's
                 // seconds and the cooldown is back before the next boss (no boss left: it pays whenever it fits)
@@ -4913,7 +4932,7 @@ namespace Leader::Dungeon
                                  .Raw("threat", overThreat && lead.stopProjection.count(guid)
                                                     ? lead.stopProjection[guid]
                                                     : std::string("null")));  // [lead246]
-                if (!victim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
+                if (!looseVictim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
                                                     .Str("why", "loose on a member until the tank has it"));
