@@ -745,27 +745,57 @@ bool RecallStrandedPet(PlayerbotAI* botAI, Creature* pet)
 // first 2-4 s of the pull (following, drinking, round a corner), so a pet on the tank's mob was called back and the
 // pet's damage was lost with the hunter's. The tank's own fight does not wait for the owner to be in combat
 // (`ownerInCombat` false: the tank's target).
-bool IsAllowedPetTarget(Player* bot, Creature* pet, Unit* target, bool ownerInCombat = true)
+// [lead540] b212 rfc-h: "[pet control] Crab called back from Jergosh the Invoker (20.0 yd from the owner, 2.8 from the
+// tank, tank engaged yes, owner attacks Jergosh the Invoker ...)", "Stonegrinder called back from Bazzalan (28.3 yd from
+// the owner, 20.0 from the tank ...)", "Serpent called back from Jergosh the Invoker (... 20.8 from the tank ...)": the
+// line never said which check refused. `why` (optional) names it; the call-back line prints it.
+bool IsAllowedPetTarget(Player* bot, Creature* pet, Unit* target, bool ownerInCombat = true,
+                        char const** why = nullptr)
 {
-    if (!target || !target->IsInWorld() || target->GetMap() != bot->GetMap() || (ownerInCombat && !bot->IsInCombat()) ||
-        !target->IsAlive() || !bot->IsValidAttackTarget(target) ||
-        target->HasBreakableByDamageCrowdControlAura() || bot->GetExactDist(target) > PET_OWNER_LEASH ||
-        !FightsGroup(target, bot) || !pet->CanCreatureAttack(target) || PetDetours(pet, target))  // [b35_sh]
+    auto refuse = [why](char const* reason)
+    {
+        if (why)
+            *why = reason;
         return false;
+    };
+
+    if (!target || !target->IsInWorld() || target->GetMap() != bot->GetMap())
+        return refuse("no target in the map");
+    if (ownerInCombat && !bot->IsInCombat())
+        return refuse("owner not in combat");
+    if (!target->IsAlive() || !bot->IsValidAttackTarget(target))
+        return refuse("not a valid attack target");
+    if (target->HasBreakableByDamageCrowdControlAura())
+        return refuse("crowd controlled");
+    if (bot->GetExactDist(target) > PET_OWNER_LEASH)
+        return refuse("beyond the owner leash");
+    if (!FightsGroup(target, bot))
+        return refuse("not in the group's fight");
+    if (!pet->CanCreatureAttack(target))
+        return refuse("the pet cannot attack it (CanCreatureAttack)");
+    if (PetDetours(pet, target))  // [b35_sh]
+        return refuse("the pet's path there is a detour");
 
     // [pet-target-exclusion] An encounter keeps the group's pets off some mobs (TargetValueExclusionType::PetTarget):
     // mgt-h 2026-10-25 build 25, a hunter's Crab ran into Selin Fireheart's room after a Wretched by her door while
     // her room was being cleared, became her victim and the group followed it in with 6 Wretched alive (wipe).
     if (GatherStrategyTargetExclusions(GET_PLAYERBOT_AI(bot), TargetValueExclusionType::PetTarget)
             .count(target->GetGUID()))
-        return false;
+        return refuse("an encounter keeps pets off it");
 
     Player* tank = GroupTank(bot);
     if (!tank)
         return true;
 
     if (!target->IsEngagedBy(tank) && tank->GetVictim() != target)
-        return false;
+        return refuse("the tank has not engaged it");
+
+    // [lead540] A boss the tank has engaged is the leader's fight wherever it stands: Jergosh the Invoker casts at its
+    // victim from range and stood 20.8 yd from the tank, Bazzalan 20.0 yd - past PET_TANK_LEASH with no member in its
+    // melee, so the pack rules below (made for trash: no nuking a mob at its spawn, no waking an idle pack on the way)
+    // sent the Serpent and the ghoul back.
+    if (Creature* creature = target->ToCreature(); creature && (creature->IsDungeonBoss() || creature->isWorldBoss()))
+        return true;
 
     // [b40_scholo] The tank's idle-pack guard for the pet too: a mob farther than TANK_FAR_MOB from the tank, standing
     // in the aggro reach of an idle mob, is left to the taunts. scholo-n 20261026-060218-scholo-n-5H-4 (1916-1942 s):
@@ -790,14 +820,17 @@ bool IsAllowedPetTarget(Player* bot, Creature* pet, Unit* target, bool ownerInCo
                          pet->GetName(), target->GetName(), target->GetExactDist(tank), idle->GetName(),
                          idle->GetExactDist(target));
             }
-            return false;
+            return refuse("its spot is in an idle pack's aggro reach");
         }
 
     if (target->GetExactDist(tank) <= PET_TANK_LEASH)
         return true;
 
     Unit* victim = target->GetVictim();
-    return victim && victim->IsPlayer() && IsGroupUnit(victim, bot) && target->GetExactDist(victim) <= PET_MELEE_FIGHT;
+    if (victim && victim->IsPlayer() && IsGroupUnit(victim, bot) && target->GetExactDist(victim) <= PET_MELEE_FIGHT)
+        return true;
+
+    return refuse("away from the tank and in melee with no member");
 }
 
 // The pet follows at its owner's heel (the move PET_HEEL_DISTANCE behind it), not PET_FOLLOW_DIST off its side.
@@ -980,6 +1013,15 @@ bool PetMayEngage(PlayerbotAI* botAI, Creature* pet, Unit* target, PetControlSta
             return true;
         }
         why = "the holder has no threat on it yet";
+        // [lead540] the approach entry the run ahead needs: without it ApproachTarget found none and a pet already on
+        // the mob fell through to the call-back. No wait cap here: the pet bites on the leader's facts only.
+        std::lock_guard<std::mutex> guard(state.lock);
+        PetApproach& approach = state.approaches[InstanceKey(pet)];
+        if (approach.target != target->GetGUID())
+        {
+            approach = PetApproach();
+            approach.target = target->GetGUID();
+        }
         return false;
     }
 
@@ -1652,8 +1694,9 @@ void Update(PlayerbotAI* botAI)
             EndClearSpot(state, pet);
 
         std::string engageWhy;
+        char const* refusedWhy = nullptr;  // [lead540] the check that kept the pet off the owner's target
         Unit* ownerTarget = OwnerAttackTarget(bot);
-        if (IsAllowedPetTarget(bot, pet, ownerTarget))
+        if (IsAllowedPetTarget(bot, pet, ownerTarget, true, &refusedWhy))
         {
             if (PetMayEngage(botAI, pet, ownerTarget, state, engageWhy))
             {
@@ -1763,12 +1806,16 @@ void Update(PlayerbotAI* botAI)
                 char const* stanceName = stance == REACT_PASSIVE ? "passive"
                                          : stance == REACT_DEFENSIVE ? "defensive"
                                                                      : "aggressive";
+                // [lead540] the refused check on the owner's target, or the engage wait that let it fall here
+                std::string const why = ownerTarget && refusedWhy ? std::string("refused: ") + refusedWhy
+                                        : !engageWhy.empty()      ? "engage wait: " + engageWhy
+                                                                  : std::string("no allowed target");
                 LOG_INFO("playerbots",
                          "[pet control] {}: {} called back from {} ({:.1f} yd from the owner, {:.1f} from the tank, "
-                         "tank engaged {}, owner attacks {}, stance was {})",
+                         "tank engaged {}, owner attacks {}, stance was {}; {})",
                          bot->GetName(), pet->GetName(), victim->GetName(), victim->GetExactDist(bot),
                          tank ? victim->GetExactDist(tank) : -1.0f, tankOn ? "yes" : "no",
-                         ownerTarget ? ownerTarget->GetName() : "nothing", stanceName);
+                         ownerTarget ? ownerTarget->GetName() : "nothing", stanceName, why);
             }
         }
 
