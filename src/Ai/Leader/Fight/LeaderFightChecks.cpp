@@ -183,7 +183,12 @@ namespace Leader::Fight
 
     bool HealReaches(Player* tank, Position const& from, Position const& to)
     {
-        return from.GetExactDist(to) <= Leader::LEADER_HEAL_REACH_YD - g_spotAcquireMargin &&
+        // [lead723] the game's heal reach (Spell::CheckRange -> Unit::IsWithinCombatRange): the 3D gap between the
+        // centres under the heal's range plus both combat reaches - healer and healed are players, the tank's reach
+        // stands for both (b219 rfc-h: 107 of the 225 heal_reach re-spots at 30-40 yd, under the 43 yd the heals
+        // land from; the healers walked 339 s of "heal reach" with the tank in 40 yd and sight)
+        float const reach = Leader::LEADER_HEAL_REACH_YD + 2.0f * tank->GetCombatReach();
+        return from.GetExactDist(to) <= reach - g_spotAcquireMargin &&
                tank->GetMap()->isInLineOfSight(from.GetPositionX(), from.GetPositionY(),
                                                from.GetPositionZ() + 2.0f, to.GetPositionX(), to.GetPositionY(),
                                                to.GetPositionZ() + 2.0f, tank->GetPhaseMask(),

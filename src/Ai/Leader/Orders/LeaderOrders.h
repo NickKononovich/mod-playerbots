@@ -304,14 +304,17 @@ namespace Leader
     constexpr bool LEADER_COMBAT_SPOTS = true;
     constexpr bool LEADER_NO_OWN_DUNGEON_MOVES = false;   // the dungeon tactics' own moves
     // [lead15] the healer reaches EVERY member (user 2026-10-26): every spot the leader issues keeps each member
-    // within LEADER_HEAL_REACH_YD (40 yd heal range minus a margin) of the healer and in its sight
+    // within the heal reach (HealReaches: LEADER_HEAL_REACH_YD and both combat reaches) of the healer and in its sight
     constexpr bool LEADER_HEAL_REACH = true;
     // [lead15] the split's enforcement check (user: «рейд-лидер решает, что, когда и где; бот сам решает только как
     // ДД-шить, танковать, хилить»): an executed member action that moves, changes the target, sits to rest, casts an
     // external / CC / burn cooldown or a buff on another without a matching leader command is an own_decision line
     // (who member:<name>) and counts in the run's conflicts; the goal is 0
     constexpr bool LEADER_OWN_DECISION_CHECK = true;
-    constexpr float LEADER_HEAL_REACH_YD = 35.0f;
+    // [lead723] the main heals' range, 40 yd (Holy Light, Flash of Light, Healing Wave, Lesser Healing Wave, Chain
+    // Heal, Healing Touch, Regrowth, Rejuvenation, Lifebloom, Nourish, Flash Heal, Greater Heal, Renew); HealReaches
+    // adds both combat reaches as the core's range check does (was 35, a margin under it)
+    constexpr float LEADER_HEAL_REACH_YD = 40.0f;
     // [lead15] an event field lives this long without the leader refreshing it (a stopped leader: the members'
     // own rules again); the dodge cadence; a spot reached within this; a member not nearer for this long is stuck
     constexpr uint32 LEADER_EVENT_TTL_MS = 1500;
