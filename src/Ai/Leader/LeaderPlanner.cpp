@@ -6548,6 +6548,21 @@ namespace FightSpot
         return true;
     }
 
+    bool Ahead(Player* tank, Position& spot)
+    {
+        if (Walking(tank, spot))
+            return true;
+
+        std::lock_guard<std::mutex> guard(fightSpotLock);
+        auto const found = fightSpots.find(tank->GetGUID().GetRawValue());
+        if (found == fightSpots.end() || !found->second.planMs ||
+            getMSTimeDiff(found->second.planMs, getMSTime()) > FIGHT_SPOT_PLAN_MS)
+            return false;
+
+        spot = found->second.spot;
+        return true;
+    }
+
     void Arrived(Player* tank)
     {
         std::lock_guard<std::mutex> guard(fightSpotLock);

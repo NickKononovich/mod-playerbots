@@ -281,6 +281,8 @@ namespace FightSpot
     bool Due(PlayerbotAI* botAI, Player* tank, Position& spot);
     // The walk back under way, without a look.
     bool Walking(Player* tank, Position& spot);
+    // [lead740] where the fight will stand: the walk back under way, or the plan's walk back for the fight not on yet
+    bool Ahead(Player* tank, Position& spot);
     void Arrived(Player* tank);
 }
 

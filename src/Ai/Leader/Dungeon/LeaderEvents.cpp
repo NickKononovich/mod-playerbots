@@ -888,12 +888,18 @@ namespace Leader::Dungeon
         auto const meleePullWait = [&](Player* bot) -> std::optional<Position>
         {
             auto& kept = lead.meleeWait[bot->GetGUID()];
-            if (kept.target != lead.commitMob || kept.meet.GetExactDist(lead.meetPoint) > 1.0f)
+            // [lead740] an engage the tank walks back to a fight spot (FightSpot::Ahead: b220 5B 794 s, the tank met
+            // the Enforcer 20 yd out and walked it back to where it had stood): the stop point is that spot
+            Position goal = lead.meetPoint;
+            Position back;
+            if (lead.commit && lead.commit->kind == "engage" && FightSpot::Ahead(tank, back))
+                goal = back;
+            if (kept.target != lead.commitMob || kept.meet.GetExactDist(goal) > 1.0f)
             {
-                std::optional<Position> const point = slow([&] { return lastSafeOnWalk(bot, lead.meetPoint); });
+                std::optional<Position> const point = slow([&] { return lastSafeOnWalk(bot, goal); });
                 if (!point)
                     return std::nullopt;  // judged again next tick, from where it walked
-                kept = {lead.commitMob, lead.meetPoint, *point};
+                kept = {lead.commitMob, goal, *point};
             }
             return kept.point;
         };
@@ -903,10 +909,62 @@ namespace Leader::Dungeon
         // runs at its own, both stop at their combat reaches). The melee member's place there is its meeting place
         // (LeaderMeleeWait), its walk the last safe point toward it. Decided once per member and target at the hit
         // (the fact it is known from), kept while that mob is its target
+        // [lead740] user 2026-11-03 (top priority, third attempt): b220 rfc-h (8 runs) melee walked ~1440 s of the
+        // fights, 987 s of it in the pull's first seconds, and its path in a pull was the tank's (5000 yd after the
+        // tank's first hit) plus its own walk in: the tank moves the fight and the melee chased the mob it walks. A
+        // mob on the tank stops where the tank stops: the tank's walk's end when it walks away from the mob (the
+        // pull back / LoS pull's return, "move fight spot back", a fight drag or a hazard move - the spline's final
+        // point, the game's own), not where the mob is now. A walk that ends at the mob (reach melee, a charge, a
+        // chase) is no walk away: the fight stands at the mob (the game's melee range of the two)
+        auto const tankWalksMobTo = [&](Unit* target, Position& stop) -> bool
+        {
+            if (!tank->isMoving() || tank->movespline->Finalized())
+                return false;
+            G3D::Vector3 const end = tank->movespline->FinalDestination();
+            if (target->GetExactDist2d(end.x, end.y) <= tank->GetMeleeRange(target))
+                return false;
+            stop = Position(end.x, end.y, end.z);
+            return true;
+        };
+        // [lead740] where the fight with `target` (a mob on the tank) will stand when it is not where the tank stands
+        // now: the tank's walk away from the mob (tankWalksMobTo), the fight spot the tank walks the fight back to
+        // (FightSpot::Ahead: the engage's planned walk back, b220: 44 pulls, melee 2401 yd walked for 1064 yd net),
+        // or a pull back / LoS / range pull's fight spot (the leader's meeting point: the tank tags the mob from its
+        // cast spot and returns there - b220 5G 720.5 s: the three melee were sent to the tank's cast spot 40 yd out,
+        // "victimWalks 0.0", and walked back with the mob). "" when none
+        auto const fightStopAhead = [&](Unit* target, Position& stop) -> char const*
+        {
+            if (target->GetVictim() && target->GetVictim() != tank)
+                return "";
+            if (tankWalksMobTo(target, stop))
+                return "the tank's walk";
+            if (FightSpot::Ahead(tank, stop))
+                return "the fight spot back";
+            // ... while the tank goes back there: not once it stands holding the mob elsewhere (b220 5F 580 s: the
+            // pull back's tank charged the Cultist 18 yd out and fought there)
+            bool const holdsElsewhere = !tank->isMoving() && tank->IsWithinMeleeRange(target) &&
+                                        tank->GetExactDist(lead.meetPoint) > tank->GetMeleeRange(target);
+            if (lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty() && !holdsElsewhere &&
+                (lead.commit->kind == "pull back" || lead.commit->kind == "los pull" || lead.commit->kind == "one"))
+            {
+                std::vector<ObjectGuid> const pulled = LeaderPullMobs(lead.commit, lead.commitMob);
+                if (target->GetGUID() == lead.commitMob ||
+                    std::find(pulled.begin(), pulled.end(), target->GetGUID()) != pulled.end())
+                {
+                    stop = lead.meetPoint;
+                    return "the pull's fight spot";
+                }
+            }
+            return "";
+        };
         auto const meleeStopAt = [&](Player* bot, Unit* target) -> Position
         {
             auto& kept = lead.meleeStop[bot->GetGUID()];
-            if (kept.target == target->GetGUID())
+            // [lead740] a new fact - the fight's stop ahead moved by more than the MoveTo's own tolerance - decides
+            // the place again
+            Position ahead;
+            std::string const aheadBy = fightStopAhead(target, ahead);
+            if (kept.target == target->GetGUID() && (aheadBy.empty() || kept.meet.GetExactDist(ahead) <= 3.0f))
                 return kept.point;
             Unit* victim = target->GetVictim() ? target->GetVictim() : static_cast<Unit*>(tank);
             float const gap = victim->GetExactDist2d(target);
@@ -932,7 +990,7 @@ namespace Leader::Dungeon
                     z = victim->GetPositionZ();
                 }
             }
-            Position const stop(x, y, z);
+            Position const stop = aheadBy.empty() ? Position(x, y, z) : ahead;
             Position const place = LeaderMeleeWait(bot, stop);
             kept = {target->GetGUID(), stop, slow([&] { return lastSafeOnWalk(bot, place); }).value_or(place)};
             Decisions().Write(run, "leader", "melee_stop_point", bot->GetGUID(), bot->GetName(), true,
@@ -940,8 +998,9 @@ namespace Leader::Dungeon
                                   .Str("member", bot->GetName())
                                   .Str("target", target->GetName())
                                   .Str("victim", victim->GetName())
+                                  .Str("stopBy", aheadBy.empty() ? "the mob meets its victim" : aheadBy)
                                   .Real("gap", gap)
-                                  .Real("victimWalks", along)
+                                  .Real("victimWalks", aheadBy.empty() ? along : victim->GetExactDist(stop))
                                   .Real("x", kept.point.GetPositionX())
                                   .Real("y", kept.point.GetPositionY())
                                   .Real("z", kept.point.GetPositionZ())
@@ -4080,9 +4139,29 @@ namespace Leader::Dungeon
                                           JsonObject().Str("member", bot->GetName()).Str("target", target->GetName())
                                               .Str("why", frontWhy));
                 }
-                bool const chases = melee && !frontHere && target->GetVictim() == tank &&
+                // [lead740] the tank walks its mob away (the walk back of a pull back / LoS pull, "move fight spot
+                // back", a fight drag, a hazard move): the melee member goes to its place at the walk's end
+                // (meleeStopAt), where the mob stops, not on a Follow behind the walking mob (b220 rfc-h: the chase
+                // took the melee out to the mob and back with it; 5B 794-800 s, 5G 720-727 s, 5A 850-863 s)
+                Position tankStop;
+                bool const toTankStop = melee && target->GetVictim() == tank && tankWalksMobTo(target, tankStop);
+                bool const chases = !toTankStop && melee && !frontHere && target->GetVictim() == tank &&
                                     (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused();
-                if (chases)
+                if (toTankStop)
+                {
+                    Position const place = meleeStopAt(bot, target);
+                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, place, 3.0f, "to the tank's walk's end"))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "to the tank's walk's end")
+                                     .Str("target", target->GetName())
+                                     .Real("x", place.GetPositionX()).Real("y", place.GetPositionY())
+                                     .Real("z", place.GetPositionZ()));
+                    lead.combatSpots.erase(guid);
+                    found = lead.combatSpots.end();
+                    lead.meleeChase.erase(guid);
+                    moved = true;
+                }
+                else if (chases)
                 {
                     if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
                                                   "chase: behind the target"))
@@ -5871,6 +5950,29 @@ namespace Leader::Dungeon
             // out, a member in reach of a Mana Tide Totem that is down (the caster's cooldown started within its
             // summon's duration: the core's cooldown, spell data)
             auto const receiving = [&](Player* member) { return ManaToolReturning(member, everyone, true); };
+            // [lead751] a member another told tool's return is still to come to: the leader's command not yet cast
+            // (b220 rfc-h 5C Jergosh 998.1 s: Evocation told to the fire mage, 999.0 s Innervate on the mage too - its
+            // channel had not begun, so it read as short again - while the balance druid itself stood at 13 % and
+            // dealt 1200 dps). A tool on the caster itself (Evocation, Dispersion, Divine Plea, Shadowfiend) returns
+            // to its caster, Innervate to the member it is told on. The member stays a mana user (its own told tool
+            // is asserted on: the command lives while each tick asserts it); only `caster`'s Innervate skips it
+            auto const otherToolComes = [&](Player* member, Player* innervator)
+            {
+                for (Player* caster : everyone)
+                {
+                    Leader::MemberEvents told;
+                    if (!caster->IsAlive() || !Leader::Events::Get(caster->GetGUID(), told) || !told.externalSpell)
+                        continue;
+                    uint32 const spell = told.externalSpell;
+                    if (spell == SPELL_INNERVATE && told.externalTarget == member->GetGUID() && caster != innervator)
+                        return true;
+                    if (caster == member &&
+                        (spell == RestState::SPELL_EVOCATION || spell == RestState::SPELL_DISPERSION ||
+                         spell == RestState::SPELL_DIVINE_PLEA || spell == RestState::SPELL_SHADOWFIEND))
+                        return true;
+                }
+                return false;
+            };
             std::vector<ManaUser> manaUsers;
             if (lead.fightSecLeft > 0.0f)
                 for (Player* member : everyone)
@@ -6033,9 +6135,13 @@ namespace Leader::Dungeon
                     for (ManaUser const& user : manaUsers)
                         if (user.who == caster)
                             self = &user;
+                    // [lead751] a druid short of its own need keeps its Innervate: its boss line counted it on
+                    // itself (lead733, FightManaLine's credit), so the group came to the boss with the druid that low
+                    // (b220 5C Jergosh: the druid at 13 % gave it to the mage, then cast 7 spells in 66 s)
                     if (uint32 const spell = LeaderReadySpell(caster, {SPELL_INNERVATE}))
                         for (ManaUser const& user : manaUsers)
-                            consider(caster, spell, user.who, {&user}, false);
+                            if ((!self || user.who == caster) && !otherToolComes(user.who, caster))
+                                consider(caster, spell, user.who, {&user}, false);
                     if (self)
                     {
                         // [lead423] Shadowfiend attacks the fight's target; the others are on the caster itself
@@ -6047,7 +6153,13 @@ namespace Leader::Dungeon
                         // wowsims arcane / frost APL channels it at currentManaPercent <= 25 % (the mage's own trigger
                         // before the leader took the tool, b31_deep "mana at or below 25", every mage spec)
                         constexpr float WOWSIMS_EVOCATION_MANA_PCT = 25.0f;
-                        if (caster->GetPowerPct(POWER_MANA) <= WOWSIMS_EVOCATION_MANA_PCT)
+                        // [lead752] one decision per fact: a told Evocation stays told until it is cast (b220 rfc-h
+                        // 5C Jergosh 997.2 s: told at 7 %, the mage's mana gem took it to 27 % in the same second, the
+                        // order dropped above the 25 % line and the mage never channelled it in the fight)
+                        Leader::MemberEvents pending;
+                        bool const evocationTold = Leader::Events::Get(caster->GetGUID(), pending) &&
+                                                   pending.externalSpell == RestState::SPELL_EVOCATION;
+                        if (caster->GetPowerPct(POWER_MANA) <= WOWSIMS_EVOCATION_MANA_PCT || evocationTold)
                             if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_EVOCATION}))
                                 consider(caster, spell, nullptr, {self}, true);
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_DISPERSION}))
