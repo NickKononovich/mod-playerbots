@@ -518,6 +518,8 @@ public:
 // [rot332] wowsims feral_tank_druid__default.apl.json: row 9 refreshes a 5-stack Lacerate with <= 1.5 s left above
 // everything ("lacerate refresh", LacerateRefreshTrigger); row 15 builds the stacks or refreshes with <= 8 s left
 // (was 6 s here) after Faerie Fire and the 1.5 s Mangle wait (LacerateTrigger).
+// [rot333] the stacks and time read are the bear's own (core: one Lacerate aura per caster; wowsims lacerate.go: the
+// druid's own dot): another druid's Lacerate on the target no longer stands in for its own.
 inline constexpr uint8 LACERATE_MAX_STACKS = 5;
 inline constexpr int32 LACERATE_REFRESH_MS = 8000;
 inline constexpr int32 LACERATE_EXPIRING_MS = 1500;
@@ -539,7 +541,7 @@ public:
         if (BearMangleDueWithin(botAI, bot, BEAR_MANGLE_WAIT_MS))  // [rot330]
             return false;
 
-        Aura* lacerate = botAI->GetAura("lacerate", target, false, false);
+        Aura* lacerate = botAI->GetAura("lacerate", target, true, false);  // [rot333] own stacks
         if (!lacerate)
             return true;
 
@@ -566,7 +568,7 @@ public:
         if (!target || !target->IsAlive() || !target->IsInWorld())
             return false;
 
-        Aura* lacerate = botAI->GetAura("lacerate", target, false, false);
+        Aura* lacerate = botAI->GetAura("lacerate", target, true, false);  // [rot333] own stacks
         return lacerate && lacerate->GetStackAmount() >= LACERATE_MAX_STACKS &&
                lacerate->GetDuration() <= LACERATE_EXPIRING_MS;
     }
@@ -593,7 +595,7 @@ public:
         if (!target || !target->IsAlive() || !target->IsInWorld())
             return false;
 
-        Aura* lacerate = botAI->GetAura("lacerate", target, false, false);
+        Aura* lacerate = botAI->GetAura("lacerate", target, true, false);  // [rot333] own stacks
         return lacerate && lacerate->GetStackAmount() >= LACERATE_MAX_STACKS;
     }
 };
