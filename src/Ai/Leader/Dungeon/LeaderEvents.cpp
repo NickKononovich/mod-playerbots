@@ -254,6 +254,13 @@ namespace Leader::Dungeon
             return std::max(getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f, HEADROOM_GCD_SEC);
         }
 
+        // [lead561] its threat per second there: what it built itself since its first threat (a taunt's copy of the
+        // top threat is no rate of the tank's)
+        float ThreatSeenRate(Leader::DungeonLeaderState::ThreatSeen const& seen)
+        {
+            return std::max(0.0f, seen.threat - seen.base) / ThreatSeenSec(seen);
+        }
+
         // [lead221] the planner's held answer named this mana line for the member (lead.plannerRestLine): its Rest
         // holds below it; without a named line (a health gap) the Rest holds as before, until the member is full
         bool BelowPlannerLine(Player* bot, float line)
@@ -2738,7 +2745,7 @@ namespace Leader::Dungeon
                     if (seen.threat > 0.0f)
                     {
                         auto& tps = lead.openTps[who];
-                        tps.first += seen.threat / ThreatSeenSec(seen);
+                        tps.first += ThreatSeenRate(seen);
                         ++tps.second;
                     }
             lead.threatSeen.clear();
@@ -4349,13 +4356,41 @@ namespace Leader::Dungeon
                     auto& seen = lead.threatSeen[mob->GetGUID()][who->GetGUID()];
                     if (float const threat = mob->GetThreatMgr().GetThreat(who); threat > 0.0f)
                     {
+                        // [lead561] b214 rfc-h 5D 85-87.6 s: the bear's Growl copied the unholy DK's 9000 threat on
+                        // a Ragefire Trogg and the bear's rate there (its threat over its seconds on the mob) carried
+                        // it: tankNext 15598 against 12274 + its real 491 per 0.3 s, the DK got headroom again and
+                        // took the Trogg back 2.5 s later. A rise while the tank's taunt aura comes onto the mob is
+                        // the taunt's copy: the tank's rate there counts from it
+                        bool const taunt =
+                            who == tank && mob->HasAuraTypeWithCaster(SPELL_AURA_MOD_TAUNT, who->GetGUID());
                         if (!seen.firstMs)
                             seen.firstMs = now;
                         if (threat > seen.threat)
+                        {
                             seen.riseMs = now;  // [lead432]
+                            if (taunt && !seen.taunted)
+                            {
+                                seen.base = threat;
+                                seen.firstMs = now;
+                            }
+                            // [lead560] b214 rfc-h 5D: the unholy DK took 10 mobs off the bear, 11 of its 21
+                            // 'out-threatened' / 'attacks a mob it was not told to' losses with headroom one look
+                            // before - a Ragefire Trogg the bear held at 3504 went to the DK's one Icy Touch (11156,
+                            // threat x7) at 183.2 s, 0 -> 4767 on an Enforcer at 535.8 s: its threat rate over one
+                            // GCD (lead243) is an average, one cast lands more. The member's largest rise on a mob
+                            // between two looks within one GCD is the threat one of its casts lands
+                            else if (who != tank && seen.lookedMs &&
+                                     getMSTimeDiff(seen.lookedMs, now) <= uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS))
+                            {
+                                float& burst = lead.threatBurst[who->GetGUID()];
+                                burst = std::max(burst, threat - seen.threat);
+                            }
+                        }
+                        seen.taunted = taunt;
                         seen.lastMs = now;
                         seen.threat = threat;
                     }
+                    seen.lookedMs = now;
                     return seen;
                 };
                 float freshRate = 0.0f;
@@ -4365,7 +4400,7 @@ namespace Leader::Dungeon
                 for (ObjectGuid const& other : killOrder)
                     if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
                         if (auto const& seen = seenOn(fought, bot); seen.threat > 0.0f)
-                            freshRate = std::max(freshRate, seen.threat / ThreatSeenSec(seen));
+                            freshRate = std::max(freshRate, ThreatSeenRate(seen));
                 // [lead246] b191 rfc-h: the warrior tanks' threat rate 0-2 s into a pull was 740 / 987 per s
                 // against 1691 / 1652 at 2-5 s (rage), so the tank's next GCD read from its first hit stopped
                 // the damage dealers early (5B 129, 5F 118 stops, 31-38 of 46 per member in the first 2 s). Both
@@ -4376,7 +4411,7 @@ namespace Leader::Dungeon
                     tankOpen = measured->second.first / float(measured->second.second);
                 auto const rateOf = [](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
                 {
-                    float const onMob = seen.threat > 0.0f ? seen.threat / ThreatSeenSec(seen) : 0.0f;
+                    float const onMob = seen.threat > 0.0f ? ThreatSeenRate(seen) : 0.0f;
                     bool const measuredHere =
                         seen.threat > 0.0f &&
                         getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
@@ -4396,7 +4431,11 @@ namespace Leader::Dungeon
                     Projection p;
                     auto const& mine = seenOn(mob, bot);
                     p.mine = mine.threat;
-                    p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                    // [lead560] its next GCD adds its rate's share or one cast's threat, whichever is more
+                    float burst = 0.0f;
+                    if (auto const measured = lead.threatBurst.find(guid); measured != lead.threatBurst.end())
+                        burst = measured->second;
+                    p.mineNext = mine.threat + std::max(rateOf(mine, freshRate) * HEADROOM_GCD_SEC, burst);
                     // [lead412] user 2026-11-02: the threat a running redirect (Misdirection / Tricks of the Trade,
                     // registered on the member's ThreatManager until it is spent) moves onto the tank is the tank's
                     if (auto const redirect = lead.redirectTo.find(guid);
