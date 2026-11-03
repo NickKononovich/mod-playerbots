@@ -28,6 +28,7 @@
 #include "AggressiveTargetValue.h"
 #include "ChooseTargetActions.h"
 #include "PullStrategy.h"
+#include "LeaderOrders.h"  // [lead682] Leader::LedBot
 #include "SafeZone.h"  // [lead9]
 #include "TerrainHazard.h"
 #include "Timer.h"
@@ -1183,6 +1184,16 @@ namespace
 
 bool TankLostHealerSightTrigger::IsActive()
 {
+    // [lead682] b218 rfc-h (8 runs, fight_breakdown): the tanks walked 67 s "step to healer sight" (5F 269 s / 1220
+    // s: the prot warrior charged, then stepped back 6-11 yd off its mobs, dragging them). In a led group the leader
+    // keeps the healer in heal reach and sight of where the tank fights (its "heal reach" MoveTo, HealReaches: range
+    // and line of sight) - the healer walks to the tank, the tank holds its fight; this second decider for the same
+    // fact is the leader's double decision (project rule: leader commands are final)
+    if (Leader::LedBot(bot))
+    {
+        _lostSinceMs = 0;
+        return false;
+    }
     if (!PlayerbotAI::IsTank(bot) || !bot->IsInCombat() || !botAI->IsInNonRaidDungeon())
     {
         _lostSinceMs = 0;
