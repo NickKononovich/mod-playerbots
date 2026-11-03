@@ -322,6 +322,7 @@ namespace Leader
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
         std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
+        std::string fightMoveWhy;                      // [lead909] its purpose (empty: away from a pack)
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
         float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
         float groupDps = 0.0f;  // [lead700] the estimated group dps the fight's seconds were judged by

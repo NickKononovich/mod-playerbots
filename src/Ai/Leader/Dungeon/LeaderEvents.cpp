@@ -2834,12 +2834,18 @@ namespace Leader::Dungeon
         }
         else if (lead.fightMoveTo)
         {
+            // [lead909] the fight's move to a blocked healer keeps its own purpose
+            std::string const moveWhy = lead.fightMoveWhy.empty()
+                                            ? std::string("hazard: the fight moves away from an unpulled pack")
+                                            : lead.fightMoveWhy;
             if (tank->GetExactDist(*lead.fightMoveTo) <= 2.0f)
                 lead.fightMoveTo.reset();
-            else if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, *lead.fightMoveTo, 2.0f,
-                                 "hazard: the fight moves away from an unpulled pack"))
-                LogFightDrag(run, tank, *lead.fightMoveTo, lead.meetPoint, "away from an unpulled pack");
+            else if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, *lead.fightMoveTo, 2.0f, moveWhy))
+                LogFightDrag(run, tank, *lead.fightMoveTo, lead.meetPoint,
+                             lead.fightMoveWhy.empty() ? "away from an unpulled pack" : "to the blocked healer");
         }
+        if (!lead.fightMoveTo)
+            lead.fightMoveWhy.clear();
         // [lead81] b124 rfc-h 167.8-182 s: Rtshaab pulled a Trogg 150 yd from the tank (no sight), the tank stood and
         // he died alone - a member a fight mob is on, beyond the tank's pick-up reach (its taunt's range, in sight):
         // the fight spot moves to it - the tank walks to the member (its walk checked) while the member runs to the
@@ -7405,7 +7411,61 @@ namespace Leader::Dungeon
                     // reaches dies for certain; a pack woken on the healer's walk is a fight the healed tank picks
                     // up. No refusal leaves the tank unhealed: the pack in the way of the healer's walk to the tank
                     // joins the fight (it blocks no walk then) and the walk is issued
+                    // [lead909] user 2026-11-03 (45): when the tank's walk to the healer is shorter than the healer's
+                    // way to it, the tank walks to the healer (taking its mobs along) - to the first point of its
+                    // route to the healer that the healer's heals reach; else the pack in the way joins (lead830)
+                    bool tankComes = false;
                     if (!issued && tank->IsAlive() && !tank->getAttackers().empty() &&
+                        std::find(out.begin(), out.end(), tank) != out.end() && !lead.fightMoveTo)
+                    {
+                        Position const healerAt = healer->GetPosition();
+                        Leader::RouteResult const way = Leader::Route(tank, healerAt);
+                        float tankWalk = -1.0f;
+                        Position toward = healerAt;
+                        if (way.found && way.complete && !way.points.empty())
+                        {
+                            float along = 0.0f;
+                            constexpr float STEP_YD = 3.0f;
+                            for (size_t i = 1; i < way.points.size() && tankWalk < 0.0f; ++i)
+                            {
+                                G3D::Vector3 const from = way.points[i - 1];
+                                G3D::Vector3 const leg = way.points[i] - from;
+                                float const length = leg.length();
+                                for (float step = 0.0f; step <= length && tankWalk < 0.0f; step += STEP_YD)
+                                {
+                                    G3D::Vector3 const at =
+                                        length > 0.0f ? from + leg * (std::min(step, length) / length) : from;
+                                    Position const point(at.x, at.y, at.z);
+                                    if (reaches(healerAt, point))
+                                    {
+                                        toward = point;
+                                        tankWalk = along + std::min(step, length);
+                                    }
+                                }
+                                along += length;
+                            }
+                        }
+                        float const healerWalk =
+                            Leader::WalkYd(healer, candidates.empty() ? tankAt : candidates.front().first);
+                        if (tankWalk >= 0.0f && tankWalk < healerWalk)
+                        {
+                            std::string const why = "the fight moves to the blocked healer " + healer->GetName();
+                            if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, toward, 2.0f, why))
+                            {
+                                tankComes = true;
+                                lead.fightMoveTo = toward;
+                                lead.fightMoveWhy = why;
+                                how = "the tank walks to the healer";
+                                LogFightDrag(run, tank, toward, lead.meetPoint, "to the blocked healer");
+                                LOG_INFO("playerbots",
+                                         "[lead909] {}: no heal reaches it under {} attackers; its walk to {} "
+                                         "({:.0f} yd) is shorter than the healer's ({:.0f} yd): the tank walks",
+                                         tank->GetName(), tank->getAttackers().size(), healer->GetName(), tankWalk,
+                                         healerWalk);
+                            }
+                        }
+                    }
+                    if (!issued && !tankComes && tank->IsAlive() && !tank->getAttackers().empty() &&
                         std::find(out.begin(), out.end(), tank) != out.end())
                     {
                         // the best ring spot (out of the tank's melee pile), else the tank's own spot
