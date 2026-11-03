@@ -2684,6 +2684,7 @@ namespace TestHarness
                                                             .Num("maxHp", boss.engageMaxHp)
                                                             .Num("groupLevel", party.level)
                                                             .Real("expectedGroupDps", ExpectedGroupDps(party)));
+                        LogBossPullState(party, fought, boss.name);  // [harness20]
                     }
                 }
 

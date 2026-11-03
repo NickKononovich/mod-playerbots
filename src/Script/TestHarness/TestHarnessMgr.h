@@ -646,6 +646,8 @@ namespace TestHarness
         void LogPull(Party& party, std::vector<Player*> const& players, bool boss, std::string const& bossName);
         void LogAttemptEnd(Party& party, BossTrack& boss, std::string const& result);
         std::string PullMembersJson(Party& party);
+        // [harness20] each member's stats and auras and the boss's auras at a boss engage (boss_pull_state)
+        void LogBossPullState(Party& party, Unit* boss, std::string const& bossName);
         // Who started the fight (StatsRegistry::Opener): pull_start, and again in pull_end with every entry.
         std::string PullOpenerJson(Party& party, std::vector<Player*> const& players, bool atStart);
         void LogPullStart(Party& party, std::vector<Player*> const& players);

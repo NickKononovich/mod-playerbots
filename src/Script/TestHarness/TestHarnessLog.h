@@ -57,7 +57,16 @@ namespace TestHarness
         std::map<uint32, uint32> itemUses;  // item entry -> uses (potions, flasks, food, healthstones)
         std::map<uint32, SpellCounters> spells;  // spell id -> casts / amounts
         uint64 busyMs = 0;  // in-combat casts x max(cast time, GCD, channel duration): GCD-utilisation estimate
+        // [harness20] power the member took (UnitScript::OnPowerGain: what the bar took, capped at its max), keyed by
+        // PowerGainKey(power, source, spell id): rage from damage dealt / taken, every energize spell and tick
+        std::map<uint32, uint64> powerGains;
     };
+
+    // [harness20] power (4 bits) | PowerGainSource (4 bits) | spell id (24 bits)
+    inline uint32 PowerGainKey(uint8 power, uint8 source, uint32 spellId)
+    {
+        return (uint32(power & 0xF) << 28) | (uint32(source & 0xF) << 24) | (spellId & 0xFFFFFF);
+    }
 
     struct DeathNote
     {
@@ -171,6 +180,7 @@ namespace TestHarness
 
         void OnDamage(Unit* attacker, Unit* victim, uint32 damage);
         void OnHeal(Unit* healer, Unit* target, uint32 gain);
+        void OnPowerGain(Unit* unit, uint8 power, int32 gain, uint8 source, uint32 spellId);  // [harness20]
         // [b31_harness] Called from the end of Spell::_cast (AllSpellScript OnSpellCast, after SMSG_SPELL_GO), so
         // only casts that went off count. castItemEntry: the item the cast started from (Spell::m_CastItem is
         // already cleared there for a consumed item, the script stashes it at the start of _cast).

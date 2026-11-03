@@ -82,8 +82,14 @@ public:
         : UnitScript("PlayerbotsTestHarnessUnitScript", true,
                      {UNITHOOK_ON_DAMAGE, UNITHOOK_ON_HEAL, UNITHOOK_ON_UNIT_DEATH,
                       UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
-                      UNITHOOK_MODIFY_HEAL_RECEIVED, UNITHOOK_ON_UNIT_ENTER_COMBAT})
+                      UNITHOOK_MODIFY_HEAL_RECEIVED, UNITHOOK_ON_UNIT_ENTER_COMBAT, UNITHOOK_ON_POWER_GAIN})
     {
+    }
+
+    // [harness20] the member's power per source (rage from damage dealt / taken, energize spells and ticks)
+    void OnPowerGain(Unit* unit, uint8 power, int32 gain, uint8 source, uint32 spellId) override
+    {
+        TestHarness::StatsRegistry::Instance().OnPowerGain(unit, power, gain, source, spellId);
     }
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override

@@ -835,6 +835,19 @@ namespace TestHarness
             _counters[source->GetGUID()].healingDone += gain;
     }
 
+    // [harness20] b218 5H bear Rtdruae at Taragaman spent ~490 rage in 60 s (Maul 17, Mangle 12, Lacerate 9) where the
+    // sim's income at the same 94 dtps is ~400: each source of the member's own power counted (the member, not its
+    // pet - a pet's focus / energy is its own bar)
+    void StatsRegistry::OnPowerGain(Unit* unit, uint8 power, int32 gain, uint8 source, uint32 spellId)
+    {
+        if (gain <= 0 || !Active() || !unit || !unit->IsPlayer())
+            return;
+
+        std::lock_guard<std::mutex> lock(_lock);
+        if (RunOfMember(unit->GetGUID()))
+            _counters[unit->GetGUID()].powerGains[PowerGainKey(power, source, spellId)] += uint64(gain);
+    }
+
     void StatsRegistry::OnSpellCast(Player* player, Spell* spell, uint32 castItemEntry)
     {
         if (!Active() || !player || !spell || !spell->m_spellInfo)

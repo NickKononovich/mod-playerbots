@@ -28,6 +28,7 @@
 #include "Playerbots.h"
 #include "PullStrategy.h"
 #include "RouteSearch.h"  // [lead144] NoteHeightGap
+#include "ScriptMgr.h"  // [harness20] PowerGainSource
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -721,11 +722,147 @@ namespace TestHarness
                           .Num("n", row.casts).Num("dmg", int64(row.damage)).Num("heal", int64(row.healing)).Build());
         }
 
+        // [harness20] power per source in the window: {"power", "src" (spell / dealt / taken), "id", "name", "amount"}
+        // in the bar's own units (rage and runic power / 10, as the client shows them)
+        JsonArray powerGains;
+        for (auto const& [key, amount] : now.powerGains)
+        {
+            auto itr = start.powerGains.find(key);
+            uint64 const gained = amount - std::min(amount, itr == start.powerGains.end() ? uint64(0) : itr->second);
+            if (!gained)
+                continue;
+            uint8 const power = uint8(key >> 28);
+            uint8 const source = uint8((key >> 24) & 0xF);
+            uint32 const spellId = key & 0xFFFFFF;
+            double const shown = (power == POWER_RAGE || power == POWER_RUNIC_POWER) ? double(gained) / 10.0
+                                                                                      : double(gained);
+            SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+            powerGains.Raw(JsonObject().Num("power", power)
+                               .Str("src", source == POWER_GAIN_SOURCE_DAMAGE_DONE    ? "dealt"
+                                           : source == POWER_GAIN_SOURCE_DAMAGE_TAKEN ? "taken"
+                                                                                      : "spell")
+                               .Num("id", spellId)
+                               .Str("name", info && info->SpellName[LOCALE_enUS] ? info->SpellName[LOCALE_enUS] : "")
+                               .Real("amount", shown).Build());
+        }
+
         uint64 const busyMs = now.busyMs - std::min(now.busyMs, start.busyMs);
         double const busyPct = combatMs ? std::min(100.0, 100.0 * double(busyMs) / double(combatMs)) : 0.0;
         return JsonObject().Real("activeSec", seconds).Real("activeDps", double(damage) * perSecond)
             .Real("activeHps", double(healing) * perSecond).Real("activeDtps", double(taken) * perSecond)
-            .Real("busyPct", busyPct).Raw("casts", casts.Build());
+            .Real("busyPct", busyPct).Raw("casts", casts.Build())
+            .Raw("powerGains", powerGains.Build());
+    }
+
+    // [harness20] An aura on a unit: {"id", "name", "stacks", "caster" (name; "self"), "casterEntry" (a totem /
+    // pet creature), "owner" (its owner), "passive"}.
+    static std::string AuraJson(Unit const* unit, Aura const* aura)
+    {
+        SpellInfo const* info = aura->GetSpellInfo();
+        JsonObject out;
+        out.Num("id", info->Id).Str("name", info->SpellName[LOCALE_enUS] ? info->SpellName[LOCALE_enUS] : "")
+            .Num("stacks", std::max<int64>(aura->GetStackAmount(), aura->GetCharges()));
+        ObjectGuid const caster = aura->GetCasterGUID();
+        if (caster == unit->GetGUID())
+            out.Str("caster", "self");
+        else if (Unit* source = ObjectAccessor::GetUnit(*unit, caster))
+        {
+            out.Str("caster", source->GetName());
+            if (Creature* creature = source->ToCreature())
+            {
+                out.Num("casterEntry", creature->GetEntry());
+                if (Unit* owner = creature->GetOwner())
+                    out.Str("owner", owner->GetName());
+            }
+        }
+        else
+            out.Str("caster", caster.IsEmpty() ? "" : "gone");
+        return out.Bool("passive", info->IsPassive()).Build();
+    }
+
+    // [harness20] b218 sim audit: per cast Frostbolt (5A Rtmagaa) +8-15 %, prot warrior Heroic Strike / Devastate /
+    // Revenge +14-19 % (Shield Slam -21 %), Obliterate +6-33 % over the calibrated sim - the member's attack / spell
+    // power, crit, haste and weapon damage in the game and the buffs it fights with (totems, other members' talent
+    // auras: Improved Icy Talons, Sanctified Retribution, Abomination's Might...) were inferred by simpct, never
+    // logged. At the boss engage: each member's stats, every aura on it but its own passives, and the boss's auras.
+    void TestHarnessMgr::LogBossPullState(Party& party, Unit* boss, std::string const& bossName)
+    {
+        JsonArray members;
+        for (Member const& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot)
+                continue;
+
+            JsonArray auras;
+            for (auto const& [id, app] : bot->GetAppliedAuras())
+            {
+                Aura const* aura = app->GetBase();
+                if (aura->GetSpellInfo()->IsPassive() && aura->GetCasterGUID() == bot->GetGUID())
+                    continue;
+                auras.Raw(AuraJson(bot, aura));
+            }
+
+            JsonArray spellPower;  // PLAYER_FIELD_MOD_DAMAGE_DONE_POS - _NEG per school (holy .. arcane)
+            JsonArray spellCrit;   // PLAYER_SPELL_CRIT_PERCENTAGE1 per school (holy .. arcane)
+            JsonArray damagePct;   // PLAYER_FIELD_MOD_DAMAGE_DONE_PCT per school (physical .. arcane)
+            for (uint8 school = SPELL_SCHOOL_NORMAL; school < MAX_SPELL_SCHOOL; ++school)
+            {
+                if (school != SPELL_SCHOOL_NORMAL)
+                {
+                    spellPower.Num(int64(bot->GetInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + school)) -
+                                   int64(bot->GetInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + school)));
+                    spellCrit.Raw(Acore::StringFormat("{:.2f}",
+                                                      bot->GetFloatValue(PLAYER_SPELL_CRIT_PERCENTAGE1 + school)));
+                }
+                damagePct.Raw(Acore::StringFormat("{:.4f}",
+                                                  bot->GetFloatValue(PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + school)));
+            }
+
+            JsonArray baseStats;  // strength, agility, stamina, intellect, spirit
+            for (uint8 stat = STAT_STRENGTH; stat < MAX_STATS; ++stat)
+                baseStats.Num(int64(bot->GetStat(Stats(stat))));
+
+            Powers const power = bot->getPowerType();
+            members.Raw(JsonObject().Str("name", bot->GetName())
+                            .Raw("stats", baseStats.Build())
+                            .Num("ap", int64(bot->GetTotalAttackPowerValue(BASE_ATTACK)))
+                            .Num("rap", int64(bot->GetTotalAttackPowerValue(RANGED_ATTACK)))
+                            .Raw("sp", spellPower.Build())
+                            .Num("heal", bot->GetInt32Value(PLAYER_FIELD_MOD_HEALING_DONE_POS))
+                            .Real("crit", bot->GetFloatValue(PLAYER_CRIT_PERCENTAGE))
+                            .Real("rangedCrit", bot->GetFloatValue(PLAYER_RANGED_CRIT_PERCENTAGE))
+                            .Raw("spellCrit", spellCrit.Build())
+                            .Real("meleeHastePct", bot->GetRatingBonusValue(CR_HASTE_MELEE))
+                            .Real("spellHastePct", bot->GetRatingBonusValue(CR_HASTE_SPELL))
+                            .Real("meleeHitPct", bot->GetRatingBonusValue(CR_HIT_MELEE))
+                            .Real("spellHitPct", bot->GetRatingBonusValue(CR_HIT_SPELL))
+                            .Num("expertise", bot->GetUInt32Value(PLAYER_EXPERTISE))
+                            .Real("arpPct", bot->GetRatingBonusValue(CR_ARMOR_PENETRATION))
+                            .Num("mhSpeedMs", bot->GetAttackTime(BASE_ATTACK))
+                            .Num("ohSpeedMs", bot->GetAttackTime(OFF_ATTACK))
+                            .Real("mhMin", bot->GetFloatValue(UNIT_FIELD_MINDAMAGE))
+                            .Real("mhMax", bot->GetFloatValue(UNIT_FIELD_MAXDAMAGE))
+                            .Real("ohMin", bot->GetFloatValue(UNIT_FIELD_MINOFFHANDDAMAGE))
+                            .Real("ohMax", bot->GetFloatValue(UNIT_FIELD_MAXOFFHANDDAMAGE))
+                            .Raw("damageDonePct", damagePct.Build())
+                            .Num("armor", bot->GetArmor())
+                            .Num("powerType", power).Num("power", bot->GetPower(power))
+                            .Num("maxPower", bot->GetMaxPower(power))
+                            .Num("form", bot->GetShapeshiftForm())
+                            .Raw("auras", auras.Build()).Build());
+        }
+
+        JsonArray bossAuras;
+        if (boss)
+            for (auto const& [id, app] : boss->GetAppliedAuras())
+                bossAuras.Raw(AuraJson(boss, app->GetBase()));
+
+        LogEvent(party, "boss_pull_state", JsonObject().Str("boss", bossName)
+                                               .Num("bossArmor", boss ? int64(boss->GetArmor()) : 0)
+                                               .Num("bossLevel", boss ? int64(boss->GetLevel()) : 0)
+                                               .Raw("bossAuras", bossAuras.Build())
+                                               .Raw("members", members.Build()));
     }
 
     std::string TestHarnessMgr::PullMembersJson(Party& party)
