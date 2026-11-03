@@ -24,10 +24,18 @@ inline constexpr uint32 SPELL_TREE_OF_LIFE = 33891;
 inline constexpr uint32 FERAL_DOT_REFRESH_WINDOW_MS = 1 * IN_MILLISECONDS;
 inline constexpr uint32 SAVAGE_ROAR_REFRESH_WINDOW_MS = 2 * IN_MILLISECONDS;
 inline constexpr int32 LIFEBLOOM_REFRESH_WINDOW_MS = 2 * IN_MILLISECONDS;
-// Rip (12 s, bleed) only beats Ferocious Bite when the target lives through most of its ticks
-inline constexpr float RIP_MIN_TARGET_LIFETIME = 12.0f;
+// [rot240] wowsims feral rotation.go endThresh (10 s): Rip only while the fight lasts >= 10 s more (ripNow), Ferocious
+// Bite at 5 points once it lasts less (biteAtEnd). Rawr 2.3.23 models steady state only.
+inline constexpr float RIP_MIN_TARGET_LIFETIME = 10.0f;
 
 class PlayerbotAI;
+class Unit;
+
+// [rot240] True when `target` lives RIP_MIN_TARGET_LIFETIME more by ExpectedLifetime (its observed health loss, the
+// group's calibrated dps before that) - wowsims' simTimeRemain >= endThresh. The health over the gear model's
+// "estimated group dps" was off both ways: b218 rfc-h 5H Rtdruaf Bite instead of Rip on Jergosh at 871 s with 17 s of
+// the fight left (Rip 1 vs sim 1.9), Rip on Bazzalan at 1086 s with 9 s left.
+bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target);
 
 class MarkOfTheWildOnPartyTrigger : public BuffOnPartyTrigger
 {
@@ -587,8 +595,9 @@ public:
         if (cp < 5)
             return false;
 
-        // Dying target: a new Rip would not tick out, so the 5 points go into Ferocious Bite instead
-        if (target->GetHealth() / AI_VALUE(float, "estimated group dps") < RIP_MIN_TARGET_LIFETIME)
+        // Dying target: a new Rip would not tick out, so the 5 points go into Ferocious Bite instead ([rot240] by
+        // the target's measured lifetime, CatRipTicksOut)
+        if (!CatRipTicksOut(botAI, target))
             return true;
 
         // [b31_sd] wowsims biteTime: not at high energy (the extra energy would go into Bite's damage conversion

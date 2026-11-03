@@ -632,3 +632,8 @@ bool FerociousBiteExecuteTrigger::IsActive()
         ComboFinishHorizon(botAI, bot, CatIsBehind(bot, target) ? "shred" : "mangle (cat)", "ferocious bite");
     return horizon > 0.0f && ExpectedLifetime(botAI, target) < horizon;
 }
+
+bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target)
+{
+    return target && ExpectedLifetime(botAI, target) >= RIP_MIN_TARGET_LIFETIME;  // [rot240]
+}

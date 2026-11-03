@@ -166,10 +166,13 @@ public:
 class CastRipAction : public CastMeleeDebuffSpellAction
 {
 public:
-    CastRipAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "rip", true, RIP_MIN_TARGET_LIFETIME)
+    // [rot240] the lifetime gate is CatRipTicksOut (measured lifetime), not the base health / gear-model dps one
+    CastRipAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "rip", true, 0.0f)
     {
         beforeDuration = FERAL_DOT_REFRESH_WINDOW_MS;
     }
+
+    bool isUseful() override { return CastMeleeDebuffSpellAction::isUseful() && CatRipTicksOut(botAI, GetTarget()); }
 };
 
 class CastShredAction : public CastMeleeSpellAction

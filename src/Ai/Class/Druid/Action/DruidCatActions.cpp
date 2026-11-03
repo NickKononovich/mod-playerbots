@@ -65,8 +65,7 @@ bool CatBuilderStarvesFinisher(PlayerbotAI* botAI, Player* bot, std::string cons
     if (combo >= 5)
     {
         Aura* rip = botAI->GetAura("rip", target, true);
-        float const dps = botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get();
-        if ((!rip || rip->GetDuration() < CAT_FINISHER_DUE_MS) && target->GetHealth() / dps >= RIP_MIN_TARGET_LIFETIME)
+        if ((!rip || rip->GetDuration() < CAT_FINISHER_DUE_MS) && CatRipTicksOut(botAI, target))  // [rot240]
             reserve = std::max(reserve, CatSpellEnergyCost(botAI, bot, "rip"));
     }
 
