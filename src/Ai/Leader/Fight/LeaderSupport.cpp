@@ -924,6 +924,139 @@ uint32 ItemUseCooldownMs(Player* bot, uint32 entry)
     return left;
 }
 
+// [lead975] b228 rfc-h 5E-13 (20261103-224151) 276.3 s: the buff step's three Blessing of Might orders for Rtpalac
+// overwrote each other in its one External slot, and the last one, set once from the harness tick, ended with the
+// next leader tick (EndTick drops an External the tick does not assert) - nothing was cast. The step's queue
+// (TickBuffing, Support::buffQueue) is the leader's here, every leader tick: a caster holds one buff order at a time,
+// asserted every tick until the buff is on its target (cast), the caster reports it cannot cast it (failed: the step
+// gives it up with the reason) or the step no longer needs it; then the caster's next queued order is issued. An
+// order whose mana the caster lacks now is not issued yet: its cast check would refuse it (the paladin at 1 %)
+void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, LogFn const& logEvent)
+{
+    DungeonLeaderState::Support& st = group.State().support;
+    GroupRouteState const& route = group.Route();
+    if (route.buffStep != 1 || st.buffQueue.empty())
+    {
+        st.buffTold.clear();
+        st.buffOrderWork.clear();
+        return;
+    }
+    auto const memberOf = [&members](ObjectGuid guid) -> Player*
+    {
+        for (Player* bot : members)
+            if (bot->GetGUID() == guid)
+                return bot;
+        return nullptr;
+    };
+    using BuffKey = DungeonLeaderState::Support::BuffKey;
+    auto const queued = [&st](BuffKey const& key)
+    {
+        for (DungeonLeaderState::Support::BuffOrder const& one : st.buffQueue)
+            if (BuffKey{one.caster, one.spell, one.target} == key)
+                return true;
+        return false;
+    };
+    auto const ended = [&](DungeonLeaderState::Support::BuffOrder const& told, std::string const& how)
+    {
+        LOG_INFO("playerbots", "[lead975] buff_order_end: {}: {} ({}, {})", told.what, how, group.Run().runId,
+                 route.buffReason);
+    };
+    // the orders the casters hold: cast, failed, no longer needed - or still standing
+    for (auto it = st.buffTold.begin(); it != st.buffTold.end();)
+    {
+        DungeonLeaderState::Support::BuffOrder const& told = it->second;
+        BuffKey const key{told.caster, told.spell, told.target};
+        Player* caster = memberOf(told.caster);
+        Unit* target = caster ? ObjectAccessor::GetUnit(*caster, told.target) : nullptr;
+        std::string failed;
+        if (!caster)
+            failed = "the caster is no living member any more";
+        else
+            Leader::Events::TakeExternalFailed(told.caster, told.spell, failed);
+        if (!failed.empty())
+        {
+            st.buffFailed[key] = failed;
+            ended(told, "failed: " + failed);
+            it = st.buffTold.erase(it);
+            continue;
+        }
+        if (target && target->HasAura(told.spell, told.caster))
+        {
+            ++st.buffCast;
+            ended(told, "cast");
+            it = st.buffTold.erase(it);
+            continue;
+        }
+        if (!queued(key))
+        {
+            ended(told, "no longer needed (the buff is on from another source, or the member left the pass)");
+            it = st.buffTold.erase(it);
+            continue;
+        }
+        ++it;
+    }
+    // one order per caster: the one it holds (asserted again: a tick asserts every command it wants), else its next
+    std::string work;
+    std::set<ObjectGuid> busy;
+    for (auto const& [casterGuid, told] : st.buffTold)
+    {
+        Leader::Events::SetExternal(casterGuid, told.spell, told.target);
+        busy.insert(casterGuid);
+        work += (work.empty() ? "" : ", ") + told.what;
+    }
+    for (DungeonLeaderState::Support::BuffOrder const& order : st.buffQueue)
+    {
+        BuffKey const key{order.caster, order.spell, order.target};
+        if (busy.count(order.caster) || st.buffFailed.count(key))
+            continue;
+        Player* caster = memberOf(order.caster);
+        if (!caster)
+        {
+            st.buffFailed[key] = "the caster is no living member any more";
+            continue;
+        }
+        busy.insert(order.caster);
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(order.spell);
+        if (!info)
+        {
+            st.buffFailed[key] = "no spell data";
+            continue;
+        }
+        // mana comes back out of a fight by itself (the game's regeneration); a rage cost does not: that order is
+        // issued and the caster's cast check reports it
+        if (info->PowerType == POWER_MANA && !Affords(caster, info))
+        {
+            work += (work.empty() ? "" : ", ") + order.what + " (its mana for the cast)";
+            continue;
+        }
+        std::string stale;
+        Leader::Events::TakeExternalFailed(order.caster, order.spell, stale);  // a report of an earlier order
+        bool const changed = Leader::Events::SetExternal(order.caster, order.spell, order.target);
+        Leader::MemberEvents held;
+        if (!Leader::Events::Get(order.caster, held) || held.externalSpell != order.spell ||
+            held.externalTarget != order.target)
+        {
+            work += (work.empty() ? "" : ", ") + order.what + " (its External holds another order)";
+            continue;
+        }
+        st.buffTold[order.caster] = order;
+        st.buffIssuedKeys.insert(key);
+        work += (work.empty() ? "" : ", ") + order.what;
+        if (changed)
+        {
+            Unit* on = ObjectAccessor::GetUnit(*caster, order.target);
+            logEvent(caster, "External",
+                     JsonObject()
+                         .Num("spell", order.spell)
+                         .Str("on", on ? on->GetName() : "-")
+                         .Str("why", "the buff pass: " + order.what));
+            LOG_INFO("playerbots", "[lead975] buff_order: {} ({} queued) ({}, {})", order.what, st.buffQueue.size(),
+                     group.Run().runId, route.buffReason);
+        }
+    }
+    st.buffOrderWork = work;
+}
+
 // [lead403] [lead405] The buff pass's support (while the pass runs; it ends only once this is done): the soulstone
 // before a boss on the healer that raises the others (else the healer, else the tank); the Ritual of Souls when a
 // member lacks a healthstone and no Soulwell stands; the two clicks a ritual's portal needs (the members nearest to
@@ -938,10 +1071,13 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
     {
         st.buffWork.clear();
         st.wellClose.clear();
+        st.buffTold.clear();  // [lead975] a fight ends the standing buff orders (no tick asserts them)
+        st.buffOrderWork.clear();
         return;
     }
     std::vector<Player*> const members = Everyone(seats, tank);
     std::vector<std::string> verdicts;
+    TickBuffOrders(group, members, logEvent);  // [lead975]
 
     // the soulstone, once per pass before a boss
     uint32 const pass = route.buffSinceMs ? route.buffSinceMs : 1;

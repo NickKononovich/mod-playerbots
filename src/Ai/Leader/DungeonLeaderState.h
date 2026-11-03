@@ -20,6 +20,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>  // [lead975]
 #include <utility>
 #include <vector>
 
@@ -541,6 +542,24 @@ namespace Leader
             std::map<ObjectGuid, std::string> battleResLogged;  // the last battle resurrection verdict per dead
             std::string buffWork;  // what the soulwell / soulstone orders still do (the buff pass waits for it)
             std::string supportLogged;  // the last buff-pass support verdict logged
+            // [lead975] the buff pass's buff orders (step 1): TickBuffing queues every missing buff a caster gives
+            // (each harness tick), the leader tick (TickBuffPass) asserts one order per caster at a time and takes
+            // the next once the buff is on or the caster reported it cannot cast it
+            struct BuffOrder
+            {
+                ObjectGuid caster;
+                uint32 spell = 0;
+                ObjectGuid target;
+                std::string what;  // "<caster> <spell name> on <target>"
+            };
+            using BuffKey = std::tuple<ObjectGuid, uint32, ObjectGuid>;  // caster, spell, target
+            std::vector<BuffOrder> buffQueue;            // the orders the step still needs, in the step's order
+            uint32 buffQueuePass = 0;                    // the buff pass (its start) the queue belongs to
+            std::map<ObjectGuid, BuffOrder> buffTold;    // caster -> the order it holds now (one at a time)
+            std::map<BuffKey, std::string> buffFailed;   // the casters' reports in this pass: the buff is not given
+            std::set<BuffKey> buffIssuedKeys;            // every order issued in this pass
+            uint32 buffCast = 0;                         // orders that ended with the buff on its target
+            std::string buffOrderWork;                   // the orders standing / waiting (the step waits for it)
         };
         Support support;
     };

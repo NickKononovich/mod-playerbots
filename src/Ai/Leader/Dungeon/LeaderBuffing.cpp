@@ -240,11 +240,13 @@ namespace Leader::Dungeon
         // "<member> <buff>, ..." for every buff the group can give that a member lacks; empty: all present. A buff
         // nobody can give (no caster of its class, the casters out of range, no reagent) is not missing.
         // [lead165] a buff the leader orders: `caster` casts `spell` on `target`
+        // [lead976] spell 0: a missing buff no caster has a rank of (nobody is ordered to give it)
         struct BuffOrder
         {
             ObjectGuid caster;
             uint32 spell = 0;
             ObjectGuid target;
+            std::string what;  // [lead975] "<caster> <spell name> on <target>" ("<target> <buff>" for spell 0)
         };
 
         std::string MissingGivableBuffs(LeaderGroup& group, std::vector<Player*> const& players, Player* leader,
@@ -290,13 +292,22 @@ namespace Leader::Dungeon
                     {
                         missing += (missing.empty() ? "" : ", ") + bot->GetName() + " " + def.label;
                         if (orders && giver)
+                        {
                             if (uint32 const spell = KnownRank(giver, def.spells))
                             {
                                 // a buff the caster spreads round itself (Horn of Winter) is cast on itself
                                 SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
                                 bool const self = info && !info->NeedsExplicitUnitTarget();
-                                orders->push_back({giver->GetGUID(), spell, self ? giver->GetGUID() : bot->GetGUID()});
+                                Player* on = self ? giver : bot;
+                                orders->push_back({giver->GetGUID(), spell, on->GetGUID(),
+                                                   giver->GetName() + " " +
+                                                       (info ? std::string(info->SpellName[LOCALE_enUS]) : "?") +
+                                                       " (" + std::to_string(spell) + ") on " + on->GetName()});
                             }
+                            else  // [lead976] no order for it: the buff would wait on a member's own (held) action
+                                orders->push_back({giver->GetGUID(), 0, bot->GetGUID(),
+                                                   bot->GetName() + " " + def.label});
+                        }
                     }
                 }
             }
@@ -347,7 +358,7 @@ namespace Leader::Dungeon
             std::string waitedFor;
             bool consumableUsed = false;  // step 1 -> 2: a flask was used; step 2 -> 3: food was used
             std::set<ObjectGuid> fed;     // step 2 -> 3: the members given food
-            std::set<std::pair<ObjectGuid, uint32>> ordered;  // [lead165] step 1: the buffs the leader ordered
+            bool ordering = false;  // [lead165] [lead975] step 1: the leader orders the missing buffs
         };
         std::unordered_map<uint32, BuffWait> buffWaits;  // per instance, world thread only
     }
@@ -420,22 +431,61 @@ namespace Leader::Dungeon
                     // (run start and after its resurrection: "every caster's buff pass ended, missing: Rtdekab Mark
                     // of the Wild") - the pass waited for the casters' own triggers. When every caster's own pass has
                     // ended with a buff still missing that one of them can give, the leader orders it (its External:
-                    // the caster's highest known rank on the member), once per member and spell in this step; the
-                    // step waits while an order stands
+                    // the caster's highest known rank on the member); the step waits while an order stands
+                    // [lead975] b228 rfc-h 5E-13 (20261103-224151) 276.3 s: the three Blessing of Might orders of
+                    // Rtpalac (on Rtpriac, Rtlocab, Rthunab) went into its one External slot in the same tick - each
+                    // replaced the one before (two leader_contradiction lines), and the last, set from the harness
+                    // tick and never asserted again, ended with the next leader tick (EndTick drops what a tick does
+                    // not assert) while the paladin stood at 1 % mana: none was cast, and none was issued again ("once
+                    // per member and spell"). The step queues its orders here (Support::buffQueue); the leader tick
+                    // asserts one per caster at a time, every tick, and takes the next once the buff is on or the
+                    // caster reported it cannot cast it (TickBuffPass). The step waits while an order is queued
+                    DungeonLeaderState::Support& orderState = group.State().support;
+                    uint32 const passKey = route.buffSinceMs ? route.buffSinceMs : 1;
+                    if (orderState.buffQueuePass != passKey)
+                    {
+                        orderState.buffQueuePass = passKey;
+                        orderState.buffQueue.clear();
+                        orderState.buffTold.clear();
+                        orderState.buffFailed.clear();
+                        orderState.buffIssuedKeys.clear();
+                        orderState.buffCast = 0;
+                        orderState.buffOrderWork.clear();
+                    }
                     if (workers.empty() && !missing.empty())
+                        wait.ordering = true;
+                    orderState.buffQueue.clear();
+                    std::string failed;    // [lead975] the missing buffs a caster reported it cannot cast
+                    std::string unordered;  // [lead976] the missing buffs no order gives
+                    std::set<DungeonLeaderState::Support::BuffKey> failedListed;
+                    if (wait.ordering)
                         for (BuffOrder const& order : orders)
                         {
-                            if (!wait.ordered.insert({order.target, order.spell}).second)
+                            if (!order.spell)
+                            {
+                                unordered += (unordered.empty() ? "" : ", ") + order.what;
                                 continue;
-                            if (Leader::Events::SetExternal(order.caster, order.spell, order.target))
-                                LOG_INFO("playerbots", "[lead165] buff_order: {} casts {} on {} ({}, {})",
-                                         order.caster.ToString(), order.spell, order.target.ToString(),
-                                         group.Run().runId, route.buffReason);
+                            }
+                            DungeonLeaderState::Support::BuffKey const key{order.caster, order.spell, order.target};
+                            if (auto const report = orderState.buffFailed.find(key);
+                                report != orderState.buffFailed.end())
+                            {
+                                if (failedListed.insert(key).second)
+                                    failed += (failed.empty() ? "" : ", ") + order.what + " (" + report->second + ")";
+                                continue;
+                            }
+                            bool queued = false;
+                            for (DungeonLeaderState::Support::BuffOrder const& one : orderState.buffQueue)
+                                queued |= one.caster == order.caster && one.spell == order.spell &&
+                                          one.target == order.target;
+                            if (!queued)
+                                orderState.buffQueue.push_back({order.caster, order.spell, order.target, order.what});
                         }
-                    for (BuffOrder const& order : orders)
-                        if (Leader::MemberEvents events;
-                            Leader::Events::Get(order.caster, events) && events.externalSpell == order.spell)
-                            workers += (workers.empty() ? "" : ", ") + std::string("a buff order");
+                    if (!orderState.buffQueue.empty())
+                        workers += (workers.empty() ? "" : ", ") +
+                                   (orderState.buffOrderWork.empty()
+                                        ? std::to_string(orderState.buffQueue.size()) + " buff order(s) queued"
+                                        : "buff orders: " + orderState.buffOrderWork);
                     // [lead403] [lead405] the leader's soulstone / Ritual of Souls / Soulwell orders still work
                     std::string const support = Leader::Support::BuffPassWork(group);
                     if (!support.empty())
@@ -454,16 +504,31 @@ namespace Leader::Dungeon
                         wait.waitedFor.clear();
                     if (why.empty())
                         break;
-                    // [lead165] the step's buff orders end with it (an External stands until replaced: no recast)
-                    for (Player* bot : players)
-                        if (Leader::MemberEvents events; Leader::Events::Get(bot->GetGUID(), events) &&
-                                                         events.externalSpell)
-                            for (auto const& ordered : wait.ordered)
-                                if (ordered.second == events.externalSpell)
-                                {
-                                    Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
-                                    break;
-                                }
+                    // [lead975] the step's buff orders end with it: the queue empties, the leader tick no longer
+                    // asserts them (EndTick drops an External a tick does not assert)
+                    if (!failed.empty())
+                        why += "; failed: " + failed;
+                    if (!unordered.empty())
+                        why += "; no order: " + unordered;
+                    if (!orderState.buffIssuedKeys.empty() || !unordered.empty())
+                    {
+                        LOG_INFO("playerbots",
+                                 "[lead975] buff_orders: {} issued, {} cast, {} failed{}{} ({}, {})",
+                                 orderState.buffIssuedKeys.size(), orderState.buffCast, orderState.buffFailed.size(),
+                                 failed.empty() ? std::string() : ": " + failed,
+                                 unordered.empty() ? std::string() : "; [lead976] no order: " + unordered,
+                                 group.Run().runId, route.buffReason);
+                        group.LogEvent("buff_orders", JsonObject()
+                                                          .Num("issued", int64(orderState.buffIssuedKeys.size()))
+                                                          .Num("cast", orderState.buffCast)
+                                                          .Num("failed", int64(orderState.buffFailed.size()))
+                                                          .Str("failures", failed)
+                                                          .Str("unordered", unordered)
+                                                          .Str("reason", route.buffReason));
+                    }
+                    orderState.buffQueue.clear();
+                    orderState.buffTold.clear();
+                    orderState.buffOrderWork.clear();
                     route.buffEndMissing = missing;  // [lead775] what this pass could not give
                     stepDone(2, why);
                     for (Player* bot : players)
