@@ -973,7 +973,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             // the threat headroom, moved and waited for the first hit. On a boss it runs its rotation the whole fight
             // (wowsims): before a boss is measured its rate per second it acted, when higher. Not a healer's: it
             // casts as the fight's damage asks (its heal term below), not a rotation
-            if (!PlayerbotAI::IsHeal(bot) && bossManaRate.find(key) == bossManaRate.end())
+            // [lead563] b214 rfc-h 5H: Oggleflint's line read the fire mage's acting rate (1.18 %/s), it ran dry there
+            // (Frostbolt, the wand: 1102 of the sim's 1581 Fireball DPS) and that starved fight became its rate
+            // "measured on bosses" (0.70 %/s): Taragaman's line was 17 % for 102 s, the trash Evocation verdict saw
+            // no boss short of mana from a full pool and spent it at 514 s (back at 754 s, the fight ended at 753 s),
+            // the mage came at 17 % and ran dry again (Taragaman 61 % of wowsims). A boss rate measured while the
+            // member could not cast is below what its rotation spends: the acting rate holds when higher
+            if (!PlayerbotAI::IsHeal(bot))
                 if (auto const acting = actingManaRate.find(key);
                     acting != actingManaRate.end() && acting->second > rate)
                 {
@@ -1056,8 +1062,15 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 float const memberRate = DrinkPctPerSec(member);
                 if (memberRate <= 0.0f)
                     continue;
-                float const sec =
-                    std::max(OwnManaLine(member) - member->GetPowerPct(POWER_MANA), 0.0f) / memberRate;
+                // [lead562] b214 rfc-h 5H 288-297.7 s: before Oggleflint the group waited 9 s for the fire mage's
+                // boss line ("Rtmagad at 28 % mana (needs 70 %)") while the MM hunter, at 17 %, counted the mage's
+                // trash line (34 %: ~2 s) as the wait it could drink in - its drink looked dearer than Viper in the
+                // fight, it rested in Viper to 30 % and spent its four boss fights 12 times in Viper (5H MM 76 % of
+                // wowsims, its acting rate 81 %). Before a boss the group waits for each member's boss line: the
+                // other members' wait is to the same kind of line this one is read for
+                float const otherLine =
+                    boss ? FightManaLine(member, fightSec, 0.0f, nullptr, true) : OwnManaLine(member);
+                float const sec = std::max(otherLine - member->GetPowerPct(POWER_MANA), 0.0f) / memberRate;
                 if (sec > otherWaitSec)
                 {
                     otherWaitSec = sec;
