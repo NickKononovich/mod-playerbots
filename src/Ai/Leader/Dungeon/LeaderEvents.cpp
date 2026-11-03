@@ -317,7 +317,7 @@ namespace Leader::Dungeon
         {
             Position const at = bot->GetPosition();
             float const gap = at.GetExactDist(target->GetPosition());
-            if (gap > std::max(LeaderShootReach(bot), LeaderSpellReach(bot)))
+            if (gap > LeaderCastReach(bot, target))  // [lead660]
                 return "out of spell range of the target";
             if (bot->getClass() == CLASS_HUNTER && gap < LeaderRangedMinGap(bot, target))
                 return "inside its minimum range of the target";

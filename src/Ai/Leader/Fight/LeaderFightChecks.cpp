@@ -6,6 +6,7 @@
 
 #include "LeaderFightChecks.h"
 
+#include "AiFactory.h"  // [lead660] GetPlayerSpecTab
 #include "CellImpl.h"
 #include "ChooseTargetActions.h"
 #include "DungeonHazard.h"
@@ -171,7 +172,7 @@ namespace Leader::Fight
                          bool whereTheyStand)
     {
         float const gap = at.GetExactDist(target->GetPosition());
-        float const reach = std::max(LeaderShootReach(bot), LeaderSpellReach(bot));
+        float const reach = LeaderCastReach(bot, target);  // [lead660] the game's reach, both combat reaches in it
         float const minGap = bot->getClass() == CLASS_HUNTER ? LeaderRangedMinGap(bot, target) : 0.0f;
         return reach > 0.0f && gap <= reach && gap >= minGap && LeaderSeesFrom(bot, target, at) &&
                (!fightMobs || LeaderOutOfMobsMelee(bot, at, *fightMobs, whereTheyStand));
@@ -691,7 +692,8 @@ namespace Leader::Fight
                 // ends nearer than that on every ray, so no spot existed. The floor is the facts it stood for: out of
                 // the target's melee (LeaderRangedMinGap, a hunter's dead zone) - every fight mob's melee reach, the
                 // cleaves and the hazards are their own checks (LeaderOutOfMobsMelee, LeaderSpotSafe)
-                float const reach = LeaderShootReach(bot);
+                // [lead660] the reach it casts by (LeaderCastReach), not the configured spell distance alone
+                float const reach = LeaderShootReach(bot) > 0.0f ? LeaderCastReach(bot, target) : 0.0f;
                 if (reach <= 0.0f || gap < LeaderRangedMinGap(bot, target) || gap > reach)
                     return "out of its band";
             }
@@ -745,7 +747,7 @@ namespace Leader::Fight
         float const base = melee ? target->GetOrientation() + float(M_PI) : target->GetAngle(bot);
         float const distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
                                : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
-                                                          : LeaderShootReach(bot) - 2.0f;  // [lead127] its reach
+                                                          : LeaderCastReach(bot, target) - 2.0f;  // [lead660]
         // [lead452] b205 / b206 rfc-h Oggleflint: the ranged damage dealers stood 85-90 s at 0 damage (5F the warlock
         // and the SV hunter, 5E the warlock; "combat_spot_none ... first spot") - every point of the one ring at its
         // reach minus 2 yd round the boss on his ledge fell off it (the ground more than 4 yd below him) and the
@@ -1153,7 +1155,93 @@ namespace Leader::Fight
     }
 
     // [lead18] the member's spell reach to its target (a hunter 35 yd, a caster 30 yd)
-    float LeaderSpellReach(Player* bot) { return bot->getClass() == CLASS_HUNTER ? 35.0f : 30.0f; }
+    // [lead660] b218 rfc-h (8 runs, fight_breakdown.py): ranged damage dealers walked 305 s "respot: out of spell
+    // range of the target" and 260 s to first spots for the same reason, 46 % of those re-spots at an edge gap
+    // (Unit::GetDistance) under 30 yd - where the game casts. The reach is the spec's rotation spells' own range with
+    // the member's talents (SpellInfo::GetMaxRange applies SPELLMOD_RANGE as Spell::CheckRange does: Arctic Reach,
+    // Shadow Reach, Destructive Reach, Nature's Reach, Hawk Eye, Flame Throwing), the shortest of the ones it knows;
+    // the fixed 30 / 35 yd only without them
+    float LeaderSpellReach(Player* bot)
+    {
+        float const fixed = bot->getClass() == CLASS_HUNTER ? 35.0f : 30.0f;
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
+            return fixed;
+        // the talents the member has (a respec changes them): the reach is computed again only then
+        uint64 talents = uint64(bot->GetLevel()) << 56 | uint64(bot->GetActiveSpec()) << 48;
+        for (auto const& [spellId, talent] : bot->GetTalentMap())
+            if (talent && talent->State != PLAYERSPELL_REMOVED && talent->IsInSpec(bot->GetActiveSpec()))
+                talents += uint64(spellId) * 2654435761ull;
+        struct Known
+        {
+            uint64 talents;
+            float reach;
+        };
+        thread_local std::unordered_map<ObjectGuid, Known> known;
+        if (auto const it = known.find(bot->GetGUID()); it != known.end() && it->second.talents == talents)
+            return it->second.reach;
+        std::vector<char const*> spells;
+        uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
+        switch (bot->getClass())
+        {
+            case CLASS_MAGE:
+                spells = tab == MAGE_TAB_ARCANE ? std::vector<char const*>{"arcane blast", "arcane missiles"}
+                         : tab == MAGE_TAB_FIRE ? std::vector<char const*>{"fireball", "living bomb"}
+                                                : std::vector<char const*>{"frostbolt", "ice lance"};
+                break;
+            case CLASS_WARLOCK:
+                spells = tab == WARLOCK_TAB_AFFLICTION ? std::vector<char const*>{"shadow bolt", "haunt", "corruption"}
+                         : tab == WARLOCK_TAB_DESTRUCTION ? std::vector<char const*>{"incinerate", "immolate"}
+                                                          : std::vector<char const*>{"shadow bolt", "immolate"};
+                break;
+            case CLASS_PRIEST:
+                if (tab == PRIEST_TAB_SHADOW)
+                    spells = {"mind flay", "mind blast", "vampiric touch"};
+                break;
+            case CLASS_DRUID:
+                if (tab == DRUID_TAB_BALANCE)
+                    spells = {"wrath", "starfire", "moonfire"};
+                break;
+            case CLASS_SHAMAN:
+                if (tab == SHAMAN_TAB_ELEMENTAL)
+                    spells = {"lightning bolt", "lava burst", "flame shock"};
+                break;
+            case CLASS_HUNTER:
+                spells = {"steady shot"};
+                break;
+            default:
+                break;
+        }
+        float reach = 0.0f;
+        auto const take = [&](SpellInfo const* info)
+        {
+            if (!info)
+                return;
+            float const range = info->GetMaxRange(false, bot);
+            if (range > 0.0f)
+                reach = reach > 0.0f ? std::min(reach, range) : range;
+        };
+        for (char const* name : spells)
+            if (uint32 const id = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get())
+                take(sSpellMgr->GetSpellInfo(id));
+        // Auto Shot (no "spell id" name): the hunter's ranged weapon shot, its range mods too
+        if (bot->getClass() == CLASS_HUNTER && bot->GetWeaponForAttack(RANGED_ATTACK, true))
+            take(sSpellMgr->GetSpellInfo(75));
+        if (reach <= 0.0f)
+            reach = fixed;
+        if (known.size() > 4096)
+            known.clear();
+        known[bot->GetGUID()] = {talents, reach};
+        return reach;
+    }
+
+    float LeaderCastReach(Player* bot, Unit* target)
+    {
+        // [lead660] Unit::IsWithinCombatRange, the check Spell::CheckRange casts by: the 3D gap between the centres
+        // under the spell's range plus both combat reaches
+        return std::max(LeaderShootReach(bot), LeaderSpellReach(bot)) + bot->GetCombatReach() +
+               (target ? target->GetCombatReach() : 0.0f);
+    }
 
     // [lead18] why a held combat spot no longer fits ("" = it does): out of the member's reach of the target
     // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
@@ -1186,7 +1274,7 @@ namespace Leader::Fight
         // Attack block's (28.5 yd SpellDistance, 3D) left each other's spots. A held ranged spot breaks only where the
         // member cannot cast from it (LeaderCastsFrom's range; the minimum range is Auto Shot's dead zone)
         float const castGap = target->GetExactDist(spot);
-        float const castReach = std::max(LeaderShootReach(bot), LeaderSpellReach(bot));
+        float const castReach = LeaderCastReach(bot, target);  // [lead660]
         if (!melee && !PlayerbotAI::IsHeal(bot) && castGap > castReach - g_spotAcquireMargin)
             return "out of spell range of the target";
         if (!melee && !PlayerbotAI::IsHeal(bot) && bot->getClass() == CLASS_HUNTER &&

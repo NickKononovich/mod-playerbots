@@ -321,6 +321,9 @@ namespace Leader::Fight
 
     // [lead18] the member's spell reach to its target (a hunter 35 yd, a caster 30 yd)
     float LeaderSpellReach(Player* bot);
+    // [lead660] the 3D centre gap within which the member's spells reach `target`: LeaderShootReach /
+    // LeaderSpellReach plus the member's and the target's combat reach (Unit::IsWithinCombatRange)
+    float LeaderCastReach(Player* bot, Unit* target);
 
     // [lead18] why a held combat spot no longer fits ("" = it does): out of the member's reach of the target
     // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
