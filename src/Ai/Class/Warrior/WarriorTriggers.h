@@ -181,11 +181,6 @@ public:
     bool IsActive() override;
 };
 
-// [rot63] wowsims arms: Heroic Strike at 40+ rage only at the main-hand swing (autoTimeToNext <= 1 ms), so the GCD
-// strikes (Mortal Strike, Overpower, Slam) spend the rage between swings. The bot queues it once the swing lands before
-// it could press a GCD strike: the swing timer (getAttackTimer) within the global cooldown left, or within the bot's
-// next look (its react delay). b201 rfc-h 5G Rtwarad on Oggleflint: Heroic Strike 5.4 a minute vs the sim's 1.6, Slam
-// 0 vs 7.6 - queued any time at 40 rage, it took the rage during each global cooldown.
 // [rot290] wowsims warrior__arms: Slam at >= 15 rage (its cost), not the generic 20 of "light rage available"
 class ArmsSlamRageTrigger : public RageAvailable
 {
@@ -195,6 +190,11 @@ public:
     ArmsSlamRageTrigger(PlayerbotAI* botAI) : RageAvailable(botAI, ARMS_SLAM_RAGE) {}
 };
 
+// [rot63] wowsims arms: Heroic Strike at 40+ rage only at the main-hand swing (autoTimeToNext <= 1 ms), so the GCD
+// strikes (Mortal Strike, Overpower, Slam) spend the rage between swings. The bot queues it once the swing lands before
+// it could press a GCD strike: the swing timer (getAttackTimer) within the global cooldown left, or within the bot's
+// next look (its react delay). b201 rfc-h 5G Rtwarad on Oggleflint: Heroic Strike 5.4 a minute vs the sim's 1.6, Slam
+// 0 vs 7.6 - queued any time at 40 rage, it took the rage during each global cooldown.
 class ArmsHeroicStrikeTrigger : public FuryHeroicStrikeRageTrigger
 {
 public:
