@@ -6762,6 +6762,63 @@ namespace Leader::Dungeon
                          paladin)
                     tell(paladin, hands, tank, "the tank is low");
             }
+            // [lead912] user 2026-11-03 (46): a led bear tank's Survival Instincts and Frenzied Regeneration are the
+            // leader's (its own triggers are off, rot371): told as its health drops - under the danger line
+            // (LEADER_DANGER_HEALTH_PCT) and either under the tank's save line (LEADER_PRESAVE_TANK_PCT) or taking
+            // more per second (DamageTaken) than the healers' throughput on it (HealerThroughput) - Survival
+            // Instincts first, then Frenzied Regeneration, held by the cooldown verdict (for the boss that needs it
+            // unless critical). The order ends once its aura is up or the bear reports it cannot cast it
+            {
+                constexpr uint32 SPELL_SURVIVAL_INSTINCTS = 61336;
+                constexpr uint32 SPELL_FRENZIED_REGENERATION = 22842;
+                bool const bearSave = tank->getClass() == CLASS_DRUID && tank->IsAlive();
+                Leader::MemberEvents bearOrder;
+                if (bearSave && Leader::Events::Get(tank->GetGUID(), bearOrder) &&
+                    (bearOrder.externalSpell == SPELL_SURVIVAL_INSTINCTS ||
+                     bearOrder.externalSpell == SPELL_FRENZIED_REGENERATION))
+                {
+                    std::string failed;
+                    bool const reported =
+                        Leader::Events::TakeExternalFailed(tank->GetGUID(), bearOrder.externalSpell, failed);
+                    if (reported || tank->HasAura(bearOrder.externalSpell))
+                    {
+                        Leader::Events::SetExternal(tank->GetGUID(), 0, ObjectGuid::Empty);
+                        LOG_INFO("playerbots", "[lead912] {}: its {} order ends ({})", tank->GetName(),
+                                 bearOrder.externalSpell,
+                                 reported ? "it reports: " + failed : std::string("its aura is up"));
+                    }
+                }
+                if (bearSave && tank->GetHealthPct() < LEADER_DANGER_HEALTH_PCT &&
+                    !tank->HasAura(SPELL_SURVIVAL_INSTINCTS) && !tank->HasAura(SPELL_FRENZIED_REGENERATION))
+                {
+                    float const taken = Leader::Support::MemberTakenPerSec(group, tank);
+                    float hps = 0.0f;
+                    for (Player* bot : everyone)
+                        if (bot->IsAlive() && PlayerbotAI::IsHeal(bot))
+                            hps += RestState::HealerThroughput(bot, tank).hps;
+                    bool const low = tank->GetHealthPct() < Leader::LEADER_PRESAVE_TANK_PCT;
+                    if (low || taken > hps)
+                    {
+                        uint32 spell = 0;
+                        for (uint32 save : {SPELL_SURVIVAL_INSTINCTS, SPELL_FRENZIED_REGENERATION})
+                            if (!spell && tank->HasSpell(save) && !tank->HasSpellCooldown(save))
+                                spell = save;
+                        std::string why;
+                        if (spell && cooldownVerdict(RechargeAfterCastSec(tank, spell), 0.0f, why))
+                        {
+                            std::string const note = Acore::StringFormat(
+                                "the bear's health drops ({:.0f} %, taken {:.0f}/s against heals {:.0f}/s): {}",
+                                tank->GetHealthPct(), taken, hps, why);
+                            if (tell(tank, spell, tank, note.c_str()))
+                            {
+                                thread_local std::set<std::pair<uint64, uint32>> bearLogged;
+                                if (bearLogged.insert({tank->GetGUID().GetRawValue(), spell}).second)
+                                    LOG_INFO("playerbots", "[lead912] {}: {} told, {}", tank->GetName(), spell, note);
+                            }
+                        }
+                    }
+                }
+            }
             for (Player* member : seats)
                 if (member != healer && !PlayerbotAI::IsTank(member) && !member->getAttackers().empty() &&
                     member->GetHealthPct() < LEADER_SAVE_HP_PCT)
