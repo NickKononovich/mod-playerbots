@@ -9,6 +9,8 @@
 
 #include "GenericTriggers.h"
 
+#include <algorithm>  // [rot180] std::max
+
 class Player;  // [b31_deep] HasReadyRunes
 class PlayerbotAI;
 
@@ -518,6 +520,9 @@ inline constexpr uint32 SPELL_DK_GLYPH_OF_DISEASE = 63334;
 constexpr float DK_DEATH_PACT_PERMANENT_GHOUL_HEALTH_PCT = 15.0f;
 // [b31_dk] The disease refresh window of the "icy touch 3s" / "plague strike 3s" / "pestilence glyph" triggers.
 constexpr int32 DK_DISEASE_REFRESH_MS = 3000;
+// [rot180] CastPestilenceAction::isUseful: a disease with this much or less left is one Pestilence refreshes; the
+// widest window a Pestilence trigger asks for ("frost pestilence"), so no trigger's refresh is refused
+constexpr int32 PESTILENCE_REFRESH_WINDOW_MS = std::max(DK_DISEASE_REFRESH_MS, FROST_PESTILENCE_FF_MS);
 
 class RuneTapHealthTrigger : public LowHealthTrigger
 {

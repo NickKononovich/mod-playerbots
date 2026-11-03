@@ -76,8 +76,52 @@ bool CastPestilenceAction::isUseful()
 
     // Pestilence spreads the diseases on the target; without both of ours it wastes the Blood rune.
     Unit* target = GetTarget();
-    return target && botAI->HasAura("blood plague", target, false, true) &&
-           botAI->HasAura("frost fever", target, false, true);
+    if (!target || !botAI->HasAura("blood plague", target, false, true) ||
+        !botAI->HasAura("frost fever", target, false, true))
+        return false;
+
+    // [rot180] it does something: the Glyph of Disease refresh on the target, or a mob within its spread radius
+    // without one of our diseases or with one running out (spell_dk_pestilence recasts both on every other hit
+    // unit). b217 rfc-h 5C Jergosh: 2-3 mobs for 25 of 33 s, Pestilence 3 + Blood Boil 1 + Death and Decay 1 of the
+    // tank's 9 Blood runes and Heart Strike 4 (sim 8); the area triggers ("medium aoe", "tank aoe pack / crowd")
+    // re-cast it on every Blood rune while each mob already carried both diseases.
+    return PestilenceRefreshesTarget(target) || PestilenceSpreads(target);
+}
+
+bool CastPestilenceAction::PestilenceRefreshesTarget(Unit* target)
+{
+    if (!bot->HasAura(SPELL_DK_GLYPH_OF_DISEASE))
+        return false;
+
+    Aura* plague = botAI->GetAura("blood plague", target, true, true);
+    Aura* fever = botAI->GetAura("frost fever", target, true, true);
+    return (plague && plague->GetDuration() <= PESTILENCE_REFRESH_WINDOW_MS) ||
+           (fever && fever->GetDuration() <= PESTILENCE_REFRESH_WINDOW_MS);
+}
+
+bool CastPestilenceAction::PestilenceSpreads(Unit* target)
+{
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!spellInfo)
+        return true;  // no radius to judge by: as before
+
+    // the spread hits round the target (effect 2, the script effect; Glyph of Pestilence's +5 yd via the spell mods)
+    float const radius = spellInfo->Effects[EFFECT_2].CalcRadius(bot);
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "attackers"))
+    {
+        Unit* mob = botAI->GetUnit(guid);
+        if (!mob || mob == target || !mob->IsAlive() || mob->GetMap() != target->GetMap() ||
+            IsCrowdControlled(mob) || !target->IsWithinDistInMap(mob, radius))
+            continue;
+
+        Aura* plague = botAI->GetAura("blood plague", mob, true, true);
+        Aura* fever = botAI->GetAura("frost fever", mob, true, true);
+        if (!plague || !fever || plague->GetDuration() <= PESTILENCE_REFRESH_WINDOW_MS ||
+            fever->GetDuration() <= PESTILENCE_REFRESH_WINDOW_MS)
+            return true;
+    }
+    return false;
 }
 
 bool CastRaiseDeadAction::Execute(Event event)

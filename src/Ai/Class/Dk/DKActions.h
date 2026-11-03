@@ -97,7 +97,13 @@ public:
     // [rot1] the diseases it spreads tick on every mob within its radius of the target: for a dps death knight the
     // area threat gate reads them all (a tank is never held by ThreatMultiplier)
     ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
+    // [rot180] both of our diseases on the target, and the cast refreshes them (Glyph of Disease) or spreads them to a
+    // mob that lacks one or has one running out
     bool isUseful() override;
+
+private:
+    bool PestilenceRefreshesTarget(Unit* target);
+    bool PestilenceSpreads(Unit* target);
 };
 
 class CastHowlingBlastAction : public CastSpellAction
