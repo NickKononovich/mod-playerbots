@@ -301,6 +301,17 @@ float CheapestCastPct(Player* bot);
 // (an offensive spell, a healer's heal) the cost over the longest of its cast (a channel's duration), its global
 // cooldown and its own cooldown - game data. A measured rate above it is a measuring error
 float MaxSpendPctPerSec(Player* bot);
+// [lead855] the mana (% of its max) a damage caster's rotation spends per second when it casts it nonstop (a boss
+// fight, wowsims): its filler (the single-target spell with no cooldown of its own that deals the most per cast
+// second, at its own cost stacks' average over their ramp) in the time its damage-over-time spells' casts leave, plus
+// each of those (cost over its duration), net of the casts its free-cast procs (Clearcasting, Elemental Focus) save
+// and of its in-combat regen, its ready boss burns (Arcane Power's cost, Icy Veins' haste) over the share of a fight
+// of `fightSec` they last - spell data and the member's own stats. -1: not computed (a healer, no damage caster, a
+// warlock: Life Tap is its rotation's own mana)
+float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why = nullptr);
+// [lead855] the rate a boss line reads from RotationSpendPctPerSec: while no boss fight of the member is measured
+// (lead610), else -1
+float BossRotationRate(Player* bot, float fightSec, std::string* why = nullptr);
 // [lead421] the mana per second (% of max mana) the best drink in the bot's bags gives; 0 without one
 float DrinkPctPerSecOf(Player* bot);
 // [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon

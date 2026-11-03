@@ -4991,6 +4991,21 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
             // [lead51] the mana THIS boss fight takes from this member (FightManaLine), not a fixed line
             float const manaLine = boss ? RestState::FightManaLine(member, bossSec, 0.0f, nullptr, true) : readyMana;
+            // [lead855] its line reads its rotation's nonstop rate (no boss fight of it measured): logged once per
+            // member and boss with the rate's terms
+            if (boss && member->GetMaxPower(POWER_MANA))
+            {
+                thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> rotationLogged;
+                if (rotationLogged.size() > 1024)
+                    rotationLogged.clear();
+                std::string rotationWhy;
+                if (!rotationLogged.count({member->GetGUID(), boss->GetGUID()}) &&
+                    RestState::BossRotationRate(member, bossSec, &rotationWhy) >= 0.0f &&
+                    rotationLogged.insert({member->GetGUID(), boss->GetGUID()}).second)
+                    LOG_INFO("playerbots", "[lead855] {}: {}'s mana line {:.0f} % for {} reads its rotation nonstop {} "
+                             "(no boss fight of it measured)", member->GetName(), boss->GetName(), manaLine,
+                             bot->GetName(), rotationWhy);
+            }
             if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < manaLine)
                 return Acore::StringFormat("{} at {:.0f} % mana (needs {:.0f} %)", member->GetName(),
                                            member->GetPowerPct(POWER_MANA), manaLine);

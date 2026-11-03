@@ -32,9 +32,12 @@
 #include "EstimatedLifetimeValue.h"  // [lead850] GroupDamage: a channel's damage share
 #include "Spell.h"                   // [lead850] the Evocation channel in progress
 #include "Playerbots.h"
+#include "SpellAuraEffects.h"  // [lead855] AuraEffect: a free-cast proc talent
 #include "SpellAuras.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"  // [lead855] SpellProcEntry, SpellBonusEntry
 #include "StringFormat.h"
+#include "World.h"  // [lead855] RATE_POWER_MANA
 
 bool HealthInRangeTrigger::IsActive()
 {
@@ -765,6 +768,292 @@ float MaxSpendPctPerSec(Player* bot)
     return most;
 }
 
+// [lead855] b223 rfc-h: before any boss was measured, the boss line read the trash's acting rate (5D arcane 1.44 %/s,
+// 5C fire 1.02 %/s) while on a boss the caster casts its rotation nonstop (5D arcane on Oggleflint: 27 + 16 + 25 + ~51
+// % in 45 s, ~2.6 %/s): the gate passed casters at 4-27 % and they went dry. Its rotation's nonstop spend from spell
+// data and its own stats: the filler (Arcane Blast's 36032 stacks +175 % cost each, 4 at most: its cost averaged over
+// the ramp 0..4 that Arcane Missiles resets), each damage-over-time spell kept up (its cost over its duration), the
+// filler in the seconds their casts leave; the casts a free-cast proc saves (Arcane Concentration's 10 %, Elemental
+// Focus's 2 x -40 % on a crit) and the in-combat regen (Player::UpdateManaRegen's casting value) netted out
+namespace
+{
+    // [lead855] a boss burn of the member's that raises its rotation's spend while it lasts
+    struct RotationBurn
+    {
+        uint32 spell = 0;
+        float sec = 0.0f;
+        float factor = 1.0f;
+        char const* name = "";
+    };
+}
+
+float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
+{
+    float const maxMana = float(bot->GetMaxPower(POWER_MANA));
+    if (maxMana <= 0.0f || PlayerbotAI::IsHeal(bot) || !PlayerbotAI::IsCaster(bot) || bot->getClass() == CLASS_WARLOCK)
+        return -1.0f;
+
+    // the spell scan is cached per bot while its spells, spell power, mana pool, haste and form stay the same
+    struct Cached
+    {
+        size_t spells = 0;
+        int32 power = -1;
+        uint32 mana = 0;
+        float haste = 0.0f;
+        uint32 form = 0;
+        float gross = -1.0f;  // mana per second before the regen and the burns
+        std::string terms;
+        std::vector<RotationBurn> burns;
+    };
+    thread_local std::unordered_map<uint64, Cached> cache;
+    Cached& cached = cache[bot->GetGUID().GetRawValue()];
+    int32 const power = bot->SpellBaseDamageBonusDone(SPELL_SCHOOL_MASK_ALL);
+    float const haste = bot->GetFloatValue(UNIT_MOD_CAST_SPEED);
+    uint32 const form = bot->GetShapeshiftForm();
+    if (cached.spells != bot->GetSpellMap().size() || cached.power != power ||
+        cached.mana != bot->GetMaxPower(POWER_MANA) || cached.haste != haste || cached.form != form)
+    {
+        struct Pick
+        {
+            SpellInfo const* info = nullptr;
+            float cost = 0.0f;
+            float sec = 0.0f;       // its cast (a channel's duration) or global cooldown, hasted
+            float value = 0.0f;     // its damage per cast second
+            float interval = 0.0f;  // a damage-over-time spell: cast again after its duration (or its cooldown)
+        };
+        Pick filler;
+        std::unordered_map<uint32, Pick> dots;  // by spell specific (one curse / sting), else by spell
+        std::vector<SpellInfo const*> burnSpells;
+        std::vector<RotationBurn> burns;
+        for (auto const& [spellId, known] : bot->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->CheckShapeshift(form) != SPELL_CAST_OK)
+                continue;
+            if (uint32 const next = sSpellMgr->GetNextSpellInChain(spellId); next && bot->HasSpell(next))
+                continue;  // a lower rank
+            if (info->IsPositive())
+            {
+                if (std::max(info->RecoveryTime, info->CategoryRecoveryTime) > 0)
+                    burnSpells.push_back(info);  // a cooldown of its own: a boss burn it may raise its spend with
+                continue;
+            }
+            if (info->PowerType != POWER_MANA || info->IsAffectingArea())
+                continue;
+            int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
+            if (cost <= 0)
+                continue;
+            SpellSchoolMask const school = info->GetSchoolMask();
+            float const sp = float(bot->SpellBaseDamageBonusDone(school));
+            auto const coefficient = [&](SpellInfo const* spell, DamageEffectType type)
+            {
+                SpellBonusEntry const* bonus = sSpellMgr->GetSpellBonusData(spell->Id);
+                float const own = bonus ? (type == DOT ? bonus->dot_damage : bonus->direct_damage) : -1.0f;
+                return own >= 0.0f ? own : bot->CalculateDefaultCoefficient(spell, type);
+            };
+            float damage = 0.0f;
+            bool periodic = false;
+            float const durationMs = float(std::max(info->GetMaxDuration(), 0));
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                    damage += float(std::max(effect.CalcValue(bot), 0)) + sp * coefficient(info, SPELL_DIRECT_DAMAGE);
+                else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.Amplitude && durationMs > 0.0f)
+                {
+                    float const ticks = durationMs / float(effect.Amplitude);
+                    if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                        effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH)
+                    {
+                        damage += ticks * (float(std::max(effect.CalcValue(bot), 0)) + sp * coefficient(info, DOT));
+                        periodic = true;
+                    }
+                    // a channel's ticks cast a damage spell (Mind Flay 58381, Arcane Missiles 42845)
+                    else if (info->IsChanneled() && (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL ||
+                                                     effect.ApplyAuraName ==
+                                                         SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE))
+                        if (SpellInfo const* tick = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                        {
+                            float perTick =
+                                effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE
+                                    ? float(std::max(effect.CalcValue(bot), 0))
+                                    : 0.0f;
+                            if (!perTick)
+                                for (SpellEffectInfo const& hit : tick->GetEffects())
+                                    if (hit.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                                        perTick += float(std::max(hit.CalcValue(bot), 0));
+                            if (perTick > 0.0f)
+                                damage += ticks * (perTick + sp * coefficient(tick, SPELL_DIRECT_DAMAGE));
+                        }
+                }
+            }
+            if (damage <= 0.0f)
+                continue;
+            damage *= bot->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE, school);
+            float const castSec = info->IsChanneled() ? durationMs / 1000.0f * haste
+                                                      : float(std::max(info->CalcCastTime(bot), 0)) / 1000.0f;
+            float const gcdSec =
+                info->StartRecoveryTime ? std::max(float(info->StartRecoveryTime) / 1000.0f * haste, 1.0f) : 0.0f;
+            float const sec = std::max(castSec, gcdSec);
+            if (sec <= 0.0f)
+                continue;
+            float const cooldownSec = float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) / 1000.0f;
+            Pick const pick{info, float(cost), sec, damage / sec, std::max(durationMs / 1000.0f, cooldownSec)};
+            if (periodic && !info->IsChanneled() && castSec <= gcdSec + 0.01f)
+            {
+                // a damage-over-time spell kept up on the target (instant, or cast within its global cooldown)
+                SpellSpecificType const specific = info->GetSpellSpecific();
+                uint32 const slot = specific == SPELL_SPECIFIC_CURSE || specific == SPELL_SPECIFIC_STING
+                                        ? uint32(specific) | 0x80000000u
+                                        : spellId;
+                if (auto const found = dots.find(slot); found == dots.end() || found->second.value < pick.value)
+                    dots[slot] = pick;
+            }
+            else if (cooldownSec <= 0.0f && pick.value > filler.value)
+                filler = pick;  // the spell it casts nonstop: no cooldown of its own
+        }
+
+        float gross = -1.0f;
+        std::string terms;
+        if (filler.info || !dots.empty())
+        {
+            gross = 0.0f;
+            float dotTime = 0.0f;
+            for (auto const& [slot, dot] : dots)
+            {
+                gross += dot.cost / dot.interval;
+                dotTime += dot.sec / dot.interval;
+                terms += Acore::StringFormat("{}{} {:.0f} / {:.0f} s", terms.empty() ? "" : " + ",
+                                             dot.info->SpellName[0], dot.cost, dot.interval);
+            }
+            if (filler.info)
+            {
+                // the filler's own cost stacks (Arcane Blast's 36032): their average over the ramp 0..max
+                float ramp = 1.0f;
+                for (SpellEffectInfo const& effect : filler.info->GetEffects())
+                    if (SpellInfo const* stacks = effect.TriggerSpell ? sSpellMgr->GetSpellInfo(effect.TriggerSpell)
+                                                                      : nullptr)
+                        for (SpellEffectInfo const& mod : stacks->GetEffects())
+                            if (mod.Effect == SPELL_EFFECT_APPLY_AURA &&
+                                mod.ApplyAuraName == SPELL_AURA_ADD_PCT_MODIFIER && mod.MiscValue == SPELLMOD_COST &&
+                                mod.CalcValue(bot) > 0 && filler.info->IsAffected(stacks->SpellFamilyName,
+                                                                                  mod.SpellClassMask))
+                                ramp = std::max(ramp, 1.0f + float(std::max<uint32>(stacks->StackAmount, 1)) / 2.0f *
+                                                                 float(mod.CalcValue(bot)) / 100.0f);
+                float const share = std::max(1.0f - dotTime, 0.0f);
+                gross += share * filler.cost * ramp / filler.sec;
+                terms += Acore::StringFormat("{}{} {:.0f}{} / {:.2f} s over {:.0f} % of the time",
+                                             terms.empty() ? "" : " + ", filler.info->SpellName[0], filler.cost,
+                                             ramp > 1.0f ? Acore::StringFormat(" x {:.2f} stack ramp", ramp)
+                                                         : std::string(),
+                                             filler.sec, share * 100.0f);
+                // a free-cast proc (Clearcasting): the share of the casts it saves
+                float crit = 0.0f;
+                for (uint8 s = SPELL_SCHOOL_HOLY; s < MAX_SPELL_SCHOOL; ++s)
+                    if (filler.info->GetSchoolMask() & (1 << s))
+                        crit = std::max(crit, bot->GetFloatValue(PLAYER_SPELL_CRIT_PERCENTAGE1 + s) / 100.0f);
+                float saved = 0.0f;
+                for (AuraEffect const* proc : bot->GetAuraEffectsByType(SPELL_AURA_PROC_TRIGGER_SPELL))
+                {
+                    SpellInfo const* talent = proc->GetSpellInfo();
+                    SpellInfo const* freeCast =
+                        sSpellMgr->GetSpellInfo(talent->Effects[proc->GetEffIndex()].TriggerSpell);
+                    if (!freeCast)
+                        continue;
+                    float cut = 0.0f;
+                    for (SpellEffectInfo const& mod : freeCast->GetEffects())
+                        if (mod.Effect == SPELL_EFFECT_APPLY_AURA && mod.ApplyAuraName == SPELL_AURA_ADD_PCT_MODIFIER &&
+                            mod.MiscValue == SPELLMOD_COST && mod.CalcValue(bot) < 0 &&
+                            filler.info->IsAffected(freeCast->SpellFamilyName, mod.SpellClassMask))
+                            cut = std::max(cut, std::min(-float(mod.CalcValue(bot)) / 100.0f, 1.0f));
+                    if (cut <= 0.0f)
+                        continue;
+                    SpellProcEntry const* entry = sSpellMgr->GetSpellProcEntry(talent->Id);
+                    float chance = (entry && entry->Chance > 0.0f ? entry->Chance : float(talent->ProcChance)) / 100.0f;
+                    if (entry && entry->ProcsPerMinute > 0.0f)
+                        chance = entry->ProcsPerMinute * filler.sec / 60.0f;
+                    if (entry && (entry->HitMask & PROC_HIT_CRITICAL))
+                        chance *= crit;
+                    float const charges = float(std::max<uint32>(freeCast->ProcCharges, 1));
+                    float const part = std::min(std::min(chance, 1.0f) * charges, 1.0f) * cut;
+                    if (part > 0.0f)
+                    {
+                        saved += part;
+                        terms += Acore::StringFormat(" - {:.0f} % ({})", part * 100.0f, talent->SpellName[0]);
+                    }
+                }
+                gross *= 1.0f - std::min(saved, 1.0f);
+                // its own boss burns (lead853: cast at the engage) that raise the filler's cost (Arcane Power +20 %)
+                // or its cast speed (Icy Veins +20 %, Elemental Mastery's 64701 +15 %, Heroism +30 %): their factor
+                // over their own duration
+                for (SpellInfo const* buff : burnSpells)
+                {
+                    auto const read = [&](SpellInfo const* spell)
+                    {
+                        float const sec = float(std::max(spell->GetMaxDuration(), 0)) / 1000.0f;
+                        if (sec <= 0.0f)
+                            return;
+                        float factor = 1.0f;
+                        for (SpellEffectInfo const& mod : spell->GetEffects())
+                        {
+                            int32 const value = mod.Effect == SPELL_EFFECT_APPLY_AURA ? mod.CalcValue(bot) : 0;
+                            if (value <= 0)
+                                continue;
+                            if ((mod.ApplyAuraName == SPELL_AURA_ADD_PCT_MODIFIER && mod.MiscValue == SPELLMOD_COST &&
+                                 filler.info->IsAffected(spell->SpellFamilyName, mod.SpellClassMask)) ||
+                                mod.ApplyAuraName == SPELL_AURA_MOD_CASTING_SPEED_NOT_STACK ||
+                                mod.ApplyAuraName == SPELL_AURA_HASTE_SPELLS)
+                                factor *= 1.0f + float(value) / 100.0f;
+                        }
+                        if (factor > 1.0f)
+                            burns.push_back({buff->Id, sec, factor, buff->SpellName[0]});
+                    };
+                    read(buff);
+                    for (SpellEffectInfo const& effect : buff->GetEffects())
+                        if (SpellInfo const* next = effect.TriggerSpell ? sSpellMgr->GetSpellInfo(effect.TriggerSpell)
+                                                                        : nullptr)
+                            read(next);
+                }
+            }
+        }
+        cached = {bot->GetSpellMap().size(), power, bot->GetMaxPower(POWER_MANA), haste, form, gross, terms, burns};
+    }
+    if (cached.gross < 0.0f)
+        return -1.0f;
+    // the boss burns ready for this fight: their factor over the share of the fight they last
+    float gross = cached.gross;
+    std::string burnTerms;
+    for (RotationBurn const& burn : cached.burns)
+    {
+        if (fightSec <= 0.0f || bot->HasSpellCooldown(burn.spell))
+            continue;
+        float const share = std::min(burn.sec / fightSec, 1.0f);
+        gross *= 1.0f + share * (burn.factor - 1.0f);
+        burnTerms += Acore::StringFormat(" x {:.2f} ({} over {:.0f} % of the fight)", burn.factor, burn.name,
+                                         share * 100.0f);
+    }
+    // the in-combat (casting) regen per second: Player::UpdateManaRegen, Player::Regenerate's rate
+    float const regen = bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) *
+                        sWorld->getRate(RATE_POWER_MANA);
+    float const pct = 100.0f * std::max(gross - regen, 0.0f) / maxMana;
+    if (why)
+        *why = Acore::StringFormat("{:.2f} %/s = ({}){} - {:.0f} regen, mana per s of {:.0f}", pct, cached.terms,
+                                   burnTerms, regen, maxMana);
+    return pct;
+}
+
+float BossRotationRate(Player* bot, float fightSec, std::string* why)
+{
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        uint64 const key = bot->GetGUID().GetRawValue();
+        if (bossManaRate.count(key) || bossActingManaRate.count(key))
+            return -1.0f;  // [lead610] a boss fight measured: its own rate
+    }
+    return RotationSpendPctPerSec(bot, fightSec, why);
+}
+
 namespace
 {
 struct FightLengths
@@ -1093,6 +1382,11 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
     char const* source = "measured";
+    // [lead855] a boss line before any boss fight of the member is measured: its rotation cast nonstop (spell data),
+    // not the trash's acting rate
+    std::string rotationWhy;
+    float const rotation = boss ? BossRotationRate(bot, fightSec, &rotationWhy) : -1.0f;
+    bool bossMeasured = false;  // [lead855] the boss line reads a boss fight's measured rate
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
         uint64 const key = bot->GetGUID().GetRawValue();
@@ -1150,6 +1444,15 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                     measured = true;
                     source = "its acting seconds on bosses";
                 }
+                bossMeasured = bossManaRate.count(key) || bossActingManaRate.count(key);
+            }
+            // [lead855] b223 rfc-h: before a boss was measured the line read the trash's acting rate (5D arcane 1.44
+            // %/s, 5C fire 1.02 %/s; Oggleflint took ~2.6 %/s of the arcane mage): its rotation cast nonstop
+            if (rotation >= 0.0f)
+            {
+                rate = rotation;
+                measured = true;
+                source = "its rotation nonstop, no boss measured";
             }
         }
     }
@@ -1494,13 +1797,20 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // a full pool lasting: the plain sum (the clamp makes it 100 %). The timeline only raises the sum's line
     // (safety-over-speed): it lowers it by the channel's seconds without a cast, and the rate it would lower it on is
     // the trash-measured one until a boss is (b223 5D: 1.44 %/s counted, ~2.6 %/s spent on Oggleflint)
+    // [lead855] a damage caster's boss line on its rotation's nonstop rate (no boss measured) or on a boss fight's
+    // measured rate reads the boss's own spend: the timeline is the honest line there (the channel's seconds spend
+    // nothing, the potion and the gem come where the pool has room), not only a raise. The other lines (a trash
+    // fight, a healer, a member whose boss line still reads a trash rate) keep the raise-only rule. A cooldown back
+    // within the fight (lead634: Shadowfiend, Innervate - spread over the fight on the timeline) still floors it
+    bool const honestRate = boss && !PlayerbotAI::IsHeal(bot) && (rotation >= 0.0f || bossMeasured);
     std::string timeline;
     if (!bursts.empty() && fightSec > 0.0f)
     {
         float const spread = std::max(need - (returned - burstCredit), 0.0f) / fightSec;
         float const burstLine = BurstLine(spread, fightSec, reserve, bursts);
         float const sumLine = lineRaw;
-        lineRaw = std::max(lineRaw, burstLine >= 0.0f ? burstLine : 100.0f);
+        float const timedLine = burstLine >= 0.0f ? burstLine : 100.0f;
+        lineRaw = honestRate ? std::max(timedLine, cooldownFloor) : std::max(lineRaw, timedLine);
         // the timeline raised the line: logged once per member and fight length (a log, no decision)
         thread_local std::set<std::pair<uint64, int32>> raisedLogged;
         if (lineRaw > sumLine + 0.5f && raisedLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec)}).second)
@@ -1508,6 +1818,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                      "[lead850] {}: the fight's timeline raises its mana line {:.0f} -> {:.0f} % ({:.0f} s at {:.2f} "
                      "%/s, {} returns)",
                      bot->GetName(), sumLine, lineRaw, fightSec, spread, bursts.size());
+        thread_local std::set<std::pair<uint64, int32>> loweredLogged;
+        if (lineRaw < sumLine - 0.5f && loweredLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec)}).second)
+            LOG_INFO("playerbots",
+                     "[lead855] {}: the boss fight's timeline is its mana line {:.0f} -> {:.0f} % ({:.0f} s at {:.2f} "
+                     "%/s, {} returns, {})",
+                     bot->GetName(), sumLine, lineRaw, fightSec, spread, bursts.size(), source);
         timeline = burstLine >= 0.0f
                        ? Acore::StringFormat("; on the fight's timeline {:.0f} % at {:.2f} %/s", burstLine, spread)
                        : Acore::StringFormat("; on the fight's timeline not even a full pool at {:.2f} %/s", spread);
@@ -1522,6 +1838,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
     if (why)
         *why += timeline;
+    if (why && rotation >= 0.0f)  // [lead855]
+        *why += "; its rotation " + rotationWhy;
     if (why && perTankHealth > 0.0f)  // [lead258]
         *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
                                     perCostMeasured ? "measured" : "throughput", cost);
