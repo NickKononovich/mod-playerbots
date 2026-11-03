@@ -58,6 +58,7 @@
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderPlan.h"         // [lead107] the leader's planner tick
 #include "LeaderPlannerShared.h"  // [lead204] the planner's pack rule and patrol forecast
+#include "LeaderPrepull.h"  // [lead823] the prepull Army's landing trash
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -730,6 +731,10 @@ namespace Leader::Travel
             return nullptr;
         if (char const* joins = JoinsBossFight(leader, boss, mob))
             return joins;
+        // [lead823] user 2026-11-03: the trash the tank knight's prepull Army would wake where it would channel for
+        // him is on his path (Leader::Prepull::ArmyLandingTrash): cleared before him
+        if (mob->IsHostileTo(leader) && Leader::Prepull::ArmyLandingTrash(boss, mob))
+            return "boss area: the prepull Army's ghouls land in its reach";
         G3D::Vector3 const at(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
         if (mob->GetExactDist(boss) <= BOSS_ROOM_TRASH_RADIUS &&
             std::fabs(mob->GetPositionZ() - boss->GetPositionZ()) <= BOSS_ROOM_TRASH_DZ &&

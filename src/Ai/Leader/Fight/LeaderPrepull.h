@@ -23,6 +23,7 @@
 #include "LeaderGroup.h"
 #include "LeaderLog.h"
 
+class Creature;
 class Player;
 class Unit;
 
@@ -36,6 +37,14 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
 // The boss preparation is over but for the Army: `orderNow` true at the buff pass's end (an Army not told yet is told
 // now), false at the planner's pull gates (they only wait for a channel under way or told). Empty: nothing holds.
 std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow);
+
+// [lead823] User decision 2026-11-03: the prepull Army is about boss pulls - the mobs round the boss are killed anyway.
+// The idle trash (no boss, no summon, not in the boss's fight by itself: lead821) whose aggro reach takes in the tank
+// knight's ghoul landing where it would channel for `boss` (his preparation, the buff pass's end, the boss pull's gate)
+// is on the boss's path: the leader clears it before his pull (Travel::BossAreaTrashOf "boss area: the prepull Army's
+// ghouls land in its reach"). Kept per boss from the knight's last look at its landing there; dropped once the channel
+// runs, the Army is on cooldown or the knight dead.
+bool ArmyLandingTrash(Creature* boss, Creature* mob);
 
 // [lead773] wowsims assassination: the rogue stands in Stealth at the pull, so its first ability starts Overkill. A
 // rogue with the talent that can stealth (alive, out of combat, Stealth known and ready) is ordered at the boss pull's

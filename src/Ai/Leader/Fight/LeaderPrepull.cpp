@@ -8,7 +8,11 @@
 #include "LeaderPrepull.h"
 
 #include <algorithm>
+#include <cmath>
 #include <list>
+#include <map>
+#include <mutex>
+#include <set>
 
 #include "AiFactory.h"
 #include "CellImpl.h"
@@ -17,6 +21,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "HealthTriggers.h"  // RestState
+#include "InstanceGuid.h"    // [lead823]
 #include "LeaderFightChecks.h"
 #include "LeaderRest.h"  // CountRestItems
 #include "LeaderOrders.h"
@@ -26,6 +31,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "RouteTargets.h"  // [lead821] Travel::JoinsBossFight
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
@@ -72,10 +78,53 @@ float GhoulSpreadYd()
     return spread;
 }
 
-// [lead750] a mob out of combat (the boss included) whose aggro reach (Creature::GetAggroRange, the game's) takes in
-// a place the knight's ghouls land on: within the ghouls' spread of the knight; nullptr: none
-Unit* GhoulsWake(Player* dk)
+// [lead823] the trash in the tank knight's ghoul landing where it would channel for the boss, per boss (instance,
+// GUID): the boss's trash to clear before his pull (Travel::BossAreaTrashOf reads ArmyLandingTrash)
+std::mutex landingLock;
+std::map<InstanceGuid, std::set<ObjectGuid>> landingTrash;
+
+void SetLanding(Creature* boss, std::set<ObjectGuid> trash)
 {
+    std::lock_guard<std::mutex> lock(landingLock);
+    if (trash.empty())
+        landingTrash.erase(InstanceKey(boss));
+    else
+        landingTrash[InstanceKey(boss)] = std::move(trash);
+}
+
+bool LandingHasTrash(Creature* boss)
+{
+    std::lock_guard<std::mutex> lock(landingLock);
+    return landingTrash.count(InstanceKey(boss)) != 0;
+}
+
+// [lead821] (boss, mob) pairs already logged as joining the boss's fight
+std::mutex joinLoggedLock;
+std::set<std::pair<InstanceGuid, ObjectGuid>> joinLogged;
+
+// What the knight's ghouls wake where they land: the first mob that stops the Army (nullptr: none), why, and the trash
+// in that reach to clear before the boss
+struct Wake
+{
+    Unit* blocker = nullptr;
+    std::string why;
+    std::set<ObjectGuid> clearFirst;
+};
+
+// [lead750] a mob out of combat (the boss included) whose aggro reach (Creature::GetAggroRange, the game's) takes in
+// a place the knight's ghouls land on: within the ghouls' spread of the knight
+// [lead822] by the core's own aggro test (Creature::CanStartAttack: GetAggroRange + m_CombatDistance in 3D, the
+// height within CREATURE_Z_ATTACK_RANGE + m_CombatDistance unless it flies, and its line of sight), the ghouls standing
+// round the knight - the 2D distance alone took in mobs on another floor (RFC Oggleflint's ledge, dz 13)
+// [lead821] user 2026-11-03: a mob that joins the boss's fight anyway (Travel::JoinsBossFight: his formation, a script
+// call for help, the assistance at his pull, its aggro reach on his spot) never stops it - it is in that fight
+// whether the ghouls wake it or not. b222 rfc-h 5G 211 s, 5C 269 / 274 s: "its ghouls land in Ragefire Trogg's aggro
+// reach" before Oggleflint (which Trogg the line did not say: the reason now carries its distance, height and
+// reach); his Ragefire Shaman and Trogg 11-13 yd from him (spawns 48643 / 48645) were in his 5G pull (pull 17, 3 kills)
+// [lead823] user 2026-11-03: the others are the boss's trash, on his path: cleared before his pull (`clearFirst`)
+Wake GhoulsWake(Player* dk, Creature* boss)
+{
+    Wake wake;
     float const spread = GhoulSpreadYd();
     float const search = MAX_AGGRO_RADIUS * sWorld->getRate(RATE_CREATURE_AGGRO) + spread;
     std::list<Unit*> nearUnits;
@@ -87,10 +136,41 @@ Unit* GhoulsWake(Player* dk)
         Creature* mob = unit->ToCreature();
         if (!mob || !mob->IsAlive() || mob->IsInCombat() || mob->IsCivilian() || !dk->IsValidAttackTarget(mob))
             continue;
-        if (dk->GetExactDist2d(mob) <= mob->GetAggroRange(dk) + spread)
-            return mob;
+        float const reach = mob->GetAggroRange(dk) + mob->m_CombatDistance;
+        float const dz = std::fabs(mob->GetPositionZ() - dk->GetPositionZ());
+        if ((!mob->CanFly() && dz > CREATURE_Z_ATTACK_RANGE + mob->m_CombatDistance) ||
+            !mob->IsWithinDistInMap(dk, reach + spread, true, false, false) || !mob->IsWithinLOSInMap(dk))
+            continue;
+        if (boss && mob != boss)
+            if (char const* joins = Leader::Travel::JoinsBossFight(dk, boss, mob))
+            {
+                std::pair<InstanceGuid, ObjectGuid> const key{InstanceKey(boss), mob->GetGUID()};
+                std::lock_guard<std::mutex> lock(joinLoggedLock);
+                if (joinLogged.insert(key).second)
+                    LOG_INFO("playerbots",
+                             "[lead821] {}: {} in its ghouls' landing ({:.1f} yd, reach {:.1f} + {:.1f} spread) is in "
+                             "{}'s fight anyway ({}): the prepull Army goes",
+                             dk->GetName(), mob->GetName(), dk->GetExactDist(mob), reach, spread, boss->GetName(),
+                             joins);
+                continue;
+            }
+        bool const trash = boss && mob != boss && !mob->IsDungeonBoss() && !mob->isWorldBoss() &&
+                           mob->GetSpawnId() && !mob->IsSummon();
+        if (trash)
+            wake.clearFirst.insert(mob->GetGUID());
+        if (!wake.blocker)
+        {
+            wake.blocker = mob;
+            wake.why = Acore::StringFormat("its ghouls land in {}'s aggro reach ({:.1f} yd, dz {:.1f}, reach {:.1f} + "
+                                           "{:.1f} spread){}",
+                                           mob->GetName(), dk->GetExactDist(mob), dz, reach, spread,
+                                           mob == boss ? ": the boss himself" : "");
+        }
     }
-    return nullptr;
+    if (!wake.clearFirst.empty())
+        wake.why += Acore::StringFormat("; {} mob(s) there cleared before {}", wake.clearFirst.size(),
+                                        boss ? boss->GetName() : std::string("the boss"));
+    return wake;
 }
 
 Spell* ArmyChannel(Player* dk)
@@ -109,20 +189,31 @@ float ChannelSec()
 
 // the DK can start the channel now: out of combat, standing, the cooldown off, the spell's runes ready
 // (SpellRuneCost.dbc by RuneType, as Spell::CheckRuneCost reads it; a Death rune stands in for any); empty: yes
-std::string ArmyBlocked(Player* dk)
+// [lead823] `atPrep`: the knight stands where it would channel for `boss` (his preparation, the buff pass's end, the
+// boss pull's gate) - the trash its ghouls would wake there is his to clear first (ArmyLandingTrash); a stand on the
+// way to him (TickArmy before the preparation) only stops the channel
+std::string ArmyBlocked(Player* dk, Creature* boss, bool atPrep)
 {
-    if (!dk->IsAlive())
-        return "dead";
+    bool const tank = PlayerbotAI::IsTank(dk);
+    if (!dk->IsAlive() || dk->HasSpellCooldown(SPELL_ARMY_OF_THE_DEAD))
+    {
+        if (tank && boss)
+            SetLanding(boss, {});  // [lead823] no channel, no landing
+        return !dk->IsAlive() ? "dead" : "on cooldown";
+    }
     if (dk->IsInCombat())
         return "in combat";
-    if (dk->HasSpellCooldown(SPELL_ARMY_OF_THE_DEAD))
-        return "on cooldown";
     if (dk->isMoving())
         return "walking";
     // [lead750] the tank's ghouls wake nothing where they land: the boss is the tank's to open, its adds stay idle
-    if (PlayerbotAI::IsTank(dk))
-        if (Unit* woken = GhoulsWake(dk))
-            return "its ghouls land in " + woken->GetName() + "'s aggro reach";
+    if (tank)
+    {
+        Wake wake = GhoulsWake(dk, boss);
+        if (atPrep && boss)
+            SetLanding(boss, std::move(wake.clearFirst));  // [lead823]
+        if (wake.blocker)
+            return wake.why;
+    }
     SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_ARMY_OF_THE_DEAD);
     SpellRuneCostEntry const* cost = info ? sSpellRuneCostStore.LookupEntry(info->RuneCostID) : nullptr;
     if (!cost)
@@ -290,9 +381,11 @@ float Sec(uint32 fromMs, uint32 toMs) { return int32(getMSTimeDiff(fromMs, toMs)
 void NoteArmyBlocked(LeaderGroup& group, DungeonLeaderState::ArmyPrepull& plan, Player* dk, Unit* boss,
                      std::string const& why, char const* gate)
 {
-    if (why.empty() || plan.blockedLogged == why)
+    // [lead823] one line per reason and mob: the numbers in brackets (distance, reach) move with a wandering mob
+    std::string const key = why.substr(0, why.find(" ("));
+    if (why.empty() || plan.blockedLogged == key)
         return;
-    plan.blockedLogged = why;
+    plan.blockedLogged = key;
     LOG_INFO("playerbots", "[lead803] {}: no prepull Army of the Dead before {} ({}): {}", dk->GetName(),
              boss->GetName(), gate, why);
     group.LogEvent("army_prepull_blocked", JsonObject()
@@ -337,6 +430,8 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         if (channeling && !plan.startedMs)
         {
             plan.startedMs = now;
+            if (Creature* armyBoss = map->GetCreature(plan.boss); armyBoss && PlayerbotAI::IsTank(dk))
+                SetLanding(armyBoss, {});  // [lead823] the ghouls are down: nothing more to clear for them
             group.LogEvent("army_prepull_started", JsonObject()
                                                        .Str("dk", dk->GetName())
                                                        .Real("afterOrderSec", Sec(plan.orderedMs, now))
@@ -382,7 +477,10 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
             plan = DungeonLeaderState::ArmyPrepull{boss->GetGUID()};
         if (plan.done || plan.startedMs)
             continue;
-        std::string const blocked = ArmyBlocked(dk);
+        // [lead823] the group stands in the boss's preparation (PrepLeftSec's own test): the knight's spot is his
+        GroupRouteState const& route = group.Route();
+        bool const atPrep = route.needBuff && route.buffStep && route.target == boss->GetGUID();
+        std::string const blocked = ArmyBlocked(dk, boss, atPrep);
         if (!plan.orderedMs)
         {
             if (!blocked.empty())
@@ -407,6 +505,19 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         }
         else if (!blocked.empty() && blocked != "walking")
         {
+            // [lead823] trash in its landing is the boss's to clear first: the order is taken back and given anew
+            // once the knight can channel (the trash dead or out of the landing), not dropped for this boss
+            if (PlayerbotAI::IsTank(dk) && LandingHasTrash(boss))
+            {
+                if (Leader::MemberEvents events;
+                    Leader::Events::Get(dk->GetGUID(), events) && events.externalSpell == SPELL_ARMY_OF_THE_DEAD)
+                    Leader::Events::SetExternal(dk->GetGUID(), 0, ObjectGuid::Empty);
+                group.LogEvent("army_prepull_paused", JsonObject().Str("dk", dk->GetName()).Str("why", blocked));
+                std::string const logged = plan.blockedLogged;
+                plan = DungeonLeaderState::ArmyPrepull{boss->GetGUID()};
+                plan.blockedLogged = logged;
+                continue;
+            }
             plan.done = true;
             group.LogEvent("army_prepull_dropped", JsonObject().Str("dk", dk->GetName()).Str("why", blocked));
             continue;
@@ -476,7 +587,8 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
             // [lead520] b211 rfc-h 5C Oggleflint / Taragaman: the knight was in combat / walking during the one-second
             // buff pass end and was never told, then stood idle 14 s before the pull. Its pull orders it too, once
             // the knight can channel (wowsims prepulls Army whenever it is ready; one on cooldown is not waited for)
-            if (std::string const blocked = ArmyBlocked(dk); !blocked.empty())
+            // [lead823] both gates order the channel where the knight stands: its landing is the boss fight's
+            if (std::string const blocked = ArmyBlocked(dk, boss->ToCreature(), true); !blocked.empty())
             {
                 NoteArmyBlocked(group, plan, dk, boss, blocked, orderNow ? "the buff pass end" : "the boss pull");
                 continue;
@@ -493,7 +605,7 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
                                                        .Real("plannedDelaySec", ChannelSec()));
         }
         // told, cannot start now (TickArmy drops it on a lasting reason): nothing to wait for
-        else if (!channel && !plan.startedMs && !ArmyBlocked(dk).empty())
+        else if (!channel && !plan.startedMs && !ArmyBlocked(dk, boss->ToCreature(), true).empty())
             continue;
         if (!plan.prepEndMs)
         {
@@ -514,6 +626,15 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
                         : std::string("starts the channel"));
     }
     return holds;
+}
+
+bool ArmyLandingTrash(Creature* boss, Creature* mob)
+{
+    if (!boss || !mob)
+        return false;
+    std::lock_guard<std::mutex> lock(landingLock);
+    auto const found = landingTrash.find(InstanceKey(boss));
+    return found != landingTrash.end() && found->second.count(mob->GetGUID());
 }
 
 bool OverkillStealther(Player* bot)
