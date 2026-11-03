@@ -189,6 +189,35 @@ namespace Leader::Dungeon
         return false;
     }
 
+    // [lead772] a dungeon boss in combat that fights the group: his victim a member or one's pet, or engaged by
+    // one of them or a pet. b220 rfc-h 5E 1192.5 s: the Searing Blade Cultist pull "brings Bazzalan" (leader_boss_pull
+    // 1184.1 s); Bazzalan was in combat (the pull's fight on the tank and the hunter's pet) before any member was
+    // his victim or engaged him - neither this fight's boss nor a boss left to pull (the next boss is one out of
+    // combat): "vanish: trash, no boss left", "bestial wrath: trash, no boss left" (boss_engaged 1194 s). A pull
+    // with the boss in it is the boss fight
+    bool BossFightsGroup(Creature* boss, Player* tank, std::vector<Player*> const& seats)
+    {
+        if (!boss || !boss->IsAlive() || !boss->IsInCombat())
+            return false;
+        Unit* victim = boss->GetVictim();
+        Unit* victimOwner = victim ? victim->GetCharmerOrOwnerOrSelf() : nullptr;
+        auto const fights = [&](Player* member)
+        {
+            if (!member)
+                return false;
+            if (victimOwner == member || boss->IsEngagedBy(member))
+                return true;
+            Pet* pet = member->GetPet();
+            return pet && boss->IsEngagedBy(pet);
+        };
+        if (fights(tank))
+            return true;
+        for (Player* bot : seats)
+            if (fights(bot))
+                return true;
+        return false;
+    }
+
     // [lead274] the burn verdict of one member (`kind`: its cooldowns, or the group's Heroism / Bloodlust), logged
     // when which cooldowns are allowed / held changes (the reasons' running numbers are no change)
     void LogBurnDecision(DecisionRun const& run, DungeonLeaderState& lead, Player* bot, char const* kind,
@@ -1378,10 +1407,7 @@ namespace Leader::Dungeon
                         Creature* boss = map->GetCreature(bossGuid);
                         if (!boss || !boss->IsAlive() || !boss->IsInCombat() || !boss->IsDungeonBoss())
                             continue;
-                        bool engaged = boss->IsEngagedBy(tank) || boss->GetVictim() == tank;
-                        for (Player* bot : seats)
-                            engaged = engaged || boss->IsEngagedBy(bot) || boss->GetVictim() == bot;
-                        if (engaged)
+                        if (BossFightsGroup(boss, tank, seats))  // [lead772]
                         {
                             inFight = boss;
                             break;
@@ -1447,6 +1473,7 @@ namespace Leader::Dungeon
             // fight seconds over its best drink's rate; the group waits for the slowest drinker) and the walk from
             // stop to stop to the boss; without a plan to him the on-path mobs and the straight walk, as before
             lead.bossPullSec = -1.0f;
+            lead.bossPullPartsSec = -1.0f;
             lead.bossPullParts.clear();
             if (nextBoss)
             {
@@ -1503,6 +1530,7 @@ namespace Leader::Dungeon
                 }
                 lead.bossWalkSec = walkYd / speed;
                 lead.bossPullSec = lead.fightSecLeft + trashSec + restSec + lead.bossWalkSec;
+                lead.bossPullPartsSec = lead.bossPullSec;  // [lead771]
                 // [lead513] b210 rfc-h 5C 875.9 s: Starfall / Force of Nature held on Jergosh for Bazzalan "his pull
                 // in >= 78 s" - he was pulled 217 s later. The route plans the way to the next boss only once the boss
                 // fight under way ends (5C route_plan "first plan" to Bazzalan at 922 s, 7 stops 307 yd): until then
@@ -2638,10 +2666,7 @@ namespace Leader::Dungeon
                 Creature* boss = map->GetCreature(bossGuid);
                 if (!boss || !boss->IsAlive() || !boss->IsInCombat() || !boss->IsDungeonBoss())
                     continue;
-                bool inFight = boss->IsEngagedBy(tank) || boss->GetVictim() == tank;
-                for (Player* bot : seats)
-                    inFight = inFight || boss->IsEngagedBy(bot) || boss->GetVictim() == bot;
-                if (inFight)
+                if (BossFightsGroup(boss, tank, seats))  // [lead772]
                 {
                     fightBoss = boss;
                     break;
@@ -2683,10 +2708,18 @@ namespace Leader::Dungeon
                     why = "trash, no boss left";
                     return true;
                 }
-                bool const back = lead.bossPullSec >= rechargeSec;
+                // [lead771] b220 rfc-h 5F 935.2 s: Vanish "trash: back before the pull of Bazzalan (his pull in
+                // 251 s, recharge 180 s)" in the fight's tail after Jergosh - the route had no plan to Bazzalan yet
+                // (its first plan came the same second, 7 stops 297 yd) and the stretch floor (lead513: the run's
+                // mean stretch between bosses, 278 / 383 / 330 s before) stood for the estimate; he was pulled 155 s
+                // later (5B 1001.4 s: floor 287 s, pulled 158 s later). The floor is a guess of the boss fight's gain
+                // plan; "back before" on trash needs the estimate the leader can account for - its parts (this
+                // fight, the trash it knows of, the rest, the walk)
+                float const pullSec = lead.bossPullPartsSec >= 0.0f ? lead.bossPullPartsSec : lead.bossPullSec;
+                bool const back = pullSec >= rechargeSec;
                 why = Acore::StringFormat("{} {} (his pull in {:.0f} s, recharge {:.0f} s)",
                                           back ? "trash: back before the pull of" : "held for", lead.nextBossName,
-                                          lead.bossPullSec, rechargeSec);
+                                          pullSec, rechargeSec);
                 return back;
             }
             // [lead700] b218 rfc-h: Heroism (Sated 600 s) went to one boss a run in every shaman comp - 5B held it on
@@ -2917,20 +2950,33 @@ namespace Leader::Dungeon
             for (Unit* caster : casters)
             {
                 Player* kicker = nullptr;
-                if (auto const kept = lead.kickers.find(caster->GetGUID()); kept != lead.kickers.end())
-                    if (Player* bot = ObjectAccessor::FindPlayer(kept->second);
+                if (auto const held = lead.kickers.find(caster->GetGUID()); held != lead.kickers.end())
+                    if (Player* bot = ObjectAccessor::FindPlayer(held->second);
                         bot && bot->IsAlive() && LeaderReadyInterrupt(bot))
                         kicker = bot;
+                bool const kept = kicker != nullptr;  // the kicker kept while it holds (no switch mid-cast)
+                // [lead776] b220 rfc-h 5E Taragaman: the rogue's Kick on every Fire Nova (714.5 - 763.5 s, 5 in the
+                // 62 s fight, 25 energy each = 121 energy a minute). Fire Nova (11970: 2 s cast, 10 yd round him,
+                // 100-112 fire x the map's spell factor 30 = ~3.2k on the tank and each melee) is worth a kick - not
+                // kicked it lands on two or three members or walks the melee out 3-4 s ("hazard: area cast") - but
+                // the kicker is the one it costs least: an interrupt off the global cooldown paid in mana (Wind
+                // Shear, Counterspell, Silencing Shot) before one paid in energy / rage / runic power (Kick, Pummel,
+                // Mind Freeze), one on the global cooldown last; the seats' order among equals
+                uint8 kickerRank = 0;
                 for (Player* bot : seats)
                 {
-                    if (kicker)
+                    if (kicker && kept)
                         break;
                     // [lead90] b131 946.1 s: Rtmagaa's Counterspell on a Searing Blade Warlock the tank had no threat
                     // on - a kicker only while it has threat headroom on the caster (its threat below the tank's)
                     if (bot != healer && !busy.count(bot->GetGUID()) && LeaderReadyInterrupt(bot) &&
                         bot->GetExactDist(caster) <= 30.0f &&
                         caster->GetThreatMgr().GetThreat(bot) < caster->GetThreatMgr().GetThreat(tank))
-                        kicker = bot;
+                        if (uint8 const rank = LeaderInterruptCostRank(bot); !kicker || rank < kickerRank)
+                        {
+                            kicker = bot;
+                            kickerRank = rank;
+                        }
                 }
                 if (!kicker || busy.count(kicker->GetGUID()))
                     continue;

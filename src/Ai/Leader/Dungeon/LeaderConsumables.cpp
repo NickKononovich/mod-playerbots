@@ -22,7 +22,10 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
+#include <algorithm>
 #include <set>
+#include <string>
+#include <vector>
 
 namespace Leader::Dungeon
 {
@@ -111,24 +114,69 @@ namespace Leader::Dungeon
     void BossBuffPass(LeaderGroup& group)
     {
         GroupRouteState& route = group.Route();
-        if (!group.RouteTargetIsBoss() || route.target.IsEmpty())
-            return;
-
         Player* leader = ObjectAccessor::FindPlayer(group.LeaderGuid());
-        Creature* boss = leader ? leader->GetMap()->GetCreature(route.target) : nullptr;
-        if (!boss || boss->IsInCombat())
+        if (!leader)
+            return;
+        Map* map = leader->GetMap();
+        // the route's boss target; [lead775] b220 rfc-h 5E 703.0 s: the planner pulled Taragaman as its nearest pick
+        // ("boss pulled where it stands") while the route's target was a patrolling Searing Blade Enforcer - no buff
+        // pass, no ready check before him (buff passes at 264, 971, 1035, 1155, 1160 s): the rogue's Blessing of
+        // Might and the tank's Blessing of Sanctuary (cast at 9 s, 10 min) had run out at ~610 s. Any idle boss within
+        // BOSS_BUFF_DISTANCE of the leader is a boss the next pull may bring
+        Creature* boss = nullptr;
+        if (group.RouteTargetIsBoss() && !route.target.IsEmpty())
+            boss = map->GetCreature(route.target);
+        if (!boss || !boss->IsAlive() || boss->IsInCombat() ||
+            leader->GetExactDist(boss) >= Travel::BOSS_BUFF_DISTANCE)
+        {
+            boss = nullptr;
+            for (ObjectGuid const& bossGuid : group.BossCreatures())
+            {
+                Creature* near = map->GetCreature(bossGuid);
+                if (!near || !near->IsAlive() || near->IsInCombat() || !near->IsDungeonBoss())
+                    continue;
+                float const yd = leader->GetExactDist(near);
+                if (yd < Travel::BOSS_BUFF_DISTANCE && (!boss || yd < leader->GetExactDist(boss)))
+                    boss = near;
+            }
+        }
+        if (!boss)
             return;
 
-        if (leader->GetExactDist(boss) >= Travel::BOSS_BUFF_DISTANCE || route.bossBuffed.count(route.target))
-            return;
-        route.bossBuffed.insert(route.target);
+        // [lead775] a boss buffed for already: a buff the group gives that went since (expired, dispelled, a death)
+        // and that the last pass did not end without - the readiness never read buffs (the planner's own buff wait
+        // is off under the leader, WaitForBuffs: "the buff pass is the leader's"), so the pass runs again
+        std::string gone;
+        if (route.bossBuffed.count(boss->GetGUID()))
+        {
+            if (route.needBuff || leader->IsInCombat())
+                return;
+            std::vector<Player*> players;
+            for (LeaderGroup::MemberInfo const& member : group.Members())
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                    bot && bot->IsAlive() && bot->GetMap() == map && !bot->IsInCombat())
+                    players.push_back(bot);
+            std::string const missing = GivableBuffsMissing(group, players, leader);
+            size_t start = 0;
+            while (start < missing.size())
+            {
+                size_t const end = std::min(missing.find(", ", start), missing.size());
+                std::string const one = missing.substr(start, end - start);
+                if (route.buffEndMissing.find(one) == std::string::npos)
+                    gone += (gone.empty() ? "" : ", ") + one;
+                start = end + 2;
+            }
+            if (gone.empty())
+                return;
+        }
+        route.bossBuffed.insert(boss->GetGUID());
         // Black Morass: the shield drains during buffs + ready check (50 -> 30 % before Temporus, 33 -> 11 % before
         // Deja in bm-n 2026-10-25); a rift boss is pulled at once.
         if (route.watchedRift > 0)
             return;
         // [brd_seven_fast] a scripted wave that just became attackable: no buff pass / ready check, pulled at once
         // (the Tomb of the Seven resets after 15 s with no dwarf in combat).
-        if (Travel::EventWaveFresh(group.InstanceId(), route.target))
+        if (Travel::EventWaveFresh(group.InstanceId(), boss->GetGUID()))
         {
             group.LogEvent("event_wave_no_ready_check",
                            JsonObject().Str("name", boss->GetName()).Num("entry", boss->GetEntry()));
@@ -136,6 +184,6 @@ namespace Leader::Dungeon
         }
         route.needBuff = true;
         route.buffStep = 0;
-        route.buffReason = std::string("before ") + boss->GetName();
+        route.buffReason = std::string("before ") + boss->GetName() + (gone.empty() ? "" : " (gone: " + gone + ")");
     }
 }

@@ -306,6 +306,8 @@ namespace Leader
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
         float bossPullSec = -1.0f;  // [lead178] seconds to the next boss pull: this fight, the on-path fights, the walk
         std::string bossPullParts;  // [lead724] bossPullSec's parts, logged with each burn_decision
+        // [lead771] bossPullSec from its parts alone (no stretch floor): what a trash verdict's "back before" reads
+        float bossPullPartsSec = -1.0f;
         // [lead274] every living boss judged like any pull once per fight (JudgePack's overload, his length over the
         // group's dps): the burn cooldowns go to the boss that needs them most; the fight itself (a critical pull)
         struct BossNeed
@@ -456,6 +458,15 @@ namespace Leader
             bool done = false;
         };
         std::map<ObjectGuid, ArmyPrepull> armyPrepull;
+        // [lead773] the assassination rogue's pre-pull Stealth for Overkill per rogue (LeaderPrepull.h StealthHolds):
+        // the boss pull it is for, the pull gate waits for it (ordered), done once stealthed / refused / fighting
+        struct StealthPrepull
+        {
+            ObjectGuid boss;
+            bool ordered = false;
+            bool done = false;
+        };
+        std::map<ObjectGuid, StealthPrepull> stealthPrepull;
         // [lead271] the trap weave per hunter (LeaderTrapWeave.h)
         struct TrapWeave
         {
@@ -481,6 +492,8 @@ namespace Leader
             std::set<ObjectGuid> resNoneLogged;  // dead members nobody can raise, logged once per death
             ObjectGuid prepotBoss;                // the boss the pre-pull potions are for
             std::set<ObjectGuid> prepotDone;      // members done (used it, have none, or refused) for that boss
+            ObjectGuid prepopBoss;                // [lead774] the boss the cat's pre-pull Berserk is for
+            std::set<ObjectGuid> prepopDone;      // [lead774] cats done (cast it or refused) for that boss
             std::map<ObjectGuid, std::string> potionLogged;  // the last in-fight potion verdict logged per member
             uint32 fightStartMs = 0;               // the fight's start (the members' measured damage taken rate)
             std::map<ObjectGuid, uint64> takenAtStart;

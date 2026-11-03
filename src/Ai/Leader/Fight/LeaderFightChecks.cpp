@@ -48,13 +48,30 @@ namespace Leader::Fight
     // Freeze, Silence); 0: none
     uint32 LeaderReadyInterrupt(Player* bot)
     {
+        // [lead776] b220 rfc-h 5H Taragaman 681.7 / 721.7 s: no kicker for his Fire Nova (the mage's Counterspell on
+        // its cooldown, 708.1 s), the cat walked out of it twice - the marksman's Silencing Shot (34490, off the
+        // global cooldown, the bot's own interrupt option: InterruptValues) was no interrupt to the leader
         static constexpr uint32 INTERRUPTS[] = {1766,  1767, 1768,  1769,  38768, 6552,  6554, 72,
-                                                1671,  1672, 29704, 2139,  57994, 47528, 15487};
+                                                1671,  1672, 29704, 2139,  57994, 47528, 15487, 34490};
         uint32 ready = 0;
         for (uint32 spell : INTERRUPTS)
             if (bot->HasSpell(spell) && !bot->HasSpellCooldown(spell))
                 ready = spell;
         return ready;
+    }
+
+    uint8 LeaderInterruptCostRank(Player* bot)
+    {
+        uint32 const spell = LeaderReadyInterrupt(bot);
+        SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (!info)
+            return 2;
+        // the game's global cooldown: its start recovery category (133) with a time (Spell::TriggerGlobalCooldown)
+        if (info->StartRecoveryCategory && info->StartRecoveryTime)
+            return 2;
+        bool const damageResource = info->PowerType == POWER_ENERGY || info->PowerType == POWER_RAGE ||
+                                    info->PowerType == POWER_RUNIC_POWER;
+        return damageResource && info->CalcPowerCost(bot, info->GetSchoolMask()) > 0 ? 1 : 0;
     }
 
     bool LeaderInterruptReaches(Player* bot, Unit* caster)

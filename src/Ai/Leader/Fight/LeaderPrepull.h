@@ -36,6 +36,15 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
 // The boss preparation is over but for the Army: `orderNow` true at the buff pass's end (an Army not told yet is told
 // now), false at the planner's pull gates (they only wait for a channel under way or told). Empty: nothing holds.
 std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow);
+
+// [lead773] wowsims assassination: the rogue stands in Stealth at the pull, so its first ability starts Overkill. A
+// rogue with the talent that can stealth (alive, out of combat, Stealth known and ready) is ordered at the boss pull's
+// gate and the pull waits until it is in Stealth (TickPotions asserts the order; a refusal or a fight ends the wait).
+// Empty: nothing holds.
+std::string StealthHolds(LeaderGroup& group, Unit* boss);
+// [lead773] the rogue's Overkill talent and Stealth known (the passive talent is no spell: HasTalent)
+bool OverkillStealther(Player* bot);
+constexpr uint32 SPELL_STEALTH = 1784;
 }  // namespace Leader::Prepull
 
 #endif

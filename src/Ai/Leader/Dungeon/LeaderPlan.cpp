@@ -1227,7 +1227,11 @@ namespace Leader::Dungeon
                 // [lead270] a prepull Army's channel under way ends before the boss pull goes
                 // [lead541] the boss the pull brings too (PullBoss)
                 if (Creature* boss = waitFor.empty() ? PullBoss(tank->GetMap(), mob, committed) : nullptr)
+                {
                     waitFor = Leader::Prepull::ArmyHolds(group, boss, false);
+                    if (waitFor.empty())
+                        waitFor = Leader::Prepull::StealthHolds(group, boss);  // [lead773]
+                }
                 if (!waitFor.empty())
                 {
                     lead.spotsWaiting = gate;
@@ -1292,6 +1296,8 @@ namespace Leader::Dungeon
             // [lead77] b120 537.5 s: "boss pulled where it stands" with the group ~100 yd away
             if (boss && notReady.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
                 notReady = "a member cannot follow (trailing / its walk blocked)";
+            if (boss && notReady.empty())  // [lead773] the rogue's pre-pull Stealth before the boss pull goes
+                notReady = Leader::Prepull::StealthHolds(group, boss);
             if (boss && !notReady.empty())
             {
                 lead.bossWaitFor = boss->GetGUID();  // [lead46] the members' Rest reads this wait
@@ -2077,8 +2083,10 @@ namespace Leader::Dungeon
             }
             // [lead270] a prepull Army's channel under way ends before the boss pull is issued
             // [lead541] the boss the pull brings too (PullBoss)
+            // [lead773] and the rogue's pre-pull Stealth (StealthHolds)
             if (Creature* pullBoss = decides ? PullBoss(tank->GetMap(), lookMob, decision) : nullptr)
-                if (std::string const army = Leader::Prepull::ArmyHolds(group, pullBoss, false); !army.empty())
+                if (std::string army = Leader::Prepull::ArmyHolds(group, pullBoss, false);
+                    !army.empty() || !(army = Leader::Prepull::StealthHolds(group, pullBoss)).empty())
                 {
                     if (lead.armyHoldFor != pullBoss->GetGUID())
                     {

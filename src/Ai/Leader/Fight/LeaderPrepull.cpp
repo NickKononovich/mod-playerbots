@@ -489,4 +489,48 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
     }
     return holds;
 }
+
+bool OverkillStealther(Player* bot)
+{
+    constexpr uint32 SPELL_OVERKILL_TALENT = 58426;
+    return bot && bot->getClass() == CLASS_ROGUE && bot->HasTalent(SPELL_OVERKILL_TALENT, bot->GetActiveSpec()) &&
+           bot->HasSpell(SPELL_STEALTH);
+}
+
+std::string StealthHolds(LeaderGroup& group, Unit* boss)
+{
+    // [lead773] b220 rfc-h 5E Taragaman: "pre-pull Stealth for Overkill: the boss pull opens" at 703.0 s, the same
+    // tick as the pull order and the rogue's pre-pull potion; the rogue took the potion first (member_ack 704.4 s),
+    // the boss fight was on at 704.6 s and Stealth (no cast in combat) was never cast - its External gave way to
+    // Tricks of the Trade at 704.9 s; Oggleflint's pull had 2.6 s and got it (ack 276.1 s). The rogue goes into
+    // Stealth before the pull is issued, like the prepull Army's channel
+    if (!boss || !boss->IsAlive() || boss->IsInCombat())
+        return std::string();
+    auto& plans = group.State().stealthPrepull;
+    std::string holds;
+    for (Player* rogue : GroupPlayers(group, boss->GetMap()))
+    {
+        if (!OverkillStealther(rogue))
+            continue;
+        DungeonLeaderState::StealthPrepull& plan = plans[rogue->GetGUID()];
+        if (plan.boss != boss->GetGUID())
+            plan = DungeonLeaderState::StealthPrepull{boss->GetGUID()};
+        if (plan.done)
+            continue;
+        if (rogue->HasAura(SPELL_STEALTH) || !rogue->IsAlive() || rogue->IsInCombat() ||
+            rogue->HasSpellCooldown(SPELL_STEALTH))
+        {
+            plan.done = rogue->HasAura(SPELL_STEALTH) || rogue->IsInCombat();
+            continue;
+        }
+        if (!plan.ordered)
+        {
+            plan.ordered = true;
+            group.LogEvent("stealth_prepull_ordered",
+                           JsonObject().Str("boss", boss->GetName()).Str("rogue", rogue->GetName()));
+        }
+        holds = Acore::StringFormat("Stealth for Overkill: {} stealths", rogue->GetName());
+    }
+    return holds;
+}
 }  // namespace Leader::Prepull

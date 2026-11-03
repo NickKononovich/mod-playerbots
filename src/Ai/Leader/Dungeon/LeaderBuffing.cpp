@@ -464,6 +464,7 @@ namespace Leader::Dungeon
                                     Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
                                     break;
                                 }
+                    route.buffEndMissing = missing;  // [lead775] what this pass could not give
                     stepDone(2, why);
                     for (Player* bot : players)
                         wait.consumableUsed = UseConsumables(group, bot, false) || wait.consumableUsed;
@@ -593,5 +594,10 @@ namespace Leader::Dungeon
             if (route.buffStep == stepBefore)
                 break;
         }
+    }
+
+    std::string GivableBuffsMissing(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
+    {
+        return leader ? MissingGivableBuffs(group, players, leader) : std::string();
     }
 }

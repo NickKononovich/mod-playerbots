@@ -117,6 +117,11 @@ namespace Leader::Fight
     // reach for Kick / Pummel / Shield Bash / Mind Freeze, its yards for Counterspell / Wind Shear / Silence)
     bool LeaderInterruptReaches(Player* bot, Unit* caster);
 
+    // [lead776] what the bot's ready interrupt costs its own damage, as a rank (lower: cheaper): 0 off the global
+    // cooldown with a mana cost or none, 1 off it with energy / rage / runic power (the resources its attacks are
+    // bought with), 2 on the global cooldown (a cast of its own lost)
+    uint8 LeaderInterruptCostRank(Player* bot);
+
     // the healer at `from` heals `to`: in range (LEADER_HEAL_REACH_YD) and in sight
     // [lead36] LEADER_SPOT_ACQUIRE_MARGIN while a new spot is picked (SpotAcquire), 0 for a held spot's check
     extern float g_spotAcquireMargin;

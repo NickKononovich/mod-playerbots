@@ -263,6 +263,8 @@ namespace Leader
         std::vector<Position> wingAnchors;
         std::vector<Position> otherWingAnchors;
         std::set<ObjectGuid> bossBuffed;
+        // [lead775] the buffs the last buff pass ended without ("<member> <buff>, ..."; its casters do not give them)
+        std::string buffEndMissing;
         bool noTargets = false;
         // Event started, nothing hostile: the group walks to the content's gather spot (Halls of Reflection waves
         // start only with everybody within 40 yd of the altar). Logged once per no-target episode.

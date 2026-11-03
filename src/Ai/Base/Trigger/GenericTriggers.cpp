@@ -556,7 +556,13 @@ bool BoostTrigger::IsActive()
     // [lead423] a healer's Shadowfiend too: the leader's mana tool
     bool const toolUse = (PlayerbotAI::IsHeal(bot) && name != "shadowfiend") ||
                          (name == "mirror image" && AI_VALUE(uint8, "my attacker count"));
-    if (!toolUse && Leader::IsBurnCooldown(name) && Leader::ExecutorMember(bot))
+    // [lead770] b220 rfc-h: the bear tanks cast Berserk on trash 6 times each (5D Rtdruac, 5H Rtdruae) and on 0 of
+    // their 8 bosses - 5H 209-230 s, 569-608 s, 776-800 s, 955-982 s under the leader's "berserk: held for <boss>"
+    // (the protection paladins' Avenging Wrath 2 / 3 and 3 / 2 trash / boss). The led tank is no executor member
+    // (Orders::IsTracked), so its boost triggers fell through to "instances: on cooldown" while the leader judged
+    // its cooldowns every fight tick (LeaderEvents, SetIntensity on the tank). Every led bot's burn cooldown is the
+    // leader's verdict, the tank's too
+    if (!toolUse && Leader::IsBurnCooldown(name) && Leader::LedBot(bot))
     {
         Leader::MemberEvents events;
         return Leader::Events::Get(bot->GetGUID(), events) && Leader::BurnAllows(events, name);

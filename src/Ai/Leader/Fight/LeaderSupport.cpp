@@ -11,6 +11,7 @@
 #include <list>
 #include <map>
 
+#include "AiFactory.h"  // [lead774] the cat's spec
 #include "ChooseTargetActions.h"  // [lead520] PullReadiness::MemberNeedsManaPotion
 #include "Creature.h"
 #include "DamageTaken.h"
@@ -22,6 +23,7 @@
 #include "ItemTemplate.h"  // [lead520]
 #include "LeaderFightChecks.h"
 #include "LeaderOrders.h"
+#include "LeaderPrepull.h"  // [lead773] StealthHolds
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"  // [lead520] the mana gem's item cooldown
@@ -535,30 +537,116 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
     // [lead524] wowsims assassination: the rogue is in Stealth at the pull so its first ability out of it starts
     // Overkill (the talent's aura, 20 s of energy regen). The boss pull opening is its stealth's moment, like the
     // pre-pull potion; out of combat and Stealth ready (the game's checks are the cast's own)
-    constexpr uint32 SPELL_OVERKILL_TALENT = 58426;
-    constexpr uint32 SPELL_STEALTH = 1784;
+    using Leader::Prepull::SPELL_STEALTH;
+    // [lead773] the rogue told at the boss pull's gate (StealthHolds): its order stands while that boss is unpulled
+    // and the rogue can stealth; a refusal ends it (the gate stops waiting)
+    auto& stealthPlans = lead.stealthPrepull;
+    auto const gateOrdered = [&](Player* bot) -> Creature*
+    {
+        auto const plan = stealthPlans.find(bot->GetGUID());
+        if (plan == stealthPlans.end() || !plan->second.ordered || plan->second.done)
+            return nullptr;
+        Creature* planBoss = map->GetCreature(plan->second.boss);
+        return planBoss && planBoss->IsAlive() && !planBoss->IsInCombat() ? planBoss : nullptr;
+    };
     // the order is done once the rogue is in Stealth or fighting (its slot is free for the next External)
     for (Player* bot : members)
-        if (Leader::MemberEvents events; bot->getClass() == CLASS_ROGUE &&
-                                         Leader::Events::Get(bot->GetGUID(), events) &&
-                                         events.externalSpell == SPELL_STEALTH &&
-                                         (bot->HasAura(SPELL_STEALTH) || bot->IsInCombat() || !boss))
+    {
+        if (bot->getClass() != CLASS_ROGUE)
+            continue;
+        if (std::string failed; Leader::Events::TakeExternalFailed(bot->GetGUID(), SPELL_STEALTH, failed))
+        {
+            if (auto const plan = stealthPlans.find(bot->GetGUID()); plan != stealthPlans.end())
+                plan->second.done = true;
+            Decisions().Write(group.Run(), "leader", "stealth_prepull_dropped", bot->GetGUID(), bot->GetName(),
+                              false,
+                              JsonObject().Str("rogue", bot->GetName()).Str("why", "the member reports: " + failed));
+        }
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.externalSpell == SPELL_STEALTH &&
+            (bot->HasAura(SPELL_STEALTH) || bot->IsInCombat() || (!boss && !gateOrdered(bot))))
             Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+    }
+    for (Player* bot : members)
+    {
+        Creature* stealthFor = boss ? boss : gateOrdered(bot);
+        auto const plan = stealthPlans.find(bot->GetGUID());
+        bool const doneFor = stealthFor && plan != stealthPlans.end() && plan->second.done &&
+                             plan->second.boss == stealthFor->GetGUID();  // refused for this boss: no new order
+        if (stealthFor && !doneFor && bot->IsAlive() && !bot->IsInCombat() && Leader::Prepull::OverkillStealther(bot) &&
+            !bot->HasAura(SPELL_STEALTH) && !bot->HasSpellCooldown(SPELL_STEALTH) &&
+            Leader::Events::SetExternal(bot->GetGUID(), SPELL_STEALTH, bot->GetGUID()))
+            logEvent(bot, "External",
+                     JsonObject()
+                         .Num("spell", SPELL_STEALTH)
+                         .Str("on", bot->GetName())
+                         .Str("boss", stealthFor->GetName())
+                         .Str("why", boss ? "pre-pull Stealth for Overkill: the boss pull opens"
+                                          : "pre-pull Stealth for Overkill: the boss pull waits for it"));
+    }
+    // [lead774] wowsims feral (PrePopBerserk): the cat's Berserk goes out 1 s before the boss pull, its 15 s from the
+    // first hit on (b220 rfc-h 5H Rtdruaf: Berserk in every boss fight, each one only after Rip was up - the in-fight
+    // berserkNow). Once the boss's pull order is open, a feral cat out of combat in Cat Form with Berserk ready casts
+    // it when the tank reaches the boss's aggro reach within that second (its walk over its run speed; a pull from
+    // range: at once). Kept for a later boss when the run's measured stretch between bosses is shorter than its
+    // recharge (the gain plan's own measure)
+    constexpr uint32 SPELL_BERSERK_DRUID = 50334;
+    constexpr uint32 SPELL_CAT_FORM = 768;
+    constexpr float PREPOP_BERSERK_SEC = 1.0f;  // wowsims feral: Berserk at -1 s
     if (boss)
     {
+        if (st.prepopBoss != boss->GetGUID())
+        {
+            st.prepopBoss = boss->GetGUID();
+            st.prepopDone.clear();
+        }
+        float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+        float const tankEta = std::max(0.0f, tank->GetExactDist(boss) - boss->GetAggroRange(tank)) / speed;
+        bool laterBoss = false;
+        for (ObjectGuid const& bossGuid : group.BossCreatures())
+            if (Creature* other = bossGuid == boss->GetGUID() ? nullptr : map->GetCreature(bossGuid);
+                other && other->IsAlive())
+                laterBoss = true;
         for (Player* bot : members)
-            if (bot->getClass() == CLASS_ROGUE && bot->IsAlive() && !bot->IsInCombat() &&
-                // [lead670] a passive talent is no spell the bot has (HasSpell false): b218 never stealthed for it
-                bot->HasTalent(SPELL_OVERKILL_TALENT, bot->GetActiveSpec()) && bot->HasSpell(SPELL_STEALTH) &&
-                !bot->HasAura(SPELL_STEALTH) && !bot->HasSpellCooldown(SPELL_STEALTH) &&
-                Leader::Events::SetExternal(bot->GetGUID(), SPELL_STEALTH, bot->GetGUID()))
+        {
+            if (bot->getClass() != CLASS_DRUID || st.prepopDone.count(bot->GetGUID()))
+                continue;
+            if (std::string failed; Leader::Events::TakeExternalFailed(bot->GetGUID(), SPELL_BERSERK_DRUID, failed))
+            {
+                st.prepopDone.insert(bot->GetGUID());
+                continue;
+            }
+            if (PlayerbotAI::IsTank(bot) || AiFactory::GetPlayerSpecTab(bot) != DRUID_TAB_FERAL ||
+                !bot->IsAlive() || bot->IsInCombat() || !bot->HasSpell(SPELL_BERSERK_DRUID) ||
+                bot->HasSpellCooldown(SPELL_BERSERK_DRUID) || !bot->HasAura(SPELL_CAT_FORM) ||
+                tankEta > PREPOP_BERSERK_SEC)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_BERSERK_DRUID);
+            int32 rechargeMs = info ? int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) : 0;
+            bot->ApplySpellMod(SPELL_BERSERK_DRUID, SPELLMOD_COOLDOWN, rechargeMs);
+            if (laterBoss && lead.stretches &&
+                lead.stretchSecSum / float(lead.stretches) < std::max(rechargeMs, 0) / 1000.0f)
+                continue;
+            if (Leader::Events::SetExternal(bot->GetGUID(), SPELL_BERSERK_DRUID, bot->GetGUID()))
                 logEvent(bot, "External",
                          JsonObject()
-                             .Num("spell", SPELL_STEALTH)
+                             .Num("spell", SPELL_BERSERK_DRUID)
                              .Str("on", bot->GetName())
                              .Str("boss", boss->GetName())
-                             .Str("why", "pre-pull Stealth for Overkill: the boss pull opens"));
+                             .Real("tankEtaSec", tankEta)
+                             .Str("why", "pre-pull Berserk (wowsims feral -1 s): the boss pull opens"));
+        }
     }
+    // the order is done once Berserk is cast or the cat fights (its slot is free for the next External)
+    for (Player* bot : members)
+        if (Leader::MemberEvents events; bot->getClass() == CLASS_DRUID &&
+                                         Leader::Events::Get(bot->GetGUID(), events) &&
+                                         events.externalSpell == SPELL_BERSERK_DRUID &&
+                                         (bot->HasSpellCooldown(SPELL_BERSERK_DRUID) || bot->IsInCombat() || !boss))
+        {
+            st.prepopDone.insert(bot->GetGUID());
+            Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+        }
     if (!fighting)
         return;
 

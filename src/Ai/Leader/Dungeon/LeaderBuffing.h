@@ -16,6 +16,7 @@
 #include "Common.h"
 #include "LeaderGroup.h"
 
+#include <string>
 #include <vector>
 
 class Player;
@@ -30,6 +31,9 @@ namespace Leader::Dungeon
 
     // one step of the buffing pass while the group needs its buffs (LeaderGroup::NeedBuff)
     void TickBuffing(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
+    // [lead775] the buffs the group can give now that are not on every member they are for (lasting the next
+    // fight): "<member> <buff>, ..."; empty: all present
+    std::string GivableBuffsMissing(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
 }
 
 #endif
