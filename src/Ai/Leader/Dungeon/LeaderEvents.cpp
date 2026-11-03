@@ -5519,7 +5519,14 @@ namespace Leader::Dungeon
             {
                 for (Player* caster : seats)
                 {
-                    if (!caster->IsAlive() || told.count(caster->GetGUID()) || caster->IsNonMeleeSpellCast(false))
+                    // [lead610] b217 rfc-h 5H Taragaman 708-715 s: the fire mage's Evocation was ready (cast 468.1 s,
+                    // recharge 240 s), the mage at 1-3 % short of the fight's need, and no mana_tool verdict came - a
+                    // caster casting anything was skipped, and dry it cast Frostbolt / wanded (Shoot's autorepeat
+                    // counts as a cast) on every tick; it got Evocation at 721.8 s on the next trash. A generic cast
+                    // ends by itself (the member casts the tool after it, LeaderExternalAction) and the wand holds
+                    // nothing: only a channel in progress is no moment to tell (the tool's cast would break it)
+                    if (!caster->IsAlive() || told.count(caster->GetGUID()) ||
+                        caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
                         continue;
                     ManaUser const* self = nullptr;
                     for (ManaUser const& user : manaUsers)
