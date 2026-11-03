@@ -146,7 +146,14 @@ namespace Leader::Dungeon
         int32 ms = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
         caster->ApplySpellMod(spell, SPELLMOD_COOLDOWN, ms);
         ms = std::max(ms, 0);
-        if (info->IsCooldownStartedOnEvent())
+        // [lead581] b215 rfc-h 5C: the blood DK's Raise Dead was judged "recharge 240 s" (180 s + the ghoul's 60 s,
+        // the cooldown-on-event rule) and held on trash ("held for Taragaman (his pull in 211 s, recharge 240 s)" at
+        // 578 s); it was ready again at Jergosh 228 s after its cast at 804 s ([rot51] raise dead cd 0). The bot's
+        // CastRaiseDeadAction starts its cooldown at the cast (the temporary ghoul is a guardian, the core's event
+        // never comes for 46584) unless Master of Ghouls keeps the core's own: the real recharge is the cooldown only
+        constexpr uint32 SPELL_RAISE_DEAD = 46584;
+        bool const setAtCast = spell == SPELL_RAISE_DEAD && !caster->HasAura(LeaderCommand::SPELL_MASTER_OF_GHOULS);
+        if (info->IsCooldownStartedOnEvent() && !setAtCast)
         {
             int32 lasts = std::max(info->GetMaxDuration(), 0);
             for (SpellEffectInfo const& effect : info->Effects)
@@ -2432,7 +2439,8 @@ namespace Leader::Dungeon
             return toHim;
         };
         // [lead274] one cooldown's verdict by its recharge: true allowed, `why` the reason either way
-        auto const cooldownVerdict = [&](float rechargeSec, std::string& why) -> bool
+        // [lead581] `effectSec`: how long its effect lasts once cast (the spell's duration)
+        auto const cooldownVerdict = [&](float rechargeSec, float effectSec, std::string& why) -> bool
         {
             if (!critical.empty())
             {
@@ -2465,12 +2473,19 @@ namespace Leader::Dungeon
                 bool const harder = need.overload > mine.overload ||
                                     (need.overload == mine.overload && need.fightSec > mine.fightSec);
                 float const toHim = secToBoss(later);
-                if (harder && toHim < rechargeSec)
+                // [lead581] b215 rfc-h 5H 1016-1032 s: the cat's Berserk (180 s, 15 s) was held on Jergosh "for
+                // Bazzalan (his pull in >= 180 s, recharge 180 s)" - cast then it is back 17 s into his 52 s fight
+                // (pulled 1179 s), its whole 15 s still on him: holding it gave him the same one Berserk and Jergosh
+                // none. Held only when it would not be back in his fight in time for its whole effect there (his
+                // pull plus his fight's estimate less its effect)
+                float const backBy = toHim + std::max(0.0f, need.fightSec - effectSec);
+                if (harder && backBy < rechargeSec)
                 {
                     why = Acore::StringFormat(
                         "held for {} (needs it more: overload {:.2f} / {:.0f} s vs {:.2f} / {:.0f} s; his pull in >= "
-                        "{:.0f} s, recharge {:.0f} s)",
-                        need.name, need.overload, need.fightSec, mine.overload, mine.fightSec, toHim, rechargeSec);
+                        "{:.0f} s, recharge {:.0f} s, effect {:.0f} s)",
+                        need.name, need.overload, need.fightSec, mine.overload, mine.fightSec, toHim, rechargeSec,
+                        effectSec);
                     return false;
                 }
             }
@@ -2503,7 +2518,7 @@ namespace Leader::Dungeon
                     continue;
                 float const rechargeSec = RechargeAfterCastSec(who, spell);  // [lead541] the game's, not the base
                 std::string why;
-                bool const allowed = cooldownVerdict(rechargeSec, why);
+                bool const allowed = cooldownVerdict(rechargeSec, std::max(info->GetMaxDuration(), 0) / 1000.0f, why);
                 if (allowed)
                     allowedOut.push_back(name);
                 std::string& note = allowed ? allowedNote : heldNote;
@@ -2522,7 +2537,9 @@ namespace Leader::Dungeon
                     continue;
                 std::string const name = trinket->GetTemplate()->Name1;
                 std::string why;
-                bool const allowed = cooldownVerdict(rechargeSec, why);
+                SpellInfo const* use = sSpellMgr->GetSpellInfo(spell);
+                bool const allowed =
+                    cooldownVerdict(rechargeSec, use ? std::max(use->GetMaxDuration(), 0) / 1000.0f : 0.0f, why);
                 if (allowed)
                     allowedOut.push_back(name);
                 std::string& note = allowed ? allowedNote : heldNote;
@@ -5274,7 +5291,8 @@ namespace Leader::Dungeon
                 bool allowed = res.needed;
                 if (!allowed)
                     if (sSpellMgr->GetSpellInfo(res.spell))
-                        allowed = cooldownVerdict(RechargeAfterCastSec(res.caster, res.spell), why);  // [lead541]
+                        allowed = cooldownVerdict(RechargeAfterCastSec(res.caster, res.spell), 0.0f,
+                                                  why);  // [lead541]
                 std::string const note = "battle resurrection of " + res.dead->GetName() + ": " + why;
                 std::string& logged = lead.support.battleResLogged[res.dead->GetGUID()];
                 if (logged != note)
@@ -5573,7 +5591,8 @@ namespace Leader::Dungeon
                         if (SpellInfo const* debuff =
                                 sSpellMgr->GetSpellInfo(spell == SPELL_HEROISM ? SPELL_EXHAUSTION : SPELL_SATED))
                             rechargeSec = std::max(rechargeSec, debuff->GetMaxDuration() / 1000.0f);
-                        bool const allowed = cooldownVerdict(rechargeSec, why);
+                        bool const allowed =
+                            cooldownVerdict(rechargeSec, std::max(info->GetMaxDuration(), 0) / 1000.0f, why);
                         std::string const note = "heroism / bloodlust: " + why;
                         LogBurnDecision(run, lead, bot, "heroism", allowed ? note : std::string(),
                                         allowed ? std::string() : note, fightBoss != nullptr);
