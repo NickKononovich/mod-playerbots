@@ -2931,6 +2931,21 @@ namespace Leader::Dungeon
                         critical = Acore::StringFormat("{} in danger at {:.0f} %", bot->GetName(), bot->GetHealthPct());
                         break;
                     }
+            // [lead903] user 2026-11-03 (36): a healer out of mana (under the line the fight's seconds left need, its
+            // own mana cooldowns and the potion credited) is a critical moment too: the cooldowns that save the fight
+            // are not held for a boss
+            if (critical.empty())
+            {
+                std::vector<Player*> everyone = seats;
+                everyone.push_back(tank);
+                critical = Leader::Support::HealerOutOfMana(everyone, lead.fightSecLeft);
+                if (!critical.empty())
+                {
+                    thread_local std::set<uint64> dryLogged;
+                    if (dryLogged.insert(uint64(lead.fightStartMs) << 8 ^ tank->GetGUID().GetCounter()).second)
+                        LOG_INFO("playerbots", "[lead903] critical: {}", critical);
+                }
+            }
         }
         Creature* fightBoss = target && target->ToCreature() && target->ToCreature()->IsDungeonBoss()
                                   ? target->ToCreature()

@@ -56,6 +56,11 @@ std::string BuffPassWork(LeaderGroup& group);
 // [lead780] the member's measured damage taken per second in the fight under way (DamageTaken since its start); 0:
 // none measured (out of a fight, nothing taken yet)
 float MemberTakenPerSec(LeaderGroup& group, Player* member);
+
+// [lead903] user 2026-11-03 (36): a healer out of mana counts as critical for the cooldown rule: a living healer of
+// `members` whose mana is under the line the fight's `fightSecLeft` need (FightManaLine, its own mana cooldowns and the
+// potion credited) - it cannot heal this fight to its end. Empty: none; else the reason
+std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft);
 }  // namespace Leader::Support
 
 #endif

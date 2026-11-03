@@ -802,6 +802,9 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                             rule = "a boss fight";
                         else if (lead.fightOverload >= 1.0f)
                             rule = Acore::StringFormat("a critical pull: overload {:.2f}", lead.fightOverload);
+                        else if (std::string const dry = HealerOutOfMana(members, lead.fightSecLeft);
+                                 !dry.empty())  // [lead903]
+                            rule = "critical: " + dry;
                         else if (lead.bossPullSec < 0.0f)
                             rule = "trash, no boss left";
                         else if (lead.bossPullSec >= rechargeSec)
@@ -1097,6 +1100,20 @@ bool PickBattleRes(LeaderGroup& group, Player* tank, std::vector<Player*> const&
 }
 
 std::string BuffPassWork(LeaderGroup& group) { return group.State().support.buffWork; }
+
+std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft)
+{
+    if (fightSecLeft <= 0.0f)
+        return "";
+    for (Player* bot : members)
+        if (bot && bot->IsAlive() && PlayerbotAI::IsHeal(bot) && bot->GetMaxPower(POWER_MANA))
+            if (float const line = RestState::FightManaLine(bot, fightSecLeft, 0.0f);
+                bot->GetPowerPct(POWER_MANA) < line)
+                return Acore::StringFormat("the healer {} out of mana: {:.0f} % < the {:.0f} % the fight's {:.0f} s "
+                                           "left need",
+                                           bot->GetName(), bot->GetPowerPct(POWER_MANA), line, fightSecLeft);
+    return "";
+}
 
 float MemberTakenPerSec(LeaderGroup& group, Player* member)
 {
