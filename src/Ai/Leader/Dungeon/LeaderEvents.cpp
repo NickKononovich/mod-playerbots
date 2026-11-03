@@ -3809,7 +3809,8 @@ namespace Leader::Dungeon
                     // its cheapest cast: no more spend); a fight it began dry tells nothing of its rate
                     bool const dry = spend.dryPct >= 0.0f;
                     float const endPct = dry ? spend.dryPct : pct;
-                    float const usedSec = dry ? spend.drySec : spend.fightSec;
+                    // [lead921] without the seconds a tool returned in
+                    float const usedSec = std::max((dry ? spend.drySec : spend.fightSec) - spend.toolSec, 0.0f);
                     // [lead480] b208 rfc-h: the casters came to Taragaman short - 5D's arcane mage at ~1 % passed the
                     // boss gate (Oggleflint began at 3 %, its Evocation's 60 % in that fight made the boss net use
                     // negative: boss rate 0, line 0), 5B's elemental shaman stood up at 30 % ("0.35 %/s measured on
@@ -3817,6 +3818,10 @@ namespace Leader::Dungeon
                     // spend without the mana its tools and potions returned: FightManaLine credits a tool only where
                     // it is ready for the fight (its cooldown, the potion the last combat or the pre-pull blocks)
                     float const used = spend.prev - endPct + spend.toolGain;
+                    if (spend.toolSec > 0.0f && spend.prev >= 0.0f)
+                        LOG_INFO("playerbots", "[lead921] {}: {:.1f} s a tool returned in ({:+.1f} % there) are out of "
+                                 "its measured mana rate: used {:.1f} % in {:.1f} s",
+                                 member->GetName(), spend.toolSec, spend.toolGain, used, usedSec);
                     if (spend.prev >= 0.0f && !(dry && spend.dryPct >= spend.prev))  // its net use counts
                     {
                         // [lead222] signed: a fight that ends with more mana than it began (Divine Plea, Judgement
@@ -3893,6 +3898,7 @@ namespace Leader::Dungeon
                     spend.drySec = 0.0f;
                     spend.lastPct = -1.0f;  // [lead480]
                     spend.toolGain = 0.0f;
+                    spend.toolSec = 0.0f;  // [lead921]
                     spend.potion = false;
                     spend.actingSec = 0.0f;  // [lead520]
                     spend.gemReady = false;  // [lead610]
@@ -3913,6 +3919,7 @@ namespace Leader::Dungeon
                     spend.fightSec = 0.0f;
                     spend.actingSec = 0.0f;
                     spend.toolGain = 0.0f;
+                    spend.toolSec = 0.0f;  // [lead921]
                     spend.dryPct = -1.0f;
                     spend.drySec = 0.0f;
                 }
@@ -3929,9 +3936,21 @@ namespace Leader::Dungeon
                 bool const gemReady = RaidConsumables::FindManaGem(member, gemAmount) != 0;
                 bool const gemNow = spend.gemReady && !gemReady;
                 spend.gemReady = gemReady;
-                if (spend.lastPct >= 0.0f && pct > spend.lastPct && spend.dryPct < 0.0f &&
-                    (potionNow || gemNow || member->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER) ||
-                     ManaToolReturning(member, spenders, false)))
+                // [lead921] b225 rfc-h 5C: the balance druid kept casting under its own Innervate (Taragaman
+                // 40052, Jergosh 51715), each tick's net rise counted as the tool's return - the spend of its 10 s
+                // vanished while they counted as acting seconds (0.95 %/s at Jergosh against ~1.3 %/s cast), and the
+                // boss line credits the same Innervate again. A tick a tool returns in (not Viper: the hunter's
+                // aspect is its rotation's own) tells nothing of the rotation's rate: its change and its seconds are
+                // out of the measure
+                bool const toolTick = spend.lastPct >= 0.0f && spend.dryPct < 0.0f &&
+                                      (potionNow || gemNow || ManaToolReturning(member, spenders, false));
+                if (toolTick)
+                {
+                    spend.toolGain += pct - spend.lastPct;
+                    spend.toolSec += dt;
+                }
+                else if (spend.lastPct >= 0.0f && pct > spend.lastPct && spend.dryPct < 0.0f &&
+                         member->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER))
                     spend.toolGain += pct - spend.lastPct;
                 spend.lastPct = pct;
                 spend.fightSec += dt;
@@ -3945,7 +3964,7 @@ namespace Leader::Dungeon
                 // (Unit::IsNonMeleeSpellCast without skipAutorepeat) - seconds that spend no mana, the acting rate
                 // under the rotation's (5H fire 1.04 %/s at Taragaman, ~1.4 %/s spent there). The wand is no second
                 // of the mana rotation
-                if (spend.dryPct < 0.0f && !ownToolChannel)
+                if (spend.dryPct < 0.0f && !ownToolChannel && !toolTick)
                     if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
                         member->IsNonMeleeSpellCast(false, false, true) ||
                         (memberAI && memberAI->GetGlobalCooldownRemaining()))
