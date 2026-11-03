@@ -399,6 +399,9 @@ namespace Leader::Fight
         std::set<ObjectGuid> const* trailing = nullptr;  // members the group waits for (LEADER_TRAIL_YD)
         std::vector<G3D::Vector3> const* routePath = nullptr;  // the tank's route leg, walked by index
         size_t routePathIndex = 0;
+        // [lead905] the route plan's walk legs ahead (stop to stop to the boss): the seconds until each begins and
+        // its walk (yd)
+        std::vector<std::pair<float, float>> routeLegs;
     };
     struct LeaderMoveTold
     {

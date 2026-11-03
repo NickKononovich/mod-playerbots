@@ -1754,10 +1754,44 @@ namespace Leader::Fight
         }
 
         // the member's best movement skill for its own walk (`to`, `length`), in a fight or out of it
+        // [lead905] user 2026-11-03 (37): a speed skill with a long recharge (Sprint, Dash) goes on the longest walk
+        // leg the route plan has within its recharge: a leg ahead that begins before it is back and is longer than
+        // the walk now holds it for that leg. `why`: the leg
+        bool HeldForLongerLeg(Player* bot, SpellInfo const* info, float length,
+                              std::vector<std::pair<float, float>> const& legs, std::string& why)
+        {
+            int32 rechargeMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+            bot->ApplySpellMod(info->Id, SPELLMOD_COOLDOWN, rechargeMs);
+            float const rechargeSec = float(std::max(rechargeMs, 0)) / 1000.0f;
+            for (auto const& [startSec, legYd] : legs)
+                if (startSec > 0.0f && startSec < rechargeSec && legYd > length)
+                {
+                    why = Acore::StringFormat("{} held for the route's {:.0f} yd leg in {:.0f} s (this walk {:.0f} yd, "
+                                              "recharge {:.0f} s)",
+                                              info->SpellName[0], legYd, startSec, length, rechargeSec);
+                    return true;
+                }
+            return false;
+        }
+
         Pick BestOwnSkill(Player* bot, Position const& to, float length, std::vector<HazardZone> const& zones,
-                          float manaLine)
+                          float manaLine, std::vector<std::pair<float, float>> const& legs)
         {
             Pick best;
+            auto const legHolds = [&](SpellInfo const* info)
+            {
+                std::string why;
+                if (!HeldForLongerLeg(bot, info, length, legs, why))
+                    return false;
+                thread_local std::map<uint64, std::string> legLogged;
+                std::string& logged = legLogged[bot->GetGUID().GetRawValue()];
+                if (std::string const key = why.substr(0, why.find(" (")); logged != key)
+                {
+                    logged = key;
+                    LOG_INFO("playerbots", "[lead905] {}: {}", bot->GetName(), why);
+                }
+                return true;
+            };
             auto const consider = [&](Pick& pick, uint32 cost)
             {
                 if (pick.saved > pick.cost && (!best.spell || pick.Net() > best.Net()) &&
@@ -1777,7 +1811,7 @@ namespace Leader::Fight
                 }
             // the rogue's Sprint
             if (uint32 const sprint = KnownRank(bot, SPELL_SPRINT); Ready(bot, sprint) && !bot->HasAura(sprint))
-                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(sprint))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(sprint); info && !legHolds(info))
                 {
                     Pick pick;
                     if (SpeedSaves(bot, info, SpeedAmount(bot, info), info->GetMaxDuration() / 1000.0f,
@@ -1789,7 +1823,7 @@ namespace Leader::Fight
             // Moonkin keeps its form: its own form upkeep takes it back within seconds and Dash's speed with it
             // (recalculated to 0 out of Cat Form), and in a fight the form is its role
             if (uint32 const dash = KnownRank(bot, SPELL_DASH); Ready(bot, dash) && !bot->HasAura(dash))
-                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(dash))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(dash); info && !legHolds(info))
                 {
                     bool const inCat = bot->GetShapeshiftForm() == FORM_CAT;
                     SpellInfo const* cat = sSpellMgr->GetSpellInfo(SPELL_CAT_FORM);
@@ -2103,7 +2137,8 @@ namespace Leader::Fight
             if (walks)
                 pick = BestOwnSkill(bot, to, length, zonesOf(bot),
                                     LeaderMoveManaLine(bot, facts.fighting, facts.fightSecLeft, facts.bossFight,
-                                                       facts.waitBoss));
+                                                       facts.waitBoss),
+                                    facts.routeLegs);
             if (!pick.spell && facts.fighting && PlayerbotAI::IsMelee(bot))
                 pick = BestGapCloser(bot, tank, live);
             if (pick.spell)

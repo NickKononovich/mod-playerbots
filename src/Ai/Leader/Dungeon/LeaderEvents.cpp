@@ -6662,6 +6662,36 @@ namespace Leader::Dungeon
             facts.trailing = &lead.trailing;
             facts.routePath = &lead.routePath;
             facts.routePathIndex = lead.routePathIndex;
+            // [lead905] the route plan's legs ahead (stop to stop to the boss, the navmesh walk): each begins after
+            // the fight now, the walks before it at the tank's speed and each stop's fight (its mobs' health at the
+            // run's measured trash rate)
+            {
+                GroupRouteState const& plan = group.Route();
+                float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                float const trashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
+                                            ? lead.trashKilledHealth / lead.trashFightSec
+                                            : 0.0f;
+                float startSec = fighting ? lead.fightSecLeft : 0.0f;
+                Position from = tank->GetPosition();
+                auto const addLeg = [&](Position const& to)
+                {
+                    float const yd = Leader::WalkYd(tank, from, to);
+                    facts.routeLegs.emplace_back(startSec, yd);
+                    startSec += yd / speed;
+                    from = to;
+                };
+                for (GroupRouteState::PlannedStop const& stop : plan.routePlan)
+                {
+                    addLeg(stop.spot);
+                    if (trashRate > 0.0f)
+                        for (ObjectGuid const& mobGuid : stop.mobs)
+                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive())
+                                startSec += float(mob->GetHealth()) / trashRate;
+                }
+                if (Creature* boss = plan.routePlanBoss.IsEmpty() ? nullptr : map->GetCreature(plan.routePlanBoss);
+                    boss && boss->IsAlive())
+                    addLeg(boss->GetPosition());
+            }
             std::vector<LeaderMoveTold> told;
             moveHeld = LeaderTickMoveSkills(facts, told);
             for (LeaderMoveTold const& one : told)
