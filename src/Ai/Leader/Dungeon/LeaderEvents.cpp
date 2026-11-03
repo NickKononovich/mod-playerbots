@@ -3063,6 +3063,10 @@ namespace Leader::Dungeon
             lead.combatSpotAnchor.clear();
             lead.combatSpotStoppedAt.clear();  // [lead397]
             lead.meleeSide.clear();            // [lead720]
+            lead.chaseVerdicts.clear();        // [lead801]
+            lead.sideHeldLogged.clear();       // [lead800]
+            lead.chaseHeldLogged.clear();      // [lead801]
+            lead.walkEndHeldLogged.clear();    // [lead802]
             lead.fightAnchorSerial = 0;
             lead.fightAnchorAhead = false;  // [lead466]
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
@@ -4181,10 +4185,40 @@ namespace Leader::Dungeon
                 {
                     if (chaseBlocked)
                         return *chaseBlocked;
+                    // [lead801] b221 rfc-h (8 runs): 99 flips Follow "chase: behind the target" <-> StandAt "combat
+                    // spot: behind the target" within 3 s (5A 23.3 / 23.6 s Rtshaab, 5C 204.0 / 204.3 / 204.6 s
+                    // Rtwarab): the chase's walk was judged again every tick from where the member had just walked -
+                    // refused, then clear one step on, then refused again ("the chase walks deeper into Ragefire
+                    // Trogg's reach than the fight stands"). The member's own walk is no fact: the verdict for this
+                    // target holds until the target stands somewhere else (its combat reach away from where it was
+                    // judged; while it walks the verdict holds), or the idle mob that refused it is no longer idle
+                    // (dead, in combat, its pack joined the fight)
+                    auto& held = lead.chaseVerdicts[guid];
+                    bool fresh = held.target != target->GetGUID() ||
+                                 (!target->isMoving() &&
+                                  target->GetExactDist2d(held.targetAt.GetPositionX(), held.targetAt.GetPositionY()) >
+                                      target->GetCombatReach());
+                    if (!fresh && held.refused && !held.blocker.IsEmpty())
+                    {
+                        Creature* const blocker = map->GetCreature(held.blocker);
+                        fresh = !blocker || !blocker->IsAlive() || blocker->IsInCombat() ||
+                                lead.joinedMobs.count(held.blocker);
+                    }
+                    if (!fresh)
+                    {
+                        chaseBlocked = held.refused;
+                        if (lead.chaseHeldLogged.insert({guid, target->GetGUID()}).second)
+                            LOG_INFO("playerbots", "[lead801] {}: the chase verdict on {} holds ({}) until {} stands "
+                                     "elsewhere or its blocker wakes",
+                                     bot->GetName(), target->GetName(), held.refused ? "refused" : "clear",
+                                     target->GetName());
+                        return *chaseBlocked;
+                    }
                     ObjectGuid mob;
                     std::string const refusal =
                         followRefusal(bot, target, uint8(index % 2), mob, true);  // [lead491] the chase
                     chaseBlocked = !refusal.empty();
+                    held = {target->GetGUID(), *chaseBlocked, mob, target->GetPosition()};
                     if (!*chaseBlocked)
                         return false;
                     Creature* woken = mob.IsEmpty() ? nullptr : map->GetCreature(mob);
@@ -4233,12 +4267,30 @@ namespace Leader::Dungeon
                                            found->second.first == target->GetGUID() &&
                                            target->HasInArc(float(M_PI), &found->second.second) &&
                                            LeaderMeleeReachesFrom(bot, target, found->second.second);
-                    if (heldFront)
+                    // [lead800] b221 rfc-h (8 runs): 72 of the 99 chase <-> spot flips were the front weighed on a mob
+                    // that stood for a tick (melee_front, StandAt in front) and walked on the next (the weighing has
+                    // no answer on a walking mob: the chase again), then stood again. The side weighed for this
+                    // target holds while the mob walks (its front place is kept: no chase), the back holds for the
+                    // target whether the member chases or stands behind it; the front is weighed again only once the
+                    // mob stands where its held front place no longer reaches it
+                    bool const frontWhileWalks = decided && side->second.second && target->isMoving() &&
+                                                 found != lead.combatSpots.end() &&
+                                                 found->second.first == target->GetGUID();
+                    if (heldFront || frontWhileWalks)
                     {
                         frontHere = true;
                         frontAt = found->second.second;
+                        if (frontWhileWalks && lead.sideHeldLogged.insert({guid, target->GetGUID()}).second)
+                            LOG_INFO("playerbots", "[lead800] {}: its front place at {} holds while it walks",
+                                     bot->GetName(), target->GetName());
                     }
-                    else if (!(decided && !side->second.second && chasing))
+                    else if (decided && !side->second.second)
+                    {
+                        if (lead.sideHeldLogged.insert({guid, target->GetGUID()}).second)
+                            LOG_INFO("playerbots", "[lead800] {}: its side behind {} holds for this target",
+                                     bot->GetName(), target->GetName());
+                    }
+                    else
                     {
                         frontHere = LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt);
                         if (!frontWhy.empty())
@@ -4260,7 +4312,22 @@ namespace Leader::Dungeon
                 // (meleeStopAt), where the mob stops, not on a Follow behind the walking mob (b220 rfc-h: the chase
                 // took the melee out to the mob and back with it; 5B 794-800 s, 5G 720-727 s, 5A 850-863 s)
                 Position tankStop;
-                bool const toTankStop = melee && target->GetVictim() == tank && tankWalksMobTo(target, tankStop);
+                bool toTankStop = melee && target->GetVictim() == tank && tankWalksMobTo(target, tankStop);
+                // [lead802] b221 rfc-h (8 runs): 28 flips chase <-> MoveTo "to the tank's walk's end", 20 walk's end
+                // <-> combat spot, 18 walk's end <-> "to the tank's stop point" (5C 202.2 / 202.5 / 203.1 s Rtwarab):
+                // the walk was read from tank->isMoving() each tick, and the tank's walk pauses between its steps.
+                // The walk the member was sent to the end of is over when the fight stands - the tank and the mob
+                // both still - not when the tank's spline pauses: the walk's end holds until then
+                if (!toTankStop && melee && target->GetVictim() == tank && chaseNow.move == Leader::MoveEvent::MoveTo &&
+                    chaseNow.moveWhy == "to the tank's walk's end" && (tank->isMoving() || target->isMoving()))
+                    if (auto const kept = lead.meleeStop.find(guid);
+                        kept != lead.meleeStop.end() && kept->second.target == target->GetGUID())
+                    {
+                        toTankStop = true;
+                        if (lead.walkEndHeldLogged.insert({guid, target->GetGUID()}).second)
+                            LOG_INFO("playerbots", "[lead802] {}: the tank's walk's end with {} holds until the fight "
+                                     "stands", bot->GetName(), target->GetName());
+                    }
                 bool const chases = !toTankStop && melee && !frontHere && target->GetVictim() == tank &&
                                     (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused();
                 if (toTankStop)

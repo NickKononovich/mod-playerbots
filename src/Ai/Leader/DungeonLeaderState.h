@@ -215,6 +215,19 @@ namespace Leader
         std::map<ObjectGuid, ObjectGuid> meleeChase;  // [lead190] member -> the walked-off target it chases
         // [lead720] member -> the target its side was weighed for and the verdict (true: its front, false: behind)
         std::map<ObjectGuid, std::pair<ObjectGuid, bool>> meleeSide;
+        // [lead801] member -> the chase verdict for its target (DryFollow): the target, refused or not, the idle mob
+        // it would wake and where the target stood when it was judged. Kept until one of those facts changes
+        struct ChaseVerdict
+        {
+            ObjectGuid target;
+            bool refused = false;
+            ObjectGuid blocker;
+            Position targetAt;
+        };
+        std::map<ObjectGuid, ChaseVerdict> chaseVerdicts;
+        std::set<std::pair<ObjectGuid, ObjectGuid>> sideHeldLogged;   // [lead800] logged once per member and target
+        std::set<std::pair<ObjectGuid, ObjectGuid>> chaseHeldLogged;  // [lead801]
+        std::set<std::pair<ObjectGuid, ObjectGuid>> walkEndHeldLogged;  // [lead802]
         ObjectGuid walkWakesReleased;      // [lead167] the pull released once for walkWakesFirst (one release per fact)
         std::map<ObjectGuid, ObjectGuid> fleeStoppers;  // [lead104] fleer -> the member the leader set to stop it
         ObjectGuid fleeFocusLogged;                     // [lead104] flee_focus logged for this fleer
@@ -460,6 +473,7 @@ namespace Leader
             uint32 channelSeenMs = 0;
             bool paused = false;         // [lead272] the order is off while the DK walks
             bool done = false;
+            std::string blockedLogged;   // [lead803] the last logged reason it could not be told (per boss)
         };
         std::map<ObjectGuid, ArmyPrepull> armyPrepull;
         // [lead773] the assassination rogue's pre-pull Stealth for Overkill per rogue (LeaderPrepull.h StealthHolds):

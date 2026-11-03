@@ -282,6 +282,26 @@ std::vector<Player*> GroupPlayers(LeaderGroup& group, Map* map)
 }
 
 float Sec(uint32 fromMs, uint32 toMs) { return int32(getMSTimeDiff(fromMs, toMs)) / 1000.0f; }
+
+// [lead803] b221 rfc-h: lead750's tank Army never fired - 5G's blood tank Rtdekac was never told one (the dps knight
+// Rtdekad was, 202 s before Oggleflint), 5C's Rtdekaa only before Taragaman, and no refusal was logged: ArmyBlocked's
+// reason (in combat, walking, on cooldown, the runes, "its ghouls land in <mob>'s aggro reach") went to a silent
+// `continue` in both gates. Every reason a knight is not told the prepull Army is logged once per boss and reason
+void NoteArmyBlocked(LeaderGroup& group, DungeonLeaderState::ArmyPrepull& plan, Player* dk, Unit* boss,
+                     std::string const& why, char const* gate)
+{
+    if (why.empty() || plan.blockedLogged == why)
+        return;
+    plan.blockedLogged = why;
+    LOG_INFO("playerbots", "[lead803] {}: no prepull Army of the Dead before {} ({}): {}", dk->GetName(),
+             boss->GetName(), gate, why);
+    group.LogEvent("army_prepull_blocked", JsonObject()
+                                               .Str("dk", dk->GetName())
+                                               .Str("boss", boss->GetName())
+                                               .Bool("tank", PlayerbotAI::IsTank(dk))
+                                               .Str("gate", gate)
+                                               .Str("why", why));
+}
 }  // namespace
 
 void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seats, bool fighting,
@@ -366,7 +386,10 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         if (!plan.orderedMs)
         {
             if (!blocked.empty())
+            {
+                NoteArmyBlocked(group, plan, dk, boss, blocked, "the buff pass");  // [lead803]
                 continue;
+            }
             std::string why;
             float const left = PrepLeftSec(group, boss, players, why);
             if (left < 0.0f || left > channelSec)
@@ -453,8 +476,11 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
             // [lead520] b211 rfc-h 5C Oggleflint / Taragaman: the knight was in combat / walking during the one-second
             // buff pass end and was never told, then stood idle 14 s before the pull. Its pull orders it too, once
             // the knight can channel (wowsims prepulls Army whenever it is ready; one on cooldown is not waited for)
-            if (!ArmyBlocked(dk).empty())
+            if (std::string const blocked = ArmyBlocked(dk); !blocked.empty())
+            {
+                NoteArmyBlocked(group, plan, dk, boss, blocked, orderNow ? "the buff pass end" : "the boss pull");
                 continue;
+            }
             plan.orderedMs = now;
             plan.predictedEndMs = now;
             group.LogEvent("army_prepull_ordered", JsonObject()
