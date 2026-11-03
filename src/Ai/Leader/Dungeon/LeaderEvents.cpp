@@ -1673,6 +1673,16 @@ namespace Leader::Dungeon
         // times "the area holds the leader's DontAttack mob"). A fleer is the group's kill, not the tank's to take back
         std::map<ObjectGuid, Unit*> looseOn;  // victim -> the loose mob on it
         std::set<ObjectGuid> looseMobs;
+        // [lead805] b221 rfc-h (8 runs): 9 harness aggro losses (39 s) had no leader_aggro_loss - 5H 808 s the cat with
+        // a Searing Blade Warlock and a Voidwalker Minion on it (only the Voidwalker logged), 5E 625.9 s an Enforcer
+        // that went from the priest to the warlock (logged "recovered" while it hit the warlock), 5F 822 s a Warlock
+        // from the druid to the hunter, 5D 38 s a Molten Elemental from the mage to the DK. The scan kept one loose
+        // mob per victim (a second on the same member was neither logged nor counted as loose: its episode "recovered"
+        // the tick it lost its slot) and keyed an episode by the mob alone (a mob that turned to a second member was
+        // the first episode still). Every loose mob is seen; a mob on a new victim is a new loss
+        // the first-per-victim set (looseMobs) stays the commands' and the kill order's
+        std::vector<std::pair<ObjectGuid, Unit*>> looseAll;  // [lead805] every (victim, loose mob)
+        std::set<ObjectGuid> looseSeen;                       // [lead805] every loose mob, for the episodes
         if (fighting)
         {
             for (Player* bot : seats)
@@ -1681,14 +1691,32 @@ namespace Leader::Dungeon
                     // no walk to the tank (b184 rfc-h 5D 900-937 s: the DK sent to the tank for a sheeped Warlock)
                     if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot && attacker->ToCreature() &&
                         LeaderFightMob(tank, attacker) && !Leader::Fight::IsFleer(attacker) &&
-                        !IsCrowdControlled(attacker) && !looseOn.count(bot->GetGUID()))
+                        !IsCrowdControlled(attacker) && looseSeen.insert(attacker->GetGUID()).second)
                     {
-                        looseOn[bot->GetGUID()] = attacker;
-                        looseMobs.insert(attacker->GetGUID());
+                        if (looseOn.emplace(bot->GetGUID(), attacker).second)  // the first per victim: its commands
+                            looseMobs.insert(attacker->GetGUID());
+                        looseAll.emplace_back(bot->GetGUID(), attacker);
                     }
-            for (auto const& [victimGuid, mob] : looseOn)
-                if (!lead.looseMobs.count(mob->GetGUID()))
+            for (auto const& [victimGuid, mob] : looseAll)
+                if (auto const known = lead.looseMobs.find(mob->GetGUID());
+                    known == lead.looseMobs.end() || known->second.first != victimGuid)
                 {
+                    bool const switched = known != lead.looseMobs.end();
+                    bool const second = looseOn.at(victimGuid) != mob;
+                    if (switched || second)
+                    {
+                        Player* const was = switched ? ObjectAccessor::FindPlayer(known->second.first) : nullptr;
+                        Player* const onNow = ObjectAccessor::FindPlayer(victimGuid);
+                        LOG_INFO("playerbots", "[lead805] aggro loss seen: {} on {}{}{}", mob->GetName(),
+                                 onNow ? onNow->GetName() : "?",
+                                 switched ? " (it left " + (was ? was->GetName() : std::string("?")) + ")" : "",
+                                 second ? " (a second loose mob on it)" : "");
+                        if (switched)  // [lead54] [lead56] the episode on the member before ended
+                        {
+                            lead.tauntLogged.erase(mob->GetGUID());
+                            lead.threatDoneFor.erase(mob->GetGUID());
+                        }
+                    }
                     lead.looseMobs[mob->GetGUID()] = {victimGuid, now};
                     Player* victim = ObjectAccessor::FindPlayer(victimGuid);
                     // [lead472] the loss's cause from the facts of this moment: the victim's command and what it hits,
@@ -1772,7 +1800,7 @@ namespace Leader::Dungeon
         }
         for (auto it = lead.looseMobs.begin(); it != lead.looseMobs.end();)
         {
-            if (looseMobs.count(it->first))
+            if (looseSeen.count(it->first))  // [lead805]
             {
                 ++it;
                 continue;
