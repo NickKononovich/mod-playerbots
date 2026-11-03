@@ -427,6 +427,7 @@ namespace Leader::Dungeon
         std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
         pullMobs.insert(pullMobs.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());  // [lead76]
         g_leaderExempt = &pullMobs;
+        g_leaderJoined = &lead.joinedMobs;  // [lead600]
         // [lead115] the pull walks: the engage order open (not fighting yet) and the tank without threat on its mob
         bool pullWalk = false;
         uint32 pullWalkOrder = 0;
@@ -463,6 +464,7 @@ namespace Leader::Dungeon
                 g_leaderIdle = nullptr;
                 g_leaderCleared = nullptr;
                 g_leaderExempt = nullptr;
+                g_leaderJoined = nullptr;
             }
         } guardReset;
         // [lead18] every MoveTo / StandAt the leader issues: the spot and the walk out of every unpulled mob's reach;

@@ -304,6 +304,7 @@ namespace Leader::Fight
     std::vector<Creature*> const* g_leaderIdle = nullptr;
     std::vector<Position> const* g_leaderCleared = nullptr;
     std::vector<ObjectGuid> const* g_leaderExempt = nullptr;  // [lead24] the committed pull's mobs
+    std::set<ObjectGuid> const* g_leaderJoined = nullptr;     // [lead600] the packs decided into the fight
 
     // [lead24] the committed pull's own mobs (target, pack, expected pack)
     std::vector<ObjectGuid> LeaderPullMobs(std::shared_ptr<PullPlanner::Decision> const& commit, ObjectGuid mob)
@@ -349,6 +350,16 @@ namespace Leader::Fight
             // mob out of combat is an idle mob for every other member (the tank has not got it yet)
             if (g_leaderExempt && PlayerbotAI::IsTank(bot) &&
                 std::find(g_leaderExempt->begin(), g_leaderExempt->end(), mob->GetGUID()) != g_leaderExempt->end())
+                return false;
+            // [lead600] b217 rfc-h 5G pull 7 (95-131 s, the wipe): the leader judged three idle packs into the fight
+            // ("pack_joins", 6-7 mobs, overload 0.86-1.00) because they blocked the healer's and the melee's spots,
+            // and then went on rejecting every spot and chase for those same mobs (114 "heal reach" and 40 "aggro
+            // loss: to the tank" spot_rejected_aggro, 21 chase_refused, heal_reach "fix: none" at 45 yd): lead500 made
+            // the exempt list the tank's only, and lead76's joined packs were in it. The healer and the three melee
+            // stood 27 s where the pull found them, the blood DK died alone out of the healer's sight and the group
+            // wiped. A pack the leader decided into the fight is the fight's (its capacity verdict counts it): it
+            // blocks nobody's spot or walk
+            if (g_leaderJoined && g_leaderJoined->count(mob->GetGUID()))
                 return false;
             if (IdleMobReachesSpot(bot, mob, spot))
                 return true;

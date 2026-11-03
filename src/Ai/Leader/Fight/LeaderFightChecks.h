@@ -180,6 +180,8 @@ namespace Leader::Fight
     extern std::vector<Creature*> const* g_leaderIdle;
     extern std::vector<Position> const* g_leaderCleared;
     extern std::vector<ObjectGuid> const* g_leaderExempt;  // [lead24] the committed pull's mobs
+    // [lead600] the idle packs the leader decided into the fight (lead76 pack_joins): no member keeps away from them
+    extern std::set<ObjectGuid> const* g_leaderJoined;
 
     // [lead24] the committed pull's own mobs (target, pack, expected pack)
     std::vector<ObjectGuid> LeaderPullMobs(std::shared_ptr<PullPlanner::Decision> const& commit, ObjectGuid mob);
