@@ -44,8 +44,9 @@ SPELL_ACTION(CastHolyShockAction, "holy shock");
 // consecration
 MELEE_ACTION(CastConsecrationAction, "consecration");
 
-// [b31_deep] Retribution's single-target Consecration (wowsims default APL): only on a target that lives 4 s more
-// (current health over the cached "estimated group dps"); the AoE trigger keeps the plain "consecration".
+// [b31_deep] Retribution's single-target Consecration (wowsims default APL): only while the fight lasts 4 s more
+// ([rot281] remainingTime: the longest ExpectedLifetime of the target and the attackers); the AoE trigger keeps the
+// plain "consecration".
 class CastRetConsecrationAction : public CastConsecrationAction
 {
 public:
@@ -334,6 +335,18 @@ public:
     // [holy_shield_in_combat] only in a fight: out of combat it drained a tank holding an idle target to 0 % mana
     // (ac-n build 27, Rlpalba 89 % -> 0 %), so it could never become ready to pull.
     bool isUseful() override { return bot->IsInCombat() && CastBuffSpellAction::isUseful(); }
+};
+
+// [rot280] Holy Shield on its cooldown in a fight, its aura up or not (wowsims protection_paladin__default:
+// castSpell 48952 on spellIsReady, after Consecration, before Judgement). The recast renews the 10 s aura and its 8
+// charges; the plain "holy shield" keeps the cast-when-missing upkeep for the area-threat trigger.
+class CastHolyShieldOnCooldownAction : public CastHolyShieldAction
+{
+public:
+    CastHolyShieldOnCooldownAction(PlayerbotAI* botAI) : CastHolyShieldAction(botAI) {}
+
+    std::string const getName() override { return "holy shield on cooldown"; }
+    bool isUseful() override { return bot->IsInCombat() && CastSpellAction::isUseful(); }
 };
 
 // [b31_holyshield_pull] Holy Shield as the first step of the tank's own pull (wowsims casts it pre-pull). Never

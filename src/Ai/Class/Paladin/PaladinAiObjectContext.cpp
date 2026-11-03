@@ -170,6 +170,7 @@ public:
         creators["hammer of the righteous ready"] = &PaladinTriggerFactoryInternal::hammer_of_the_righteous_ready;
         creators["judgement of wisdom ready"] = &PaladinTriggerFactoryInternal::judgement_of_wisdom_ready;
         creators["consecration ready"] = &PaladinTriggerFactoryInternal::consecration_ready;
+        creators["holy shield ready"] = &PaladinTriggerFactoryInternal::holy_shield_ready;  // [rot280]
         creators["avenger's shield boss filler"] = &PaladinTriggerFactoryInternal::avengers_shield_boss_filler;
         // [b31_deep]
         creators["paladin tank judges wisdom"] = &PaladinTriggerFactoryInternal::paladin_tank_judges_wisdom;
@@ -281,6 +282,9 @@ private:
     {
         return new PaladinSpellReadyTrigger(botAI, "consecration");
     }
+    // [rot280] wowsims protection_paladin__default casts Holy Shield whenever it is ready (spellIsReady), not when
+    // its 10 s aura is gone: on its 8 s cooldown
+    static Trigger* holy_shield_ready(PlayerbotAI* botAI) { return new PaladinSpellReadyTrigger(botAI, "holy shield"); }
     static Trigger* avengers_shield_boss_filler(PlayerbotAI* botAI)
     {
         return new AvengersShieldBossFillerTrigger(botAI);
@@ -346,6 +350,7 @@ public:
         creators["holy shield"] = &PaladinAiObjectContextInternal::holy_shield;
         // [b31_holyshield_pull]
         creators["holy shield pre pull"] = &PaladinAiObjectContextInternal::holy_shield_pre_pull;
+        creators["holy shield on cooldown"] = &PaladinAiObjectContextInternal::holy_shield_on_cooldown;  // [rot280]
         creators["hammer of the righteous"] = &PaladinAiObjectContextInternal::hammer_of_the_righteous;
         creators["retribution aura"] = &PaladinAiObjectContextInternal::retribution_aura;
         creators["shadow resistance aura"] = &PaladinAiObjectContextInternal::shadow_resistance_aura;
@@ -466,6 +471,7 @@ private:
     static Action* hammer_of_wrath(PlayerbotAI* botAI) { return new CastHammerOfWrathAction(botAI); }
     static Action* holy_shield(PlayerbotAI* botAI) { return new CastHolyShieldAction(botAI); }
     static Action* holy_shield_pre_pull(PlayerbotAI* botAI) { return new CastHolyShieldPrePullAction(botAI); }
+    static Action* holy_shield_on_cooldown(PlayerbotAI* botAI) { return new CastHolyShieldOnCooldownAction(botAI); }
     static Action* hammer_of_the_righteous(PlayerbotAI* botAI) { return new CastHammerOfTheRighteousAction(botAI); }
     static Action* retribution_aura(PlayerbotAI* botAI) { return new CastRetributionAuraAction(botAI); }
     static Action* shadow_resistance_aura(PlayerbotAI* botAI) { return new CastShadowResistanceAuraAction(botAI); }

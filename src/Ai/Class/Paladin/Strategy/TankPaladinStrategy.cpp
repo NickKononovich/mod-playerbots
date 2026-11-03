@@ -29,8 +29,8 @@ public:
         std::string const name = action->getName();
         bool const shield = name == "shield of righteousness";
         bool const hammer = name == "hammer of the righteous";
-        bool const filler = name == "consecration" || name == "holy shield" || name == "judgement of wisdom" ||
-                            name == "avenger's shield";
+        bool const filler = name == "consecration" || name == "holy shield" || name == "holy shield on cooldown" ||
+                            name == "judgement of wisdom" || name == "avenger's shield";
         if (!shield && !hammer && !filler)
             return 1.0f;
 
@@ -321,7 +321,10 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
     // [rot11] wowsims order: Holy Shield after Consecration, before Judgement
-    triggers.push_back(new TriggerNode("holy shield", {NextAction("holy shield", ACTION_HIGH + 5.72f)}));
+    // [rot280] on its cooldown (wowsims spellIsReady), not only once its 10 s aura is gone: b218 rfc-h 5E Rtpalac
+    // 4 / 5 / 3 / 4 casts in 48 / 61 / 45 / 47 s boss fights (5.0/min; the 8 s cooldown gives ~7/min in the grid)
+    triggers.push_back(
+        new TriggerNode("holy shield ready", {NextAction("holy shield on cooldown", ACTION_HIGH + 5.72f)}));
     // [b31_pal] 969: the 6 s Shield of Righteousness / Hammer of the Righteous and the 9 s Judgement / Consecration on
     // their cooldowns, Avenger's Shield as the filler on a boss, all in one band under Holy Shield's upkeep (above)
     // and the taunts (ACTION_HIGH + 7), above Avenging Wrath and the Judgement debuff upkeep. The peel, area threat,
