@@ -148,8 +148,9 @@ public:
 class CastPriestDotAction : public CastDebuffSpellAction
 {
 public:
-    CastPriestDotAction(PlayerbotAI* botAI, std::string const spell, uint32 refreshMs)
-        : CastDebuffSpellAction(botAI, spell, true, ai::priest::DOT_MIN_LIFETIME)
+    CastPriestDotAction(PlayerbotAI* botAI, std::string const spell, uint32 refreshMs,
+                        float minLifetime = ai::priest::DOT_MIN_LIFETIME)
+        : CastDebuffSpellAction(botAI, spell, true, minLifetime)
     {
         beforeDuration = refreshMs;
     }
@@ -200,7 +201,8 @@ class CastVampiricTouchAction : public CastPriestDotAction
 {
 public:
     CastVampiricTouchAction(PlayerbotAI* botAI)
-        : CastPriestDotAction(botAI, "vampiric touch", ai::priest::VAMPIRIC_TOUCH_REFRESH_MS) {}
+        : CastPriestDotAction(botAI, "vampiric touch", ai::priest::VAMPIRIC_TOUCH_REFRESH_MS,
+                              ai::priest::VAMPIRIC_TOUCH_MIN_LIFETIME) {}
 
     // Refresh window follows the hasted cast time.
     bool isUseful() override;
@@ -212,7 +214,11 @@ class CastDevouringPlagueAction : public CastPriestDotAction
 {
 public:
     CastDevouringPlagueAction(PlayerbotAI* botAI)
-        : CastPriestDotAction(botAI, "devouring plague", ai::priest::DOT_REFRESH_MS) {}
+        : CastPriestDotAction(botAI, "devouring plague", ai::priest::DOT_REFRESH_MS,
+                              ai::priest::DEVOURING_PLAGUE_MIN_LIFETIME) {}
+
+    // [rot210] also while it is up when the fight ends within the APL's 1.75 s (DevouringPlagueFinalCast)
+    bool isUseful() override;
 };
 BUFF_ACTION(CastTouchOfWeaknessAction, "touch of weakness");
 DEBUFF_ACTION(CastHexOfWeaknessAction, "hex of weakness");

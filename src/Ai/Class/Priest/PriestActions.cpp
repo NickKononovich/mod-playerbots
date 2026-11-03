@@ -64,6 +64,14 @@ bool CastVampiricTouchAction::isUseful()
     return CastPriestDotAction::isUseful();
 }
 
+bool CastDevouringPlagueAction::isUseful()
+{
+    if (ai::priest::DevouringPlagueFinalCast(botAI, GetTarget()))
+        return CastSpellAction::isUseful();
+
+    return CastPriestDotAction::isUseful();
+}
+
 bool CastFadeAction::isUseful()
 {
     Unit* target = AI_VALUE(Unit*, "current target");

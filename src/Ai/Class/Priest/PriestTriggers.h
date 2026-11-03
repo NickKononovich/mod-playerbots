@@ -23,8 +23,9 @@ DEBUFF_ENEMY_TRIGGER(VampiricTouchOnAttackerTrigger, "vampiric touch");
 class PriestDotTrigger : public DebuffTrigger
 {
 public:
-    PriestDotTrigger(PlayerbotAI* botAI, std::string const spell, uint32 refreshMs)
-        : DebuffTrigger(botAI, spell, 1, true, ai::priest::DOT_MIN_LIFETIME, refreshMs) {}
+    PriestDotTrigger(PlayerbotAI* botAI, std::string const spell, uint32 refreshMs,
+                     float minLifetime = ai::priest::DOT_MIN_LIFETIME)
+        : DebuffTrigger(botAI, spell, 1, true, minLifetime, refreshMs) {}
 };
 
 class ShadowWordPainTrigger : public PriestDotTrigger
@@ -41,7 +42,8 @@ class VampiricTouchTrigger : public PriestDotTrigger
 {
 public:
     VampiricTouchTrigger(PlayerbotAI* botAI)
-        : PriestDotTrigger(botAI, "vampiric touch", ai::priest::VAMPIRIC_TOUCH_REFRESH_MS) {}
+        : PriestDotTrigger(botAI, "vampiric touch", ai::priest::VAMPIRIC_TOUCH_REFRESH_MS,
+                           ai::priest::VAMPIRIC_TOUCH_MIN_LIFETIME) {}
 
     // Refresh window follows the hasted cast time.
     bool IsActive() override;
@@ -51,7 +53,11 @@ class DevouringPlagueTrigger : public PriestDotTrigger
 {
 public:
     DevouringPlagueTrigger(PlayerbotAI* botAI)
-        : PriestDotTrigger(botAI, "devouring plague", ai::priest::DOT_REFRESH_MS) {}
+        : PriestDotTrigger(botAI, "devouring plague", ai::priest::DOT_REFRESH_MS,
+                           ai::priest::DEVOURING_PLAGUE_MIN_LIFETIME) {}
+
+    // [rot210] also while it is up when the fight ends within the APL's 1.75 s (DevouringPlagueFinalCast)
+    bool IsActive() override;
 };
 
 BUFF_TRIGGER(VampiricEmbraceTrigger, "vampiric embrace");
@@ -116,7 +122,7 @@ public:
     bool IsActive() override;
 
 private:
-    bool DotDue(Unit* target, std::string const spell, uint32 refreshMs);
+    bool DotDue(Unit* target, std::string const spell, uint32 refreshMs, float minLifetime);
     bool HeldForThreat(Unit* target);
 };
 

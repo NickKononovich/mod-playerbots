@@ -5,6 +5,7 @@
  */
 
 #include "PriestTriggers.h"
+#include "EstimatedLifetimeValue.h"  // [rot210] ExpectedLifetime
 #include "Group.h"
 #include "HealerSupport.h"
 #include "PartyStrengthValue.h"  // [b31_deep]
@@ -45,6 +46,22 @@ uint32 VampiricTouchRefreshMs(Player* bot, uint32 spellId)
 
     return spellInfo->CalcCastTime(bot) + VAMPIRIC_TOUCH_REFRESH_MARGIN_MS;
 }
+
+bool DevouringPlagueFinalCast(PlayerbotAI* botAI, Unit* target)
+{
+    if (!target || !target->IsAlive() || ExpectedLifetime(botAI, target) > DEVOURING_PLAGUE_FINAL_CAST_SEC)
+        return false;
+
+    // the fight's remaining time is its longest-living attacker's: a pack's first kill is no end of the fight
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
+    {
+        Unit* mob = botAI->GetUnit(guid);
+        if (mob && mob != target && mob->IsAlive() &&
+            ExpectedLifetime(botAI, mob) > DEVOURING_PLAGUE_FINAL_CAST_SEC)
+            return false;
+    }
+    return true;
+}
 }
 
 bool ShadowWordPainTrigger::IsActive()
@@ -60,6 +77,11 @@ bool VampiricTouchTrigger::IsActive()
 {
     beforeDuration = ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", spell));
     return PriestDotTrigger::IsActive();
+}
+
+bool DevouringPlagueTrigger::IsActive()
+{
+    return PriestDotTrigger::IsActive() || ai::priest::DevouringPlagueFinalCast(botAI, GetTarget());
 }
 
 bool ShadowProtectionTrigger::IsActive()
@@ -219,11 +241,16 @@ bool MindFlayClipTrigger::IsActive()
         return false;
 
     // [b31_deep] the DoTs only while their strategy runs, else nothing would cast them after the clip
+    // [rot210] with the APL's lifetime rules (VT >= 3 s, DP none) and its final Devouring Plague
     bool const dots = botAI->HasStrategy("shadow debuff", BOT_STATE_COMBAT);
     bool const due =
-        (dots && DotDue(target, "vampiric touch",
-                        ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", "vampiric touch")))) ||
-        (dots && DotDue(target, "devouring plague", ai::priest::DOT_REFRESH_MS));
+        dots &&
+        (DotDue(target, "vampiric touch",
+                ai::priest::VampiricTouchRefreshMs(bot, AI_VALUE2(uint32, "spell id", "vampiric touch")),
+                ai::priest::VAMPIRIC_TOUCH_MIN_LIFETIME) ||
+         DotDue(target, "devouring plague", ai::priest::DOT_REFRESH_MS, ai::priest::DEVOURING_PLAGUE_MIN_LIFETIME) ||
+         (AI_VALUE2(uint32, "spell id", "devouring plague") &&
+          ai::priest::DevouringPlagueFinalCast(botAI, target)));
 
     return due && !HeldForThreat(target);
 }
@@ -244,15 +271,15 @@ bool InnerFocusShadowWeavingTrigger::IsActive()
 }
 
 // [b31_deep] the same test as PriestDotTrigger: missing or inside the refresh window, on a target that lives long
-// enough (DOT_MIN_LIFETIME at the group's dps)
-bool MindFlayClipTrigger::DotDue(Unit* target, std::string const spell, uint32 refreshMs)
+// enough (`minLifetime` at the group's dps)
+bool MindFlayClipTrigger::DotDue(Unit* target, std::string const spell, uint32 refreshMs, float minLifetime)
 {
     uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
     if (!spellId)
         return false;
 
     float const groupDps = AI_VALUE(float, "estimated group dps");
-    if (groupDps > 0.0f && target->GetHealth() / groupDps < ai::priest::DOT_MIN_LIFETIME)
+    if (groupDps > 0.0f && target->GetHealth() / groupDps < minLifetime)
         return false;
 
     Aura* aura = target->GetAura(spellId, bot->GetGUID());
