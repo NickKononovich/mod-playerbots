@@ -5470,13 +5470,22 @@ namespace Leader::Dungeon
             // tool is kept for him only when a member it reaches would still be short there from a full pool (his
             // fight's need without the tools, FightManaLine credits = false, over 100 %) and it would not be back for
             // his pull (secToBoss within its recharge); otherwise it gives its fight seconds now
-            auto const manaToolVerdict = [&](Player* caster, bool self, float rechargeSec, std::string& why) -> bool
+            // [lead651] user 2026-11-02 (cooldowns-boss-judged-like-pulls): long cooldowns are kept for the bosses -
+            // on trash only at a critical moment or when back before the next boss pull. b218 rfc-h 5C 1039.9 s:
+            // Innervate on trash to Rtmagab ("10 % < 12 % for the fight's 12 s left - 2 fight s gained; no later boss
+            // within its recharge needs it beyond a full pool"), Bazzalan pulled 36 s later with it on its 180 s
+            // recharge. On trash a mana tool has the burn cooldowns' verdict (cooldownVerdict: the critical moment, or
+            // back before the pull of the next boss); in a boss fight the later boss's need from a full pool as above
+            auto const manaToolVerdict = [&](Player* caster, bool self, float rechargeSec, float effectSec,
+                                             std::string& why) -> bool
             {
                 if (!critical.empty())
                 {
                     why = critical;
                     return true;
                 }
+                if (!fightBoss)
+                    return cooldownVerdict(rechargeSec, effectSec, why);
                 for (auto const& [bossGuid, need] : lead.bossNeeds)
                 {
                     Creature* later =
@@ -5539,8 +5548,8 @@ namespace Leader::Dungeon
                 if (sec <= 0.0f || (sec <= best.sec && sec <= heldTool.sec))
                     return;
                 std::string verdictWhy;
-                bool const allowed =
-                    manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), verdictWhy);  // [lead541]
+                bool const allowed = manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), durationSec,
+                                                     verdictWhy);  // [lead541] [lead651]
                 ManaTool& slot = allowed ? best : heldTool;
                 if (sec > slot.sec)
                 {
