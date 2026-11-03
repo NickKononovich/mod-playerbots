@@ -23,6 +23,7 @@
 #include "ItemTemplate.h"  // [lead520]
 #include "LeaderFightChecks.h"
 #include "LeaderOrders.h"
+#include "LeaderPlannerShared.h"  // [lead791] TankEngageOpeners
 #include "LeaderPrepull.h"  // [lead773] StealthHolds
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -601,7 +602,22 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
             st.prepopDone.clear();
         }
         float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
-        float const tankEta = std::max(0.0f, tank->GetExactDist(boss) - boss->GetAggroRange(tank)) / speed;
+        // [lead791] b221 rfc-h: 0 pre-pull Berserks in 8 runs - every boss was an engage from the tank's opener
+        // range (5H Taragaman 689.7 s: the cat in Cat Form, Berserk ready, the tank's opener pulled him from range;
+        // Berserk only at 690.4 s in the fight). The pull lands where the tank's first ready engage opener reaches him
+        // (TankEngageOpeners, spell data range, in sight), or at his aggro reach, whichever comes first
+        float pullReach = boss->GetAggroRange(tank);
+        if (PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank); tankAI && tank->IsWithinLOSInMap(boss))
+            for (char const* opener : PullPlanning::TankEngageOpeners(tank, true))
+                if (uint32 const spell = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", opener)->Get();
+                    spell && tank->HasSpell(spell) && !tank->HasSpellCooldown(spell))
+                {
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+                        pullReach = std::max(pullReach, info->GetMaxRange(false) + tank->GetCombatReach() +
+                                                            boss->GetCombatReach());
+                    break;
+                }
+        float const tankEta = std::max(0.0f, tank->GetExactDist(boss) - pullReach) / speed;
         bool laterBoss = false;
         for (ObjectGuid const& bossGuid : group.BossCreatures())
             if (Creature* other = bossGuid == boss->GetGUID() ? nullptr : map->GetCreature(bossGuid);

@@ -9553,14 +9553,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             // by a hazard, no pull back: engaged where it stands, the tank drags the fight off it (FightNearHazard)
             if (engageHazard && !engageCrossed)
             {
-                // [lead54] b103 rfc-h pull 8: "the tank drags the fight off it" for a led tank, whose own drag is off
-                // (LEADER_TANK_OWN_PICKS_OFF): no executor - no such plan
-                if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()))
-                    return false;
                 // [lead766] b220 rfc-h: the tank's drag off the hazard ("move fight off hazard") walked it 320 yd in
                 // fights after its first hits. The fight is planned off the hazard before the pull: where the tank
                 // stands to commit (off it, the healer's sight from the walk here) - the tank waits there after its
                 // opener and the mob comes (TankWalkMovesFight: no walk toward a mob not at the fight spot)
+                // [lead790] b221 rfc-h (8 runs): 0 plans "fought off it where the tank stands" - the block stood
+                // after lead54's return below, which every led tank takes (Orders::IsTracked), so it never ran. This
+                // plan needs no drag of the tank's own: it is judged first
                 if (!NearHazard(hazardMap, bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(),
                                 bot->GetPositionZ(), TERRAIN_HAZARD_FIGHT_RADIUS) &&
                     bot->GetExactDist(candidate) > CAREFUL_AGGRO_MARGIN)
@@ -9572,6 +9571,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     _planFightNote = pullBackWhy;
                     return true;
                 }
+                // [lead54] b103 rfc-h pull 8: "the tank drags the fight off it" for a led tank, whose own drag is off
+                // (LEADER_TANK_OWN_PICKS_OFF): no executor - no such plan
+                if (Leader::LEADER_TANK_OWN_PICKS_OFF && Leader::Orders::IsTracked(bot->GetGUID()))
+                    return false;
                 return takeEngage(pullBackWhy + ", the tank drags the fight off it");
             }
 

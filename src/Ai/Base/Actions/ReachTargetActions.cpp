@@ -17,6 +17,8 @@
 #include "LastMovementValue.h"
 #include "Log.h"
 #include "Map.h"
+#include "MotionMaster.h"  // [lead792]
+#include "MoveSpline.h"    // [lead792]
 #include "BotPath.h"  // [lead109]
 #include "PathGenerator.h"
 #include "PlayerbotAIConfig.h"
@@ -479,6 +481,36 @@ bool ReachMeleeAction::BreakShooterSight(Unit* target)
     return false;
 }
 
+// [lead792] b221 rfc-h (8 runs): the led tank's "reach melee" walked on after its refusal held - a walk issued while
+// its mob stood or fought nobody went on once the mob came at the tank (MobComesToTank) or once the plan put the fight
+// elsewhere (TankWalkMovesFight): 27 s / 213 yd with the walk under way at a sample where the mob already came, the
+// mob and the tank meeting halfway (5A 12 s: the walk issued at 9.2 s with Earthborer on nobody, 10.7 yd on to it
+// after it turned at the tank). The refusal ends the tank's own walk to that mob too: its spline is the bot's last
+// own MoveTo (not a forced escape), it ends nearer the mob than the tank stands, and no leader position command
+// for the tank ends there. Returns the yards left of the stopped walk (0: none stopped)
+static float StopOwnWalkToMob(PlayerbotAI* botAI, Player* bot, Unit* target)
+{
+    // a mob in the fight only: the walk to the open order's mob not yet in combat is the pull (the engage walk)
+    if (!target->IsInCombat() || !bot->isMoving() || bot->movespline->Finalized())
+        return 0.0f;
+    G3D::Vector3 const end = bot->movespline->FinalDestination();
+    LastMovement& last = botAI->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get();
+    if (last.priority == MovementPriority::MOVEMENT_FORCED ||
+        std::hypot(last.lastMoveToX - end.x, last.lastMoveToY - end.y) > 1.0f)
+        return 0.0f;
+    if (target->GetExactDist(end.x, end.y, end.z) >= target->GetExactDist(bot))
+        return 0.0f;
+    Leader::MemberEvents events;
+    if (Leader::Events::Get(bot->GetGUID(), events) && events.move != Leader::MoveEvent::None &&
+        events.move != Leader::MoveEvent::Follow &&
+        events.spot.GetExactDist2d(end.x, end.y) <= std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE) + 1.0f)
+        return 0.0f;
+    float const left = bot->GetExactDist(end.x, end.y, end.z);
+    bot->StopMoving();
+    bot->GetMotionMaster()->Clear();
+    return left;
+}
+
 bool ReachMeleeAction::Execute(Event event)
 {
     // [b46_ohb] a standing shooter nobody else sees (isUseful): the tank steps out of its sight, it comes
@@ -517,13 +549,24 @@ bool ReachMeleeAction::isUseful()
     // incoming mob (17 of 42 pulls >5 yd in the first 12 s, 10 of them a plain "engage at its spot"), and every
     // ranged / healer spot followed. The mob runs to the tank: the fight is where the tank took it
     if (PlayerbotAI::IsTank(bot) && Leader::LedBot(bot) && Leader::Fight::MobComesToTank(bot, target))
+    {
+        if (float const left = StopOwnWalkToMob(botAI, bot, target); left > 0.0f)
+            LOG_INFO("playerbots", "[lead792] {}: stops its walk to {} ({:.1f} yd, low {}, {:.1f} yd of it left): it "
+                     "comes to the tank", bot->GetName(), target->GetName(), bot->GetExactDist(target),
+                     target->GetGUID().GetCounter(), left);
         return false;
+    }
     // [lead760] the fight stands where the leader planned it after the tank's opener: no walk to a mob away from the
     // plan's fight spot back, to a mob a ready taunt reaches from here, to a caster on the tank at range while it
     // holds other mobs in its melee (TankWalkMovesFight)
     if (PlayerbotAI::IsTank(bot) && bot->IsInCombat() && Leader::LedBot(bot))
         if (std::string const moves = Leader::Fight::TankWalkMovesFight(bot, target); !moves.empty())
         {
+            // [lead792] ... and its walk to the mob under way ends
+            if (float const left = StopOwnWalkToMob(botAI, bot, target); left > 0.0f)
+                LOG_INFO("playerbots", "[lead792] {}: stops its walk to {} ({:.1f} yd, low {}, {:.1f} yd of it left): "
+                         "{}", bot->GetName(), target->GetName(), bot->GetExactDist(target),
+                         target->GetGUID().GetCounter(), left, moves);
             thread_local std::unordered_map<ObjectGuid, uint32> stillLog;
             uint32 const now = getMSTime();
             uint32& last = stillLog[bot->GetGUID()];
