@@ -194,6 +194,16 @@ bool CastBlastWaveAction::isUseful()
     return targetClose && !IsCrowdControlledMobNear(botAI, bot, MAGE_AOE_CC_CHECK_RANGE);
 }
 
+bool CastArcaneExplosionAction::isUseful()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target)
+        return false;
+
+    return CastSpellAction::isUseful() && bot->IsWithinCombatRange(target, 10.0f) &&
+           !IsCrowdControlledMobNear(botAI, bot, MAGE_AOE_CC_CHECK_RANGE);
+}
+
 Unit* CastFocusMagicOnPartyAction::GetTarget()
 {
     Group* group = bot->GetGroup();

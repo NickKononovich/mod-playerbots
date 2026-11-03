@@ -31,6 +31,10 @@ static constexpr float DOT_MIN_LIFETIME = 8.0f;
 static constexpr float VAMPIRIC_TOUCH_MIN_LIFETIME = 3.0f;
 static constexpr float DEVOURING_PLAGUE_MIN_LIFETIME = 0.0f;
 static constexpr float DEVOURING_PLAGUE_FINAL_CAST_SEC = 1.75f;
+// [rot400] the filler a Shadow DoT is weighed against (wowsims shadow_priest__default: Mind Flay)
+static constexpr char const* DOT_FILLER = "mind flay";
+// Improved Devouring Plague (3.3.5): a priest dummy aura, icon 3790, effect 1 = percent (SpellAuras.cpp)
+static constexpr uint32 IMPROVED_DEVOURING_PLAGUE_ICON = 3790;
 
 // Shadow Weaving (3.3.5): a buff on the priest, +2 % shadow damage done per stack, up to 5 stacks.
 // Shadow Word: Pain snapshots damage-done modifiers when it is applied.

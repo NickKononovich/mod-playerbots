@@ -28,6 +28,7 @@
 #include "SetBonusTriggers.h"
 #include "SharedDefines.h"
 #include "SpellAuraEffects.h"  // [b44_cos] AuraEffect::GetBase (LossOfControlTrigger)
+#include "SpellPayoff.h"       // [rot400]
 #include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "World.h"  // [rot70] RATE_POWER_ENERGY
@@ -427,6 +428,32 @@ bool AoeTrigger::IsActive()
     return HasEnoughAoeTargets(botAI, current_target->GetPosition(), range, minCount);
 }
 
+bool AoePaysTrigger::IsActive()
+{
+    // the cheap counts first: two attackers at least, a target, the spell known
+    uint32 const minimum = AOE_MIN_TARGETS + (excludesTarget ? 1 : 0);
+    if (AI_VALUE(uint8, "attacker count") < minimum)
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target)
+        return false;
+
+    uint32 const aoeId = AI_VALUE2(uint32, "spell id", aoeSpell);
+    uint32 const fillerId = AI_VALUE2(uint32, "spell id", Filler());
+    if (!aoeId || !fillerId)
+        return false;
+
+    float const radius = SpellPayoff::AreaRadius(bot, aoeId);
+    uint32 const breakEven = SpellPayoff::AoeBreakEvenTargets(bot, target, aoeId, fillerId);
+    if (radius <= 0.0f || !breakEven)
+        return false;
+
+    uint32 const needed = std::max(breakEven, AOE_MIN_TARGETS) + (excludesTarget ? 1 : 0);
+    Position const center = selfCentred ? bot->GetPosition() : target->GetPosition();
+    return HasEnoughAoeTargets(botAI, center, radius, needed);
+}
+
 bool NoFoodTrigger::IsActive()
 {
     return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured food").empty();
@@ -457,7 +484,34 @@ bool DebuffTrigger::IsActive()
         return false;
 
     return BuffTrigger::IsActive() &&
-           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
+           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime &&
+           (DotFiller().empty() || DotPaysOff(target));
+}
+
+bool DebuffTrigger::DotPaysOff(Unit* target)
+{
+    std::string const filler = DotFiller();
+    uint32 const dotId = AI_VALUE2(uint32, "spell id", spell);
+    uint32 const fillerId = AI_VALUE2(uint32, "spell id", filler);
+    if (!dotId || !fillerId)
+        return true;
+
+    float const lifetime = ExpectedFightLifetime(botAI, target);
+    SpellPayoff::DotVerdict const verdict =
+        SpellPayoff::DotPays(bot, target, dotId, fillerId, lifetime, DotUpfrontShare());
+    if (verdict.pays)
+        return true;
+
+    uint32 const now = getMSTime();
+    if (!_payoffLoggedMs || getMSTimeDiff(_payoffLoggedMs, now) >= DOT_PAYOFF_LOG_MS)
+    {
+        _payoffLoggedMs = now ? now : 1;
+        LOG_INFO("playerbots",
+                 "[rot400] {} holds {} on {}: lives {:.1f} s, {} tick(s) land for {:.0f} vs {} {:.0f} in its time",
+                 bot->GetName(), spell, target->GetName(), lifetime, verdict.ticks, verdict.dot, filler,
+                 verdict.filler);
+    }
+    return false;
 }
 
 bool DebuffOnBossTrigger::IsActive()

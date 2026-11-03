@@ -444,4 +444,14 @@ public:
     bool isUseful() override;
 };
 
+// [rot401] wowsims mage__arcane_aoe / fire_aoe: Arcane Explosion around the mage, where mobs already stand within
+// its radius ("arcane explosion pays"); the same close-target and crowd-control checks as Blast Wave
+class CastArcaneExplosionAction : public CastSpellAction
+{
+public:
+    CastArcaneExplosionAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "arcane explosion") {}
+    ActionThreatType getThreatType() override { return ActionThreatType::Aoe; }
+    bool isUseful() override;
+};
+
 #endif

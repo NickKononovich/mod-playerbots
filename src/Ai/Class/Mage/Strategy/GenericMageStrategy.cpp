@@ -160,21 +160,23 @@ void MageAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     Player* bot = botAI->GetBot();
     int tab = AiFactory::GetPlayerSpecTab(bot);
 
+    // [rot401] each area spell on the mobs where it beats the spec's filler (MageAoePaysTrigger, its own radius
+    // around the target or the mage), no longer every one on 3 mobs in 8 yd of the target ("medium aoe"); wowsims
+    // mage__arcane_aoe / fire_aoe also use Arcane Explosion, where the mobs already stand around the mage
     if (tab == MAGE_TAB_ARCANE)
     {
         triggers.push_back(new TriggerNode("flamestrike active and medium aoe", { NextAction("blizzard", 24.0f) }));
-        triggers.push_back(new TriggerNode("medium aoe", {
-                                                     NextAction("flamestrike", 23.0f),
-                                                     NextAction("blizzard", 22.0f) }));
+        triggers.push_back(new TriggerNode("arcane explosion pays", { NextAction("arcane explosion", 23.5f) }));
+        triggers.push_back(new TriggerNode("flamestrike pays", { NextAction("flamestrike", 23.0f) }));
+        triggers.push_back(new TriggerNode("blizzard pays", { NextAction("blizzard", 22.0f) }));
     }
     else if (tab == MAGE_TAB_FIRE)
     {
-        triggers.push_back(
-            new TriggerNode("medium aoe", {
-                                      NextAction("dragon's breath", 39.0f),
-                                      NextAction("blast wave", 38.0f),
-                                      NextAction("flamestrike", 23.0f),
-                                      NextAction("blizzard", 22.0f) }));
+        triggers.push_back(new TriggerNode("dragon's breath pays", { NextAction("dragon's breath", 39.0f) }));
+        triggers.push_back(new TriggerNode("blast wave pays", { NextAction("blast wave", 38.0f) }));
+        triggers.push_back(new TriggerNode("flamestrike pays", { NextAction("flamestrike", 23.0f) }));
+        triggers.push_back(new TriggerNode("blizzard pays", { NextAction("blizzard", 22.0f) }));
+        triggers.push_back(new TriggerNode("arcane explosion pays", { NextAction("arcane explosion", 21.5f) }));
 
         triggers.push_back(new TriggerNode("flamestrike active and medium aoe", { NextAction("blizzard", 24.0f) }));
         triggers.push_back(new TriggerNode("firestarter", { NextAction("flamestrike", 40.0f) }));
@@ -184,9 +186,8 @@ void MageAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     else if (tab == MAGE_TAB_FROST)
     {
         triggers.push_back(new TriggerNode("flamestrike active and medium aoe", { NextAction("blizzard", 24.0f) }));
-        triggers.push_back(new TriggerNode("medium aoe", {
-                                                     NextAction("flamestrike", 23.0f),
-                                                     NextAction("blizzard", 22.0f) }));
+        triggers.push_back(new TriggerNode("flamestrike pays", { NextAction("flamestrike", 23.0f) }));
+        triggers.push_back(new TriggerNode("blizzard pays", { NextAction("blizzard", 22.0f) }));
         triggers.push_back(new TriggerNode("light aoe", { NextAction("cone of cold", 21.0f) }));
     }
 }

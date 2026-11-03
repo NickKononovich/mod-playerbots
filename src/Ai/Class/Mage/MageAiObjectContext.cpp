@@ -131,6 +131,11 @@ public:
         creators["blizzard channel check"] = &MageTriggerFactoryInternal::blizzard_channel_check;
         creators["blast wave off cd"] = &MageTriggerFactoryInternal::blast_wave_off_cd;
         creators["blast wave off cd and medium aoe"] = &MageTriggerFactoryInternal::blast_wave_off_cd_and_medium_aoe;
+        creators["flamestrike pays"] = &MageTriggerFactoryInternal::flamestrike_pays;  // [rot401]
+        creators["blizzard pays"] = &MageTriggerFactoryInternal::blizzard_pays;
+        creators["arcane explosion pays"] = &MageTriggerFactoryInternal::arcane_explosion_pays;
+        creators["blast wave pays"] = &MageTriggerFactoryInternal::blast_wave_pays;
+        creators["dragon's breath pays"] = &MageTriggerFactoryInternal::dragons_breath_pays;
         creators["no firestarter strategy"] = &MageTriggerFactoryInternal::no_firestarter_strategy;
         creators["enemy is close and no firestarter strategy"] = &MageTriggerFactoryInternal::enemy_is_close_and_no_firestarter_strategy;
         creators["enemy too close for spell and no firestarter strategy"] = &MageTriggerFactoryInternal::enemy_too_close_for_spell_and_no_firestarter_strategy;
@@ -203,6 +208,17 @@ private:
     static Trigger* blizzard_channel_check(PlayerbotAI* botAI) { return new BlizzardChannelCheckTrigger(botAI); }
     static Trigger* blast_wave_off_cd(PlayerbotAI* botAI) { return new BlastWaveOffCdTrigger(botAI); }
     static Trigger* blast_wave_off_cd_and_medium_aoe(PlayerbotAI* botAI) { return new BlastWaveOffCdTriggerAndMediumAoeTrigger(botAI); }
+    static Trigger* flamestrike_pays(PlayerbotAI* botAI) { return new MageAoePaysTrigger(botAI, "flamestrike"); }
+    static Trigger* blizzard_pays(PlayerbotAI* botAI) { return new MageAoePaysTrigger(botAI, "blizzard"); }
+    static Trigger* arcane_explosion_pays(PlayerbotAI* botAI)
+    {
+        return new MageAoePaysTrigger(botAI, "arcane explosion", true);
+    }
+    static Trigger* blast_wave_pays(PlayerbotAI* botAI) { return new MageAoePaysTrigger(botAI, "blast wave", true); }
+    static Trigger* dragons_breath_pays(PlayerbotAI* botAI)
+    {
+        return new MageAoePaysTrigger(botAI, "dragon's breath", true);
+    }
     static Trigger* no_firestarter_strategy(PlayerbotAI* botAI) { return new NoFirestarterStrategyTrigger(botAI); }
     static Trigger* enemy_is_close_and_no_firestarter_strategy(PlayerbotAI* botAI) { return new EnemyIsCloseAndNoFirestarterStrategyTrigger(botAI); }
     static Trigger* enemy_too_close_for_spell_and_no_firestarter_strategy(PlayerbotAI* botAI) { return new EnemyTooCloseForSpellAndNoFirestarterStrategyTrigger(botAI); }
@@ -278,6 +294,7 @@ public:
         creators["living bomb on attackers"] = &MageAiObjectContextInternal::living_bomb_on_attackers;
         creators["dragon's breath"] = &MageAiObjectContextInternal::dragons_breath;
         creators["blast wave"] = &MageAiObjectContextInternal::blast_wave;
+        creators["arcane explosion"] = &MageAiObjectContextInternal::arcane_explosion;  // [rot401]
         creators["invisibility"] = &MageAiObjectContextInternal::invisibility;
         creators["evocation"] = &MageAiObjectContextInternal::evocation;
         creators["arcane blast"] = &MageAiObjectContextInternal::arcane_blast;
@@ -350,6 +367,7 @@ private:
     static Action* living_bomb_on_attackers(PlayerbotAI* botAI) { return new CastLivingBombOnAttackersAction(botAI); }
     static Action* dragons_breath(PlayerbotAI* botAI) { return new CastDragonsBreathAction(botAI); }
     static Action* blast_wave(PlayerbotAI* botAI) { return new CastBlastWaveAction(botAI); }
+    static Action* arcane_explosion(PlayerbotAI* botAI) { return new CastArcaneExplosionAction(botAI); }
     static Action* invisibility(PlayerbotAI* botAI) { return new CastInvisibilityAction(botAI); }
     static Action* evocation(PlayerbotAI* botAI) { return new CastEvocationAction(botAI); }
     static Action* counterspell_on_enemy_healer(PlayerbotAI* botAI) { return new CastCounterspellOnEnemyHealerAction(botAI); }

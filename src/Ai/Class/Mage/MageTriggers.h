@@ -374,6 +374,18 @@ public:
     FlamestrikeBlizzardTrigger(PlayerbotAI* botAI) : TwoTriggers(botAI, "flamestrike nearby", "medium aoe") {}
 };
 
+// [rot401] A mage's area spell where it beats the spec's filler (AoePaysTrigger): Arcane Blast for Arcane, Fireball for
+// Fire, Frostbolt for Frost (wowsims mage__arcane / fire / frost)
+class MageAoePaysTrigger : public AoePaysTrigger
+{
+public:
+    MageAoePaysTrigger(PlayerbotAI* botAI, std::string const aoeSpell, bool selfCentred = false)
+        : AoePaysTrigger(botAI, aoeSpell, "", selfCentred) {}
+
+protected:
+    std::string const Filler() override;
+};
+
 class BlizzardChannelCheckTrigger : public Trigger
 {
 public:

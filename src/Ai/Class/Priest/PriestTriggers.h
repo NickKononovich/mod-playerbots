@@ -17,15 +17,36 @@ class PlayerbotAI;
 
 DEBUFF_CHECKISOWNER_TRIGGER(HolyFireTrigger, "holy fire");
 // [b31_deep] never the current target: its Shadow Word: Pain waits for 5 Shadow Weaving stacks (ShadowWordPainTrigger)
-DEBUFF_ENEMY_TRIGGER_A(ShadowWordPainOnAttackerTrigger, "shadow word: pain");
-DEBUFF_ENEMY_TRIGGER(VampiricTouchOnAttackerTrigger, "vampiric touch");
+// [rot400] the multidots too only where their ticks before the mob's death beat a Mind Flay in their time
+class ShadowWordPainOnAttackerTrigger : public DebuffOnAttackerTrigger
+{
+public:
+    ShadowWordPainOnAttackerTrigger(PlayerbotAI* botAI) : DebuffOnAttackerTrigger(botAI, "shadow word: pain")
+    {
+        dotFiller = ai::priest::DOT_FILLER;
+    }
+    bool IsActive() override;
+};
 
+class VampiricTouchOnAttackerTrigger : public DebuffOnAttackerTrigger
+{
+public:
+    VampiricTouchOnAttackerTrigger(PlayerbotAI* botAI) : DebuffOnAttackerTrigger(botAI, "vampiric touch")
+    {
+        dotFiller = ai::priest::DOT_FILLER;
+    }
+};
+
+// [rot400] Shadow's DoTs against Mind Flay (DebuffTrigger::DotPaysOff)
 class PriestDotTrigger : public DebuffTrigger
 {
 public:
     PriestDotTrigger(PlayerbotAI* botAI, std::string const spell, uint32 refreshMs,
                      float minLifetime = ai::priest::DOT_MIN_LIFETIME)
-        : DebuffTrigger(botAI, spell, 1, true, minLifetime, refreshMs) {}
+        : DebuffTrigger(botAI, spell, 1, true, minLifetime, refreshMs)
+    {
+        dotFiller = ai::priest::DOT_FILLER;
+    }
 };
 
 class ShadowWordPainTrigger : public PriestDotTrigger
@@ -58,6 +79,10 @@ public:
 
     // [rot210] also while it is up when the fight ends within the APL's 1.75 s (DevouringPlagueFinalCast)
     bool IsActive() override;
+
+protected:
+    // [rot400] Improved Devouring Plague: its rank's percent x the full periodic damage hits at once
+    float DotUpfrontShare() override;
 };
 
 BUFF_TRIGGER(VampiricEmbraceTrigger, "vampiric embrace");
@@ -133,6 +158,14 @@ class MindSearHeavyAoeTrigger : public AoeTrigger
 public:
     MindSearHeavyAoeTrigger(PlayerbotAI* botAI) : AoeTrigger(botAI, 6, 10.0f) {}
     std::string const getName() override { return "mind sear heavy aoe"; }
+};
+
+// [rot401] Mind Sear where its ticks on the mobs around the target (never the target itself) beat Mind Flay on the
+// target: the break-even count from the two spells (AoePaysTrigger) instead of 3 mobs in 8 yd ("medium aoe")
+class MindSearPaysTrigger : public AoePaysTrigger
+{
+public:
+    MindSearPaysTrigger(PlayerbotAI* botAI) : AoePaysTrigger(botAI, "mind sear", ai::priest::DOT_FILLER, false, true) {}
 };
 
 class ShadowProtectionTrigger : public BuffTrigger

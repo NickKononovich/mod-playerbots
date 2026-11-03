@@ -106,6 +106,13 @@ bool DevouringPlagueTrigger::IsActive()
     return PriestDotTrigger::IsActive() || ai::priest::DevouringPlagueFinalCast(botAI, GetTarget());
 }
 
+float DevouringPlagueTrigger::DotUpfrontShare()
+{
+    AuraEffect const* improved =
+        bot->GetDummyAuraEffect(SPELLFAMILY_PRIEST, ai::priest::IMPROVED_DEVOURING_PLAGUE_ICON, EFFECT_1);
+    return improved ? static_cast<float>(improved->GetAmount()) / 100.0f : 0.0f;
+}
+
 bool ShadowProtectionTrigger::IsActive()
 {
     return BuffTrigger::IsActive() && !botAI->HasAura("prayer of shadow protection", GetTarget());

@@ -106,13 +106,16 @@ void AoEWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                 // gd-h-5F-51: a Demonology warlock tried Shadowfury ("bot lacks spell 47847") and Shadowflame first.
                 NextAction("immolation aura", 26.0f),
                 NextAction("seed of corruption on attacker", 23.5f),
-                NextAction("seed of corruption", 23.4f),
-                NextAction("shadowfury", 23.0f),
-                NextAction("shadowflame", 22.5f),
-                NextAction("rain of fire", 21.0f)
+                NextAction("seed of corruption", 23.4f)
             }
         )
     );
+    // [rot401] the direct-damage areas on the mobs where they beat the spec's filler (WarlockAoePaysTrigger, each
+    // spell's own radius), not on any 3 in 8 yd: Shadowfury around the target, Shadowflame in front of the warlock,
+    // Rain of Fire last, the stationary option
+    triggers.push_back(new TriggerNode("shadowfury pays", { NextAction("shadowfury", 23.0f) }));
+    triggers.push_back(new TriggerNode("shadowflame pays", { NextAction("shadowflame", 22.5f) }));
+    triggers.push_back(new TriggerNode("rain of fire pays", { NextAction("rain of fire", 21.0f) }));
 
     triggers.push_back(
         new TriggerNode("rain of fire channel check",

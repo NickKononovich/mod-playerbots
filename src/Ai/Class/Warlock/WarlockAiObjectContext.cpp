@@ -197,6 +197,9 @@ public:
         creators["pull imminent life tap"] = &WarlockTriggerFactoryInternal::pull_imminent_life_tap;
         creators["wrong pet"] = &WarlockTriggerFactoryInternal::wrong_pet;
         creators["rain of fire channel check"] = &WarlockTriggerFactoryInternal::rain_of_fire_channel_check;
+        creators["shadowfury pays"] = &WarlockTriggerFactoryInternal::shadowfury_pays;  // [rot401]
+        creators["shadowflame pays"] = &WarlockTriggerFactoryInternal::shadowflame_pays;
+        creators["rain of fire pays"] = &WarlockTriggerFactoryInternal::rain_of_fire_pays;
         // [b31_deep]
         creators["demo immolate"] = &WarlockTriggerFactoryInternal::demo_immolate;
         creators["demo corruption on attacker"] = &WarlockTriggerFactoryInternal::demo_corruption_on_attacker;
@@ -265,6 +268,12 @@ private:
     static Trigger* pull_imminent_life_tap(PlayerbotAI* botAI) { return new PullImminentLifeTapTrigger(botAI); }
     static Trigger* wrong_pet(PlayerbotAI* botAI) { return new WrongPetTrigger(botAI); }
     static Trigger* rain_of_fire_channel_check(PlayerbotAI* botAI) { return new RainOfFireChannelCheckTrigger(botAI); }
+    static Trigger* shadowfury_pays(PlayerbotAI* botAI) { return new WarlockAoePaysTrigger(botAI, "shadowfury"); }
+    static Trigger* shadowflame_pays(PlayerbotAI* botAI)
+    {
+        return new WarlockAoePaysTrigger(botAI, "shadowflame", true);
+    }
+    static Trigger* rain_of_fire_pays(PlayerbotAI* botAI) { return new WarlockAoePaysTrigger(botAI, "rain of fire"); }
     // [b31_deep]
     static Trigger* demo_immolate(PlayerbotAI* botAI) { return new DemoImmolateTrigger(botAI); }
     static Trigger* demo_corruption_on_attacker(PlayerbotAI* botAI)

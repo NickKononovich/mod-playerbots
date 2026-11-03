@@ -5,6 +5,7 @@
  */
 
 #include "WarlockTriggers.h"
+#include "AiFactory.h"  // [rot400] GetPlayerSpecTab
 #include "DynamicObject.h"
 #include "GameObject.h"
 #include "GenericTriggers.h"
@@ -254,6 +255,11 @@ bool IsCurseAllowed(PlayerbotAI* botAI, AssignedCurse curse)
 }
 
 // [b31_deep] Agony never replaces the bot's own Curse of Doom (one curse per warlock per target).
+std::string const ai::warlock::DotFiller(Player* bot)
+{
+    return AiFactory::GetPlayerSpecTab(bot) == WARLOCK_TAB_DESTRUCTION ? "incinerate" : "shadow bolt";
+}
+
 bool CurseOfAgonyTrigger::IsActive()
 {
     return ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::AGONY) && DebuffTrigger::IsActive() &&

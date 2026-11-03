@@ -26,6 +26,9 @@ namespace ai::warlock
     ai::raidutil::AssignedCurse GetCoordinatedCurse(PlayerbotAI* botAI);
     // False when the coordinator gave this warlock a different curse (one curse per warlock per target).
     bool IsCurseAllowed(PlayerbotAI* botAI, ai::raidutil::AssignedCurse curse);
+    // [rot400] The filler a DoT is weighed against (DebuffTrigger::DotPaysOff): Incinerate for Destruction (wowsims
+    // warlock__destro), Shadow Bolt for Affliction / Demonology (warlock__affliction / warlock__demo)
+    std::string const DotFiller(Player* bot);
 }
 
 // Buff and Out of Combat Triggers
@@ -197,6 +200,7 @@ class CorruptionTrigger : public DebuffTrigger
 public:
     CorruptionTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "corruption", 1, true, CORRUPTION_MIN_TARGET_LIFETIME, CORRUPTION_REFRESH_MS) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     bool IsActive() override
     {
         return DebuffTrigger::IsActive() && !botAI->HasAura("seed of corruption", GetTarget(), false, true);
@@ -208,6 +212,7 @@ class CorruptionOnAttackerTrigger : public DebuffOnAttackerTrigger
 public:
     CorruptionOnAttackerTrigger(PlayerbotAI* botAI)
         : DebuffOnAttackerTrigger(botAI, "corruption", true, CORRUPTION_MIN_TARGET_LIFETIME) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     bool IsActive() override
     {
         return DebuffTrigger::IsActive() && !botAI->HasAura("seed of corruption", GetTarget(), false, true);
@@ -234,6 +239,7 @@ class DemoImmolateTrigger : public DebuffTrigger
 public:
     DemoImmolateTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "immolate", 1, true, DEMO_IMMOLATE_MIN_TARGET_LIFETIME, IMMOLATE_REFRESH_MS) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     std::string const getName() override { return "demo immolate"; }
 };
 
@@ -262,6 +268,7 @@ public:
         needLifeTime = DEMO_MULTIDOT_MIN_TARGET_LIFETIME;
     }
     std::string const getName() override { return "demo immolate on attacker"; }
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     bool IsActive() override
     {
         return AI_VALUE(uint8, "attacker count") >= 2 && ImmolateOnAttackerTrigger::IsActive();
@@ -274,6 +281,7 @@ public:
     UnstableAfflictionTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "unstable affliction", 1, true, UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME,
                         UNSTABLE_AFFLICTION_REFRESH_MS) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
 
     // [rot352] the refresh at the hasted cast time (UnstableAfflictionRefreshMs)
     bool IsActive() override
@@ -288,6 +296,7 @@ class UnstableAfflictionOnAttackerTrigger : public DebuffOnAttackerTrigger
 public:
     UnstableAfflictionOnAttackerTrigger(PlayerbotAI* botAI)
         : DebuffOnAttackerTrigger(botAI, "unstable affliction", true, UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
 };
 
 // Execute phase: Drain Soul deals four times its damage while the target is at or below 25 % health (3.3.5).
@@ -342,6 +351,17 @@ public:
 };
 
 // [guide_b31_dead] Destruction: Chaos Bolt on cooldown. Previously unregistered, so the 19.0 node never fired.
+// [rot401] A warlock's area spell where it beats the spec's filler (AoePaysTrigger, ai::warlock::DotFiller)
+class WarlockAoePaysTrigger : public AoePaysTrigger
+{
+public:
+    WarlockAoePaysTrigger(PlayerbotAI* botAI, std::string const aoeSpell, bool selfCentred = false)
+        : AoePaysTrigger(botAI, aoeSpell, "", selfCentred) {}
+
+protected:
+    std::string const Filler() override { return ai::warlock::DotFiller(bot); }
+};
+
 class ChaosBoltTrigger : public SpellNoCooldownTrigger
 {
 public:
@@ -354,6 +374,7 @@ class CurseOfAgonyTrigger : public DebuffTrigger
 public:
     CurseOfAgonyTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "curse of agony", 1, true, CURSE_OF_AGONY_MIN_TARGET_LIFETIME) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     bool IsActive() override;
 };
 
@@ -362,6 +383,7 @@ class CurseOfAgonyOnAttackerTrigger : public DebuffOnAttackerTrigger
 public:
     CurseOfAgonyOnAttackerTrigger(PlayerbotAI* botAI)
         : DebuffOnAttackerTrigger(botAI, "curse of agony", true, CURSE_OF_AGONY_MIN_TARGET_LIFETIME) {}
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     bool IsActive() override;
 };
 

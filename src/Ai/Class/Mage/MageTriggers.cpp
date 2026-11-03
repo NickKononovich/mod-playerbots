@@ -449,3 +449,16 @@ bool ScorchFightEndTrigger::IsActive()
     Unit* target = GetTarget();
     return FireFightEndTarget(bot, target) && FightRemainingSec(botAI, target) <= FIRE_FIGHT_END_SCORCH_SEC;
 }
+
+std::string const MageAoePaysTrigger::Filler()
+{
+    switch (AiFactory::GetPlayerSpecTab(bot))
+    {
+        case MAGE_TAB_ARCANE:
+            return "arcane blast";
+        case MAGE_TAB_FIRE:
+            return "fireball";
+        default:
+            return "frostbolt";
+    }
+}

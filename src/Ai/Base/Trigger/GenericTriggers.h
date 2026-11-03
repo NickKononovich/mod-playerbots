@@ -467,6 +467,35 @@ public:
     HighAoeTrigger(PlayerbotAI* botAI) : AoeTrigger(botAI, 4, 8.0f) {}
 };
 
+// [rot401] An area spell where it pays: at least SpellPayoff::AoeBreakEvenTargets mobs (the fewest on which one cast
+// deals the spec's filler damage in the same time, from the spells; never fewer than 2, an area on one mob is the
+// single-target rotation's call) within the spell's own radius (its damage effects) of the current target, or of the
+// bot for an area around the caster (Arcane Explosion, Blast Wave, Dragon's Breath). `excludesTarget`: the area
+// never hits its target (Mind Sear), which is not counted. Replaces the fixed 3 mobs in 8 yd ("medium aoe") for the
+// casters' area spells; the leader's AoE rule and the threat gate still decide the cast (multipliers).
+class AoePaysTrigger : public Trigger
+{
+public:
+    AoePaysTrigger(PlayerbotAI* botAI, std::string const aoeSpell, std::string const filler, bool selfCentred = false,
+                   bool excludesTarget = false)
+        : Trigger(botAI, aoeSpell + " pays"), aoeSpell(aoeSpell), filler(filler), selfCentred(selfCentred),
+          excludesTarget(excludesTarget) {}
+
+    bool IsActive() override;
+
+protected:
+    // the filler the area is weighed against; a class with a spec-dependent filler overrides it
+    virtual std::string const Filler() { return filler; }
+
+    std::string aoeSpell;
+    std::string filler;
+    bool selfCentred;
+    bool excludesTarget;
+
+private:
+    static constexpr uint32 AOE_MIN_TARGETS = 2;
+};
+
 class BuffTrigger : public SpellTrigger
 {
 public:
@@ -574,7 +603,21 @@ public:
     bool IsActive() override;
 
 protected:
+    // [rot400] With a filler set (the spec's single-target filler): the DoT only when its ticks that land before the
+    // target dies (ExpectedFightLifetime) beat that filler cast in the DoT's own time (SpellPayoff::DotPays). b228
+    // rfc-h: Shadow 476k / Affliction 246k DoT damage per run left on mobs that died within 6-8 s.
+    bool DotPaysOff(Unit* target);
+    // [rot400] the share of the DoT's full periodic damage that lands at once on top (Improved Devouring Plague)
+    virtual float DotUpfrontShare() { return 0.0f; }
+    // [rot400] the filler's spell name; empty: no payoff check (a class with a spec-dependent filler overrides it)
+    virtual std::string const DotFiller() { return dotFiller; }
+
     float needLifeTime;
+    std::string dotFiller;
+
+private:
+    static constexpr uint32 DOT_PAYOFF_LOG_MS = 5000;
+    uint32 _payoffLoggedMs = 0;
 };
 
 class DebuffOnBossTrigger : public DebuffTrigger

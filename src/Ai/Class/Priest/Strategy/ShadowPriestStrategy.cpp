@@ -110,7 +110,8 @@ void ShadowPriestAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // [b31_deep] wowsims aoe APLs: at 2-5 targets the current target's DoTs (VT +3, DP +2, SW:P +1) come first and
     // Mind Sear after them (above Mind Blast / Mind Flay, below the set-bonus procs +0.4 / +0.5); it goes over
     // the DoTs only with 5+ other enemies within its 10 yd around the target (it never hits the target itself).
-    triggers.push_back(new TriggerNode("medium aoe", { NextAction("mind sear", ACTION_HIGH + 0.3f) }));
+    // [rot401] on the mobs where it beats Mind Flay (MindSearPaysTrigger), not on any 3 in 8 yd
+    triggers.push_back(new TriggerNode("mind sear pays", { NextAction("mind sear", ACTION_HIGH + 0.3f) }));
     triggers.push_back(new TriggerNode("mind sear heavy aoe", { NextAction("mind sear", ACTION_HIGH + 4) }));
 }
 
