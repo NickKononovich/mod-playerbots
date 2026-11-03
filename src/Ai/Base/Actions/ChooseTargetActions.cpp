@@ -9,6 +9,7 @@
 #include "TankAoeThreat.h"  // [lead760] TankPeel::IsGapCloser
 
 #include <mutex>
+#include <set>  // [lead906]
 #include <unordered_map>
 #include "AggressiveTargetValue.h"
 #include "Battleground.h"
@@ -506,8 +507,10 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
                     if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
                         TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr))
                     {
-                        LOG_DEBUG("playerbots", "[lead906] {}: no {} on {} ({:.1f} yd), it comes at the tank",
-                                  bot->GetName(), name, mob->GetName(), bot->GetExactDist(mob));
+                        thread_local std::set<std::pair<uint64, uint64>> comesLogged;
+                        if (comesLogged.insert({bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots", "[lead906] {}: no {} on {} ({:.1f} yd), it comes at the tank",
+                                     bot->GetName(), name, mob->GetName(), bot->GetExactDist(mob));
                         continue;
                     }
                 // [lead760] a gap closer only where the leader's fight is planned to stand (TankWalkMovesFight)
