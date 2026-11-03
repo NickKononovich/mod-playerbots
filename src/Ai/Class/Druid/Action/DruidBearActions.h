@@ -68,6 +68,14 @@ class CastLacerateAction : public CastMeleeSpellAction
 {
 public:
     CastLacerateAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "lacerate") {}
+
+    // [rot334] LOG_DEBUG "[bear lacerate]" per cast on a dungeon boss (DruidBearActions.cpp)
+    bool Execute(Event event) override;
+
+private:
+    ObjectGuid traceTarget;
+    uint32 traceFirstMs = 0;
+    uint32 traceLastMs = 0;
 };
 
 class CastBashOnEnemyHealerAction : public CastSpellOnEnemyHealerAction
