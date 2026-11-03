@@ -1445,6 +1445,12 @@ namespace Leader::Dungeon
                                                         : nullptr;
                         bool const toldToHit = commandTarget == mob;
                         bool const hitsIt = victim->GetVictim() == mob;
+                        // [lead571] b215: the "not told to" losses were mobs the member had been told seconds before;
+                        // the seconds since its Attack left this mob (-1: it was not the last one it left)
+                        float leftSec = -1.0f;
+                        if (auto const left = lead.attackLeft.find(victimGuid);
+                            !toldToHit && left != lead.attackLeft.end() && left->second.first == mob->GetGUID())
+                            leftSec = float(getMSTimeDiff(left->second.second, now)) / 1000.0f;
                         Spell const* casting = victim->GetCurrentSpell(CURRENT_GENERIC_SPELL);
                         if (!casting)
                             casting = victim->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
@@ -1469,8 +1475,11 @@ namespace Leader::Dungeon
                             why = "heal threat over the tank's";
                         else if (!toldToHit && !hitsIt)
                             why = "threat on a mob it was not told to hit (area / splash / dot)";
+                        else if (!toldToHit && leftSec >= 0.0f)
+                            why = "the leader moved its Attack off this mob, its switch still in flight";
                         else if (!toldToHit)
                             why = "it attacks a mob it was not told to";
+                        cause.Real("attackLeftSec", leftSec);
                         cause.Str("cause", why)
                             .Str("victimCommand", commanded ? std::string(commandTarget ? "Attack " +
                                                                                               commandTarget->GetName()
@@ -2313,7 +2322,15 @@ namespace Leader::Dungeon
                     }
                 }
             bool const toMob = goTo && goTo != alone;
-            if (alone && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, goTo->GetPosition(), arrive,
+            // [lead572] b215 rfc-h 5B 201.7 / 241.8 s: a Ragefire Trogg 13.2 yd from the warrior, 3.5 yd below it and
+            // out of its sight, took the priest / rogue; the tank's MoveTo arrived at the taunt's 30 yd (it stood
+            // inside it already) and it never walked - 51 s of the run's 87 s standing (phantom combat, "the attack
+            // refused: no line of sight"); 24 of the 58 such walks in b215 were issued in reach but out of sight. In
+            // reach but out of sight the walk ends where the tank sees it: at the unit (melee reach)
+            float const tolerance =
+                goTo && goTo->GetExactDist(tank) <= arrive && !tank->IsWithinLOSInMap(goTo) ? NOMINAL_MELEE_RANGE
+                                                                                            : arrive;
+            if (alone && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, goTo->GetPosition(), tolerance,
                                      toMob ? "aggro loss: the tank goes to the mob"
                                            : "aggro loss: the tank goes to the member"))
                 Decisions().Write(run, "leader", "fight_spot_to_member", alone->GetGUID(),
@@ -2323,6 +2340,27 @@ namespace Leader::Dungeon
                                                   .Real("distance", goTo->GetExactDist(tank))
                                                   .Real("pickUp", pickUp)
                                                   .Bool("sight", tank->IsWithinLOSInMap(goTo)));
+            // [lead572] ... and the same Trogg while it was on the warrior (5B 196-201 / 231-241 s): it stood out of
+            // the tank's sight, nobody could hit it ("the attack refused: no line of sight" from the tank and the
+            // rogue), the tank stood ("leader in combat with attackers: no walk") until the game moved the mob onto
+            // a member. A fight mob on the tank that stands (not walking in) out of the tank's sight is a mob the
+            // tank goes to: at it (melee reach), where it sees it. A mob walking in (a LoS pull) is not touched
+            else if (!alone)
+            {
+                Unit* stuck = nullptr;
+                for (Unit* attacker : tank->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank && attacker->ToCreature() &&
+                        LeaderFightMob(tank, attacker) && !attacker->isMoving() && !IsCrowdControlled(attacker) &&
+                        !tank->IsWithinLOSInMap(attacker) &&
+                        (!stuck || attacker->GetExactDist(tank) < stuck->GetExactDist(tank)))
+                        stuck = attacker;
+                if (stuck && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, stuck->GetPosition(),
+                                         NOMINAL_MELEE_RANGE, "the tank goes to its mob out of its sight"))
+                    Decisions().Write(run, "leader", "fight_spot_to_mob", stuck->GetGUID(), stuck->GetName(), true,
+                                      JsonObject().Str("mob", stuck->GetName())
+                                          .Real("distance", stuck->GetExactDist(tank))
+                                          .Real("dz", stuck->GetPositionZ() - tank->GetPositionZ()));
+            }
         }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
         if (!fighting && tank->isMoving())
@@ -4761,7 +4799,26 @@ namespace Leader::Dungeon
                                 mine = nullptr;
                                 break;
                             }
-                    Unit* const attackOn = mine ? mine : target;
+                    // [lead570] b215 rfc-h: 18 of the 25 "it attacks a mob it was not told to" losses (5D 557.3 /
+                    // 859.0 s the unholy DK, 5B 859.1 / 975.9 s the elemental shaman) came one tick after the member
+                    // lost its headroom: the Attack went from the mob it hit to the leader's focus with the Stop
+                    // (Cultist -> Enforcer -> Cultist within 1 s), its victim was still the old mob, and the chase /
+                    // combat spot walked it to the new one. Without headroom the member does no damage anywhere (the
+                    // Stop): its live Attack target stays the one it has (one command per fact, lead236); only a
+                    // loose mob the leader made the focus (lead245) or a target that left the fight moves it
+                    Unit* attackOn = mine ? mine : target;
+                    if (!mine && !lead.looseIsTarget)
+                        if (Leader::MemberEvents current;
+                            Leader::Events::Get(guid, current) && current.attack == Leader::AttackEvent::Attack)
+                            if (Unit* held = ObjectAccessor::GetUnit(*tank, current.target);
+                                held && held != target && held->IsAlive() && held->IsInCombat() &&
+                                std::find(killOrder.begin(), killOrder.end(), held->GetGUID()) != killOrder.end())
+                                attackOn = held;
+                    // [lead571] the mob its Attack leaves, for the aggro-loss cause (the switch in flight)
+                    if (Leader::MemberEvents before;
+                        Leader::Events::Get(guid, before) && before.attack == Leader::AttackEvent::Attack &&
+                        !before.target.IsEmpty() && before.target != attackOn->GetGUID())
+                        lead.attackLeft[guid] = {before.target, now};
                     Leader::AoeRule memberAoe = aoe;
                     std::string memberAoeWhy = aoeWhy;
                     // [lead415] the fight's mobs this member has no headroom on are spared too: each AoE's own
@@ -4808,6 +4865,7 @@ namespace Leader::Dungeon
                     if (changed || aoeChanged)
                         logEvent(bot, "Attack", JsonObject().Str("target", attackOn->GetName())
                                                     .Num("targetEntry", attackOn->GetEntry())
+                                                    .Num("targetLow", attackOn->GetGUID().GetCounter())  // [lead571]
                                                     .Num("killOrder", int64(killOrder.size()))
                                                     .Num("named", int64(named.size()))  // [lead520]
                                                     .Str("aoe", memberAoe == Leader::AoeRule::Forbidden

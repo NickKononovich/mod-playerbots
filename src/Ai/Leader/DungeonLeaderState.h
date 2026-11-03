@@ -355,6 +355,8 @@ namespace Leader
         uint32 manaTickMs = 0;
         std::map<ObjectGuid, bool> noHeadroom;  // [lead53] no fight mob leaves this member threat headroom
         std::map<ObjectGuid, std::string> attackWaitWhy;  // [lead413] its mobs stand in an unpulled mob's reach
+        // [lead571] member -> the mob its last Attack change left and when (the aggro-loss cause: a switch in flight)
+        std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> attackLeft;
         // [lead412] the threat redirect the leader told a member (Misdirection / Tricks): onto whom, and the share of
         // its threat the spell's SPELL_EFFECT_REDIRECT_THREAT moves (its base points, %)
         std::map<ObjectGuid, std::pair<ObjectGuid, float>> redirectTo;
