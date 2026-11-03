@@ -92,10 +92,10 @@ namespace
         bool AllowExecution(Action* /*action*/, Event /*event*/) override { return true; }
         bool OverrideResult(Action* /*action*/, bool executed, Event /*event*/) override { return executed; }
 
-        void After(Action* action, bool executed, Event /*event*/) override
+        void After(Action* action, bool executed, Event event) override
         {
             if (executed && action)
-                _botAI->NoteIdleDiagAction(action);
+                _botAI->NoteIdleDiagAction(action, event.GetSource());
         }
 
     private:
@@ -7544,7 +7544,7 @@ namespace
     constexpr float IDLE_DIAG_RANGED_REACH = 30.0f;
 }
 
-void PlayerbotAI::NoteIdleDiagAction(Action* action)
+void PlayerbotAI::NoteIdleDiagAction(Action* action, std::string const& source)
 {
     if (!bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable())
         return;
@@ -7553,6 +7553,7 @@ void PlayerbotAI::NoteIdleDiagAction(Action* action)
     if (!dynamic_cast<CastSpellAction*>(action))
         return;
 
+    TraceRogueGcd(action, source);
     idleDiag.tickCast = true;
     uint32 const now = getMSTime();
     if (idleDiag.busyEndMs && now >= idleDiag.busyEndMs)
@@ -7574,6 +7575,38 @@ void PlayerbotAI::NoteIdleDiagAction(Action* action)
             busy = std::max(busy, static_cast<uint32>(std::max(spell->GetCastTimeRemaining(), 0)));
 
     idleDiag.busyEndMs = std::max(idleDiag.busyEndMs, now + busy);
+}
+
+// [rot171] b215 rfc-h 5E: the assassination rogue's energy use did not add up (~200 energy a minute unexplained by
+// the casts / regen in the harness numbers). One debug line per cast on a dungeon boss: energy and combo points right
+// after the cast, the action and its trigger, the ms since the previous cast and the energy then, so the energy
+// budget (regen, Relentless Strikes / Focused Attacks / Overkill returns, pooling) can be summed from the log.
+void PlayerbotAI::TraceRogueGcd(Action* action, std::string const& source)
+{
+    if (bot->getClass() != CLASS_ROGUE || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+
+    Unit* target = aiObjectContext->GetValue<Unit*>("current target")->Get();
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !boss->IsDungeonBoss())
+    {
+        rogueGcdLastMs = 0;
+        return;
+    }
+
+    uint32 const now = getMSTime();
+    uint32 const energy = bot->GetPower(POWER_ENERGY);
+    uint32 const sinceMs = rogueGcdLastMs ? getMSTimeDiff(rogueGcdLastMs, now) : 0;
+    Aura const* snd = GetAura("slice and dice", bot);
+    LOG_DEBUG("playerbots",
+              "[rogue gcd] {} on {}: after the cast energy {} cp {} -> {} (trigger {}) | {} ms after the last cast "
+              "(energy {}) | slice and dice {} s, melee {}, swinging {}",
+              bot->GetName(), boss->GetName(), energy, bot->GetComboPoints(target), action->getName(),
+              source.empty() ? "default" : source, sinceMs, rogueGcdLastEnergy,
+              snd ? snd->GetDuration() / IN_MILLISECONDS : 0, bot->IsWithinMeleeRange(target),
+              bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING));
+    rogueGcdLastMs = now;
+    rogueGcdLastEnergy = energy;
 }
 
 void PlayerbotAI::UpdateHealDiag()

@@ -622,8 +622,9 @@ public:
     uint32 GetReactDelay();
     // Remaining global cooldown of the last spell this bot cast, in ms (0 when it is over).
     uint32 GetGlobalCooldownRemaining();
-    // Temporary combat idle diagnostics (LOG_DEBUG "[idle diag]"): the engine executed `action` this tick.
-    void NoteIdleDiagAction(Action* action);
+    // Temporary combat idle diagnostics (LOG_DEBUG "[idle diag]"): the engine executed `action` this tick, fired by
+    // the trigger `source` (the event's source; empty for a default action).
+    void NoteIdleDiagAction(Action* action, std::string const& source);
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -722,6 +723,11 @@ protected:
 
     // Temporary combat idle diagnostics: why a dps bot in an instance group cast nothing on a tick.
     void UpdateIdleDiag(bool casting);
+    // [rot171] LOG_DEBUG "[rogue gcd]": one line per rogue cast on a dungeon boss (energy and combo points after it,
+    // the action and its trigger, ms since the last cast and the energy after that one)
+    void TraceRogueGcd(Action* action, std::string const& source);
+    uint32 rogueGcdLastMs = 0;
+    uint32 rogueGcdLastEnergy = 0;
     struct IdleDiag
     {
         uint32 windowStartMs = 0;
