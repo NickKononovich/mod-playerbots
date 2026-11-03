@@ -552,6 +552,44 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     if (currentSpell)
     {
+        // [lead573] b215 rfc-h 5D 512.9-514.1 s: the leader moved the arcane mage's Attack from a Searing Blade Cultist
+        // it had no more threat headroom on to an Enforcer; its Arcane Blast on the Cultist was still casting, landed
+        // and took it (5F 38.1-38.4 s the warlock's Shadow Bolt on a Molten Elemental the same way). The leader names
+        // the mobs a led member may hit (its Attack target, the kill order it has headroom on, its interrupt / CC /
+        // flee stop / pick-up / dispel targets) and its DontAttack mob is hit by nobody: a hostile cast or channel of
+        // a led member (not the tank, which owns its threat work) on a mob outside that, or on the DontAttack mob,
+        // stops - the command is the leader's, an older cast does not outlive it
+        if (Leader::LEADER_ATTACK_EVENTS && bot->IsInCombat() && Leader::ExecutorMember(bot))
+        {
+            Leader::MemberEvents events;
+            SpellInfo const* castInfo = currentSpell->GetSpellInfo();
+            Unit* castOn = currentSpell->m_targets.GetUnitTarget();
+            if (castInfo && castOn && castOn != bot && !castOn->GetGUID().IsPlayer() && castOn->IsAlive() &&
+                !castInfo->IsPositive() && bot->IsHostileTo(castOn) && castOn->GetOwnerGUID() != bot->GetGUID() &&
+                Leader::Events::Get(bot->GetGUID(), events))
+            {
+                ObjectGuid const on = castOn->GetGUID();
+                bool const named = on == events.target || on == events.interrupt || on == events.cc ||
+                                   on == events.fleeStop || on == events.threatTarget || on == events.dispelTarget ||
+                                   std::find(events.killOrder.begin(), events.killOrder.end(), on) !=
+                                       events.killOrder.end();
+                bool const barred = (!events.dontAttack.IsEmpty() && on == events.dontAttack && on != events.cc &&
+                                     on != events.interrupt) ||
+                                    (events.attack == Leader::AttackEvent::Attack && !named);
+                if (barred)
+                {
+                    B44CastTrace(bot, "stop:leader target", castInfo, castOn);  // [b44_cast]
+                    LOG_INFO("playerbots", "[lead573] {} stops {} on {} {}: {}", bot->GetName(),
+                             castInfo->SpellName[0], castOn->GetName(), castOn->GetEntry(),
+                             on == events.dontAttack ? "the leader's DontAttack mob"
+                                                     : "the leader's Attack no longer names it");
+                    bot->InterruptSpell(currentSpell->GetCurrentContainer());
+                    YieldThread(bot, GetReactDelay());
+                    return;
+                }
+            }
+        }
+
         if (currentSpell->getState() == SPELL_STATE_PREPARING)
         {
             // Allow external scripts to interrupt a cast in progress
