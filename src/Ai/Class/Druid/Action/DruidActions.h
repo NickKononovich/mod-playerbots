@@ -491,8 +491,7 @@ class CastEnrageAction : public CastBuffSpellAction
 public:
     CastEnrageAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "enrage") {}
 
-    // [b31_sd] Enrage lowers the bear's armor while it builds rage (GUIDE_AUDIT_TANKS.md: the guide uses it before
-    // the pull, in combat "generally not"). In combat only while the bear is short of rage and healthy.
+    // [rot331] on its cooldown in combat, as wowsims' major cooldown (DruidActions.cpp)
     bool isUseful() override;
 };
 

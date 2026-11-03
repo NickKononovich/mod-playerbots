@@ -590,19 +590,11 @@ Unit* CastBlanketHotAction::GetTarget() { return botAI->GetUnit(AI_VALUE2(Object
 
 bool CastBlanketHotAction::isUseful() { return GetTarget() != nullptr; }
 
-// [b31_sd] In combat: rage below ENRAGE_MAX_RAGE (Mangle, Lacerate and Swipe are not affordable, so the GCD-free rage
-// is worth the armor) and the bear at or above the almost-full band (the armor loss does not land on a falling
-// tank). It left the "medium health" node, where it went out at 65 % next to Frenzied Regeneration.
-bool CastEnrageAction::isUseful()
-{
-    constexpr uint8 ENRAGE_MAX_RAGE = 20;
-
-    if (!CastBuffSpellAction::isUseful())
-        return false;
-
-    if (!bot->IsInCombat())
-        return true;
-
-    return AI_VALUE2(uint8, "rage", "self target") < ENRAGE_MAX_RAGE &&
-           bot->GetHealthPct() >= sPlayerbotAIConfig.AlmostFullHealth;
-}
+// [rot331] wowsims casts Enrage whenever it is ready: a major cooldown (druid/enrage.go:71 AddMajorCooldown,
+// CooldownTypeDPS) that the feral tank APL's autocastOtherCooldowns (row 2, above every spell) uses at once, with no
+// rage or health condition - its 0.84 armor scaling is part of the sim's tank model. The [b31_sd] gate (rage below 20,
+// health at the almost-full band) came from no source: b220 rfc-h bosses Enrage 0.55 (5H Rtdruae) / 0.66 (5D Rtdruac)
+// a minute vs the sim's 1.19 / 1.31, trash 9 of 37 (5H) and 7 of 41 (5D) pulls with an Enrage; pulls opened at 0 rage
+// ("feral charge - bear ... not enough power (0 of 50)" on Taragaman, Earthborer, Searing Blade Cultist; "mangle (bear)
+// ... not enough power (101 of 150)" after the opener). Only the base buff check stays (not while it is up).
+bool CastEnrageAction::isUseful() { return CastBuffSpellAction::isUseful(); }

@@ -119,6 +119,7 @@ public:
         creators["party member remove curse"] = &DruidTriggerFactoryInternal::party_member_remove_curse;
         creators["mangle (bear)"] = &DruidTriggerFactoryInternal::mangle_bear_trigger;
         creators["lacerate"] = &DruidTriggerFactoryInternal::lacerate_trigger;
+        creators["lacerate refresh"] = &DruidTriggerFactoryInternal::lacerate_refresh;  // [rot332]
         creators["swipe (bear) rage dump"] = &DruidTriggerFactoryInternal::swipe_bear_rage_dump;  // [b31_deep]
         creators["demoralizing roar"] = &DruidTriggerFactoryInternal::demoralize_roar;
         creators["tank aoe threat"] = &DruidTriggerFactoryInternal::tank_aoe_threat;
@@ -198,6 +199,7 @@ private:
     static Trigger* party_member_remove_curse(PlayerbotAI* botAI) { return new DruidPartyMemberRemoveCurseTrigger(botAI); }
     static Trigger* mangle_bear_trigger(PlayerbotAI* botAI) { return new MangleBearTrigger(botAI); }
     static Trigger* lacerate_trigger(PlayerbotAI* botAI) { return new LacerateTrigger(botAI); }
+    static Trigger* lacerate_refresh(PlayerbotAI* botAI) { return new LacerateRefreshTrigger(botAI); }  // [rot332]
     static Trigger* swipe_bear_rage_dump(PlayerbotAI* botAI) { return new SwipeBearRageDumpTrigger(botAI); }
     static Trigger* demoralize_roar(PlayerbotAI* botAI) { return new DemoralizeRoarTrigger(botAI); }
     // Swipe (Bear) reaches 8 yd

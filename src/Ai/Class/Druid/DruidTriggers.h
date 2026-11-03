@@ -37,6 +37,16 @@ class Unit;
 // the fight left (Rip 1 vs sim 1.9), Rip on Bazzalan at 1086 s with 9 s left.
 bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target);
 
+// [rot330] wowsims feral_tank_druid__default.apl.json: the global cooldown waits for Mangle (Bear) when its cooldown
+// runs out within BEAR_MANGLE_WAIT_FF_MS (row 12, before Faerie Fire (Feral)) or BEAR_MANGLE_WAIT_MS (row 14, before
+// Lacerate and the Swipe rage dump); a ready Mangle the bear cannot afford waits for nothing (spellIsReady is the
+// cooldown only). b220 rfc-h: Mangle 10.7 a minute on 5H Rtdruae's bosses and 7.9 on 5D Rtdruac's vs the sim's 13.8 /
+// 15.0 (4.5 s Improved Mangle cooldown): a Lacerate or Faerie Fire went out with Mangle back in < 1.5 s and pushed it
+// back by its GCD.
+inline constexpr uint32 BEAR_MANGLE_WAIT_FF_MS = 1000;
+inline constexpr uint32 BEAR_MANGLE_WAIT_MS = 1500;
+bool BearMangleDueWithin(PlayerbotAI* botAI, Player* bot, uint32 withinMs);
+
 class MarkOfTheWildOnPartyTrigger : public BuffOnPartyTrigger
 {
 public:
@@ -180,10 +190,12 @@ public:
             return false;
 
         // Bear: every cast generates immediate threat/damage for free — spam it
+        // [rot330] below Mangle and its 1.0 s wait (wowsims feral tank APL rows 11-13)
         if (botAI->HasAnyAuraOf(bot, "bear form", "dire bear form", nullptr))
         {
             Unit* target = GetTarget();
-            return target && target->IsAlive() && target->IsInWorld();
+            return target && target->IsAlive() && target->IsInWorld() &&
+                   !BearMangleDueWithin(botAI, bot, BEAR_MANGLE_WAIT_FF_MS);
         }
 
         if (!botAI->HasAura("cat form", bot))
@@ -503,6 +515,13 @@ public:
     }
 };
 
+// [rot332] wowsims feral_tank_druid__default.apl.json: row 9 refreshes a 5-stack Lacerate with <= 1.5 s left above
+// everything ("lacerate refresh", LacerateRefreshTrigger); row 15 builds the stacks or refreshes with <= 8 s left
+// (was 6 s here) after Faerie Fire and the 1.5 s Mangle wait (LacerateTrigger).
+inline constexpr uint8 LACERATE_MAX_STACKS = 5;
+inline constexpr int32 LACERATE_REFRESH_MS = 8000;
+inline constexpr int32 LACERATE_EXPIRING_MS = 1500;
+
 class LacerateTrigger : public DebuffTrigger
 {
 public:
@@ -517,31 +536,57 @@ public:
         if (!target || !target->IsAlive() || !target->IsInWorld())
             return false;
 
+        if (BearMangleDueWithin(botAI, bot, BEAR_MANGLE_WAIT_MS))  // [rot330]
+            return false;
+
         Aura* lacerate = botAI->GetAura("lacerate", target, false, false);
         if (!lacerate)
             return true;
 
-        if (lacerate->GetStackAmount() < 5)
+        if (lacerate->GetStackAmount() < LACERATE_MAX_STACKS)
             return true;
 
-        return lacerate->GetDuration() <= 6000;
+        return lacerate->GetDuration() <= LACERATE_REFRESH_MS;
+    }
+};
+
+// [rot332] the APL's first row: the bear's own 5-stack Lacerate about to fall off (<= 1.5 s), cast before Demoralizing
+// Roar, Mangle and their waits
+class LacerateRefreshTrigger : public Trigger
+{
+public:
+    LacerateRefreshTrigger(PlayerbotAI* botAI) : Trigger(botAI, "lacerate refresh") {}
+
+    bool IsActive() override
+    {
+        if (!bot->IsInCombat() || !botAI->HasAnyAuraOf(bot, "bear form", "dire bear form", nullptr))
+            return false;
+
+        Unit* target = AI_VALUE(Unit*, "current target");
+        if (!target || !target->IsAlive() || !target->IsInWorld())
+            return false;
+
+        Aura* lacerate = botAI->GetAura("lacerate", target, false, false);
+        return lacerate && lacerate->GetStackAmount() >= LACERATE_MAX_STACKS &&
+               lacerate->GetDuration() <= LACERATE_EXPIRING_MS;
     }
 };
 
 // [b31_deep] wowsims feral tank APL rage dump: Swipe (Bear) on a single target at SWIPE_MIN_RAGE+ rage once Lacerate
 // holds 5 stacks. Cached rage value plus two aura lookups.
+// [rot330] below the APL's 1.5 s Mangle wait (row 14), as Lacerate
 class SwipeBearRageDumpTrigger : public Trigger
 {
 public:
     static constexpr uint8 SWIPE_MIN_RAGE = 40;
-    static constexpr uint8 LACERATE_MAX_STACKS = 5;
 
     SwipeBearRageDumpTrigger(PlayerbotAI* botAI) : Trigger(botAI, "swipe (bear) rage dump") {}
 
     bool IsActive() override
     {
         if (!bot->IsInCombat() || AI_VALUE2(uint8, "rage", "self target") < SWIPE_MIN_RAGE ||
-            !botAI->HasAnyAuraOf(bot, "bear form", "dire bear form", nullptr))
+            !botAI->HasAnyAuraOf(bot, "bear form", "dire bear form", nullptr) ||
+            BearMangleDueWithin(botAI, bot, BEAR_MANGLE_WAIT_MS))
             return false;
 
         Unit* target = AI_VALUE(Unit*, "current target");

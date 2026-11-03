@@ -102,9 +102,12 @@ BearDruidStrategy::BearDruidStrategy(PlayerbotAI* botAI) : FeralDruidStrategy(bo
 
 std::vector<NextAction> BearDruidStrategy::getDefaultActions()
 {
+    // [rot331] Enrage as wowsims' autocastOtherCooldowns (feral tank APL row 2, above every spell): off the global
+    // cooldown, cast in the first tick it is ready, also above the opener's Feral Charge ("tank open incoming" at
+    // ACTION_INTERRUPT + 1, the charge's 5 rage: b220 "not enough power (0 of 50)" at the pull)
     return {
+        NextAction("enrage", ACTION_INTERRUPT + 1.1f),
         NextAction("maul",   5.2f),
-        NextAction("enrage", 5.1f),
         NextAction("melee",  5.0f)
     };
 }
@@ -205,8 +208,7 @@ void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "medium health",
             {
-                // [b31_sd] Enrage left this node: at 65 % its armor loss lands on a falling tank. It stays the low
-                // default (5.1), gated by CastEnrageAction::isUseful() (low rage, healthy bear).
+                // [b31_sd] Enrage left this node; [rot331] it is a default action on its cooldown (wowsims).
                 NextAction("frenzied regeneration", 27.0f)
             }
         )
@@ -228,6 +230,9 @@ void BearDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "lacerate", { NextAction("lacerate", 16.0f) }
     ));
+    // [rot332] wowsims feral tank APL row 9: a 5-stack Lacerate with <= 1.5 s left first, above Demoralizing Roar
+    // (17.6) and Mangle (17.5); below the pack threat steps ("tank aoe pack" 17.8 and up)
+    triggers.push_back(new TriggerNode("lacerate refresh", { NextAction("lacerate", 17.65f) }));
     // [rot31] wowsims feral tank: the Demoralizing Roar refresh above Mangle
     triggers.push_back(new TriggerNode(
         "demoralizing roar", { NextAction("demoralizing roar", 17.6f) }

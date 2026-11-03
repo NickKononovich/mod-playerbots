@@ -637,3 +637,11 @@ bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target)
 {
     return target && ExpectedLifetime(botAI, target) >= RIP_MIN_TARGET_LIFETIME;  // [rot240]
 }
+
+// [rot330] Mangle (Bear) on its cooldown with less than `withinMs` of it left (wowsims spellTimeToReady < x and not
+// spellIsReady). Under Berserk Mangle has no cooldown, so nothing waits.
+bool BearMangleDueWithin(PlayerbotAI* botAI, Player* bot, uint32 withinMs)
+{
+    uint32 const mangle = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "mangle (bear)")->Get();
+    return mangle && bot->HasSpellCooldown(mangle) && bot->GetSpellCooldownDelay(mangle) < withinMs;
+}
