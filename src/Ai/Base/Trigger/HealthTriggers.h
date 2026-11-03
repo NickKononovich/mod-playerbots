@@ -368,6 +368,11 @@ constexpr uint32 SPELL_EVOCATION = 12051;
 // [lead633] [lead850] the wowsims arcane / fire / frost APL channels Evocation at currentManaPercent <= 25 % (the
 // leader's in-fight Evocation verdict and the boss line's timeline read the same line)
 constexpr float WOWSIMS_EVOCATION_MANA_PCT = 25.0f;
+// [lead920] Omen of Clarity procs Clearcasting on 6 % of the spell casts (Rawr 2.3.23 Rawr.Moonkin
+// SpellRotation.cs:197, 356); its spell_proc row reads Chance 100 - the core's spell_dru_omen_of_clarity CheckProc
+// rolls the 6 % itself
+constexpr uint32 SPELL_OMEN_OF_CLARITY = 16864;
+constexpr float OMEN_OF_CLARITY_SPELL_PROC_PCT = 6.0f;
 constexpr uint32 SPELL_DISPERSION = 47585;
 constexpr uint32 SPELL_DISPERSION_MANA = 60069;   // [lead425] Dispersion's linked mana aura (6 % a second, 6 s)
 constexpr uint32 SPELL_MANA_TIDE_TICK = 39610;    // [lead425] the totem's tick (spell_sha_mana_tide_totem)

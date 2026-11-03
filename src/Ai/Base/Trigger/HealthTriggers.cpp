@@ -820,6 +820,7 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             float sec = 0.0f;       // its cast (a channel's duration) or global cooldown, hasted
             float value = 0.0f;     // its damage per cast second
             float interval = 0.0f;  // a damage-over-time spell: cast again after its duration (or its cooldown)
+            bool direct = false;    // [lead920] a direct damage part: a cast that can crit
         };
         Pick filler;
         std::unordered_map<uint32, Pick> dots;  // by spell specific (one curse / sting), else by spell
@@ -855,11 +856,15 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             };
             float damage = 0.0f;
             bool periodic = false;
+            bool direct = false;  // [lead920]
             float const durationMs = float(std::max(info->GetMaxDuration(), 0));
             for (SpellEffectInfo const& effect : info->GetEffects())
             {
                 if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                {
                     damage += float(std::max(effect.CalcValue(bot), 0)) + sp * coefficient(info, SPELL_DIRECT_DAMAGE);
+                    direct = true;
+                }
                 else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.Amplitude && durationMs > 0.0f)
                 {
                     float const ticks = durationMs / float(effect.Amplitude);
@@ -899,7 +904,8 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             if (sec <= 0.0f)
                 continue;
             float const cooldownSec = float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) / 1000.0f;
-            Pick const pick{info, float(cost), sec, damage / sec, std::max(durationMs / 1000.0f, cooldownSec)};
+            Pick const pick{info, float(cost), sec, damage / sec, std::max(durationMs / 1000.0f, cooldownSec),
+                            direct || info->IsChanneled()};
             if (periodic && !info->IsChanneled() && castSec <= gcdSec + 0.01f)
             {
                 // a damage-over-time spell kept up on the target (instant, or cast within its global cooldown)
@@ -973,6 +979,12 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                     float chance = (entry && entry->Chance > 0.0f ? entry->Chance : float(talent->ProcChance)) / 100.0f;
                     if (entry && entry->ProcsPerMinute > 0.0f)
                         chance = entry->ProcsPerMinute * filler.sec / 60.0f;
+                    // [lead920] b225 rfc-h 5C: the balance druid's line read "- 100 % (Omen of Clarity)" (its
+                    // spell_proc Chance 100, the core script rolls 6 %), its rotation 0.00 %/s: the Oggleflint gate
+                    // passed it at 3 % and its Innervate went to the mage. The talent's roll is its script's
+                    bool const scriptRoll = talent->Id == SPELL_OMEN_OF_CLARITY;
+                    if (scriptRoll)
+                        chance = OMEN_OF_CLARITY_SPELL_PROC_PCT / 100.0f;
                     if (entry && (entry->HitMask & PROC_HIT_CRITICAL))
                         chance *= crit;
                     float const charges = float(std::max<uint32>(freeCast->ProcCharges, 1));
@@ -980,10 +992,43 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                     if (part > 0.0f)
                     {
                         saved += part;
-                        terms += Acore::StringFormat(" - {:.0f} % ({})", part * 100.0f, talent->SpellName[0]);
+                        terms += Acore::StringFormat(" - {:.0f} % ({}{})", part * 100.0f, talent->SpellName[0],
+                                                     scriptRoll ? " [lead920]" : "");
                     }
                 }
                 gross *= 1.0f - std::min(saved, 1.0f);
+                // [lead920] the mana its crits return (Moonkin Form's 24905 -> 53506: 2 % of its max mana on a spell
+                // crit, Rawr.Moonkin SpellRotation.cs:186, 256): a proc on a crit that energizes its own mana, per
+                // second over the casts that can crit (the filler's, the damage-over-time spells' direct part)
+                float critCasts = share / filler.sec;
+                for (auto const& [slot, dot] : dots)
+                    if (dot.direct)
+                        critCasts += 1.0f / dot.interval;
+                for (AuraEffect const* proc : bot->GetAuraEffectsByType(SPELL_AURA_PROC_TRIGGER_SPELL))
+                {
+                    SpellInfo const* talent = proc->GetSpellInfo();
+                    SpellProcEntry const* entry = sSpellMgr->GetSpellProcEntry(talent->Id);
+                    SpellInfo const* gain = sSpellMgr->GetSpellInfo(talent->Effects[proc->GetEffIndex()].TriggerSpell);
+                    if (!gain || !entry || !(entry->HitMask & PROC_HIT_CRITICAL) || entry->ProcsPerMinute > 0.0f)
+                        continue;
+                    float manaPerProc = 0.0f;
+                    for (SpellEffectInfo const& effect : gain->GetEffects())
+                        if (effect.MiscValue == POWER_MANA && effect.CalcValue(bot) > 0)
+                        {
+                            if (effect.Effect == SPELL_EFFECT_ENERGIZE_PCT)
+                                manaPerProc += maxMana * float(effect.CalcValue(bot)) / 100.0f;
+                            else if (effect.Effect == SPELL_EFFECT_ENERGIZE)
+                                manaPerProc += float(effect.CalcValue(bot));
+                        }
+                    float const chance =
+                        std::min((entry->Chance > 0.0f ? entry->Chance : float(talent->ProcChance)) / 100.0f, 1.0f);
+                    if (float const back = critCasts * crit * chance * manaPerProc; back > 0.0f)
+                    {
+                        gross = std::max(gross - back, 0.0f);
+                        terms += Acore::StringFormat(" - {:.0f} mana/s ({} on a crit [lead920])", back,
+                                                     talent->SpellName[0]);
+                    }
+                }
                 // its own boss burns (lead853: cast at the engage) that raise the filler's cost (Arcane Power +20 %)
                 // or its cast speed (Icy Veins +20 %, Elemental Mastery's 64701 +15 %, Heroism +30 %): their factor
                 // over their own duration
