@@ -892,7 +892,7 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                 continue;
             damage *= bot->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE, school);
             float const castSec = info->IsChanneled() ? durationMs / 1000.0f * haste
-                                                      : float(std::max(info->CalcCastTime(bot), 0)) / 1000.0f;
+                                                      : float(std::max<int32>(info->CalcCastTime(bot), 0)) / 1000.0f;
             float const gcdSec =
                 info->StartRecoveryTime ? std::max(float(info->StartRecoveryTime) / 1000.0f * haste, 1.0f) : 0.0f;
             float const sec = std::max(castSec, gcdSec);
