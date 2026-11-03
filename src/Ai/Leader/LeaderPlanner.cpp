@@ -6058,12 +6058,29 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float lossSec = 0.0f;
         uint32 ranged = 0;
         uint32 held = 0;
+        uint32 cornerMobs = 0;  // [lead641] the mobs that come round the corner
+        uint32 restMobs = 0;    // [lead641] the stand pack's mobs the corner leaves at their spot
+        float restSec = 0.0f;   // [lead641] their fight there (and its loss)
+        uint32 standMobs = 0;
     };
+
+    // [lead641] the seconds a fight's healing takes beyond the healers' work in it: the tank's damage (the pack's cost
+    // in tank healths) plus the loose casters' damage (TankRangedHolds) against the healers' rate over the fight.
+    // The healers heal while the group fights: a loose caster costs time only when the healing it asks for is more
+    // than they heal in that fight (b218: "the threat loss" was its whole damage over the heal rate, added on top)
+    float HealingOverSec(Player* tank, float costTankHealths, float looseLossSec, float fightSec, float healRate)
+    {
+        if (healRate <= 0.0f)
+            return looseLossSec;
+        float const needed = costTankHealths * float(tank->GetMaxHealth()) + looseLossSec * healRate;
+        return std::max(0.0f, needed - healRate * fightSec) / healRate;
+    }
 
     CornerCost CornerVsStand(PlayerbotAI* tankAI, Player* tank, Unit* candidate, Position const& castSpot,
                              Position const& corner, Position const& gather, std::vector<Unit*> const& losPack,
                              float losFightSec, std::vector<Unit*> const& standPack, float standFightSec,
-                             float groupDps, float healRate, Position const* pullBackKill)
+                             float groupDps, float healRate, Position const* pullBackKill, float losCost,
+                             float standCost, std::vector<Unit*> const& restPack, float restFightSec, float restCost)
     {
         CornerCost cost;
         float const speed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
@@ -6081,9 +6098,25 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float const walkBack = corner.GetExactDist(candidate->GetPosition());
         // [lead215] b184 rfc-h 5D: 99 s of aggro off the tank in corner pulls - the casters that come round are the
         // tank's tools' too
-        cost.cornerLossSec = TankRangedHolds(tankAI, tank, corner, losRanged, true, groupDps, healRate).lossSec;
+        float const cornerLoose = TankRangedHolds(tankAI, tank, corner, losRanged, true, groupDps, healRate).lossSec;
+        cost.cornerLossSec = HealingOverSec(tank, losCost, cornerLoose, losFightSec, healRate);
+        // [lead641] b218 rfc-h: "los pull 3 ... corner 32 s vs where it stands 52 s (ranged tools hold 4 of 6)" - the
+        // corner priced 3 mobs, standing 6: the 3 the corner leaves stay at their spot, fought there after the walk
+        // back. The same work on both sides: the rest of the stand pack's fight at its spot is in the corner's seconds
+        std::vector<Unit*> restRanged;
+        for (Unit* mob : restPack)
+            if (RangedMob(mob))
+                restRanged.push_back(mob);
+        float const restLoss = HealingOverSec(
+            tank, restCost,
+            TankRangedHolds(tankAI, tank, candidate->GetPosition(), restRanged, false, groupDps, healRate).lossSec,
+            restFightSec, healRate);
+        cost.cornerMobs = uint32(losPack.size());
+        cost.restMobs = uint32(restPack.size());
+        cost.standMobs = uint32(standPack.size());
+        cost.restSec = restPack.empty() ? 0.0f : restFightSec + restLoss;
         cost.cornerSec = (std::max(tankCorner, GroupWalkTo(tank, gather)) + walkBack) / speed + casterSec +
-                         losFightSec + cost.cornerLossSec;
+                         losFightSec + cost.cornerLossSec + cost.restSec;
 
         std::vector<Unit*> ranged;
         for (Unit* mob : standPack)
@@ -6093,7 +6126,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         Position const fight = pullBackKill ? *pullBackKill : candidate->GetPosition();
         RangedLoss const loss = TankRangedHolds(tankAI, tank, fight, ranged, false, groupDps, healRate);
         cost.held = loss.held;
-        cost.lossSec = loss.lossSec;
+        cost.lossSec = HealingOverSec(tank, standCost, loss.lossSec, standFightSec, healRate);  // [lead641]
         if (pullBackKill)
         {
             float mobSec = 0.0f;
@@ -9559,25 +9592,41 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         std::vector<PackOverlap> const overlapsBefore = overlaps;
         auto const hopsBefore = lastPackHops;
         std::string cornerNote;
-        if (!losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort) && !_planLos &&
-            _planCached == candidate->GetGUID())
+        bool const standTaken = !losOnly && tryPlanStand(candidate, allowBossPack, limit, comfort);
+        if (standTaken && !_planLos && _planCached == candidate->GetGUID())
         {
             Position castSpot = bot->GetPosition();
             PullBackSpot(candidate, castSpot);
             // [lead215] the healers' healing rate turns a loose caster's damage into seconds (CarefulOverload's)
             float const healRate = support.healHps;  // [lead258] the healers' best rate (HealerThroughput)
             Position const pullBackKill = _planKill;
-            CornerCost const cost =
-                CornerVsStand(botAI, bot, candidate, castSpot, corner, gather, losSeen, losEstimate.fightSec,
-                              chosenPack, chosen.fightSec, groupDps, healRate, _planPullBack ? &pullBackKill : nullptr);
+            // [lead641] the stand pack's mobs the corner leaves at their spot (fought there after it)
+            std::vector<Unit*> restPack;
+            for (Unit* mob : chosenPack)
+                if (std::find(losSeen.begin(), losSeen.end(), mob) == losSeen.end())
+                    restPack.push_back(mob);
+            PackEstimate const restEstimate =
+                restPack.empty() ? PackEstimate() : EstimatePack(restPack, bot, groupDps, estimateMode);
+            CornerCost const cost = CornerVsStand(
+                botAI, bot, candidate, castSpot, corner, gather, losSeen, losEstimate.fightSec, chosenPack,
+                chosen.fightSec, groupDps, healRate, _planPullBack ? &pullBackKill : nullptr, losEstimate.cost,
+                chosen.cost, restPack, restEstimate.fightSec, restEstimate.cost);
             // [lead212] b184 rfc-h 5F 784 s: "corner 23 s vs where it stands 23 s (threat loss 0 s)": the corner. At
             // the same cost the group stays where the route takes it
-            bool const stand = cost.standSec <= cost.cornerSec;
+            // [lead641] user 2026-11-03: two packs at once in 52 s are 26 s each - the two ways fight different
+            // mobs (the corner's may bring one the stand does not), so they are judged per mob: the corner's seconds
+            // (its rest included) over every mob it handles, the stand's over its pack
+            uint32 const cornerAll = std::max<uint32>(cost.cornerMobs + cost.restMobs, 1);
+            float const cornerPerMob = cost.cornerSec / float(cornerAll);
+            float const standPerMob = cost.standSec / float(std::max<uint32>(cost.standMobs, 1));
+            bool const stand = standPerMob <= cornerPerMob;
             cornerNote = Acore::StringFormat(
-                "corner {:.0f} s vs where it stands {:.0f} s{} (threat loss {:.0f} s, "
-                "ranged tools hold {} of {}; the corner's threat loss {:.0f} s): {}",
-                cost.cornerSec, cost.standSec, _planPullBack ? " pulled back" : "", cost.lossSec, cost.held,
-                cost.ranged, cost.cornerLossSec, stand ? "no corner" : "the corner");
+                "corner {} mobs {:.0f} s (+ rest {} mobs {:.0f} s; {:.1f} s per mob) vs where it stands {} mobs {:.0f} "
+                "s{} ({:.1f} s per mob; healing over the healers {:.0f} s, ranged tools hold {} of {}; the corner's "
+                "{:.0f} s): {}",
+                cost.cornerMobs, cost.cornerSec - cost.restSec, cost.restMobs, cost.restSec, cornerPerMob,
+                cost.standMobs, cost.standSec, _planPullBack ? " pulled back" : "", standPerMob, cost.lossSec,
+                cost.held, cost.ranged, cost.cornerLossSec, stand ? "no corner" : "the corner");
             LOG_DEBUG("playerbots", "[lead206] {}: {}: {}", bot->GetName(), candidate->GetName(), cornerNote);
             if (stand)
             {
@@ -9586,6 +9635,26 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             }
         }
 
+        // [lead640] b218 rfc-h: 12 of the 32 corner pulls named no comparison ("3 casters / shooters pulled round the
+        // corner; packs: los pull 3 ..."): the fight where the pack stands was no plan the group takes (5G 609-611.8
+        // s: "Searing Blade Cultist as it comes: 10 mobs, cost 2.06 tank hp, fight 51 s, overload 1.43 of 1.00"),
+        // or a corner-only search (the last resort). Every corner names what it was chosen against: the pack where
+        // it stands as the leader's estimate judges it
+        if (cornerNote.empty())
+        {
+            std::vector<Unit*> standPack;
+            CollectPack(botAI, bot, candidate, candidate->GetPosition(), possible, standPack,
+                        FightHere(candidate->GetPosition()), measured, false, nullptr);
+            PackEstimate const standEstimate = EstimatePack(standPack, bot, groupDps, estimateMode);
+            OverloadTerms standTerms;
+            CarefulOverload(bot, standEstimate, strength, support, kit, measured, &standTerms);
+            char const* const standWhy = losOnly      ? "a corner-only search"
+                                         : standTaken ? "its plan is another pull"
+                                                      : "no plan the group takes there";
+            cornerNote = Acore::StringFormat(
+                "where it stands: {} mobs, fight {:.0f} s, overload {:.2f} of {:.2f}{}: {}", standEstimate.mobs,
+                standEstimate.fightSec, standTerms.Max(comfort), limit, standEstimate.boss ? ", a boss" : "", standWhy);
+        }
         pack = packBefore;
         overlaps = overlapsBefore;
         lastPackHops = hopsBefore;
