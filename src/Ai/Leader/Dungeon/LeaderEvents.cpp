@@ -2846,8 +2846,15 @@ namespace Leader::Dungeon
                 // [lead119] b153 rfc-h 90.6-158 s: the four members the pull walk held (Hold "the tank takes the mob
                 // first") trailed at 36 yd as the tank walked in, the far gate held the tank for them: a deadlock. A
                 // member the pull walk holds stands where the leader put it - placed, not trailing
+                // [lead710] b219 rfc-h 5B 567.8-807 s (stalled): Rtshaac's combat spot (lead660's spell reach) ended
+                // the fight 35 yd from the tank, its Follow back was refused ("the walk would wake Searing Blade
+                // Cultist") and the leader made it stay there (group_blocked, lead77: the Cultist the next pull) - and
+                // marked it trailing, so the Cultist's pull held "Rtshaac trails the group" for the member only that
+                // pull frees: a wait nobody ended (5E 630.8-750.9 s: Rthunab, the same Cultist). A member the leader
+                // holds where it stands because its walk is blocked is placed by the leader: the block's pull frees it
                 bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
-                                    lead.combatSpots.count(guid) || lead.pullWalkSpots.count(guid) || walkRejected;
+                                    lead.combatSpots.count(guid) || lead.pullWalkSpots.count(guid) || walkRejected ||
+                                    lead.groupBlockedBy.count(guid);
                 float const gap = bot->GetExactDist(tank);
                 bool const was = lead.trailing.count(guid) > 0;
                 bool const trails = !fighting && !placed &&
