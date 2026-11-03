@@ -478,6 +478,66 @@ namespace Leader::Dungeon
             return best;
         }
 
+        // [lead901] the threat a member's running periodic effects still put on a mob, which no Stop takes back:
+        // its damage over time on the mob (diseases, Death and Decay's aura, Corruption...) and, split as the game
+        // splits a heal's threat (half the heal over the mobs that have the healed member on their threat list,
+        // ThreatManager::ForwardThreatForAssistingMe), its heals over time on members the mob has on its threat list
+        // (Lifebloom, Rejuvenation, Renew, Riptide...). Each tick left at its bonuses and threat mods; withinOut is
+        // the part that lands within the GCD, secOut the longest of them left
+        struct PeriodicLeft
+        {
+            float threat = 0.0f;
+            float within = 0.0f;
+            float sec = 0.0f;
+        };
+        PeriodicLeft PeriodicThreatLeft(Player* who, Unit* mob)
+        {
+            PeriodicLeft left;
+            auto const add = [&](AuraEffect const* periodic, float perTick)
+            {
+                int32 const ticks = periodic->GetTotalTicks() - int32(periodic->GetTickNumber());
+                if (ticks <= 0 || perTick <= 0.0f || periodic->GetAmplitude() <= 0)
+                    return;
+                float const sec = float(ticks * periodic->GetAmplitude()) / IN_MILLISECONDS;
+                float const threat = perTick * float(ticks);
+                left.threat += threat;
+                left.within += threat * std::min(1.0f, HEADROOM_GCD_SEC / std::max(sec, 0.001f));
+                left.sec = std::max(left.sec, sec);
+            };
+            for (AuraType type : {SPELL_AURA_PERIODIC_DAMAGE, SPELL_AURA_PERIODIC_LEECH})
+                for (AuraEffect const* periodic : mob->GetAuraEffectsByType(type))
+                    if (periodic->GetCasterGUID() == who->GetGUID())
+                    {
+                        SpellInfo const* info = periodic->GetSpellInfo();
+                        float const tick = float(who->SpellDamageBonusDone(
+                            mob, info, uint32(std::max(periodic->GetAmount(), 0)), DOT, periodic->GetEffIndex(),
+                            0.0f, periodic->GetBase()->GetStackAmount()));
+                        add(periodic, SpellThreatFor(who, info, tick));
+                    }
+            for (auto const& entry : mob->GetThreatMgr().GetUnsortedThreatList())
+            {
+                Unit* healed = entry ? entry->GetVictim() : nullptr;
+                if (!healed || !healed->IsPlayer())
+                    continue;
+                size_t split = 0;
+                for (auto const& [threatenedGuid, ref] : healed->GetThreatMgr().GetThreatenedByMeList())
+                    if (ref && !ref->GetOwner()->HasUnitState(UNIT_STATE_CONTROLLED))
+                        ++split;
+                if (!split)
+                    continue;
+                for (AuraEffect const* periodic : healed->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
+                    if (periodic->GetCasterGUID() == who->GetGUID())
+                    {
+                        SpellInfo const* info = periodic->GetSpellInfo();
+                        float const tick = float(who->SpellHealingBonusDone(
+                            healed, info, uint32(std::max(periodic->GetAmount(), 0)), DOT, periodic->GetEffIndex(),
+                            0.0f, periodic->GetBase()->GetStackAmount()));
+                        add(periodic, SpellThreatFor(who, info, tick * 0.5f / float(split)));
+                    }
+            }
+            return left;
+        }
+
         // [lead221] the planner's held answer named this mana line for the member (lead.plannerRestLine): its Rest
         // holds below it; without a named line (a health gap) the Rest holds as before, until the member is full
         bool BelowPlannerLine(Player* bot, float line)
@@ -5645,6 +5705,16 @@ namespace Leader::Dungeon
                             p.mineNext = p.mine + first;
                         }
                     }
+                    // [lead901] user 2026-11-03: its running damage / heals over time keep adding threat after a Stop
+                    // (no Stop cancels them): what they still put on the mob counts on top of its next GCD (the part
+                    // within the GCD is already in its rate there), against the tank's threat over the same time
+                    float horizon = HEADROOM_GCD_SEC;
+                    if (PeriodicLeft const periodic = PeriodicThreatLeft(bot, mob); periodic.threat > 0.0f)
+                    {
+                        float const cast = p.mineNext - p.mine;
+                        p.mineNext = p.mine + std::max(cast, periodic.within) + (periodic.threat - periodic.within);
+                        horizon = std::max(horizon, periodic.sec);
+                    }
                     // [lead412] user 2026-11-02: the threat a running redirect (Misdirection / Tricks of the Trade,
                     // registered on the member's ThreatManager until it is spent) moves onto the tank is the tank's
                     if (auto const redirect = lead.redirectTo.find(guid);
@@ -5662,13 +5732,20 @@ namespace Leader::Dungeon
                     // was read at its opening single-target rate on a mob it did not attack. The tank's opening rate
                     // projects onto the mob it attacks; on another its threat grows only by what it measured there
                     p.tankNext = held.threat > 0.0f
-                                     ? held.threat + rateOf(held, tankOpensOn(mob) ? tankOpen : 0.0f) *
-                                                         HEADROOM_GCD_SEC
+                                     ? held.threat + rateOf(held, tankOpensOn(mob) ? tankOpen : 0.0f) * horizon
                                      : 0.0f;
                     p.tankNext += p.redirected;
                     p.share = mob->GetVictim() != tank       ? 1.0f
                               : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
                                                              : THREAT_OVERTAKE_RANGED;
+                    if (horizon > HEADROOM_GCD_SEC && p.mineNext >= p.share * p.tankNext)
+                    {
+                        thread_local std::set<std::pair<uint64, uint64>> periodicLogged;
+                        if (periodicLogged.insert({bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots", "[lead901] {}: its running periodic threat on {} over {:.1f} s "
+                                     "closes the headroom ({:.0f} vs tank {:.0f})",
+                                     bot->GetName(), mob->GetName(), horizon, p.mineNext, p.tankNext);
+                    }
                     return p;
                 };
                 auto const headroomOn = [&](Unit* mob)
@@ -5808,11 +5885,19 @@ namespace Leader::Dungeon
                                 getMSTimeDiff(seen.firstMs, seen.riseMs) / 1000.0f >= HEADROOM_GCD_SEC;
                             return measuredHere ? onMob : std::max(onMob, opening);
                         };
-                        float const mineNext = mine.threat + rateHere(mine, healFresh) * HEADROOM_GCD_SEC;
+                        float mineNext = mine.threat + rateHere(mine, healFresh) * HEADROOM_GCD_SEC;
+                        // [lead901] its running heals / damage over time still add threat after the heals stop
+                        float horizon = HEADROOM_GCD_SEC;
+                        if (PeriodicLeft const periodic = PeriodicThreatLeft(bot, mob); periodic.threat > 0.0f)
+                        {
+                            mineNext = mine.threat +
+                                       std::max(mineNext - mine.threat, periodic.within) +
+                                       (periodic.threat - periodic.within);
+                            horizon = std::max(horizon, periodic.sec);
+                        }
                         float const tankNext =
                             held.threat > 0.0f
-                                ? held.threat +
-                                      rateHere(held, tankOpensOn(mob) ? tankOpen : 0.0f) * HEADROOM_GCD_SEC
+                                ? held.threat + rateHere(held, tankOpensOn(mob) ? tankOpen : 0.0f) * horizon
                                 : 0.0f;
                         float const share = mob->GetVictim() != tank       ? 1.0f
                                             : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
