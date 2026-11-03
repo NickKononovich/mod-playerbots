@@ -17,6 +17,16 @@ static constexpr uint32 SPELL_HAND_OF_PROTECTION = 1022;
 static constexpr uint32 SPELL_HAND_OF_SALVATION = 1038;
 static constexpr uint32 SPELL_HAND_OF_FREEDOM = 1044;
 static constexpr uint32 SPELL_HAND_OF_SACRIFICE = 6940;
+static constexpr uint32 SPELL_GUARDED_BY_THE_LIGHT_R1 = 53583;
+static constexpr uint32 SPELL_GUARDED_BY_THE_LIGHT_R2 = 53585;
+
+// [rot150] Guarded by the Light (Spell.dbc 53583 / 53585: effect 2 PROC_TRIGGER_SPELL 63521 on a melee swing or melee
+// spell hit, 50 / 100 %; spell_pal_guarded_by_the_light refreshes Divine Plea, whose 5 % of max mana ticks every 3 s go
+// on). Rawr ClassTalents.cs:2037-2041. A tank with it keeps one Divine Plea up for the whole fight by hitting.
+inline bool KeepsDivinePleaUpByHits(Player* bot)
+{
+    return bot && (bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R1) || bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R2));
+}
 
 inline bool HasHandFromCaster(Unit* target, Unit* caster, std::initializer_list<uint32> spellIds)
 {

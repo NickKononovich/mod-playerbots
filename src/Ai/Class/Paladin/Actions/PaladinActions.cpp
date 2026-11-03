@@ -237,6 +237,11 @@ bool CastDivinePleaAction::isUseful()
     if (!CastBuffSpellAction::isUseful())
         return false;
 
+    // [rot150] a tank with Guarded by the Light keeps Divine Plea for the fight, where its hits keep it up (the
+    // non-combat "medium mana" K4 line spent it between pulls: TankDivinePleaTrigger)
+    if (!bot->IsInCombat() && PlayerbotAI::IsTank(bot) && ai::paladin::KeepsDivinePleaUpByHits(bot))
+        return false;
+
     if (!PlayerbotAI::IsHeal(bot))
         return true;
 
