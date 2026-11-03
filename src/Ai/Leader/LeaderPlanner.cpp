@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "AggressiveTargetValue.h"
+#include "AiFactory.h"  // [lead913] GetPlayerSpecTab
 #include "Battleground.h"
 #include "BuyAction.h"  // [lead477] CountBagFood
 #include "ChooseRpgTargetAction.h"
@@ -7704,9 +7705,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // A tank that holds a stack: Consecration, Thunder Clap, Swipe (Bear), Death and Decay / Blood Boil, Hammer of
     // the Righteous.
+    // [lead913] rot370: the Blood tank casts no Blood Boil (the wowsims blood_aggro APL), so it counts for no Blood DK
+    bool CastsBloodBoil(Player* member)
+    {
+        return member->getClass() != CLASS_DEATH_KNIGHT ||
+               AiFactory::GetPlayerSpecTab(member) != DEATH_KNIGHT_TAB_BLOOD;
+    }
+
     bool HasAoeThreat(Player* tank)
     {
-        return KnowsAnyRank(tank, {26573, 6343, 779, 43265, 48721, 53595});
+        return KnowsAnyRank(tank, {26573, 6343, 779, 43265, 53595}) ||
+               (CastsBloodBoil(tank) && KnowsAnyRank(tank, {48721}));
     }
 
     // A damage dealer that hits the stack: Arcane Explosion, Blizzard, Flamestrike, Cone of Cold; Rain of Fire,
@@ -7717,7 +7726,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         return KnowsAnyRank(member, {1449,  10,    2120,  120,   5740,  1949,  27243, 1510,  13813,
                                      421,   8190,  1535,  16914, 62078, 48045, 15237, 51723, 13877,
-                                     1680,  845,   46924, 26573, 53385, 43265, 48721, 49184});
+                                     1680,  845,   46924, 26573, 53385, 43265, 49184}) ||
+               (CastsBloodBoil(member) && KnowsAnyRank(member, {48721}));  // [lead913]
     }
 
     // [lead261] What a member's area spells deal to each mob of a stack per second, from its spell data: the best of
