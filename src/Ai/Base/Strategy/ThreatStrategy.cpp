@@ -773,9 +773,9 @@ namespace
 
     // [rot2] Where an area action lands and how far it reaches (the rules of ThreatMultiplier::AreaHolds).
     bool AreaFootprint(Player* bot, CastSpellAction* action, SpellInfo const* info, Unit* mainTarget, Position& center,
-                       float& radius)
+                       float& radius, bool& selfCentred)
     {
-        bool const selfCentred = !info || info->GetMaxRange(false, bot) <= 0.0f;
+        selfCentred = !info || info->GetMaxRange(false, bot) <= 0.0f;
         Unit* target = action->GetTarget();
         WorldObject const* origin = selfCentred ? static_cast<WorldObject const*>(bot)
                                                 : static_cast<WorldObject const*>(target ? target : mainTarget);
@@ -856,7 +856,7 @@ void LeaderCommandMultiplier::Refresh()
             std::string why;
             if (stop)
                 why = "the leader's Stop";
-            else if (!LeaderCommand::AoeAllowed(bot, center))
+            else if (!LeaderCommand::AoeAllowed(bot, center, radius))  // [rot310] on the caster: its own reach
                 why = _command.aoe == Leader::AoeRule::Forbidden ? "the leader forbids AoE"
                                                                  : "AoE outside the leader's pack";
             else if (Unit* spared = SparedInArea(
@@ -1059,10 +1059,12 @@ float LeaderCommandMultiplier::GetValue(Action* action)
 
     Position center;
     float radius = 0.0f;
-    if (!AreaFootprint(bot, spellAction, info, AI_VALUE(Unit*, "current target"), center, radius))
+    bool selfCentred = false;
+    if (!AreaFootprint(bot, spellAction, info, AI_VALUE(Unit*, "current target"), center, radius, selfCentred))
         return 1.0f;
 
-    if (!LeaderCommand::AoeAllowed(bot, center))
+    // [rot310] a caster-centred area reaches the pack from its own radius away (Starfall from the ranged spot)
+    if (!LeaderCommand::AoeAllowed(bot, center, selfCentred ? radius : 0.0f))
     {
         Log(action,
             _command.aoe == Leader::AoeRule::Forbidden ? "the leader forbids AoE" : "AoE outside the leader's pack");

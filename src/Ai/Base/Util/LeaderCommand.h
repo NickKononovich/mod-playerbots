@@ -17,6 +17,8 @@
 #include "LeaderOrders.h"
 #include "Player.h"
 
+#include <algorithm>  // [rot310] std::max
+
 namespace LeaderCommand
 {
     // The bot's fresh leader command (stale fields come back None); false: not led, or no command at all.
@@ -45,14 +47,19 @@ namespace LeaderCommand
 
     // May the bot's AoE hit around `pos`? Not led or no rule from the leader: true (the rotation's own choice).
     // Forbidden: false. AllowedOnPack: `pos` within the leader's radius of the pack's center.
-    inline bool AoeAllowed(Player* bot, Position const& pos)
+    // [rot310] `reach`: a caster-centred area's own radius - such an area hits the pack from wherever the caster stands
+    // within that radius of it (Starfall's stars 30 yd round the druid). The mobs it would hit outside the pack are
+    // the leader's spared ones, gated by the callers. b219 / b220 rfc-h 5C Rtdruab: 133 / 136 "holds starfall: AoE
+    // outside the leader's pack" from its ranged spot ~25-30 yd off the target (the 10 yd pack radius round the
+    // target never held the druid itself), 0 Starfalls on Oggleflint / Bazzalan vs the sim's 1.6-1.9 a fight
+    inline bool AoeAllowed(Player* bot, Position const& pos, float reach = 0.0f)
     {
         Leader::MemberEvents command;
         if (!CurrentCommand(bot, command) || command.aoe == Leader::AoeRule::Unset)
             return true;
         if (command.aoe == Leader::AoeRule::Forbidden)
             return false;
-        return command.aoeCenter.GetExactDist(pos) <= command.aoeRadius;
+        return command.aoeCenter.GetExactDist(pos) <= std::max(command.aoeRadius, reach);
     }
 
     // Normal / Burn (press cooldowns, Bloodlust / Heroism) / Stop (no damage; also AttackEvent::StopDps).
