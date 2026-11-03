@@ -9,6 +9,7 @@
 #include "LeaderOrders.h"  // [lead1] the decision log switches
 
 #include "Creature.h"
+#include "Group.h"
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
@@ -32,6 +33,24 @@ namespace TestHarness
     {
         std::mutex fileLock;
         bool dirReady = false;
+
+        // [rot200] a member's own cast in its group's fight: it or a group member near it is in combat. The boss
+        // opener a ranged member casts before its first hit lands (Arcane Power, Icy Veins, Mirror Image at the
+        // leader's Burn) runs before the game puts it in combat. b218 rfc-h 5D: the arcane mage's Icy Veins and
+        // Mirror Image left the leader's ready list at each boss pull (on cooldown) with no counted cast.
+        bool InGroupFight(Player* player)
+        {
+            if (player->IsInCombat())
+                return true;
+            Group* group = player->GetGroup();
+            if (!group)
+                return false;
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource())
+                    if (member != player && member->IsInMap(player) && member->IsInCombat())
+                        return true;
+            return false;
+        }
 
         Player* OwnerPlayer(Unit* unit)
         {
@@ -836,7 +855,7 @@ namespace TestHarness
         bool const interrupt = info->HasEffect(SPELL_EFFECT_INTERRUPT_CAST);
         bool const dispel = info->HasEffect(SPELL_EFFECT_DISPEL);
         // Rotation review: what the member casts by its own choice in a fight (procs and triggered casts excluded).
-        bool const rotation = player->IsInCombat() && !triggered && !castItemEntry;
+        bool const rotation = InGroupFight(player) && !triggered && !castItemEntry;
         if (!interrupt && !dispel && !castItemEntry && !rotation)
             return;
 
