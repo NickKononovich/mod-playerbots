@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -682,7 +683,30 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
                 continue;
 
             // [rot47] the share after the spell's own threat (TankShare's rules when nobody holds the mob)
-            float const holder = ThreatLead::HolderThreat(bot, mob);
+            // [rot47b] the holder's threat over the same seconds: the bot's side was projected over the spell's whole
+            // duration (Death and Decay 10 s) against the holder's threat of now - the tank's own threat over those
+            // 10 s at the rate measured on that mob (its threat since this bot first read it) is in the comparison
+            // too. A holder whose threat fell (a taunt, a threat drop, another holder) starts its measure again
+            float holder = ThreatLead::HolderThreat(bot, mob);
+            if (holder > 0.0f && holder < ThreatLead::HOLD_UNBOUNDED)
+            {
+                struct Seen
+                {
+                    float threat;
+                    uint32 ms;
+                };
+                thread_local std::unordered_map<uint64, Seen> holderSeen;
+                if (holderSeen.size() > 4096)
+                    holderSeen.clear();
+                uint32 const nowMs = getMSTime();
+                uint64 const key = mob->GetGUID().GetRawValue() ^ (bot->GetGUID().GetRawValue() << 1);
+                auto const [it, fresh] = holderSeen.try_emplace(key, Seen{holder, nowMs});
+                if (!fresh && holder < it->second.threat)
+                    it->second = Seen{holder, nowMs};
+                uint32 const sinceMs = getMSTimeDiff(it->second.ms, nowMs);
+                if (sinceMs >= IN_MILLISECONDS)
+                    holder += (holder - it->second.threat) * commit * IN_MILLISECONDS / float(sinceMs);
+            }
             float const after = mob->GetThreatMgr().GetThreat(bot) + added;
             uint8 const share = holder > 0.0f ? static_cast<uint8>(std::min(after * 100.0f / holder, 255.0f))
                                               : ThreatLead::TankShare(bot, mob);
