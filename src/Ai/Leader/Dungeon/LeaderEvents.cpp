@@ -1647,13 +1647,40 @@ namespace Leader::Dungeon
         // floor, sight: CrowdControlMarkReachable). The CC'd mobs leave the kill order.
         if (fighting && Leader::LEADER_CC_ASSIGN && target)
         {
+            // [lead545] b213 rfc-h 5C 565.8-670 s: the balance druid's own pack mark (a Searing Blade Enforcer) became
+            // its Cc, the Enforcer stood on the blood DK tank in melee, under its area damage; "leader cc" cast
+            // Entangling Roots 40 times through Taragaman (the root broke at once and holds no mob that already hits
+            // its victim), the druid ran dry (44 -> 0 %) and did 111 dps on the boss. The leader issues a Cc only
+            // where the game lets it hold, on every tick: the member has a hold for the mob, nothing on the mob
+            // breaks it (CrowdControlWouldBreak) unless it is held now, and a root alone is no hold on a mob in melee
+            // with its victim
+            auto const ccHolds = [&](Player* member, Unit* mob) -> bool
+            {
+                PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+                CrowdControlOption const* option = memberAI ? FindCrowdControl(memberAI, mob, false) : nullptr;
+                if (!option)
+                    return false;
+                uint64 const mechanics = GetCrowdControlMechanics(GetCrowdControlHoldInfo(memberAI, *option));
+                if (IsHeldByCrowdControl(mob, mechanics))
+                    return true;
+                if (CrowdControlWouldBreak(memberAI, mob))
+                    return false;
+                Unit* const victim = mob->GetVictim();
+                bool const rootOnly = mechanics && !(mechanics & ~(uint64(1) << MECHANIC_ROOT));
+                return !(rootOnly && victim && mob->IsWithinMeleeRange(victim));
+            };
             for (auto it = lead.ccAssign.begin(); it != lead.ccAssign.end();)
             {
                 Unit* mob = ObjectAccessor::GetUnit(*tank, it->first);
                 Player* member = ObjectAccessor::FindPlayer(it->second);
                 if (!mob || !mob->IsAlive() || !mob->IsInCombat() || !member || !member->IsAlive() ||
-                    mob == target || looseOn.count(member->GetGUID()))
+                    mob == target || looseOn.count(member->GetGUID()) || !ccHolds(member, mob))
+                {
+                    // [lead545] the command goes with the assignment (a command stands until replaced: the
+                    // druid's Cc outlived its assignment and kept the roots on the tank's mob)
+                    Leader::Events::SetCc(it->second, ObjectGuid::Empty);
                     it = lead.ccAssign.erase(it);
+                }
                 else
                     ++it;
             }
@@ -1664,7 +1691,8 @@ namespace Leader::Dungeon
                 if (bot != healer && !controlling.count(bot->GetGUID()))
                     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
                         if (Unit* marked = GetAutoCcTarget(botAI);
-                            marked && marked->IsAlive() && marked != target && !lead.ccAssign.count(marked->GetGUID()))
+                            marked && marked->IsAlive() && marked != target && !lead.ccAssign.count(marked->GetGUID()) &&
+                            ccHolds(bot, marked))  // [lead545]
                         {
                             lead.ccAssign[marked->GetGUID()] = bot->GetGUID();
                             controlling.insert(bot->GetGUID());
@@ -1689,7 +1717,7 @@ namespace Leader::Dungeon
                         !CrowdControlMarkReachable(bot, mob))
                         continue;
                     CrowdControlOption const* option = FindCrowdControl(botAI, mob, false);
-                    if (!option || CrowdControlWouldBreak(botAI, mob))
+                    if (!option || CrowdControlWouldBreak(botAI, mob) || !ccHolds(bot, mob))  // [lead545]
                         continue;
                     if (SpellInfo const* hold = GetCrowdControlHoldInfo(botAI, *option))
                     {
@@ -1715,7 +1743,11 @@ namespace Leader::Dungeon
             }
         }
         else if (!fighting)
+        {
+            for (auto const& [mobGuid, memberGuid] : lead.ccAssign)
+                Leader::Events::SetCc(memberGuid, ObjectGuid::Empty);  // [lead545]
             lead.ccAssign.clear();
+        }
 
         // [lead16] LEADER_PRESAVE: a big hit foreseen - a heavy cast (its damage >= LEADER_PRESAVE_HIT_PCT of the
         // victim's health) of a fight mob on a member or the tank, an enraged boss on the tank, the tank low under a
