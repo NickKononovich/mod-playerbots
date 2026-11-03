@@ -113,8 +113,12 @@ void AssassinationRogueStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         new TriggerNode(
             "slice and dice",
             {
-                // [b31_wr] above Envenom (HIGH + 5): the tie let Envenom take the points while Slice and Dice was down
-                NextAction("slice and dice", ACTION_HIGH + 5.5f),
+                // [b31_wr] above Envenom (HIGH + 5): the tie let Envenom take the points while Slice and Dice was down.
+                // [rot340] and above the Hunger for Blood enabler Rupture (HIGH + 7) and Hunger for Blood (HIGH + 6):
+                // wowsims rogue__mutilate.apl.json row 2 (Slice and Dice <= 1 s) outranks row 4 (Hunger for Blood).
+                // b221 rfc-h 5E Rtrogab opened every boss Mutilate -> Rupture -> Hunger for Blood -> Mutilate -> Slice
+                // and Dice, the first 6-8 s without it (sim uptime 98 %, bot 41-84 %)
+                NextAction("slice and dice", ACTION_HIGH + 7.5f),
             }
         )
     );
