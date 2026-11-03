@@ -635,7 +635,7 @@ bool FerociousBiteExecuteTrigger::IsActive()
 
 bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target)
 {
-    return target && ExpectedLifetime(botAI, target) >= RIP_MIN_TARGET_LIFETIME;  // [rot240]
+    return target && ExpectedFightLifetime(botAI, target) >= RIP_MIN_TARGET_LIFETIME;  // [rot240] [rot341]
 }
 
 // [rot330] Mangle (Bear) on its cooldown with less than `withinMs` of it left (wowsims spellTimeToReady < x and not

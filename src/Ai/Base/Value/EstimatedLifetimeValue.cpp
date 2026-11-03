@@ -293,10 +293,12 @@ namespace
         std::array<uint32, LIFE_SAMPLES> health{};
         size_t count = 0;
         uint32 lastSeenMs = 0;
+        uint32 startMs = 0;      // [rot341] the track's first sample: the whole observed loss
+        uint32 startHealth = 0;
     };
 }
 
-float ObservedLifetime(Unit* target)
+static float ObservedLifetimeOf(Unit* target, bool wholeFight)
 {
     float const unknown = std::numeric_limits<float>::max();
     if (!target || !target->IsAlive() || !target->IsInWorld())
@@ -338,9 +340,25 @@ float ObservedLifetime(Unit* target)
             --track.count;
         }
 
+        if (!track.count)
+        {
+            track.startMs = now;
+            track.startHealth = health;
+        }
+
         track.ms[track.count] = now;
         track.health[track.count] = health;
         ++track.count;
+    }
+
+    if (wholeFight)
+    {
+        uint32 const age = getMSTimeDiff(track.startMs, now);
+        if (age < LIFE_MIN_WINDOW_MS || track.startHealth <= health)
+            return unknown;
+
+        float const perSecond = static_cast<float>(track.startHealth - health) * IN_MILLISECONDS / age;
+        return static_cast<float>(health) / perSecond;
     }
 
     // The oldest sample inside the window gives the rate.
@@ -360,6 +378,15 @@ float ObservedLifetime(Unit* target)
     }
 
     return unknown;
+}
+
+float ObservedLifetime(Unit* target) { return ObservedLifetimeOf(target, false); }
+
+float ExpectedFightLifetime(PlayerbotAI* botAI, Unit* target)
+{
+    float const lifetime = target && target->IsAlive() ? ObservedLifetimeOf(target, true)
+                                                       : std::numeric_limits<float>::max();
+    return lifetime < std::numeric_limits<float>::max() ? lifetime : ExpectedLifetime(botAI, target);
 }
 
 namespace

@@ -89,6 +89,12 @@ namespace GroupDamage
 // mage held Fireball on it. `source` (optional) names the estimate for the log.
 float ObservedLifetime(Unit* target);
 float ExpectedLifetime(PlayerbotAI* botAI, Unit* target, std::string* source = nullptr);
+// [rot341] The same by the rate over the target's whole observed health loss (since its track began: first seen,
+// healed or forgotten), not the last 0.7-4 s: wowsims' simTimeRemain for a decision on a dot's full duration
+// (feral rotation.go ripNow endThresh). The 4 s rate swung with bursts: b221 rfc-h 5H Rtdruaf Bit at 5 points with
+// Rip down on Oggleflint at ~37 % health (it lost 2.1 %/s over the fight and lived 18 s more), no Rip that fight.
+// Falls back to ExpectedLifetime while no loss was seen.
+float ExpectedFightLifetime(PlayerbotAI* botAI, Unit* target);
 
 // [lead451] A member's held cast (CastTimeMultiplier): the target it would not live to the cast's landing on and the
 // seconds the cast needs to land (its cast time, flight and the next tick). The member reports the fact; the leader's
