@@ -695,7 +695,12 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                     healer && healer != bot ? "the healer's gap between heals" : "the fight left, no healer");
             }
         }
-        uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
+        // [lead840] b223 rfc-h 5C Taragaman 671.8-676.7 s: the fire mage's Evocation (the boss line's 60 %) ran 2 ->
+        // 33 % and the leader's mana potion verdict ("31 % < the 97 % ... - 0 cooldowns": the channel's return still
+        // to come is no cooldown any more) put the Runic Mana Injector on it - the item's cast broke the channel,
+        // ~30 % of the counted 60 % never came. One owner per fact: while a mana tool's channel runs, its return is
+        // the member's mana; the potion and the gem wait for its end (a health potion does not)
+        uint32 const maxMana = Leader::Fight::LeaderChannelsManaTool(bot) ? 0 : bot->GetMaxPower(POWER_MANA);
         if (!item && maxMana)
             if (uint32 const potion = RaidConsumables::FindRestorePotion(bot, true, amount);
                 potion && maxMana - bot->GetPower(POWER_MANA) >= amount)

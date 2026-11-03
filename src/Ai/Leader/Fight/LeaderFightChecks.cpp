@@ -44,6 +44,15 @@ namespace Leader::Fight
         return ready;
     }
 
+    bool LeaderChannelsManaTool(Player* bot)
+    {
+        Spell const* channel = bot ? bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) : nullptr;
+        if (!channel || channel->getState() == SPELL_STATE_FINISHED || !channel->GetSpellInfo())
+            return false;
+        uint32 const first = channel->GetSpellInfo()->GetFirstRankSpell()->Id;
+        return first == RestState::SPELL_EVOCATION || first == RestState::SPELL_HYMN_OF_HOPE;
+    }
+
     // the bot's interrupt with no cooldown running (Kick, Pummel, Shield Bash, Counterspell, Wind Shear, Mind
     // Freeze, Silence); 0: none
     uint32 LeaderReadyInterrupt(Player* bot)

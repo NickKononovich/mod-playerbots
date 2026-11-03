@@ -127,7 +127,15 @@ namespace Leader::Dungeon
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
         if (!info || !caster->HasSpell(spell) || info->GetMaxDuration() <= 0)
             return false;
-        uint32 const recovery = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
+        // [lead840] b223 rfc-h 5B: the shadow priest's Shadowfiend recharges in 180 s (Veiled Shadows, the
+        // leader's own "recharge 180 s"), the raw spell data says 300 s - its cooldown was never "within its
+        // duration" of 300 s, the fiend never counted as out: its mana was netted into the boss fight's measured use
+        // (Oggleflint 70 -> 99 % with the potion and the fiend, the boss rate 0.36 %/s) and Taragaman's line asked
+        // 19 % of a priest that spends ~1.3 %/s (dry 26 s in, wand 10 s). The recharge is the caster's, with its
+        // cooldown modifiers (talents, glyphs: SPELLMOD_COOLDOWN, as Player::AddSpellAndCategoryCooldowns applies)
+        int32 recoveryMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+        caster->ApplySpellMod(spell, SPELLMOD_COOLDOWN, recoveryMs);
+        uint32 const recovery = uint32(std::max(recoveryMs, 0));
         uint32 const delay = caster->GetSpellCooldownDelay(spell);
         return delay && recovery > uint32(info->GetMaxDuration()) && delay > recovery - uint32(info->GetMaxDuration());
     }
@@ -3026,7 +3034,7 @@ namespace Leader::Dungeon
                 Player* kicker = nullptr;
                 if (auto const held = lead.kickers.find(caster->GetGUID()); held != lead.kickers.end())
                     if (Player* bot = ObjectAccessor::FindPlayer(held->second);
-                        bot && bot->IsAlive() && LeaderReadyInterrupt(bot))
+                        bot && bot->IsAlive() && LeaderReadyInterrupt(bot) && !LeaderChannelsManaTool(bot))
                         kicker = bot;
                 bool const kept = kicker != nullptr;  // the kicker kept while it holds (no switch mid-cast)
                 // [lead776] b220 rfc-h 5E Taragaman: the rogue's Kick on every Fire Nova (714.5 - 763.5 s, 5 in the
@@ -3043,8 +3051,11 @@ namespace Leader::Dungeon
                         break;
                     // [lead90] b131 946.1 s: Rtmagaa's Counterspell on a Searing Blade Warlock the tank had no threat
                     // on - a kicker only while it has threat headroom on the caster (its threat below the tank's)
+                    // [lead840] b223 rfc-h 5C Taragaman 676.3 s: the fire mage was told the kick 4.5 s into its
+                    // Evocation (the boss line's 60 %): the Counterspell breaks the channel. A member channelling a
+                    // mana tool is no kicker (the channel is the mana its line counted)
                     if (bot != healer && !busy.count(bot->GetGUID()) && LeaderReadyInterrupt(bot) &&
-                        bot->GetExactDist(caster) <= 30.0f &&
+                        !LeaderChannelsManaTool(bot) && bot->GetExactDist(caster) <= 30.0f &&
                         caster->GetThreatMgr().GetThreat(bot) < caster->GetThreatMgr().GetThreat(tank))
                         if (uint8 const rank = LeaderInterruptCostRank(bot); !kicker || rank < kickerRank)
                         {
@@ -3553,6 +3564,22 @@ namespace Leader::Dungeon
                 }
                 if (spend.prev < 0.0f)
                     spend.prev = pct;  // the fight's start
+                // [lead841] b223 rfc-h 5H Oggleflint 280-336 s: the fire mage began the boss dry (1 %), its Evocation
+                // took it to 58 % in the first 8 s, and it fought the boss out with the potion and the gem - the whole
+                // fight was dropped as "a fight it began dry" (lead417), no boss rate was noted, and Taragaman's line
+                // read every fight's acting rate (1.04 %/s) where the boss rotation spent ~1.4 %/s (dry 6 s before the
+                // kill). A fight begun dry is measured from the tick it can cast again (a tool's or a potion's
+                // return): its start there, the rise before it is in that start
+                if (spend.dryPct >= 0.0f && spend.dryPct >= spend.prev && pct >= RestState::CheapestCastPct(member))
+                {
+                    spend.prev = pct;
+                    spend.lastPct = pct;
+                    spend.fightSec = 0.0f;
+                    spend.actingSec = 0.0f;
+                    spend.toolGain = 0.0f;
+                    spend.dryPct = -1.0f;
+                    spend.drySec = 0.0f;
+                }
                 // [lead480] the mana a tool or a potion returned this tick (its rise while the return comes: under
                 // Evocation / Innervate / Hymn / Dispersion / Viper, a Shadowfiend or Mana Tide out, the tick the
                 // game marks the combat's potion), counted until it runs dry. Divine Plea stays in the rate (lead224)
@@ -3577,9 +3604,15 @@ namespace Leader::Dungeon
                 // is the tool's return (toolGain), its seconds spend nothing
                 bool const ownToolChannel = member->HasAura(RestState::SPELL_EVOCATION) ||
                                             member->HasAura(RestState::SPELL_DISPERSION_MANA);
+                // [lead842] b223 rfc-h: the casters wanded at 1-3 % (above their cheapest cast, so not "dry": 5H fire
+                // 932-944 s, 5D arcane 835-837 s, 5B shadow) and the wand's autorepeat counted as acting seconds
+                // (Unit::IsNonMeleeSpellCast without skipAutorepeat) - seconds that spend no mana, the acting rate
+                // under the rotation's (5H fire 1.04 %/s at Taragaman, ~1.4 %/s spent there). The wand is no second
+                // of the mana rotation
                 if (spend.dryPct < 0.0f && !ownToolChannel)
                     if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
-                        member->IsNonMeleeSpellCast(false) || (memberAI && memberAI->GetGlobalCooldownRemaining()))
+                        member->IsNonMeleeSpellCast(false, false, true) ||
+                        (memberAI && memberAI->GetGlobalCooldownRemaining()))
                         spend.actingSec += dt;
                 if (spend.dryPct < 0.0f && pct < RestState::CheapestCastPct(member))  // [lead417] it ran dry
                 {
@@ -4172,6 +4205,41 @@ namespace Leader::Dungeon
                         return Leader::Events::Get(guid, current) && current.move == Leader::MoveEvent::MoveTo &&
                                current.moveWhy == why;
                     });
+            // [lead840] b223 rfc-h 5H Bazzalan 1157.9-1161.8 s: the boss gate passed the fire mage at 2 % on its
+            // Evocation's 60 % ("Evocation in the fight"); the leader told it Evocation at the pull and 0.6 s later
+            // its first combat spot ("no line of sight to the target", a 3 yd walk) - the walk broke the channel, the
+            // 240 s recharge started, the mage was at 1 % at 1161.8 s and wanded 1191-1213 s. The mana tool's channel
+            // is the member's fact while it runs: no combat spot moves it for its target's sight or range (its tool
+            // needs neither); only its place's safety does (a fight mob's melee reach, a hazard, lava / a drop-off,
+            // a cleave)
+            {
+                thread_local std::unordered_map<ObjectGuid, std::string> channelVerdict;  // logged once per change
+                std::string verdict;
+                if (!moved && combat && LeaderChannelsManaTool(bot))
+                {
+                    float const x = bot->GetPositionX();
+                    float const y = bot->GetPositionY();
+                    float const z = bot->GetPositionZ();
+                    if (!LeaderOutOfMobsMelee(bot, bot->GetPosition(), killOrder, true))
+                        verdict = "gives way: inside a fight mob's melee reach";
+                    else if (LeaderZoneAt(lead.hazardZones[guid], x, y, z, LEADER_HAZARD_EDGE))
+                        verdict = "gives way: a hazard covers it";
+                    else if (NearHazard(bot->GetMap(), bot->GetPhaseMask(), x, y, z, LEADER_TERRAIN_EDGE))
+                        verdict = "gives way: lava / a drop-off";
+                    else if (botAI && DungeonTactics::SpotInFrontalCleave(bot, botAI, x, y, 1.0f,
+                                                                          20.0f * float(M_PI) / 180.0f))
+                        verdict = "gives way: a cleave covers it";
+                    else
+                    {
+                        verdict = "holds its place (no combat spot until it ends)";
+                        moved = true;
+                    }
+                }
+                std::string& logged = channelVerdict[guid];
+                if (!verdict.empty() && verdict != logged)
+                    LOG_INFO("playerbots", "[lead840] {}: its mana tool's channel {}", bot->GetName(), verdict);
+                logged = verdict;
+            }
             if (!moved && combat && Leader::LEADER_COMBAT_SPOTS && target && target->IsAlive())
             {
                 Unit* const target = spotTarget;  // the block below judges the spot against it
@@ -4396,7 +4464,29 @@ namespace Leader::Dungeon
                     else
                     {
                         frontHere = LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt);
-                        if (!frontWhy.empty())
+                        // [lead843] b223 rfc-h (8 runs): 72 of the 103 chase <-> "combat spot: behind the target"
+                        // flips kept one target (5A 113.9 / 115.4 / 116.0 s Rtshaab on a Ragefire Shaman whose front
+                        // place "holds while it walks"; 5G 621.8-625.4 s Rtwarad, Rtpalae, Rtdekad x7): the front was
+                        // decided, the mob turned to the tank and stood, its held front place left its front half,
+                        // and the weighing ran again - "the near place is in its back half already" (no answer: the
+                        // chase), one step of the chase later the near place was in its front half again (the front
+                        // again). The front decided for this target holds: in the mob's melee reach the member hits
+                        // it from where it stands (the side it stands on costs no more than the front it accepted);
+                        // out of it the weighing's place, else the chase. Weighed anew only for a new target
+                        if (!frontHere && decided && side->second.second && bot->IsWithinMeleeRange(target) &&
+                            bot->IsWithinLOSInMap(target))
+                        {
+                            frontHere = true;
+                            frontAt = bot->GetPosition();
+                            frontWhy.clear();
+                            thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> keptLogged;
+                            if (keptLogged.size() > 4096)
+                                keptLogged.clear();
+                            if (keptLogged.insert({guid, target->GetGUID()}).second)
+                                LOG_INFO("playerbots", "[lead843] {}: its front at {} holds where it stands in reach",
+                                         bot->GetName(), target->GetName());
+                        }
+                        else if (!frontWhy.empty())
                             lead.meleeSide[guid] = {target->GetGUID(), frontHere};
                     }
                 }

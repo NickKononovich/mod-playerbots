@@ -113,6 +113,10 @@ namespace Leader::Fight
     // Freeze, Silence); 0: none
     uint32 LeaderReadyInterrupt(Player* bot);
 
+    // [lead840] the bot channels a mana tool now (Evocation, Hymn of Hope: the core's channelled spell): the mana the
+    // boss line counted comes only while nothing breaks the channel - a move, an item's or a spell's cast
+    bool LeaderChannelsManaTool(Player* bot);
+
     // [lead460] the bot's ready interrupt reaches `caster` from where the bot stands (the spell's own range: melee
     // reach for Kick / Pummel / Shield Bash / Mind Freeze, its yards for Counterspell / Wind Shear / Silence)
     bool LeaderInterruptReaches(Player* bot, Unit* caster);
