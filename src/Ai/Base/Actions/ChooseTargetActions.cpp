@@ -499,6 +499,17 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
             {
                 if ((comes || fromHere) && !reachesFromHere(name, mob))
                     continue;
+                // [lead906] user 2026-11-03 (35): b224 rfc-h 5F t=18 Earthborer 30 yd, 5B t=546 Molten Elemental 30
+                // yd - the warrior charged a mob already running at it. A mob coming at the warrior tank is hit from
+                // where it stands (Heroic Throw / Shoot / Taunt, else it waits in its melee): no Charge / Intercept
+                if (comes && bot->getClass() == CLASS_WARRIOR)
+                    if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+                        TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr))
+                    {
+                        LOG_DEBUG("playerbots", "[lead906] {}: no {} on {} ({:.1f} yd), it comes at the tank",
+                                  bot->GetName(), name, mob->GetName(), bot->GetExactDist(mob));
+                        continue;
+                    }
                 // [lead760] a gap closer only where the leader's fight is planned to stand (TankWalkMovesFight)
                 if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
                     TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr) &&
