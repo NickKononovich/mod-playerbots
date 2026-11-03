@@ -869,8 +869,16 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
     if (!FollowPlace(target, index, x, y, z))
         return std::string();
     // the executor's own no-walk facts: a chased mob in melee reach, the member at its place
-    if ((bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target)) ||
-        bot->GetExactDist2d(x, y) <= Leader::LEADER_SPOT_TOLERANCE)
+    // [lead532] b212 rfc-h 5H 1044-1050 s / 5C 637-834 s / 5G 91.8 s: 9 member_refusals "chase: behind the target -
+    // GuardIdleMobPath" - the member stood in melee reach in the mob's front arc, this returned "no refusal" without
+    // judging the walk (no judged follow left), and the executor walked behind the mob (lead418: in reach in the front
+    // arc the walk goes on) under its own idle guard, which refused it. The no-walk facts are the executor's: a chased
+    // mob in reach is no walk only when its victim is the member or the member stands out of its front arc; a chase
+    // out of reach is walked even from the place (lead523)
+    bool const chased = bot->IsValidAttackTarget(target);
+    if (chased ? bot->IsWithinMeleeRange(target) &&
+                     (target->GetVictim() == bot || !target->HasInArc(float(M_PI), bot))
+               : bot->GetExactDist2d(x, y) <= Leader::LEADER_SPOT_TOLERANCE)
         return std::string();
     MovementAction::s_dryRun = true;
     _dryFollow = true;
