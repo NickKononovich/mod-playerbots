@@ -122,11 +122,12 @@ struct Wake
 // reach" before Oggleflint (which Trogg the line did not say: the reason now carries its distance, height and
 // reach); his Ragefire Shaman and Trogg 11-13 yd from him (spawns 48643 / 48645) were in his 5G pull (pull 17, 3 kills)
 // [lead823] user 2026-11-03: the others are the boss's trash, on his path: cleared before his pull (`clearFirst`)
-Wake GhoulsWake(Player* dk, Creature* boss)
+// [lead910] `at`: where the knight would channel (its own place, or a step out of the boss's reach)
+Wake GhoulsWakeAt(Player* dk, Creature* boss, Position const& at)
 {
     Wake wake;
     float const spread = GhoulSpreadYd();
-    float const search = MAX_AGGRO_RADIUS * sWorld->getRate(RATE_CREATURE_AGGRO) + spread;
+    float const search = MAX_AGGRO_RADIUS * sWorld->getRate(RATE_CREATURE_AGGRO) + spread + dk->GetExactDist(at);
     std::list<Unit*> nearUnits;
     Acore::AnyUnfriendlyUnitInObjectRangeCheck check(dk, dk, search);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(dk, nearUnits, check);
@@ -137,9 +138,10 @@ Wake GhoulsWake(Player* dk, Creature* boss)
         if (!mob || !mob->IsAlive() || mob->IsInCombat() || mob->IsCivilian() || !dk->IsValidAttackTarget(mob))
             continue;
         float const reach = mob->GetAggroRange(dk) + mob->m_CombatDistance;
-        float const dz = std::fabs(mob->GetPositionZ() - dk->GetPositionZ());
+        float const dz = std::fabs(mob->GetPositionZ() - at.GetPositionZ());
         if ((!mob->CanFly() && dz > CREATURE_Z_ATTACK_RANGE + mob->m_CombatDistance) ||
-            !mob->IsWithinDistInMap(dk, reach + spread, true, false, false) || !mob->IsWithinLOSInMap(dk))
+            mob->GetExactDist(at) > reach + spread ||
+            !mob->IsWithinLOS(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + dk->GetCollisionHeight()))
             continue;
         if (boss && mob != boss)
             if (char const* joins = Leader::Travel::JoinsBossFight(dk, boss, mob))
@@ -163,7 +165,7 @@ Wake GhoulsWake(Player* dk, Creature* boss)
             wake.blocker = mob;
             wake.why = Acore::StringFormat("its ghouls land in {}'s aggro reach ({:.1f} yd, dz {:.1f}, reach {:.1f} + "
                                            "{:.1f} spread){}",
-                                           mob->GetName(), dk->GetExactDist(mob), dz, reach, spread,
+                                           mob->GetName(), mob->GetExactDist(at), dz, reach, spread,
                                            mob == boss ? ": the boss himself" : "");
         }
     }
@@ -171,6 +173,97 @@ Wake GhoulsWake(Player* dk, Creature* boss)
         wake.why += Acore::StringFormat("; {} mob(s) there cleared before {}", wake.clearFirst.size(),
                                         boss ? boss->GetName() : std::string("the boss"));
     return wake;
+}
+
+Wake GhoulsWake(Player* dk, Creature* boss) { return GhoulsWakeAt(dk, boss, dk->GetPosition()); }
+
+// [lead910] user 2026-11-03 (44): the tank knight's place where the boss's own aggro reach takes in its ghouls'
+// landing: the nearest spot by its walk (navmesh, Leader::WalkYd) round it where the ghouls wake nothing (the boss's
+// reach plus their spread, every other idle mob's too) and every group member still heals / sees it (HealReaches,
+// the group's reach); false: none
+bool StepOutSpot(Player* dk, Creature* boss, std::vector<Player*> const& members, Position& out)
+{
+    constexpr float STEP_YD = 3.0f;
+    constexpr uint32 DIRECTIONS = 16;
+    float const farthest = boss->GetAggroRange(dk) + boss->m_CombatDistance + GhoulSpreadYd() + STEP_YD;
+    Map* map = dk->GetMap();
+    for (float ring = STEP_YD; ring <= farthest; ring += STEP_YD)
+    {
+        std::optional<Position> best;
+        float bestWalk = 0.0f;
+        for (uint32 i = 0; i < DIRECTIONS; ++i)
+        {
+            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+            float x = dk->GetPositionX() + std::cos(angle) * ring;
+            float y = dk->GetPositionY() + std::sin(angle) * ring;
+            float z = dk->GetPositionZ();
+            if (!map->CheckCollisionAndGetValidCoords(dk, dk->GetPositionX(), dk->GetPositionY(), dk->GetPositionZ(), x,
+                                                      y, z) ||
+                std::fabs(z - dk->GetPositionZ()) > 4.0f)
+                continue;
+            Position const spot(x, y, z);
+            if (best && dk->GetExactDist(spot) >= bestWalk)
+                continue;
+            if (GhoulsWakeAt(dk, boss, spot).blocker)
+                continue;
+            bool reached = true;
+            for (Player* member : members)
+                if (member != dk && member->IsAlive() && !Leader::Fight::HealReaches(dk, member->GetPosition(), spot))
+                    reached = false;
+            if (!reached)
+                continue;
+            Leader::RouteResult const route = Leader::Route(dk, spot);
+            if (!route.found || !route.complete)
+                continue;
+            if (float const walk = Leader::WalkYd(dk, spot); !best || walk < bestWalk)
+            {
+                best = spot;
+                bestWalk = walk;
+            }
+        }
+        if (best)
+        {
+            out = *best;
+            return true;
+        }
+    }
+    return false;
+}
+
+// [lead910] the tank knight's step for its prepull Army, kept per plan: searched once from where it stands when the
+// boss's own reach blocks its landing; true while the step is the way to its channel (the leader keeps the move on)
+bool StepOut(LeaderGroup& group, DungeonLeaderState::ArmyPrepull& plan, Player* dk, Creature* boss,
+             std::vector<Player*> const& members, std::string const& blocked)
+{
+    if (!PlayerbotAI::IsTank(dk) || plan.done || plan.startedMs)
+        return false;
+    if (!plan.stepTo)
+    {
+        if (blocked.find(": the boss himself") == std::string::npos || dk->isMoving() || dk->IsInCombat())
+            return false;
+        if (plan.stepNone && dk->GetExactDist(plan.stepFrom) <= 1.5f)
+            return false;
+        plan.stepFrom = dk->GetPosition();
+        Position spot;
+        plan.stepNone = !StepOutSpot(dk, boss, members, spot);
+        if (plan.stepNone)
+        {
+            LOG_INFO("playerbots", "[lead910] {}: {}; no spot out of {}'s reach in the group's reach", dk->GetName(),
+                     blocked, boss->GetName());
+            return false;
+        }
+        plan.stepTo = spot;
+        LOG_INFO("playerbots", "[lead910] {}: {}; steps {:.1f} yd out of {}'s reach to channel", dk->GetName(),
+                 blocked, Leader::WalkYd(dk, spot), boss->GetName());
+        group.LogEvent("army_prepull_step", JsonObject()
+                                                .Str("dk", dk->GetName())
+                                                .Str("boss", boss->GetName())
+                                                .Str("why", blocked)
+                                                .Real("walk", Leader::WalkYd(dk, spot)));
+    }
+    Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, *plan.stepTo, 1.0f,
+                            "army: steps out of the boss's reach to channel");
+    return true;
 }
 
 Spell* ArmyChannel(Player* dk)
@@ -488,17 +581,33 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         DungeonLeaderState::ArmyPrepull& plan = plans[dk->GetGUID()];
         if (plan.boss != boss->GetGUID())
             plan = DungeonLeaderState::ArmyPrepull{boss->GetGUID()};
+        // [lead910] the step's channel spot is kept while the channel runs; after it the knight walks back (until the
+        // pull order takes it)
+        if (plan.stepTo && plan.startedMs && !plan.done)
+            Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, *plan.stepTo, 1.0f,
+                                    "army: steps out of the boss's reach to channel");
+        if (plan.stepTo && plan.done && !plan.stepBack)
+        {
+            if (dk->GetExactDist(plan.stepFrom) <= 1.5f || Leader::Orders::IsOpen(dk->GetGUID()))
+                plan.stepBack = true;
+            else
+                Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, plan.stepFrom, 1.5f,
+                                        "army: back to its spot after the channel");
+        }
         if (plan.done || plan.startedMs)
             continue;
         // [lead823] the group stands in the boss's preparation (PrepLeftSec's own test): the knight's spot is his
         GroupRouteState const& route = group.Route();
         bool const atPrep = route.needBuff && route.buffStep && route.target == boss->GetGUID();
         std::string const blocked = ArmyBlocked(dk, boss, atPrep);
+        // [lead910] the boss's own reach blocks the tank knight's landing: it steps out and channels there
+        bool const stepping = StepOut(group, plan, dk, boss, members, blocked);
         if (!plan.orderedMs)
         {
             if (!blocked.empty())
             {
-                NoteArmyBlocked(group, plan, dk, boss, blocked, "the buff pass");  // [lead803]
+                if (!stepping)
+                    NoteArmyBlocked(group, plan, dk, boss, blocked, "the buff pass");  // [lead803]
                 continue;
             }
             std::string why;
@@ -610,6 +719,14 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
             if (std::string const blocked = ArmyBlocked(dk, boss->ToCreature(), true); !blocked.empty())
             {
                 char const* const gate = orderNow ? "the buff pass end" : "the boss pull";
+                // [lead910] the tank knight steps out of the boss's reach to channel: the gate waits for it
+                if (boss->ToCreature() &&
+                    StepOut(group, plan, dk, boss->ToCreature(), GroupPlayers(group, boss->GetMap()), blocked))
+                {
+                    holds = Acore::StringFormat("Army of the Dead: {} steps out of {}'s reach", dk->GetName(),
+                                                boss->GetName());
+                    continue;
+                }
                 NoteArmyBlocked(group, plan, dk, boss, blocked, gate);
                 // [lead881] b224 rfc-h 5C Bazzalan: the tank knight's runes were not ready at -7.9 s, it walked at
                 // -6.9 s, and the pull gate let the pull go past it without asking again. A reason that passes by

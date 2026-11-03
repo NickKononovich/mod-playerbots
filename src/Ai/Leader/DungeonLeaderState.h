@@ -483,6 +483,11 @@ namespace Leader
             bool done = false;
             std::string blockedLogged;   // [lead803] the last logged reason it could not be told (per boss)
             std::string waitLogged;      // [lead881] the last logged reason the gate waits for it (per boss)
+            // [lead910] the tank knight's step out of the boss's own reach to channel: where to and where from
+            std::optional<Position> stepTo;
+            Position stepFrom;
+            bool stepNone = false;  // no such spot found from stepFrom (searched once per place)
+            bool stepBack = false;  // walked back to stepFrom after the channel
         };
         std::map<ObjectGuid, ArmyPrepull> armyPrepull;
         // [lead773] the assassination rogue's pre-pull Stealth for Overkill per rogue (LeaderPrepull.h StealthHolds):
