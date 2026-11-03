@@ -4302,6 +4302,169 @@ namespace Leader::Dungeon
                         lead.restExtra.erase(guid);
                     }
                 }
+                // [lead955] user 2026-11-03 (warlock-detached): a warlock short of mana is not simply sat down - the
+                // leader picks the fastest way to its mana line: Life Tap as its command (the taps' global cooldowns
+                // plus the healer's time to heal back the health the taps take below the warlock's health line, and
+                // the healer's own drink for that heal's mana beyond its spare), drinking like any member (the line
+                // over its best drink's rate), or a druid's Innervate under the cooldown rule (cooldownVerdict: on
+                // trash only when back before the next boss pull). Game data and the members' own rates, no clock
+                bool manaWayLive = false;
+                if (needsRest && HealTriage::DrainsOwnHealth(bot) && bot->GetMaxPower(POWER_MANA) &&
+                    !RestState::IsDrinking(bot))
+                {
+                    float manaLine = RestState::OwnManaLine(bot);
+                    if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+                        waitBoss && waitBoss->IsAlive())
+                        manaLine = PullReadiness::MemberBossManaLine(bot, waitBoss);
+                    if (!lead.plannerRestFor.empty() && bot->GetName() == lead.plannerRestFor)
+                        manaLine = std::max(manaLine, lead.plannerRestLine >= 0.0f ? lead.plannerRestLine : 100.0f);
+                    float const manaPct = bot->GetPowerPct(POWER_MANA);
+                    float const needPct = std::min(manaLine, 100.0f) - manaPct;
+                    if (needPct > 0.0f && ManaToolReturning(bot, seats, false))
+                        needsRest = false;  // an Innervate (another tool) still gives it mana: no Rest, no tap over it
+                    else if (needPct > 0.0f)
+                    {
+                        manaWayLive = true;
+                        constexpr float NONE = -1.0f;
+                        float const maxMana = float(bot->GetMaxPower(POWER_MANA));
+                        float const drinkRate = RestState::DrinkPctPerSecOf(bot);
+                        float const drinkSec = drinkRate > 0.0f ? needPct / drinkRate : NONE;
+                        // Life Tap (spell_warl_life_tap: health = its effect, mana = that plus half the shadow spell
+                        // power, Improved Life Tap's percent on it)
+                        constexpr uint32 SPELL_LIFE_TAP_RANK_1 = 1454;
+                        constexpr uint32 ICON_IMPROVED_LIFE_TAP = 208;
+                        uint32 tapSpell = 0;
+                        for (uint32 rank = sSpellMgr->GetLastSpellInChain(SPELL_LIFE_TAP_RANK_1); rank && !tapSpell;
+                             rank = sSpellMgr->GetPrevSpellInChain(rank))
+                            if (bot->HasSpell(rank))
+                                tapSpell = rank;
+                        float tapSec = NONE;
+                        std::string tapWhy = "no Life Tap";
+                        if (SpellInfo const* tap = tapSpell ? sSpellMgr->GetSpellInfo(tapSpell) : nullptr)
+                        {
+                            float const healthPerTap = float(std::max(tap->Effects[EFFECT_0].CalcValue(bot), 1));
+                            float manaPerTap =
+                                healthPerTap + float(bot->SpellBaseDamageBonusDone(SPELL_SCHOOL_MASK_SHADOW)) * 0.5f;
+                            if (AuraEffect const* improved =
+                                    bot->GetDummyAuraEffect(SPELLFAMILY_WARLOCK, ICON_IMPROVED_LIFE_TAP, 0))
+                                manaPerTap *= 1.0f + float(improved->GetAmount()) / 100.0f;
+                            float const taps = std::ceil(needPct / 100.0f * maxMana / std::max(manaPerTap, 1.0f));
+                            float const gcdSec =
+                                std::max(1.0f, float(tap->StartRecoveryTime) / 1000.0f *
+                                                   bot->GetFloatValue(UNIT_MOD_CAST_SPEED));
+                            float const spent = taps * healthPerTap;
+                            float const above = float(bot->GetHealth()) -
+                                                RestState::HealthLine(bot) / 100.0f * float(bot->GetMaxHealth());
+                            float const healBack = std::max(0.0f, spent - above);
+                            float healSec = 0.0f;
+                            float healerDrinkSec = 0.0f;
+                            if (healBack > 0.0f)
+                            {
+                                RestState::HealerFacts const facts = healer && healer != bot
+                                                                         ? RestState::HealerThroughput(healer, bot)
+                                                                         : RestState::HealerFacts();
+                                if (facts.hps > 0.0f && facts.healPerMana > 0.0f && facts.maxMana > 0.0f)
+                                {
+                                    healSec = healBack / facts.hps;
+                                    float const healerCost = 100.0f * healBack / facts.healPerMana / facts.maxMana;
+                                    float const spare = std::max(
+                                        healer->GetPowerPct(POWER_MANA) - RestState::OwnManaLine(healer), 0.0f);
+                                    float const healerDrink = RestState::DrinkPctPerSecOf(healer);
+                                    if (healerCost > spare)
+                                        healerDrinkSec = healerDrink > 0.0f ? (healerCost - spare) / healerDrink : NONE;
+                                }
+                                else
+                                    healSec = NONE;  // no healer heals it back
+                            }
+                            if (healSec >= 0.0f && healerDrinkSec >= 0.0f)
+                                tapSec = taps * gcdSec + healSec + healerDrinkSec;
+                            tapWhy = Acore::StringFormat("{:.0f} taps x {:.1f} s + heal back {:.0f} health {:.1f} s + "
+                                                         "the healer's drink {:.1f} s",
+                                                         taps, gcdSec, healBack, healSec, healerDrinkSec);
+                        }
+                        // Innervate: a druid with it ready, in a form that casts it, not drinking, not short of its
+                        // own line (lead751), its cooldown verdict allowing it
+                        Player* innervator = nullptr;
+                        uint32 innervate = 0;
+                        float innervateSec = NONE;
+                        std::string innervateWhy = "no Innervate ready";
+                        std::vector<Player*> casters = seats;
+                        casters.push_back(tank);
+                        for (Player* druid : casters)
+                        {
+                            uint32 const spell = druid != bot && druid->IsAlive() && !druid->IsSitState()
+                                                     ? LeaderReadySpell(druid, {SPELL_INNERVATE})
+                                                     : 0;
+                            SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+                            if (!info || info->CheckShapeshift(druid->GetShapeshiftForm()) != SPELL_CAST_OK ||
+                                (druid->GetMaxPower(POWER_MANA) &&
+                                 druid->GetPowerPct(POWER_MANA) < RestState::OwnManaLine(druid)))
+                                continue;
+                            float const gainPct = RestState::ManaToolPct(druid, bot, spell);
+                            float const durationSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
+                            if (gainPct <= 0.0f || durationSec <= 0.0f)
+                                continue;
+                            std::string verdict;
+                            if (!cooldownVerdict(RechargeAfterCastSec(druid, spell), durationSec, verdict))
+                            {
+                                innervateWhy = "Innervate " + verdict;
+                                continue;
+                            }
+                            float const castSec =
+                                std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(druid)) / 1000.0f;
+                            float const left = needPct - gainPct;
+                            float const sec = left <= 0.0f      ? castSec + durationSec * needPct / gainPct
+                                              : drinkRate > 0.0f ? castSec + durationSec + left / drinkRate
+                                                                 : NONE;
+                            if (sec >= 0.0f && (innervateSec < 0.0f || sec < innervateSec))
+                            {
+                                innervator = druid;
+                                innervate = spell;
+                                innervateSec = sec;
+                                innervateWhy = Acore::StringFormat("{:.0f} % from {}, {}", gainPct, druid->GetName(),
+                                                                   verdict);
+                            }
+                        }
+                        auto const faster = [](float a, float b) { return a >= 0.0f && (b < 0.0f || a < b); };
+                        char const* way = faster(tapSec, drinkSec) && faster(tapSec, innervateSec) ? "life tap"
+                                          : faster(innervateSec, drinkSec)                        ? "innervate"
+                                                                                                   : "drink";
+                        // one decision per fact: the way taken stays while it is still a way (no A -> B -> A as the
+                        // rates move with the mana)
+                        if (std::string const& held = lead.manaWayLogged[guid];
+                            (held == "life tap" && tapSec >= 0.0f) || (held == "innervate" && innervateSec >= 0.0f))
+                            way = held == "life tap" ? "life tap" : "innervate";
+                        std::string const note = Acore::StringFormat(
+                            "{}: mana {:.0f} % < {:.0f} % line - life tap {:.1f} s ({}), drink {:.1f} s, innervate "
+                            "{:.1f} s ({})",
+                            way, manaPct, manaLine, tapSec, tapWhy, drinkSec, innervateSec, innervateWhy);
+                        if (std::string& logged = lead.manaWayLogged[guid]; logged != way)
+                        {
+                            logged = way;
+                            Decisions().Write(run, "leader", "warlock_mana_way", guid, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("way", way)
+                                                  .Real("mana", manaPct).Real("line", manaLine)
+                                                  .Real("lifeTapSec", tapSec).Real("drinkSec", drinkSec)
+                                                  .Real("innervateSec", innervateSec).Str("why", note));
+                            LOG_INFO("playerbots", "[lead955] {}: {}", bot->GetName(), note);
+                        }
+                        std::string const picked = way;
+                        // the taps go while its health is at or above its health line; below it the healer's top-up
+                        // (lead945: a Life Tap warlock under its line) brings it back first - no tap into a pull
+                        if (picked == "life tap" && bot->GetHealthPct() >= RestState::HealthLine(bot) &&
+                            Leader::Events::SetExternal(guid, tapSpell, ObjectGuid::Empty))
+                            logEvent(bot, "External", JsonObject().Num("spell", tapSpell).Str("on", bot->GetName())
+                                                          .Str("why", note));
+                        if (picked == "innervate" &&
+                            Leader::Events::SetExternal(innervator->GetGUID(), innervate, guid))
+                            logEvent(innervator, "External", JsonObject().Num("spell", innervate)
+                                                                 .Str("on", bot->GetName()).Str("why", note));
+                        if (picked != "drink")
+                            needsRest = false;  // its mana comes on the move: no Rest
+                    }
+                }
+                if (!manaWayLive)
+                    lead.manaWayLogged.erase(guid);
                 {
                     // [lead76] the Rest's line vs the member's mana, logged at the Rest's start and end
                     // [lead79] logged at the Rest's start and end only (the line's text changes with the mana)

@@ -322,6 +322,7 @@ namespace Leader
         std::set<ObjectGuid> restHurtLogged;  // [lead226] no Rest while it takes damage: logged once per stretch
         std::map<ObjectGuid, float> restEndMana;  // [lead230] its mana when its last Rest ended (out of a fight)
         std::map<ObjectGuid, float> restExtra;    // [lead230] the mana it spent standing between two Rests
+        std::map<ObjectGuid, std::string> manaWayLogged;  // [lead955] the warlock mana way last logged
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
         std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)

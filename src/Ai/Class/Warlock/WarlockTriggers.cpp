@@ -9,6 +9,7 @@
 #include "GameObject.h"
 #include "GenericTriggers.h"
 #include "Item.h"
+#include "LeaderOrders.h"  // [lead955] Leader::ExecutorMember
 #include "Map.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -201,6 +202,10 @@ bool DecimationTrigger::IsActive()
 // Checks if the bot's mana is below 85% and health is above a low health threshold
 bool LifeTapTrigger::IsActive()
 {
+    // [lead955] out of a fight a led warlock's Life Tap for mana is the leader's command (its fastest way to the
+    // mana line: Life Tap, a drink or an Innervate); its own trigger is off there. In a fight the rotation's filler
+    if (!bot->IsInCombat() && Leader::ExecutorMember(bot))
+        return false;
     if (AI_VALUE2(uint8, "health", "self target") <= sPlayerbotAIConfig.LowHealth)
         return false;
 
