@@ -511,10 +511,19 @@ namespace Leader::Dungeon
             else
             {
                 // away from the pack, out of its reach (its aggro range + the spot guard's margin)
+                // [lead734] b219 rfc-h 5G pull 8 (91-149 s): the DK tank stood just out of an idle Trogg's reach and
+                // the Trogg it held in it - every melee place round that Trogg was in the idle one's reach, three
+                // melee stood 58 s. The fight is out of the pack's reach when the tank's target and the melee places
+                // round it are: the tank stands that much farther (its gap to the target, the target's combat reach,
+                // the member's)
+                Unit* const held = tank->GetVictim();
+                float const fightRing = held && held->IsAlive() ? tank->GetExactDist2d(held) + held->GetCombatReach() +
+                                                                       bot->GetCombatReach()
+                                                                 : 0.0f;
                 float const dx = tank->GetPositionX() - mob->GetPositionX();
                 float const dy = tank->GetPositionY() - mob->GetPositionY();
                 float const length = std::max(0.1f, std::hypot(dx, dy));
-                float const away = packReach + Leader::LEADER_SPOT_AGGRO_MARGIN;
+                float const away = packReach + Leader::LEADER_SPOT_AGGRO_MARGIN + fightRing;
                 float x = mob->GetPositionX() + dx / length * std::max(away, length);
                 float y = mob->GetPositionY() + dy / length * std::max(away, length);
                 float z = tank->GetPositionZ();
@@ -544,6 +553,21 @@ namespace Leader::Dungeon
                                    : nullptr;
             return mover ? mover->DryFollow(target, index, mob, chase) : std::string();
         };
+        // [lead730] a stay the leader's own guards issue in place of the move it judged ("<why>: stays (...)") is the
+        // member's live command like any other: logged as its leader_event (b219 rfc-h: 167 "to the tank's stop
+        // point" stays wrote none, fight_breakdown read the Follow before them as the live command)
+        auto const logStay = [&](Player* bot, std::string const& stay)
+        {
+            ++lead.leaderEventCounts[bot->GetName()];
+            Decisions().Write(run, "leader", "leader_event", bot->GetGUID(), bot->GetName(), true,
+                              JsonObject()
+                                  .Str("why", stay)
+                                  .Real("x", bot->GetPositionX())
+                                  .Real("y", bot->GetPositionY())
+                                  .Real("z", bot->GetPositionZ())
+                                  .Str("member", bot->GetName())
+                                  .Str("event", MoveEventName(Leader::MoveEvent::StandAt)));
+        };
         // [lead374] the walk along with the tank: a Follow the member's walk takes is issued; one it cannot take
         // safely is not - the member stays and the group holds for it (group_blocked: the tank walks on only where
         // the group follows, lead77), the idle mob in the way is the next pull (lead364). Returns the command changed
@@ -559,6 +583,8 @@ namespace Leader::Dungeon
                                      ")";
             bool const changed =
                 Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay);
+            if (changed)
+                logStay(bot, stay);  // [lead730]
             if (!lead.groupBlockedBy.count(bot->GetGUID()))
                 Decisions().Write(run, "leader", "group_blocked", bot->GetGUID(), bot->GetName(), true,
                                   JsonObject()
@@ -673,14 +699,27 @@ namespace Leader::Dungeon
                     if (logged != why + "|" + reason)
                     {
                         logged = why + "|" + reason;
-                        Decisions().Write(run, "leader", "spot_rejected_aggro", member, bot->GetName(),
-                                                      false,
-                                                      JsonObject().Str("member", bot->GetName()).Str("why", why)
-                                                          .Str("reject", reject)
-                                                          .Str("mob", mob ? mob->GetName() : "-")
-                                                          .Real("distance", mob ? mob->GetExactDist(spot) : -1.0f)
-                                                          .Real("aggroRange", mob ? mob->GetAggroRange(bot) : -1.0f)
-                                                          .Real("margin", Leader::LEADER_SPOT_AGGRO_MARGIN));
+                        // [lead734] where the idle mob, the spot and the tank are (b219 5G pull 8: three melee
+                        // 58 s at 14 yd, every spot "an idle mob's aggro reach", no position to tell why)
+                        bool const tankInReach = mob && IdleMobReachesSpot(bot, mob, tank->GetPosition());
+                        Decisions().Write(run, "leader", "spot_rejected_aggro", member, bot->GetName(), false,
+                                          JsonObject()
+                                              .Str("member", bot->GetName())
+                                              .Str("why", why)
+                                              .Str("reject", reject)
+                                              .Str("mob", mob ? mob->GetName() : "-")
+                                              .Real("distance", mob ? mob->GetExactDist(spot) : -1.0f)
+                                              .Real("aggroRange", mob ? mob->GetAggroRange(bot) : -1.0f)
+                                              .Real("margin", Leader::LEADER_SPOT_AGGRO_MARGIN)
+                                              .Num("idleLow", mob ? int64(mob->GetGUID().GetCounter()) : 0)
+                                              .Real("mobX", mob ? mob->GetPositionX() : 0.0f)
+                                              .Real("mobY", mob ? mob->GetPositionY() : 0.0f)
+                                              .Real("mobZ", mob ? mob->GetPositionZ() : 0.0f)
+                                              .Real("x", spot.GetPositionX())
+                                              .Real("y", spot.GetPositionY())
+                                              .Real("z", spot.GetPositionZ())
+                                              .Real("tankGap", mob ? tank->GetExactDist(mob) : -1.0f)
+                                              .Bool("tankInReach", tankInReach));
                     }
                     judgeBlockingPack(bot, mob);  // [lead76]
                     // [lead99] b138 rfc-h 339-427 s: the engage's range / meeting spots on the ledge had no walk
@@ -709,9 +748,12 @@ namespace Leader::Dungeon
                         lead.groupBlockedBy[member] = mob ? mob->GetGUID() : ObjectGuid::Empty;
                     }
                     // [lead71] the arbiter's next candidate: the member stays where it is (never a move it refuses)
+                    // [lead730] logged as its command (it was the member's live command with no leader_event)
                     if (move != Leader::MoveEvent::StandAt || spot.GetExactDist(bot->GetPosition()) > 1.0f)
-                        Leader::Events::SetMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
-                                                why + ": stays (" + reason + ")");
+                        if (std::string const stay = why + ": stays (" + reason + ")";
+                            Leader::Events::SetMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
+                                                    stay))
+                            logStay(bot, stay);
                     return false;
                 }
             }
@@ -780,38 +822,12 @@ namespace Leader::Dungeon
                                                   .Str("ground", LeaderOnCleared(spot) ? "cleared" : "new"));
             return changed;
         };
-        // [lead66] b111: the leader rejected its own meeting-point move (in a Trogg's reach) and left the melee member
-        // with no command - its own reach melee then walked it. The move, else it stays where it is (StandAt here),
-        // else Hold; the alternative is logged
-        auto const moveOrStay = [&](Player* bot, Position const& spot, float tolerance, std::string const& why)
-        {
-            ObjectGuid const member = bot->GetGUID();
-            bool const changed = checkedMove(member, Leader::MoveEvent::MoveTo, spot, tolerance, why);
-            Leader::MemberEvents now;
-            // [lead81] checkedMove's own stay ("<why>: stays (...)") is the answer too: no second stay text flipping
-            if (Leader::Events::Get(member, now) && now.moveWhy.rfind(why, 0) == 0)
-                return changed;
-            std::string const stay = why + ": stays (the spot is in an unpulled mob's reach)";
-            bool const stays = checkedMove(member, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay);
-            if (!(Leader::Events::Get(member, now) && now.moveWhy == stay))
-                Leader::Events::SetMove(member, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, stay);
-            if (stays)
-                Decisions().Write(run, "leader", "position_owner", member, bot->GetName(), true,
-                                              JsonObject().Str("member", bot->GetName()).Str("owner", stay)
-                                                  .Str("was", why));
-            return stays;
-        };
+        // [lead66] the meeting-point move's stay (moveOrStay) went with lead730's wait point: a refused wait is the
+        // walk along with the tank
         // [lead83] b126 rfc-h 598.5-603.7 s: Rtshaab's "to the meeting point" was re-derived from where it stood every
         // tick (LeaderMeleeWait) and flipped between two points (command_repeat). Like the range spot (lead68): the
-        // melee place is computed once from the leader's meeting point and kept until a fact changes - a new order or
-        // fight start (the meeting point moves) or another target
-        auto const meleeMeetAt = [&](Player* bot, ObjectGuid target) -> Position
-        {
-            auto& kept = lead.meleeMeet[bot->GetGUID()];
-            if (kept.target != target || kept.meet.GetExactDist(lead.meetPoint) > 1.0f)
-                kept = {target, lead.meetPoint, LeaderMeleeWait(bot, lead.meetPoint)};
-            return kept.point;
-        };
+        // melee place is computed once and kept until a fact changes - [lead730] meleePullWait (per order) and
+        // meleeStopAt (per target at the tank's opener) below
         // a slow-layer call, timed
         auto const slow = [&](auto&& call, std::source_location where = std::source_location::current())
         {
@@ -827,6 +843,110 @@ namespace Leader::Dungeon
                 lead.slowestPass = "TestHarnessRunner.cpp:" + std::to_string(where.line());
             }
             return result;
+        };
+        // [lead730] user 2026-11-03 (top priority: the damage dealers hit within a couple of seconds of the tank): the
+        // last point of the member's own walk to `goal` (the route the leader judges its walks by, lead99) before the
+        // walk enters an unpulled mob's reach (LeaderAggroAt: the game's aggro radius by the level difference plus
+        // the spot guard's margin; the pull's own mobs are unpulled for a member until the tank has them) - the
+        // closest place to the goal it reaches without waking anything. None while it stands in such a reach itself
+        // (no safe walk to judge from)
+        auto const lastSafeOnWalk = [&](Player* bot, Position const& goal) -> std::optional<Position>
+        {
+            Position last = bot->GetPosition();
+            if (LeaderAggroAt(bot, last))
+                return std::nullopt;
+            Leader::RouteResult const route = Leader::Route(bot, goal);
+            std::vector<G3D::Vector3> points;
+            if (route.found && !route.points.empty())
+                points = route.points;
+            else
+                points.emplace_back(goal.GetPositionX(), goal.GetPositionY(), goal.GetPositionZ());
+            G3D::Vector3 from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            constexpr float STEP_YD = 1.0f;
+            for (G3D::Vector3 const& to : points)
+            {
+                float const length = (to - from).length();
+                for (float at = std::min(STEP_YD, length); length > 0.0f; at = std::min(at + STEP_YD, length))
+                {
+                    G3D::Vector3 const point = from + (to - from) * (at / length);
+                    Position const sample(point.x, point.y, point.z);
+                    if (LeaderAggroAt(bot, sample))
+                        return last;
+                    last = sample;
+                    if (at >= length)
+                        break;
+                }
+                from = to;
+            }
+            return last;
+        };
+        // [lead730] before the pull (the order issued, the tank on its way) a melee member waits at the closest safe
+        // point to the pull's stop point (the leader's meeting point: the engaged mob, the fight spot of a pull back
+        // / LoS / range pull), not on a Follow ~21 yd behind the tank (b219 rfc-h: 116 of 376 melee first hits came
+        // from that Follow, 614 s after the tanks' hits). Computed once per order (the stop point), kept until a new
+        // one
+        auto const meleePullWait = [&](Player* bot) -> std::optional<Position>
+        {
+            auto& kept = lead.meleeWait[bot->GetGUID()];
+            if (kept.target != lead.commitMob || kept.meet.GetExactDist(lead.meetPoint) > 1.0f)
+            {
+                std::optional<Position> const point = slow([&] { return lastSafeOnWalk(bot, lead.meetPoint); });
+                if (!point)
+                    return std::nullopt;  // judged again next tick, from where it walked
+                kept = {lead.commitMob, lead.meetPoint, *point};
+            }
+            return kept.point;
+        };
+        // [lead730] at the tank's opener the pulled mob runs to its victim: where they meet is the fight's stop point
+        // - the victim's place when it stands (a pull back / LoS / range pull: the tank waits at its fight spot), else
+        // the point on their line where both arrive at once (an engage: the tank walks in at its run speed, the mob
+        // runs at its own, both stop at their combat reaches). The melee member's place there is its meeting place
+        // (LeaderMeleeWait), its walk the last safe point toward it. Decided once per member and target at the hit
+        // (the fact it is known from), kept while that mob is its target
+        auto const meleeStopAt = [&](Player* bot, Unit* target) -> Position
+        {
+            auto& kept = lead.meleeStop[bot->GetGUID()];
+            if (kept.target == target->GetGUID())
+                return kept.point;
+            Unit* victim = target->GetVictim() ? target->GetVictim() : static_cast<Unit*>(tank);
+            float const gap = victim->GetExactDist2d(target);
+            float const reaches = victim->GetCombatReach() + target->GetCombatReach();
+            float const mobSpeed = target->GetSpeed(MOVE_RUN);
+            float const victimSpeed =
+                victim == tank && lead.commit && lead.commit->kind == "engage" ? tank->GetSpeed(MOVE_RUN) : 0.0f;
+            float const along =
+                mobSpeed + victimSpeed > 0.0f ? std::max(0.0f, gap - reaches) * victimSpeed / (mobSpeed + victimSpeed)
+                                              : 0.0f;
+            float x = victim->GetPositionX();
+            float y = victim->GetPositionY();
+            float z = victim->GetPositionZ();
+            if (gap > 0.1f && along > 0.0f)
+            {
+                x += (target->GetPositionX() - victim->GetPositionX()) / gap * along;
+                y += (target->GetPositionY() - victim->GetPositionY()) / gap * along;
+                if (!map->CheckCollisionAndGetValidCoords(victim, victim->GetPositionX(), victim->GetPositionY(),
+                                                          victim->GetPositionZ(), x, y, z))
+                {
+                    x = victim->GetPositionX();
+                    y = victim->GetPositionY();
+                    z = victim->GetPositionZ();
+                }
+            }
+            Position const stop(x, y, z);
+            Position const place = LeaderMeleeWait(bot, stop);
+            kept = {target->GetGUID(), stop, slow([&] { return lastSafeOnWalk(bot, place); }).value_or(place)};
+            Decisions().Write(run, "leader", "melee_stop_point", bot->GetGUID(), bot->GetName(), true,
+                              JsonObject()
+                                  .Str("member", bot->GetName())
+                                  .Str("target", target->GetName())
+                                  .Str("victim", victim->GetName())
+                                  .Real("gap", gap)
+                                  .Real("victimWalks", along)
+                                  .Real("x", kept.point.GetPositionX())
+                                  .Real("y", kept.point.GetPositionY())
+                                  .Real("z", kept.point.GetPositionZ())
+                                  .Real("short", kept.point.GetExactDist(place)));
+            return kept.point;
         };
         if (!lead.slowestPassLogMs)
             lead.slowestPassLogMs = now;
@@ -2864,9 +2984,15 @@ namespace Leader::Dungeon
                 // marked it trailing, so the Cultist's pull held "Rtshaac trails the group" for the member only that
                 // pull frees: a wait nobody ended (5E 630.8-750.9 s: Rthunab, the same Cultist). A member the leader
                 // holds where it stands because its walk is blocked is placed by the leader: the block's pull frees it
+                // [lead730] a member walking to / waiting at the pull's stop point (melee) or its range spot of the
+                // engage (ranged) is placed there by the leader (it may stand ahead of the walking tank)
+                Leader::MemberEvents waits;
+                bool const atStopPoint = Leader::Events::Get(guid, waits) &&
+                                         (waits.moveWhy.rfind("to the tank's stop point", 0) == 0 ||
+                                          waits.moveWhy.rfind("along with the tank: to range of the engage", 0) == 0);
                 bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
                                     lead.combatSpots.count(guid) || lead.pullWalkSpots.count(guid) || walkRejected ||
-                                    lead.groupBlockedBy.count(guid);
+                                    lead.groupBlockedBy.count(guid) || atStopPoint;
                 float const gap = bot->GetExactDist(tank);
                 bool const was = lead.trailing.count(guid) > 0;
                 bool const trails = !fighting && !placed &&
@@ -3331,6 +3457,23 @@ namespace Leader::Dungeon
             bool const walking = group.GetWaypoint(guid, harnessWalk);
 
             bool restCommanded = false;  // [lead47] the Rest command this tick: no move replaces it
+            // [lead732] b219 rfc-h 5C 840.8 s: the balance druid's Rest ("mana 20 % < need 34 %") went out 0.2 s before
+            // pull 38 and its end was never logged - the Rest is asserted out of a fight only (the command ends at
+            // the tick's end once the fight is on, the druid attacked at 841.1 s), but rest_line / the leader_event
+            // timeline showed it live to 903 s. A Rest ends when the member's fight starts, logged as such
+            if (combat)
+                if (std::string& logged = lead.restLogged[guid]; !logged.empty())
+                {
+                    float const mana = bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f;
+                    Decisions().Write(run, "leader", "rest_line", guid, bot->GetName(), false,
+                                      JsonObject().Str("member", bot->GetName()).Str("state", "end")
+                                          .Str("line", logged).Str("why", "the fight starts")
+                                          .Real("mana", mana).Real("health", bot->GetHealthPct()));
+                    logEvent(bot, "RestEnd", JsonObject().Str("why", "the fight starts").Real("mana", mana));
+                    logged.clear();
+                    lead.restEndMana.erase(guid);  // a fight's spend is no standing spend between two Rests
+                    lead.restExtra.erase(guid);
+                }
             // 1. readiness, out of combat: Rest to whoever needs it (to full), Ready? while the pull waits for the
             // spots, Prepare (buffs, forms, a resurrection) while the group stands
             if (!combat)
@@ -4069,15 +4212,18 @@ namespace Leader::Dungeon
                         // the leader's meeting point of the tank and the pulled mob (an engage: at the mob, the
                         // tank's charge lands there too; a pull back / range pull: the fight spot the mob runs to) -
                         // instead of standing at its pull spot until the mob is on the tank (b207: ~4 s a pull). Its
-                        // place there is the meeting place of the engage walk (meleeMeetAt); checkedMove judges the
-                        // spot and the walk against every unpulled mob's reach
+                        // place there is the meeting place of the running mob and the tank (lead730: meleeStopAt);
+                        // checkedMove judges the spot and the walk against every unpulled mob's reach
                         if (melee && lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty())
                         {
                             std::vector<ObjectGuid> const pulled = LeaderPullMobs(lead.commit, lead.commitMob);
                             if (target->GetGUID() == lead.commitMob ||
                                 std::find(pulled.begin(), pulled.end(), target->GetGUID()) != pulled.end())
                             {
-                                Position const stopAt = meleeMeetAt(bot, lead.commitMob);
+                                // [lead730] where the running mob and its victim meet (meleeStopAt), not the pull's
+                                // meeting point of the issue (b219: 167 stays, the engaged mob's spawn point inside
+                                // its pack's reach); the pulled mobs' reach is no constraint once the tank has them
+                                Position const stopAt = meleeStopAt(bot, target);
                                 if (checkedMove(guid, Leader::MoveEvent::MoveTo, stopAt, 3.0f,
                                                 "to the tank's stop point"))
                                     logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
@@ -4161,6 +4307,7 @@ namespace Leader::Dungeon
                             // stood away from the mob)
                             bool const reaches = melee ? bot->IsWithinMeleeRange(target) : MemberCastsHere(bot, target);
                             float const meleeReach = target->GetCombatReach() + bot->GetCombatReach() + 1.0f;
+                            Creature* idleBlocker = nullptr;  // [lead734] the first idle mob a melee place met
                             auto const meleeAtTarget = [&](Position const& at, char const* search)
                             {
                                 if (target->GetExactDist2d(at.GetPositionX(), at.GetPositionY()) > meleeReach)
@@ -4180,9 +4327,11 @@ namespace Leader::Dungeon
                                     return false;
                                 }
                                 // [lead490] no deeper into an idle mob's reach than the fight at the target stands
-                                if (LeaderFightAggroAt(bot, at, target))
+                                if (Creature* idle = LeaderFightAggroAt(bot, at, target))
                                 {
                                     NoteSpotReject(search, "an idle mob's aggro reach");
+                                    if (!idleBlocker)
+                                        idleBlocker = idle;  // [lead734]
                                     return false;
                                 }
                                 return true;
@@ -4273,12 +4422,36 @@ namespace Leader::Dungeon
                                     // [lead463] user 2026-11-02: a member with no spot is a leader bug - loud
                                     LOG_ERROR("playerbots", "[lead463] combat_spot_none: {} has no spot on {} ({}): {}",
                                               bot->GetName(), target->GetName(), breaks, rejects.Summary());
-                                    Decisions().Write(run, "leader", "combat_spot_none", guid, bot->GetName(), false,
-                                                      JsonObject().Str("member", bot->GetName())
-                                                          .Str("why", breaks).Str("target", target->GetName())
-                                                          .Bool("reaches", reaches)
-                                                          .Str("rejects", rejects.Summary()));
+                                    // [lead734] the idle mob the melee places met, where it and the fight stand
+                                    Decisions().Write(
+                                        run, "leader", "combat_spot_none", guid, bot->GetName(), false,
+                                        JsonObject()
+                                            .Str("member", bot->GetName())
+                                            .Str("why", breaks)
+                                            .Str("target", target->GetName())
+                                            .Bool("reaches", reaches)
+                                            .Str("rejects", rejects.Summary())
+                                            .Str("idle", idleBlocker ? idleBlocker->GetName() : "-")
+                                            .Num("idleLow",
+                                                 idleBlocker ? int64(idleBlocker->GetGUID().GetCounter()) : 0)
+                                            .Real("idleX", idleBlocker ? idleBlocker->GetPositionX() : 0.0f)
+                                            .Real("idleY", idleBlocker ? idleBlocker->GetPositionY() : 0.0f)
+                                            .Real("idleZ", idleBlocker ? idleBlocker->GetPositionZ() : 0.0f)
+                                            .Real("idleReach", idleBlocker ? idleBlocker->GetAggroRange(bot) : -1.0f)
+                                            .Real("targetX", target->GetPositionX())
+                                            .Real("targetY", target->GetPositionY())
+                                            .Real("tankX", tank->GetPositionX())
+                                            .Real("tankY", tank->GetPositionY())
+                                            .Real("tankGap", idleBlocker ? tank->GetExactDist(idleBlocker) : -1.0f)
+                                            .Real("targetGap",
+                                                  idleBlocker ? target->GetExactDist(idleBlocker) : -1.0f));
                                 }
+                                // [lead734] the idle mob that keeps a melee member off its target is the fight's
+                                // question like a refused walk's (lead76): its pack joins the fight when the group
+                                // takes it, else the fight moves out of its reach (the tank's target and the melee
+                                // places round it included)
+                                if (melee && idleBlocker)
+                                    judgeBlockingPack(bot, idleBlocker);
                             }
                         }
                         found = lead.combatSpots.find(guid);
@@ -4450,8 +4623,11 @@ namespace Leader::Dungeon
                 // member keeps its place behind the tank by itself); an engage walk-along to range stays a point
                 Leader::PullOrder engage;
                 Unit* engaged = nullptr;
-                if (!pullWalk && lead.commit && lead.commitIssued && lead.commit->kind == "engage" && !melee &&
-                    Leader::Orders::GetOpen(group.LeaderGuid(), engage))
+                // [lead730] a ranged damage dealer takes its range spot of the engage while the tank walks too (its
+                // spot is outside every unpulled reach, judged below); the healer keeps lead148's walk with the tank
+                bool const healing = PlayerbotAI::IsHeal(bot);
+                if ((!pullWalk || !healing) && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
+                    !melee && Leader::Orders::GetOpen(group.LeaderGuid(), engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
                 // [lead81] b124 rfc-h 147.6-166 s: the group walked 120 yd to the engage's range / meeting point while
                 // the tank never left (-90,-40) - the tank leads the walk: a walk-along point nearer the engaged mob
@@ -4463,19 +4639,35 @@ namespace Leader::Dungeon
                 { return engagedMob && engagedMob->GetExactDist(at) < engagedMob->GetExactDist(tank); };
                 bool aheadHolds = false;
                 // [lead64] melee at an engage: one command when the tank goes - to the meeting point
+                // [lead730] user 2026-11-03: every pull (engage, pull back, LoS, range pull), also while the tank
+                // walks to it (lead148's Follow on the pull walk is gone for melee): the melee member walks to the
+                // closest safe point to the pull's stop point (meleePullWait: the last point of its walk there
+                // outside every unpulled mob's reach, the pull's own mobs included until the tank has them) and
+                // waits there for the tank's opener. Its walk judged as every walk (checkedMove); refused, it walks
+                // along with the tank as before
                 bool meleeToMeeting = false;
-                if (!pullWalk && melee && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
+                if (melee && lead.commit && lead.commitIssued && !lead.commitMob.IsEmpty() &&
                     Leader::Orders::GetOpen(group.LeaderGuid(), engage))
                 {
-                    Position const meetAt = meleeMeetAt(bot, lead.commitMob);  // [lead83]
-                    if (aheadOfTank(meetAt))
-                        aheadHolds = true;
-                    else
+                    std::optional<Position> const waitFound = meleePullWait(bot);
+                    Position const waitAt = waitFound.value_or(bot->GetPosition());
+                    std::string const waitWhy = "to the tank's stop point: waits out of the unpulled mobs' reach";
+                    auto const refusedHere = [&]
+                    {
+                        auto const verdict = lead.spotChecked.find(guid);
+                        return verdict != lead.spotChecked.end() && !verdict->second.reject.empty() &&
+                               verdict->second.spot.GetExactDist(waitAt) <= 1.0f;
+                    };
+                    if (waitFound && !refusedHere() &&
+                        checkedMove(guid, Leader::MoveEvent::MoveTo, waitAt, 3.0f, waitWhy))
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", waitWhy).Real("x", waitAt.GetPositionX())
+                                     .Real("y", waitAt.GetPositionY()).Real("z", waitAt.GetPositionZ())
+                                     .Real("stopGap", waitAt.GetExactDist(lead.meetPoint))
+                                     .Str("kind", lead.commit->kind));
+                    if (waitFound && !refusedHere())
                     {
                         meleeToMeeting = true;
-                        if (moveOrStay(bot, meetAt, 3.0f, "along with the tank: to the meeting point"))
-                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                     JsonObject().Str("why", "along with the tank: to the meeting point"));
                         moved = true;
                     }
                 }
@@ -4533,15 +4725,25 @@ namespace Leader::Dungeon
                 {
                     lead.engageRangeSpots[guid] = {engaged->GetGUID(), rangeSpot};
                     lead.engageRangeOrder[guid] = engage.id;
-                    if (aheadOfTank(rangeSpot))
-                        aheadHolds = true;  // [lead81]
-                    else
+                    // [lead81] the healer follows the tank until it is past its spot; [lead730] a ranged damage dealer
+                    // waits at its spot (out of every unpulled reach) for the tank's opener
+                    // On the tank's walk a spot whose walk the leader refused is no wait: the member walks along with
+                    // the tank (the Follow below), the tank does not hold for it
+                    auto const refusedOnWalk = [&]
+                    {
+                        auto const verdict = lead.spotChecked.find(guid);
+                        return pullWalk && verdict != lead.spotChecked.end() && !verdict->second.reject.empty() &&
+                               verdict->second.spot.GetExactDist(rangeSpot) <= 1.0f;
+                    };
+                    if (healing && aheadOfTank(rangeSpot))
+                        aheadHolds = true;
+                    else if (!refusedOnWalk())
                     {
                         if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
                                         "along with the tank: to range of the engage"))
                             logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                      JsonObject().Str("why", "along with the tank: to range of the engage"));
-                        moved = true;
+                        moved = !refusedOnWalk();
                     }
                 }
                 // [lead372] the member reported it cannot reach its follow place safely: while the facts of that
@@ -4970,6 +5172,20 @@ namespace Leader::Dungeon
                     // mob), is out of every unpulled mob's aggro reach (the spot guard's IdleMobReachesSpot): in a LoS
                     // pull it waits until the mob came to the tank
                     std::string unpulledNear;
+                    // [lead731] b219 rfc-h: 9-13 A -> B -> A Attack switches within 3 s per melee member a run (5A
+                    // 430-433 s Rtshaab Searing Blade Cultist <-> Molten Elemental every 0.3 s, 35 yd off; 5F Rtrogac
+                    // 20 between two Troggs). Two deciders read the member's own walk: the arrival test below judged
+                    // the held target from where the member stood that tick (its chase moved it, the arrival point
+                    // swung in and out of an idle mob's reach), and lead136's out-of-reach pick took the nearest mob
+                    // every tick (the walk to one made the other nearer). The held target keeps the arrival it was
+                    // taken with while it stands where it stood (a fact: it moved, an idle mob woke or moved, is
+                    // re-judged), and the out-of-reach pick leaves the held target only for a mob at the tank when the
+                    // held one is not
+                    Unit* heldTarget = nullptr;
+                    if (Leader::MemberEvents current;
+                        Leader::Events::Get(guid, current) && current.attack == Leader::AttackEvent::Attack)
+                        heldTarget = ObjectAccessor::GetUnit(*tank, current.target);
+                    std::map<ObjectGuid, Position> arrivals;
                     auto const pickable = [&](Unit* mob)
                     {
                         if (!headroomOn(mob))
@@ -4990,6 +5206,14 @@ namespace Leader::Dungeon
                                             mob->GetPositionY() + (bot->GetPositionY() - mob->GetPositionY()) * step,
                                             mob->GetPositionZ());
                         }
+                        // [lead731] the held target's arrival as it was taken, while the mob stands there (within
+                        // the arrival's own scale: the combat reaches it was placed at)
+                        if (auto const kept = lead.attackArrive.find(guid);
+                            mob == heldTarget && kept != lead.attackArrive.end() &&
+                            kept->second.target == mob->GetGUID() &&
+                            kept->second.meet.GetExactDist(mob->GetPosition()) <= reach)
+                            arrive = kept->second.point;
+                        arrivals[mob->GetGUID()] = arrive;
                         // [lead721] b219 rfc-h (8 runs): 34 of the 204 "waits: <mob> stands in <idle>'s aggro reach"
                         // stops came with the mob already on the tank (<= 12 yd, 5C 151.1 s, 5F 545.7 s ...) - this
                         // test read the plain unpulled reach, while the spots and walks the leader issues read the
@@ -5062,13 +5286,14 @@ namespace Leader::Dungeon
                         { return mob->GetVictim() == tank && tank->IsWithinMeleeRange(mob); };
                         bool bestAtTank = atTank(mine);
                         float best = bot->GetExactDist(mine);
+                        bool const keepsHeld = mine == heldTarget;  // [lead731]
                         for (ObjectGuid const& next : killOrder)
                             if (Unit* mob = ObjectAccessor::GetUnit(*tank, next);
                                 mob && mob != mine && mob->IsAlive() && mob->IsInCombat() && pickable(mob))
                             {
                                 bool const at = atTank(mob);
                                 float const distance = bot->GetExactDist(mob);
-                                if ((at && !bestAtTank) || (at == bestAtTank && distance < best))
+                                if ((at && !bestAtTank) || (!keepsHeld && at == bestAtTank && distance < best))
                                 {
                                     bestAtTank = at;
                                     best = distance;
@@ -5134,6 +5359,16 @@ namespace Leader::Dungeon
                                     memberAoeWhy = "spares " + mob->GetName() + " (no threat headroom)";
                                 memberSpared.push_back(mob->GetGUID());
                             }
+                    // [lead731] the arrival the pick was taken with, kept for the held target (see heldTarget)
+                    if (mine)
+                        if (auto const arrived = arrivals.find(mine->GetGUID()); arrived != arrivals.end())
+                        {
+                            auto& kept = lead.attackArrive[guid];
+                            if (kept.target != mine->GetGUID() ||
+                                kept.meet.GetExactDist(mine->GetPosition()) >
+                                    mine->GetCombatReach() + bot->GetCombatReach())
+                                kept = {mine->GetGUID(), mine->GetPosition(), arrived->second};
+                        }
                     lead.noHeadroom[guid] = !mine;  // no mob with headroom: it waits (Intensity Stop below)
                     lead.attackWaitWhy[guid] = !mine ? unpulledNear : std::string();  // [lead413]
                     if (!mine)                      // [lead246] the projection on its Attack target, for the Stop's log
@@ -5739,14 +5974,32 @@ namespace Leader::Dungeon
                 float sec = 0.0f;
                 std::string names;
                 for (ManaUser const* user : to)
-                    if (float const gained =
-                            gainedSec(*user, RestState::ManaToolPct(caster, user->who, spell), durationSec);
-                        gained > 0.0f)
+                {
+                    // [lead733] b219 rfc-h 5C Taragaman 701.1 s: Innervate on the balance druid at 98 % mana ("2 fight
+                    // s gained") - its return did not fit the pool. A return the pool's room cuts, in a fight that
+                    // lasts until the receiver has spent room for all of it, gains more later (wowsims: Innervate as
+                    // late as possible, at the bottom of the pool): no tool for this receiver now
+                    float const gainPct = RestState::ManaToolPct(caster, user->who, spell);
+                    float const room = 100.0f - user->pct + user->ratePct * durationSec;
+                    if (gainPct > room && lead.fightSecLeft > (gainPct - room) / user->ratePct + durationSec)
+                        continue;
+                    if (float const gained = gainedSec(*user, gainPct, durationSec); gained > 0.0f)
                     {
                         sec += gained;
                         names += Acore::StringFormat("{}{} {:.0f} % < {:.0f} %", names.empty() ? "" : ", ",
                                                      user->who->GetName(), user->pct, user->need);
                     }
+                }
+                // [lead733] b219 rfc-h 5C 93.5 / 110.0 / 502.9 s: Innervate on trash for "1 / 3 / 4 fight s gained" -
+                // the cast itself takes the caster's global cooldown (a channel: its whole duration) out of the fight,
+                // as FightManaLine's credit weighs it (lead177). A tool gains only the fight seconds beyond its own
+                // cast; one that gains no more than that is no tool now (it stays for a fight it gains in)
+                float const castSec =
+                    info->IsChanneled()
+                        ? std::max(info->GetDuration(), 0) / 1000.0f
+                        : std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(caster)) / 1000.0f;
+                if (sec <= castSec)
+                    return;
                 // [lead440] the most fight seconds among the tools the verdict allows: a held tool no longer keeps
                 // another one out (5H: Innervate / Hymn held for Taragaman kept the mage's Evocation from the test)
                 if (sec <= 0.0f || (sec <= best.sec && sec <= heldTool.sec))

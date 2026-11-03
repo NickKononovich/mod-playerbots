@@ -1158,6 +1158,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     };
     credit(SPELL_EVOCATION, ManaToolPct(bot, bot, SPELL_EVOCATION), "Evocation");
     credit(SPELL_SHADOWFIEND, ManaToolPct(bot, bot, SPELL_SHADOWFIEND), "Shadowfiend");  // [lead423]
+    // [lead733] the druid's own Innervate on itself (wowsims / Rawr's self-Innervate: cast at the bottom of the pool)
+    // counts in its boss line like Evocation: the mana the spell returns to it (ManaToolPct, 225 % of its base mana
+    // over 10 s), ready now or back within the fight (b219 rfc-h 5C: the balance druid's boss lines counted none -
+    // "- 0 cooldowns"). A trash line does not: on trash the leader keeps it for the next boss unless it is back
+    // before his pull (the cooldown verdict), which this line cannot know
+    if (boss)
+        credit(SPELL_INNERVATE, ManaToolPct(bot, bot, SPELL_INNERVATE), "Innervate");
     // [lead224] a measured rate is the net use of fights the paladin keeps Divine Plea up in (rot48, Guarded by the
     // Light): its mana is in that rate already, a credit on top counted it twice
     // [lead367] b198 rfc-h 5A: the tank's rate came from its opening fight alone, no Divine Plea up yet (first cast

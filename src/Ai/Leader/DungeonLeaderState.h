@@ -244,7 +244,16 @@ namespace Leader
             Position meet;      // the leader's meeting point it was computed from
             Position point;     // the member's place at it
         };
-        std::map<ObjectGuid, MeleeMeet> meleeMeet;  // [lead83] the melee meeting place, once per order / fight
+        // [lead730] the melee wait before the pull: the last point of its walk to the pull's stop point outside
+        // every unpulled mob's reach (target: the pull's mob, meet: the stop point it was computed for)
+        std::map<ObjectGuid, MeleeMeet> meleeWait;
+        // [lead730] the melee walk in at the tank's opener: the predicted meeting of the running target and the tank
+        // (target: that mob, meet: the stop point, point: the member's walk's end outside every unpulled reach)
+        std::map<ObjectGuid, MeleeMeet> meleeStop;
+        // [lead731] the arrival a member's Attack target was judged by (lead413 / lead432): target, the mob where it
+        // stood then (meet), the arrival point (point) - kept while the mob stays there, not re-read from the
+        // member's own walk
+        std::map<ObjectGuid, MeleeMeet> attackArrive;
         std::map<std::string, uint32> vetoedEvals;  // "<member>|<what>" -> count (vetoed_eval)
         // [lead18] the issued pull's whole plan for the red view (latched at the issue)
         Position issuedFrom;
