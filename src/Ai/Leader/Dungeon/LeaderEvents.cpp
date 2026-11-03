@@ -5985,6 +5985,37 @@ namespace Leader::Dungeon
                                 mine = nullptr;
                                 break;
                             }
+                    // [lead875] user 2026-11-03: b224 rfc-h had 21 damage dealer losses "no tank threat on it" with no
+                    // hit of theirs on the mob (5A 740.1 s the frost mage at 9.9 threat on a Searing Blade Cultist, a
+                    // Warlock and its Voidwalker the warrior had 0 on; 5B the shadow priest at 0.1-15). The game
+                    // splits the threat of a heal, an energize (Judgement of Wisdom, Replenishment, a mana potion) and
+                    // a buff over every mob that has the member on its threat list (ThreatManager::
+                    // ForwardThreatForAssistingMe), and a mob where the tank has 0 goes to the first member with any.
+                    // A damage dealer does not attack while a fight mob that has it on its threat list has 0 tank
+                    // threat; the Stop lifts as soon as the tank has threat on every such mob. The tank takes each
+                    // one: a mob on a member is the leader's aggro loss (above) and the tank's take-back, a mob out of
+                    // its melee its open-incoming, a mob in its melee its lowest-threat target (TankTargetValue). A
+                    // mob under crowd control takes no split threat (the game skips it); a fleer is the group's kill
+                    // (lead200), not the tank's
+                    if (mine && !PlayerbotAI::IsHeal(bot))
+                        for (auto const& [listingGuid, ref] : bot->GetThreatMgr().GetThreatenedByMeList())
+                            if (Creature* listing = ref ? ref->GetOwner() : nullptr;
+                                listing && listing->IsAlive() && listing->GetMap() == map && listing->IsInCombat() &&
+                                !listing->HasUnitState(UNIT_STATE_CONTROLLED) && !Leader::Fight::IsFleer(listing) &&
+                                LeaderFightMob(tank, listing) && listing->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                            {
+                                unpulledNear = Acore::StringFormat(
+                                    "a fight mob {} has it on its threat list at 0 tank threat", listing->GetName());
+                                thread_local std::set<std::pair<uint64, uint64>> zeroTankLogged;
+                                if (zeroTankLogged.insert({bot->GetGUID().GetRawValue(), listingGuid.GetRawValue()})
+                                        .second)
+                                    LOG_INFO("playerbots", "[lead875] {}: holds its damage, {} has it on its threat "
+                                             "list at {:.1f} with the tank at 0 (attack on {})",
+                                             bot->GetName(), listing->GetName(),
+                                             listing->GetThreatMgr().GetThreat(bot), mine->GetName());
+                                mine = nullptr;
+                                break;
+                            }
                     // [lead570] b215 rfc-h: 18 of the 25 "it attacks a mob it was not told to" losses (5D 557.3 /
                     // 859.0 s the unholy DK, 5B 859.1 / 975.9 s the elemental shaman) came one tick after the member
                     // lost its headroom: the Attack went from the mob it hit to the leader's focus with the Stop
