@@ -5,6 +5,8 @@
  */
 
 #include "PriestTriggers.h"
+
+#include <algorithm>  // [rot230] std::max
 #include "EstimatedLifetimeValue.h"  // [rot210] ExpectedLifetime
 #include "Group.h"
 #include "HealerSupport.h"
@@ -23,14 +25,28 @@
 
 namespace ai::priest
 {
-bool ShadowWeavingReady(Player* bot)
+bool ShadowWeavingReady(PlayerbotAI* botAI, Player* bot, Unit* target)
 {
     if (!bot->HasAura(SPELL_SHADOW_WEAVING_RANK_1) && !bot->HasAura(SPELL_SHADOW_WEAVING_RANK_2) &&
         !bot->HasAura(SPELL_SHADOW_WEAVING_RANK_3))
         return true;
 
     Aura* weaving = bot->GetAura(SPELL_SHADOW_WEAVING_BUFF);
-    return weaving && weaving->GetStackAmount() >= SHADOW_WEAVING_MAX_STACKS;
+    uint8 const stacks = weaving ? weaving->GetStackAmount() : 0;
+    if (stacks >= SHADOW_WEAVING_MAX_STACKS)
+        return true;
+
+    return stacks >= SHADOW_WEAVING_EARLY_STACKS && target &&
+           FightRemainingSec(botAI, target) < SHADOW_WORD_PAIN_EARLY_FIGHT_SEC;
+}
+
+float FightRemainingSec(PlayerbotAI* botAI, Unit* target)
+{
+    float remaining = target && target->IsAlive() ? ExpectedLifetime(botAI, target) : 0.0f;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
+        if (Unit* mob = botAI->GetUnit(guid); mob && mob != target && mob->IsAlive())
+            remaining = std::max(remaining, ExpectedLifetime(botAI, mob));
+    return remaining;
 }
 
 uint32 ShadowWordPainRefreshMs(Player* bot)
@@ -66,7 +82,7 @@ bool DevouringPlagueFinalCast(PlayerbotAI* botAI, Unit* target)
 
 bool ShadowWordPainTrigger::IsActive()
 {
-    if (!ai::priest::ShadowWeavingReady(bot))
+    if (!ai::priest::ShadowWeavingReady(botAI, bot, GetTarget()))
         return false;
 
     beforeDuration = ai::priest::ShadowWordPainRefreshMs(bot);

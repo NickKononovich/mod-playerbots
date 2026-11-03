@@ -36,8 +36,20 @@ static constexpr uint8 SHADOW_WEAVING_MAX_STACKS = 5;
 // Pain and Suffering 3/3: every Mind Flay hit refreshes Shadow Word: Pain (100 % chance).
 static constexpr uint32 SPELL_PAIN_AND_SUFFERING_RANK_3 = 47582;
 
-// True when Shadow Word: Pain should be applied now: the priest has no Shadow Weaving talent, or has 5 stacks.
-bool ShadowWeavingReady(Player* bot);
+// [rot230] wowsims shadow_priest__default: Shadow Word: Pain at 5 Shadow Weaving stacks while the fight has >= 75 s
+// left, at >= 3 stacks once it has less. The core keeps the cast's damage-done multiplier (Shadow Weaving) and crit
+// chance through every Pain and Suffering refresh (spell_pri_pain_and_suffering_proc: RefreshTimersWithMods +
+// CalculateAmount with the stored pct mods, no CalculatePeriodicData) and re-takes only spell power, as wowsims'
+// Dot.Rollover does - in a long fight the 5-stack cast pays back the wait, in a short one it does not
+static constexpr uint8 SHADOW_WEAVING_EARLY_STACKS = 3;
+static constexpr float SHADOW_WORD_PAIN_EARLY_FIGHT_SEC = 75.0f;
+
+// True when Shadow Word: Pain should be applied now on `target`: the priest has no Shadow Weaving talent, has 5
+// stacks, or has >= 3 stacks with the fight's remaining time under SHADOW_WORD_PAIN_EARLY_FIGHT_SEC.
+bool ShadowWeavingReady(PlayerbotAI* botAI, Player* bot, Unit* target);
+// [rot230] The fight's remaining seconds as the APL's remainingTime: the longest ExpectedLifetime of `target` and the
+// group's other attackers (a pack's first kill is no end of the fight).
+float FightRemainingSec(PlayerbotAI* botAI, Unit* target);
 // Refresh window of Shadow Word: Pain: 0 (never re-cast while up) when Mind Flay keeps it rolling.
 uint32 ShadowWordPainRefreshMs(Player* bot);
 // Refresh window of Vampiric Touch: its hasted cast time plus a margin, so the new cast lands before expiry.

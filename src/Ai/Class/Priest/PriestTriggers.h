@@ -34,7 +34,7 @@ public:
     ShadowWordPainTrigger(PlayerbotAI* botAI)
         : PriestDotTrigger(botAI, "shadow word: pain", ai::priest::DOT_REFRESH_MS) {}
 
-    // Waits for 5 Shadow Weaving stacks; never re-cast while Mind Flay keeps it rolling (Pain and Suffering 3/3).
+    // Waits for 5 Shadow Weaving stacks (3 with < 75 s of the fight left, [rot230]); never re-cast while Mind Flay keeps it rolling (Pain and Suffering 3/3).
     bool IsActive() override;
 };
 

@@ -51,7 +51,7 @@ Unit* CastPowerWordShieldOnPartyAction::GetTarget()
 
 bool CastShadowWordPainAction::isUseful()
 {
-    if (!ai::priest::ShadowWeavingReady(bot))
+    if (!ai::priest::ShadowWeavingReady(botAI, bot, GetTarget()))
         return false;
 
     beforeDuration = ai::priest::ShadowWordPainRefreshMs(bot);
