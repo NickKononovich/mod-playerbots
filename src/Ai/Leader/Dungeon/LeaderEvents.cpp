@@ -3920,6 +3920,28 @@ namespace Leader::Dungeon
                     {
                         breaks.clear();
                         moved = true;
+                        // [lead684] b218 rfc-h (8 runs, fight_breakdown): 197 s of first-hit delay and ~50 s of
+                        // ranged / healer walking were "Follow: along with the tank [given before the pull]" - "it
+                        // stays" here issued no command, so the pre-pull Follow stayed live and walked the member on
+                        // behind the tank while the pulled mob ran in. A ranged member that casts on its target from
+                        // where it stands (a healer: heals the tank from there, HealReaches) stays there: its live
+                        // command is the stand, not the walk along
+                        if (!melee)
+                        {
+                            Leader::MemberEvents live;
+                            bool const walksAlong = Leader::Events::Get(guid, live) &&
+                                                    live.move == Leader::MoveEvent::Follow &&
+                                                    live.moveWhy.rfind("along with the tank", 0) == 0;
+                            bool const healing = bot == healer || PlayerbotAI::IsHeal(bot);
+                            bool const actsHere = healing ? HealReaches(tank, bot->GetPosition(), tank->GetPosition())
+                                                          : MemberCastsHere(bot, target);
+                            if (walksAlong && actsHere &&
+                                Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
+                                                        "stays: acts from here while the target runs in"))
+                                logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
+                                         JsonObject().Str("why", "stays: acts from here while the target runs in")
+                                             .Str("target", target->GetName()));
+                        }
                         // [lead137] no "along with the tank" walk in a fight (b162: the shaman 83 s): the member
                         // stays until the mob stands on the tank, then takes its spot
                         // [lead465] user 2026-11-02 (Q15): a melee member goes at once to where the tank will stop -
