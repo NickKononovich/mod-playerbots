@@ -373,6 +373,17 @@ void NoteActingManaRate(ObjectGuid member, float pctPerSec)
 
 namespace
 {
+    std::unordered_map<uint64, float> bossActingManaRate;  // [lead610] under manaRateLock
+}
+
+void NoteBossActingManaRate(ObjectGuid member, float pctPerSec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    bossActingManaRate[member.GetRawValue()] = pctPerSec;
+}
+
+namespace
+{
     std::unordered_map<uint64, float> healerPctPerCost;  // [lead393] under manaRateLock
 }
 
@@ -979,7 +990,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             // no boss short of mana from a full pool and spent it at 514 s (back at 754 s, the fight ended at 753 s),
             // the mage came at 17 % and ran dry again (Taragaman 61 % of wowsims). A boss rate measured while the
             // member could not cast is below what its rotation spends: the acting rate holds when higher
+            // [lead610] b217 rfc-h 5H: Taragaman's line read "0.78 %/s (its acting seconds) x 84 s" - every fight's
+            // acting rate, the trash pulls in it - while the fire mage's boss rotation burnt ~1.3 %/s there (64 -> 1 %
+            // in ~50 s, dry ~15 s before the kill). Once a boss fight is measured, its acting rate on bosses is the
+            // boss rotation's (the more specific fact); before that every fight's acting rate
             if (!PlayerbotAI::IsHeal(bot))
+            {
                 if (auto const acting = actingManaRate.find(key);
                     acting != actingManaRate.end() && acting->second > rate)
                 {
@@ -987,6 +1003,15 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                     measured = true;
                     source = "its acting seconds";
                 }
+                if (auto const bossActing = bossActingManaRate.find(key);
+                    bossActing != bossActingManaRate.end() && bossActing->second > 0.0f)
+                {
+                    auto const bossRate = bossManaRate.find(key);
+                    rate = std::max(bossActing->second, bossRate != bossManaRate.end() ? bossRate->second : 0.0f);
+                    measured = true;
+                    source = "its acting seconds on bosses";
+                }
+            }
         }
     }
     float need = rate * fightSec;

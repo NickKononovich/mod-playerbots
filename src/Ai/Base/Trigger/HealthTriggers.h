@@ -375,6 +375,8 @@ void NotePeakManaRate(ObjectGuid member, float pctPerSec);
 // [lead520] ... per second it acted in its fights (casting, channelling, on its global cooldown): its whole rotation's
 // rate, a boss fight's before one is measured
 void NoteActingManaRate(ObjectGuid member, float pctPerSec);
+// [lead610] ... per second it acted in its boss fights only: its boss rotation's rate (a boss line reads it first)
+void NoteBossActingManaRate(ObjectGuid member, float pctPerSec);
 // [lead393] the leader notes a healer's measured net mana use (% of max) per tank health of the plan's fight cost:
 // FightManaLine's heal term reads it in place of the throughput model (HealerPctPerTankHealth) once measured
 void NoteHealerPctPerCost(ObjectGuid member, float pctPerCost);

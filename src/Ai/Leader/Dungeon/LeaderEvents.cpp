@@ -56,6 +56,7 @@
 #include "LeaderPrepull.h"      // [lead270]
 #include "LeaderTrapWeave.h"    // [lead271]
 #include "LeaderSupport.h"      // [lead400] .. [lead405]
+#include "RaidConsumables.h"    // [lead610] FindManaGem
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
 #include "Player.h"
@@ -3001,6 +3002,14 @@ namespace Leader::Dungeon
                             spend.actSec += spend.actingSec;
                             RestState::NoteActingManaRate(member->GetGUID(),
                                                           std::max(0.0f, spend.actSpent / spend.actSec));
+                            // [lead610] the boss fights' own acting rate (the boss line's rotation rate)
+                            if (spend.boss)
+                            {
+                                spend.bossActSpent += used;
+                                spend.bossActSec += spend.actingSec;
+                                RestState::NoteBossActingManaRate(
+                                    member->GetGUID(), std::max(0.0f, spend.bossActSpent / spend.bossActSec));
+                            }
                         }
                         // [lead393] a healer's net use per tank health the plan costed its fights at
                         if (spend.fightCost > 0.0f)
@@ -3021,6 +3030,7 @@ namespace Leader::Dungeon
                     spend.toolGain = 0.0f;
                     spend.potion = false;
                     spend.actingSec = 0.0f;  // [lead520]
+                    spend.gemReady = false;  // [lead610]
                     continue;
                 }
                 if (spend.prev < 0.0f)
@@ -3030,14 +3040,26 @@ namespace Leader::Dungeon
                 // game marks the combat's potion), counted until it runs dry. Divine Plea stays in the rate (lead224)
                 bool const potionNow = member->GetLastPotionId() && !spend.potion;
                 spend.potion |= member->GetLastPotionId() != 0;
+                // [lead610] b217 rfc-h 5H: the fire mage's Mana Sapphire (24 % at each boss pull: 256.3, 654.7,
+                // 855.5 s) is no potion (no Player::GetLastPotionId) and no tool aura, so its mana was netted into
+                // the measured use - Taragaman's fight read ~45 % used where ~69 % was spent, the boss line 0.78 %/s.
+                // The tick a ready gem goes (its cooldown started, or its last charge used) is the gem's return
+                uint32 gemAmount = 0;
+                bool const gemReady = RaidConsumables::FindManaGem(member, gemAmount) != 0;
+                bool const gemNow = spend.gemReady && !gemReady;
+                spend.gemReady = gemReady;
                 if (spend.lastPct >= 0.0f && pct > spend.lastPct && spend.dryPct < 0.0f &&
-                    (potionNow || member->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER) ||
+                    (potionNow || gemNow || member->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER) ||
                      ManaToolReturning(member, spenders, false)))
                     spend.toolGain += pct - spend.lastPct;
                 spend.lastPct = pct;
                 spend.fightSec += dt;
                 // [lead520] it acted this tick: a cast or channel on, or its global cooldown running (game state)
-                if (spend.dryPct < 0.0f)
+                // [lead610] a channel of its own mana tool (Evocation, Dispersion) is no rotation second: its mana
+                // is the tool's return (toolGain), its seconds spend nothing
+                bool const ownToolChannel = member->HasAura(RestState::SPELL_EVOCATION) ||
+                                            member->HasAura(RestState::SPELL_DISPERSION_MANA);
+                if (spend.dryPct < 0.0f && !ownToolChannel)
                     if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
                         member->IsNonMeleeSpellCast(false) || (memberAI && memberAI->GetGlobalCooldownRemaining()))
                         spend.actingSec += dt;

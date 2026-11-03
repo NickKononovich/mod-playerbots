@@ -349,6 +349,9 @@ namespace Leader
             float actingSec = 0.0f;
             float actSpent = 0.0f;
             float actSec = 0.0f;
+            float bossActSpent = 0.0f;  // [lead610] the same over boss fights only: its boss rotation's rate
+            float bossActSec = 0.0f;
+            bool gemReady = false;  // [lead610] a mana gem ready at the last fight tick (RaidConsumables::FindManaGem)
         };
         std::map<ObjectGuid, ManaSpend> manaSpend;
         std::map<ObjectGuid, float> fightBosses;  // [lead234] the bosses of this fight, their max health
