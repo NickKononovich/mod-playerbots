@@ -598,3 +598,13 @@ bool CastBlanketHotAction::isUseful() { return GetTarget() != nullptr; }
 // ("feral charge - bear ... not enough power (0 of 50)" on Taragaman, Earthborer, Searing Blade Cultist; "mangle (bear)
 // ... not enough power (101 of 150)" after the opener). Only the base buff check stays (not while it is up).
 bool CastEnrageAction::isUseful() { return CastBuffSpellAction::isUseful(); }
+
+bool CastEnrageAction::Execute(Event event)
+{
+    if (!CastBuffSpellAction::Execute(event))
+        return false;
+
+    LOG_DEBUG("playerbots", "[rot331] {} casts Enrage on its cooldown (rage {})", bot->GetName(),
+              bot->GetPower(POWER_RAGE) / 10);
+    return true;
+}

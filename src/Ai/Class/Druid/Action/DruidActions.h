@@ -493,6 +493,7 @@ public:
 
     // [rot331] on its cooldown in combat, as wowsims' major cooldown (DruidActions.cpp)
     bool isUseful() override;
+    bool Execute(Event event) override;  // [rot331] logs the tag
 };
 
 class CastRejuvenationOnNotFullAction : public HealPartyMemberAction

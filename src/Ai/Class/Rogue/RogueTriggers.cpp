@@ -398,7 +398,15 @@ bool SliceAndDiceTrigger::IsActive()
     if (!ai::buff::BuffBelowRefreshTarget(botAI, aura, beforeDuration))
         return false;
 
-    return !aura || comboPoints >= SND_EARLY_REFRESH_MIN_COMBO_POINTS;
+    if (aura && comboPoints < SND_EARLY_REFRESH_MIN_COMBO_POINTS)
+        return false;
+
+    // [rot340] Assassination: Slice and Dice now outranks the Hunger for Blood enabler Rupture and Hunger for Blood
+    if (bot->HasSpell(SPELL_HUNGER_FOR_BLOOD))
+        LOG_DEBUG("playerbots", "[rot340] {} Slice and Dice first ({} points, {} ms left, Hunger for Blood {})",
+                  bot->GetName(), comboPoints, aura ? aura->GetDuration() : 0,
+                  botAI->HasAura("hunger for blood", bot) ? "up" : "down");
+    return true;
 }
 
 bool RuptureTrigger::IsActive()

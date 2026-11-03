@@ -9,6 +9,7 @@
 
 #include "CureTriggers.h"
 #include "GenericTriggers.h"
+#include "Log.h"  // [rot330] [rot332] trigger tags
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -564,7 +565,12 @@ public:
         if (lacerate->GetStackAmount() < LACERATE_MAX_STACKS)
             return true;
 
-        return lacerate->GetDuration() <= LACERATE_REFRESH_MS;
+        if (lacerate->GetDuration() > LACERATE_REFRESH_MS)
+            return false;
+
+        LOG_DEBUG("playerbots", "[rot332] {} refreshes its 5-stack Lacerate on {}: {} ms left (<= {} ms)",
+                  bot->GetName(), target->GetName(), lacerate->GetDuration(), LACERATE_REFRESH_MS);
+        return true;
     }
 };
 
@@ -585,8 +591,13 @@ public:
             return false;
 
         Aura* lacerate = botAI->GetAura("lacerate", target, true, false);  // [rot333] own stacks
-        return lacerate && lacerate->GetStackAmount() >= LACERATE_MAX_STACKS &&
-               lacerate->GetDuration() <= LACERATE_EXPIRING_MS;
+        if (!lacerate || lacerate->GetStackAmount() < LACERATE_MAX_STACKS ||
+            lacerate->GetDuration() > LACERATE_EXPIRING_MS)
+            return false;
+
+        LOG_DEBUG("playerbots", "[rot332] {} saves its expiring 5-stack Lacerate on {}: {} ms left (<= {} ms)",
+                  bot->GetName(), target->GetName(), lacerate->GetDuration(), LACERATE_EXPIRING_MS);
+        return true;
     }
 };
 

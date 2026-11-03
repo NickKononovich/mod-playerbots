@@ -635,7 +635,16 @@ bool FerociousBiteExecuteTrigger::IsActive()
 
 bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target)
 {
-    return target && ExpectedFightLifetime(botAI, target) >= RIP_MIN_TARGET_LIFETIME;  // [rot240] [rot341]
+    if (!target)
+        return false;
+
+    float const fight = ExpectedFightLifetime(botAI, target);  // [rot240] [rot341]
+    bool const ticksOut = fight >= RIP_MIN_TARGET_LIFETIME;
+    if (ticksOut != (ExpectedLifetime(botAI, target) >= RIP_MIN_TARGET_LIFETIME))
+        LOG_DEBUG("playerbots", "[rot341] {} on {}: Rip {} by its fight lifetime {:.1f} s (4 s rate {:.1f} s)",
+                  botAI->GetBot()->GetName(), target->GetName(), ticksOut ? "ticks out" : "would not tick out",
+                  fight, ExpectedLifetime(botAI, target));
+    return ticksOut;
 }
 
 // [rot330] Mangle (Bear) on its cooldown with less than `withinMs` of it left (wowsims spellTimeToReady < x and not
@@ -643,5 +652,10 @@ bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target)
 bool BearMangleDueWithin(PlayerbotAI* botAI, Player* bot, uint32 withinMs)
 {
     uint32 const mangle = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "mangle (bear)")->Get();
-    return mangle && bot->HasSpellCooldown(mangle) && bot->GetSpellCooldownDelay(mangle) < withinMs;
+    if (!mangle || !bot->HasSpellCooldown(mangle) || bot->GetSpellCooldownDelay(mangle) >= withinMs)
+        return false;
+
+    LOG_DEBUG("playerbots", "[rot330] {} holds the GCD for Mangle (Bear): back in {} ms (< {} ms)", bot->GetName(),
+              bot->GetSpellCooldownDelay(mangle), withinMs);
+    return true;
 }
