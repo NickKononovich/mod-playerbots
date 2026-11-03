@@ -291,6 +291,7 @@ namespace Leader
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
         float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
+        float groupDps = 0.0f;  // [lead700] the estimated group dps the fight's seconds were judged by
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
         float bossPullSec = -1.0f;  // [lead178] seconds to the next boss pull: this fight, the on-path fights, the walk
         // [lead274] every living boss judged like any pull once per fight (JudgePack's overload, his length over the

@@ -1159,6 +1159,7 @@ namespace Leader::Dungeon
             float const groupDps =
                 tankAI ? tankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
             lead.fightSecLeft = health / std::max(groupDps, 1.0f);
+            lead.groupDps = groupDps;  // [lead700]
             float bossYd = -1.0f;
             Creature* nextBoss = nullptr;
             for (ObjectGuid const& bossGuid : group.BossCreatures())
@@ -2498,37 +2499,110 @@ namespace Leader::Dungeon
                                           lead.bossPullSec, rechargeSec);
                 return back;
             }
-            // a boss fight: held when a boss that needs it more (overload first, then the longer fight) comes within
-            // its recharge - the time to him at least this fight's rest and the walk to him
-            auto const here = lead.bossNeeds.find(fightBoss->GetGUID());
-            DungeonLeaderState::BossNeed const mine =
-                here != lead.bossNeeds.end() ? here->second : DungeonLeaderState::BossNeed();
-            for (auto const& [bossGuid, need] : lead.bossNeeds)
+            // [lead700] b218 rfc-h: Heroism (Sated 600 s) went to one boss a run in every shaman comp - 5B held it on
+            // Oggleflint (408 s) "for Bazzalan (needs it more ...; his pull in >= 236 s, recharge 600 s)", Bazzalan
+            // was pulled 794 s later and both would have had it; 5A held it on Oggleflint for Bazzalan (pulled 691 s
+            // later). The pairwise rule held it for any boss "that needs it more" judged within its recharge, and a
+            // boss beyond the next one was timed as the next one's pull, his fight and one stretch (the straight walk
+            // before any was measured). Now the bosses left are put in their order (the next one, then each nearest
+            // to the one before) and timed along it - the next one's pull estimate, then each one's fight and a
+            // stretch (the run's measured mean, else the straight walk between them); every set of uses that fits
+            // the recharge in that order (each use at his pull or when it is back, in his fight) is weighed by its
+            // gain - the group's dps over the fight seconds the effect covers, the fights' lengths x the group's dps
+            // between equal gains - and it is cast here when the best set has this fight in it
+            float const dps = std::max(lead.groupDps, 1.0f);
+            float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+            struct Use
             {
-                Creature* later = bossGuid == fightBoss->GetGUID() ? nullptr : map->GetCreature(bossGuid);
-                if (!later || !later->IsAlive() || later->IsInCombat())
-                    continue;
-                bool const harder = need.overload > mine.overload ||
-                                    (need.overload == mine.overload && need.fightSec > mine.fightSec);
-                float const toHim = secToBoss(later);
-                // [lead581] b215 rfc-h 5H 1016-1032 s: the cat's Berserk (180 s, 15 s) was held on Jergosh "for
-                // Bazzalan (his pull in >= 180 s, recharge 180 s)" - cast then it is back 17 s into his 52 s fight
-                // (pulled 1179 s), its whole 15 s still on him: holding it gave him the same one Berserk and Jergosh
-                // none. Held only when it would not be back in his fight in time for its whole effect there (his
-                // pull plus his fight's estimate less its effect)
-                float const backBy = toHim + std::max(0.0f, need.fightSec - effectSec);
-                if (harder && backBy < rechargeSec)
+                std::string name;
+                float pullSec;  // seconds from now to his pull (0: this fight)
+                float fightSec;
+            };
+            std::vector<Use> uses{{fightBoss->GetName(), 0.0f, std::max(lead.fightSecLeft, 0.0f)}};
+            std::vector<Creature*> left;
+            for (auto const& [bossGuid, need] : lead.bossNeeds)
+                if (Creature* later = bossGuid == fightBoss->GetGUID() ? nullptr : map->GetCreature(bossGuid);
+                    later && later->IsAlive() && !later->IsInCombat())
+                    left.push_back(later);
+            Creature* prev = nullptr;
+            float at = 0.0f;
+            while (!left.empty())
+            {
+                auto pick = left.begin();
+                if (!prev)
                 {
-                    why = Acore::StringFormat(
-                        "held for {} (needs it more: overload {:.2f} / {:.0f} s vs {:.2f} / {:.0f} s; his pull in >= "
-                        "{:.0f} s, recharge {:.0f} s, effect {:.0f} s)",
-                        need.name, need.overload, need.fightSec, mine.overload, mine.fightSec, toHim, rechargeSec,
-                        effectSec);
-                    return false;
+                    auto const next = std::find_if(left.begin(), left.end(), [&](Creature* boss)
+                                                   { return boss->GetGUID() == lead.nextBossGuid; });
+                    if (next != left.end())
+                        pick = next;
+                    else
+                        pick = std::min_element(left.begin(), left.end(), [&](Creature* a, Creature* b)
+                                                { return tank->GetExactDist(a) < tank->GetExactDist(b); });
+                }
+                else
+                    pick = std::min_element(left.begin(), left.end(), [&](Creature* a, Creature* b)
+                                            { return prev->GetExactDist(a) < prev->GetExactDist(b); });
+                Creature* boss = *pick;
+                left.erase(pick);
+                if (!prev)
+                    at = boss->GetGUID() == lead.nextBossGuid && lead.bossPullSec >= 0.0f ? lead.bossPullSec
+                                                                                          : secToBoss(boss);
+                else
+                    at += uses.back().fightSec + (lead.stretches ? lead.stretchSecSum / float(lead.stretches)
+                                                                 : prev->GetExactDist(boss) / speed);
+                auto const need = lead.bossNeeds.find(boss->GetGUID());
+                uses.push_back({boss->GetName(), at, need != lead.bossNeeds.end() ? need->second.fightSec : 0.0f});
+                prev = boss;
+            }
+            // every subset in the bosses' order (this fight and at most the next 9 bosses)
+            size_t const n = std::min<size_t>(uses.size(), 10);
+            uint32 best = 0;
+            float bestGain = -1.0f;
+            float bestLength = -1.0f;
+            for (uint32 set = 1; set < (1u << n); ++set)
+            {
+                float ready = 0.0f;
+                float gain = 0.0f;
+                float length = 0.0f;
+                bool fits = true;
+                for (size_t i = 0; i < n && fits; ++i)
+                    if (set & (1u << i))
+                    {
+                        float const cast = std::max(uses[i].pullSec, ready);
+                        float const fightLeft = uses[i].pullSec + uses[i].fightSec - cast;
+                        // an effect with no duration (an instant) gains the same anywhere in a fight
+                        float const covered = effectSec > 0.0f ? std::min(effectSec, fightLeft) : 1.0f;
+                        fits = fightLeft > 0.0f && covered > 0.0f;
+                        gain += dps * covered;
+                        length += dps * uses[i].fightSec;
+                        ready = cast + rechargeSec;
+                    }
+                // equal gains: the longer fights, then the set that casts here (lower bit set first)
+                if (fits && (gain > bestGain || (gain == bestGain && length > bestLength) ||
+                             (gain == bestGain && length == bestLength && (set & 1u) && !(best & 1u))))
+                {
+                    best = set;
+                    bestGain = gain;
+                    bestLength = length;
                 }
             }
-            why = Acore::StringFormat("the boss that needs it most within its recharge (overload {:.2f}, {:.0f} s)",
-                                      mine.overload, mine.fightSec);
+            std::string plan;
+            for (size_t i = 1; i < n; ++i)
+                if (best & (1u << i))
+                    plan += Acore::StringFormat("{}{} (pull in ~{:.0f} s, {:.0f} s fight)", plan.empty() ? "" : ", ",
+                                                uses[i].name, uses[i].pullSec, uses[i].fightSec);
+            if (!(best & 1u))
+            {
+                why = Acore::StringFormat("held for {} (the most gain over the bosses left without it here: {:.0f} "
+                                          "damage; this fight {:.0f} s left, recharge {:.0f} s, effect {:.0f} s)",
+                                          plan.empty() ? std::string("a later boss") : plan, bestGain,
+                                          uses[0].fightSec, rechargeSec, effectSec);
+                return false;
+            }
+            why = Acore::StringFormat("the most gain over the bosses left: here ({:.0f} s left){}{} - {:.0f} damage "
+                                      "(recharge {:.0f} s, effect {:.0f} s)",
+                                      uses[0].fightSec, plan.empty() ? "" : ", then ", plan, bestGain, rechargeSec,
+                                      effectSec);
             return true;
         };
         // [lead178] [lead274] one member's burn cooldowns, each one ready, by its verdict
