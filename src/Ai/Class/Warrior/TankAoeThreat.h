@@ -123,7 +123,8 @@ inline bool CrowdFirst(PlayerbotAI* botAI)
     static char const* const WARRIOR[] = {"thunder clap"};
     static char const* const DRUID[] = {"swipe (bear)"};
     static char const* const PALADIN[] = {"consecration", "avenger's shield"};
-    static char const* const DEATH_KNIGHT[] = {"pestilence", "death and decay", "blood boil"};
+    // [rot370] the Blood tank casts no Blood Boil (wowsims blood_aggro): a ready one must not hold the taunt back
+    static char const* const DEATH_KNIGHT[] = {"pestilence", "death and decay"};
     char const* const* begin = nullptr;
     char const* const* end = nullptr;
     switch (bot->getClass())

@@ -66,10 +66,13 @@ void GenericDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode("combat party member dead", { NextAction("raise ally", ACTION_HIGH + 5) }));
 
-    triggers.push_back(
-        new TriggerNode("medium aoe", { NextAction("death and decay", ACTION_HIGH + 9),
-                                                        NextAction("pestilence", ACTION_NORMAL + 4),
-                                                        NextAction("blood boil", ACTION_NORMAL + 3) }));
+    // [rot370] no Blood Boil for the Blood tank (CastsBloodBoil): the wowsims blood_aggro APL never casts it
+    std::vector<NextAction> mediumAoe = { NextAction("death and decay", ACTION_HIGH + 9),
+                                          NextAction("pestilence", ACTION_NORMAL + 4) };
+    if (CastsBloodBoil())
+        mediumAoe.push_back(NextAction("blood boil", ACTION_NORMAL + 3));
+
+    triggers.push_back(new TriggerNode("medium aoe", mediumAoe));
     triggers.push_back(
         new TriggerNode("pestilence glyph", { NextAction("pestilence", ACTION_HIGH + 9) }));
     // [b35_uh] Empower Rune Weapon per spec: "no rune" (any fight) for Blood (BloodDKStrategy), "no rune boss" for

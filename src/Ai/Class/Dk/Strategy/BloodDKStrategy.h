@@ -55,6 +55,10 @@ public:
     std::string const getName() override { return "blood"; }
     std::vector<NextAction> getDefaultActions() override;
     uint32 GetType() const override { return STRATEGY_TYPE_TANK | STRATEGY_TYPE_MELEE; }
+
+protected:
+    // [rot370] the wowsims blood_aggro APL never casts Blood Boil; Heart Strike already hits a second target
+    bool CastsBloodBoil() const override { return false; }
 };
 
 #endif

@@ -44,6 +44,10 @@ public:
 
     std::string const getName() override { return "DK"; }
     void InitTriggers(std::vector<TriggerNode*>& triggers) override;
+
+protected:
+    // [rot370] false for the Blood tank: wowsims tank_deathknight__blood_aggro never casts Blood Boil
+    virtual bool CastsBloodBoil() const { return true; }
 };
 
 #endif

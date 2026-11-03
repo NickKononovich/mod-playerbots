@@ -305,12 +305,11 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             "tank aoe threat",
             {
                 NextAction("death and decay", ACTION_INTERRUPT + 0.2f),
-                // [b32_tank_aoe] Pestilence before Blood Boil (both a Blood rune): at +0.15 under Blood Boil it never
-                // ran on the scholo-n 13-mob pull (Blood Boil 8, Pestilence 0, Icy Touch 11). It spreads the diseases
-                // (and their threat) from the target, and Blood Boil hits harder on diseased mobs; useless without
-                // both diseases on the target (CastPestilenceAction::isUseful), then Blood Boil takes the rune.
-                NextAction("pestilence", ACTION_INTERRUPT + 0.19f),
-                NextAction("blood boil tank aoe", ACTION_INTERRUPT + 0.18f)
+                // [b32_tank_aoe] Pestilence spreads the diseases (and their threat) from the target; useless without
+                // both diseases on the target (CastPestilenceAction::isUseful).
+                // [rot370] no Blood Boil anywhere in the Blood tank's list: the wowsims blood_aggro APL never casts it
+                // (Heart Strike already hits a second target); Pestilence and Death and Decay carry the area threat.
+                NextAction("pestilence", ACTION_INTERRUPT + 0.19f)
             }
         )
     );
@@ -326,36 +325,25 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("tank aoe pack",
         {
             NextAction("pestilence", ACTION_HIGH + 3.6f),
-            NextAction("death and decay", ACTION_HIGH + 3.5f),
-            NextAction("blood boil tank aoe", ACTION_HIGH + 3.4f)
+            NextAction("death and decay", ACTION_HIGH + 3.5f)
         }));
     // [b32_peel] "tank aoe crowd" (TankAoeThreat.h): more than 3 mobs in reach, one not held -> the area threat above
     // every peel step (+0.25..+0.5) and "taunt reaction" (TankPeel::CrowdFirst); off while a mob is on the healer.
     triggers.push_back(new TriggerNode("tank aoe crowd",
         {
             NextAction("pestilence", ACTION_INTERRUPT + 0.63f),
-            NextAction("death and decay", ACTION_INTERRUPT + 0.62f),
-            NextAction("blood boil tank aoe", ACTION_INTERRUPT + 0.6f)
+            NextAction("death and decay", ACTION_INTERRUPT + 0.62f)
         }));
     // [b33_aoe_class] 3+ mobs on the tank's target pile ("medium aoe", 8 yd), threat lead safe or not: Death and Decay
     // above the Icy Touch peel (+0.3), which spent the frost rune it needs (hor-n-5G-27 escape, 299 s with 5-15 adds:
-    // Death and Decay 4, Icy Touch 29; GenericDKStrategy's 29.0 lost every rune race). Pestilence and Blood Boil
-    // above Death Strike (+3), Icy Touch / Plague Strike (+2) and Heart Strike, as "tank aoe pack".
+    // Death and Decay 4, Icy Touch 29; GenericDKStrategy's 29.0 lost every rune race). Pestilence above Death Strike
+    // (+3), Icy Touch / Plague Strike (+2) and Heart Strike, as "tank aoe pack".
     triggers.push_back(new TriggerNode("medium aoe",
         {
             NextAction("death and decay", ACTION_INTERRUPT + 0.35f),
-            NextAction("pestilence", ACTION_HIGH + 3.6f),
-            NextAction("blood boil tank aoe", ACTION_HIGH + 3.4f)
+            NextAction("pestilence", ACTION_HIGH + 3.6f)
         }));
-    // One mob within Blood Boil's reach is held by it while the taunts cool down (two or more: below).
-    triggers.push_back(
-        new TriggerNode(
-            "mob attacking group member nearby",
-            {
-                NextAction("blood boil on group member attackers", ACTION_MOVE + 2.4f)
-            }
-        )
-    );
+    // [rot370] the lone mob on a member is the peel's ("mob in reach attacking group member"): no Blood Boil
     triggers.push_back(
         new TriggerNode(
             "group member attacker near",
@@ -368,8 +356,7 @@ void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode(
             "mobs attacking group members nearby",
             {
-                NextAction("death and decay", ACTION_MOVE + 2.5f),
-                NextAction("blood boil on group member attackers", ACTION_MOVE + 2.4f)
+                NextAction("death and decay", ACTION_MOVE + 2.5f)
             }
         )
     );
