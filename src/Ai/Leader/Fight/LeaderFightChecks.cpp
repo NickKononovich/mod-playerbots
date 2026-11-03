@@ -1402,6 +1402,97 @@ namespace Leader::Fight
         return true;
     }
 
+    uint32 LeaderLeapSpell(Player* bot, float* leap)
+    {
+        // the mage's Blink (1953, one rank): its forward leap (SPELL_EFFECT_LEAP, the effect's radius: 20 yd)
+        static constexpr uint32 BLINK = 1953;
+        if (!bot || bot->getClass() != CLASS_MAGE || !bot->HasSpell(BLINK))
+            return 0;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(BLINK);
+        if (!info)
+            return 0;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.Effect == SPELL_EFFECT_LEAP)
+            {
+                if (leap)
+                    *leap = effect.CalcRadius(bot);
+                return BLINK;
+            }
+        return 0;
+    }
+
+    bool LeaderLeapSaves(Player* bot, Position const& to, std::vector<HazardZone> const& zones, std::string* why)
+    {
+        float leap = 0.0f;
+        uint32 const spell = LeaderLeapSpell(bot, &leap);
+        SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (!info || leap <= 0.0f || bot->HasSpellCooldown(spell) || bot->IsRooted() || !bot->isMoving() ||
+            bot->IsNonMeleeSpellCast(false) || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || bot->IsInFlight() ||
+            bot->GetTransport() || bot->isSwimming() ||
+            bot->GetPower(POWER_MANA) < info->CalcPowerCost(bot, info->GetSchoolMask()))
+            return false;
+        // a leap past the place is no saving: the walk left is at least the leap
+        if (bot->GetExactDist2d(to.GetPositionX(), to.GetPositionY()) < leap)
+            return false;
+        Leader::RouteResult const route = Leader::Route(bot, to);  // [lead99] the leader's walk
+        if (!route.found || !route.complete || route.points.size() < 2 || route.length < leap)
+            return false;
+        // The point `leap` yd along the walk; the leap goes straight ahead, so it saves that much walk only when
+        // the walk runs straight there: its point that far along lies the leap's length off (within the member's
+        // own combat reach, the size the game gives it), on the same ground
+        G3D::Vector3 const start(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        G3D::Vector3 land = route.points.back();
+        float along = 0.0f;
+        for (size_t i = 1; i < route.points.size(); ++i)
+        {
+            float const step = (route.points[i] - route.points[i - 1]).length();
+            if (along + step >= leap)
+            {
+                float const share = step > 0.0f ? (leap - along) / step : 0.0f;
+                land = route.points[i - 1] + (route.points[i] - route.points[i - 1]) * share;
+                break;
+            }
+            along += step;
+        }
+        float const off = (land - start).length();
+        if (off < leap - bot->GetCombatReach())
+            return false;
+        Map* map = bot->GetMap();
+        if (!map->isInLineOfSight(start.x, start.y, start.z + 2.0f, land.x, land.y, land.z + 2.0f,
+                                  bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+            return false;
+        // safe along the leap and where it lands: no hazard zone, no lava / drop-off, no idle mob's aggro reach
+        constexpr uint32 SAMPLES = 4;
+        for (uint32 i = 1; i <= SAMPLES; ++i)
+        {
+            G3D::Vector3 const at = start + (land - start) * (float(i) / float(SAMPLES));
+            if (LeaderZoneAt(zones, at.x, at.y, at.z, LEADER_HAZARD_EDGE) ||
+                NearHazard(map, bot->GetPhaseMask(), at.x, at.y, at.z, LEADER_TERRAIN_EDGE))
+                return false;
+        }
+        if (LeaderAggroAt(bot, Position(land.x, land.y, land.z)))
+            return false;
+        // Seconds: the leap saves its length at the member's run speed; it costs the global cooldown it starts
+        // (Spell::TriggerGlobalCooldown: StartRecoveryTime times the caster's cast speed, 1-1.5 s) where the walk
+        // left after it ends sooner than that cooldown (no cast while walking anyway)
+        float const speed = bot->GetSpeed(MOVE_RUN);
+        if (speed <= 0.0f)
+            return false;
+        float gcd = float(info->StartRecoveryTime) / 1000.0f;
+        if (gcd > 0.0f)
+            gcd = std::clamp(gcd * bot->GetFloatValue(UNIT_MOD_CAST_SPEED), 1.0f, 1.5f);
+        float const castSec = info->CalcCastTime(bot) / 1000.0f;
+        float const saved = leap / speed;
+        float const left = (route.length - leap) / speed;
+        float const cost = castSec + std::max(0.0f, gcd - left);
+        if (why)
+            *why = Acore::StringFormat("{}: {:.1f} s of a {:.0f} yd walk saved vs {:.1f} s cast / GCD after it, "
+                                       "{} mana",
+                                       info->SpellName[0], saved, route.length, cost,
+                                       info->CalcPowerCost(bot, info->GetSchoolMask()));
+        return saved > cost;
+    }
+
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
                                  std::vector<HazardZone> const& zones,

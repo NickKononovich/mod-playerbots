@@ -12,6 +12,7 @@
 #include "InterruptValues.h"
 #include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "LeaderConsumables.h"   // [lead407] Leader::Dungeon::UseItem
+#include "LastMovementValue.h"   // [lead690]
 #include "Log.h"
 #include "ObjectAccessor.h"  // [lead401]
 #include "RtiValue.h"        // [rot2] FindCrowdControl
@@ -209,12 +210,25 @@ bool LeaderExternalAction::Execute(Event /*event*/)
                                                                           unit->GetName());
         return false;
     }
+    // [lead690] a leap (the mage's Blink, SPELL_EFFECT_LEAP) goes where the member faces: it faces the spot of the
+    // walk the leader ordered first, and the walk goes on from where it lands (its last move is no move any more)
+    bool const leaps = info->HasEffect(SPELL_EFFECT_LEAP);
+    if (leaps)
+    {
+        Leader::MemberEvents live;
+        if (!Leader::Events::Get(bot->GetGUID(), live) ||
+            (live.move != Leader::MoveEvent::MoveTo && live.move != Leader::MoveEvent::StandAt))
+            return false;
+        bot->SetFacingTo(bot->GetAbsoluteAngle(&live.spot));
+    }
     if (!botAI->CastSpell(spell, unit))
     {
         // [lead272] reported: the leader drops the order instead of waiting on it
         Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "the cast failed on " + unit->GetName());
         return false;
     }
+    if (leaps)
+        AI_VALUE(LastMovement&, "last movement").clear();
 
     LOG_INFO("playerbots", "[rot2] [leader external] {} casts {} ({}) on {}", bot->GetName(), info->SpellName[0], spell,
              unit->GetName());

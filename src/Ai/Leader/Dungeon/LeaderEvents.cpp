@@ -5353,6 +5353,33 @@ namespace Leader::Dungeon
                                                          .Str("why", why));
             }
 
+        // [lead690] user 2026-11-03: "the mage also has Blink to move faster" - on a walk the leader ordered (a MoveTo /
+        // StandAt spot it walks to, in a fight or out of it) the member's forward leap goes when it saves walk seconds
+        // (LeaderLeapSaves: straight, safe, its seconds against its cast and global cooldown). The leader decides,
+        // the member casts it facing its walk (LeaderExternalAction). A leap told and no longer saving is withdrawn;
+        // any other External the member holds goes first
+        {
+            std::vector<Player*> walkers = seats;
+            walkers.push_back(tank);
+            for (Player* bot : walkers)
+            {
+                uint32 const leap = LeaderLeapSpell(bot);
+                if (!leap)
+                    continue;
+                Leader::MemberEvents live;
+                if (!Leader::Events::Get(bot->GetGUID(), live) || (live.externalSpell && live.externalSpell != leap))
+                    continue;
+                std::string why;
+                bool const walks = live.move == Leader::MoveEvent::MoveTo || live.move == Leader::MoveEvent::StandAt;
+                bool const saves = walks && LeaderLeapSaves(bot, live.spot, lead.hazardZones[bot->GetGUID()], &why);
+                if (saves && Leader::Events::SetExternal(bot->GetGUID(), leap, bot->GetGUID()))
+                    logEvent(bot, "External", JsonObject().Num("spell", leap).Str("on", bot->GetName())
+                                                  .Str("why", "the walk (" + live.moveWhy + "): " + why));
+                else if (!saves && live.externalSpell == leap)
+                    Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+            }
+        }
+
         // 3c. external saves and buffs on a target: the leader picks who and when, the member casts when told
         if (fighting && Leader::LEADER_ATTACK_EVENTS)
         {

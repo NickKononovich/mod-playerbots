@@ -346,6 +346,17 @@ namespace Leader::Fight
     // stands); `standAt`: that place when the front costs less
     bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why = nullptr, Position* standAt = nullptr);
 
+    // [lead690] user 2026-11-03 ("the mage also has Blink to move faster"): the member's forward leap (the mage's
+    // Blink: SPELL_EFFECT_LEAP, its radius from spell data) and its length (0: none)
+    uint32 LeaderLeapSpell(Player* bot, float* leap = nullptr);
+    // [lead690] the leap saves time on the member's walk to `to`: ready, the mana there, the walk (the leader's route)
+    // at least the leap long and straight for the leap (its point the leap's length along lies the leap off, within
+    // the member's combat reach), in sight, the leap's line and landing clear of hazard zones, lava / drop-offs and
+    // idle mobs' aggro reach; the walk seconds it saves at the run speed beat its cast time plus the global cooldown
+    // it starts where the walk left after it is shorter. `why`: the terms
+    bool LeaderLeapSaves(Player* bot, Position const& to, std::vector<HazardZone> const& zones,
+                         std::string* why = nullptr);
+
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,
                                  std::vector<HazardZone> const& zones,
