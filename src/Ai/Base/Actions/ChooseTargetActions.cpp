@@ -9,7 +9,6 @@
 #include "TankAoeThreat.h"  // [lead760] TankPeel::IsGapCloser
 
 #include <mutex>
-#include <set>  // [lead906]
 #include <unordered_map>
 #include "AggressiveTargetValue.h"
 #include "Battleground.h"
@@ -500,23 +499,14 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
             {
                 if ((comes || fromHere) && !reachesFromHere(name, mob))
                     continue;
-                // [lead906] user 2026-11-03 (35): b224 rfc-h 5F t=18 Earthborer 30 yd, 5B t=546 Molten Elemental 30
-                // yd - the warrior charged a mob already running at it. A mob coming at the warrior tank is hit from
-                // where it stands (Heroic Throw / Shoot / Taunt, else it waits in its melee): no Charge / Intercept
-                if (comes && bot->getClass() == CLASS_WARRIOR)
-                    if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
-                        TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr))
-                    {
-                        thread_local std::set<std::pair<uint64, uint64>> comesLogged;
-                        if (comesLogged.insert({bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue()}).second)
-                            LOG_INFO("playerbots", "[lead906] {}: no {} on {} ({:.1f} yd), it comes at the tank",
-                                     bot->GetName(), name, mob->GetName(), bot->GetExactDist(mob));
-                        continue;
-                    }
                 // [lead760] a gap closer only where the leader's fight is planned to stand (TankWalkMovesFight)
+                // [lead926] user 2026-11-03 (item 5): lead906's "no Charge / Intercept on a mob coming at the warrior"
+                // is undone - a mob coming at the tank is charged (it lands earlier, its threat starts earlier) when
+                // the leader's landing check passes (TankGapCloserAllowed, lead925), one check for every tank
                 if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
                     TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr) &&
-                    !Leader::Fight::TankWalkMovesFight(bot, mob).empty())
+                    (!Leader::Fight::TankWalkMovesFight(bot, mob, true).empty() ||
+                     !Leader::Fight::TankGapCloserAllowed(bot, mob, name)))
                     continue;
                 if (opener)
                     *opener = name;
@@ -547,7 +537,9 @@ bool TankOpenIncomingAction::Execute(Event /*event*/)
 // does not land the tank in an idle pack's aggro reach (TankWalkIntoIdlePack)
 std::vector<char const*> AggressiveTargetAction::EngageOpeners(Unit* target)
 {
-    return TankEngageOpeners(bot, target && !TankWalkIntoIdlePack(botAI, bot, target));
+    // [lead925] ... and where its landing passes the leader's check (TankGapCloserAllowed)
+    return TankEngageOpeners(bot, target && !TankWalkIntoIdlePack(botAI, bot, target) &&
+                                      Leader::Fight::TankGapCloserAllowed(bot, target, "the engage's gap closer"));
 }
 
 // [lead85] the range of the tank's first ready opener (TankEngageOpeners)
