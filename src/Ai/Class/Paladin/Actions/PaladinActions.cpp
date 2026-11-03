@@ -6,6 +6,7 @@
 
 #include "PaladinActions.h"
 #include "AiFactory.h"
+#include "EstimatedLifetimeValue.h"  // [rot281] ExpectedLifetime
 #include "Event.h"
 #include "GenericBuffUtils.h"
 #include "ObjectAccessor.h"
@@ -215,8 +216,14 @@ bool CastRetConsecrationAction::isUseful()
     if (!target || !target->IsAlive())
         return false;
 
-    float const groupDps = AI_VALUE(float, "estimated group dps");
-    return groupDps <= 0.0f || target->GetHealth() / groupDps >= MIN_TARGET_LIFE_SECS;
+    // [rot281] the APL's remainingTime is the fight's, not the current target's: the longest ExpectedLifetime of the
+    // target and the group's other attackers - a dying add is no end of the fight, its pack fights on (b218 rfc-h 5G
+    // Rtpalae: Consecration 2 / 3 / 2 / 2 vs wowsims 3 / 4 / 3 / 3 in the boss fights)
+    float remaining = ExpectedLifetime(botAI, target);
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "attackers"))
+        if (Unit* mob = botAI->GetUnit(guid); mob && mob != target && mob->IsAlive())
+            remaining = std::max(remaining, ExpectedLifetime(botAI, mob));
+    return remaining > MIN_TARGET_LIFE_SECS;
 }
 
 // [b31_pal]
