@@ -1193,7 +1193,23 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                     damageCut = std::max(damageCut, -float(effect.CalcValue(bot)) / 100.0f);
             }
             float const viperCostPerPct = damageCut / float(DamageDealers(bot)) / viperPerSec;
-            float const viperPct = std::min(viperPerSec * fightSec, std::max(need + reserve - returned, 0.0f));
+            // [lead726] b219 rfc-h: no hunter drank a mana potion in any of the 13 boss fights (itemUses {}), the
+            // in-fight potion verdicts came at "the fight's 0-7 s left" (5H Rthunad "mana potion: 6 % < the 6 %
+            // ... Aspect of the Viper in the fight: 0.9 s"), and the hunters fought their bosses in Viper at 6-15 %.
+            // The verdict's line (the line without the potion) credited Viper with the whole shortfall, so the
+            // potion was never needed while Viper could pay. A potion is off the global cooldown and costs no damage,
+            // Viper cuts it: in a fight Viper covers only what the mana it has and a mana potion it can drink now
+            // leave uncovered
+            float coveredFirst = 0.0f;
+            if (bot->IsInCombat() && bot->GetMaxPower(POWER_MANA))
+            {
+                uint32 potionAmount = 0;
+                coveredFirst = bot->GetPowerPct(POWER_MANA);
+                if (RaidConsumables::FindRestorePotion(bot, true, potionAmount))
+                    coveredFirst += 100.0f * float(potionAmount) / float(bot->GetMaxPower(POWER_MANA));
+            }
+            float const viperPct =
+                std::min(viperPerSec * fightSec, std::max(need + reserve - returned - coveredFirst, 0.0f));
             // [lead525] the whole shortfall Viper would cover: its damage lost vs the wait its drink adds
             float const viperCost = viperCostPerPct * viperPct;
             float const drinkSec = drinkCost(viperPct);
