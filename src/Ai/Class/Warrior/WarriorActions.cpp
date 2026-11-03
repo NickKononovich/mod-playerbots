@@ -213,7 +213,8 @@ bool CastBerserkerRageAction::Execute(Event event)
 // [b31_deep]
 bool CastSlamFillerAction::isUseful()
 {
-    return CastSlamAction::isUseful() && LeavesRageForStrike(botAI, bot, "slam");
+    // [rot290] no Mortal Strike reserve (wowsims warrior__arms): the priority order keeps Mortal Strike first
+    return CastSlamAction::isUseful();
 }
 
 // [b31_deep] Enraged Regeneration known, off cooldown, and no enrage effect on the warrior yet.

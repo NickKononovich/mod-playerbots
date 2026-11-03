@@ -145,9 +145,10 @@ ENEMY_HEALER_ACTION(CastInterceptOnEnemyHealerAction, "intercept");
 SNARE_ACTION(CastInterceptOnSnareTargetAction, "intercept");
 MELEE_ACTION(CastSlamAction, "slam");
 
-// [b31_deep] Arms filler Slam: not with the rage Mortal Strike needs. Only with 45 rage (Mortal Strike 30 plus this
-// one 15) or while Mortal Strike is more than 1.5 s from ready. It used to share a node with Mortal Strike on 20
-// rage: Mortal Strike short of rage failed and Slam spent the rest (build 30: Mortal Strike 5.1 a minute of ~10).
+// [rot290] Arms filler Slam per wowsims warrior__arms: the last entry, at >= 15 rage ("arms slam rage"), under
+// Mortal Strike at >= 30 - no rage held back for a Mortal Strike coming off cooldown (the APL has no such reserve;
+// Mortal Strike's own node is above it with its 30 rage gate). b218 rfc-h 5G Rtwarad: Slam 0 / 1 / 3 / 2 a boss
+// fight vs the sim's 3.7 / 6.1 / 6.6 / 3.7 - gated on 20 rage plus Mortal Strike's 30 within a GCD of its ready.
 class CastSlamFillerAction : public CastSlamAction
 {
 public:

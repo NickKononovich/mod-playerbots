@@ -186,6 +186,15 @@ public:
 // it could press a GCD strike: the swing timer (getAttackTimer) within the global cooldown left, or within the bot's
 // next look (its react delay). b201 rfc-h 5G Rtwarad on Oggleflint: Heroic Strike 5.4 a minute vs the sim's 1.6, Slam
 // 0 vs 7.6 - queued any time at 40 rage, it took the rage during each global cooldown.
+// [rot290] wowsims warrior__arms: Slam at >= 15 rage (its cost), not the generic 20 of "light rage available"
+class ArmsSlamRageTrigger : public RageAvailable
+{
+public:
+    static constexpr int32 ARMS_SLAM_RAGE = 15;  // wowsims warrior__arms
+
+    ArmsSlamRageTrigger(PlayerbotAI* botAI) : RageAvailable(botAI, ARMS_SLAM_RAGE) {}
+};
+
 class ArmsHeroicStrikeTrigger : public FuryHeroicStrikeRageTrigger
 {
 public:

@@ -86,6 +86,7 @@ public:
         creators["mortal strike ready"] = &WarriorTriggerFactoryInternal::mortal_strike_ready;
         creators["heroic throw ready"] = &WarriorTriggerFactoryInternal::heroic_throw_ready;
         creators["arms heroic strike rage"] = &WarriorTriggerFactoryInternal::arms_heroic_strike_rage;
+        creators["arms slam rage"] = &WarriorTriggerFactoryInternal::arms_slam_rage;  // [rot290]
         creators["fury heroic strike rage"] = &WarriorTriggerFactoryInternal::fury_heroic_strike_rage;  // [rot19]
         creators["shattering throw boss"] = &WarriorTriggerFactoryInternal::shattering_throw_boss;
         creators["victory rush and medium health"] = &WarriorTriggerFactoryInternal::victory_rush_and_medium_health;
@@ -240,6 +241,7 @@ private:
     // [rot29] wowsims arms: Heroic Strike at 40 rage, keeping the rage of a Mortal Strike due within a GCD (was a flat
     // 45). [rot63] and only at the swing (ArmsHeroicStrikeTrigger)
     static Trigger* arms_heroic_strike_rage(PlayerbotAI* botAI) { return new ArmsHeroicStrikeTrigger(botAI); }
+    static Trigger* arms_slam_rage(PlayerbotAI* botAI) { return new ArmsSlamRageTrigger(botAI); }  // [rot290]
     static Trigger* fury_heroic_strike_rage(PlayerbotAI* botAI) { return new FuryHeroicStrikeRageTrigger(botAI); }
     static Trigger* shattering_throw_boss(PlayerbotAI* botAI) { return new ShatteringThrowBossTrigger(botAI); }
     static Trigger* victory_rush_and_medium_health(PlayerbotAI* botAI)

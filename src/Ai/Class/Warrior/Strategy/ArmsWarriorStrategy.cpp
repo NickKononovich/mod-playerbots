@@ -218,24 +218,19 @@ void ArmsWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
-    // [b31_deep] Slam filler only with rage to spare for Mortal Strike (CastSlamFillerAction)
+    // [rot290] wowsims warrior__arms: Slam filler at >= 15 rage, the APL's last entry
     triggers.push_back(
         new TriggerNode(
-            "light rage available",
+            "arms slam rage",
             {
                 NextAction("slam filler", ACTION_HIGH + 1)
             }
         )
     );
 
-    triggers.push_back(
-        new TriggerNode(
-            "execute phase and high rage",
-            {
-                NextAction("execute", ACTION_HIGH + 6)
-            }
-        )
-    );
+    // [rot291] no Execute above Bladestorm / Mortal Strike at high rage (was "execute phase and high rage" at
+    // HIGH + 6): wowsims warrior__arms puts Execute (>= 15 rage) under Bladestorm and Mortal Strike (>= 30) in the
+    // execute phase too - "target critical health" / "sudden death" at HIGH + 3 keep it there.
 
     triggers.push_back(
         new TriggerNode(
