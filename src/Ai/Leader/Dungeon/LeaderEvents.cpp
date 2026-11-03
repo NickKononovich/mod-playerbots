@@ -6001,7 +6001,13 @@ namespace Leader::Dungeon
                                     tickMs = std::max(tickMs, uint32(periodic->GetAmplitude()));
                         return tickMs ? tickMs + LEADER_FIGHT_TICK_MS : uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS);
                     };
-                    if (mine && splashes && !PlayerbotAI::IsHeal(bot))
+                    // [lead885] b224 rfc-h 5B 1007.2 s: the shadow priest Rtpriaa, told Jergosh, had 1776 threat on a
+                    // Searing Blade Cultist it never hit (the tank 1043, the mob on the tank till then): Vampiric
+                    // Embrace's heals and Vampiric Touch's Replenishment split their threat over every mob that has a
+                    // healed / energized member on its threat list (ThreatManager::ForwardThreatForAssistingMe). A
+                    // ranged member's threat rising on a mob it does not attack is that split; its own damage feeds it,
+                    // so it holds like a melee member's splash
+                    if (mine && !PlayerbotAI::IsHeal(bot))
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* splashed = ObjectAccessor::GetUnit(*tank, other);
                                 splashed && splashed != mine && splashed->IsAlive() &&
@@ -6022,6 +6028,13 @@ namespace Leader::Dungeon
                                     LOG_INFO("playerbots", "[lead852] {}: its splash on {} still grows within its "
                                              "periodic tick ({} ms): the stop holds",
                                              bot->GetName(), splashed->GetName(), window);
+                                if (!splashes && splashLogged
+                                                     .insert({bot->GetGUID().GetRawValue(),
+                                                              splashed->GetGUID().GetRawValue() ^ 1u})
+                                                     .second)
+                                    LOG_INFO("playerbots", "[lead885] {}: its split threat on {} (not attacked) "
+                                             "overtakes the tank: holds its damage",
+                                             bot->GetName(), splashed->GetName());
                                 mine = nullptr;
                                 break;
                             }

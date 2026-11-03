@@ -459,6 +459,38 @@ void TickResurrect(LeaderGroup& group, Player* tank, std::vector<Player*> const&
     }
 }
 
+// [lead884] b224 rfc-h 5B 1000.2-1001.7 s: the shadow priest's Runic Mana Injector (in the fight at 0 % mana) put
+// ~1050 threat on Jergosh the Invoker, who had it on his threat list and the tank at 156 (he had just run in): the game
+// splits half the mana an energize gives, unmodified, over every mob that has the member on its threat list and is
+// not crowd-controlled (Unit::EnergizeBySpell -> ThreatManager::ForwardThreatForAssistingMe). The mob where that share
+// takes the member past the share the game moves it at over the tank's threat (110 % in its melee, 130 % out of it,
+// a mob on another member at 100 %); empty: none
+std::string ManaSplitOvertakes(Player* bot, Player* tank, uint32 mana)
+{
+    std::vector<Creature*> listing;
+    for (auto const& [guid, ref] : bot->GetThreatMgr().GetThreatenedByMeList())
+        if (Creature* mob = ref ? ref->GetOwner() : nullptr;
+            mob && mob->IsAlive() && mob->IsInCombat() && !mob->HasUnitState(UNIT_STATE_CONTROLLED))
+            listing.push_back(mob);
+    if (listing.empty() || !tank)
+        return std::string();
+    float const perMob = mana / 2.0f / float(listing.size());
+    for (Creature* mob : listing)
+    {
+        if (mob->GetVictim() == bot)
+            continue;  // already on it: the aggro loss's, not this potion's
+        float const mine = mob->GetThreatMgr().GetThreat(bot) + perMob;
+        float const tankThreat = mob->GetThreatMgr().GetThreat(tank);
+        float const share = mob->GetVictim() != tank      ? 1.0f
+                            : mob->IsWithinMeleeRange(bot) ? 1.1f
+                                                           : 1.3f;
+        if (mine >= share * tankThreat)
+            return Acore::StringFormat("its split threat on {} ({:.0f} + {:.0f}) overtakes the tank's {:.0f} x {:.1f}",
+                                       mob->GetName(), mob->GetThreatMgr().GetThreat(bot), perMob, tankThreat, share);
+    }
+    return std::string();
+}
+
 // [lead402] The pre-pull potion at the boss's pull (wowsims prepots at the pull): once the leader's pull order on
 // a boss opens, each member out of combat uses its best buff potion for its role, so the buff runs from the pull
 // on; in a fight the mana / health potion when the leader's estimate needs it
@@ -723,6 +755,20 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                         "mana potion: {:.0f} % < the {:.0f} % the fight's {:.0f} s left "
                         "need ({})",
                         bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft, lineWhy);
+                    // [lead884] its energize's split threat stays under the tank's on every mob listing it
+                    if (std::string const overtakes = ManaSplitOvertakes(bot, tank, amount); !overtakes.empty())
+                    {
+                        item = 0;
+                        verdict = "mana potion waits: " + overtakes;
+                        thread_local std::map<uint64, std::string> waitLogged;
+                        std::string const key = overtakes.substr(0, overtakes.find(" ("));
+                        std::string& logged = waitLogged[bot->GetGUID().GetRawValue()];
+                        if (logged != key)
+                        {
+                            logged = key;
+                            LOG_INFO("playerbots", "[lead884] {}: {}", bot->GetName(), verdict);
+                        }
+                    }
                 }
             }
         // [lead520] b211 rfc-h: the mages' own "high mana" trigger used the Mana Gem on trash under 65 % and it was on
@@ -764,9 +810,16 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                                 lead.bossPullSec, rechargeSec);
                         if (!rule.empty())
                             item = gem;
+                        // [lead884] the gem's energize splits its threat like the potion's
+                        if (std::string const overtakes = item ? ManaSplitOvertakes(bot, tank, amount) : "";
+                            !overtakes.empty())
+                        {
+                            item = 0;
+                            rule = "waits: " + overtakes;
+                        }
                         verdict = Acore::StringFormat(
                             "mana gem {}: {:.0f} % < the {:.0f} % the fight's {:.0f} s left need ({}); {}",
-                            rule.empty() ? "held" : "used", bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft,
+                            item ? "used" : "held", bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft,
                             lineWhy,
                             rule.empty() ? Acore::StringFormat("held for {} (his pull in {:.0f} s, recharge {:.0f} s)",
                                                                lead.nextBossName, lead.bossPullSec, rechargeSec)
