@@ -354,8 +354,66 @@ namespace Leader::Fight
     // the member's combat reach), in sight, the leap's line and landing clear of hazard zones, lava / drop-offs and
     // idle mobs' aggro reach; the walk seconds it saves at the run speed beat its cast time plus the global cooldown
     // it starts where the walk left after it is shorter. `why`: the terms
+    // [lead691] `manaLine` (% of max mana, < 0: none): the member's mana after the leap still covers it
     bool LeaderLeapSaves(Player* bot, Position const& to, std::vector<HazardZone> const& zones,
-                         std::string* why = nullptr);
+                         std::string* why = nullptr, float manaLine = -1.0f);
+
+    // [lead691] user 2026-11-03: every class's movement skills on the walks the leader orders, used whenever they
+    // save walk seconds (never kept for a boss: no boss here needs a run). The leader decides; the member casts the
+    // External (LeaderExternalAction). Spell data (Spell.dbc 3.3.5a):
+    //   Blink 1953 (SPELL_EFFECT_LEAP 20 yd, GCD 1.5 s, 21 % base mana);
+    //   Sprint 2983 / 8696 / 11305 (+50 / 70 / 70 % run speed, 15 s, off the GCD, no energy);
+    //   Shadowstep 36554 (talent; to an enemy 25 yd, behind it, off the GCD, 10 energy);
+    //   Dash 1850 / 9821 / 33357 (+50 / 60 / 70 %, 15 s, off the GCD; spell_dru_dash: cat form only, and its speed
+    //     is recalculated to 0 on leaving it) after Cat Form 768 (GCD 1.5 s, 35 % base mana);
+    //   Feral Charge - Cat 49376 (taught by the Feral Charge talent 49377; cat form, enemy 8-25 yd, off the GCD);
+    //   Ghost Wolf 2645 (+40 %, 2 s cast less Improved Ghost Wolf 16262 / 16287, GCD 1.5 s, 6 % base mana; a
+    //     shapeshift no spell is cast in, so the leader also tells the member to leave it);
+    //   Aspect of the Cheetah 5118 (+30 %, the caster) / Aspect of the Pack 13159 (+30 %, the party in 40 yd):
+    //     no GCD, 1 s aspect category cooldown, Dazed (15571) on a hit - out of a fight only;
+    //   Power Word: Shield 17 ... 48066 (GCD 1.5 s, 23 % base mana, Weakened Soul 6788 15 s) with Body and Soul
+    //     64127 / 64129 (its proc 64128 / 65081: +30 / 60 % for 4 s on the shielded member);
+    //   Disengage 781 (SPELL_EFFECT_LEAP_BACK: MiscValue / 10 yd/s across, BasePoints / 10 yd/s up -> a leap of
+    //     2 x vz x vxy / gravity backwards, off the GCD, 5 % base mana; spell_hun_disengage: in combat only).
+    // Not wired: Unholy Presence (Improved Unholy Presence 50391 / 50392 already gives 8 / 15 % in Blood and Frost
+    // through 49772: rank 2 is the swap's whole 15 %), Travel Form indoors, Demonic Circle.
+    struct LeaderMoveTick
+    {
+        Player* tank = nullptr;
+        std::vector<Player*> members;  // the seats (the tank apart)
+        bool fighting = false;
+        bool pullOrdered = false;  // the leader issued the pull order
+        float fightSecLeft = 0.0f;
+        bool bossFight = false;
+        Unit* waitBoss = nullptr;  // the boss the next pull waits for (its boss mana line)
+        std::map<ObjectGuid, std::vector<HazardZone>>* hazardZones = nullptr;
+        std::set<ObjectGuid> const* trailing = nullptr;  // members the group waits for (LEADER_TRAIL_YD)
+        std::vector<G3D::Vector3> const* routePath = nullptr;  // the tank's route leg, walked by index
+        size_t routePathIndex = 0;
+    };
+    struct LeaderMoveTold
+    {
+        Player* member = nullptr;
+        uint32 spell = 0;
+        std::string on;
+        std::string why;
+    };
+    // [lead691] one leader tick of the movement skills: each member's best skill for its walk (the most seconds
+    // saved over its cost), told as its External; a told one no longer saving withdrawn; a movement form left
+    // when it no longer serves. `told`: the new orders to log. Returns the hunters held in a movement aspect
+    std::set<ObjectGuid> LeaderTickMoveSkills(LeaderMoveTick const& facts, std::vector<LeaderMoveTold>& told);
+    // [lead691] the member's mana line the leader keeps for its fight now (FightManaLine for the seconds left) or
+    // its next (the boss gate's MemberBossManaLine for the boss waited for, else OwnManaLine), % of max mana
+    float LeaderMoveManaLine(Player* member, bool fighting, float fightSecLeft, bool bossFight, Unit* waitBoss);
+    // [lead691] the hunter is in its own Aspect of the Cheetah / Pack
+    bool LeaderInMoveAspect(Player* hunter);
+    // [lead691] the member's External: `spell` is a movement form it is in and the leader told it on itself by its
+    // guid - leave it (Ghost Wolf)
+    bool LeaderMoveFormLeave(Player* bot, uint32 spell, ObjectGuid target);
+    // [lead691] the member's External: a movement aura of its own already up (nothing to cast)
+    bool LeaderMoveSkillUp(Player* bot, uint32 spell, ObjectGuid target);
+    // [lead691] the form the member must take before the External's cast (Cat Form for Dash), 0: none needed
+    uint32 LeaderMoveSkillForm(Player* bot, uint32 spell);
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,

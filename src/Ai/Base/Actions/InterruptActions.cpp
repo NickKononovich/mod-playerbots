@@ -13,6 +13,7 @@
 #include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "LeaderConsumables.h"   // [lead407] Leader::Dungeon::UseItem
 #include "LastMovementValue.h"   // [lead690]
+#include "LeaderFightChecks.h"   // [lead691] the movement skills
 #include "Log.h"
 #include "ObjectAccessor.h"  // [lead401]
 #include "RtiValue.h"        // [rot2] FindCrowdControl
@@ -162,8 +163,9 @@ bool LeaderExternalAction::isUseful()
 {
     uint32 spell = 0;
     ObjectGuid target;
+    // [lead691] a movement aura of its own already up: nothing to cast (the leader withdraws the order)
     return LeaderCommand::AssignedExternal(bot, spell, target) && spell && bot->HasSpell(spell) &&
-           ExternalUnit(botAI, spell, target);
+           !Leader::Fight::LeaderMoveSkillUp(bot, spell, target) && ExternalUnit(botAI, spell, target);
 }
 
 bool LeaderExternalAction::isPossible()
@@ -176,6 +178,11 @@ bool LeaderExternalAction::isPossible()
     Unit* unit = ExternalUnit(botAI, spell, target);
     if (!unit)
         return false;
+    // [lead691] leaving a movement form (Ghost Wolf) is always possible; Dash's Cat Form goes first
+    if (Leader::Fight::LeaderMoveFormLeave(bot, spell, target))
+        return true;
+    if (uint32 const form = Leader::Fight::LeaderMoveSkillForm(bot, spell))
+        return botAI->CanCastSpell(form, bot, true);
     // [lead401] out of a fight a resurrection out of range or sight walks there first (its prerequisite)
     if (RaisesDead(spell) && !bot->IsInCombat() && ResurrectionNeedsWalk(bot, spell, unit))
         return true;
@@ -210,16 +217,48 @@ bool LeaderExternalAction::Execute(Event /*event*/)
                                                                           unit->GetName());
         return false;
     }
+    // [lead691] the leader tells the member to leave its movement form (Ghost Wolf: no spell is cast in it)
+    if (Leader::Fight::LeaderMoveFormLeave(bot, spell, target))
+    {
+        bot->RemoveAurasDueToSpell(spell);
+        LOG_INFO("playerbots", "[lead691] [leader external] {} leaves {} ({})", bot->GetName(), info->SpellName[0],
+                 spell);
+        AckLeader(bot, "external", std::string("leaves ") + info->SpellName[0]);
+        return true;
+    }
+    // [lead691] Dash needs Cat Form (spell_dru_dash): the shift goes first, Dash on a later tick
+    if (uint32 const form = Leader::Fight::LeaderMoveSkillForm(bot, spell))
+    {
+        if (!botAI->CastSpell(form, bot))
+        {
+            Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "its form shift failed");
+            return false;
+        }
+        AckLeader(bot, "external", std::string("shifts for ") + info->SpellName[0]);
+        return true;
+    }
     // [lead690] a leap (the mage's Blink, SPELL_EFFECT_LEAP) goes where the member faces: it faces the spot of the
     // walk the leader ordered first, and the walk goes on from where it lands (its last move is no move any more)
-    bool const leaps = info->HasEffect(SPELL_EFFECT_LEAP);
+    // [lead691] a leap back (the hunter's Disengage, SPELL_EFFECT_LEAP_BACK) goes opposite the facing: it turns
+    // its back to the walk's spot; a member the group waits for walks to the tank it follows
+    bool const leapsBack = info->HasEffect(SPELL_EFFECT_LEAP_BACK);
+    bool const leaps = info->HasEffect(SPELL_EFFECT_LEAP) || leapsBack;
     if (leaps)
     {
         Leader::MemberEvents live;
-        if (!Leader::Events::Get(bot->GetGUID(), live) ||
-            (live.move != Leader::MoveEvent::MoveTo && live.move != Leader::MoveEvent::StandAt))
+        if (!Leader::Events::Get(bot->GetGUID(), live))
             return false;
-        bot->SetFacingTo(bot->GetAbsoluteAngle(&live.spot));
+        Position walkTo;
+        if (live.move == Leader::MoveEvent::MoveTo || live.move == Leader::MoveEvent::StandAt)
+            walkTo = live.spot;
+        else if (Unit* followed = live.move == Leader::MoveEvent::Follow
+                                      ? ObjectAccessor::GetUnit(*bot, live.followTarget)
+                                      : nullptr)
+            walkTo = followed->GetPosition();
+        else
+            return false;
+        float const angle = bot->GetAbsoluteAngle(&walkTo);
+        bot->SetFacingTo(leapsBack ? Position::NormalizeOrientation(angle + float(M_PI)) : angle);
     }
     if (!botAI->CastSpell(spell, unit))
     {

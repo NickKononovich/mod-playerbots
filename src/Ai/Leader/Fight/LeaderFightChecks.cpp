@@ -17,6 +17,9 @@
 #include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "MovementActions.h"
+#include "MovementTypedefs.h"  // [lead691] Movement::gravity
+#include "SpellAuraEffects.h"  // [lead691] AuraEffect
+#include "HealthTriggers.h"   // [lead691] RestState mana lines
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -1421,76 +1424,665 @@ namespace Leader::Fight
         return 0;
     }
 
-    bool LeaderLeapSaves(Player* bot, Position const& to, std::vector<HazardZone> const& zones, std::string* why)
+    namespace
+    {
+        // [lead691] the movement skills by their first rank (the highest rank the member knows is cast)
+        constexpr uint32 SPELL_BLINK = 1953;
+        constexpr uint32 SPELL_SPRINT = 2983;
+        constexpr uint32 SPELL_SHADOWSTEP = 36554;
+        constexpr uint32 SPELL_DASH = 1850;
+        constexpr uint32 SPELL_CAT_FORM = 768;
+        constexpr uint32 SPELL_MOONKIN_FORM = 24858;
+        constexpr uint32 SPELL_FERAL_CHARGE_CAT = 49376;
+        constexpr uint32 SPELL_GHOST_WOLF = 2645;
+        constexpr uint32 SPELL_ASPECT_OF_THE_CHEETAH = 5118;
+        constexpr uint32 SPELL_ASPECT_OF_THE_PACK = 13159;
+        constexpr uint32 SPELL_POWER_WORD_SHIELD = 17;
+        constexpr uint32 SPELL_WEAKENED_SOUL = 6788;
+        constexpr uint32 SPELL_BODY_AND_SOUL = 64127;
+        constexpr uint32 SPELL_DISENGAGE = 781;
+
+        // the highest rank of `first`'s chain the member knows (0: none)
+        uint32 KnownRank(Player* bot, uint32 first)
+        {
+            for (uint32 rank = sSpellMgr->GetLastSpellInChain(first); rank; rank = sSpellMgr->GetPrevSpellInChain(rank))
+                if (bot->HasSpell(rank))
+                    return rank;
+            return 0;
+        }
+
+        // the global cooldown a cast starts (Spell::TriggerGlobalCooldown: StartRecoveryTime x cast speed, 1-1.5 s)
+        float GcdSec(Player* bot, SpellInfo const* info)
+        {
+            float gcd = float(info->StartRecoveryTime) / 1000.0f;
+            if (gcd > 0.0f)
+                gcd = std::clamp(gcd * bot->GetFloatValue(UNIT_MOD_CAST_SPEED), 1.0f, 1.5f);
+            return gcd;
+        }
+
+        uint32 ManaCost(Player* bot, SpellInfo const* info)
+        {
+            return info->PowerType == POWER_MANA ? uint32(std::max(0, info->CalcPowerCost(bot, info->GetSchoolMask())))
+                                                 : 0;
+        }
+
+        // the member's mana after `cost` still covers `line` (% of max; < 0: no line); no mana pool: none needed
+        bool ManaCovers(Player* bot, uint32 cost, float line, std::string& why)
+        {
+            uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
+            if (!maxMana)
+                return true;
+            uint32 const mana = bot->GetPower(POWER_MANA);
+            if (mana < cost)
+                return false;
+            float const after = 100.0f * float(mana - cost) / float(maxMana);
+            if (line >= 0.0f && after < line)
+                return false;
+            why += Acore::StringFormat("; {} mana, {:.0f} % after it", cost, after) +
+                   (line >= 0.0f ? Acore::StringFormat(" >= its line {:.0f} %", line) : std::string());
+            return true;
+        }
+
+        // the amount of the spell's SPELL_AURA_MOD_INCREASE_SPEED (0: none)
+        int32 SpeedAmount(Player* bot, SpellInfo const* info)
+        {
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.IsAura(SPELL_AURA_MOD_INCREASE_SPEED))
+                    return effect.CalcValue(bot);
+            return 0;
+        }
+
+        // the run speed `unit` would have with a SPELL_AURA_MOD_INCREASE_SPEED of `amount` (Unit::UpdateSpeed: the
+        // largest one of that aura counts, not their sum)
+        float SpeedWith(Unit* unit, int32 amount)
+        {
+            float const speed = unit->GetSpeed(MOVE_RUN);
+            if (unit->IsMounted())
+                return speed;
+            int32 const main = unit->GetMaxPositiveAuraModifier(SPELL_AURA_MOD_INCREASE_SPEED);
+            return speed * float(100 + std::max(main, amount)) / float(100 + main);
+        }
+
+        // the seconds a walk of `length` yd takes at `fast` for `durSec` (< 0: for good), then at `speed`
+        float WalkSec(float length, float speed, float fast, float durSec)
+        {
+            if (durSec < 0.0f || length <= fast * durSec)
+                return length / fast;
+            return durSec + (length - fast * durSec) / speed;
+        }
+
+        // one candidate: what it saves and costs on the walk (seconds)
+        struct Pick
+        {
+            uint32 spell = 0;
+            ObjectGuid on;  // Empty: on itself
+            float saved = 0.0f;
+            float cost = 0.0f;
+            std::string why;
+            float Net() const { return saved - cost; }
+        };
+
+        // a speed aura of `amount` for `durSec` (< 0: for good), cast in `castSec` with a global cooldown of `gcd`,
+        // on the member's walk of `length` yd: the cast stands, the walk goes on in the global cooldown (a cost
+        // only where the walk ends sooner), `extraCost` on top
+        bool SpeedSaves(Player* bot, SpellInfo const* info, int32 amount, float durSec, float castSec, float gcd,
+                        float extraCost, float length, Pick& pick)
+        {
+            float const speed = bot->GetSpeed(MOVE_RUN);
+            float const fast = SpeedWith(bot, amount);
+            if (speed <= 0.0f || fast <= speed || length <= 0.0f)
+                return false;
+            float const with = WalkSec(length, speed, fast, durSec);
+            pick.spell = info->Id;
+            pick.saved = length / speed - with;
+            pick.cost = castSec + std::max(0.0f, gcd - with) + extraCost;
+            pick.why = Acore::StringFormat("{}: {:.1f} s of a {:.0f} yd walk saved ({:.1f} -> {:.1f} yd/s{}) vs "
+                                           "{:.1f} s cast / GCD after it",
+                                           info->SpellName[0], pick.saved, length, speed, fast,
+                                           durSec < 0.0f ? std::string() : Acore::StringFormat(" for {:.0f} s", durSec),
+                                           pick.cost);
+            return pick.saved > pick.cost;
+        }
+
+        // [lead690] the leap of `leap` yd ahead (or, `back`, behind the member's facing) along its walk to `to`:
+        // the walk (the leader's route) at least the leap long and straight for the leap (its point the leap's
+        // length along lies the leap off, within the member's combat reach), in sight, the leap's line and landing
+        // clear of hazard zones, lava / drop-offs and idle mobs' aggro reach
+        bool LeapSaves(Player* bot, SpellInfo const* info, float leap, bool back, Position const& to,
+                       std::vector<HazardZone> const& zones, Pick& pick)
+        {
+            if (leap <= 0.0f || bot->IsRooted() || !bot->isMoving() || bot->IsNonMeleeSpellCast(false) ||
+                bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || bot->IsInFlight() || bot->GetTransport() ||
+                bot->isSwimming())
+                return false;
+            // [lead691] a leap backwards only where the walk goes back: its spot behind the member's facing
+            if (back)
+            {
+                float const turn = Position::NormalizeOrientation(bot->GetAbsoluteAngle(&to) - bot->GetOrientation());
+                if (turn < float(M_PI) / 2.0f || turn > 1.5f * float(M_PI))
+                    return false;
+            }
+            // a leap past the place is no saving: the walk left is at least the leap
+            if (bot->GetExactDist2d(to.GetPositionX(), to.GetPositionY()) < leap)
+                return false;
+            Leader::RouteResult const route = Leader::Route(bot, to);  // [lead99] the leader's walk
+            if (!route.found || !route.complete || route.points.size() < 2 || route.length < leap)
+                return false;
+            // The point `leap` yd along the walk; the leap goes straight, so it saves that much walk only when the
+            // walk runs straight there: its point that far along lies the leap's length off (within the member's
+            // own combat reach, the size the game gives it), on the same ground
+            G3D::Vector3 const start(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            G3D::Vector3 land = route.points.back();
+            float along = 0.0f;
+            for (size_t i = 1; i < route.points.size(); ++i)
+            {
+                float const step = (route.points[i] - route.points[i - 1]).length();
+                if (along + step >= leap)
+                {
+                    float const share = step > 0.0f ? (leap - along) / step : 0.0f;
+                    land = route.points[i - 1] + (route.points[i] - route.points[i - 1]) * share;
+                    break;
+                }
+                along += step;
+            }
+            float const off = (land - start).length();
+            if (off < leap - bot->GetCombatReach())
+                return false;
+            Map* map = bot->GetMap();
+            if (!map->isInLineOfSight(start.x, start.y, start.z + 2.0f, land.x, land.y, land.z + 2.0f,
+                                      bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+                return false;
+            // safe along the leap and where it lands: no hazard zone, no lava / drop-off, no idle mob's aggro reach
+            constexpr uint32 SAMPLES = 4;
+            for (uint32 i = 1; i <= SAMPLES; ++i)
+            {
+                G3D::Vector3 const at = start + (land - start) * (float(i) / float(SAMPLES));
+                if (LeaderZoneAt(zones, at.x, at.y, at.z, LEADER_HAZARD_EDGE) ||
+                    NearHazard(map, bot->GetPhaseMask(), at.x, at.y, at.z, LEADER_TERRAIN_EDGE))
+                    return false;
+            }
+            if (LeaderAggroAt(bot, Position(land.x, land.y, land.z)))
+                return false;
+            // Seconds: the leap saves its length at the member's run speed; it costs its cast time and the global
+            // cooldown it starts where the walk left after it ends sooner than that cooldown (no cast while walking)
+            float const speed = bot->GetSpeed(MOVE_RUN);
+            if (speed <= 0.0f)
+                return false;
+            float const gcd = GcdSec(bot, info);
+            float const castSec = info->CalcCastTime(bot) / 1000.0f;
+            float const left = (route.length - leap) / speed;
+            pick.spell = info->Id;
+            pick.saved = leap / speed;
+            pick.cost = castSec + std::max(0.0f, gcd - left);
+            pick.why = Acore::StringFormat("{}: {:.1f} s of a {:.0f} yd walk saved ({:.0f} yd leap{}) vs {:.1f} s "
+                                           "cast / GCD after it",
+                                           info->SpellName[0], pick.saved, route.length, leap,
+                                           back ? " backwards" : "", pick.cost);
+            return pick.saved > pick.cost;
+        }
+
+        // the leap length of a SPELL_EFFECT_LEAP_BACK (Spell::EffectLeapBack: MiscValue / 10 yd/s across,
+        // BasePoints / 10 yd/s up; the flight lasts 2 x up / gravity)
+        float LeapBackYd(Player* bot, SpellInfo const* info)
+        {
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.Effect == SPELL_EFFECT_LEAP_BACK)
+                {
+                    float const across = float(effect.MiscValue) / 10.0f;
+                    float const up = float(effect.CalcValue(bot)) / 10.0f;
+                    return across * 2.0f * up / float(Movement::gravity);
+                }
+            return 0.0f;
+        }
+
+        bool Ready(Player* bot, uint32 spell) { return spell && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell); }
+
+        bool IsMoveSkill(uint32 spell)
+        {
+            if (!spell)
+                return false;
+            uint32 const first = sSpellMgr->GetFirstSpellInChain(spell);
+            for (uint32 one : {SPELL_BLINK, SPELL_SPRINT, SPELL_SHADOWSTEP, SPELL_DASH, SPELL_FERAL_CHARGE_CAT,
+                               SPELL_GHOST_WOLF, SPELL_ASPECT_OF_THE_CHEETAH, SPELL_ASPECT_OF_THE_PACK,
+                               SPELL_POWER_WORD_SHIELD, SPELL_DISENGAGE})
+                if (first == one || spell == one)
+                    return true;
+            return false;
+        }
+
+        // the External is the movement pass's own: a movement skill on the member itself (Empty or its guid), or
+        // a gap closer onto a mob (a Power Word: Shield on another member is the fight's save, 3c)
+        bool OwnMoveExternal(Player* bot, Leader::MemberEvents const& live)
+        {
+            if (!IsMoveSkill(live.externalSpell))
+                return false;
+            if (live.externalSpell == SPELL_SHADOWSTEP || live.externalSpell == SPELL_FERAL_CHARGE_CAT)
+                return true;
+            return live.externalTarget.IsEmpty() || live.externalTarget == bot->GetGUID();
+        }
+
+        // a movement skill of its own the member knows off cooldown (the route search only for those)
+        bool AnyOwnSkillReady(Player* bot)
+        {
+            return Ready(bot, SPELL_BLINK) || Ready(bot, KnownRank(bot, SPELL_SPRINT)) ||
+                   Ready(bot, KnownRank(bot, SPELL_DASH)) || Ready(bot, SPELL_GHOST_WOLF) ||
+                   Ready(bot, SPELL_ASPECT_OF_THE_CHEETAH) || Ready(bot, SPELL_DISENGAGE) ||
+                   (bot->GetAuraEffectOfRankedSpell(SPELL_BODY_AND_SOUL, EFFECT_0) &&
+                    Ready(bot, KnownRank(bot, SPELL_POWER_WORD_SHIELD)));
+        }
+
+        // the member's walk the leader ordered now: its end and its length (the leader's route); false: none
+        bool OrderedWalk(Player* bot, Player* tank, Leader::MemberEvents const& live, bool trails, Position& to,
+                         float& length, std::string& what)
+        {
+            if (live.move == Leader::MoveEvent::MoveTo || live.move == Leader::MoveEvent::StandAt)
+            {
+                if (bot->GetExactDist(live.spot) <= live.tolerance)
+                    return false;
+                Leader::RouteResult const route = Leader::Route(bot, live.spot);
+                if (!route.found)
+                    return false;
+                to = live.spot;
+                length = route.length;
+                what = live.moveWhy;
+                return true;
+            }
+            // [lead17] a member the group waits for walks to the tank until it is back within LEADER_TRAIL_BACK_YD
+            if (trails && tank && live.move == Leader::MoveEvent::Follow && live.followTarget == tank->GetGUID())
+            {
+                Leader::RouteResult const route = Leader::Route(bot, tank->GetPosition());
+                if (!route.found || route.length <= Leader::LEADER_TRAIL_BACK_YD)
+                    return false;
+                to = tank->GetPosition();
+                length = route.length - Leader::LEADER_TRAIL_BACK_YD;
+                what = "trails the group";
+                return true;
+            }
+            return false;
+        }
+
+        // the member's best movement skill for its own walk (`to`, `length`), in a fight or out of it
+        Pick BestOwnSkill(Player* bot, Position const& to, float length, std::vector<HazardZone> const& zones,
+                          float manaLine)
+        {
+            Pick best;
+            auto const consider = [&](Pick& pick, uint32 cost)
+            {
+                if (pick.saved > pick.cost && (!best.spell || pick.Net() > best.Net()) &&
+                    ManaCovers(bot, cost, manaLine, pick.why))
+                    best = pick;
+            };
+            bool const combat = bot->IsInCombat();
+            // the mage's Blink (lead690)
+            if (Ready(bot, SPELL_BLINK))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_BLINK))
+                {
+                    float leap = 0.0f;
+                    LeaderLeapSpell(bot, &leap);
+                    Pick pick;
+                    if (LeapSaves(bot, info, leap, false, to, zones, pick))
+                        consider(pick, ManaCost(bot, info));
+                }
+            // the rogue's Sprint
+            if (uint32 const sprint = KnownRank(bot, SPELL_SPRINT); Ready(bot, sprint) && !bot->HasAura(sprint))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(sprint))
+                {
+                    Pick pick;
+                    if (SpeedSaves(bot, info, SpeedAmount(bot, info), info->GetMaxDuration() / 1000.0f,
+                                   info->CalcCastTime(bot) / 1000.0f, GcdSec(bot, info), 0.0f, length, pick))
+                        consider(pick, 0);
+                }
+            // the druid's Dash: in Cat Form (spell_dru_dash); a druid out of every form shifts first out of a fight
+            // (Cat Form's global cooldown and mana; leaving it again is free: the form's cancel). A bear tank or a
+            // Moonkin keeps its form: its own form upkeep takes it back within seconds and Dash's speed with it
+            // (recalculated to 0 out of Cat Form), and in a fight the form is its role
+            if (uint32 const dash = KnownRank(bot, SPELL_DASH); Ready(bot, dash) && !bot->HasAura(dash))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(dash))
+                {
+                    bool const inCat = bot->GetShapeshiftForm() == FORM_CAT;
+                    SpellInfo const* cat = sSpellMgr->GetSpellInfo(SPELL_CAT_FORM);
+                    bool const shifts = !inCat && !combat && bot->GetShapeshiftForm() == FORM_NONE && cat &&
+                                        bot->HasSpell(SPELL_CAT_FORM) && !PlayerbotAI::IsTank(bot) &&
+                                        !bot->HasSpell(SPELL_MOONKIN_FORM);
+                    if (inCat || shifts)
+                    {
+                        float const shiftGcd = shifts ? GcdSec(bot, cat) : 0.0f;
+                        Pick pick;
+                        // its amount in Cat Form (the aura's own value; spell_dru_dash_aura zeroes it outside)
+                        if (SpeedSaves(bot, info, SpeedAmount(bot, info), info->GetMaxDuration() / 1000.0f, 0.0f,
+                                       shiftGcd, 0.0f, length, pick))
+                        {
+                            if (shifts)
+                                pick.why += Acore::StringFormat(" (Cat Form first: {:.1f} s GCD)", shiftGcd);
+                            consider(pick, shifts ? ManaCost(bot, cat) : 0);
+                        }
+                    }
+                }
+            // the shaman's Ghost Wolf, out of a fight: its cast stands (2 s less Improved Ghost Wolf)
+            if (!combat && Ready(bot, SPELL_GHOST_WOLF) && bot->GetShapeshiftForm() == FORM_NONE)
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_GHOST_WOLF))
+                {
+                    Pick pick;
+                    if (SpeedSaves(bot, info, SpeedAmount(bot, info), -1.0f, info->CalcCastTime(bot) / 1000.0f,
+                                   GcdSec(bot, info), 0.0f, length, pick))
+                        consider(pick, ManaCost(bot, info));
+                }
+            // the hunter's Aspect of the Cheetah, out of a fight (Dazed on a hit): no global cooldown; its swap back
+            // to the fight's aspect waits for the aspects' category cooldown where the walk ends sooner
+            if (!combat && Ready(bot, SPELL_ASPECT_OF_THE_CHEETAH) && !LeaderInMoveAspect(bot))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_ASPECT_OF_THE_CHEETAH))
+                {
+                    int32 const amount = SpeedAmount(bot, info);
+                    float const fast = SpeedWith(bot, amount);
+                    float const back = float(info->CategoryRecoveryTime) / 1000.0f;
+                    float const swapBack = fast > 0.0f ? std::max(0.0f, back - length / fast) : 0.0f;
+                    Pick pick;
+                    if (SpeedSaves(bot, info, amount, -1.0f, info->CalcCastTime(bot) / 1000.0f, GcdSec(bot, info),
+                                   swapBack, length, pick))
+                        consider(pick, ManaCost(bot, info));
+                }
+            // the priest's Power Word: Shield on itself with Body and Soul (its proc's speed for its duration)
+            if (AuraEffect const* talent = bot->GetAuraEffectOfRankedSpell(SPELL_BODY_AND_SOUL, EFFECT_0))
+                if (uint32 const shield = KnownRank(bot, SPELL_POWER_WORD_SHIELD);
+                    Ready(bot, shield) && !bot->HasAura(SPELL_WEAKENED_SOUL))
+                {
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(shield);
+                    SpellInfo const* proc =
+                        sSpellMgr->GetSpellInfo(talent->GetSpellInfo()->Effects[EFFECT_0].TriggerSpell);
+                    Pick pick;
+                    if (info && proc &&
+                        SpeedSaves(bot, info, SpeedAmount(bot, proc), proc->GetMaxDuration() / 1000.0f,
+                                   info->CalcCastTime(bot) / 1000.0f, GcdSec(bot, info), 0.0f, length, pick))
+                    {
+                        pick.why += Acore::StringFormat(" (its {} {})", proc->SpellName[0], proc->Id);
+                        consider(pick, ManaCost(bot, info));
+                    }
+                }
+            // the hunter's Disengage: in a fight (spell_hun_disengage), only on a walk backwards
+            if (combat && Ready(bot, SPELL_DISENGAGE))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_DISENGAGE))
+                {
+                    Pick pick;
+                    if (LeapSaves(bot, info, LeapBackYd(bot, info), true, to, zones, pick))
+                        consider(pick, ManaCost(bot, info));
+                }
+            return best;
+        }
+
+        // the melee member's gap closer onto the mob the leader told it to attack, which the tank holds
+        // (Shadowstep, Feral Charge - Cat): the walk into its melee reach it saves at the run speed
+        Pick BestGapCloser(Player* bot, Player* tank, Leader::MemberEvents const& live)
+        {
+            Pick best;
+            if (!bot->IsInCombat() || live.attack != Leader::AttackEvent::Attack || live.target.IsEmpty())
+                return best;
+            Unit* target = ObjectAccessor::GetUnit(*bot, live.target);
+            if (!target || !target->IsAlive() || !target->IsInCombat() || target->GetVictim() != tank ||
+                bot->IsWithinMeleeRange(target) || !bot->IsWithinLOSInMap(target))
+                return best;
+            float const speed = bot->GetSpeed(MOVE_RUN);
+            if (speed <= 0.0f)
+                return best;
+            float const dist = bot->GetExactDist(target);
+            float const walk = std::max(0.0f, bot->GetDistance(target) - bot->GetMeleeRange(target));
+            for (uint32 spell : {SPELL_SHADOWSTEP, SPELL_FERAL_CHARGE_CAT})
+            {
+                SpellInfo const* info = Ready(bot, spell) ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+                if (!info || (spell == SPELL_FERAL_CHARGE_CAT && bot->GetShapeshiftForm() != FORM_CAT))
+                    continue;
+                if (dist < info->GetMinRange() || dist > info->GetMaxRange(false, bot))
+                    continue;
+                int32 const cost = std::max(0, info->CalcPowerCost(bot, info->GetSchoolMask()));
+                if (info->PowerType != POWER_MANA && int32(bot->GetPower(Powers(info->PowerType))) < cost)
+                    continue;
+                Pick pick;
+                pick.spell = spell;
+                pick.on = target->GetGUID();
+                pick.saved = walk / speed;
+                pick.cost = info->CalcCastTime(bot) / 1000.0f + GcdSec(bot, info);
+                pick.why = Acore::StringFormat("{}: {:.1f} s of the {:.0f} yd walk to {} (on the tank) saved vs "
+                                               "{:.1f} s cast / GCD",
+                                               info->SpellName[0], pick.saved, walk, target->GetName(), pick.cost);
+                if (pick.saved > pick.cost && (!best.spell || pick.Net() > best.Net()))
+                    best = pick;
+            }
+            return best;
+        }
+
+    }
+
+    float LeaderMoveManaLine(Player* member, bool fighting, float fightSecLeft, bool bossFight, Unit* waitBoss)
+    {
+        if (!member->GetMaxPower(POWER_MANA))
+            return -1.0f;
+        if (fighting)
+            return RestState::FightManaLine(member, fightSecLeft, 0.0f, nullptr, bossFight);
+        if (waitBoss && waitBoss->IsAlive())
+            return PullReadiness::MemberBossManaLine(member, waitBoss);
+        return RestState::OwnManaLine(member);
+    }
+
+    bool LeaderInMoveAspect(Player* hunter)
+    {
+        return hunter && (hunter->HasAura(SPELL_ASPECT_OF_THE_CHEETAH, hunter->GetGUID()) ||
+                          hunter->HasAura(SPELL_ASPECT_OF_THE_PACK, hunter->GetGUID()));
+    }
+
+    bool LeaderMoveFormLeave(Player* bot, uint32 spell, ObjectGuid target)
+    {
+        return spell == SPELL_GHOST_WOLF && target == bot->GetGUID() && bot->HasAura(SPELL_GHOST_WOLF);
+    }
+
+    bool LeaderMoveSkillUp(Player* bot, uint32 spell, ObjectGuid target)
+    {
+        if (!target.IsEmpty())
+            return false;
+        uint32 const first = sSpellMgr->GetFirstSpellInChain(spell);
+        if (first != SPELL_SPRINT && first != SPELL_DASH && first != SPELL_GHOST_WOLF &&
+            first != SPELL_ASPECT_OF_THE_CHEETAH && first != SPELL_ASPECT_OF_THE_PACK)
+            return false;
+        return bot->HasAura(spell, bot->GetGUID());
+    }
+
+    uint32 LeaderMoveSkillForm(Player* bot, uint32 spell)
+    {
+        return sSpellMgr->GetFirstSpellInChain(spell) == SPELL_DASH && bot->GetShapeshiftForm() != FORM_CAT
+                   ? SPELL_CAT_FORM
+                   : 0;
+    }
+
+    std::set<ObjectGuid> LeaderTickMoveSkills(LeaderMoveTick const& facts, std::vector<LeaderMoveTold>& told)
+    {
+        std::set<ObjectGuid> held;
+        Player* tank = facts.tank;
+        if (!tank)
+            return held;
+        std::vector<Player*> walkers = facts.members;
+        walkers.push_back(tank);
+        static std::vector<HazardZone> const noZones;
+        auto const zonesOf = [&](Player* bot) -> std::vector<HazardZone> const&
+        {
+            if (!facts.hazardZones)
+                return noZones;
+            auto const found = facts.hazardZones->find(bot->GetGUID());
+            return found != facts.hazardZones->end() ? found->second : noZones;
+        };
+        auto const tell = [&](Player* bot, Pick const& pick, std::string const& why)
+        {
+            if (Leader::Events::SetExternal(bot->GetGUID(), pick.spell, pick.on))
+            {
+                Unit* on = pick.on.IsEmpty() ? bot : ObjectAccessor::GetUnit(*bot, pick.on);
+                told.push_back({bot, pick.spell, on ? on->GetName() : bot->GetName(), why});
+            }
+        };
+
+        // The group's route walk out of a fight: one hunter's Aspect of the Pack speeds every walker in its radius
+        // (40 yd) - the group walks at its slowest walker's speed (the members follow the tank, the far gate waits
+        // for the ones behind), so the time it saves is the route left at the slowest walker's speed with the
+        // aspect against without. The hunter keeps it while the route walk goes on; a pull ordered, a fight or the
+        // walk's end hands it back to the Viper switch (the fight's or the walk's aspect)
+        float routeLeft = 0.0f;
+        Leader::MemberEvents tankLive;
+        bool const routeWalk = !facts.fighting && !facts.pullOrdered && facts.routePath &&
+                               facts.routePathIndex < facts.routePath->size() &&
+                               Leader::Events::Get(tank->GetGUID(), tankLive) &&
+                               tankLive.move == Leader::MoveEvent::MoveTo && tankLive.moveWhy == "route walk";
+        if (routeWalk)
+        {
+            std::vector<G3D::Vector3> const& path = *facts.routePath;
+            G3D::Vector3 const& next = path[facts.routePathIndex];
+            routeLeft = tank->GetExactDist(next.x, next.y, next.z);
+            for (size_t i = facts.routePathIndex + 1; i < path.size(); ++i)
+                routeLeft += (path[i] - path[i - 1]).length();
+        }
+        Player* packHunter = nullptr;
+        SpellInfo const* pack = sSpellMgr->GetSpellInfo(SPELL_ASPECT_OF_THE_PACK);
+        if (routeWalk && routeLeft > 0.0f && pack)
+        {
+            Pick bestPack;
+            float bestMargin = 0.0f;
+            for (Player* hunter : facts.members)
+            {
+                if (!hunter->IsAlive() || hunter->IsInCombat() || !hunter->HasSpell(SPELL_ASPECT_OF_THE_PACK))
+                    continue;
+                bool const inPack = hunter->HasAura(SPELL_ASPECT_OF_THE_PACK, hunter->GetGUID());
+                if (!inPack && hunter->HasSpellCooldown(SPELL_ASPECT_OF_THE_PACK))
+                    continue;
+                float const radius = pack->Effects[EFFECT_0].CalcRadius(hunter);
+                int32 const amount = SpeedAmount(hunter, pack);
+                float before = 0.0f;
+                float after = 0.0f;
+                for (Player* walker : walkers)
+                {
+                    if (!walker->IsAlive() || walker->GetMapId() != tank->GetMapId())
+                        continue;
+                    float const speed = walker->GetSpeed(MOVE_RUN);
+                    // in the aspect already, its speed now is the aspect's
+                    float const fast = walker->GetExactDist(hunter) <= radius ? SpeedWith(walker, amount) : speed;
+                    before = before > 0.0f ? std::min(before, speed) : speed;
+                    after = after > 0.0f ? std::min(after, fast) : fast;
+                }
+                Pick pick;
+                pick.spell = SPELL_ASPECT_OF_THE_PACK;
+                if (!inPack)
+                {
+                    if (before <= 0.0f || after <= before)
+                        continue;
+                    pick.saved = routeLeft / before - routeLeft / after;
+                    float const back = float(pack->CategoryRecoveryTime) / 1000.0f;
+                    pick.cost = std::max(0.0f, back - routeLeft / after);
+                    pick.why = Acore::StringFormat(
+                        "Aspect of the Pack: {:.1f} s of the group's {:.0f} yd route walk saved (the slowest walker "
+                        "{:.1f} -> {:.1f} yd/s) vs {:.1f} s to its swap back (aspect category cooldown)",
+                        pick.saved, routeLeft, before, after, pick.cost);
+                    float const line = LeaderMoveManaLine(hunter, false, 0.0f, false, facts.waitBoss);
+                    if (pick.saved <= pick.cost || !ManaCovers(hunter, ManaCost(hunter, pack), line, pick.why))
+                        continue;
+                }
+                // the hunter already in it keeps it; else the one with the most mana over its line
+                float const margin =
+                    inPack ? 1000.0f
+                           : 1.0f + hunter->GetPowerPct(POWER_MANA) -
+                                 std::max(0.0f, LeaderMoveManaLine(hunter, false, 0.0f, false, facts.waitBoss));
+                if (!packHunter || margin > bestMargin)
+                {
+                    bestMargin = margin;
+                    bestPack = pick;
+                    packHunter = hunter;
+                }
+            }
+            if (packHunter)
+            {
+                held.insert(packHunter->GetGUID());
+                Leader::MemberEvents live;
+                bool const known = Leader::Events::Get(packHunter->GetGUID(), live);
+                if (!packHunter->HasAura(SPELL_ASPECT_OF_THE_PACK, packHunter->GetGUID()))
+                {
+                    if (known && (!live.externalSpell || OwnMoveExternal(packHunter, live)))
+                        tell(packHunter, bestPack, "the group's route walk: " + bestPack.why);
+                }
+                else if (known && live.externalSpell == SPELL_ASPECT_OF_THE_PACK)
+                    Leader::Events::SetExternal(packHunter->GetGUID(), 0, ObjectGuid::Empty);
+            }
+        }
+
+        for (Player* bot : walkers)
+        {
+            if (!bot->IsAlive() || bot == packHunter)
+                continue;
+            Leader::MemberEvents live;
+            if (!Leader::Events::Get(bot->GetGUID(), live))
+                continue;
+            // another External goes first
+            if (live.externalSpell && !OwnMoveExternal(bot, live))
+                continue;
+            bool const trails = facts.trailing && facts.trailing->count(bot->GetGUID());
+            // out of a fight the tank's walk is the group's walk (the members follow it, the far gate waits for the
+            // ones behind): a speed of its own saves the group nothing
+            bool const groupWalk = bot == tank && !facts.fighting;
+            Position to;
+            float length = 0.0f;
+            std::string what;
+            bool const walks =
+                !groupWalk && (AnyOwnSkillReady(bot) || LeaderInMoveAspect(bot)) &&
+                OrderedWalk(bot, tank, live, trails, to, length, what);
+            // a hunter in its own movement aspect stays in it while its walk goes on out of a fight
+            if (LeaderInMoveAspect(bot) && walks && !facts.fighting && !facts.pullOrdered && !bot->IsInCombat())
+                held.insert(bot->GetGUID());
+            // Ghost Wolf: no spell is cast in it - left once the fight starts, the pull is ordered, the walk stops,
+            // the leader readies or rests the group, or the shaman has heals to cast
+            if (bot->HasAura(SPELL_GHOST_WOLF))
+            {
+                bool const keep = !facts.fighting && !facts.pullOrdered && !bot->IsInCombat() &&
+                                  (bot->isMoving() || tank->isMoving()) && live.ready == Leader::ReadyEvent::None &&
+                                  !RestState::HealerHasWork(bot);
+                if (!keep)
+                {
+                    Pick leave;
+                    leave.spell = SPELL_GHOST_WOLF;
+                    leave.on = bot->GetGUID();
+                    tell(bot, leave, "leaves Ghost Wolf: the walk is over");
+                }
+                else if (live.externalSpell == SPELL_GHOST_WOLF)
+                    Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+                continue;
+            }
+            Pick pick;
+            if (walks)
+                pick = BestOwnSkill(bot, to, length, zonesOf(bot),
+                                    LeaderMoveManaLine(bot, facts.fighting, facts.fightSecLeft, facts.bossFight,
+                                                       facts.waitBoss));
+            if (!pick.spell && facts.fighting && PlayerbotAI::IsMelee(bot))
+                pick = BestGapCloser(bot, tank, live);
+            if (pick.spell)
+            {
+                // a leap goes facing the walk (LeaderExternalAction): told on the member by its guid (lead690)
+                if (pick.spell == SPELL_BLINK)
+                    pick.on = bot->GetGUID();
+                tell(bot, pick, (walks ? "the walk (" + what + "): " : std::string("the attack: ")) + pick.why);
+            }
+            else if (OwnMoveExternal(bot, live))
+                Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
+        }
+        return held;
+    }
+
+    // [lead690] [lead691] the mage's Blink on the member's walk (LeapSaves), its mana after it over `manaLine`
+    bool LeaderLeapSaves(Player* bot, Position const& to, std::vector<HazardZone> const& zones, std::string* why,
+                         float manaLine)
     {
         float leap = 0.0f;
         uint32 const spell = LeaderLeapSpell(bot, &leap);
         SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
-        if (!info || leap <= 0.0f || bot->HasSpellCooldown(spell) || bot->IsRooted() || !bot->isMoving() ||
-            bot->IsNonMeleeSpellCast(false) || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || bot->IsInFlight() ||
-            bot->GetTransport() || bot->isSwimming() ||
-            bot->GetPower(POWER_MANA) < info->CalcPowerCost(bot, info->GetSchoolMask()))
+        if (!info || bot->HasSpellCooldown(spell))
             return false;
-        // a leap past the place is no saving: the walk left is at least the leap
-        if (bot->GetExactDist2d(to.GetPositionX(), to.GetPositionY()) < leap)
+        Pick pick;
+        if (!LeapSaves(bot, info, leap, false, to, zones, pick) ||
+            !ManaCovers(bot, ManaCost(bot, info), manaLine, pick.why))
             return false;
-        Leader::RouteResult const route = Leader::Route(bot, to);  // [lead99] the leader's walk
-        if (!route.found || !route.complete || route.points.size() < 2 || route.length < leap)
-            return false;
-        // The point `leap` yd along the walk; the leap goes straight ahead, so it saves that much walk only when
-        // the walk runs straight there: its point that far along lies the leap's length off (within the member's
-        // own combat reach, the size the game gives it), on the same ground
-        G3D::Vector3 const start(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-        G3D::Vector3 land = route.points.back();
-        float along = 0.0f;
-        for (size_t i = 1; i < route.points.size(); ++i)
-        {
-            float const step = (route.points[i] - route.points[i - 1]).length();
-            if (along + step >= leap)
-            {
-                float const share = step > 0.0f ? (leap - along) / step : 0.0f;
-                land = route.points[i - 1] + (route.points[i] - route.points[i - 1]) * share;
-                break;
-            }
-            along += step;
-        }
-        float const off = (land - start).length();
-        if (off < leap - bot->GetCombatReach())
-            return false;
-        Map* map = bot->GetMap();
-        if (!map->isInLineOfSight(start.x, start.y, start.z + 2.0f, land.x, land.y, land.z + 2.0f,
-                                  bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
-            return false;
-        // safe along the leap and where it lands: no hazard zone, no lava / drop-off, no idle mob's aggro reach
-        constexpr uint32 SAMPLES = 4;
-        for (uint32 i = 1; i <= SAMPLES; ++i)
-        {
-            G3D::Vector3 const at = start + (land - start) * (float(i) / float(SAMPLES));
-            if (LeaderZoneAt(zones, at.x, at.y, at.z, LEADER_HAZARD_EDGE) ||
-                NearHazard(map, bot->GetPhaseMask(), at.x, at.y, at.z, LEADER_TERRAIN_EDGE))
-                return false;
-        }
-        if (LeaderAggroAt(bot, Position(land.x, land.y, land.z)))
-            return false;
-        // Seconds: the leap saves its length at the member's run speed; it costs the global cooldown it starts
-        // (Spell::TriggerGlobalCooldown: StartRecoveryTime times the caster's cast speed, 1-1.5 s) where the walk
-        // left after it ends sooner than that cooldown (no cast while walking anyway)
-        float const speed = bot->GetSpeed(MOVE_RUN);
-        if (speed <= 0.0f)
-            return false;
-        float gcd = float(info->StartRecoveryTime) / 1000.0f;
-        if (gcd > 0.0f)
-            gcd = std::clamp(gcd * bot->GetFloatValue(UNIT_MOD_CAST_SPEED), 1.0f, 1.5f);
-        float const castSec = info->CalcCastTime(bot) / 1000.0f;
-        float const saved = leap / speed;
-        float const left = (route.length - leap) / speed;
-        float const cost = castSec + std::max(0.0f, gcd - left);
         if (why)
-            *why = Acore::StringFormat("{}: {:.1f} s of a {:.0f} yd walk saved vs {:.1f} s cast / GCD after it, "
-                                       "{} mana",
-                                       info->SpellName[0], saved, route.length, cost,
-                                       info->CalcPowerCost(bot, info->GetSchoolMask()));
-        return saved > cost;
+            *why = pick.why;
+        return true;
     }
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)

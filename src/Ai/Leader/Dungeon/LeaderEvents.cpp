@@ -5407,14 +5407,41 @@ namespace Leader::Dungeon
             }
             if (wantViper && !inViper)
                 return RestState::SPELL_ASPECT_OF_THE_VIPER;
-            if (!wantViper && inViper)
+            // [lead691] a movement aspect the leader put it in (Cheetah / Pack, LeaderTickMoveSkills) ends like
+            // Viper: the fight's or the walk's aspect by the same lines (the pull ordered, a fight, the walk over)
+            if (!wantViper && (inViper || LeaderInMoveAspect(hunter)))
                 return attack;
             return 0;
         };
+        // [lead691] user 2026-11-03: every class's movement skills on the walks the leader orders (Blink, Sprint,
+        // Shadowstep, Dash, Feral Charge - Cat, Ghost Wolf, Aspect of the Cheetah / Pack, Power Word: Shield with
+        // Body and Soul, Disengage), told as Externals when they save walk seconds by game math and the member's
+        // mana after it still covers its mana line for the fight now / next (LeaderTickMoveSkills); never kept for
+        // a boss. The hunters it holds in a movement aspect on the walk are no Viper switch's out of a fight
+        std::set<ObjectGuid> moveHeld;
+        {
+            LeaderMoveTick facts;
+            facts.tank = tank;
+            facts.members = seats;
+            facts.fighting = fighting;
+            facts.pullOrdered = lead.commit && lead.commitIssued;
+            facts.fightSecLeft = lead.fightSecLeft;
+            facts.bossFight = fightBoss != nullptr;
+            facts.waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+            facts.hazardZones = &lead.hazardZones;
+            facts.trailing = &lead.trailing;
+            facts.routePath = &lead.routePath;
+            facts.routePathIndex = lead.routePathIndex;
+            std::vector<LeaderMoveTold> told;
+            moveHeld = LeaderTickMoveSkills(facts, told);
+            for (LeaderMoveTold const& one : told)
+                logEvent(one.member, "External",
+                         JsonObject().Num("spell", one.spell).Str("on", one.on).Str("why", one.why));
+        }
         if (!fighting)
             for (Player* hunter : seats)
             {
-                if (hunter->IsInCombat())
+                if (hunter->IsInCombat() || moveHeld.count(hunter->GetGUID()))
                     continue;
                 std::string why;
                 // [lead456] coordinator 2026-11-02 (Q5): once the leader issued the pull order the fight's rule
@@ -5426,33 +5453,6 @@ namespace Leader::Dungeon
                         logEvent(hunter, "External", JsonObject().Num("spell", aspect).Str("on", hunter->GetName())
                                                          .Str("why", why));
             }
-
-        // [lead690] user 2026-11-03: "the mage also has Blink to move faster" - on a walk the leader ordered (a MoveTo /
-        // StandAt spot it walks to, in a fight or out of it) the member's forward leap goes when it saves walk seconds
-        // (LeaderLeapSaves: straight, safe, its seconds against its cast and global cooldown). The leader decides,
-        // the member casts it facing its walk (LeaderExternalAction). A leap told and no longer saving is withdrawn;
-        // any other External the member holds goes first
-        {
-            std::vector<Player*> walkers = seats;
-            walkers.push_back(tank);
-            for (Player* bot : walkers)
-            {
-                uint32 const leap = LeaderLeapSpell(bot);
-                if (!leap)
-                    continue;
-                Leader::MemberEvents live;
-                if (!Leader::Events::Get(bot->GetGUID(), live) || (live.externalSpell && live.externalSpell != leap))
-                    continue;
-                std::string why;
-                bool const walks = live.move == Leader::MoveEvent::MoveTo || live.move == Leader::MoveEvent::StandAt;
-                bool const saves = walks && LeaderLeapSaves(bot, live.spot, lead.hazardZones[bot->GetGUID()], &why);
-                if (saves && Leader::Events::SetExternal(bot->GetGUID(), leap, bot->GetGUID()))
-                    logEvent(bot, "External", JsonObject().Num("spell", leap).Str("on", bot->GetName())
-                                                  .Str("why", "the walk (" + live.moveWhy + "): " + why));
-                else if (!saves && live.externalSpell == leap)
-                    Leader::Events::SetExternal(bot->GetGUID(), 0, ObjectGuid::Empty);
-            }
-        }
 
         // 3c. external saves and buffs on a target: the leader picks who and when, the member casts when told
         if (fighting && Leader::LEADER_ATTACK_EVENTS)

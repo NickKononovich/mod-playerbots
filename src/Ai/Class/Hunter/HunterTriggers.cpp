@@ -99,6 +99,12 @@ bool HunterAspectOfTheDragonhawkTrigger::IsActive()
         botAI->HasAura("aspect of the dragonhawk", target))
         return false;
 
+    // [lead691] a led hunter's own Aspect of the Cheetah (5118) / Pack (13159) on the walk is the leader's: it swaps
+    // back by the leader's External (the pull ordered, a fight, the walk over: LeaderTickMoveSkills, the Viper switch)
+    if (Leader::LedBot(bot) && !bot->IsInCombat() &&
+        (bot->HasAura(5118, bot->GetGUID()) || bot->HasAura(13159, bot->GetGUID())))
+        return false;
+
     if (botAI->HasAura("aspect of the viper", target))
     {
         // [lead426] a led hunter's switch out of Viper is the leader's External (its fight need, its rest line)
