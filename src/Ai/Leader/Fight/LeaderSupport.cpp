@@ -735,6 +735,41 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
         // [lead850] b223 rfc-h 5D Oggleflint 275.1-276.6 s: Evocation was told at 24 %, the potion verdict ("24 % <
         // the 90 % ... - 0 cooldowns") put the Runic Mana Potion on the mage before its channel ran: 24 + 25 + 60 %
         // and ~9 % over the pool's top. A told Evocation is the member's next mana too (one order per fact, lead752)
+        // [lead903] [lead904] the cooldown rule the mana gem and the mana potion are held by: in a boss fight, on
+        // trash only at a critical moment (a critical pull, a healer out of mana), with no boss left, or when the item
+        // is back (`backSec`) before the next boss pull; empty: held. A potion drunk in combat starts its cooldown
+        // only once the fight ends (Player::UpdatePotionCooldown): its back time counts the fight's seconds left
+        auto const itemRechargeSec = [](uint32 entry)
+        {
+            float rechargeSec = 0.0f;
+            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry))
+                for (auto const& use : proto->Spells)
+                    if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                    {
+                        rechargeSec = std::max({rechargeSec, float(std::max(use.SpellCooldown, 0)),
+                                                float(std::max(use.SpellCategoryCooldown, 0))}) /
+                                      1000.0f;
+                        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(uint32(use.SpellId)))
+                            rechargeSec = std::max(rechargeSec,
+                                                   std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f);
+                    }
+            return rechargeSec;
+        };
+        auto const cooldownRule = [&](float backSec) -> std::string
+        {
+            if (bossFight)
+                return "a boss fight";
+            if (lead.fightOverload >= 1.0f)
+                return Acore::StringFormat("a critical pull: overload {:.2f}", lead.fightOverload);
+            if (std::string const dry = HealerOutOfMana(members, lead.fightSecLeft); !dry.empty())  // [lead903]
+                return "critical: " + dry;
+            if (lead.bossPullSec < 0.0f)
+                return "trash, no boss left";
+            if (lead.bossPullSec >= backSec)
+                return Acore::StringFormat("trash: back before the pull of {} (in {:.0f} s, back in {:.0f} s)",
+                                           lead.nextBossName, lead.bossPullSec, backSec);
+            return "";
+        };
         Leader::MemberEvents pending;
         bool const evocationTold = Leader::Events::Get(bot->GetGUID(), pending) &&
                                    pending.externalSpell == RestState::SPELL_EVOCATION;
@@ -750,13 +785,31 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                     RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight, true, false);
                 if (bot->GetPowerPct(POWER_MANA) < line)
                 {
-                    item = potion;
+                    // [lead904] user 2026-11-03 (32 / 18): the mana potion on trash is kept for the next boss like the
+                    // mana gem (the cooldown rule, except critical); its cooldown starts once the fight ends
+                    float const backSec = lead.fightSecLeft + itemRechargeSec(potion);
+                    std::string const rule = cooldownRule(backSec);
+                    item = rule.empty() ? 0 : potion;
                     verdict = Acore::StringFormat(
-                        "mana potion: {:.0f} % < the {:.0f} % the fight's {:.0f} s left "
-                        "need ({})",
-                        bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft, lineWhy);
+                        "mana potion {}: {:.0f} % < the {:.0f} % the fight's {:.0f} s left "
+                        "need ({}); {}",
+                        item ? "used" : "held", bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft, lineWhy,
+                        rule.empty() ? Acore::StringFormat("held for {} (his pull in {:.0f} s, back in {:.0f} s)",
+                                                           lead.nextBossName, lead.bossPullSec, backSec)
+                                     : rule);
+                    if (!item)
+                    {
+                        thread_local std::map<uint64, std::string> heldLogged;
+                        if (std::string& logged = heldLogged[bot->GetGUID().GetRawValue()];
+                            logged != lead.nextBossName)
+                        {
+                            logged = lead.nextBossName;
+                            LOG_INFO("playerbots", "[lead904] {}: {}", bot->GetName(), verdict);
+                        }
+                    }
                     // [lead884] its energize's split threat stays under the tank's on every mob listing it
-                    if (std::string const overtakes = ManaSplitOvertakes(bot, tank, amount); !overtakes.empty())
+                    if (std::string const overtakes = item ? ManaSplitOvertakes(bot, tank, amount) : "";
+                        !overtakes.empty())
                     {
                         item = 0;
                         verdict = "mana potion waits: " + overtakes;
@@ -784,33 +837,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                         RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight, true, false);
                     if (bot->GetPowerPct(POWER_MANA) < line)
                     {
-                        float rechargeSec = 0.0f;
-                        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(gem))
-                            for (auto const& use : proto->Spells)
-                                if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
-                                {
-                                    rechargeSec = std::max({rechargeSec, float(std::max(use.SpellCooldown, 0)),
-                                                            float(std::max(use.SpellCategoryCooldown, 0))}) /
-                                                  1000.0f;
-                                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(uint32(use.SpellId)))
-                                        rechargeSec = std::max(
-                                            rechargeSec,
-                                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f);
-                                }
-                        std::string rule;
-                        if (bossFight)
-                            rule = "a boss fight";
-                        else if (lead.fightOverload >= 1.0f)
-                            rule = Acore::StringFormat("a critical pull: overload {:.2f}", lead.fightOverload);
-                        else if (std::string const dry = HealerOutOfMana(members, lead.fightSecLeft);
-                                 !dry.empty())  // [lead903]
-                            rule = "critical: " + dry;
-                        else if (lead.bossPullSec < 0.0f)
-                            rule = "trash, no boss left";
-                        else if (lead.bossPullSec >= rechargeSec)
-                            rule = Acore::StringFormat(
-                                "trash: back before the pull of {} (in {:.0f} s, recharge {:.0f} s)", lead.nextBossName,
-                                lead.bossPullSec, rechargeSec);
+                        float const rechargeSec = itemRechargeSec(gem);
+                        std::string rule = cooldownRule(rechargeSec);
                         if (!rule.empty())
                             item = gem;
                         // [lead884] the gem's energize splits its threat like the potion's
