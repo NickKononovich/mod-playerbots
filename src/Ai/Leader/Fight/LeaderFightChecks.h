@@ -340,7 +340,11 @@ namespace Leader::Fight
     // mob's block value takes (mobs neither parry nor block from behind) over ExpectedLifetime; the walk: the arc at
     // its distance into the mob's back half (out of HasInArc(pi)) at its run speed. Bosses keep behind, and so do the
     // members whose rotation needs the back (a cat's Shred, a Subtlety rogue's Backstab). `why`: the terms
-    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why = nullptr);
+    // [lead680] the core's roll (expertise, weapon skill vs the mob's level, no-parry / no-block flags) and the walk
+    // the chase really takes (to the first point in reach out of the front half) against the walk to the nearest
+    // place in reach (none where the member stands in reach, else the place on the line to the mob once the fight
+    // stands); `standAt`: that place when the front costs less
+    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why = nullptr, Position* standAt = nullptr);
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
     bool LeaderNearestCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& from, bool melee,

@@ -3796,9 +3796,16 @@ namespace Leader::Dungeon
                 };
                 // [lead454] in reach in front of a trash mob whose remaining life loses less to its parry / block
                 // than the walk round it costs: the member stays where it stands (no chase, its spot is here)
+                // [lead680] b218 rfc-h (8 runs, fight_breakdown): melee walked 1198 s under "chase: behind the
+                // target", 483 s of it with the tank standing, most of it the walk in from out of reach (the target
+                // switch to a mob at the tank's other side, the first walk in) straight past the near side to the
+                // back. Out of reach too the leader weighs the walk round against the front's loss: the nearest place
+                // in reach (frontAt) when the extra walk to the back costs more than the parry / block over the mob's
+                // life (the core's roll with the member's expertise and the level difference)
                 std::string frontWhy;
+                Position frontAt = bot->GetPosition();
                 bool const frontHere =
-                    melee && target->GetVictim() != bot && LeaderFrontCostsLess(bot, target, &frontWhy);
+                    melee && target->GetVictim() != bot && LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt);
                 if (frontHere)
                 {
                     thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> frontLogged;
@@ -3823,7 +3830,8 @@ namespace Leader::Dungeon
                 }
                 // [lead190] the chase of a walked-off target holds until the member is in its melee reach again
                 else if (auto const chase = lead.meleeChase.find(guid);
-                         melee && chase != lead.meleeChase.end() && chase->second == target->GetGUID() &&
+                         melee && !frontHere && chase != lead.meleeChase.end() &&
+                         chase->second == target->GetGUID() &&
                          !bot->IsWithinMeleeRange(target) && !chaseRefused())
                 {
                     Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2), "chase: behind the target");
@@ -3867,7 +3875,7 @@ namespace Leader::Dungeon
                         // its target. A melee member's held spot for this target that the target walked away from is
                         // the chase: one Follow behind that mob (lead156), the spot again once it stands
                         if (melee && found->second.first == target->GetGUID() &&
-                            breaks.rfind("out of melee reach", 0) == 0 && !chaseRefused())
+                            breaks.rfind("out of melee reach", 0) == 0 && !frontHere && !chaseRefused())
                         {
                             if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
                                                           "chase: behind the target"))
@@ -3884,16 +3892,22 @@ namespace Leader::Dungeon
                     // is its spot when the spot's other checks hold there (no walk behind, a spot in front no break)
                     if (frontHere)
                     {
-                        std::string const standing =
-                            LeaderCombatSpotBreaks(bot, botAI, target, bot->GetPosition(), true, zones, keeps, true,
-                                                   &killOrder, true);
+                        std::string const standing = LeaderCombatSpotBreaks(bot, botAI, target, frontAt, true, zones,
+                                                                            keeps, true, &killOrder, true);
                         if (standing.empty() || standing == "in front of the target")
                         {
-                            if (found == lead.combatSpots.end() || found->second.first != target->GetGUID() ||
-                                bot->GetExactDist2d(found->second.second.GetPositionX(),
-                                                    found->second.second.GetPositionY()) > 1.0f)
+                            // [lead680] a held front spot for this target the member still hits it from is kept (one
+                            // decision per fact: the near place moves with the member's own walk in)
+                            bool const heldFits = found != lead.combatSpots.end() &&
+                                                  found->second.first == target->GetGUID() &&
+                                                  target->HasInArc(float(M_PI), &found->second.second) &&
+                                                  LeaderMeleeReachesFrom(bot, target, found->second.second);
+                            if (!heldFits && (found == lead.combatSpots.end() ||
+                                              found->second.first != target->GetGUID() ||
+                                              frontAt.GetExactDist2d(found->second.second.GetPositionX(),
+                                                                     found->second.second.GetPositionY()) > 1.0f))
                             {
-                                lead.combatSpots[guid] = {target->GetGUID(), bot->GetPosition()};
+                                lead.combatSpots[guid] = {target->GetGUID(), frontAt};
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 found = lead.combatSpots.find(guid);
                             }

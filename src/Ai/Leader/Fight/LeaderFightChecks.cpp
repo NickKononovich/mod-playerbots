@@ -1301,36 +1301,105 @@ namespace Leader::Fight
         return std::string();
     }
 
-    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why)
+    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why, Position* standAt)
     {
         Creature* mob = target ? target->ToCreature() : nullptr;
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        // [lead580] staying in front is staying where the member hits it: in the game's sight too
-        if (!mob || !botAI || mob->IsDungeonBoss() || mob->isWorldBoss() || !bot->IsWithinMeleeRange(mob) ||
-            !mob->HasInArc(float(M_PI), bot) || !bot->IsWithinLOSInMap(mob))
+        if (!mob || !botAI || !mob->IsAlive() || mob->IsDungeonBoss() || mob->isWorldBoss() ||
+            bot->GetMap() != mob->GetMap())
             return false;
         // the rotations that need the back: Shred (cat form), Backstab as the Subtlety builder (Hemorrhage talent)
         if ((bot->getClass() == CLASS_DRUID && botAI->HasSpell("shred")) ||
             (bot->getClass() == CLASS_ROGUE && botAI->HasSpell("hemorrhage")))
             return false;
+        // [lead680] where the member hits it from without the walk round: where it stands when it is in the game's
+        // melee range and sight; out of reach the nearest place in reach on the line to the mob (the ring the chase
+        // places stand on, LeaderMeleePlace), judged only once the fight stands (the mob on its victim, in its reach)
+        bool const inReach = bot->IsWithinMeleeRange(mob) && bot->IsWithinLOSInMap(mob);
+        Position nearAt = bot->GetPosition();
+        if (!inReach)
+        {
+            Unit* const victim = mob->GetVictim();
+            if (mob->isMoving() || !victim || !mob->IsWithinMeleeRange(victim))
+                return false;
+            float const ring = std::max(1.5f, mob->GetCombatReach() + bot->GetCombatReach() * 0.5f);
+            float const angle = mob->GetAbsoluteAngle(bot);
+            float x = mob->GetPositionX() + std::cos(angle) * ring;
+            float y = mob->GetPositionY() + std::sin(angle) * ring;
+            float z = mob->GetPositionZ();
+            if (!mob->GetMap()->CheckCollisionAndGetValidCoords(mob, mob->GetPositionX(), mob->GetPositionY(),
+                                                                 mob->GetPositionZ(), x, y, z) ||
+                !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+                return false;
+            nearAt.Relocate(x, y, z);
+            if (!LeaderMeleeReachesFrom(bot, mob, nearAt))
+                return false;
+        }
+        // the near place in the mob's back half already: behind is the nearest place, no front to weigh
+        if (!mob->HasInArc(float(M_PI), &nearAt))
+            return false;
+        Position behindAt;
+        bool behind = false;
+        if (!LeaderMeleePlace(bot, mob, 1.0f, behindAt, &behind) || !behind)
+            return false;
+        // The walk the chase takes (LeaderMoveOrderAction's Follow): the straight walk to its place behind the mob,
+        // stopped as soon as the member stands in the mob's reach out of its front half (ChaseDoneHere); against it
+        // the walk to the near place (none in reach)
+        float const nearWalk = bot->GetExactDist(nearAt);
+        float behindWalk = bot->GetExactDist(behindAt);
+        {
+            float const reach =
+                std::max(mob->GetCombatReach() + bot->GetCombatReach() + 4.0f / 3.0f, float(NOMINAL_MELEE_RANGE));
+            constexpr float STEP = 0.25f;
+            float const whole = behindWalk;
+            for (float done = STEP; done < whole; done += STEP)
+            {
+                float const share = done / whole;
+                Position const at(bot->GetPositionX() + (behindAt.GetPositionX() - bot->GetPositionX()) * share,
+                                  bot->GetPositionY() + (behindAt.GetPositionY() - bot->GetPositionY()) * share,
+                                  bot->GetPositionZ() + (behindAt.GetPositionZ() - bot->GetPositionZ()) * share);
+                if (!mob->HasInArc(float(M_PI), &at) && mob->GetExactDist(at) <= reach)
+                {
+                    behindWalk = done;
+                    break;
+                }
+            }
+        }
+        // The front's loss, the core's melee roll (Unit::RollMeleeOutcomeAgainst): parry and block only from the
+        // front (none with SPELL_AURA_IGNORE_HIT_DIRECTION: front and back are the same there), the parry chance less
+        // the member's expertise (Player::GetExpertiseDodgeOrParryReduction), both less the weapon skill bonus
+        // (0.04 % per point of weapon skill over the mob's max skill for its level: the level difference), none for
+        // a mob flagged CREATURE_FLAG_EXTRA_NO_PARRY / _NO_BLOCK; a block takes the mob's block value off the hit
+        float parry = 0.0f;
+        float block = 0.0f;
+        if (!mob->HasIgnoreHitDirectionAura())
+        {
+            float const skillBonus = 0.04f * (float(bot->GetWeaponSkillValue(BASE_ATTACK, mob)) -
+                                              float(mob->GetMaxSkillValueForLevel(bot)));
+            if (!mob->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_PARRY))
+                parry = std::max(0.0f, mob->GetUnitParryChance() -
+                                           bot->GetExpertiseDodgeOrParryReduction(BASE_ATTACK) - skillBonus);
+            if (!mob->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_BLOCK))
+                block = std::max(0.0f, mob->GetUnitBlockChance() - skillBonus);
+        }
         float const avgHit =
             (bot->GetFloatValue(UNIT_FIELD_MINDAMAGE) + bot->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
         float const blockShare = avgHit > 0.0f ? std::min(1.0f, float(mob->GetShieldBlockValue()) / avgHit) : 0.0f;
-        float const lossShare = (mob->GetUnitParryChance() + mob->GetUnitBlockChance() * blockShare) / 100.0f;
+        float const lossShare = (parry + block * blockShare) / 100.0f;
         float const lifetime = ExpectedLifetime(botAI, mob);
         float const lossSec = lifetime * lossShare;
-        // the arc into its back half: from the member's angle off the mob's facing to a right angle
-        float const off = std::fabs(Position::NormalizeOrientation(mob->GetRelativeAngle(bot) + float(M_PI)) -
-                                    float(M_PI));
-        float const arc = mob->GetExactDist2d(bot) * std::max(0.0f, float(M_PI) / 2.0f - off);
         float const speed = bot->GetSpeed(MOVE_RUN);
-        float const walkSec = speed > 0.0f ? arc / speed : 0.0f;
+        float const extraSec = speed > 0.0f ? std::max(0.0f, behindWalk - nearWalk) / speed : 0.0f;
         if (why)
             *why = Acore::StringFormat("front loss {:.2f} s ({:.1f} % parry + {:.1f} % block x {:.2f} over {:.1f} s) "
-                                       "vs the walk {:.2f} s ({:.1f} yd)",
-                                       lossSec, mob->GetUnitParryChance(), mob->GetUnitBlockChance(), blockShare,
-                                       lifetime, walkSec, arc);
-        return lossSec < walkSec;
+                                       "vs the walk round {:.2f} s ({:.1f} yd behind vs {:.1f} yd {})",
+                                       lossSec, parry, block, blockShare, lifetime, extraSec, behindWalk, nearWalk,
+                                       inReach ? "where it stands" : "to the near place in reach");
+        if (lossSec >= extraSec)
+            return false;
+        if (standAt)
+            *standAt = nearAt;
+        return true;
     }
 
     // [lead18] the nearest spot around `from` that fits (ranged: at least 8 yd off the target)
