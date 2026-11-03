@@ -8,10 +8,14 @@
 #include "LeaderPrepull.h"
 
 #include <algorithm>
+#include <list>
 
 #include "AiFactory.h"
+#include "CellImpl.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "HealthTriggers.h"  // RestState
 #include "LeaderFightChecks.h"
 #include "LeaderRest.h"  // CountRestItems
@@ -37,15 +41,56 @@ namespace
 {
 using Leader::Fight::SPELL_ARMY_OF_THE_DEAD;
 
-// a death knight that casts Army before a pull in wowsims: Blood and Frost, not Unholy
-// [lead725] and not the tank: b219 rfc-h 5C (the blood tank the comp's only DK) Oggleflint 279.0 s "not on the tank
-// with the tank's threat (on Army of the Dead Ghoul, tank threat 108366)", 5G (blood tank + frost DK, both channelled
-// at 281-287 s) 7 such heal waits on Oggleflint / Bazzalan - the ghouls reach the boss and hit it before the tank's
-// threat holds it, and the boss is the tank's to hold (aggro off the tank: 0). The damage DK's Army stays
+// a death knight that casts Army before a pull in wowsims: Blood (tank and dps) and Frost, not Unholy
+// [lead750] the tank again (wowsims blood_aggro: Army at -6 s; b220 without it the blood tank read 69-73 % of a sim
+// that has a fresh Army at every boss). lead725 took it off for b219 rfc-h 5C: the channel's ghouls woke a Ragefire
+// Shaman beside the knight (pull 17 at 268 s started during the channel, "firstMember" none) and fought it with the
+// boss on them. The ghouls attack only what fights their owner (npc_pet_dk_army_of_the_dead::CanAIAttack) and the
+// owner's target when it attacks (OwnerAttacked): the tank's opener goes first. What they wake by standing there is
+// the knight's to judge before the channel: ArmyBlocked's idle-mob reach
 bool ArmyCaster(Player* bot)
 {
     return bot && bot->IsAlive() && bot->getClass() == CLASS_DEATH_KNIGHT && bot->HasSpell(SPELL_ARMY_OF_THE_DEAD) &&
-           AiFactory::GetPlayerSpecTab(bot) != DEATH_KNIGHT_TAB_UNHOLY && !PlayerbotAI::IsTank(bot);
+           AiFactory::GetPlayerSpecTab(bot) != DEATH_KNIGHT_TAB_UNHOLY;
+}
+
+// [lead750] how far from the knight its ghouls land: the largest radius of the Army's effects and of the spells they
+// trigger (the summons) - spell data
+float GhoulSpreadYd()
+{
+    float spread = 0.0f;
+    SpellInfo const* army = sSpellMgr->GetSpellInfo(SPELL_ARMY_OF_THE_DEAD);
+    if (!army)
+        return spread;
+    for (SpellEffectInfo const& effect : army->GetEffects())
+    {
+        spread = std::max(spread, effect.CalcRadius());
+        if (SpellInfo const* summon = effect.TriggerSpell ? sSpellMgr->GetSpellInfo(effect.TriggerSpell) : nullptr)
+            for (SpellEffectInfo const& landing : summon->GetEffects())
+                spread = std::max(spread, landing.CalcRadius());
+    }
+    return spread;
+}
+
+// [lead750] a mob out of combat (the boss included) whose aggro reach (Creature::GetAggroRange, the game's) takes in
+// a place the knight's ghouls land on: within the ghouls' spread of the knight; nullptr: none
+Unit* GhoulsWake(Player* dk)
+{
+    float const spread = GhoulSpreadYd();
+    float const search = MAX_AGGRO_RADIUS * sWorld->getRate(RATE_CREATURE_AGGRO) + spread;
+    std::list<Unit*> nearUnits;
+    Acore::AnyUnfriendlyUnitInObjectRangeCheck check(dk, dk, search);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(dk, nearUnits, check);
+    Cell::VisitObjects(dk, searcher, search);
+    for (Unit* unit : nearUnits)
+    {
+        Creature* mob = unit->ToCreature();
+        if (!mob || !mob->IsAlive() || mob->IsInCombat() || mob->IsCivilian() || !dk->IsValidAttackTarget(mob))
+            continue;
+        if (dk->GetExactDist2d(mob) <= mob->GetAggroRange(dk) + spread)
+            return mob;
+    }
+    return nullptr;
 }
 
 Spell* ArmyChannel(Player* dk)
@@ -74,6 +119,10 @@ std::string ArmyBlocked(Player* dk)
         return "on cooldown";
     if (dk->isMoving())
         return "walking";
+    // [lead750] the tank's ghouls wake nothing where they land: the boss is the tank's to open, its adds stay idle
+    if (PlayerbotAI::IsTank(dk))
+        if (Unit* woken = GhoulsWake(dk))
+            return "its ghouls land in " + woken->GetName() + "'s aggro reach";
     SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_ARMY_OF_THE_DEAD);
     SpellRuneCostEntry const* cost = info ? sSpellRuneCostStore.LookupEntry(info->RuneCostID) : nullptr;
     if (!cost)
