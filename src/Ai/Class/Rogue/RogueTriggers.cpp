@@ -35,7 +35,9 @@ constexpr uint8 SND_MIN_COMBO_POINTS = 2;
 constexpr uint8 SND_EARLY_REFRESH_MIN_COMBO_POINTS = 4;  // a running SnD is only refreshed with 4+ points
 constexpr int32 SND_PRE_REFRESH_MS = 6000;
 constexpr float SND_MIN_LIFETIME_S = 6.0f;
-constexpr int32 COLD_BLOOD_MIN_SND_MS = 2000;
+// [rot140] wowsims rogue__mutilate.apl.json: Cold Blood "currentComboPoints == 5 or remainingTime <= 5s", and only the
+// Slice and Dice line at <= 1 s (SLICE_AND_DICE_REFRESH_MS) ranks above it
+constexpr float COLD_BLOOD_FIGHT_END_S = 5.0f;
 constexpr uint32 FINISHER_ENERGY = 35;
 
 // Whether the current target lives minSeconds more at the group's damage (true when it cannot be told)
@@ -248,11 +250,18 @@ bool ColdBloodFinisherTrigger::IsActive()
     if (!bot->HasSpell(SPELL_COLD_BLOOD) || bot->HasSpellCooldown(SPELL_COLD_BLOOD) || bot->HasAura(SPELL_COLD_BLOOD))
         return false;
 
-    if (AI_VALUE2(uint8, "combo", "current target") < 5 || bot->GetPower(POWER_ENERGY) < FINISHER_ENERGY)
+    // [rot140] b212 rfc-h 5E Rtrogab: Cold Blood 0.33 a minute against the sim's 1.33 (once a boss fight). The bot's
+    // own 2 s Slice and Dice guard held it on the 5-point states that ended with Slice and Dice at 1-2 s, and most
+    // Envenoms go at 4 points, so the 5-point state came rarely: the APL's second branch (the target's last 5 s) was
+    // missing. Slice and Dice now only blocks it where the APL's Slice and Dice line outranks it (<= 1 s).
+    uint8 const combo = AI_VALUE2(uint8, "combo", "current target");
+    bool const fightEnds = combo && !TargetLivesFor(botAI, COLD_BLOOD_FIGHT_END_S);
+    if ((combo < 5 && !fightEnds) || bot->GetPower(POWER_ENERGY) < FINISHER_ENERGY)
         return false;
 
     Aura* sliceAndDice = botAI->GetAura("slice and dice", bot);
-    if (!sliceAndDice || sliceAndDice->GetDuration() < COLD_BLOOD_MIN_SND_MS)
+    if (!fightEnds &&
+        (!sliceAndDice || sliceAndDice->GetDuration() <= static_cast<int32>(SLICE_AND_DICE_REFRESH_MS)))
         return false;
 
     // the Hunger for Blood enabler Rupture would take the points next ("assassination rupture": no bleed and Hunger

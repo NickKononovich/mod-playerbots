@@ -91,8 +91,9 @@ public:
     bool IsActive() override;
 };
 
-// [b31_wr] Cold Blood right before a 5-point finisher: 5 points, energy for the finisher, Slice and Dice running (or
-// the next finisher would be it) and no Hunger for Blood enabler Rupture pending (Rupture cannot crit).
+// [b31_wr] Cold Blood right before a 5-point finisher: 5 points (or the target's last 5 s, [rot140]), energy for the
+// finisher, Slice and Dice over 1 s (or the next finisher would be it) and no Hunger for Blood enabler Rupture pending
+// (Rupture cannot crit).
 class ColdBloodFinisherTrigger : public Trigger
 {
 public:
