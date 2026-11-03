@@ -27,6 +27,7 @@
 #include "Timer.h"
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace
@@ -181,21 +182,59 @@ namespace
     // CastHealingSpellAction::getThreatType). Classified by the spell itself, for every class: a heal effect (direct,
     // percent, periodic, absorb), a positive spell that deals no damage, or a cast on a friendly unit.
     // [lead431] a spell whose effects trigger a damage spell (two deep, as LeaderMaxAreaRadius reads Starfall's stars)
+    // [lead620] b218: lead601 logged 0 cancels in 8 runs while 5C's Starfall hit spared mobs under the leader's Stop
+    // (cast ~886.4 s, Stop 888.6 s, "threat on a mob it was not told to hit" on a spared Searing Blade Warlock 889.2 s;
+    // cast 983 s, the same at 985.1 s): neither lasting area passed this test. Spell.dbc: Starfall 53201's periodic
+    // trigger is 53198, a SPELL_EFFECT_DUMMY with no TriggerSpell whose value (53194 + 1 die) is the star 53195 that
+    // spell_dru_starfall_dummy casts (caster->CastSpell(hit, GetEffectValue())); Bladestorm 46924 triggers 50622
+    // Whirlwind, SPELL_EFFECT_NORMALIZED_WEAPON_DMG (121) + a trigger of 44949 (121 too). Every weapon damage effect
+    // counts, and a dummy whose value names a spell of the same name (the script's relay) is followed as a trigger
+    bool IsDamageEffect(SpellEffectInfo const& hit)
+    {
+        switch (hit.Effect)
+        {
+            case SPELL_EFFECT_SCHOOL_DAMAGE:
+            case SPELL_EFFECT_WEAPON_DAMAGE:
+            case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+            case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+            case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+            case SPELL_EFFECT_HEALTH_LEECH:
+                return true;
+            case SPELL_EFFECT_APPLY_AURA:
+                return hit.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                       hit.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH;
+            default:
+                return false;
+        }
+    }
+
+    SpellInfo const* TriggeredBy(SpellInfo const* info, SpellEffectInfo const& effect)
+    {
+        if (effect.TriggerSpell)
+            return sSpellMgr->GetSpellInfo(effect.TriggerSpell);
+        if (effect.Effect != SPELL_EFFECT_DUMMY)
+            return nullptr;
+        int32 const value = effect.CalcValue();
+        SpellInfo const* relayed = value > 0 ? sSpellMgr->GetSpellInfo(uint32(value)) : nullptr;
+        if (!relayed || relayed == info || relayed->SpellFamilyName != info->SpellFamilyName ||
+            !relayed->SpellName[0] || !info->SpellName[0] || strcmp(relayed->SpellName[0], info->SpellName[0]) != 0)
+            return nullptr;
+        return relayed;
+    }
+
     bool TriggersDamage(SpellInfo const* info, uint8 depth)
     {
         if (!info || !depth)
             return false;
         for (SpellEffectInfo const& effect : info->GetEffects())
         {
-            if (!effect.IsEffect() || !effect.TriggerSpell)
+            if (!effect.IsEffect())
                 continue;
-            SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell);
+            SpellInfo const* triggered = TriggeredBy(info, effect);
             if (!triggered)
                 continue;
             for (SpellEffectInfo const& hit : triggered->GetEffects())
-                if (hit.Effect == SPELL_EFFECT_SCHOOL_DAMAGE || hit.Effect == SPELL_EFFECT_WEAPON_DAMAGE ||
-                    hit.Effect == SPELL_EFFECT_HEALTH_LEECH ||
-                    (hit.Effect == SPELL_EFFECT_APPLY_AURA && hit.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE))
+                if (IsDamageEffect(hit))
                     return true;
             if (TriggersDamage(triggered, depth - 1))
                 return true;
