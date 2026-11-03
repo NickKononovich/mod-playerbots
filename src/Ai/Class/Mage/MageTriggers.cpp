@@ -5,6 +5,11 @@
  */
 
 #include "MageTriggers.h"
+
+#include <algorithm>  // [rot251] std::max
+
+#include "AiFactory.h"  // [rot250] spec tab
+#include "EstimatedLifetimeValue.h"  // [rot251] ExpectedLifetime
 #include "Creature.h"
 #include "DynamicObject.h"
 #include "GameObject.h"
@@ -18,6 +23,7 @@
 #include "ServerFacade.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
+#include "SpellMgr.h"  // [rot250]
 #include "TargetValue.h"
 #include "Value.h"
 
@@ -377,4 +383,69 @@ bool BlizzardChannelCheckTrigger::IsActive()
     }
 
     return false;
+}
+
+// [rot250] see EvocationTrigger (MageTriggers.h)
+bool EvocationTrigger::IsActive()
+{
+    if (!AI_VALUE2(bool, "has mana", "self target") || AI_VALUE2(uint8, "mana", "self target") > MAGE_CONSERVE_MANA_PCT)
+        return false;
+
+    if (AiFactory::GetPlayerSpecTab(bot) != MAGE_TAB_ARCANE)
+        return true;
+
+    constexpr uint32 SPELL_MISSILE_BARRAGE_PROC = 44401;
+    constexpr uint32 SPELL_ARCANE_BLAST_STACK = 36032;
+    constexpr uint8 ARCANE_BLAST_MAX_STACKS = 4;
+    if (bot->HasAura(SPELL_MISSILE_BARRAGE_PROC))
+        return false;
+
+    Aura const* stacks = bot->GetAura(SPELL_ARCANE_BLAST_STACK);
+    if (stacks && stacks->GetStackAmount() >= ARCANE_BLAST_MAX_STACKS)
+        return true;
+
+    // Below 4 stacks the APL casts Arcane Blast first: Evocation only once it can no longer be paid.
+    uint32 const arcaneBlast = AI_VALUE2(uint32, "spell id", "arcane blast");
+    SpellInfo const* info = arcaneBlast ? sSpellMgr->GetSpellInfo(arcaneBlast) : nullptr;
+    if (!info)
+        return true;
+
+    return int32(bot->GetPower(POWER_MANA)) < info->CalcPowerCost(bot, info->GetSchoolMask());
+}
+
+namespace
+{
+// [rot251] the APL's remainingTime: the longest ExpectedLifetime of the target and the mage's attackers
+float FightRemainingSec(PlayerbotAI* botAI, Unit* target)
+{
+    float remaining = ExpectedLifetime(botAI, target);
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
+        if (Unit* mob = botAI->GetUnit(guid); mob && mob != target && mob->IsAlive())
+            remaining = std::max(remaining, ExpectedLifetime(botAI, mob));
+    return remaining;
+}
+
+bool FireFightEndTarget(Player* bot, Unit* target)
+{
+    return target && target->IsAlive() && target->IsInWorld() && bot->IsInCombat() &&
+           AiFactory::GetPlayerSpecTab(bot) == MAGE_TAB_FIRE;
+}
+}  // namespace
+
+bool FireBlastFightEndTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!FireFightEndTarget(bot, target))
+        return false;
+
+    uint32 const scorch = AI_VALUE2(uint32, "spell id", "scorch");
+    SpellInfo const* info = scorch ? sSpellMgr->GetSpellInfo(scorch) : nullptr;
+    float const scorchCastSec = info ? info->CalcCastTime(bot) / 1000.0f : 1.5f;
+    return FightRemainingSec(botAI, target) <= scorchCastSec;
+}
+
+bool ScorchFightEndTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    return FireFightEndTarget(bot, target) && FightRemainingSec(botAI, target) <= FIRE_FIGHT_END_SCORCH_SEC;
 }

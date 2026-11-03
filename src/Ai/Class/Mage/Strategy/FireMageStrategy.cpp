@@ -47,6 +47,11 @@ void FireMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
+    // [rot251] wowsims fire APL, the fight's end: below Living Bomb (18.5, it needs 12 s of target life), above
+    // Fireball
+    triggers.push_back(new TriggerNode("fire blast fight end", { NextAction("fire blast", 18.4f) }));
+    triggers.push_back(new TriggerNode("scorch fight end", { NextAction("scorch", 18.3f) }));
+
     // Proc Trigger
     triggers.push_back(
         new TriggerNode(

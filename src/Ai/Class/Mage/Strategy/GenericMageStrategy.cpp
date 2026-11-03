@@ -97,7 +97,8 @@ void GenericMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                                                    NextAction("use mana agate", ACTION_EMERGENCY - 0.6f) }));
 
     // [b31_deep] wowsims arcane / frost APL: Evocation at <= 25 % mana (was "low mana", 15 %)
-    triggers.push_back(new TriggerNode("mana at or below 25", { NextAction("evocation", ACTION_EMERGENCY - 1.0f) }));
+    // [rot250] arcane: at 4 Arcane Blast stacks with no Missile Barrage proc up (EvocationTrigger)
+    triggers.push_back(new TriggerNode("evocation", { NextAction("evocation", ACTION_EMERGENCY - 1.0f) }));
 
     // Counterspell / Spellsteal Triggers
     triggers.push_back(new TriggerNode("spellsteal", { NextAction("spellsteal", 40.0f) }));

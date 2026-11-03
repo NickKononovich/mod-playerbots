@@ -133,6 +133,19 @@ public:
     }
 };
 
+// [rot250] Evocation at <= 25 % mana. Arcane: in the wowsims arcane APL's place - after "Arcane Blast while stacks < 4"
+// and "Missile Barrage -> Arcane Missiles" - so it is channelled only at 4 Arcane Blast stacks with no Missile Barrage
+// proc up (or once Arcane Blast can no longer be paid). The 8 s channel outlasts the 6 s stack aura (36032), and a
+// proc kept through it and the 4 Arcane Blasts after it (15 s aura, 44401) runs out: b218 rfc-h 5D Rtmagac cast 60
+// Arcane Blasts to 10 Arcane Missiles on the 4 bosses (1 : 6), the sim 82 to 20 (1 : 4). Fire / Frost: <= 25 % only
+// (their APLs).
+class EvocationTrigger : public Trigger
+{
+public:
+    EvocationTrigger(PlayerbotAI* botAI) : Trigger(botAI, "evocation") {}
+    bool IsActive() override;
+};
+
 // Conserve phase: at 4 Arcane Blast stacks and <= 25 % mana, Arcane Missiles drops the stacks.
 // [b31_deep] was "medium mana" (40 %): the burn phase ended 15 points of mana before the wowsims APL.
 class ArcaneBlast4StacksAndConserveManaTrigger : public TwoTriggers
@@ -267,6 +280,27 @@ class ImprovedScorchTrigger : public DebuffTrigger
 public:
     ImprovedScorchTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "improved scorch", 1, true, IMPROVED_SCORCH_MIN_TARGET_LIFETIME) {}
+    bool IsActive() override;
+};
+
+// [rot251] wowsims fire APL, the fight's end: Fire Blast once the fight has no more than a Scorch cast left, Scorch
+// once it has <= 4 s left. The fight's remaining seconds as the APL's remainingTime: the longest ExpectedLifetime of
+// the target and the mage's attackers.
+constexpr float FIRE_FIGHT_END_SCORCH_SEC = 4.0f;
+
+class FireBlastFightEndTrigger : public Trigger
+{
+public:
+    FireBlastFightEndTrigger(PlayerbotAI* botAI) : Trigger(botAI, "fire blast fight end") {}
+    std::string const GetTargetName() override { return "current target"; }
+    bool IsActive() override;
+};
+
+class ScorchFightEndTrigger : public Trigger
+{
+public:
+    ScorchFightEndTrigger(PlayerbotAI* botAI) : Trigger(botAI, "scorch fight end") {}
+    std::string const GetTargetName() override { return "current target"; }
     bool IsActive() override;
 };
 

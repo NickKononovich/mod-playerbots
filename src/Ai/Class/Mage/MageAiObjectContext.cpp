@@ -121,6 +121,9 @@ public:
         // [b31_deep] conserve phase / Evocation at <= 25 % mana; "icy veins on cd" / "deep freeze on cd" removed
         // with the old Cold Snap condition
         creators["mana at or below 25"] = &MageTriggerFactoryInternal::mana_at_or_below_25;
+        creators["evocation"] = &MageTriggerFactoryInternal::evocation;  // [rot250]
+        creators["fire blast fight end"] = &MageTriggerFactoryInternal::fire_blast_fight_end;  // [rot251]
+        creators["scorch fight end"] = &MageTriggerFactoryInternal::scorch_fight_end;  // [rot251]
         creators["arcane blast 4 stacks and mana at or below 25"] =
             &MageTriggerFactoryInternal::arcane_blast_4_stacks_and_conserve_mana;
         creators["no mana gem"] = &MageTriggerFactoryInternal::NoManaGem;
@@ -188,6 +191,9 @@ private:
     static Trigger* arcane_blast_4_stacks_and_missile_barrage(PlayerbotAI* botAI) { return new ArcaneBlast4StacksAndMissileBarrageTrigger(botAI); }
     // [b31_deep]
     static Trigger* mana_at_or_below_25(PlayerbotAI* botAI) { return new ManaAtOrBelow25Trigger(botAI); }
+    static Trigger* evocation(PlayerbotAI* botAI) { return new EvocationTrigger(botAI); }
+    static Trigger* fire_blast_fight_end(PlayerbotAI* botAI) { return new FireBlastFightEndTrigger(botAI); }
+    static Trigger* scorch_fight_end(PlayerbotAI* botAI) { return new ScorchFightEndTrigger(botAI); }
     static Trigger* arcane_blast_4_stacks_and_conserve_mana(PlayerbotAI* botAI)
     {
         return new ArcaneBlast4StacksAndConserveManaTrigger(botAI);
