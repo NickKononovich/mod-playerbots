@@ -215,10 +215,16 @@ public:
     BashInterruptSpellTrigger(PlayerbotAI* botAI) : InterruptSpellTrigger(botAI, "bash") {}
 };
 
-// [b31_sd] Tiger's Fury / Berserk order (FERAL_CAT_AUDIT.md 2.2.6-7, wowsims waitForTf). Berserk removes an active
-// Tiger's Fury (spell_dru_berserk) and the core refuses Tiger's Fury under Berserk, so in cat form Berserk waits for
-// a Tiger's Fury that is neither up nor coming back within 15 s; a bear (no Tiger's Fury there) is not held.
-inline constexpr uint32 BERSERK_TF_MIN_COOLDOWN_MS = 15 * IN_MILLISECONDS;
+// [b31_sd] Tiger's Fury / Berserk order (FERAL_CAT_AUDIT.md 2.2.6-7). Berserk removes an active Tiger's Fury
+// (spell_dru_berserk) and the core refuses Tiger's Fury under Berserk, so in cat form Berserk waits while Tiger's
+// Fury is up; a bear (no Tiger's Fury there) is not held.
+// [rot170] no wait for a Tiger's Fury coming back within 15 s any more. wowsims feral/rotation.go:317 waitForTf reads
+// TigersFury.ReadyAt() <= BerserkAura.Duration, an absolute sim time against 15 s: it only holds Berserk in the
+// first 15 s of a fight, and the Rip-up condition (rotation.go:318) already puts Berserk after the opener. With the
+// 15 s wait Berserk fit only into 6-15 s after each Tiger's Fury and only with Rip up and no Clearcasting: b215
+// rfc-h 5H Rtdruaf, leader-allowed the whole fight, cast no Berserk on Jergosh (979-1016 s) and Bazzalan
+// (1179-1232 s) - sim 1 per fight - and starved (energy 0-40, Shred 10.2 / min vs 19.6, Rip 1 per fight;
+// rotation 76 % on those two, 95-100 % on Oggleflint / Taragaman where Berserk went out).
 inline constexpr uint8 TIGERS_FURY_MAX_ENERGY = 40;  // wowsims: 40 - 10 * leeway; King of the Jungle adds 60
 
 class BerserkTrigger : public BoostTrigger
@@ -231,10 +237,6 @@ public:
         if (botAI->HasAura("cat form", bot))
         {
             if (botAI->HasAura("tiger's fury", bot))
-                return false;
-
-            uint32 const tigersFury = AI_VALUE2(uint32, "spell id", "tiger's fury");
-            if (tigersFury && bot->GetSpellCooldownDelay(tigersFury) < BERSERK_TF_MIN_COOLDOWN_MS)
                 return false;
 
             // [rot26] wowsims feral berserkNow: with the own Rip up and no Clearcasting
