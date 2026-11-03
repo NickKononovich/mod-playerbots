@@ -7554,6 +7554,7 @@ void PlayerbotAI::NoteIdleDiagAction(Action* action, std::string const& source)
         return;
 
     TraceRogueGcd(action, source);
+    TraceDkGcd(action, source);
     idleDiag.tickCast = true;
     uint32 const now = getMSTime();
     if (idleDiag.busyEndMs && now >= idleDiag.busyEndMs)
@@ -7607,6 +7608,49 @@ void PlayerbotAI::TraceRogueGcd(Action* action, std::string const& source)
               bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING));
     rogueGcdLastMs = now;
     rogueGcdLastEnergy = energy;
+}
+
+// [rot181] b217 rfc-h: the Blood DK tank at 76 % of the sim in 5C against 92.5 % in 5G with the same gear, talents and
+// code; the rot51 state lines carry no runes and no time. One debug line per death knight cast on a dungeon boss: the
+// six runes (type and seconds left, 0 = ready) and runic power right after the cast, the action and its trigger, the ms
+// since the previous cast, our diseases on the target and the attackers, so rune idle time (ready runes x the gap to
+// the next cast), runic power capping and the area spells' share can be summed from the log.
+void PlayerbotAI::TraceDkGcd(Action* action, std::string const& source)
+{
+    if (bot->getClass() != CLASS_DEATH_KNIGHT || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+
+    Unit* target = aiObjectContext->GetValue<Unit*>("current target")->Get();
+    Creature* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !boss->IsDungeonBoss())
+    {
+        dkGcdLastMs = 0;
+        return;
+    }
+
+    // RuneType order: blood, unholy, frost, death
+    static char const RUNE_LETTER[NUM_RUNE_TYPES] = {'B', 'U', 'F', 'D'};
+    std::string runes;
+    for (uint8 i = 0; i < MAX_RUNES; ++i)
+    {
+        RuneType const type = bot->GetCurrentRune(i);
+        runes += Acore::StringFormat("{}{}{:.1f}", i ? " " : "", type < NUM_RUNE_TYPES ? RUNE_LETTER[type] : '?',
+                                     bot->GetRuneCooldown(i) / float(IN_MILLISECONDS));
+    }
+
+    uint32 const now = getMSTime();
+    uint32 const sinceMs = dkGcdLastMs ? getMSTimeDiff(dkGcdLastMs, now) : 0;
+    Aura const* plague = GetAura("blood plague", target, true, true);
+    Aura const* fever = GetAura("frost fever", target, true, true);
+    LOG_DEBUG("playerbots",
+              "[dk gcd] {} on {}: after the cast runes {} rp {} -> {} (trigger {}) | {} ms after the last cast | "
+              "blood plague {} s, frost fever {} s, attackers {}, melee {}, swinging {}",
+              bot->GetName(), boss->GetName(), runes, bot->GetPower(POWER_RUNIC_POWER) / 10, action->getName(),
+              source.empty() ? "default" : source, sinceMs, plague ? plague->GetDuration() / IN_MILLISECONDS : 0,
+              fever ? fever->GetDuration() / IN_MILLISECONDS : 0,
+              aiObjectContext->GetValue<GuidVector>("attackers")->Get().size(), bot->IsWithinMeleeRange(target),
+              bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING));
+    dkGcdLastMs = now;
 }
 
 void PlayerbotAI::UpdateHealDiag()

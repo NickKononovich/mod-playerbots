@@ -728,6 +728,10 @@ protected:
     void TraceRogueGcd(Action* action, std::string const& source);
     uint32 rogueGcdLastMs = 0;
     uint32 rogueGcdLastEnergy = 0;
+    // [rot181] LOG_DEBUG "[dk gcd]": one line per death knight cast on a dungeon boss (the six runes and runic power
+    // after it, the action and its trigger, ms since the last cast, our diseases on the target, attackers)
+    void TraceDkGcd(Action* action, std::string const& source);
+    uint32 dkGcdLastMs = 0;
     struct IdleDiag
     {
         uint32 windowStartMs = 0;
