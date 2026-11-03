@@ -5576,8 +5576,14 @@ namespace Leader::Dungeon
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_SHADOWFIEND});
                             spell && target)
                             consider(caster, spell, target, {self}, true);
-                        if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_EVOCATION}))
-                            consider(caster, spell, nullptr, {self}, true);
+                        // [lead633] b218 rfc-h 5D Oggleflint 282.7 s: the arcane mage was told Evocation at 44 %
+                        // ("44 % < 50 % for the fight's 30 s left - 3 fight s gained"), an 8 s channel for 3 s. The
+                        // wowsims arcane / frost APL channels it at currentManaPercent <= 25 % (the mage's own trigger
+                        // before the leader took the tool, b31_deep "mana at or below 25", every mage spec)
+                        constexpr float WOWSIMS_EVOCATION_MANA_PCT = 25.0f;
+                        if (caster->GetPowerPct(POWER_MANA) <= WOWSIMS_EVOCATION_MANA_PCT)
+                            if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_EVOCATION}))
+                                consider(caster, spell, nullptr, {self}, true);
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_DISPERSION}))
                             consider(caster, spell, nullptr, {self}, true);
                         if (PlayerbotAI::IsHeal(caster) && !caster->HasAura(RestState::SPELL_DIVINE_PLEA))
