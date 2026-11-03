@@ -523,7 +523,14 @@ bool ReachMeleeAction::isUseful()
     // still gets ready (a member buffing, a sitter below its line) and, for a boss, until the group is ready for
     // him (PullReadiness::BossNotReady). sh-h w24 (20261025-115805-sh-h-5A-37, 1640 s): "reach melee" walked onto
     // Warchief Kargath Bladefist 9 s into "buffing: before Warchief Kargath Bladefist", the group at 69 % mana.
-    if (PlayerbotAI::IsTank(bot) && botAI->IsInNonRaidDungeon() && !bot->IsInCombat() && !target->IsInCombat())
+    // [lead531] b212 rfc-h 5F 621.6-691 s: the leader's engage order on Taragaman (its boss gate passed) was refused
+    // here 70 s ("Rthunac at 69 % mana (needs 74 %)"), order_orphan: a led tank's walk to the mob of the leader's
+    // open order is the leader's pull - its readiness is the leader's check before it issues, never the tank's veto
+    Leader::PullOrder ordered;
+    bool const leaderPull = Leader::LedBot(bot) && Leader::Orders::GetOpen(bot->GetGUID(), ordered) &&
+                            ordered.target == target->GetGUID();
+    if (PlayerbotAI::IsTank(bot) && botAI->IsInNonRaidDungeon() && !bot->IsInCombat() && !target->IsInCombat() &&
+        !leaderPull)
     {
         std::string why;
         Creature* creature = target->ToCreature();

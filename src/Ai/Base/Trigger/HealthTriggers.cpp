@@ -1177,7 +1177,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             float const potionPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                              std::max(need + reserve - returned, 0.0f));
             returned += potionPct;
-            potionFloor = rate * float(readyMs) / float(IN_MILLISECONDS);
+            // [lead531] b212 rfc-h 5F 621.6-691 s: the boss gate passed the MM hunter at 17 % (Aspect of the Viper
+            // covers the fight, its pre-pull potion the leader's); the pre-pull Potion of Speed put the potions on
+            // their cooldown and this floor made the line "mana potion 0 % (ready in 60 s: 89 % until then)" - the
+            // tank's walk to Taragaman held 70 s, the hunter drank for a line the leader had judged met. The floor is
+            // the mana spent until the potion counted here is ready: a potion that covers nothing holds nothing
+            if (potionPct > 0.0f)
+                potionFloor = rate * float(readyMs) / float(IN_MILLISECONDS);
             pick += readyMs ? Acore::StringFormat("{}mana potion {:.0f} % (ready in {:.0f} s: {:.0f} % until then)",
                                                   pick.empty() ? "" : "; ", potionPct,
                                                   float(readyMs) / float(IN_MILLISECONDS), potionFloor)
