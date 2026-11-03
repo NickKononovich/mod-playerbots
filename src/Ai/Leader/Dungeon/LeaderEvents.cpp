@@ -217,7 +217,8 @@ namespace Leader::Dungeon
                           JsonObject().Str("member", bot->GetName()).Str("kind", kind).Str("allowed", allowed)
                               .Str("held", held).Bool("bossFight", bossFight)
                               .Real("fightSec", lead.fightSecLeft).Real("fightOverload", lead.fightOverload)
-                              .Real("bossPullSec", lead.bossPullSec).Str("nextBoss", lead.nextBossName));
+                              .Real("bossPullSec", lead.bossPullSec).Str("bossPullParts", lead.bossPullParts)
+                              .Str("nextBoss", lead.nextBossName));
     }
 
     // [lead22] slabs-h 20261026-201857: the leader told a full healer to Rest 52 times («[rest] Rtdruaa stands up:
@@ -1267,6 +1268,7 @@ namespace Leader::Dungeon
             // fight seconds over its best drink's rate; the group waits for the slowest drinker) and the walk from
             // stop to stop to the boss; without a plan to him the on-path mobs and the straight walk, as before
             lead.bossPullSec = -1.0f;
+            lead.bossPullParts.clear();
             if (nextBoss)
             {
                 float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
@@ -1335,7 +1337,16 @@ namespace Leader::Dungeon
                     float const stretchLeft =
                         std::max(0.0f, lead.stretchSecSum / float(lead.stretches) - walked);
                     lead.bossPullSec = std::max(lead.bossPullSec, lead.fightSecLeft + stretchLeft);
+                    lead.bossPullParts = Acore::StringFormat("stretch floor {:.0f}; ", lead.fightSecLeft + stretchLeft);
                 }
+                // [lead724] b219 rfc-h (8 runs): 239 of 918 burn verdicts read the next boss's pull more than 10 s
+                // later than it came (5A 15.9 s: 294 s, pulled 214 s later; 5F 461.5 s: 396 vs 263 s) - Bladestorm,
+                // Gargoyle, Icy Veins "back before the pull" on trash that was not back. The estimate's parts are
+                // logged with each verdict to find the part that overshoots
+                lead.bossPullParts += Acore::StringFormat(
+                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s{}) + rest {:.0f} + walk {:.0f} ({:.0f} yd{})",
+                    lead.fightSecLeft, trashSec, trashHealth, trashRate, lead.trashFightSec > 0.0f ? " measured" : "",
+                    restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
             }
         }
 
@@ -2774,6 +2785,7 @@ namespace Leader::Dungeon
             lead.tankGroundFor.clear();
             lead.combatSpotAnchor.clear();
             lead.combatSpotStoppedAt.clear();  // [lead397]
+            lead.meleeSide.clear();            // [lead720]
             lead.fightAnchorSerial = 0;
             lead.fightAnchorAhead = false;  // [lead466]
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
@@ -3883,11 +3895,39 @@ namespace Leader::Dungeon
                 // back. Out of reach too the leader weighs the walk round against the front's loss: the nearest place
                 // in reach (frontAt) when the extra walk to the back costs more than the parry / block over the mob's
                 // life (the core's roll with the member's expertise and the level difference)
+                // [lead720] b219 rfc-h (8 runs): 590 flips StandAt "behind the target" <-> Follow "chase: behind the
+                // target" within 1 s on the same target (5A 393.6 / 393.9 s, 412.6 / 413.5 s, 5G 608.3 / 608.6 s):
+                // the front-or-back weighing ran again every tick from where the member had just walked - the near
+                // place moved with it, the walk round shrank as it went, the mob's life (the front's loss) fell - so
+                // the chase stopped where it stood ("stops its walk") and went on the next tick. One decision per
+                // fact: the side weighed for this target holds - the front while its held place still hits the mob
+                // from its front half, the chase while it walks - until the target changes or that place no longer
+                // reaches it; it is weighed again only then (and only once the weighing is made: the mob standing on
+                // its victim)
                 std::string frontWhy;
                 Position frontAt = bot->GetPosition();
-                bool const frontHere =
-                    melee && target->GetVictim() != bot && LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt);
-                if (frontHere)
+                bool frontHere = false;
+                if (melee && target->GetVictim() != bot)
+                {
+                    auto const side = lead.meleeSide.find(guid);
+                    bool const decided = side != lead.meleeSide.end() && side->second.first == target->GetGUID();
+                    bool const heldFront = decided && side->second.second && found != lead.combatSpots.end() &&
+                                           found->second.first == target->GetGUID() &&
+                                           target->HasInArc(float(M_PI), &found->second.second) &&
+                                           LeaderMeleeReachesFrom(bot, target, found->second.second);
+                    if (heldFront)
+                    {
+                        frontHere = true;
+                        frontAt = found->second.second;
+                    }
+                    else if (!(decided && !side->second.second && chasing))
+                    {
+                        frontHere = LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt);
+                        if (!frontWhy.empty())
+                            lead.meleeSide[guid] = {target->GetGUID(), frontHere};
+                    }
+                }
+                if (frontHere && !frontWhy.empty())
                 {
                     thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> frontLogged;
                     if (frontLogged.size() > 4096)
@@ -4950,7 +4990,13 @@ namespace Leader::Dungeon
                                             mob->GetPositionY() + (bot->GetPositionY() - mob->GetPositionY()) * step,
                                             mob->GetPositionZ());
                         }
-                        if (Creature* idle = LeaderAggroAt(bot, arrive))
+                        // [lead721] b219 rfc-h (8 runs): 34 of the 204 "waits: <mob> stands in <idle>'s aggro reach"
+                        // stops came with the mob already on the tank (<= 12 yd, 5C 151.1 s, 5F 545.7 s ...) - this
+                        // test read the plain unpulled reach, while the spots and walks the leader issues read the
+                        // fight at the target (lead490 / lead492: no deeper into an idle mob's reach than the target's
+                        // victim stands unwoken). The arrival is judged by that same fact; a mob still at its pack (no
+                        // victim standing in that reach) waits as before
+                        if (Creature* idle = LeaderFightAggroAt(bot, arrive, mob))
                         {
                             if (unpulledNear.empty())
                                 unpulledNear = Acore::StringFormat("{} stands in {}'s aggro reach", mob->GetName(),
@@ -5285,13 +5331,19 @@ namespace Leader::Dungeon
                     LogBurnDecision(run, lead, bot, "cooldowns", allowedNote, heldNote, fightBoss != nullptr);
                 }
                 Leader::Intensity const mine = victim || overThreat ? Leader::Intensity::Stop : burnable;
+                // [lead722] b219 rfc-h: 791 Stop and 614 Burn events, no end of either - the back to Normal was not
+                // logged, so fight_breakdown's "threat wait" (283 s of first-hit delay "waits: <mob> stands in ...
+                // aggro reach") ran on to the member's next Intensity wherever the stop had ended before it. The
+                // change back is logged too
                 if (Leader::Events::SetIntensity(
-                        guid, mine, mine == Leader::Intensity::Burn ? burnAllowed : std::vector<std::string>()) &&
-                    mine != Leader::Intensity::Normal)
+                        guid, mine, mine == Leader::Intensity::Burn ? burnAllowed : std::vector<std::string>()))
                     logEvent(bot, "Intensity",
                              JsonObject()
-                                 .Str("intensity", mine == Leader::Intensity::Stop ? "stop" : "burn")
-                                 .Str("why", victim       ? "aggro loss: the tank takes the mob back"
+                                 .Str("intensity", mine == Leader::Intensity::Stop   ? "stop"
+                                                   : mine == Leader::Intensity::Burn ? "burn"
+                                                                                     : "normal")
+                                 .Str("why", mine == Leader::Intensity::Normal ? std::string("-")
+                                             : victim ? "aggro loss: the tank takes the mob back"
                                              : overThreat && !lead.attackWaitWhy[guid].empty()  // [lead413]
                                                  ? "waits: " + lead.attackWaitWhy[guid]
                                              : overThreat ? std::string("threat: no mob with headroom")

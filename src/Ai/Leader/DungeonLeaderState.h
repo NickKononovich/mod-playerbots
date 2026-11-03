@@ -209,6 +209,8 @@ namespace Leader
         std::set<ObjectGuid> routeSkips;   // [lead96] route targets skipped while the leader refuses them
         ObjectGuid walkWakesFirst;         // [lead101] the pack the walk to a patrol wakes: the pull first
         std::map<ObjectGuid, ObjectGuid> meleeChase;  // [lead190] member -> the walked-off target it chases
+        // [lead720] member -> the target its side was weighed for and the verdict (true: its front, false: behind)
+        std::map<ObjectGuid, std::pair<ObjectGuid, bool>> meleeSide;
         ObjectGuid walkWakesReleased;      // [lead167] the pull released once for walkWakesFirst (one release per fact)
         std::map<ObjectGuid, ObjectGuid> fleeStoppers;  // [lead104] fleer -> the member the leader set to stop it
         ObjectGuid fleeFocusLogged;                     // [lead104] flee_focus logged for this fleer
@@ -294,6 +296,7 @@ namespace Leader
         float groupDps = 0.0f;  // [lead700] the estimated group dps the fight's seconds were judged by
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
         float bossPullSec = -1.0f;  // [lead178] seconds to the next boss pull: this fight, the on-path fights, the walk
+        std::string bossPullParts;  // [lead724] bossPullSec's parts, logged with each burn_decision
         // [lead274] every living boss judged like any pull once per fight (JudgePack's overload, his length over the
         // group's dps): the burn cooldowns go to the boss that needs them most; the fight itself (a critical pull)
         struct BossNeed
