@@ -123,7 +123,8 @@ namespace Leader::Fight
         Attacks
     };
 
-    RefFight JudgeRef(Player* leader, Unit* other, float& pathDistance, std::string& pathNote)
+    // `owner`: the group's unit whose combat ref this is (nullptr: none)
+    RefFight JudgeRef(Player* leader, Unit* other, float& pathDistance, std::string& pathNote, Unit* owner = nullptr)
     {
         Creature* creature = other->ToCreature();
         if (!other->IsAlive() || (creature && creature->IsInEvadeMode()))
@@ -140,12 +141,43 @@ namespace Leader::Fight
                     return RefFight::Attacks;
             }
         }
+        // [lead980] b228 rfc-h 5D-4 (20261103-221518) 318 / 328 s: eight Troggs and Shamans stood 0.8-9 yd from the
+        // arcane mage, their victim the shaman healer on the level above (no path to it): "nothing attacks or can be
+        // reached" ended every member's combat twice, the leader called the fight over and walked the group 80 yd
+        // on while those mobs hit the mage from 59 % to its death. A live mob that has the ref's member on its
+        // threat list and stands in its melee reach hits it on its next victim pick: a fight
+        if (owner && owner->IsAlive() && other->IsWithinMeleeRange(owner) &&
+            other->GetThreatMgr().GetThreat(owner) > 0.0f)
+        {
+            Unit* const victim = other->GetVictim();
+            if (victim != owner)
+            {
+                thread_local std::set<std::pair<uint64, uint64>> logged;
+                if (logged.size() > 4096)
+                    logged.clear();
+                if (logged.insert({other->GetGUID().GetRawValue(), owner->GetGUID().GetRawValue()}).second)
+                    LOG_INFO("playerbots", "[lead980] {}: {} stands in {}'s melee reach with it on its threat list "
+                             "(victim {}): the fight is on, no phantom combat",
+                             leader->GetName(), other->GetName(), owner->GetName(),
+                             victim ? victim->GetName() : std::string("nobody"));
+            }
+            return RefFight::Attacks;
+        }
         if (!leader->IsValidAttackTarget(other) || other->GetMap() != leader->GetMap())
             return RefFight::None;
         PathGenerator path(leader);
         path.CalculatePath(other->GetPositionX(), other->GetPositionY(), other->GetPositionZ());
         if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
-            return RefFight::None;
+        {
+            // [lead980] ... and the mobs were walkable: the mage had walked there. PathGenerator's straight search
+            // stops at its own length cap; the leader's route search (the walks it orders) is the reach
+            Leader::RouteResult const route = Leader::Route(leader, other->GetPosition());
+            if (!route.found || !route.complete)
+                return RefFight::None;
+            pathDistance = route.length;
+            pathNote = Acore::StringFormat("{}, {:.0f} yd", route.Describe(), route.length);
+            return RefFight::Reachable;
+        }
         pathDistance = leader->GetExactDist(other);
         pathNote = Acore::StringFormat("path type {}, {} points", uint32(path.GetPathType()), path.GetPath().size());
         return RefFight::Reachable;
@@ -184,7 +216,7 @@ namespace Leader::Fight
                         continue;
                     float distance = 0.0f;
                     std::string note;
-                    RefFight const fight = JudgeRef(leader, other, distance, note);
+                    RefFight const fight = JudgeRef(leader, other, distance, note, owner);
                     if (fight == RefFight::Attacks)
                         attacks = true;
                     else if (fight == RefFight::Reachable && other->IsCreature() && (!hunt || distance < huntDistance))

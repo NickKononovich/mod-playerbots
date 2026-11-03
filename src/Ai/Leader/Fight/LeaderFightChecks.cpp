@@ -1646,6 +1646,23 @@ namespace Leader::Fight
             float const off = (land - start).length();
             if (off < leap - bot->GetCombatReach())
                 return false;
+            // [lead980] b228 rfc-h 5D-4 (20261103-221518) 310.4 / 313.1 s: two Blinks on a 193 yd walk down the
+            // Ragefire ramp were judged on the route's first 20 yd, while the member faces the walk's END before it
+            // leaps (LeaderExternalAction: SetFacingTo the ordered spot, 121 yd off): the leaps went straight off
+            // the ledge, 14 yd down into an idle pack of eight; the mage died in it at 337 s. The leap goes where
+            // the member will face - toward `to` (a leap back turns its back to `to` and flies the same way): that
+            // line must be the route's, its landing within the member's combat reach of the route's point
+            {
+                float const dx = to.GetPositionX() - start.x;
+                float const dy = to.GetPositionY() - start.y;
+                float const across = std::hypot(dx, dy);
+                if (across <= 0.1f)
+                    return false;
+                float const faceX = start.x + dx / across * leap;
+                float const faceY = start.y + dy / across * leap;
+                if (std::hypot(faceX - land.x, faceY - land.y) > bot->GetCombatReach())
+                    return false;
+            }
             Map* map = bot->GetMap();
             if (!map->isInLineOfSight(start.x, start.y, start.z + 2.0f, land.x, land.y, land.z + 2.0f,
                                       bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))

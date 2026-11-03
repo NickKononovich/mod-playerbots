@@ -2910,9 +2910,86 @@ namespace Leader::Dungeon
             float const tolerance =
                 goTo && goTo->GetExactDist(tank) <= arrive && !tank->IsWithinLOSInMap(goTo) ? NOMINAL_MELEE_RANGE
                                                                                             : arrive;
-            if (alone && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, goTo->GetPosition(), tolerance,
-                                     toMob ? "aggro loss: the tank goes to the mob"
-                                           : "aggro loss: the tank goes to the member"))
+            std::string const pickUpWhy =
+                toMob ? "aggro loss: the tank goes to the mob" : "aggro loss: the tank goes to the member";
+            bool pickUpIssued = false;
+            if (alone)
+            {
+                // [lead983] b228 rfc-h 5D-12 (20261103-224121) 805-865 s: a Searing Blade Warlock cast on the unholy
+                // DK from 27.6 yd out of the bear's sight for 60 s; the bear's walk to the mob passed an idle
+                // Enforcer pack judged too much for the fight (fight_moves_away, overload 1.14), the tank "stays"
+                // and then "fights nothing" for 48 s. The walk's goal is a place the tank picks the mob up from
+                // (its taunt's range, in sight - lead81 / lead217), not the mob's own spot: once the walk to the mob
+                // is refused, the nearest such place (a ring round the unit inside the taunt's range, in its
+                // sight, out of every idle mob's reach) that the leader's guards pass is the walk
+                thread_local std::map<ObjectGuid, std::pair<ObjectGuid, Position>> pickUpSpots;
+                if (pickUpSpots.size() > 4096)
+                    pickUpSpots.clear();
+                auto const seesFrom = [&](Position const& spot)
+                {
+                    return goTo->GetExactDist(spot) <= arrive - 1.0f &&
+                           map->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + 2.0f,
+                                                goTo->GetPositionX(), goTo->GetPositionY(),
+                                                goTo->GetPositionZ() + 2.0f, tank->GetPhaseMask(),
+                                                LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+                };
+                auto kept = pickUpSpots.find(tank->GetGUID());
+                if (kept != pickUpSpots.end() &&
+                    (kept->second.first != goTo->GetGUID() || !seesFrom(kept->second.second)))
+                {
+                    pickUpSpots.erase(kept);
+                    kept = pickUpSpots.end();
+                }
+                if (kept != pickUpSpots.end())
+                    pickUpIssued = checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, kept->second.second,
+                                               1.5f, pickUpWhy + " (a spot in its taunt's reach and sight)");
+                else
+                {
+                    pickUpIssued =
+                        checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, goTo->GetPosition(), tolerance,
+                                    pickUpWhy);
+                    if (!pickUpIssued && pickUp > 0.0f)
+                    {
+                        std::vector<Position> ring;
+                        for (float radius : {arrive - 4.0f, arrive * 0.66f, arrive * 0.33f})
+                            for (uint32 i = 0; i < 12 && radius > NOMINAL_MELEE_RANGE; ++i)
+                            {
+                                float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
+                                float x = goTo->GetPositionX() + std::cos(angle) * radius;
+                                float y = goTo->GetPositionY() + std::sin(angle) * radius;
+                                float z = goTo->GetPositionZ();
+                                if (!map->CheckCollisionAndGetValidCoords(goTo, goTo->GetPositionX(),
+                                                                          goTo->GetPositionY(), goTo->GetPositionZ(),
+                                                                          x, y, z))
+                                    continue;
+                                Position const spot(x, y, z);
+                                if (seesFrom(spot) && !LeaderAggroAt(tank, spot))
+                                    ring.push_back(spot);
+                            }
+                        std::sort(ring.begin(), ring.end(), [&](Position const& a, Position const& b)
+                                  { return tank->GetExactDist(a) < tank->GetExactDist(b); });
+                        // the nearest few by the straight line (each judged by the guards' route search)
+                        constexpr size_t RING_TRIES = 6;
+                        if (ring.size() > RING_TRIES)
+                            ring.resize(RING_TRIES);
+                        for (Position const& spot : ring)
+                        {
+                            if (!checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.5f,
+                                             pickUpWhy + " (a spot in its taunt's reach and sight)"))
+                                continue;
+                            pickUpIssued = true;
+                            pickUpSpots[tank->GetGUID()] = {goTo->GetGUID(), spot};
+                            LOG_INFO("playerbots",
+                                     "[lead983] {}: its walk to {} ({:.1f} yd) is refused; it picks it up from "
+                                     "({:.1f},{:.1f},{:.1f}), {:.1f} yd off it in its sight",
+                                     tank->GetName(), goTo->GetName(), tank->GetExactDist(goTo), spot.GetPositionX(),
+                                     spot.GetPositionY(), spot.GetPositionZ(), goTo->GetExactDist(spot));
+                            break;
+                        }
+                    }
+                }
+            }
+            if (pickUpIssued)
                 Decisions().Write(run, "leader", "fight_spot_to_member", alone->GetGUID(),
                                               alone->GetName(), true,
                                               JsonObject().Str("member", alone->GetName())
@@ -6037,6 +6114,89 @@ namespace Leader::Dungeon
                     Projection const p = project(mob);
                     return p.mineNext < p.share * p.tankNext;
                 };
+                // [lead985] user 2026-11-03 (aggro-loss-if-survives): headroom is no absolute stop - a damage dealer
+                // keeps its damage on a mob it would take off the tank when it survives that mob's hits until the
+                // tank has it back and the healer can heal it. The mob's damage on THIS member (AttackerDps: its
+                // melee after the member's armor - plate takes less than cloth - its avoidance, plus the spell it
+                // casts), with the mobs already on the member, over the take-back time: the tank's ready taunt in
+                // its range and sight (its global cooldown + the leader's reaction tick; one taunt for one loose
+                // mob: none while a fight mob is already off the tank), else its threat catch-up to the game's
+                // overtake share at its rate there (the member stops once the mob turns). Against the member's
+                // health + absorbs now, and a healer that reaches it (heal reach, sight) above its own mana line.
+                // Never before the tank's first threat on the mob (lead875 stays). Any check failing: the headroom
+                // Stop stands
+                auto const survivesOn = [&](Unit* mob) -> bool
+                {
+                    if (!mob || !mob->IsAlive() || bot == tank || PlayerbotAI::IsHeal(bot) ||
+                        PlayerbotAI::IsTank(bot))
+                        return false;
+                    Projection const p = project(mob);
+                    if (p.tank <= 0.0f || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                        return false;
+                    bool looseNow = false;
+                    for (ObjectGuid const& other : killOrder)
+                        if (Unit* fought = ObjectAccessor::GetUnit(*tank, other);
+                            fought && fought->IsAlive() && fought->GetVictim() && fought->GetVictim() != tank &&
+                            fought->GetVictim()->IsPlayer())
+                            looseNow = true;
+                    float takeBack = -1.0f;
+                    std::string how;
+                    if (!looseNow)
+                        for (uint32 taunt : TANK_TAUNTS)
+                            if (tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt))
+                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
+                                    info && tank->IsWithinCombatRange(mob, info->GetMaxRange(false)) &&
+                                    tank->IsWithinLOSInMap(mob))
+                                {
+                                    takeBack = HEADROOM_GCD_SEC + LEADER_FIGHT_TICK_MS / 1000.0f;
+                                    how = Acore::StringFormat("{} ready", info->SpellName[LOCALE_enUS]);
+                                    break;
+                                }
+                    if (takeBack < 0.0f)
+                    {
+                        float const tankRate =
+                            rateOf(seenOn(mob, tank), tankOpensOn(mob) ? tankOpen : 0.0f);
+                        if (tankRate <= 0.0f)
+                            return false;
+                        takeBack = std::max(HEADROOM_GCD_SEC,
+                                            (THREAT_OVERTAKE_MELEE * p.mineNext - p.tankNext) / tankRate);
+                        how = Acore::StringFormat("threat catch-up at {:.0f} tps", tankRate);
+                    }
+                    float spellPart = 0.0f;
+                    float incoming = AttackerDps(mob, bot, spellPart);
+                    for (Unit* attacker : bot->getAttackers())
+                        if (attacker && attacker != mob && attacker->IsAlive() && attacker->GetVictim() == bot)
+                        {
+                            float part = 0.0f;
+                            incoming += AttackerDps(attacker, bot, part);
+                        }
+                    float const damage = incoming * takeBack;
+                    float const health =
+                        float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
+                    bool const healed = healer && healer != bot && healer->IsAlive() &&
+                                        healer->IsWithinCombatRange(bot, Leader::LEADER_HEAL_REACH_YD) &&
+                                        healer->IsWithinLOSInMap(bot) &&
+                                        (!healer->GetMaxPower(POWER_MANA) ||
+                                         healer->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(healer));
+                    bool const survives = damage < health && healed;
+                    // logged on a change of the verdict per member and mob
+                    thread_local std::map<std::pair<uint64, uint64>, bool> verdicts;
+                    if (verdicts.size() > 4096)
+                        verdicts.clear();
+                    auto const key = std::make_pair(bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue());
+                    if (auto const was = verdicts.find(key); was == verdicts.end() || was->second != survives)
+                    {
+                        verdicts[key] = survives;
+                        LOG_INFO("playerbots",
+                                 "[lead985] {}: no headroom on {} ({:.0f} -> {:.0f} vs tank {:.0f} -> {:.0f}); "
+                                 "{} dps on it ({:.0f} cast) x {:.1f} s to take it back ({}) = {:.0f} vs {:.0f} "
+                                 "health, healer {}: {}",
+                                 bot->GetName(), mob->GetName(), p.mine, p.mineNext, p.tank, p.tankNext, incoming,
+                                 spellPart, takeBack, how, damage, health, healed ? "reaches it" : "does not",
+                                 survives ? "keeps its damage" : "the Stop stands");
+                    }
+                    return survives;
+                };
                 if (bot == healer || PlayerbotAI::IsHeal(bot))
                 {
                     // [lead61] user: the leader starts the heals - once every fight mob is on the tank (no heal
@@ -6081,6 +6241,26 @@ namespace Leader::Dungeon
                                 byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f}{}", attacker->GetName(),
                                                                                   dps, spellPart > 0.0f ? " (cast)" : ""));
                             }
+                        // [lead980] b228 rfc-h 5D-4 336.7 s: the mage at 18 % stood among Troggs whose victim was the
+                        // healer on the level above (no path to it); with no attacker "on" it the mage was no
+                        // emergency and the heals waited ("a fight mob attacks a member") 0.3 s before a Trogg's
+                        // swing killed it. A mob that has the member on its threat list and stands in its melee reach
+                        // hits it on its next victim pick: its damage counts (not crowd-controlled, not held by the
+                        // tank)
+                        for (auto const& [mobGuid, ref] : member->GetThreatMgr().GetThreatenedByMeList())
+                        {
+                            Unit* const near = ref ? ref->GetOwner() : nullptr;
+                            // a mob the tank holds is no danger to the melee beside it (its victim stays the tank)
+                            if (!near || !near->IsAlive() || near->GetVictim() == member || near->GetVictim() == tank ||
+                                near->HasUnitState(UNIT_STATE_CONTROLLED) || !near->IsWithinMeleeRange(member))
+                                continue;
+                            float spellPart = 0.0f;
+                            // its swings only: the spell it casts now goes to its victim
+                            float const dps = AttackerDps(near, member, spellPart) - spellPart;
+                            incoming += dps;
+                            byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f} (in reach)", near->GetName(),
+                                                                              dps));
+                        }
                         if (incoming <= 0.0f)
                             continue;
                         float const absorbs = float(member->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
@@ -6302,7 +6482,7 @@ namespace Leader::Dungeon
                     std::map<ObjectGuid, Position> arrivals;
                     auto const pickable = [&](Unit* mob)
                     {
-                        if (!headroomOn(mob))
+                        if (!headroomOn(mob) && !survivesOn(mob))  // [lead985]
                             return false;
                         if (!splashes || PlayerbotAI::IsHeal(bot) || bot->IsWithinMeleeRange(mob))
                             return true;
@@ -7608,7 +7788,20 @@ namespace Leader::Dungeon
                 tankStands && !healer->isMoving() ? std::optional<Position>(healer->GetPosition()) : std::nullopt;
             auto const provenOut = [&failsHere](Position const& spot)
             { return failsHere && spot.GetExactDist(*failsHere) <= 2.0f; };
-            Position const tankAt = tankStands ? tank->GetPosition() : tankFightAt();  // [lead120]
+            // [lead980] b228 rfc-h 5D-4 313-337 s: the bear had no attacker (it never got the pack the mage woke on
+            // the level below), the mage 80 yd off took the hits; every heal_reach fix walked the shaman "back into
+            // reach of the tank" (the spots kept the tank and every assigned spot, impossible 80 yd apart) - away
+            // from the mage, 82 yd off at its death. While nothing attacks the tank, the members who are attacked
+            // are where the heals go: the reach anchors on the attacked member at the lowest health
+            Player* rescue = nullptr;
+            if (!tankUnderAttack)
+                for (Player* other : seats)
+                    if (other != healer && other != tank && other->IsAlive() && !other->getAttackers().empty() &&
+                        (!rescue || other->GetHealthPct() < rescue->GetHealthPct()))
+                        rescue = other;
+            Position const tankAt = rescue      ? rescue->GetPosition()
+                                    : tankStands ? tank->GetPosition()
+                                                 : tankFightAt();  // [lead120]
             // [lead121] b155 rfc-h 20261101-103820 610.9-616.0 s: A -> B -> A heal-reach spots (command_repeat), each
             // time a member walking in drifted out of reach for a moment. The heal reach judges the members where the
             // leader put them (their MoveTo / StandAt spot), never a member on its way; one decision per fact: the
@@ -7634,7 +7827,12 @@ namespace Leader::Dungeon
             // heals the member where both stand now (its reach and sight) is not moved for it: the member's spot or
             // the tank's anchor out of its reach is where they will be, not the fact; it moves once they are there
             auto const healsNow = [&](Player* member) { return reaches(healer->GetPosition(), member->GetPosition()); };
-            if (tankUnderAttack ? tankUnhealed : (outOfReach(tankAt) && !healsNow(tank)))  // [lead950]
+            if (rescue)  // [lead980]
+            {
+                if (!healsNow(rescue))
+                    out.push_back(rescue);
+            }
+            else if (tankUnderAttack ? tankUnhealed : (outOfReach(tankAt) && !healsNow(tank)))  // [lead950]
                 out.push_back(tank);
             // [lead950] logged where the old judgement (the anchor by the model's sight) found it reached: once per
             // tank, healer and fight anchor
@@ -7652,16 +7850,19 @@ namespace Leader::Dungeon
                              healer->GetExactDist(tank), healer->IsWithinLOSInMap(tank) ? "yes" : "no");
             }
             for (Player* other : seats)
-                if (other != healer)
+                if (other != healer && other != rescue)
                     if (std::optional<Position> const& at = assigned[other->GetGUID()];
                         at && outOfReach(*at) && !healsNow(other))
                         out.push_back(other);
-            // the healer at `spot` reaches the tank where it fights and every assigned spot
+            // the healer at `spot` reaches the tank where it fights and every assigned spot ([lead980] the attacked
+            // member it rescues: that member only)
             auto const keepsAssigned = [&](Position const& spot)
             {
                 if (provenOut(spot) || !reaches(spot, tankAt) ||
                     spot.GetExactDist(tankAt) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
                     return false;
+                if (rescue)
+                    return true;
                 for (auto const& [member, at] : assigned)
                     if (at && !reaches(spot, *at))
                         return false;
@@ -7714,7 +7915,9 @@ namespace Leader::Dungeon
                 // [lead121] the spot round where the tank fights in heal reach and sight of it that reaches the most
                 // assigned spots (the nearest to the healer of those), else the tank's own spot (the same checks
                 // before it is issued)
-                std::string how = issued ? "the healer re-spots" : "none";
+                std::string how = !issued  ? std::string("none")
+                                  : rescue ? "[lead980] the healer re-spots to the attacked " + rescue->GetName()
+                                           : std::string("the healer re-spots");
                 if (!issued)
                 {
                     std::vector<std::pair<Position, uint32>> candidates;
@@ -7763,7 +7966,9 @@ namespace Leader::Dungeon
                         issued = checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f, "heal reach");
                     }
                     if (issued)
-                        how = "the healer walks back into reach of the tank";
+                        how = rescue ? "[lead980] the healer walks into reach of the attacked " + rescue->GetName() +
+                                           " (nothing attacks the tank)"
+                                     : std::string("the healer walks back into reach of the tank");
                     // [lead830] b222 rfc-h 5E pull 7 (133-225 s, the wipe): every heal-reach walk of the holy priest
                     // (the ring round the tank and the tank's own spot) passed an idle Ragefire Trogg's reach; its
                     // pack was judged too much for the fight (fight_moves_away, overload 1.12) and the tank's walk
