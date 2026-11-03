@@ -4813,7 +4813,26 @@ namespace Leader::Dungeon
                         }
                     }
                     // [lead38] no first spot for a ranged / healer while the target runs in: it stays (and casts)
-                    if (breaks == "first spot" && target->isMoving() &&
+                    // [lead882] b224 rfc-h 5E 1087.7-1092.9 s: the destruction warlock Rtlocab stood where it saw
+                    // neither Bazzalan running in nor the tank's stop point (fight_anchor_ahead): every cast "no line
+                    // of sight" until the boss stood on the tank. A ranged damage dealer that casts on its target
+                    // from where it stands, or sees where the fight lands, stays; one that does neither takes its
+                    // first spot now
+                    Position const landing = lead.fightAnchorSerial ? lead.fightAnchor : tank->GetPosition();
+                    bool const blindToFight =
+                        breaks == "first spot" && target->isMoving() && !melee && bot != healer &&
+                        !PlayerbotAI::IsHeal(bot) && !MemberCastsHere(bot, target) &&
+                        !bot->IsWithinLOS(landing.GetPositionX(), landing.GetPositionY(),
+                                          landing.GetPositionZ() + tank->GetCollisionHeight());
+                    if (blindToFight)
+                    {
+                        thread_local std::set<uint64> blindLogged;
+                        if (blindLogged.insert(bot->GetGUID().GetRawValue() ^ target->GetGUID().GetRawValue()).second)
+                            LOG_INFO("playerbots", "[lead882] {}: sees neither {} running in nor the fight's landing: "
+                                     "takes its first spot now",
+                                     bot->GetName(), target->GetName());
+                    }
+                    if (breaks == "first spot" && target->isMoving() && !blindToFight &&
                         (target->GetVictim() != tank || !tank->IsWithinMeleeRange(target)))
                     {
                         breaks.clear();
@@ -5875,13 +5894,27 @@ namespace Leader::Dungeon
                     PlayerbotAI* const memberAI = castNoted ? GET_PLAYERBOT_AI(bot) : nullptr;
                     auto const castLands = [&](Unit* mob)
                     { return !memberAI || ExpectedLifetime(memberAI, mob) >= castHeld.landsSec; };
+                    // [lead883] b224 rfc-h 5E Rtlocab (destruction): 14 s of "the attack refused: <mob> (no line of
+                    // sight)" over the run (762-768 s: a Voidwalker Minion, then a Cultist, then a Warlock, each
+                    // round the corner while other kill-order mobs stood in its sight). A ranged damage dealer's pick
+                    // is a mob it sees from where it stands first; an unseen one only when it sees none (its spot
+                    // walk brings it into sight then)
+                    bool const sightFirst = PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
+                    auto const seesMob = [&](Unit* mob) { return bot->IsWithinLOSInMap(mob); };
                     Unit* mine = nullptr;
-                    for (bool const needLanding : {true, false})
+                    for (uint8 pass = 0; pass < 4; ++pass)
                     {
-                        if (mine || (!needLanding && !memberAI))
+                        bool const needSight = pass < 2;
+                        bool const needLanding = pass % 2 == 0;
+                        if (mine)
                             break;
+                        // without a held cast (no memberAI) every mob "lands": the landing passes are the only ones
+                        if ((needSight && !sightFirst) || (!needLanding && !memberAI))
+                            continue;
                         auto const pickHere = [&](Unit* mob)
-                        { return pickable(mob) && (!needLanding || castLands(mob)); };
+                        {
+                            return pickable(mob) && (!needLanding || castLands(mob)) && (!needSight || seesMob(mob));
+                        };
                         // [lead236] b188 rfc-h 5G 125-139 s: the ret paladin's Attack flipped Shaman <-> Trogg every
                         // leader tick (0.3 s, 30 changes) - lead229's rate moves with every hit, the leader's focus mob
                         // passed and failed the test in turn, and each switch opened a fresh mob: 16 aggro losses for
@@ -5904,6 +5937,13 @@ namespace Leader::Dungeon
                                 mob && mob->IsAlive() && mob->IsInCombat() && pickHere(mob))
                                 mine = mob;
                         }
+                    }
+                    if (sightFirst && mine && mine != target && !seesMob(target))
+                    {
+                        thread_local std::set<std::pair<uint64, uint64>> sightLogged;
+                        if (sightLogged.insert({bot->GetGUID().GetRawValue(), mine->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots", "[lead883] {}: attacks {} it sees, not the unseen {}",
+                                     bot->GetName(), mine->GetName(), target->GetName());
                     }
                     // [lead136] b162 20261101-121409: the shaman moved 377 s, 48 % of its fight time not acting - 121
                     // "combat spot: behind the target" moves, 63 re-spots "out of melee reach". A melee member out of
