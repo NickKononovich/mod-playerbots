@@ -97,6 +97,50 @@ namespace Leader::Fight
                                                  VMAP::ModelIgnoreFlags::Nothing);
     }
 
+    bool LeaderMeleeReachesFrom(Player* bot, Unit* target, Position const& at)
+    {
+        float const reach =
+            std::max(target->GetCombatReach() + bot->GetCombatReach() + 4.0f / 3.0f, float(NOMINAL_MELEE_RANGE));
+        return target->GetExactDist(at) <= reach && LeaderSeesFrom(bot, target, at);
+    }
+
+    bool LeaderMeleePlace(Player* bot, Unit* target, float side, Position& out, bool* behind)
+    {
+        // [lead580] b215 rfc-h 5E 365-411 s: the assassination rogue's chase of Oggleflint ended on Oggleflint's own
+        // centre (-147.2, 17.6, -38.6): the one place behind him met the wall at his back (no valid ground), the
+        // place fell back to the target's position, and from there every ability failed "no line of sight" for 45 s.
+        // The places round the target at the follow's melee distance, behind first, the first the member stands on
+        // and hits it from (the game's melee range and sight)
+        static constexpr float TURNS[] = {0.35f, 0.0f,  -0.35f, 0.7f,  -0.7f, 1.05f, -1.05f, 1.4f, -1.4f,
+                                          1.75f, -1.75f, 2.1f,  -2.1f, 2.45f, -2.45f, 2.8f, -2.8f, 3.14f};
+        if (!target || !target->IsInWorld() || !bot || bot->GetMap() != target->GetMap())
+            return false;
+        float const ring = std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f);
+        float const base = target->GetOrientation() + float(M_PI);
+        float const sign = side < 0.0f ? -1.0f : 1.0f;
+        Map* map = target->GetMap();
+        for (float const turn : TURNS)
+        {
+            float const angle = base + sign * turn;
+            float x = target->GetPositionX() + std::cos(angle) * ring;
+            float y = target->GetPositionY() + std::sin(angle) * ring;
+            float z = target->GetPositionZ();
+            if (!std::isfinite(x) || !std::isfinite(y) ||
+                !map->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                      target->GetPositionZ(), x, y, z) ||
+                !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+                continue;
+            Position const at(x, y, z);
+            if (!LeaderMeleeReachesFrom(bot, target, at))
+                continue;
+            if (behind)
+                *behind = !target->HasInArc(float(M_PI), &at);
+            out = at;
+            return true;
+        }
+        return false;
+    }
+
     bool LeaderOutOfMobsMelee(Player* bot, Position const& at, std::vector<ObjectGuid> const& fightMobs,
                               bool whereTheyStand)
     {
@@ -646,7 +690,8 @@ namespace Leader::Fight
                 return "heal reach";
             // [lead127] the game's own sight from the spot (b159: the hunter's spot passed a +2 yd eye-to-eye ray, its
             // shots "no line of sight" all fight)
-            if (sight && !melee && !LeaderSeesFrom(bot, target, spot))
+            // [lead580] a melee spot too (b215 5E: the rogue 45 s at Oggleflint, every ability "no line of sight")
+            if (sight && !LeaderSeesFrom(bot, target, spot))
                 return "no line of sight to the target";
             return std::string();
         }
@@ -761,6 +806,22 @@ namespace Leader::Fight
             }
             if (ring < inner)
                 break;
+        }
+        // [lead580] no melee spot behind the target fits (the ring's checks, its sight among them): the melee place in
+        // front of it in its reach and sight (LeaderMeleePlace) when it is safe and keeps the heal reach - the spot
+        // breaks "in front of the target" only while a place behind fits
+        if (melee)
+        {
+            Position at;
+            bool behind = true;
+            if (LeaderMeleePlace(bot, target, 1.0f, at, &behind) && !behind &&
+                LeaderSpotSafe(bot, botAI, zones, at.GetPositionX(), at.GetPositionY(), at.GetPositionZ()) &&
+                keeps(at))
+            {
+                out = at;
+                return true;
+            }
+            NoteSpotReject("front", "no melee place in reach and sight in front of the target");
         }
         // [lead471] b208 rfc-h: combat_spot_none "ring: out of its band x105" / "ring: no ground x91" for hunters on a
         // Ragefire Trogg in RFC's tunnels - every straight ray from the target hit the tunnel wall inside the band's
@@ -1097,8 +1158,19 @@ namespace Leader::Fight
         // sample) and 30 s not behind Oggleflint: the chase ended in melee reach at the boss's side and a melee spot in
         // reach was kept. A melee damage dealer's spot is behind the target (out of its front half: no parry, no
         // frontal attack, Shred / Backstab land) unless the target fights that member itself
+        // [lead580] ... when a melee place behind it fits (LeaderMeleePlace: in its melee range and sight); with none
+        // behind, a place in front in its reach and sight is the melee place
         if (melee && !PlayerbotAI::IsTank(bot) && target->GetVictim() != bot && target->HasInArc(float(M_PI), &spot))
-            return "in front of the target";
+        {
+            Position behindAt;
+            bool behind = false;
+            if (LeaderMeleePlace(bot, target, 1.0f, behindAt, &behind) && behind)
+                return "in front of the target";
+        }
+        // [lead580] b215 rfc-h 5E 365-411 s: the rogue's place at Oggleflint had no line of sight of him, every
+        // ability failed 45 s: a melee spot the game does not see the target from breaks, on the same sight cadence
+        if (sight && melee && !LeaderSeesFrom(bot, target, spot))
+            return "no line of sight to the target";
         // [lead203] b181 (8 runs): 240 re-spots "inside its minimum range", and this rule (30 yd, the 2D gap) and the
         // Attack block's (28.5 yd SpellDistance, 3D) left each other's spots. A held ranged spot breaks only where the
         // member cannot cast from it (LeaderCastsFrom's range; the minimum range is Auto Shot's dead zone)
@@ -1134,8 +1206,9 @@ namespace Leader::Fight
     {
         Creature* mob = target ? target->ToCreature() : nullptr;
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        // [lead580] staying in front is staying where the member hits it: in the game's sight too
         if (!mob || !botAI || mob->IsDungeonBoss() || mob->isWorldBoss() || !bot->IsWithinMeleeRange(mob) ||
-            !mob->HasInArc(float(M_PI), bot))
+            !mob->HasInArc(float(M_PI), bot) || !bot->IsWithinLOSInMap(mob))
             return false;
         // the rotations that need the back: Shred (cat form), Backstab as the Subtlety builder (Hemorrhage talent)
         if ((bot->getClass() == CLASS_DRUID && botAI->HasSpell("shred")) ||

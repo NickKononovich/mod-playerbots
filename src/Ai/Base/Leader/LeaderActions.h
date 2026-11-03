@@ -193,6 +193,11 @@ private:
         bool chase = false;  // [lead491] the leader's melee chase (DryFollow, chase)
     } _judgedFollow;
     bool _judgedWalk = false;  // [lead370] the executor walks a judged follow now
+    // [lead580] the last chase place FollowPlace found lies behind the target (false: none behind fits, a front one)
+    bool _placeBehind = true;
+    // [lead580] the chase is done where the member stands: in the game's melee range and sight of `target`, and
+    // behind it (or the target's victim, or no place behind it fits)
+    bool ChaseDoneHere(Unit* target) const;
 };
 
 // [lead76] Executes the leader's "top up X": the healer's heal on the named member now.

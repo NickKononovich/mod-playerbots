@@ -136,6 +136,14 @@ namespace Leader::Fight
     float LeaderRangedMinGap(Player* bot, Unit* target);
     // [lead127] the member standing at `at` sees `target` (the game's IsWithinLOSInMap from there)
     bool LeaderSeesFrom(Player* bot, Unit* target, Position const& at);
+    // [lead580] the member standing at `at` hits `target` in melee: in the game's melee range of it from there
+    // (Unit::GetMeleeRange, centre to centre in 3D) and in the game's line of sight of it (LeaderSeesFrom)
+    bool LeaderMeleeReachesFrom(Player* bot, Unit* target, Position const& at);
+    // [lead580] a melee place round `target`: on the ground the core lets the member stand on next to it
+    // (CheckCollisionAndGetValidCoords from the target), one LeaderMeleeReachesFrom passes. Behind the target first
+    // (out of its front half), `side` (+1 / -1) the side tried first; in front of it only when no place behind fits.
+    // `behind`: the place found is out of its front half. False when no place round it fits
+    bool LeaderMeleePlace(Player* bot, Unit* target, float side, Position& out, bool* behind = nullptr);
     // [lead203] a ranged member standing at `at` casts on `target`: within its spells' range (the larger of its
     // positioning reach and LeaderSpellReach), out of Auto Shot's dead zone (a hunter), in sight. The one fact both
     // combat spot rules leave a spot by

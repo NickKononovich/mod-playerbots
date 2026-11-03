@@ -634,8 +634,8 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // point every tick, so the duplicate-move check below returned first and this stop never ran, and the walk
         // ended at the follow place (two rows behind the mob) beyond its reach plus the tolerance. Checked first now;
         // a mob that stands leaves nothing for that walk to reach: in reach behind it the member stops
-        if (bot->isMoving() && bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target) &&
-            !target->HasInArc(float(M_PI), bot) &&
+        // [lead580] ... and in its sight (ChaseDoneHere): a stop where the game sees no target is no place
+        if (bot->isMoving() && bot->IsValidAttackTarget(target) && ChaseDoneHere(target) &&
             (!target->isMoving() || target->GetExactDist2d(last.lastMoveToX, last.lastMoveToY) <=
                                         target->GetCombatReach() + bot->GetCombatReach() + tolerance))
         {
@@ -650,8 +650,11 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // place (Taragaman's reach behind him) was 2.6 yd off, inside the follow's 3 yd tolerance, so "standing at
         // its place" ended the walk. A chase is done only in the mob's melee range (the game's IsWithinMeleeRange,
         // the reach-behind stop below); out of it, stopped, the walk to the place is walked again
+        // [lead580] ... and in its sight: a member stopped in reach without the game's line of sight of the mob
+        // (b215 5E: the rogue on Oggleflint's centre, 45 s "no line of sight") walks to its place, which is in sight
         bool const chase = bot->IsValidAttackTarget(target);
-        bool const chaseShort = chase && !bot->isMoving() && !bot->IsWithinMeleeRange(target);
+        bool const chaseShort =
+            chase && !bot->isMoving() && (!bot->IsWithinMeleeRange(target) || !bot->IsWithinLOSInMap(target));
         if (!chaseShort && IsDuplicateMove(x, y, z))
             return false;
         // [lead154] b173 281-366 s: Rtshaab stood at its follow place, the tank still; the walk there was refused and
@@ -673,8 +676,7 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // 102 / 103) - Shred impossible: a chased mob in melee reach was no work wherever the member stood. The
         // leader's place is behind the mob: in reach out of its front arc (the core's HasInArc, where it parries /
         // blocks) is done, in reach in its front arc the walk behind goes on (the mob's victim stands where it is)
-        if (bot->IsValidAttackTarget(target) && bot->IsWithinMeleeRange(target) &&
-            (target->GetVictim() == bot || !target->HasInArc(float(M_PI), bot)))
+        if (bot->IsValidAttackTarget(target) && ChaseDoneHere(target))
             return false;
         Position const place(x, y, z);
         // [lead370] b200 5G 632-862 s: DryFollow passed Rtdekad's walk, the executor's own GuardIdleMobPath refused
@@ -830,16 +832,25 @@ bool LeaderMoveOrderAction::FollowPlace(Unit* target, uint8 index, float& x, flo
 {
     if (!target || !target->IsAlive())
         return false;
-    float back = 3.0f + 2.5f * float((index / 2) % 2);
-    float side = index % 2 ? 1.5f : -1.5f;
+    float const back = 3.0f + 2.5f * float((index / 2) % 2);
+    float const side = index % 2 ? 1.5f : -1.5f;
     // [lead219] the chase of a mob: behind it within its melee reach (LeaderCombatSpot's melee distance, the two
     // places a little apart), not the follow rows behind a walking member (3-5.5 yd: out of melee of a small mob)
+    // [lead580] b215 rfc-h 5E 365-411 s: the place behind Oggleflint met the wall at his back, the place fell back to
+    // his own centre and the rogue stood there 45 s, every ability "no line of sight". A chase place is a melee place
+    // the game hits the target from (LeaderMeleePlace: in its melee range and sight, behind it first); none is no
+    // place, never the target's own position
     if (bot->IsValidAttackTarget(target))
     {
-        float const reach = std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f);
-        float const turn = index % 2 ? 0.35f : -0.35f;
-        back = reach * std::cos(turn);
-        side = reach * std::sin(turn);
+        Position at;
+        bool behind = true;
+        if (!Leader::Fight::LeaderMeleePlace(bot, target, index % 2 ? -1.0f : 1.0f, at, &behind))
+            return false;
+        _placeBehind = behind;
+        x = at.GetPositionX();
+        y = at.GetPositionY();
+        z = at.GetPositionZ();
+        return true;
     }
     float const o = target->GetOrientation();
     x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
@@ -866,8 +877,11 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
+    // [lead580] a chase with no melee place in the target's reach and sight is no chase the member can walk
     if (!FollowPlace(target, index, x, y, z))
-        return std::string();
+        return target && target->IsAlive() && bot->IsValidAttackTarget(target)
+                   ? std::string("no melee place in reach and sight of the target")
+                   : std::string();
     // the executor's own no-walk facts: a chased mob in melee reach, the member at its place
     // [lead532] b212 rfc-h 5H 1044-1050 s / 5C 637-834 s / 5G 91.8 s: 9 member_refusals "chase: behind the target -
     // GuardIdleMobPath" - the member stood in melee reach in the mob's front arc, this returned "no refusal" without
@@ -875,10 +889,9 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
     // arc the walk goes on) under its own idle guard, which refused it. The no-walk facts are the executor's: a chased
     // mob in reach is no walk only when its victim is the member or the member stands out of its front arc; a chase
     // out of reach is walked even from the place (lead523)
+    // [lead580] in reach also means in the game's sight of the mob (ChaseDoneHere)
     bool const chased = bot->IsValidAttackTarget(target);
-    if (chased ? bot->IsWithinMeleeRange(target) &&
-                     (target->GetVictim() == bot || !target->HasInArc(float(M_PI), bot))
-               : bot->GetExactDist2d(x, y) <= Leader::LEADER_SPOT_TOLERANCE)
+    if (chased ? ChaseDoneHere(target) : bot->GetExactDist2d(x, y) <= Leader::LEADER_SPOT_TOLERANCE)
         return std::string();
     MovementAction::s_dryRun = true;
     _dryFollow = true;
@@ -910,6 +923,15 @@ std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGu
     if (goes)  // [lead370] the walk judged clear: the executor's walk with the same inputs takes it as judged
         _judgedFollow = {true, target->GetGUID(), bot->GetPosition(), Position(x, y, z), chase};
     return std::string();
+}
+
+bool LeaderMoveOrderAction::ChaseDoneHere(Unit* target) const
+{
+    // [lead418] behind the mob (out of its front half, where it parries / blocks) or its own victim; [lead580] in
+    // front only when no place behind it fits (FollowPlace's last answer), and always in the game's melee range and
+    // line of sight of it - the member's spells answer "no line of sight" otherwise
+    return bot->IsWithinMeleeRange(target) && bot->IsWithinLOSInMap(target) &&
+           (target->GetVictim() == bot || !_placeBehind || !target->HasInArc(float(M_PI), bot));
 }
 
 void LeaderMoveOrderAction::ReportRefusal(Leader::MemberEvents const& events, Position const& spot,
