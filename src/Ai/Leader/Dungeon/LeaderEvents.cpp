@@ -5423,6 +5423,33 @@ namespace Leader::Dungeon
                                  JsonObject().Str("why", "its spot for the pull")
                                      .Real("x", spot->second.GetPositionX()).Real("y", spot->second.GetPositionY())
                                      .Real("z", spot->second.GetPositionZ()));
+                    // [lead930] b226 rfc-h 5H 259.2-491 s: the guard refused Rthunad's walk to its pull spot, the
+                    // hunter stayed 53 yd off it and the spot gate waited for that spot to the stall (lead860: no
+                    // refusal leaves the run without a next action). A pull spot the guard refuses is no spot: it is
+                    // dropped and kept out, the next LeaderAssignSpots gives the member another one (or its place /
+                    // none, lead20 - the gate never waits on a member without a spot)
+                    else if (auto const verdict = lead.spotChecked.find(guid);
+                             verdict != lead.spotChecked.end() && !verdict->second.reject.empty() &&
+                             verdict->second.spot.GetExactDist(spot->second) <= 1.0f &&
+                             bot->GetExactDist2d(spot->second.GetPositionX(), spot->second.GetPositionY()) >
+                                 Leader::LEADER_SPOT_TOLERANCE)
+                    {
+                        LOG_INFO("playerbots", "[lead930] {}: its pull spot ({:.1f},{:.1f},{:.1f}) {:.0f} yd off is "
+                                 "refused ({}): a new spot",
+                                 bot->GetName(), spot->second.GetPositionX(), spot->second.GetPositionY(),
+                                 spot->second.GetPositionZ(), bot->GetExactDist(spot->second),
+                                 verdict->second.reject);
+                        Decisions().Write(run, "leader", "spot_refused_respot", guid, bot->GetName(), true,
+                                          JsonObject().Str("member", bot->GetName())
+                                              .Str("reject", verdict->second.reject)
+                                              .Real("x", spot->second.GetPositionX())
+                                              .Real("y", spot->second.GetPositionY())
+                                              .Real("z", spot->second.GetPositionZ())
+                                              .Real("gap", bot->GetExactDist(spot->second)));
+                        lead.spotRefused[guid].push_back(spot->second);
+                        lead.spotBest.erase(guid);
+                        lead.spots.erase(spot);
+                    }
                     moved = true;
                 }
             // the member's own follow is off (LEADER_NO_OWN_FOLLOW): the leader walks it along with the tank; a

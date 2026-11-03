@@ -415,6 +415,10 @@ namespace Leader::Travel
                 }
                 else
                     add("not arrived");  // [b43_harn] arrivedMs 0: no stop reached yet
+                // [lead930] b226 rfc-h 5H: 230 s of "no walk ... not arrived" while the committed pull's spot gate
+                // waited ("Rthunad 53 yd") - what holds the pull is named
+                if (group.State().spotsWaiting && !group.State().spotGateLast.empty())
+                    add("the pull waits for the spots: " + group.State().spotGateLast);
                 if (PatrolWaitOn(group))
                     add("patrol wait");
                 if (leader->IsInCombat())

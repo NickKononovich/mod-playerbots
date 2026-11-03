@@ -327,6 +327,7 @@ namespace Leader::Dungeon
             lead.spotBest.clear();
             lead.spotStuck.clear();
             lead.spotReassigns.clear();
+            lead.spotRefused.clear();  // [lead930]
             lead.spotsFor = mob->GetGUID();
             lead.spotsSinceMs = getMSTime();
         }
@@ -428,7 +429,20 @@ namespace Leader::Dungeon
                                   fight.GetPositionY() + std::sin(angle) * distance * shrink, fight.GetPositionZ());
                     // [lead18] a member stands out of every unpulled mob's reach, the pulled pack's too, and walks
                     // there without passing one
-                    if (!LeaderSpotOk(tank, fight, spot, pullMobs) || !LeaderMemberWalks(bot, spot, idleNear, pullMobs))
+                    // [lead930] b226 rfc-h 5H 259.2-491 s: Rthunad's pull spot passed this check and the issue's own
+                    // guard (LeaderAggroOnWalk, the aggro margin, the pull's mobs idle for a non-tank) refused its walk
+                    // ("its spot for the pull: stays (the spot or its walk is in the reach of Ragefire Shaman)"); the
+                    // gate waited 230 s for a spot the hunter was never sent to. A spot the leader assigns passes the
+                    // guard it is issued under, and a spot that guard refused before is no candidate
+                    bool guardNoWalk = false;
+                    auto const refused = lead.spotRefused.find(member.guid);
+                    bool const refusedBefore =
+                        refused != lead.spotRefused.end() &&
+                        std::any_of(refused->second.begin(), refused->second.end(),
+                                    [&spot](Position const& at) { return at.GetExactDist2d(&spot) <= 1.0f; });
+                    if (refusedBefore || !LeaderSpotOk(tank, fight, spot, pullMobs) ||
+                        !LeaderMemberWalks(bot, spot, idleNear, pullMobs) ||
+                        LeaderAggroOnWalk(bot, spot, guardNoWalk) || guardNoWalk)
                     {
                         if (Creature* mob = LeaderAggroAt(bot, spot))
                             Decisions().Write(
