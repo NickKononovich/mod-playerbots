@@ -39,6 +39,8 @@ namespace TestHarness
             {"surv-hunter", CLASS_HUNTER, "surv pve", Role::Ranged, "Survival Hunter", CAP_REPLENISHMENT},
             {"assa-rogue", CLASS_ROGUE, "as pve", Role::Melee, "Assassination Rogue", CAPS_ROGUE | CAP_CRIT_TAKEN},
             {"combat-rogue", CLASS_ROGUE, "combat pve", Role::Melee, "Combat Rogue", CAPS_ROGUE},
+            // [harness10] user: specs nobody plays in PvE (Subtlety Rogue, PvP-only in 3.3.5) are kept out of the
+            // compositions; the entry stays for a manual test
             {"sub-rogue", CLASS_ROGUE, "subtlety pve", Role::Melee, "Subtlety Rogue", CAPS_ROGUE},
             {"disc-priest", CLASS_PRIEST, "disc pve", Role::Healer, "Discipline Priest", CAPS_PRIEST},
             {"holy-priest", CLASS_PRIEST, "holy pve", Role::Healer, "Holy Priest", CAPS_PRIEST},
@@ -88,7 +90,7 @@ namespace TestHarness
               {"assa-rogue", 1, 0}}},
             {"5F", 5, false, "rotation",
              {{"prot-warrior", 1, MT}, {"resto-druid", 1, 0}, {"demo-warlock", 1, 0}, {"surv-hunter", 1, 0},
-              {"sub-rogue", 1, 0}}},
+              {"combat-rogue", 1, 0}}},
             {"5G", 5, false, "rotation",
              {{"blood-dk", 1, MT}, {"holy-paladin", 1, 0}, {"ret-paladin", 1, 0}, {"arms-warrior", 1, 0},
               {"frost-dk", 1, 0}}},
@@ -123,7 +125,7 @@ namespace TestHarness
               {"surv-hunter", 2, 0}, {"unholy-dk", 2, 0}}},
             {"10E", 10, false, "rotation",
              {{"prot-paladin", 1, MT}, {"blood-dk", 1, OT}, {"holy-paladin", 1, 0}, {"disc-priest", 1, 0},
-              {"resto-shaman", 1, 0}, {"frost-dk", 2, 0}, {"sub-rogue", 2, 0}, {"ele-shaman", 2, 0},
+              {"resto-shaman", 1, 0}, {"frost-dk", 2, 0}, {"combat-rogue", 2, 0}, {"ele-shaman", 2, 0},
               {"arcane-mage", 2, 0}, {"affli-warlock", 2, 0}}},
 
             {"25A", 25, true, "optimal",
@@ -141,7 +143,7 @@ namespace TestHarness
              {{"blood-dk", 1, MT}, {"bear-druid", 1, OT}, {"holy-paladin", 1, 0}, {"holy-paladin", 1, 0},
               {"disc-priest", 1, 0},
               {"enh-shaman", 2, 0}, {"fury-warrior", 2, 0}, {"arms-warrior", 2, 0}, {"assa-rogue", 2, 0},
-              {"sub-rogue", 2, 0},
+              {"combat-rogue", 2, 0},
               {"ele-shaman", 3, 0}, {"balance-druid", 3, 0}, {"frost-mage", 3, 0}, {"arcane-mage", 3, 0},
               {"shadow-priest", 3, 0},
               {"resto-shaman", 4, 0}, {"resto-druid", 4, 0}, {"holy-priest", 4, 0}, {"ret-paladin", 4, 0},
