@@ -330,6 +330,8 @@ namespace Leader
         std::string bossPullParts;  // [lead724] bossPullSec's parts, logged with each burn_decision
         // [lead771] bossPullSec from its parts alone (no stretch floor): what a trash verdict's "back before" reads
         float bossPullPartsSec = -1.0f;
+        // [lead852] a burn cooldown allowed in a boss fight stays allowed for that fight: member -> cooldown -> boss
+        std::map<ObjectGuid, std::map<std::string, ObjectGuid>> burnKept;
         // [lead274] every living boss judged like any pull once per fight (JudgePack's overload, his length over the
         // group's dps): the burn cooldowns go to the boss that needs them most; the fight itself (a critical pull)
         struct BossNeed

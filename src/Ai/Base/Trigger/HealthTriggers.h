@@ -354,6 +354,9 @@ constexpr uint32 SPELL_SHADOWFIEND = 34433;
 constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
 constexpr uint32 SPELL_MANA_TIDE_TOTEM = 16190;
 constexpr uint32 SPELL_EVOCATION = 12051;
+// [lead633] [lead850] the wowsims arcane / fire / frost APL channels Evocation at currentManaPercent <= 25 % (the
+// leader's in-fight Evocation verdict and the boss line's timeline read the same line)
+constexpr float WOWSIMS_EVOCATION_MANA_PCT = 25.0f;
 constexpr uint32 SPELL_DISPERSION = 47585;
 constexpr uint32 SPELL_DISPERSION_MANA = 60069;   // [lead425] Dispersion's linked mana aura (6 % a second, 6 s)
 constexpr uint32 SPELL_MANA_TIDE_TICK = 39610;    // [lead425] the totem's tick (spell_sha_mana_tide_totem)

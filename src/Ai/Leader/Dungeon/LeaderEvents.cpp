@@ -71,6 +71,7 @@
 #include "SmartAI.h"
 #include "SmartScriptMgr.h"
 #include "Spell.h"
+#include "SpellAuraEffects.h"  // [lead852] the member's periodic damage on a mob
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -180,6 +181,99 @@ namespace Leader::Dungeon
             ms += lasts;
         }
         return ms / 1000.0f;
+    }
+
+    // [lead854] An effect that lasts until its proc charges are spent on crits while each hit of its school adds a
+    // stack of crit chance (Combustion: 11129's 3 charges, 28682's +10 % a stack, the core's spell_mage_combustion; its
+    // cooldown starts once it is spent). Rawr.Mage (ComputeCombustion, CombustionFireCritBonus): the casts it lasts, N,
+    // from the crit chain c0, c0 + 10 %, ... until the 3rd crit; during it the crit rate is 3 / N and the crit damage
+    // bonus has the effect's SPELLMOD_CRIT_DAMAGE_BONUS (+50 %) on top; a fire crit's Ignite (the talent's share of the
+    // crit) rides on both. Its gain: N casts x the member's non-crit cast damage (its measured dps x the cast) x the
+    // crits' extra. b223 rfc-h 5C: Combustion was judged "effect 0 s", one second of the group's dps (7551 damage).
+    // `effectSec`: N x the cast; `valuePerSec`: the gain over it. False: not such an effect or no damage measured yet
+    bool ChargeCritEffect(Player* who, SpellInfo const* info, uint32 fillerSpell, float& effectSec, float& valuePerSec)
+    {
+        if (!info || !info->IsCooldownStartedOnEvent() || !info->ProcCharges || info->GetMaxDuration() > 0)
+            return false;
+        SpellInfo const* filler = fillerSpell ? sSpellMgr->GetSpellInfo(fillerSpell) : nullptr;
+        if (!filler)
+            return false;
+        float perStack = 0.0f;
+        float critDamagePct = 0.0f;
+        uint32 const school = filler->GetSchoolMask();
+        auto const read = [&](SpellInfo const* spell)
+        {
+            for (SpellEffectInfo const& effect : spell->GetEffects())
+            {
+                if (effect.ApplyAuraName == SPELL_AURA_ADD_FLAT_MODIFIER &&
+                    effect.MiscValue == SPELLMOD_CRITICAL_CHANCE)
+                    perStack = std::max(perStack, float(effect.CalcValue(who)) / 100.0f);
+                else if ((effect.ApplyAuraName == SPELL_AURA_ADD_PCT_MODIFIER ||
+                          effect.ApplyAuraName == SPELL_AURA_ADD_FLAT_MODIFIER) &&
+                         effect.MiscValue == SPELLMOD_CRIT_DAMAGE_BONUS)
+                    critDamagePct = std::max(critDamagePct, float(effect.CalcValue(who)) / 100.0f);
+            }
+        };
+        read(info);
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (SpellInfo const* proc = effect.TriggerSpell ? sSpellMgr->GetSpellInfo(effect.TriggerSpell) : nullptr)
+                read(proc);
+        constexpr uint32 SPELL_COMBUSTION_PROC = 28682;  // spell_mage_combustion casts it (no effect names it)
+        if (SpellInfo const* proc = sSpellMgr->GetSpellInfo(SPELL_COMBUSTION_PROC);
+            proc && info->SpellFamilyName == SPELLFAMILY_MAGE)
+            read(proc);
+        if (perStack <= 0.0f)
+            return false;
+        float const own = GroupDamage::MemberSustainedDps(who);
+        if (own <= 0.0f)
+            return false;
+        // the crit chain (Rawr: up to 13 casts)
+        float c0 = 0.0f;
+        for (uint8 s = SPELL_SCHOOL_HOLY; s < MAX_SPELL_SCHOOL; ++s)
+            if (school & (1 << s))
+                c0 = std::max(c0, who->GetFloatValue(PLAYER_SPELL_CRIT_PERCENTAGE1 + s) / 100.0f);
+        uint32 const charges = info->ProcCharges;
+        std::vector<float> state(charges + 1, 0.0f);  // state[k]: k crits so far, still running
+        state[0] = 1.0f;
+        float crit = std::min(c0, 1.0f);
+        float casts = 0.0f;
+        for (uint32 cast = 1; cast <= 13; ++cast)
+        {
+            std::vector<float> next(charges + 1, 0.0f);
+            for (uint32 k = 0; k < charges; ++k)
+            {
+                next[k] += state[k] * (1.0f - crit);
+                next[k + 1] += state[k] * crit;
+            }
+            casts += next[charges] * float(cast);
+            next[charges] = 0.0f;
+            state = next;
+            crit = std::min(crit + perStack, 1.0f);
+        }
+        if (casts <= 0.0f)
+            return false;
+        // the crit damage factors (Unit::SpellCriticalDamageBonus: the core's own; the effect's bonus on its 50 %)
+        float const bonus = float(Unit::SpellCriticalDamageBonus(who, filler, 10000, nullptr)) / 10000.0f - 1.0f;
+        float const base = 1.5f * (1.0f + who->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_DAMAGE_BONUS,
+                                                                              school) / 100.0f) - 1.0f;
+        float ignite = 0.0f;  // Ignite (11119 / 11120 / 12846 / 12847 / 12848): its share of a fire crit
+        if (school & SPELL_SCHOOL_MASK_FIRE)
+            for (uint32 rank : {12848u, 12847u, 12846u, 11120u, 11119u})
+                if (who->HasAura(rank))
+                    if (SpellInfo const* talent = sSpellMgr->GetSpellInfo(rank))
+                    {
+                        ignite = float(talent->Effects[EFFECT_0].CalcValue(who)) / 100.0f;
+                        break;
+                    }
+        float const critExtraBase = (1.0f + bonus) * (1.0f + ignite) - 1.0f;
+        float const critExtraOn = (1.0f + bonus + base * critDamagePct) * (1.0f + ignite) - 1.0f;
+        float const castSec = std::max(filler->CalcCastTime(who) / 1000.0f, 1.0f);
+        float const perCastBase = 1.0f + c0 * critExtraBase;
+        float const nonCrit = own * castSec / perCastBase;
+        float const perCastOn = 1.0f + std::min(float(charges) / casts, 1.0f) * critExtraOn;
+        effectSec = casts * castSec;
+        valuePerSec = nonCrit * (perCastOn - perCastBase) / castSec;
+        return valuePerSec > 0.0f;
     }
 
     // [lead425] a tool's return still comes to `member`: under Innervate, Hymn of Hope's tick, Evocation, Dispersion's
@@ -2744,7 +2838,11 @@ namespace Leader::Dungeon
         };
         // [lead274] one cooldown's verdict by its recharge: true allowed, `why` the reason either way
         // [lead581] `effectSec`: how long its effect lasts once cast (the spell's duration)
-        auto const cooldownVerdict = [&](float rechargeSec, float effectSec, std::string& why) -> bool
+        // [lead854] `spentEffect`: its recharge starts only once its effect is spent (Combustion: its 3 crits),
+        // `effectSec` the fight seconds that takes; `valuePerSec`: the damage a second of its effect adds (0: the
+        // group's dps)
+        auto const cooldownVerdict = [&](float rechargeSec, float effectSec, std::string& why, bool spentEffect = false,
+                                         float valuePerSec = 0.0f) -> bool
         {
             if (!critical.empty())
             {
@@ -2766,10 +2864,24 @@ namespace Leader::Dungeon
                 // plan; "back before" on trash needs the estimate the leader can account for - its parts (this
                 // fight, the trash it knows of, the rest, the walk)
                 float const pullSec = lead.bossPullPartsSec >= 0.0f ? lead.bossPullPartsSec : lead.bossPullSec;
-                bool const back = pullSec >= rechargeSec;
+                // [lead854] b223 rfc-h 5C: Combustion "trash: back before the pull of Oggleflint (his pull in 169 s,
+                // recharge 120 s)" at 161.9 s - its effect ran until its 3rd fire crit at 233 s across the trash
+                // pulls (the game starts its cooldown then), it was back at 353 s and Oggleflint (289 s) had none;
+                // Taragaman the same (cast 513 s, spent 637 s, he was pulled at 669 s). Such a cooldown is back
+                // before the boss only when this fight spends its effect and the recharge from then fits
+                if (spentEffect && effectSec > lead.fightSecLeft)
+                {
+                    why = Acore::StringFormat("held for {}: its effect runs until spent ({:.0f} s of its casts > the "
+                                              "fight's {:.0f} s left), its recharge {:.0f} s only from then (his pull "
+                                              "in {:.0f} s)",
+                                              lead.nextBossName, effectSec, lead.fightSecLeft, rechargeSec, pullSec);
+                    return false;
+                }
+                float const backSec = rechargeSec + (spentEffect ? effectSec : 0.0f);
+                bool const back = pullSec >= backSec;
                 why = Acore::StringFormat("{} {} (his pull in {:.0f} s, recharge {:.0f} s)",
                                           back ? "trash: back before the pull of" : "held for", lead.nextBossName,
-                                          pullSec, rechargeSec);
+                                          pullSec, backSec);
                 return back;
             }
             // [lead700] b218 rfc-h: Heroism (Sated 600 s) went to one boss a run in every shaman comp - 5B held it on
@@ -2783,7 +2895,7 @@ namespace Leader::Dungeon
             // the recharge in that order (each use at his pull or when it is back, in his fight) is weighed by its
             // gain - the group's dps over the fight seconds the effect covers, the fights' lengths x the group's dps
             // between equal gains - and it is cast here when the best set has this fight in it
-            float const dps = std::max(lead.groupDps, 1.0f);
+            float const dps = valuePerSec > 0.0f ? valuePerSec : std::max(lead.groupDps, 1.0f);  // [lead854]
             float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
             struct Use
             {
@@ -2792,6 +2904,11 @@ namespace Leader::Dungeon
                 float fightSec;
             };
             std::vector<Use> uses{{fightBoss->GetName(), 0.0f, std::max(lead.fightSecLeft, 0.0f)}};
+            // [lead852] b223 rfc-h 5D Oggleflint 259.7-273.0 s: Army of the Dead "allowed" (here, Taragaman,
+            // Bazzalan: 81352) then "held for Taragaman, Bazzalan, Jergosh (81352)" - the same gain, and the tie went
+            // by the fights' lengths with this one counted by its seconds left: 66 + 97 + 70 > 97 + 70 + 64 at
+            // 259.7 s, 63.97 + ... < ... at 272.4 s. The fight is as long as it is: its whole length (fought + left)
+            float const foughtSec = lead.fightStartMs ? getMSTimeDiff(lead.fightStartMs, now) / 1000.0f : 0.0f;
             std::vector<Creature*> left;
             for (auto const& [bossGuid, need] : lead.bossNeeds)
                 if (Creature* later = bossGuid == fightBoss->GetGUID() ? nullptr : map->GetCreature(bossGuid);
@@ -2848,8 +2965,8 @@ namespace Leader::Dungeon
                         float const covered = effectSec > 0.0f ? std::min(effectSec, fightLeft) : 1.0f;
                         fits = fightLeft > 0.0f && covered > 0.0f;
                         gain += dps * covered;
-                        length += dps * uses[i].fightSec;
-                        ready = cast + rechargeSec;
+                        length += dps * (uses[i].fightSec + (i ? 0.0f : foughtSec));  // [lead852]
+                        ready = cast + rechargeSec + (spentEffect ? effectSec : 0.0f);  // [lead854]
                     }
                 // equal gains: the longer fights, then the set that casts here (lower bit set first)
                 if (fits && (gain > bestGain || (gain == bestGain && length > bestLength) ||
@@ -2880,9 +2997,51 @@ namespace Leader::Dungeon
             return true;
         };
         // [lead178] [lead274] one member's burn cooldowns, each one ready, by its verdict
+        // [lead853] b223 rfc-h 5E Oggleflint 355.8 s: Rapid Fire / Bestial Wrath / Avenging Wrath / Cold Blood
+        // allowed while he ran in 27 yd off the tank (boss_engaged 357 s), 5C 288.2 s Mirror Image the same - their
+        // seconds ran before anyone could hit him. A boss fight's burn cooldowns start at the engage, the tank's
+        // first threat on the boss (the wowsims APL's own pre-pull casts - the DK's Army, the cat's Berserk at -1 s,
+        // the rogue's Stealth, the pre-pull potion - are the leader's prepull steps, not these); a critical moment
+        // is not held
+        bool const bossEngaged = !fightBoss || !critical.empty() ||
+                                 (tank->IsAlive() ? fightBoss->GetThreatMgr().GetThreat(tank) > 0.0f
+                                                  : fightBoss->IsInCombat());
         auto const burnVerdict = [&](Player* who, PlayerbotAI* whoAI, std::vector<std::string>& allowedOut,
                                      std::string& allowedNote, std::string& heldNote)
         {
+            // [lead852] one verdict per fact: a cooldown allowed in this boss fight stays allowed in it (b223 5D
+            // Oggleflint: Army of the Dead allowed / held / allowed as the bosses' pull estimates moved a second)
+            auto& kept = lead.burnKept[who->GetGUID()];
+            for (auto entry = kept.begin(); entry != kept.end();)
+                entry = !fightBoss || entry->second != fightBoss->GetGUID() ? kept.erase(entry) : std::next(entry);
+            auto const judged = [&](std::string const& name, std::string const& why, bool allowed)
+            {
+                if (allowed)
+                {
+                    allowedOut.push_back(name);
+                    if (fightBoss)
+                        kept[name] = fightBoss->GetGUID();
+                }
+                std::string& note = allowed ? allowedNote : heldNote;
+                note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
+            };
+            auto const keptOrEngage = [&](std::string const& name) -> bool
+            {
+                if (kept.count(name))
+                {
+                    judged(name, "kept: allowed in this boss fight already", true);
+                    return true;
+                }
+                if (!bossEngaged)
+                {
+                    judged(name,
+                           Acore::StringFormat("held until {} is engaged (the tank's first threat on him)",
+                                               fightBoss->GetName()),
+                           false);
+                    return true;
+                }
+                return false;
+            };
             for (char const* burn : Leader::BURN_COOLDOWNS)
             {
                 std::string const name(burn);
@@ -2901,6 +3060,8 @@ namespace Leader::Dungeon
                                             ? sSpellMgr->GetSpellInfo(spell)
                                             : nullptr;
                 if (!info)
+                    continue;
+                if (keptOrEngage(name))  // [lead852] [lead853]
                     continue;
                 float const rechargeSec = RechargeAfterCastSec(who, spell);  // [lead541] the game's, not the base
                 // [lead812] b221 rfc-h 5G: the blood tank's Raise Dead was judged "effect 0 s" (46584 has no duration:
@@ -2927,12 +3088,13 @@ namespace Leader::Dungeon
                                      who->GetName(), name, effectSec);
                     }
                 }
+                // [lead854] an effect spent by its crits (Combustion): its seconds and its damage computed
+                float valuePerSec = 0.0f;
+                uint32 const filler = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", "fireball")->Get();
+                bool const spentEffect = ChargeCritEffect(who, info, filler, effectSec, valuePerSec);
                 std::string why;
-                bool const allowed = cooldownVerdict(rechargeSec, effectSec, why);
-                if (allowed)
-                    allowedOut.push_back(name);
-                std::string& note = allowed ? allowedNote : heldNote;
-                note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
+                bool const allowed = cooldownVerdict(rechargeSec, effectSec, why, spentEffect, valuePerSec);
+                judged(name, why, allowed);
             }
             // [lead512] b210 rfc-h 5C Rtdruab / 5G Rtpalae: their on-use trinkets (Tome of Arcane Phenomena, 2 min)
             // went on trash under the bot's own "generic boost" and were ready only at Oggleflint. An equipped
@@ -2946,14 +3108,13 @@ namespace Leader::Dungeon
                 if (!Leader::BoostTrinket(trinket, spell, rechargeSec) || who->HasSpellCooldown(spell))
                     continue;
                 std::string const name = trinket->GetTemplate()->Name1;
+                if (keptOrEngage(name))  // [lead852] [lead853]
+                    continue;
                 std::string why;
                 SpellInfo const* use = sSpellMgr->GetSpellInfo(spell);
                 bool const allowed =
                     cooldownVerdict(rechargeSec, use ? std::max(use->GetMaxDuration(), 0) / 1000.0f : 0.0f, why);
-                if (allowed)
-                    allowedOut.push_back(name);
-                std::string& note = allowed ? allowedNote : heldNote;
-                note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
+                judged(name, why, allowed);
             }
         };
         // [lead187] b180: the blood DK tank cast no Raise Dead / Army of the Dead (sim 1.3 / min each) - its DK
@@ -5766,13 +5927,28 @@ namespace Leader::Dungeon
                     // over the seconds since its first threat there). A mob it does not attack gains its threat only
                     // while its splash lands: the projection holds it only while its threat there still grows (within
                     // the game's global cooldown)
+                    // [lead852] b223 rfc-h 5D Oggleflint 264.9 / 269.1 / 270.3 s: the unholy DK's Stop ("its splash
+                    // threat on Ragefire Shaman / Oggleflint / Ragefire Trogg overtakes the tank") and its burn
+                    // alternated every 0.3-1 s (leader_contradiction "1:army of the dead" -> "2" -> again) - its
+                    // diseases there tick every 3 s, the window above was one global cooldown: between two ticks its
+                    // threat "no longer grew" though nothing had changed. Its threat there grows while its own periodic
+                    // damage is on the mob: the window is that aura's tick (spell data) as the leader samples it (its
+                    // fight tick), a global cooldown with none
+                    auto const growsWithin = [&](Unit* mob) -> uint32
+                    {
+                        uint32 tickMs = 0;
+                        for (AuraType type : {SPELL_AURA_PERIODIC_DAMAGE, SPELL_AURA_PERIODIC_LEECH})
+                            for (AuraEffect const* periodic : mob->GetAuraEffectsByType(type))
+                                if (periodic->GetCasterGUID() == bot->GetGUID() && periodic->GetAmplitude() > 0)
+                                    tickMs = std::max(tickMs, uint32(periodic->GetAmplitude()));
+                        return tickMs ? tickMs + LEADER_FIGHT_TICK_MS : uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS);
+                    };
                     if (mine && splashes && !PlayerbotAI::IsHeal(bot))
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* splashed = ObjectAccessor::GetUnit(*tank, other);
                                 splashed && splashed != mine && splashed->IsAlive() &&
                                 splashed->GetVictim() == tank && seenOn(splashed, bot).threat > 0.0f &&
-                                getMSTimeDiff(seenOn(splashed, bot).riseMs, now) <=
-                                    uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS) &&
+                                getMSTimeDiff(seenOn(splashed, bot).riseMs, now) <= growsWithin(splashed) &&
                                 !headroomOn(splashed))
                             {
                                 unpulledNear = Acore::StringFormat("its splash threat on {} overtakes the tank",
@@ -6547,7 +6723,7 @@ namespace Leader::Dungeon
                         // ("44 % < 50 % for the fight's 30 s left - 3 fight s gained"), an 8 s channel for 3 s. The
                         // wowsims arcane / frost APL channels it at currentManaPercent <= 25 % (the mage's own trigger
                         // before the leader took the tool, b31_deep "mana at or below 25", every mage spec)
-                        constexpr float WOWSIMS_EVOCATION_MANA_PCT = 25.0f;
+                        using RestState::WOWSIMS_EVOCATION_MANA_PCT;  // [lead850] one line, the boss line too
                         // [lead752] one decision per fact: a told Evocation stays told until it is cast (b220 rfc-h
                         // 5C Jergosh 997.2 s: told at 7 %, the mage's mana gem took it to 27 % in the same second, the
                         // order dropped above the 25 % line and the mage never channelled it in the fight)

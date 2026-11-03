@@ -28,6 +28,8 @@
 #include "ObjectMgr.h"        // [lead264] CreatureBaseStats
 #include "PartyMemberToHeal.h"
 #include "RaidConsumables.h"  // [lead482] the mana potion it can drink in the fight
+#include "EstimatedLifetimeValue.h"  // [lead850] GroupDamage: a channel's damage share
+#include "Spell.h"                   // [lead850] the Evocation channel in progress
 #include "Playerbots.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -979,6 +981,112 @@ float ManaToolRadius(Player* caster, uint32 spell)
     return tick ? tick->Effects[EFFECT_0].CalcRadius(caster) : 0.0f;
 }
 
+namespace
+{
+    // [lead850] A mana return that arrives at one moment of the fight: a mana potion / gem (an instant) or Evocation's
+    // channel (its ticks over channelSec, the member casts nothing meanwhile and the fight lasts the damage it does not
+    // deal longer: extendSec). b223 rfc-h 5D Oggleflint: the line summed Evocation 60 % + potion 25 % + gem 16 % =
+    // 101 % against a 95 % need as if all came at once; Evocation comes at the wowsims line (<= 25 %) once ready, the
+    // potion and the gem only where their whole return fits the pool (TickPotions' room test), each once
+    struct BurstReturn
+    {
+        float readySec = 0.0f;
+        float pct = 0.0f;
+        float channelSec = 0.0f;
+        float extendSec = 0.0f;
+        float useAtPct = 100.0f;  // a channel: used at or below this mana
+        bool fitsPool = false;    // an instant: used once its whole return fits the pool
+    };
+
+    // [lead850] the member's mana through a fight of `fightSec` from `start` %, spending `rate` %/s while it casts:
+    // true when it never runs dry before the fight's end and ends with `reserve` % or more
+    bool BurstFightLasts(float start, float rate, float fightSec, float reserve, std::vector<BurstReturn> returns)
+    {
+        constexpr float EPS = 0.001f;
+        float t = 0.0f;
+        float mana = start;
+        float end = fightSec;
+        for (size_t step = 0; step < 4 * returns.size() + 8; ++step)
+        {
+            bool used = false;
+            for (BurstReturn& r : returns)
+            {
+                if (r.pct <= 0.0f || r.readySec > t + EPS)
+                    continue;
+                bool const dry = mana <= EPS;
+                if (!dry && !(r.fitsPool ? mana <= 100.0f - r.pct + EPS : mana <= r.useAtPct + EPS))
+                    continue;
+                float part = 1.0f;  // a channel the fight's end cuts returns its ticks until then
+                if (r.channelSec > 0.0f)
+                {
+                    end += r.extendSec;
+                    part = std::clamp((end - t) / r.channelSec, 0.0f, 1.0f);
+                    t += r.channelSec;
+                }
+                mana = std::min(100.0f, mana + r.pct * part);
+                r.pct = 0.0f;
+                used = true;
+                break;
+            }
+            if (used)
+                continue;
+            if (t >= end - EPS)
+                break;
+            float next = end;
+            if (rate > 0.0f)
+                next = std::min(next, t + mana / rate);
+            for (BurstReturn const& r : returns)
+            {
+                if (r.pct <= 0.0f)
+                    continue;
+                if (r.readySec > t + EPS)
+                    next = std::min(next, r.readySec);
+                else if (rate > 0.0f)
+                {
+                    float const at = r.fitsPool ? 100.0f - r.pct : r.useAtPct;
+                    if (mana > at)
+                        next = std::min(next, t + (mana - at) / rate);
+                }
+            }
+            if (next <= t + EPS)
+                return false;  // dry, nothing it can use now
+            mana -= rate * (next - t);
+            t = next;
+        }
+        return t >= end - EPS && mana + EPS >= reserve;
+    }
+
+    // [lead850] the lowest start mana whose fight lasts (BurstFightLasts); -1: not even a full pool
+    float BurstLine(float rate, float fightSec, float reserve, std::vector<BurstReturn> const& returns)
+    {
+        if (!BurstFightLasts(100.0f, rate, fightSec, reserve, returns))
+            return -1.0f;
+        float low = 0.0f;
+        float high = 100.0f;
+        if (BurstFightLasts(0.0f, rate, fightSec, reserve, returns))
+            return 0.0f;
+        for (uint32 i = 0; i < 14; ++i)
+        {
+            float const mid = (low + high) / 2.0f;
+            (BurstFightLasts(mid, rate, fightSec, reserve, returns) ? high : low) = mid;
+        }
+        return high;
+    }
+
+    // [lead850] the share of the group's damage this member deals (GroupDamage, measured), else one of its damage
+    // dealers'; a healer's cast stops the healing the whole group's damage goes on under: 1
+    float DamageShare(Player* bot, uint32 dealers)
+    {
+        if (PlayerbotAI::IsHeal(bot))
+            return 1.0f;
+        float const group = GroupDamage::SustainedDps(bot);
+        float const own = GroupDamage::MemberSustainedDps(bot);
+        if (group > 0.0f && own > 0.0f)
+            return std::min(own / group, 1.0f);
+        return 1.0f / float(std::max<uint32>(dealers, 1));
+    }
+}
+
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits, bool potion)
 {
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
@@ -1154,6 +1262,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // told it there at 282.7 s), and the line counted none of its 60 %: the mage drank 15 s. A cooldown that is back
     // within the fight counts like a potion's (lead502): the line then holds at least the mana it spends until then
     float cooldownFloor = 0.0f;
+    std::vector<BurstReturn> bursts;  // [lead850] the returns on the fight's timeline
+    float burstCredit = 0.0f;         // [lead850] their part of `returned`
     auto const credit = [&](uint32 spell, float pct, char const* name)
     {
         if (!credits || !bot->HasSpell(spell))
@@ -1171,21 +1281,61 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         float const castSec = info->IsChanneled() ? std::max(info->GetDuration(), 0) / 1000.0f
                                                   : std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(bot)) /
                                                         1000.0f;
-        float const fightCost = PlayerbotAI::IsHeal(bot) ? castSec : castSec / float(DamageDealers(bot));
+        // [lead850] the cast's real cost: its seconds times this member's measured share of the group's damage (the
+        // fight lasts that much longer), not one damage dealer's even share
+        float const share = DamageShare(bot, DamageDealers(bot));
+        float const fightCost = castSec * share;
         float const drinkSec = drinkCost(pct);  // [lead525]
         bool const inFight = drinkSec < 0.0f || fightCost < drinkSec;
         if (inFight)
         {
             returned += pct;
-            if (readyMs)
+            // [lead850] Evocation's return is on the fight's timeline (BurstLine): at the wowsims line once ready
+            if (spell == SPELL_EVOCATION && info->IsChanneled())
+            {
+                BurstReturn evocation;
+                evocation.readySec = float(readyMs) / float(IN_MILLISECONDS);
+                evocation.pct = pct;
+                evocation.channelSec = castSec;
+                evocation.extendSec = fightCost;
+                evocation.useAtPct = WOWSIMS_EVOCATION_MANA_PCT;
+                bursts.push_back(evocation);
+                burstCredit += pct;
+            }
+            else if (readyMs)
                 cooldownFloor = std::max(cooldownFloor, rate * float(readyMs) / float(IN_MILLISECONDS));
         }
-        pick += Acore::StringFormat("{}{} {}: {:.1f} s in the fight vs {:.1f} s drinking", pick.empty() ? "" : "; ",
-                                    name, inFight ? "in the fight" : "drunk before", fightCost, drinkSec);
+        pick += Acore::StringFormat("{}{} {}: {:.1f} s channel / cast x {:.0f} % of the group's damage = {:.1f} s in "
+                                    "the fight vs {:.1f} s drinking",
+                                    pick.empty() ? "" : "; ", name, inFight ? "in the fight" : "drunk before", castSec,
+                                    share * 100.0f, fightCost, drinkSec);
         if (readyMs)
             pick += Acore::StringFormat(" (ready in {:.0f} s: {:.0f} % until then)", float(readyMs) / 1000.0f,
                                         rate * float(readyMs) / float(IN_MILLISECONDS));
     };
+    // [lead850] an Evocation channel under way: the ticks still to come are the member's mana now (b223 5C Taragaman
+    // 671.8 s: "- 0 cooldowns" mid-channel, the potion verdict put a potion on it)
+    if (credits)
+        if (Spell* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            channel && channel->getState() == SPELL_STATE_CASTING && channel->GetSpellInfo() &&
+            channel->GetSpellInfo()->GetFirstRankSpell()->Id == SPELL_EVOCATION)
+            if (int32 const durationMs = channel->GetSpellInfo()->GetDuration(); durationMs > 0)
+            {
+                float const leftSec = std::max(channel->GetCastTimeRemaining(), 0) / float(IN_MILLISECONDS);
+                BurstReturn under;
+                under.pct = ManaToolPct(bot, bot, SPELL_EVOCATION) * std::min(leftSec * 1000.0f / durationMs, 1.0f);
+                under.channelSec = leftSec;
+                under.extendSec = leftSec * DamageShare(bot, DamageDealers(bot));
+                under.useAtPct = 100.0f;
+                if (under.pct > 0.0f)
+                {
+                    bursts.push_back(under);
+                    returned += under.pct;
+                    burstCredit += under.pct;
+                    pick += Acore::StringFormat("{}Evocation channelling: {:.0f} % in its {:.1f} s left",
+                                                pick.empty() ? "" : "; ", under.pct, leftSec);
+                }
+            }
     credit(SPELL_EVOCATION, ManaToolPct(bot, bot, SPELL_EVOCATION), "Evocation");
     credit(SPELL_SHADOWFIEND, ManaToolPct(bot, bot, SPELL_SHADOWFIEND), "Shadowfiend");  // [lead423]
     // [lead733] the druid's own Innervate on itself (wowsims / Rawr's self-Innervate: cast at the bottom of the pool)
@@ -1287,6 +1437,16 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             float const potionPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                              std::max(need + reserve - returned, 0.0f));
             returned += potionPct;
+            // [lead850] on the fight timeline: its whole return once ready, where the pool has room for it
+            if (potionPct > 0.0f)
+            {
+                BurstReturn drink;
+                drink.readySec = float(readyMs) / float(IN_MILLISECONDS);
+                drink.pct = 100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA));
+                drink.fitsPool = true;
+                bursts.push_back(drink);
+                burstCredit += potionPct;
+            }
             // [lead531] b212 rfc-h 5F 621.6-691 s: the boss gate passed the MM hunter at 17 % (Aspect of the Viper
             // covers the fight, its pre-pull potion the leader's); the pre-pull Potion of Speed put the potions on
             // their cooldown and this floor made the line "mana potion 0 % (ready in 60 s: 89 % until then)" - the
@@ -1310,6 +1470,14 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             float const gemPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                           std::max(need + reserve - returned, 0.0f));
             returned += gemPct;
+            if (gemPct > 0.0f)  // [lead850] on the fight timeline, like the potion (ready now: FindManaGem)
+            {
+                BurstReturn gem;
+                gem.pct = 100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA));
+                gem.fitsPool = true;
+                bursts.push_back(gem);
+                burstCredit += gemPct;
+            }
             pick += Acore::StringFormat("{}mana gem {:.0f} %", pick.empty() ? "" : "; ", gemPct);
         }
     }
@@ -1319,8 +1487,23 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // against -34 % with Evocation), drinking 5C 75 -> 160 s, 5B 3 -> 87 s. A measured rate is the fight's own need:
     // no floor over it; the low line guards only the role's estimate (nothing measured yet)
     float const floorPct = measured ? 0.0f : float(sPlayerbotAIConfig.LowMana);
-    float const line = std::clamp(std::max({need + reserve - returned, potionFloor, cooldownFloor}), floorPct,
-                                  100.0f);  // [lead502] [lead634]
+    float lineRaw = std::max({need + reserve - returned, potionFloor, cooldownFloor});  // [lead502] [lead634]
+    // [lead850] with a return on the fight timeline (Evocation, the mana potion, the gem): the lowest start mana its
+    // timeline lasts the fight with, the other tools' mana (spread over the fight) taken off the spend rate. Not even
+    // a full pool lasting: the plain sum (the clamp makes it 100 %). The timeline only raises the sum's line
+    // (safety-over-speed): it lowers it by the channel's seconds without a cast, and the rate it would lower it on is
+    // the trash-measured one until a boss is (b223 5D: 1.44 %/s counted, ~2.6 %/s spent on Oggleflint)
+    std::string timeline;
+    if (!bursts.empty() && fightSec > 0.0f)
+    {
+        float const spread = std::max(need - (returned - burstCredit), 0.0f) / fightSec;
+        float const burstLine = BurstLine(spread, fightSec, reserve, bursts);
+        lineRaw = std::max(lineRaw, burstLine >= 0.0f ? burstLine : 100.0f);
+        timeline = burstLine >= 0.0f
+                       ? Acore::StringFormat("; on the fight's timeline {:.0f} % at {:.2f} %/s", burstLine, spread)
+                       : Acore::StringFormat("; on the fight's timeline not even a full pool at {:.2f} %/s", spread);
+    }
+    float const line = std::clamp(lineRaw, floorPct, 100.0f);
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? source : "spell data", fightSec, reserve,
@@ -1328,6 +1511,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
                                        : Acore::StringFormat("one more mob, {:.1f} s", oneMobSec),
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
+    if (why)
+        *why += timeline;
     if (why && perTankHealth > 0.0f)  // [lead258]
         *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
                                     perCostMeasured ? "measured" : "throughput", cost);

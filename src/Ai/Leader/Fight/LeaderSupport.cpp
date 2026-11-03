@@ -700,7 +700,14 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
         // to come is no cooldown any more) put the Runic Mana Injector on it - the item's cast broke the channel,
         // ~30 % of the counted 60 % never came. One owner per fact: while a mana tool's channel runs, its return is
         // the member's mana; the potion and the gem wait for its end (a health potion does not)
-        uint32 const maxMana = Leader::Fight::LeaderChannelsManaTool(bot) ? 0 : bot->GetMaxPower(POWER_MANA);
+        // [lead850] b223 rfc-h 5D Oggleflint 275.1-276.6 s: Evocation was told at 24 %, the potion verdict ("24 % <
+        // the 90 % ... - 0 cooldowns") put the Runic Mana Potion on the mage before its channel ran: 24 + 25 + 60 %
+        // and ~9 % over the pool's top. A told Evocation is the member's next mana too (one order per fact, lead752)
+        Leader::MemberEvents pending;
+        bool const evocationTold = Leader::Events::Get(bot->GetGUID(), pending) &&
+                                   pending.externalSpell == RestState::SPELL_EVOCATION;
+        uint32 const maxMana =
+            Leader::Fight::LeaderChannelsManaTool(bot) || evocationTold ? 0 : bot->GetMaxPower(POWER_MANA);
         if (!item && maxMana)
             if (uint32 const potion = RaidConsumables::FindRestorePotion(bot, true, amount);
                 potion && maxMana - bot->GetPower(POWER_MANA) >= amount)
