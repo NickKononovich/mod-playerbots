@@ -236,6 +236,19 @@ std::string ArmyBlocked(Player* dk, Creature* boss, bool atPrep)
     return std::string();
 }
 
+// [lead881] a reason ArmyBlocked gives that ends by itself while the knight stands out of combat: its walk (it
+// stops at its spot) and its runes (they come back by their own cooldowns, Player::GetRuneCooldown)
+bool ArmyBlockPasses(std::string const& why) { return why == "walking" || why == "its runes are not ready"; }
+
+// [lead881] seconds until every rune is back (the longest rune cooldown; a log fact, no decision reads it)
+float RuneWaitSec(Player* dk)
+{
+    uint32 longest = 0;
+    for (uint8 i = 0; i < MAX_RUNES; ++i)
+        longest = std::max(longest, dk->GetRuneCooldown(i));
+    return longest / 1000.0f;
+}
+
 // the boss whose pull the group prepares for: the route's boss target
 Creature* PreparedBoss(LeaderGroup& group, Map* map)
 {
@@ -568,6 +581,12 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
     // pass's end): a boss dead or already fought has no prepull
     if (!boss || !boss->IsAlive() || boss->IsInCombat())
         return std::string();
+    // [lead880] only a boss has a prepull Army: b224 rfc-h 5G 931 s the buff pass's end ordered it "before Searing
+    // Blade Cultist" (the route target was a committed trash pull) and Bazzalan met it on cooldown
+    if (Creature* creature = boss->ToCreature();
+        !creature ||
+        !(creature->IsDungeonBoss() || creature->isWorldBoss() || group.BossCreatures().count(creature->GetGUID())))
+        return std::string();
     auto& plans = group.State().armyPrepull;
     uint32 const now = getMSTime() ? getMSTime() : 1;
     std::string holds;
@@ -590,7 +609,29 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
             // [lead823] both gates order the channel where the knight stands: its landing is the boss fight's
             if (std::string const blocked = ArmyBlocked(dk, boss->ToCreature(), true); !blocked.empty())
             {
-                NoteArmyBlocked(group, plan, dk, boss, blocked, orderNow ? "the buff pass end" : "the boss pull");
+                char const* const gate = orderNow ? "the buff pass end" : "the boss pull";
+                NoteArmyBlocked(group, plan, dk, boss, blocked, gate);
+                // [lead881] b224 rfc-h 5C Bazzalan: the tank knight's runes were not ready at -7.9 s, it walked at
+                // -6.9 s, and the pull gate let the pull go past it without asking again. A reason that passes by
+                // itself holds the pass's end / the pull; the next look orders the channel
+                if (ArmyBlockPasses(blocked))
+                {
+                    if (plan.waitLogged != blocked)
+                    {
+                        plan.waitLogged = blocked;
+                        LOG_INFO("playerbots", "[lead881] {}: {} waits for its prepull Army before {}: {} ({:.1f} s "
+                                 "until every rune is back)",
+                                 dk->GetName(), gate, boss->GetName(), blocked, RuneWaitSec(dk));
+                        group.LogEvent("army_prepull_waits", JsonObject()
+                                                                 .Str("dk", dk->GetName())
+                                                                 .Str("boss", boss->GetName())
+                                                                 .Str("gate", gate)
+                                                                 .Str("why", blocked)
+                                                                 .Real("runeWaitSec", RuneWaitSec(dk)));
+                    }
+                    holds = Acore::StringFormat("Army of the Dead: {} {}", dk->GetName(),
+                                                blocked == "walking" ? "walks to its spot" : "waits for its runes");
+                }
                 continue;
             }
             plan.orderedMs = now;
@@ -605,8 +646,16 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
                                                        .Real("plannedDelaySec", ChannelSec()));
         }
         // told, cannot start now (TickArmy drops it on a lasting reason): nothing to wait for
-        else if (!channel && !plan.startedMs && !ArmyBlocked(dk, boss->ToCreature(), true).empty())
+        else if (std::string const blocked =
+                     channel || plan.startedMs ? std::string() : ArmyBlocked(dk, boss->ToCreature(), true);
+                 !blocked.empty())
+        {
+            // [lead881] told and walking / its runes not back: TickArmy gives the order again once it stands
+            if (ArmyBlockPasses(blocked))
+                holds = Acore::StringFormat("Army of the Dead: {} {}", dk->GetName(),
+                                            blocked == "walking" ? "walks to its spot" : "waits for its runes");
             continue;
+        }
         if (!plan.prepEndMs)
         {
             plan.prepEndMs = now;

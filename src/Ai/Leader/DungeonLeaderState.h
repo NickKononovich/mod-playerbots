@@ -481,6 +481,7 @@ namespace Leader
             bool paused = false;         // [lead272] the order is off while the DK walks
             bool done = false;
             std::string blockedLogged;   // [lead803] the last logged reason it could not be told (per boss)
+            std::string waitLogged;      // [lead881] the last logged reason the gate waits for it (per boss)
         };
         std::map<ObjectGuid, ArmyPrepull> armyPrepull;
         // [lead773] the assassination rogue's pre-pull Stealth for Overkill per rogue (LeaderPrepull.h StealthHolds):

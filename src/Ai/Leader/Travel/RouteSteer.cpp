@@ -1879,8 +1879,23 @@ namespace Leader::Travel
         // being the commitment's mob (one target)
         if (group.LeaderDecides() && (Leader::Orders::IsOpen(group.LeaderGuid()) || group.State().commit))
         {
-            if (group.State().commit && !group.State().commitMob.IsEmpty())
+            // [lead880] b224 rfc-h 5G 928.4 s: the commitment's Searing Blade Cultist ("brings Bazzalan", pulled
+            // as one mob at range) took the route target while targetIsBoss stayed Bazzalan's - the buff pass ran
+            // "before Searing Blade Cultist" and its end ordered the prepull Army for the cultist as "the boss"
+            // (Rtdekad, 30.8 s before Bazzalan, on cooldown for him). The flag follows the mob the target now is
+            if (group.State().commit && !group.State().commitMob.IsEmpty() &&
+                routeState.target != group.State().commitMob)
+            {
+                Creature* committed = leader->GetMap() ? leader->GetMap()->GetCreature(group.State().commitMob)
+                                                       : nullptr;
+                bool const isBoss = committed && (committed->IsDungeonBoss() || committed->isWorldBoss() ||
+                                                  routeState.bossCreatures.count(committed->GetGUID()));
+                if (routeState.targetIsBoss && !isBoss)
+                    LOG_INFO("playerbots", "[lead880] {}: the committed pull's {} is the route target, no boss",
+                             leader->GetName(), committed ? committed->GetName() : std::string("?"));
                 routeState.target = group.State().commitMob;
+                routeState.targetIsBoss = isBoss;
+            }
             group.ClearWaypoint(group.LeaderGuid());
             return;
         }
