@@ -3027,13 +3027,24 @@ namespace Leader::Dungeon
             };
             auto const keptOrEngage = [&](std::string const& name) -> bool
             {
+                thread_local std::set<std::tuple<uint64, std::string, uint64>> logged;  // one log per fact
                 if (kept.count(name))
                 {
+                    if (logged.insert({who->GetGUID().GetRawValue(), "kept " + name,
+                                       fightBoss->GetGUID().GetRawValue()})
+                            .second)
+                        LOG_INFO("playerbots", "[lead852] {}: {} stays allowed in the fight with {}", who->GetName(),
+                                 name, fightBoss->GetName());
                     judged(name, "kept: allowed in this boss fight already", true);
                     return true;
                 }
                 if (!bossEngaged)
                 {
+                    if (logged.insert({who->GetGUID().GetRawValue(), "engage " + name,
+                                       fightBoss->GetGUID().GetRawValue()})
+                            .second)
+                        LOG_INFO("playerbots", "[lead853] {}: {} held until {} is engaged by the tank", who->GetName(),
+                                 name, fightBoss->GetName());
                     judged(name,
                            Acore::StringFormat("held until {} is engaged (the tank's first threat on him)",
                                                fightBoss->GetName()),
@@ -3092,6 +3103,13 @@ namespace Leader::Dungeon
                 float valuePerSec = 0.0f;
                 uint32 const filler = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", "fireball")->Get();
                 bool const spentEffect = ChargeCritEffect(who, info, filler, effectSec, valuePerSec);
+                if (spentEffect)
+                {
+                    thread_local std::set<std::pair<uint64, uint32>> effectLogged;
+                    if (effectLogged.insert({who->GetGUID().GetRawValue(), spell}).second)
+                        LOG_INFO("playerbots", "[lead854] {}: {} judged by its crit chain: {:.1f} s, {:.0f} damage",
+                                 who->GetName(), name, effectSec, valuePerSec * effectSec);
+                }
                 std::string why;
                 bool const allowed = cooldownVerdict(rechargeSec, effectSec, why, spentEffect, valuePerSec);
                 judged(name, why, allowed);
@@ -5953,6 +5971,17 @@ namespace Leader::Dungeon
                             {
                                 unpulledNear = Acore::StringFormat("its splash threat on {} overtakes the tank",
                                                                    splashed->GetName());
+                                thread_local std::set<std::pair<uint64, uint64>> splashLogged;
+                                if (uint32 const window = growsWithin(splashed);
+                                    window > uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS) &&
+                                    getMSTimeDiff(seenOn(splashed, bot).riseMs, now) >
+                                        uint32(HEADROOM_GCD_SEC * IN_MILLISECONDS) &&
+                                    splashLogged
+                                        .insert({bot->GetGUID().GetRawValue(), splashed->GetGUID().GetRawValue()})
+                                        .second)
+                                    LOG_INFO("playerbots", "[lead852] {}: its splash on {} still grows within its "
+                                             "periodic tick ({} ms): the stop holds",
+                                             bot->GetName(), splashed->GetName(), window);
                                 mine = nullptr;
                                 break;
                             }

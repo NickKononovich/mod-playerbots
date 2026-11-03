@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <set>  // [lead850]
 #include <unordered_map>
 
 #include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
@@ -1498,7 +1499,15 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     {
         float const spread = std::max(need - (returned - burstCredit), 0.0f) / fightSec;
         float const burstLine = BurstLine(spread, fightSec, reserve, bursts);
+        float const sumLine = lineRaw;
         lineRaw = std::max(lineRaw, burstLine >= 0.0f ? burstLine : 100.0f);
+        // the timeline raised the line: logged once per member and fight length (a log, no decision)
+        thread_local std::set<std::pair<uint64, int32>> raisedLogged;
+        if (lineRaw > sumLine + 0.5f && raisedLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec)}).second)
+            LOG_INFO("playerbots",
+                     "[lead850] {}: the fight's timeline raises its mana line {:.0f} -> {:.0f} % ({:.0f} s at {:.2f} "
+                     "%/s, {} returns)",
+                     bot->GetName(), sumLine, lineRaw, fightSec, spread, bursts.size());
         timeline = burstLine >= 0.0f
                        ? Acore::StringFormat("; on the fight's timeline {:.0f} % at {:.2f} %/s", burstLine, spread)
                        : Acore::StringFormat("; on the fight's timeline not even a full pool at {:.2f} %/s", spread);
