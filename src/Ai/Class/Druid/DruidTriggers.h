@@ -21,12 +21,24 @@
 
 inline constexpr uint32 AURA_OMEN_OF_CLARITY = 16864;
 inline constexpr uint32 SPELL_TREE_OF_LIFE = 33891;
-inline constexpr uint32 FERAL_DOT_REFRESH_WINDOW_MS = 1 * IN_MILLISECONDS;
-inline constexpr uint32 SAVAGE_ROAR_REFRESH_WINDOW_MS = 2 * IN_MILLISECONDS;
+// [rot322] Rake, Rip and Savage Roar are recast only once they are gone, as wowsims feral rotation.go (rakeNow / ripNow
+// !Dot.IsActive(), roarNow !SavageRoarAura.IsActive() or clipRoar). A recast before the end loses a tick in the core:
+// Aura::RefreshDuration resets the tick count (ResetTicks) but not the periodic timer, so the pending tick becomes
+// the new aura's first and its last one falls past the end (AuraEffect::Update, totalTicks) - one of Rake's 3 ticks,
+// one of Rip's 8-11; an early Roar throws its seconds left away. b220 rfc-h 5H Rtdruaf: Rake 3800 a cast against the
+// sim's 5560 (68 %), Rip 12900 against 23600 at the old 1 s / 2 s windows.
+inline constexpr uint32 FERAL_DOT_REFRESH_WINDOW_MS = 0;
+inline constexpr uint32 SAVAGE_ROAR_REFRESH_WINDOW_MS = 0;
 inline constexpr int32 LIFEBLOOM_REFRESH_WINDOW_MS = 2 * IN_MILLISECONDS;
 // [rot240] wowsims feral rotation.go endThresh (10 s): Rip only while the fight lasts >= 10 s more (ripNow), Ferocious
 // Bite at 5 points once it lasts less (biteAtEnd). Rawr 2.3.23 models steady state only.
 inline constexpr float RIP_MIN_TARGET_LIFETIME = 10.0f;
+// [rot323] wowsims feral rotation.go ripCcCheck / rakeCcCheck: with Clearcasting up and a bleed already on the target
+// the free cast goes to Shred (42 energy saved), not to Rip (30) or Rake (35); without a bleed Rip / Rake may take it
+inline bool CatClearcastForShred(PlayerbotAI* botAI, Player* bot, Unit* target)
+{
+    return target && botAI->HasAura("clearcasting", bot) && target->HasAuraState(AURA_STATE_BLEEDING);
+}
 
 class PlayerbotAI;
 class Unit;
@@ -109,7 +121,11 @@ class RakeTrigger : public DebuffTrigger
 {
 public:
     RakeTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "rake", 1, true, 8.0f, FERAL_DOT_REFRESH_WINDOW_MS) {}
-    bool IsActive() override { return !botAI->HasAura("prowl", bot) && DebuffTrigger::IsActive(); }
+    bool IsActive() override
+    {
+        return !botAI->HasAura("prowl", bot) && !CatClearcastForShred(botAI, bot, GetTarget()) &&
+               DebuffTrigger::IsActive();
+    }
 };
 
 // [b31_sd] A second-target DoT only pays out on a mob that lives through most of its ticks (Insect Swarm and

@@ -172,7 +172,11 @@ public:
         beforeDuration = FERAL_DOT_REFRESH_WINDOW_MS;
     }
 
-    bool isUseful() override { return CastMeleeDebuffSpellAction::isUseful() && CatRipTicksOut(botAI, GetTarget()); }
+    bool isUseful() override
+    {
+        return CastMeleeDebuffSpellAction::isUseful() && CatRipTicksOut(botAI, GetTarget()) &&
+               !CatClearcastForShred(botAI, bot, GetTarget());  // [rot323]
+    }
 };
 
 class CastShredAction : public CastMeleeSpellAction
