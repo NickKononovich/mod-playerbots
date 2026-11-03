@@ -7062,7 +7062,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // (MEASURED_QUANTILE: all but the slowest tenth of the fights' seconds) of each fight's health less its AoE part;
     // no AoE measured (aoe 0): the old quantile of killed health per second. `stackedPeak`: the most stacked mobs a
     // measured fight had - past it the AoE is not measured (EstimatePack hits no more).
-    struct GroupDamage
+    struct MeasuredDamage
     {
         float single = 0.0f;  // 0: no fight measured
         float aoe = 0.0f;
@@ -7070,9 +7070,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         uint32 fights = 0;
     };
 
-    GroupDamage MeasuredGroupDamageLocked(MeasuredDps const& measured)
+    MeasuredDamage MeasuredGroupDamageLocked(MeasuredDps const& measured)
     {
-        GroupDamage out;
+        MeasuredDamage out;
         out.fights = uint32(measured.fights.size());
         float sumSec = 0.0f, sumStacked = 0.0f, sumKilled = 0.0f, sumStacked2 = 0.0f, sumKilledStacked = 0.0f;
         for (size_t i = 0; i < measured.fights.size() && i < measured.stackedSec.size(); ++i)
@@ -7135,7 +7135,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         entry.fights.push_back({killed, float(fightMs) / float(IN_MILLISECONDS)});
         entry.stackedSec.push_back(stackedSec);
         entry.stackedPeak = std::max(entry.stackedPeak, record.stackedPeak);
-        GroupDamage const fit = MeasuredGroupDamageLocked(entry);
+        MeasuredDamage const fit = MeasuredGroupDamageLocked(entry);
         LOG_INFO("playerbots",
                  "[lead650] {}: fight killed {:.0f} health in {:.1f} s, {:.1f} stacked mob-s (peak {}); group damage "
                  "{:.0f}/s on the focus + {:.0f}/s on each stacked mob (up to {}) over {} fights",
@@ -7143,12 +7143,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                  fit.single, fit.aoe, fit.stackedPeak, fit.fights);
     }
 
-    GroupDamage MeasuredGroupDamage(Player* tank)
+    MeasuredDamage MeasuredGroupDamage(Player* tank)
     {
         std::lock_guard<std::mutex> guard(pullCheckLock);
         auto const found = measuredDps.find(tank->GetGUID().GetRawValue());
         if (found == measuredDps.end() || found->second.instanceId != tank->GetInstanceId())
-            return GroupDamage();
+            return MeasuredDamage();
         return MeasuredGroupDamageLocked(found->second);
     }
 
@@ -8766,7 +8766,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // The fight's length and cost, in every careful mode: the tank's health carries part of the fight.
     // [lead265] the dungeon's measured spread once a fight is measured (MeasuredGroupDps), else the model
     // [lead650] and the group's AoE measured with it (MeasuredGroupDamage: the stack's fight played out under it)
-    GroupDamage const measuredDamage = MeasuredGroupDamage(bot);
+    MeasuredDamage const measuredDamage = MeasuredGroupDamage(bot);
     float const fightsDps = measuredDamage.single;
     float const groupDps =
         fightsDps > 0.0f ? fightsDps : std::max(PlanGroupDps(), GroupWeaponDps(bot));  // [lead7] [lead259]
@@ -13206,7 +13206,7 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     PartyStrength const strength = PlanStrength();
     GroupSupport const support = CountSupport(bot);
     TankKit const kit = PartyStrengthShared::GetTankKit(bot);
-    GroupDamage const measuredDamage = MeasuredGroupDamage(bot);  // [lead265] [lead650] as PlanCarefulPull
+    MeasuredDamage const measuredDamage = MeasuredGroupDamage(bot);  // [lead265] [lead650] as PlanCarefulPull
     float const fightsDps = measuredDamage.single;
     float const groupDps = fightsDps > 0.0f ? fightsDps : std::max(PlanGroupDps(), GroupWeaponDps(bot));
     EstimateMode mode;
