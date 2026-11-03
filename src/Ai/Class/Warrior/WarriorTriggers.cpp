@@ -13,6 +13,7 @@
 #include "ThreatManager.h"
 #include <algorithm>         // [b33_class]
 #include <initializer_list>  // [b33_class]
+#include <unordered_map>     // [rot360]
 
 namespace
 {
@@ -397,7 +398,37 @@ bool WarriorStanceAoeTrigger::IsActive()
     if (!spellName.empty() && !AI_VALUE2(uint32, "spell id", spellName))  // [b31_deep] not known
         return false;
 
-    return AoeTrigger::IsActive();
+    if (!AoeTrigger::IsActive())
+        return false;
+
+    // [rot360] A damage dealer's Thunder Clap only while the target's attack speed slot is open. wowsims
+    // warrior__arms / warrior__fury cast it at no target count (Sweeping Strikes, Cleave, Bladestorm / Whirlwind are
+    // their multi-target rows): its value to a damage dealer is the debuff, and Thunder Clap, Frost Fever, Judgements
+    // of the Just and Infected Wounds share one slot (ThunderClapTrigger). b224 rfc-h 5G Rtwarad Jergosh: 3 Thunder
+    // Claps under the blood tank's Frost Fever, 2 Mortal Strikes in 36 s (sim 8.0 a minute), 73 % of the sim.
+    if (spellName == "thunder clap" && !PlayerbotAI::IsTank(bot))
+    {
+        Unit* target = AI_VALUE(Unit*, "current target");
+        if (target && (botAI->HasAura("thunder clap", target, false, false) ||
+                       botAI->HasAura("frost fever", target, false, false) ||
+                       botAI->HasAura("judgements of the just", target, false, false) ||
+                       botAI->HasAura("infected wounds", target, false, false)))
+        {
+            // the log line once per target and 10 s (the trigger is asked every tick); the decision is not timed
+            thread_local std::unordered_map<ObjectGuid::LowType, std::pair<ObjectGuid, uint32>> logged;
+            auto& last = logged[bot->GetGUID().GetCounter()];
+            uint32 const now = getMSTime();
+            if (last.first != target->GetGUID() || getMSTimeDiff(last.second, now) >= 10 * IN_MILLISECONDS)
+            {
+                last = {target->GetGUID(), now};
+                LOG_DEBUG("playerbots", "[rot360] {}: Thunder Clap skipped: the attack speed slot of {} is covered",
+                          bot->GetName(), target->GetName());
+            }
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // [rot19]
