@@ -511,6 +511,60 @@ static float StopOwnWalkToMob(PlayerbotAI* botAI, Player* bot, Unit* target)
     return left;
 }
 
+// [lead960] b227 5C-11 (the wipe): the engage order on Ragefire Shaman (75.0 s, "engage: the tank walks its route in",
+// the pack 45 yd off, its route 86 path points round the ledge) went to Fighting at 84.1 s with a Ragefire Trogg of
+// the way on the tank; the walk to the Shaman went on - 83-95 s the blood DK slid ~80 yd down the route with the
+// Trogg in its melee, woke the next pack (11 mobs, overload 1.57) and died. "reach melee" never ran (the Trogg stood
+// in reach) and lead792 judges only a walk to the reach-melee target. The walk in of an engage / body pull is the
+// pull's execution: once the leader's order reads Fighting (the tank in a fight with a mob on it or its victim) its
+// purpose has ended and the fight is where the tank took it. It stops if it is the tank's own last MoveTo (not a
+// forced escape), issued before the order went Fighting, and it does not end on the order's fight spot or a leader
+// position command's spot. b227 (16 runs): 15 such walks in 11 runs, 230 yd in fights (92 yd with the mob in
+// its melee, 7 woke more mobs); 5C-11 84 s 67 yd and the wipe.
+bool StopPullWalkInFight(PlayerbotAI* botAI, Player* bot)
+{
+    if (!bot->isMoving() || bot->movespline->Finalized() || !bot->IsAlive() || !bot->IsInCombat() ||
+        !PlayerbotAI::IsTank(bot) || !Leader::LedBot(bot))
+        return false;
+    if (!bot->GetVictim() && bot->getAttackers().empty())
+        return false;
+
+    Leader::PullOrder order;
+    if (!Leader::Orders::GetOpen(bot->GetGUID(), order) || order.state != Leader::OrderState::Fighting ||
+        (order.method != Leader::PullMethod::Engage && order.method != Leader::PullMethod::Body))
+        return false;
+
+    G3D::Vector3 const end = bot->movespline->FinalDestination();
+    LastMovement& last = botAI->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get();
+    if (!last.msTime || last.priority == MovementPriority::MOVEMENT_FORCED ||
+        std::hypot(last.lastMoveToX - end.x, last.lastMoveToY - end.y) > 1.0f)
+        return false;
+    // issued before the order went Fighting (the clocks are both getMSTime, wrap-safe)
+    if (static_cast<int32>(order.changedMs - last.msTime) <= 0)
+        return false;
+    if (order.fight.fightSpot.GetExactDist2d(end.x, end.y) <= Leader::LEADER_SPOT_TOLERANCE)
+        return false;
+
+    Leader::MemberEvents events;
+    if (Leader::Events::Get(bot->GetGUID(), events) && events.move != Leader::MoveEvent::None &&
+        events.move != Leader::MoveEvent::Follow &&
+        events.spot.GetExactDist2d(end.x, end.y) <= std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE) + 1.0f)
+        return false;
+
+    Unit* mob = bot->GetVictim();
+    if (!mob)
+        mob = *bot->getAttackers().begin();
+    float const left = bot->GetExactDist(end.x, end.y, end.z);
+    bot->StopMoving();
+    bot->GetMotionMaster()->Clear();
+    LOG_INFO("playerbots", "[lead960] {}: stops its {} walk to {} ({:.1f} yd of it left, issued {:.1f} s before the "
+             "fight): the order is Fighting, {} on it {:.1f} yd off{}", bot->GetName(),
+             Leader::MethodName(order.method), order.targetName, left,
+             getMSTimeDiff(last.msTime, order.changedMs) / 1000.0f, mob->GetName(), bot->GetExactDist(mob),
+             bot->IsWithinMeleeRange(mob) ? " (in melee)" : "");
+    return true;
+}
+
 bool ReachMeleeAction::Execute(Event event)
 {
     // [b46_ohb] a standing shooter nobody else sees (isUseful): the tank steps out of its sight, it comes

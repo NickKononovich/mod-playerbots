@@ -49,6 +49,10 @@ protected:
 // the next pack. nullptr when none does.
 Creature* IdleMobReachingSpot(PlayerbotAI* botAI, Player* bot, Unit* target);
 
+// [lead960] A led tank in a fight: its own walk in of an engage / body pull order (issued before the order went
+// Fighting, not to the order's fight spot nor a leader command's spot) stops - its purpose ended. True: stopped.
+bool StopPullWalkInFight(PlayerbotAI* botAI, Player* bot);
+
 // A dungeon tank's walk to `target`, a mob already fighting (not a boss) farther than TANK_FAR_MOB, would end in the
 // aggro reach of an idle pack (IdleMobReachingSpot, returned): the taunts take it from where the tank stands.
 Creature* TankWalkIntoIdlePack(PlayerbotAI* botAI, Player* bot, Unit* target);

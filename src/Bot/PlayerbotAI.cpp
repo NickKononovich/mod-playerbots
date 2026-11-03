@@ -13,6 +13,7 @@
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
 #include "ChooseTargetActions.h"  // [healer_audit_b30] DpsAssistAction::HealerGroupUnderAttack
+#include "ReachTargetActions.h"  // [lead960] StopPullWalkInFight
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -2145,6 +2146,11 @@ void PlayerbotAI::DoNextAction(bool min)
         if (events.attack == Leader::AttackEvent::None)
             Leader::Events::NoteStale(bot->GetGUID());
     }
+
+    // [lead960] a led tank's pull walk in ends once its order's fight is on (b227 5C-11: ~80 yd on with the mob in
+    // its melee, the next pack woken); no action of the combat engine judges a walk with its target in reach
+    if (isBotAlive && bot->IsInCombat())
+        StopPullWalkInFight(this, bot);
 
     if (Leader::LEADER_IDLE_WITHOUT_COMMAND && isBotAlive && !bot->IsInCombat() &&
         currentEngine == engines[BOT_STATE_NON_COMBAT] && !forceRebuff.IsPending() && !bot->IsInWater() &&
