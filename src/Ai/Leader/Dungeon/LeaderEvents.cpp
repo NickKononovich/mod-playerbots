@@ -506,14 +506,9 @@ namespace Leader::Dungeon
         // it fits: the pack joins the pull (its mobs count, no longer block); it does not: the fight moves away from
         // it (the tank to a spot out of its reach, on the group's side). [lead374] one judge for checkedMove's spots
         // and the chase's walk
-        auto const judgeBlockingPack = [&](Player* bot, Creature* mob)
+        // the idle mob and its pack mates within its aggro range of it
+        auto const packOf = [&](Creature* mob)
         {
-            if (!mob || !group.FightOn(tank) || lead.joinedPack.count(mob->GetGUID()))
-                return;
-            std::vector<ObjectGuid> combined;
-            for (Unit* attacker : tank->getAttackers())
-                if (attacker && attacker->IsAlive())
-                    combined.push_back(attacker->GetGUID());
             std::list<Creature*> pack;
             IdleAggroCheck packCheck{tank};
             Acore::CreatureListSearcher<IdleAggroCheck> packSearcher(mob, pack, packCheck);
@@ -523,21 +518,38 @@ namespace Leader::Dungeon
             for (Creature* other : pack)
                 if (other != mob && other->GetExactDist(mob) <= packReach)
                     packMobs.push_back(other->GetGUID());
+            return packMobs;
+        };
+        // the pack is the fight's: its mobs block no spot or walk (lead600) and are the pull's for the members' own
+        // guards (Leader::PullPack)
+        auto const joinPack = [&](Creature* mob, std::vector<ObjectGuid> const& packMobs)
+        {
+            lead.joinedPack[mob->GetGUID()] = mob->GetGUID();
+            lead.joinedMobs.insert(packMobs.begin(), packMobs.end());
+            if (Group* group = tank->GetGroup())
+            {
+                std::vector<ObjectGuid> all = LeaderPullMobs(lead.commit, lead.commitMob);
+                all.insert(all.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
+                Leader::PullPack::Set(group->GetGUID(), all);
+            }
+        };
+        auto const judgeBlockingPack = [&](Player* bot, Creature* mob)
+        {
+            if (!mob || !group.FightOn(tank) || lead.joinedPack.count(mob->GetGUID()))
+                return;
+            std::vector<ObjectGuid> combined;
+            for (Unit* attacker : tank->getAttackers())
+                if (attacker && attacker->IsAlive())
+                    combined.push_back(attacker->GetGUID());
+            std::vector<ObjectGuid> const packMobs = packOf(mob);
+            float const packReach = mob->GetAggroRange(tank);
             combined.insert(combined.end(), packMobs.begin(), packMobs.end());
             float overload = 0.0f;
             std::string judged;
             bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
             lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
             if (fits)
-            {
-                lead.joinedMobs.insert(packMobs.begin(), packMobs.end());
-                if (Group* group = tank->GetGroup())
-                {
-                    std::vector<ObjectGuid> all = LeaderPullMobs(lead.commit, lead.commitMob);
-                    all.insert(all.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
-                    Leader::PullPack::Set(group->GetGUID(), all);
-                }
-            }
+                joinPack(mob, packMobs);
             else
             {
                 // away from the pack, out of its reach (its aggro range + the spot guard's margin)
@@ -6726,6 +6738,64 @@ namespace Leader::Dungeon
                     }
                     if (issued)
                         how = "the healer walks back into reach of the tank";
+                    // [lead830] b222 rfc-h 5E pull 7 (133-225 s, the wipe): every heal-reach walk of the holy priest
+                    // (the ring round the tank and the tank's own spot) passed an idle Ragefire Trogg's reach; its
+                    // pack was judged too much for the fight (fight_moves_away, overload 1.12) and the tank's walk
+                    // away was refused by the same guard. 162 spot_rejected_aggro "heal reach", heal_reach "fix:
+                    // none" 50 s: the priest stood 32.5 yd off without sight of the tank, cast nothing, and the
+                    // paladin died under 5-6 mobs at 188 s, the group after it. A tank under attack that no heal
+                    // reaches dies for certain; a pack woken on the healer's walk is a fight the healed tank picks
+                    // up. No refusal leaves the tank unhealed: the pack in the way of the healer's walk to the tank
+                    // joins the fight (it blocks no walk then) and the walk is issued
+                    if (!issued && tank->IsAlive() && !tank->getAttackers().empty() &&
+                        std::find(out.begin(), out.end(), tank) != out.end())
+                    {
+                        // the best ring spot (out of the tank's melee pile), else the tank's own spot
+                        std::vector<Position> goals;
+                        if (!candidates.empty())
+                            goals.push_back(candidates.front().first);
+                        goals.push_back(tankAt);
+                        std::set<ObjectGuid> joined;
+                        for (Position const& goal : goals)
+                        {
+                            fix = goal;
+                            lead.spotChecked.erase(healer->GetGUID());  // judged again on this tick's facts
+                            issued =
+                                checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f, "heal reach");
+                            while (!issued)
+                            {
+                                auto const verdict = lead.spotChecked.find(healer->GetGUID());
+                                Creature* blocker =
+                                    verdict != lead.spotChecked.end() && !verdict->second.mob.IsEmpty()
+                                        ? map->GetCreature(verdict->second.mob)
+                                        : nullptr;
+                                if (!blocker || !blocker->IsAlive() || blocker->IsInCombat() ||
+                                    !joined.insert(blocker->GetGUID()).second)
+                                    break;
+                                std::vector<ObjectGuid> const packMobs = packOf(blocker);
+                                joinPack(blocker, packMobs);
+                                lead.fightMoveTo.reset();  // the fight stays: no walk away from a pack it holds
+                                Decisions().Write(run, "leader", "pack_joins", blocker->GetGUID(),
+                                                  blocker->GetName(), true,
+                                                  JsonObject()
+                                                      .Num("packMobs", int64(packMobs.size()))
+                                                      .Str("judged", "the healer's walk to the tank under attack")
+                                                      .Str("blocked", healer->GetName()));
+                                LOG_INFO("playerbots",
+                                         "[lead830] {}: no heal reaches {} under {} attackers; {}'s pack ({} mobs) "
+                                         "on the healer's walk joins the fight",
+                                         healer->GetName(), tank->GetName(), tank->getAttackers().size(),
+                                         blocker->GetName(), packMobs.size());
+                                lead.spotChecked.erase(healer->GetGUID());  // the refusal's fact changed
+                                issued = checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f,
+                                                     "heal reach");
+                            }
+                            if (issued)
+                                break;
+                        }
+                        if (issued)
+                            how = "the healer walks back into reach of the tank (the pack on its walk joins)";
+                    }
                 }
                 if (issued)
                 {
