@@ -590,6 +590,51 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             }
         }
 
+        // [lead870] b224 rfc-h: 53 of the healers' 65 "no tank threat on it" / "heal threat over the tank's" losses
+        // came within 4 s of the leader's Heal gate closing (triage heal_gate: "cast in flight"; 5B 602.9 s: Heal
+        // "every mob the heals reach is on the tank" with 0 mobs, 603.2 DontAttack "Searing Blade Cultist is not on
+        // the tank with the tank's threat", the holy paladin's heal begun at 602.9 landed after the pull started and
+        // its threat - split by the game over every mob with the healed member on its threat list
+        // (ThreatManager::ForwardThreatForAssistingMe) - put it at 34.3 on four mobs the warrior had 0 on: all four
+        // went to it). The leader's Heal is the only command a led healer heals under in a fight (lead61, the member
+        // gate blocks every new heal without it); a heal cast or channel begun under it does not outlive it either -
+        // like lead573's hostile cast, it stops when the command no longer allows it (the leader's emergency heal is
+        // a Heal, an External it names stays)
+        if (Leader::LEADER_HEAL_AFTER_THREAT && bot->IsInCombat() && Leader::ExecutorMember(bot) && IsHeal(bot))
+        {
+            Leader::MemberEvents events;
+            SpellInfo const* castInfo = currentSpell->GetSpellInfo();
+            auto const heals = [](SpellInfo const* info)
+            {
+                for (SpellEffectInfo const& effect : info->Effects)
+                    if (effect.Effect == SPELL_EFFECT_HEAL || effect.Effect == SPELL_EFFECT_HEAL_PCT ||
+                        effect.Effect == SPELL_EFFECT_HEAL_MAX_HEALTH ||
+                        (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL))
+                        return true;
+                return false;
+            };
+            bool healCast = castInfo && castInfo->IsPositive() && heals(castInfo);
+            // a channel heals through the spell its ticks trigger (Penance, Divine Hymn, Tranquility)
+            if (castInfo && castInfo->IsPositive() && !healCast)
+                for (SpellEffectInfo const& effect : castInfo->Effects)
+                    if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                        effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && effect.TriggerSpell)
+                        if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell);
+                            triggered && heals(triggered))
+                            healCast = true;
+            if (healCast && Leader::Events::Get(bot->GetGUID(), events) &&
+                events.attack != Leader::AttackEvent::Heal && castInfo->Id != events.externalSpell)
+            {
+                Unit* castOn = currentSpell->m_targets.GetUnitTarget();
+                B44CastTrace(bot, "stop:leader heal", castInfo, castOn);  // [b44_cast]
+                LOG_INFO("playerbots", "[lead870] {} stops {} on {}: the leader's heals wait (no Heal command)",
+                         bot->GetName(), castInfo->SpellName[0], castOn ? castOn->GetName() : std::string("-"));
+                bot->InterruptSpell(currentSpell->GetCurrentContainer());
+                YieldThread(bot, GetReactDelay());
+                return;
+            }
+        }
+
         if (currentSpell->getState() == SPELL_STATE_PREPARING)
         {
             // Allow external scripts to interrupt a cast in progress
