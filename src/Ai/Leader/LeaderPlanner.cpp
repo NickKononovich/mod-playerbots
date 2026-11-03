@@ -4967,14 +4967,19 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (!IsGroupPresent(bot))
             return "the group is not all here";
 
+        // [lead542] b212 rfc-h: the boss holds named one member at a time ("held for now: Rtshaab at 49 % mana
+        // (needs 56 %)" while Rthunaa stood at 19 %): every member's gap is named, the leader's Rest reads them all
         std::string missing = gap(bot);
         if (Group* group = bot->GetGroup())
         {
-            for (GroupReference* ref = group->GetFirstMember(); ref && missing.empty(); ref = ref->next())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
             {
                 Player* member = ref->GetSource();
-                if (member && member != bot && IsPresent(bot, member))
-                    missing = gap(member);
+                if (!member || member == bot || !IsPresent(bot, member))
+                    continue;
+                std::string const memberGap = gap(member);
+                if (!memberGap.empty())
+                    missing += (missing.empty() ? "" : "; ") + memberGap;
             }
         }
 
