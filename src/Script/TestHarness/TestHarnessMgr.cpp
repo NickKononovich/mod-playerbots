@@ -2685,6 +2685,7 @@ namespace TestHarness
                                                             .Num("groupLevel", party.level)
                                                             .Real("expectedGroupDps", ExpectedGroupDps(party)));
                         LogBossPullState(party, fought, boss.name);  // [harness20]
+                        LogAuraStacks(party, players, "boss_pull");  // [harness30]
                     }
                 }
 
@@ -2966,6 +2967,8 @@ namespace TestHarness
         {
             party.lastPositionsMs = now;
             LogPositions(party, players);
+            if (anyInCombat)
+                LogAuraStacks(party, players, "tick");  // [harness30]
         }
 
         // [b34_arc] arc-h 20261026-014521-arc-h-5F-31 (696-1898 s): a Warder Corpse (21304, Arcatraz rooted trap;

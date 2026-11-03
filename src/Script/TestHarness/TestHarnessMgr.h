@@ -653,6 +653,10 @@ namespace TestHarness
         void LogPullStart(Party& party, std::vector<Player*> const& players);
         void Heartbeat(Party& party, std::vector<Player*> const& players, Player* leader);
         void LogPositions(Party& party, std::vector<Player*> const& players);
+        // [harness30] every member's own auras and the auras it put on each mob it fights, with stacks / charges and
+        // the ms left, and its threat on those mobs ("aura_stacks", at the positions cadence in combat; `at`: "tick"
+        // or "boss_pull")
+        void LogAuraStacks(Party& party, std::vector<Player*> const& players, char const* at);
         void CheckStall(Party& party, std::vector<Player*> const& players, Player* leader, bool anyInCombat);
         // The idle guard: no fight for IDLE_GUARD_MS outside rest / buffing (IDLE_EVENT_WAIT_MS in a genuine event
         // wait) logs "[idle] <run>: no fight for N s: <components holding>" once, with a diagnostic snapshot.

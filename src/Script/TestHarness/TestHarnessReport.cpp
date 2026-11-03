@@ -761,7 +761,8 @@ namespace TestHarness
         SpellInfo const* info = aura->GetSpellInfo();
         JsonObject out;
         out.Num("id", info->Id).Str("name", info->SpellName[LOCALE_enUS] ? info->SpellName[LOCALE_enUS] : "")
-            .Num("stacks", std::max<int64>(aura->GetStackAmount(), aura->GetCharges()));
+            .Num("stacks", std::max<int64>(aura->GetStackAmount(), aura->GetCharges()))
+            .Num("rem", aura->GetDuration());  // [harness30] ms left (-1: no duration)
         ObjectGuid const caster = aura->GetCasterGUID();
         if (caster == unit->GetGUID())
             out.Str("caster", "self");
@@ -1652,6 +1653,103 @@ namespace TestHarness
                                 .Real("z", tankTarget->GetPositionZ()).Real("o", tankTarget->GetOrientation())
                                 .Build());
         LogEvent(party, "positions", event);
+    }
+
+    // [harness30] user 2026-11-03: stack data for every spec, not per-class traces (b221 [rot320] poison doses,
+    // [rot334] Lacerate). One "aura_stacks" line per POSITIONS_MS in combat and one at a boss engage:
+    //   ms   run time (ms, finer than elapsedSec), at "tick" / "boss_pull"
+    //   m    [{"n" name, "t" GUID low of its victim (0: none), "s" [[spell id, stacks, ms left], ...]}], the auras on
+    //        the member it cast itself, passives (talents, item equip auras) left out; stacks = max(stacks, charges);
+    //        ms left -1 = no duration (presence, form, seal)
+    //   mob  [{"g" GUID low, "e" entry, "hp" %, "v" index into m of its victim (-1: none / not a member),
+    //        "a" [[member index, spell id, stacks, ms left], ...] the auras members put on it,
+    //        "th" [[member index, threat], ...] each member's threat on it}]
+    // The mobs: every creature a member is on the threat list of (ThreatManager::GetThreatenedByMeList, the member's
+    // own threat comes with it) and each member's victim; each mob's auras are read once. Names: tools/run_report.py.
+    void TestHarnessMgr::LogAuraStacks(Party& party, std::vector<Player*> const& players, char const* at)
+    {
+        std::unordered_map<ObjectGuid, int64> index;
+        std::vector<Player*> members;
+        for (Player* bot : players)
+            if (bot && bot->IsInWorld() && index.emplace(bot->GetGUID(), int64(members.size())).second)
+                members.push_back(bot);
+
+        struct MobRow
+        {
+            Unit* mob = nullptr;
+            std::vector<std::pair<int64, int64>> threat;  // member index, threat
+        };
+        std::vector<MobRow> mobs;
+        std::unordered_map<Unit*, size_t> mobIndex;
+        auto rowOf = [&](Unit* mob) -> MobRow&
+        {
+            auto [it, added] = mobIndex.emplace(mob, mobs.size());
+            if (added)
+                mobs.push_back(MobRow{mob, {}});
+            return mobs[it->second];
+        };
+
+        JsonArray memberRows;
+        for (size_t i = 0; i < members.size(); ++i)
+        {
+            Player* bot = members[i];
+            JsonArray own;
+            for (auto const& [id, app] : bot->GetAppliedAuras())
+            {
+                Aura const* aura = app->GetBase();
+                if (aura->GetCasterGUID() != bot->GetGUID() || aura->GetSpellInfo()->IsPassive())
+                    continue;
+                own.Raw(JsonArray().Num(aura->GetId())
+                            .Num(std::max<int64>(aura->GetStackAmount(), aura->GetCharges()))
+                            .Num(aura->GetDuration()).Build());
+            }
+
+            for (auto const& [guid, ref] : bot->GetThreatMgr().GetThreatenedByMeList())
+            {
+                Creature* mob = ref ? ref->GetOwner() : nullptr;
+                if (mob && mob->IsAlive() && mob->IsInWorld() && mob->GetMap() == bot->GetMap())
+                    rowOf(mob).threat.emplace_back(int64(i), int64(ref->GetThreat()));
+            }
+            Unit* victim = bot->GetVictim();
+            if (victim && victim->IsCreature() && victim->IsAlive() && victim->IsInWorld() &&
+                victim->GetMap() == bot->GetMap())
+                rowOf(victim);
+
+            memberRows.Raw(JsonObject().Str("n", bot->GetName())
+                               .Num("t", victim && victim->IsCreature() ? int64(victim->GetGUID().GetCounter()) : 0)
+                               .Raw("s", own.Build()).Build());
+        }
+
+        JsonArray mobRows;
+        for (MobRow const& row : mobs)
+        {
+            Unit* mob = row.mob;
+            JsonArray auras;
+            for (auto const& [id, app] : mob->GetAppliedAuras())
+            {
+                Aura const* aura = app->GetBase();
+                auto const caster = index.find(aura->GetCasterGUID());
+                if (caster == index.end())
+                    continue;
+                auras.Raw(JsonArray().Num(caster->second).Num(aura->GetId())
+                              .Num(std::max<int64>(aura->GetStackAmount(), aura->GetCharges()))
+                              .Num(aura->GetDuration()).Build());
+            }
+            JsonArray threat;
+            for (auto const& [member, amount] : row.threat)
+                threat.Raw(JsonArray().Num(member).Num(amount).Build());
+            int64 victim = -1;
+            if (Unit* target = mob->GetVictim())
+                if (auto const it = index.find(target->GetGUID()); it != index.end())
+                    victim = it->second;
+            mobRows.Raw(JsonObject().Num("g", int64(mob->GetGUID().GetCounter())).Num("e", mob->GetEntry())
+                            .Real("hp", mob->GetHealthPct()).Num("v", victim).Raw("a", auras.Build())
+                            .Raw("th", threat.Build()).Build());
+        }
+
+        LogEvent(party, "aura_stacks",
+                 JsonObject().Num("ms", party.runStartMs ? int64(getMSTimeDiff(party.runStartMs, getMSTime())) : 0)
+                     .Str("at", at).Raw("m", memberRows.Build()).Raw("mob", mobRows.Build()));
     }
 
     void TestHarnessMgr::Heartbeat(Party& party, std::vector<Player*> const& players, Player* leader)
