@@ -189,6 +189,14 @@ namespace Leader::Dungeon
                 Player* bot = ObjectAccessor::FindPlayer(member.guid);
                 if (!bot || !bot->IsAlive() || bot->IsInCombat())
                     continue;
+                // [lead981] user 2026-11-03 (warlock-detached): the pre-pull heal-over-time care is the TANK's. A
+                // tick forwards its threat over the mobs that list the healed member; a damage dealer is listed by
+                // no mob before it attacks, and it attacks only on the tank's threat (the leader's dps hold) - its
+                // heal over time takes nothing off the tank. The tank is listed by every mob it pulls from its
+                // first hit, at its lowest threat. b228 (16 runs): 175 s of pull holds on Renew / Rejuvenation
+                // ticking on damage dealers (5C-3 Rtdruab, 5F-6 Rtlocac / Rtrogac / Rthunac, 5E-5 Rthunab / Rtrogab)
+                if (bot != leader && !PlayerbotAI::IsTank(bot))
+                    continue;
                 for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
                 {
                     Aura const* aura = effect->GetBase();
