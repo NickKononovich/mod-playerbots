@@ -2883,8 +2883,32 @@ namespace Leader::Dungeon
                 if (!info)
                     continue;
                 float const rechargeSec = RechargeAfterCastSec(who, spell);  // [lead541] the game's, not the base
+                // [lead812] b221 rfc-h 5G: the blood tank's Raise Dead was judged "effect 0 s" (46584 has no duration:
+                // the core's spell_dk_raise_dead casts the guardian named by its effect 1, 52150, a 60 s ghoul) - an
+                // instant's gain, the same anywhere, so the verdict spread it by the tie-break and it sat out
+                // Oggleflint and Jergosh (wowsims raises it every fight, ~280 Claw dps). The effect of a spell with no
+                // duration of its own is its summon's / triggered spell's duration (spell data)
+                float effectSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
+                if (effectSec <= 0.0f)
+                {
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        if (SpellInfo const* next = effect.TriggerSpell ? sSpellMgr->GetSpellInfo(effect.TriggerSpell)
+                                                                        : nullptr)
+                            effectSec = std::max(effectSec, std::max(next->GetMaxDuration(), 0) / 1000.0f);
+                    if (name == "raise dead" && info->GetEffect(EFFECT_1).Effect)
+                        if (SpellInfo const* ghoul =
+                                sSpellMgr->GetSpellInfo(uint32(std::max(info->GetEffect(EFFECT_1).CalcValue(), 0))))
+                            effectSec = std::max(effectSec, std::max(ghoul->GetMaxDuration(), 0) / 1000.0f);
+                    if (effectSec > 0.0f)
+                    {
+                        thread_local std::set<uint32> effectLogged;
+                        if (effectLogged.insert(spell).second)
+                            LOG_INFO("playerbots", "[lead812] {}: {} judged with its summon's {:.0f} s effect",
+                                     who->GetName(), name, effectSec);
+                    }
+                }
                 std::string why;
-                bool const allowed = cooldownVerdict(rechargeSec, std::max(info->GetMaxDuration(), 0) / 1000.0f, why);
+                bool const allowed = cooldownVerdict(rechargeSec, effectSec, why);
                 if (allowed)
                     allowedOut.push_back(name);
                 std::string& note = allowed ? allowedNote : heldNote;
@@ -3441,7 +3465,22 @@ namespace Leader::Dungeon
                                                         std::max(0.0f, spend.fullSpent / spend.fullSec));
                         }
                         // [lead520] the net use per second it acted (its whole rotation's rate)
-                        if (spend.actingSec > 0.0f)
+                        // [lead810] b221 rfc-h 5H: the fire mage's boss line read "7.10 %/s (its acting seconds on
+                        // bosses)" at Taragaman (its Fireball spends ~1.3 %/s), after Oggleflint - 100 % asked for 81
+                        // s, the gem and the injector spent on it at 75 % / 52 %. A fight's acting rate above what the
+                        // member's spells can spend per acting second (MaxSpendPctPerSec, spell data) is a measuring
+                        // error: not noted, logged with the fight's inputs
+                        float const spendCap = RestState::MaxSpendPctPerSec(member);
+                        float const fightActing = spend.actingSec > 0.0f ? used / spend.actingSec : 0.0f;
+                        bool const actingImpossible = spendCap > 0.0f && fightActing > spendCap;
+                        if (actingImpossible)
+                            LOG_INFO("playerbots", "[lead810] {}: its fight's acting mana rate {:.2f} %/s is above its "
+                                     "spells' {:.2f} %/s - not noted (used {:.1f} % = start {:.1f} - end {:.1f} + "
+                                     "returned {:.1f}; acting {:.1f} s of {:.1f} s{}{})",
+                                     member->GetName(), fightActing, spendCap, used, spend.prev, endPct,
+                                     spend.toolGain, spend.actingSec, usedSec, dry ? ", dry" : "",
+                                     spend.boss ? ", a boss fight" : "");
+                        if (spend.actingSec > 0.0f && !actingImpossible)
                         {
                             spend.actSpent += used;
                             spend.actSec += spend.actingSec;

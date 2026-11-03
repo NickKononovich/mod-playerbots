@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -811,6 +812,25 @@ namespace
     }
 }
 
+// [lead813] b221 rfc-h 5C: Rtdruab's Starfall held 50 times "the area reaches the leader's spared <mob>" (Earthborer
+// 23, Ragefire Trogg 12, Molten Elemental 9) - the test was the 30 yd sphere alone, through the cave's rock. The
+// game's area hits only what the spell's centre sees (Spell::CheckEffectTarget: the line of sight unless
+// SPELL_ATTR2_IGNORE_LINE_OF_SIGHT; Starfall's own filter, spell_dru_starfall_dummy, the same): a spared mob out of
+// that sight is out of the area
+bool LeaderCommandMultiplier::AreaSees(SpellInfo const* info, Unit* mob, Position const& center)
+{
+    if (!info || info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) ||
+        mob->IsWithinLOS(center.GetPositionX(), center.GetPositionY(), center.GetPositionZ()))
+        return true;
+    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> logged;
+    if (logged.size() > 4096)
+        logged.clear();
+    if (logged.insert({bot->GetGUID(), mob->GetGUID()}).second)
+        LOG_INFO("playerbots", "[lead813] {}: the spared {} is out of its {}'s sight: out of the area", bot->GetName(),
+                 mob->GetName(), info->SpellName[0] ? info->SpellName[0] : "area");
+    return false;
+}
+
 // [lead415] the first of the leader's spared mobs (Leader::MemberEvents::aoeSpared) the area reaches; nullptr: none
 Unit* LeaderCommandMultiplier::SparedInArea(std::function<bool(Unit*)> const& reaches)
 {
@@ -862,7 +882,7 @@ void LeaderCommandMultiplier::Refresh()
             else if (Unit* spared = SparedInArea(
                          [&](Unit* mob)
                          {
-                             if (mob->IsWithinDist3d(&center, radius))
+                             if (mob->IsWithinDist3d(&center, radius) && AreaSees(info, mob, center))  // [lead813]
                                  return true;
                              Unit* const mobVictim = mob->GetVictim();
                              return mobVictim && mobVictim->IsWithinDist3d(&center, radius);
@@ -1083,7 +1103,7 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     if (Unit* spared = SparedInArea(
             [&](Unit* mob)
             {
-                if (mob->IsWithinDist3d(&center, radius))
+                if (mob->IsWithinDist3d(&center, radius) && AreaSees(info, mob, center))  // [lead813]
                     return true;
                 Unit* const mobVictim = lasting ? mob->GetVictim() : nullptr;
                 return mobVictim && mobVictim->IsWithinDist3d(&center, radius);

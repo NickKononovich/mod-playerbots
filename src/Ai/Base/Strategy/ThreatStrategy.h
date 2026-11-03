@@ -85,6 +85,7 @@ private:
     void Log(Action* action, char const* why);
     // [lead415] the first of the leader's spared mobs the area reaches (`reaches`); nullptr: none
     Unit* SparedInArea(std::function<bool(Unit*)> const& reaches);
+    bool AreaSees(SpellInfo const* info, Unit* mob, Position const& center);  // [lead813]
 
     uint32 _readMs = 0;
     bool _led = false;

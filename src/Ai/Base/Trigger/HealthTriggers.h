@@ -297,6 +297,10 @@ float SpellManaRate(Player* bot);
 // [lead417] the cheapest mana cast of the bot's rotation (% of its max mana): an offensive spell, a healer's heal;
 // below it the bot is dry (it cannot cast, its mana spend stops)
 float CheapestCastPct(Player* bot);
+// [lead810] the most mana (% of its max) the bot's spells can spend per second it acts: over its rotation's mana spells
+// (an offensive spell, a healer's heal) the cost over the longest of its cast (a channel's duration), its global
+// cooldown and its own cooldown - game data. A measured rate above it is a measuring error
+float MaxSpendPctPerSec(Player* bot);
 // [lead421] the mana per second (% of max mana) the best drink in the bot's bags gives; 0 without one
 float DrinkPctPerSecOf(Player* bot);
 // [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon

@@ -5042,6 +5042,30 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 missing = "missing " + buff;
         }
 
+        // [lead811] b221 rfc-h 5C 689 s: Taragaman was pulled with the fire mage at 5 % - the gate's mana line for it
+        // passed with no trace of what it credited (Evocation, the potion, the gem), and the mage was dry before the
+        // kill. The boss gate's pass is logged once per boss: each mana member's mana against its line and the line's
+        // terms
+        if (missing.empty() && boss)
+        {
+            thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> passLogged;
+            if (passLogged.size() > 1024)
+                passLogged.clear();
+            if (passLogged.insert({bot->GetGUID(), boss->GetGUID()}).second)
+                if (Group* group = bot->GetGroup())
+                    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        if (Player* member = ref->GetSource();
+                            member && member->IsAlive() && member->getPowerType() == POWER_MANA &&
+                            IsPresent(bot, member))
+                        {
+                            std::string why;
+                            float const line = RestState::FightManaLine(member, bossSec, 0.0f, &why, true);
+                            LOG_INFO("playerbots", "[lead811] {}: boss gate for {} passes {} at {:.0f} % mana, its "
+                                     "line {:.0f} % ({})", bot->GetName(), boss->GetName(), member->GetName(),
+                                     member->GetPowerPct(POWER_MANA), line, why);
+                        }
+        }
+
         return missing;
     }
 

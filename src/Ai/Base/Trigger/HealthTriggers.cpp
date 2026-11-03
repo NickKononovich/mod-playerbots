@@ -732,6 +732,36 @@ float CheapestCastPct(Player* bot)
     return cached.pct;
 }
 
+float MaxSpendPctPerSec(Player* bot)
+{
+    float const maxMana = float(bot->GetMaxPower(POWER_MANA));
+    if (maxMana <= 0.0f)
+        return 0.0f;
+    bool const healer = PlayerbotAI::IsHeal(bot);
+    float most = 0.0f;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->IsPassive() || info->PowerType != POWER_MANA ||
+            (healer ? !(info->IsPositive() && IsHealSpell(info)) : info->IsPositive()))
+            continue;
+        int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
+        if (cost <= 0)
+            continue;
+        float const castSec = float(std::max(info->CalcCastTime(bot), 0)) / 1000.0f;
+        float const channelSec = info->IsChanneled() ? float(std::max(info->GetMaxDuration(), 0)) / 1000.0f : 0.0f;
+        float const gcdSec = float(info->StartRecoveryTime) / 1000.0f;
+        float const cooldownSec = float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) / 1000.0f;
+        float const sec = std::max({castSec, channelSec, gcdSec, cooldownSec});
+        if (sec <= 0.0f)
+            continue;  // no cast, no global cooldown, no cooldown: no rate of its own
+        most = std::max(most, 100.0f * float(cost) / maxMana / sec);
+    }
+    return most;
+}
+
 namespace
 {
 struct FightLengths
