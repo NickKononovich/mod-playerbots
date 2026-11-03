@@ -1807,6 +1807,10 @@ namespace Leader::Dungeon
                     lead.fightSecLeft, trashSec, trashHealth, trashRate, lead.trashFightSec > 0.0f ? " measured" : "",
                     restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
             }
+            // [lead990] the trash lines' own mana cooldowns read the same "back before the pull" as the verdict
+            if (Group* tankGroup = tank->GetGroup())
+                RestState::NoteBossPullSec(tankGroup->GetGUID(), lead.bossPullPartsSec >= 0.0f ? lead.bossPullPartsSec
+                                                                                               : lead.bossPullSec);
         }
 
         // [lead20] the tank holds every fight mob near `to` and the walk from `from` (its victim is the tank, or it is
@@ -3918,14 +3922,20 @@ namespace Leader::Dungeon
                     bool const dry = spend.dryPct >= 0.0f;
                     float const endPct = dry ? spend.dryPct : pct;
                     // [lead921] without the seconds a tool returned in
-                    float const usedSec = std::max((dry ? spend.drySec : spend.fightSec) - spend.toolSec, 0.0f);
+                    // [lead990] ... and the seconds it wanded
+                    float const usedSec =
+                        std::max((dry ? spend.drySec : spend.fightSec) - spend.toolSec - spend.wandSec, 0.0f);
                     // [lead480] b208 rfc-h: the casters came to Taragaman short - 5D's arcane mage at ~1 % passed the
                     // boss gate (Oggleflint began at 3 %, its Evocation's 60 % in that fight made the boss net use
                     // negative: boss rate 0, line 0), 5B's elemental shaman stood up at 30 % ("0.35 %/s measured on
                     // bosses x 76 s + 3": Oggleflint's mana potion netted in) and was dry 57 s in. The rate is the
                     // spend without the mana its tools and potions returned: FightManaLine credits a tool only where
                     // it is ready for the fight (its cooldown, the potion the last combat or the pre-pull blocks)
-                    float const used = spend.prev - endPct + spend.toolGain;
+                    float const used = spend.prev - endPct + spend.toolGain + spend.wandGain;
+                    if (spend.wandSec > 0.0f && spend.prev >= 0.0f)
+                        LOG_INFO("playerbots", "[lead990] {}: {:.1f} s it wanded ({:+.1f} % there) are out of its "
+                                 "measured mana rate: used {:.1f} % in {:.1f} s",
+                                 member->GetName(), spend.wandSec, spend.wandGain, used, usedSec);
                     if (spend.toolSec > 0.0f && spend.prev >= 0.0f)
                         LOG_INFO("playerbots", "[lead921] {}: {:.1f} s a tool returned in ({:+.1f} % there) are out of "
                                  "its measured mana rate: used {:.1f} % in {:.1f} s",
@@ -4007,6 +4017,8 @@ namespace Leader::Dungeon
                     spend.lastPct = -1.0f;  // [lead480]
                     spend.toolGain = 0.0f;
                     spend.toolSec = 0.0f;  // [lead921]
+                    spend.wandSec = 0.0f;  // [lead990]
+                    spend.wandGain = 0.0f;
                     spend.potion = false;
                     spend.actingSec = 0.0f;  // [lead520]
                     spend.gemReady = false;  // [lead610]
@@ -4028,6 +4040,8 @@ namespace Leader::Dungeon
                     spend.actingSec = 0.0f;
                     spend.toolGain = 0.0f;
                     spend.toolSec = 0.0f;  // [lead921]
+                    spend.wandSec = 0.0f;  // [lead990]
+                    spend.wandGain = 0.0f;
                     spend.dryPct = -1.0f;
                     spend.drySec = 0.0f;
                 }
@@ -4052,10 +4066,23 @@ namespace Leader::Dungeon
                 // out of the measure
                 bool const toolTick = spend.lastPct >= 0.0f && spend.dryPct < 0.0f &&
                                       (potionNow || gemNow || ManaToolReturning(member, spenders, false));
+                // [lead990] b228 rfc-h: the casters wanded at 1-3 % mana - above their cheapest cast, so not "dry"
+                // (lead417) - and those seconds spent nothing: 5H's fire mage measured 0.61 %/s on trash (its Fireball
+                // spends ~1.3 %/s), its rest line let it start the next pull short, and that pull wanded again. A tick
+                // on a wand (the autorepeat of a member that is no hunter: Shoot) is no second of its mana rotation
+                Spell const* autoRepeat = member->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+                bool const wandTick = !toolTick && spend.lastPct >= 0.0f && spend.dryPct < 0.0f &&
+                                      member->getClass() != CLASS_HUNTER && autoRepeat &&
+                                      autoRepeat->getState() != SPELL_STATE_FINISHED;
                 if (toolTick)
                 {
                     spend.toolGain += pct - spend.lastPct;
                     spend.toolSec += dt;
+                }
+                else if (wandTick)
+                {
+                    spend.wandGain += pct - spend.lastPct;
+                    spend.wandSec += dt;
                 }
                 else if (spend.lastPct >= 0.0f && pct > spend.lastPct && spend.dryPct < 0.0f &&
                          member->HasAura(RestState::SPELL_ASPECT_OF_THE_VIPER))
@@ -6542,19 +6569,27 @@ namespace Leader::Dungeon
                     // walk brings it into sight then)
                     bool const sightFirst = PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                     auto const seesMob = [&](Unit* mob) { return bot->IsWithinLOSInMap(mob); };
+                    // [lead991] b228 rfc-h 5H-8: the fire mage's Attack was a fire-immune Molten Elemental while
+                    // other kill-order mobs fought (40 s a run on the wand, "fireball ... target immune"; 5C 9 s). A
+                    // ranged damage dealer's pick is a mob its rotation's school hurts first (the mob's own immunity,
+                    // Unit::IsImmunedToDamageOrSchool); an immune one only when no other is (its spot then reads the
+                    // reach of the spells that hurt it, LeaderCastReach)
+                    bool const schoolFirst = PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
                     Unit* mine = nullptr;
-                    for (uint8 pass = 0; pass < 4; ++pass)
+                    for (uint8 pass = 0; pass < 8; ++pass)
                     {
-                        bool const needSight = pass < 2;
+                        bool const needSchool = pass < 4;
+                        bool const needSight = pass % 4 < 2;
                         bool const needLanding = pass % 2 == 0;
                         if (mine)
                             break;
                         // without a held cast (no memberAI) every mob "lands": the landing passes are the only ones
-                        if ((needSight && !sightFirst) || (!needLanding && !memberAI))
+                        if ((needSight && !sightFirst) || (!needLanding && !memberAI) || (needSchool && !schoolFirst))
                             continue;
                         auto const pickHere = [&](Unit* mob)
                         {
-                            return pickable(mob) && (!needLanding || castLands(mob)) && (!needSight || seesMob(mob));
+                            return pickable(mob) && (!needLanding || castLands(mob)) && (!needSight || seesMob(mob)) &&
+                                   (!needSchool || !LeaderRotationImmune(bot, mob));
                         };
                         // [lead236] b188 rfc-h 5G 125-139 s: the ret paladin's Attack flipped Shaman <-> Trogg every
                         // leader tick (0.3 s, 30 changes) - lead229's rate moves with every hit, the leader's focus mob

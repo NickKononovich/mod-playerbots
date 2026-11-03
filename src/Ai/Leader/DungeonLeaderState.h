@@ -389,6 +389,10 @@ namespace Leader
             float lastPct = -1.0f;   // [lead480] its mana at the last fight tick
             float toolGain = 0.0f;   // [lead480] the mana its tools and potions returned in this fight (until dry)
             float toolSec = 0.0f;    // [lead921] the fight seconds a tool returned in (out of the measured rate)
+            // [lead990] the fight seconds it wanded (its rotation out of mana: no spend) and the mana they changed,
+            // both out of the measured rate (until dry)
+            float wandSec = 0.0f;
+            float wandGain = 0.0f;
             bool potion = false;     // [lead480] a potion drunk in this combat (Player::GetLastPotionId) is counted
             // [lead520] the fight seconds it acted (casting, channelling or on its global cooldown) until dry, and over
             // its fights the net use per acting second: the rate of its whole rotation, a boss fight's

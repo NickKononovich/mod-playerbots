@@ -412,6 +412,35 @@ void NoteDivinePleaInFight(ObjectGuid member)
 
 namespace
 {
+    struct BossPullNote
+    {
+        float sec = -1.0f;
+        uint32 notedMs = 0;
+    };
+    std::unordered_map<uint64, BossPullNote> bossPullSec;  // [lead990] by group, under manaRateLock
+}
+
+void NoteBossPullSec(ObjectGuid group, float sec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    bossPullSec[group.GetRawValue()] = {sec, getMSTime()};
+}
+
+float BossPullSecOf(Player* bot)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    if (!group)
+        return -1.0f;
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    auto const found = bossPullSec.find(group->GetGUID().GetRawValue());
+    if (found == bossPullSec.end() || found->second.sec < 0.0f)
+        return -1.0f;
+    // the estimate as it stands now: the seconds gone since the leader made it are on the way to that pull
+    return std::max(found->second.sec - getMSTimeDiff(found->second.notedMs, getMSTime()) / 1000.0f, 0.0f);
+}
+
+namespace
+{
     struct FightLengthError
     {
         float sum = 0.0f;
@@ -843,17 +872,37 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             }
             if (info->PowerType != POWER_MANA || info->IsAffectingArea())
                 continue;
+            // [lead990] b228 rfc-h 5C: the balance druid's rotation kept "Entangling Roots 244 / 27 s" up as a damage
+            // over time spell - a crowd control no damage rotation casts (wowsims): a spell whose aura roots, stuns,
+            // fears, confuses or pacifies is no rotation spell
+            if (info->HasAura(SPELL_AURA_MOD_ROOT) || info->HasAura(SPELL_AURA_MOD_STUN) ||
+                info->HasAura(SPELL_AURA_MOD_FEAR) || info->HasAura(SPELL_AURA_MOD_CONFUSE) ||
+                info->HasAura(SPELL_AURA_MOD_PACIFY))
+                continue;
             int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
             if (cost <= 0)
                 continue;
             SpellSchoolMask const school = info->GetSchoolMask();
             float const sp = float(bot->SpellBaseDamageBonusDone(school));
+            // [lead990] b228 rfc-h: the fire mages' filler came out Arcane Blast ("Arcane Blast 228 x 4.50 stack ramp
+            // / 2.43 s", 2.90-6.74 %/s; their Fireball spends ~1.3 %/s) - the pick read the spells' base damage and
+            // coefficient without the member's talents (Fire Power's +10 % damage, Empowered Fire's +15 % of spell
+            // power on Fireball). The coefficient and the damage take the member's spell mods as the core's
+            // Unit::SpellDamageBonusDone applies them (SPELLMOD_BONUS_MULTIPLIER, SPELLMOD_DAMAGE / SPELLMOD_DOT)
             auto const coefficient = [&](SpellInfo const* spell, DamageEffectType type)
             {
                 SpellBonusEntry const* bonus = sSpellMgr->GetSpellBonusData(spell->Id);
                 float const own = bonus ? (type == DOT ? bonus->dot_damage : bonus->direct_damage) : -1.0f;
-                return own >= 0.0f ? own : bot->CalculateDefaultCoefficient(spell, type);
+                float coeff = (own >= 0.0f ? own : bot->CalculateDefaultCoefficient(spell, type)) * 100.0f;
+                bot->ApplySpellMod(spell->Id, SPELLMOD_BONUS_MULTIPLIER, coeff, nullptr, true);
+                return coeff / 100.0f;
             };
+            auto const modded = [&](SpellInfo const* spell, float value, DamageEffectType type)
+            {
+                bot->ApplySpellMod(spell->Id, type == DOT ? SPELLMOD_DOT : SPELLMOD_DAMAGE, value, nullptr, true);
+                return value;
+            };
+            bool areaTick = false;  // [lead990] a channel whose ticks hit an area (Mind Sear): an AoE spell
             float damage = 0.0f;
             bool periodic = false;
             bool direct = false;  // [lead920]
@@ -862,7 +911,9 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             {
                 if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
                 {
-                    damage += float(std::max(effect.CalcValue(bot), 0)) + sp * coefficient(info, SPELL_DIRECT_DAMAGE);
+                    damage += modded(info, float(std::max(effect.CalcValue(bot), 0)) +
+                                               sp * coefficient(info, SPELL_DIRECT_DAMAGE),
+                                     SPELL_DIRECT_DAMAGE);
                     direct = true;
                 }
                 else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.Amplitude && durationMs > 0.0f)
@@ -871,7 +922,9 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                     if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
                         effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH)
                     {
-                        damage += ticks * (float(std::max(effect.CalcValue(bot), 0)) + sp * coefficient(info, DOT));
+                        damage += ticks * modded(info, float(std::max(effect.CalcValue(bot), 0)) +
+                                                           sp * coefficient(info, DOT),
+                                                 DOT);
                         periodic = true;
                     }
                     // a channel's ticks cast a damage spell (Mind Flay 58381, Arcane Missiles 42845)
@@ -880,6 +933,7 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                                                          SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE))
                         if (SpellInfo const* tick = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
                         {
+                            areaTick |= tick->IsAffectingArea();
                             float perTick =
                                 effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE
                                     ? float(std::max(effect.CalcValue(bot), 0))
@@ -889,15 +943,23 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                                     if (hit.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
                                         perTick += float(std::max(hit.CalcValue(bot), 0));
                             if (perTick > 0.0f)
-                                damage += ticks * (perTick + sp * coefficient(tick, SPELL_DIRECT_DAMAGE));
+                                damage += ticks * modded(info, perTick + sp * coefficient(tick, SPELL_DIRECT_DAMAGE),
+                                                         SPELL_DIRECT_DAMAGE);
                         }
                 }
             }
-            if (damage <= 0.0f)
+            if (damage <= 0.0f || areaTick)  // [lead990] b228 5B: "Mind Sear 853 / 4.46 s" was the shadow filler
                 continue;
             damage *= bot->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE, school);
+            // [lead990] the cast time without the mods that spend a charge (Presence of Mind: b228 "Frostbolt 359 /
+            // 1.23 s" - the global cooldown - was a fire mage's filler for the cache's life): its talents' and its
+            // haste's, as WorldObject::ModSpellCastTime applies them to a magic spell
+            int32 castMs = info->CastTimeEntry ? info->CastTimeEntry->CastTime : 0;
+            bot->ApplySpellMod(info->Id, SPELLMOD_CASTING_TIME, castMs, nullptr, true);
+            if (info->DmgClass == SPELL_DAMAGE_CLASS_MAGIC)
+                castMs = int32(float(castMs) * haste);
             float const castSec = info->IsChanneled() ? durationMs / 1000.0f * haste
-                                                      : float(std::max<int32>(info->CalcCastTime(bot), 0)) / 1000.0f;
+                                                      : float(std::max<int32>(castMs, 0)) / 1000.0f;
             float const gcdSec =
                 info->StartRecoveryTime ? std::max(float(info->StartRecoveryTime) / 1000.0f * haste, 1.0f) : 0.0f;
             float const sec = std::max(castSec, gcdSec);
@@ -912,7 +974,8 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                 SpellSpecificType const specific = info->GetSpellSpecific();
                 uint32 const slot = specific == SPELL_SPECIFIC_CURSE || specific == SPELL_SPECIFIC_STING
                                         ? uint32(specific) | 0x80000000u
-                                        : spellId;
+                                        : info->GetFirstRankSpell()->Id;  // [lead990] one per spell, not per rank
+                                                                           // (b228: "Living Bomb 718 / 12 s" x 3)
                 if (auto const found = dots.find(slot); found == dots.end() || found->second.value < pick.value)
                     dots[slot] = pick;
             }
@@ -1430,7 +1493,14 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // [lead855] a boss line before any boss fight of the member is measured: its rotation cast nonstop (spell data),
     // not the trash's acting rate
     std::string rotationWhy;
-    float const rotation = boss ? BossRotationRate(bot, fightSec, &rotationWhy) : -1.0f;
+    // [lead990] b228 rfc-h: the trash line read the rate measured over the trash fights - 5H's fire mage "mana 1 % <
+    // need 5 % = 0.61 %/s (measured) x 13 s" (946 s) - a rate measured while it wanded dry (5H fire 168 s a run on
+    // the wand "not enough power", 5C fire 142, 5D arcane 61, 5B shadow 49, 5A frost 31): its low rate let it start
+    // the next pull short and the short pull measured the low rate again. A damage caster's trash line reads its
+    // rotation cast nonstop over the pull's estimated seconds too (wowsims: it casts the whole fight), its measured
+    // rate where that is higher (AoE)
+    float const rotation =
+        boss ? BossRotationRate(bot, fightSec, &rotationWhy) : RotationSpendPctPerSec(bot, fightSec, &rotationWhy);
     bool bossMeasured = false;  // [lead855] the boss line reads a boss fight's measured rate
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
@@ -1499,6 +1569,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 measured = true;
                 source = "its rotation nonstop, no boss measured";
             }
+        }
+        else if (rotation > rate)  // [lead990] a trash line: the rotation's nonstop rate when higher
+        {
+            rate = rotation;
+            measured = true;
+            source = "its rotation nonstop";
         }
     }
     float need = rate * fightSec;
@@ -1627,6 +1703,25 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
         if (!info)
             return;
+        // [lead990] b228 rfc-h 5H-8 163.9-302.1 s: the fire mage fought the trash at 1-19 % mana, its ready
+        // Evocation "held for Oggleflint (his pull in 171 s, recharge 240 s)" 215 times - the leader's cooldown
+        // verdict (cooldowns-boss-judged-like-pulls) - while its trash line counted Evocation's 60 % in the next fight
+        // and so never had it drink. A trash line counts the member's own long mana cooldown only where that verdict
+        // gives it on trash: no boss left, or its recharge after a cast (from when it is ready) is back before the
+        // next boss pull (the leader's estimate, NoteBossPullSec)
+        if (!boss && (spell == SPELL_EVOCATION || spell == SPELL_SHADOWFIEND))
+            if (float const toBoss = BossPullSecOf(bot); toBoss >= 0.0f)
+            {
+                int32 rechargeMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+                bot->ApplySpellMod(spell, SPELLMOD_COOLDOWN, rechargeMs);
+                float const backSec = (float(readyMs) + float(std::max(rechargeMs, 0))) / float(IN_MILLISECONDS);
+                if (backSec > toBoss)
+                {
+                    pick += Acore::StringFormat("{}{} kept for the boss (back in {:.0f} s > his pull in {:.0f} s)",
+                                                pick.empty() ? "" : "; ", name, backSec, toBoss);
+                    return;
+                }
+            }
         float const castSec = info->IsChanneled() ? std::max(info->GetDuration(), 0) / 1000.0f
                                                   : std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(bot)) /
                                                         1000.0f;

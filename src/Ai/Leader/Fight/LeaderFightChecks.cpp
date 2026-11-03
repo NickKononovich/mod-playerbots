@@ -30,6 +30,7 @@
 #include "TerrainHazard.h"
 #include <algorithm>
 #include <cmath>
+#include <map>  // [lead991]
 #include <unordered_map>  // [lead420]
 
 namespace Leader::Fight
@@ -1215,32 +1216,9 @@ namespace Leader::Fight
                                           .Real("offMeetingPoint", meet.GetExactDist(to)));
     }
 
-    // [lead18] the member's spell reach to its target (a hunter 35 yd, a caster 30 yd)
-    // [lead660] b218 rfc-h (8 runs, fight_breakdown.py): ranged damage dealers walked 305 s "respot: out of spell
-    // range of the target" and 260 s to first spots for the same reason, 46 % of those re-spots at an edge gap
-    // (Unit::GetDistance) under 30 yd - where the game casts. The reach is the spec's rotation spells' own range with
-    // the member's talents (SpellInfo::GetMaxRange applies SPELLMOD_RANGE as Spell::CheckRange does: Arctic Reach,
-    // Shadow Reach, Destructive Reach, Nature's Reach, Hawk Eye, Flame Throwing), the shortest of the ones it knows;
-    // the fixed 30 / 35 yd only without them
-    float LeaderSpellReach(Player* bot)
+    // [lead991] the spec's rotation spells (LeaderSpellReach's list): their reach, their school
+    std::vector<char const*> LeaderRotationSpellNames(Player* bot)
     {
-        float const fixed = bot->getClass() == CLASS_HUNTER ? 35.0f : 30.0f;
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI)
-            return fixed;
-        // the talents the member has (a respec changes them): the reach is computed again only then
-        uint64 talents = uint64(bot->GetLevel()) << 56 | uint64(bot->GetActiveSpec()) << 48;
-        for (auto const& [spellId, talent] : bot->GetTalentMap())
-            if (talent && talent->State != PLAYERSPELL_REMOVED && talent->IsInSpec(bot->GetActiveSpec()))
-                talents += uint64(spellId) * 2654435761ull;
-        struct Known
-        {
-            uint64 talents;
-            float reach;
-        };
-        thread_local std::unordered_map<ObjectGuid, Known> known;
-        if (auto const it = known.find(bot->GetGUID()); it != known.end() && it->second.talents == talents)
-            return it->second.reach;
         std::vector<char const*> spells;
         uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
         switch (bot->getClass())
@@ -1273,6 +1251,36 @@ namespace Leader::Fight
             default:
                 break;
         }
+        return spells;
+    }
+
+    // [lead18] the member's spell reach to its target (a hunter 35 yd, a caster 30 yd)
+    // [lead660] b218 rfc-h (8 runs, fight_breakdown.py): ranged damage dealers walked 305 s "respot: out of spell
+    // range of the target" and 260 s to first spots for the same reason, 46 % of those re-spots at an edge gap
+    // (Unit::GetDistance) under 30 yd - where the game casts. The reach is the spec's rotation spells' own range with
+    // the member's talents (SpellInfo::GetMaxRange applies SPELLMOD_RANGE as Spell::CheckRange does: Arctic Reach,
+    // Shadow Reach, Destructive Reach, Nature's Reach, Hawk Eye, Flame Throwing), the shortest of the ones it knows;
+    // the fixed 30 / 35 yd only without them
+    float LeaderSpellReach(Player* bot)
+    {
+        float const fixed = bot->getClass() == CLASS_HUNTER ? 35.0f : 30.0f;
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
+            return fixed;
+        // the talents the member has (a respec changes them): the reach is computed again only then
+        uint64 talents = uint64(bot->GetLevel()) << 56 | uint64(bot->GetActiveSpec()) << 48;
+        for (auto const& [spellId, talent] : bot->GetTalentMap())
+            if (talent && talent->State != PLAYERSPELL_REMOVED && talent->IsInSpec(bot->GetActiveSpec()))
+                talents += uint64(spellId) * 2654435761ull;
+        struct Known
+        {
+            uint64 talents;
+            float reach;
+        };
+        thread_local std::unordered_map<ObjectGuid, Known> known;
+        if (auto const it = known.find(bot->GetGUID()); it != known.end() && it->second.talents == talents)
+            return it->second.reach;
+        std::vector<char const*> const spells = LeaderRotationSpellNames(bot);
         float reach = 0.0f;
         auto const take = [&](SpellInfo const* info)
         {
@@ -1296,8 +1304,85 @@ namespace Leader::Fight
         return reach;
     }
 
+    bool LeaderRotationImmune(Player* bot, Unit* mob)
+    {
+        PlayerbotAI* botAI = mob ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI || bot->getClass() == CLASS_HUNTER)
+            return false;
+        // the schools of its rotation spells, kept while its spells and spec stay the same (a lookup per call)
+        struct Schools
+        {
+            size_t spells = 0;
+            uint8 spec = 0;
+            std::vector<SpellSchoolMask> masks;
+        };
+        thread_local std::unordered_map<ObjectGuid, Schools> known;
+        Schools& schools = known[bot->GetGUID()];
+        if (schools.spells != bot->GetSpellMap().size() || schools.spec != bot->GetActiveSpec() ||
+            schools.masks.empty())
+        {
+            schools = {bot->GetSpellMap().size(), bot->GetActiveSpec(), {}};
+            for (char const* name : LeaderRotationSpellNames(bot))
+                if (uint32 const id = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get())
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(id))
+                        schools.masks.push_back(info->GetSchoolMask());
+        }
+        for (SpellSchoolMask const mask : schools.masks)
+            if (!mob->IsImmunedToDamageOrSchool(mask))
+                return false;
+        return !schools.masks.empty();
+    }
+
+    // [lead991] the reach on a mob its rotation's school cannot hurt: the shortest range of the spells it knows that
+    // do hurt it and that it can cast on and on (a mana damage spell on one target with no cooldown of its own: the
+    // fire mage's Frostbolt, Arcane Missiles), its talents' range mods in; -1 without one
+    float LeaderImmuneReach(Player* bot, Unit* mob)
+    {
+        uint32 immune = 0;
+        for (uint8 school = SPELL_SCHOOL_NORMAL; school < MAX_SPELL_SCHOOL; ++school)
+            if (mob->IsImmunedToDamageOrSchool(SpellSchoolMask(1 << school)))
+                immune |= 1u << school;
+        struct Known
+        {
+            size_t spells;
+            float reach;
+        };
+        thread_local std::map<std::pair<ObjectGuid, uint32>, Known> known;
+        if (auto const it = known.find({bot->GetGUID(), immune});
+            it != known.end() && it->second.spells == bot->GetSpellMap().size())
+            return it->second.reach;
+        float reach = -1.0f;
+        for (auto const& [spellId, spell] : bot->GetSpellMap())
+        {
+            if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive() || info->PowerType != POWER_MANA ||
+                info->IsAffectingArea() || (uint32(info->GetSchoolMask()) & immune) ||
+                std::max(info->RecoveryTime, info->CategoryRecoveryTime) > 0 ||
+                info->CalcPowerCost(bot, info->GetSchoolMask()) <= 0)
+                continue;
+            bool damages = info->IsChanneled();
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                damages |= effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE;
+            float const range = damages ? info->GetMaxRange(false, bot) : 0.0f;
+            if (range > 0.0f)
+                reach = reach > 0.0f ? std::min(reach, range) : range;
+        }
+        if (known.size() > 4096)
+            known.clear();
+        known[{bot->GetGUID(), immune}] = {bot->GetSpellMap().size(), reach};
+        return reach;
+    }
+
     float LeaderCastReach(Player* bot, Unit* target)
     {
+        // [lead991] b228 rfc-h 5H-8 32-42 / 484-604 s: the fire mage stood 30-38 yd from a fire-immune Molten
+        // Elemental ("fireball ... target immune", "frostbolt ... out of range (37.2 > 30.0)") and wanded 40 s a run:
+        // its spot read Fireball's 35 yd. On a mob its rotation's school cannot hurt the reach is the spells that do
+        if (target && LeaderRotationImmune(bot, target))
+            if (float const reach = LeaderImmuneReach(bot, target); reach > 0.0f)
+                return reach + bot->GetCombatReach() + target->GetCombatReach();
         // [lead660] Unit::IsWithinCombatRange, the check Spell::CheckRange casts by: the 3D gap between the centres
         // under the spell's range plus both combat reaches
         return std::max(LeaderShootReach(bot), LeaderSpellReach(bot)) + bot->GetCombatReach() +

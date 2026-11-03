@@ -335,6 +335,11 @@ namespace Leader::Fight
     // [lead660] the 3D centre gap within which the member's spells reach `target`: LeaderShootReach /
     // LeaderSpellReach plus the member's and the target's combat reach (Unit::IsWithinCombatRange)
     float LeaderCastReach(Player* bot, Unit* target);
+    // [lead991] the spec's rotation spells by name (LeaderSpellReach's); the mob is immune to the school of every one
+    // the member knows (Unit::IsImmunedToDamageOrSchool: a Molten Elemental to the fire mage's)
+    std::vector<char const*> LeaderRotationSpellNames(Player* bot);
+    bool LeaderRotationImmune(Player* bot, Unit* mob);
+    float LeaderImmuneReach(Player* bot, Unit* mob);
 
     // [lead18] why a held combat spot no longer fits ("" = it does): out of the member's reach of the target
     // (melee: of its melee reach), out of sight (ranged), a hazard, a cleave, lava / a drop-off, the heal reach
