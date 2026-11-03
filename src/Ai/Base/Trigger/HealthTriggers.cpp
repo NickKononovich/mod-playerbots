@@ -750,7 +750,7 @@ float MaxSpendPctPerSec(Player* bot)
         int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
         if (cost <= 0)
             continue;
-        float const castSec = float(std::max(info->CalcCastTime(bot), 0)) / 1000.0f;
+        float const castSec = float(info->CalcCastTime(bot)) / 1000.0f;
         float const channelSec = info->IsChanneled() ? float(std::max(info->GetMaxDuration(), 0)) / 1000.0f : 0.0f;
         float const gcdSec = float(info->StartRecoveryTime) / 1000.0f;
         float const cooldownSec = float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) / 1000.0f;

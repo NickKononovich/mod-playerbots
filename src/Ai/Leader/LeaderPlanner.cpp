@@ -66,6 +66,7 @@
 #include <iterator>
 #include <map>
 #include <memory>  // [lead7]
+#include <set>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
