@@ -7,6 +7,7 @@
 #include "ShamanTriggers.h"
 #include "AiFactory.h"
 #include "Creature.h"
+#include "DBCStores.h"  // [rot402] sSummonPropertiesStore
 #include "FearCounterValues.h"
 #include "InstanceScript.h"
 #include "LeaderOrders.h"  // [lead151] AtCommandedSpot
@@ -53,26 +54,65 @@ bool CreatedBy(uint32 spellId, uint32 const* spells, size_t count)
 constexpr uint8 TOTEM_SLOTS[] = {SUMMON_SLOT_TOTEM_EARTH, SUMMON_SLOT_TOTEM_FIRE, SUMMON_SLOT_TOTEM_WATER,
                                  SUMMON_SLOT_TOTEM_AIR};
 
-// Slots Call of the Elements would fill: empty, or the totem out of TOTEM_KEEP_RANGE, for a slot the bot has a totem
-// for. Four slot lookups, no scan.
+// True when `slot` has no totem of the shaman within TOTEM_KEEP_RANGE (none, or it stands out of reach).
+bool TotemSlotNeedsDrop(Player* bot, uint8 slot)
+{
+    ObjectGuid const guid = bot->m_SummonSlot[slot];
+    if (guid.IsEmpty())
+        return true;
+
+    Creature* totem = bot->GetMap()->GetCreature(guid);
+    return !totem || totem->GetDistance(bot) > TOTEM_KEEP_RANGE;
+}
+
+// [rot402] Slots Call of the Elements would really fill now: a totem on its bar (the spell's cast-button effect,
+// MiscValue + 132, MiscValueB buttons) that it casts - known, off cooldown, multi-castable and paid for from the mana
+// left after the bar's earlier totems (Spell::EffectCastButtons skips every other one) - for a slot that needs a
+// drop (TotemSlotNeedsDrop). Was every needing slot the bot has a rank-1 totem for: b228 rfc-h 5B Rtshaac at 1-2 %
+// mana cast Call of the Elements 9 times in one 22 s pull, every cast dropping nothing and the slots still "empty".
+// Four button lookups, no scan.
 int CountTotemSlotsToDrop(Player* bot)
 {
-    int count = 0;
-    for (uint8 slot : TOTEM_SLOTS)
-    {
-        ObjectGuid const guid = bot->m_SummonSlot[slot];
-        if (!guid.IsEmpty())
-        {
-            Creature* totem = bot->GetMap()->GetCreature(guid);
-            if (totem && totem->GetDistance(bot) <= TOTEM_KEEP_RANGE)
-                continue;
-        }
+    SpellInfo const* call = sSpellMgr->GetSpellInfo(SPELL_CALL_OF_THE_ELEMENTS);
+    if (!call)
+        return 0;
 
-        if ((slot == SUMMON_SLOT_TOTEM_EARTH && bot->HasSpell(SPELL_STONESKIN_TOTEM_RANK_1)) ||
-            (slot == SUMMON_SLOT_TOTEM_FIRE && bot->HasSpell(SPELL_SEARING_TOTEM_RANK_1)) ||
-            (slot == SUMMON_SLOT_TOTEM_WATER && bot->HasSpell(SPELL_HEALING_STREAM_TOTEM_RANK_1)) ||
-            (slot == SUMMON_SLOT_TOTEM_AIR && bot->HasSpell(SPELL_NATURE_RESISTANCE_TOTEM_RANK_1)))
-            ++count;
+    int count = 0;
+    uint32 mana = bot->GetPower(POWER_MANA);
+    for (SpellEffectInfo const& effect : call->GetEffects())
+    {
+        if (effect.Effect != SPELL_EFFECT_CAST_BUTTON)
+            continue;
+
+        uint32 button = static_cast<uint32>(effect.MiscValue) + 132;
+        for (uint32 left = static_cast<uint32>(effect.MiscValueB); left; --left, ++button)
+        {
+            ActionButton const* ab = bot->GetActionButton(button);
+            if (!ab || ab->GetType() != ACTION_BUTTON_SPELL || !ab->GetAction())
+                continue;
+
+            uint32 const totemSpell = ab->GetAction();
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(totemSpell);
+            if (!info || !bot->HasSpell(totemSpell) || bot->HasSpellCooldown(totemSpell) ||
+                !info->HasAttribute(SPELL_ATTR7_CAN_BE_MULTI_CAST))
+                continue;
+
+            uint32 const cost = static_cast<uint32>(std::max(info->CalcPowerCost(bot, info->GetSchoolMask()), 0));
+            if (mana < cost)
+                continue;
+            mana -= cost;
+
+            for (SpellEffectInfo const& summon : info->GetEffects())
+            {
+                if (summon.Effect != SPELL_EFFECT_SUMMON)
+                    continue;
+                SummonPropertiesEntry const* properties = sSummonPropertiesStore.LookupEntry(summon.MiscValueB);
+                if (properties && properties->Slot >= SUMMON_SLOT_TOTEM_FIRE &&
+                    properties->Slot < MAX_TOTEM_SLOT && TotemSlotNeedsDrop(bot, static_cast<uint8>(properties->Slot)))
+                    ++count;
+                break;
+            }
+        }
     }
 
     return count;
