@@ -4584,14 +4584,68 @@ namespace Leader::Dungeon
                                 addReach(ref->GetOwner());
                     for (ObjectGuid const& fightMob : killOrder)
                         addReach(ObjectAccessor::GetUnit(*tank, fightMob));
+                    // [lead574] b215 rfc-h: the healer's Heal <-> DontAttack flipped 330 times within 1 s on all 8
+                    // comps (5D 547.7 DontAttack "no headroom on Searing Blade Cultist" -> 548.0 Heal, the same one
+                    // mob). 61 of them closed and opened on the healer's headroom with the same mobs: its rate there
+                    // was its threat over the seconds since its first threat, and those seconds grew on every look
+                    // while it waited - the wait itself lowered the projection until the gate opened, its next heal
+                    // closed it again (the clock, no fact, opened it). The gate reads both sides' rates up to their
+                    // last threat rise: the projection changes only when a heal lands or the tank's threat grows
+                    // (the other flips - 181 "not on the tank", 69 "a fight mob attacks a member" - are the game's
+                    // victim / threat facts; their reason now names the mob's victim and the tank's threat)
+                    auto const riseRate = [](Leader::DungeonLeaderState::ThreatSeen const& seen)
+                    {
+                        if (seen.threat <= 0.0f || !seen.riseMs)
+                            return 0.0f;
+                        float const sec =
+                            std::max(getMSTimeDiff(seen.firstMs, seen.riseMs) / 1000.0f, HEADROOM_GCD_SEC);
+                        return std::max(0.0f, seen.threat - seen.base) / sec;
+                    };
+                    float healFresh = 0.0f;
+                    if (auto const measured = lead.openTps.find(guid);
+                        measured != lead.openTps.end() && measured->second.second)
+                        healFresh = measured->second.first / float(measured->second.second);
+                    for (ObjectGuid const& other : killOrder)
+                        if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
+                            healFresh = std::max(healFresh, riseRate(seenOn(fought, bot)));
+                    auto const healHeadroomOn = [&](Unit* mob)
+                    {
+                        auto const& mine = seenOn(mob, bot);
+                        auto const& held = seenOn(mob, tank);
+                        auto const rateHere = [&](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
+                        {
+                            float const onMob = riseRate(seen);
+                            bool const measuredHere =
+                                seen.threat > 0.0f &&
+                                getMSTimeDiff(seen.firstMs, seen.riseMs) / 1000.0f >= HEADROOM_GCD_SEC;
+                            return measuredHere ? onMob : std::max(onMob, opening);
+                        };
+                        float const mineNext = mine.threat + rateHere(mine, healFresh) * HEADROOM_GCD_SEC;
+                        float const tankNext =
+                            held.threat > 0.0f
+                                ? held.threat +
+                                      rateHere(held, tank->GetVictim() == mob ? tankOpen : 0.0f) * HEADROOM_GCD_SEC
+                                : 0.0f;
+                        float const share = mob->GetVictim() != tank       ? 1.0f
+                                            : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
+                                                                           : THREAT_OVERTAKE_RANGED;
+                        return mineNext < share * tankNext;
+                    };
                     std::string closedOn = allOnTank ? "" : "a fight mob attacks a member";
                     for (Unit* mob : healReach)
                     {
                         if (!closedOn.empty())
                             break;
                         if (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
-                            closedOn = mob->GetName() + " is not on the tank with the tank's threat";
-                        else if (!headroomOn(mob))
+                        {
+                            // [lead574] its victim and the tank's threat named (a pet / totem it hits is not the tank)
+                            Unit* const on = mob->GetVictim();
+                            closedOn = Acore::StringFormat("{} is not on the tank with the tank's threat (on {}, "
+                                                           "tank threat {:.0f})",
+                                                           mob->GetName(), on ? on->GetName() : std::string("nobody"),
+                                                           mob->GetThreatMgr().GetThreat(tank));
+                        }
+                        else if (!healHeadroomOn(mob))
                             closedOn = "no headroom on " + mob->GetName();
                     }
                     if (closedOn.empty() || emergency)
