@@ -19,6 +19,7 @@
 #include <vector>
 
 class Creature;
+class Map;
 class Player;
 class Unit;
 
@@ -51,6 +52,8 @@ namespace Leader::Dungeon
     // [lead15] the spots of a pull (false: no gate for it) and what the pull still waits for ("" = everyone there)
     bool LeaderAssignSpots(LeaderGroup& group, Player* tank, PullPlanner::Decision const& decision);
     std::string LeaderSpotsWait(LeaderGroup& group, Player* tank);
+    // [lead541] the boss a pull is for: its mob, or a boss the plan's pack counts; nullptr: a trash pull
+    Creature* PullBoss(Map* map, Unit* mob, PullPlanner::Decision const& decision);
     // [lead24] a former forcing timer's diagnostic: `kind` waited `ms` (once per kind per 30 s)
     void WaitedLong(LeaderGroup& group, std::string const& kind, uint32 ms, std::string const& why);
 }

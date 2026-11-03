@@ -267,6 +267,24 @@ namespace Leader::Dungeon
         return true;
     }
 
+    // [lead541] The boss a pull is for: its mob, or a boss the plan's pack counts (a trash pull that "brings" him,
+    // LeaderPlanner's drawn boss). b212 rfc-h 5C 1008 s: the Cultist's pull brought Jergosh the Invoker and the
+    // Army of the Dead prepull was never ordered - the prepull hold looked only at the pull's own mob.
+    Creature* PullBoss(Map* map, Unit* mob, PullPlanner::Decision const& decision)
+    {
+        auto const isBoss = [](Creature const* creature)
+        { return creature && creature->IsAlive() && (creature->IsDungeonBoss() || creature->isWorldBoss()); };
+        if (Creature* creature = mob ? mob->ToCreature() : nullptr; isBoss(creature))
+            return creature;
+        if (!map)
+            return nullptr;
+        for (GuidVector const* list : {&decision.pack, &decision.verdictPack, &decision.losPack})
+            for (ObjectGuid const& guid : *list)
+                if (Creature* creature = map->GetCreature(guid); isBoss(creature))
+                    return creature;
+        return nullptr;
+    }
+
     // [lead15] the spots of the pull `decision` (healer near enough to heal the FIGHT spot, ranged 22 yd behind it,
     // melee just behind it, all away from the pulled pack); false: the pull needs no gate (no fight spot / pack).
     bool LeaderAssignSpots(LeaderGroup& group, Player* tank, PullPlanner::Decision const& decision)
@@ -1206,9 +1224,9 @@ namespace Leader::Dungeon
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
-                Creature* boss = mob ? mob->ToCreature() : nullptr;
                 // [lead270] a prepull Army's channel under way ends before the boss pull goes
-                if (waitFor.empty() && boss && (boss->IsDungeonBoss() || boss->isWorldBoss()))
+                // [lead541] the boss the pull brings too (PullBoss)
+                if (Creature* boss = waitFor.empty() ? PullBoss(tank->GetMap(), mob, committed) : nullptr)
                     waitFor = Leader::Prepull::ArmyHolds(group, boss, false);
                 if (!waitFor.empty())
                 {
@@ -2051,14 +2069,14 @@ namespace Leader::Dungeon
                 lead.spotsIssuedMs = now;
             }
             // [lead270] a prepull Army's channel under way ends before the boss pull is issued
-            if (decides && lookMob && lookMob->ToCreature() &&
-                (lookMob->ToCreature()->IsDungeonBoss() || lookMob->ToCreature()->isWorldBoss()))
-                if (std::string const army = Leader::Prepull::ArmyHolds(group, lookMob, false); !army.empty())
+            // [lead541] the boss the pull brings too (PullBoss)
+            if (Creature* pullBoss = decides ? PullBoss(tank->GetMap(), lookMob, decision) : nullptr)
+                if (std::string const army = Leader::Prepull::ArmyHolds(group, pullBoss, false); !army.empty())
                 {
-                    if (lead.armyHoldFor != lookMob->GetGUID())
+                    if (lead.armyHoldFor != pullBoss->GetGUID())
                     {
-                        lead.armyHoldFor = lookMob->GetGUID();
-                        group.LogEvent("leader_spots_wait", JsonObject().Str("name", lookMob->GetName())
+                        lead.armyHoldFor = pullBoss->GetGUID();
+                        group.LogEvent("leader_spots_wait", JsonObject().Str("name", pullBoss->GetName())
                                                                 .Str("kind", decision.kind).Str("waitFor", army));
                     }
                     return;

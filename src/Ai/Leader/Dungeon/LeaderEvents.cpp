@@ -130,6 +130,41 @@ namespace Leader::Dungeon
         return delay && recovery > uint32(info->GetMaxDuration()) && delay > recovery - uint32(info->GetMaxDuration());
     }
 
+    // [lead541] The seconds until `spell` is ready again once `caster` casts it now, from the game: its cooldown with
+    // the caster's cooldown modifiers (talents, glyphs: SPELLMOD_COOLDOWN, as Player::AddSpellAndCategoryCooldowns
+    // applies them), and for a cooldown that starts only when the spell's effect ends (SPELL_ATTR0_COOLDOWN_ON_EVENT /
+    // the category's flag: Player::SendCooldownEvent on the summon's or aura's end) that effect's duration on top.
+    // b212 rfc-h 5C: Raise Dead (category cooldown 180 s, COOLDOWN_ON_EVENT) was allowed on trash 26 s in "recharge
+    // 180 s" and was ready again only at 281 s - its cooldown starts when the ghoul it raises (46585, 60 s, named by
+    // the spell's script effect) expires. Bloodlust / Heroism: the group's Sated / Exhaustion (its own duration, spell
+    // data) keeps it from the next one longer than the spell's cooldown.
+    float RechargeAfterCastSec(Player* caster, uint32 spell)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+        if (!info)
+            return 0.0f;
+        int32 ms = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+        caster->ApplySpellMod(spell, SPELLMOD_COOLDOWN, ms);
+        ms = std::max(ms, 0);
+        if (info->IsCooldownStartedOnEvent())
+        {
+            int32 lasts = std::max(info->GetMaxDuration(), 0);
+            for (SpellEffectInfo const& effect : info->Effects)
+            {
+                uint32 named = effect.TriggerSpell;
+                // a script / dummy effect that names the spell it casts (Raise Dead's ghoul: Effects[1] = 46585)
+                if (!named && (effect.Effect == SPELL_EFFECT_SCRIPT_EFFECT || effect.Effect == SPELL_EFFECT_DUMMY) &&
+                    effect.CalcValue() > 0)
+                    named = uint32(effect.CalcValue());
+                SpellInfo const* cast = named ? sSpellMgr->GetSpellInfo(named) : nullptr;
+                if (cast && cast->SpellFamilyName == info->SpellFamilyName && cast->IsCooldownStartedOnEvent())
+                    lasts = std::max(lasts, cast->GetMaxDuration());
+            }
+            ms += lasts;
+        }
+        return ms / 1000.0f;
+    }
+
     // [lead425] a tool's return still comes to `member`: under Innervate, Hymn of Hope's tick, Evocation, Dispersion's
     // mana (and Divine Plea when `plea`), its Shadowfiend out, in reach of a Mana Tide Totem that is down
     bool ManaToolReturning(Player* member, std::vector<Player*> const& everyone, bool plea)
@@ -1137,9 +1172,14 @@ namespace Leader::Dungeon
                 // run's first tick, to this pull) are a measured stretch between bosses
                 if (Creature const* boss = target->ToCreature(); boss && boss->IsDungeonBoss() && !lead.bossFightOn)
                 {
-                    if (lead.stretchFromMs)
+                    // [lead541] b212 rfc-h: "his pull in 4294931 s" / "2147153 s" - on a fight's first tick
+                    // fightStartMs is still 0 here (set further down the tick), getMSTimeDiff(stretchFromMs, 0)
+                    // wrapped to ~2^32 ms into the stretches' mean. The pull's start is this tick then; a start before
+                    // the walk began (a fight that outlived the boss fight's end) is no stretch
+                    uint32 const pulledMs = lead.fightStartMs ? lead.fightStartMs : now;
+                    if (lead.stretchFromMs && int32(pulledMs - lead.stretchFromMs) >= 0)
                     {
-                        lead.stretchSecSum += getMSTimeDiff(lead.stretchFromMs, lead.fightStartMs) / 1000.0f;
+                        lead.stretchSecSum += (pulledMs - lead.stretchFromMs) / 1000.0f;
                         ++lead.stretches;
                     }
                     lead.stretchFromMs = 0;
@@ -2272,9 +2312,28 @@ namespace Leader::Dungeon
                         break;
                     }
         }
-        Creature* const fightBoss = target && target->ToCreature() && target->ToCreature()->IsDungeonBoss()
-                                        ? target->ToCreature()
-                                        : nullptr;
+        Creature* fightBoss = target && target->ToCreature() && target->ToCreature()->IsDungeonBoss()
+                                  ? target->ToCreature()
+                                  : nullptr;
+        // [lead541] b212 rfc-h 5C 1008 s: the pull of a Searing Blade Cultist "brings Jergosh the Invoker (the plan
+        // counts him)"; with the Cultist the tank's target the verdict judged trash ("back before the pull of
+        // Bazzalan") - no Rapid Fire / Readiness on Jergosh, the cooldowns went by the trash rule. A dungeon boss that
+        // fights the group (its victim a member, or engaged by one) makes it a boss fight
+        if (!fightBoss && fighting)
+            for (ObjectGuid const& bossGuid : group.BossCreatures())
+            {
+                Creature* boss = map->GetCreature(bossGuid);
+                if (!boss || !boss->IsAlive() || !boss->IsInCombat() || !boss->IsDungeonBoss())
+                    continue;
+                bool inFight = boss->IsEngagedBy(tank) || boss->GetVictim() == tank;
+                for (Player* bot : seats)
+                    inFight = inFight || boss->IsEngagedBy(bot) || boss->GetVictim() == bot;
+                if (inFight)
+                {
+                    fightBoss = boss;
+                    break;
+                }
+            }
         // [lead421] the seconds to a later boss's pull: the next boss, the route's estimate (bossPullSec); one after
         // him: that, his fight and a stretch between bosses as this run measured them (their mean; none yet: the
         // straight walk from him); without an estimate this fight's rest and the straight walk to him
@@ -2365,7 +2424,7 @@ namespace Leader::Dungeon
                                             : nullptr;
                 if (!info)
                     continue;
-                float const rechargeSec = std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
+                float const rechargeSec = RechargeAfterCastSec(who, spell);  // [lead541] the game's, not the base
                 std::string why;
                 bool const allowed = cooldownVerdict(rechargeSec, why);
                 if (allowed)
@@ -5029,9 +5088,8 @@ namespace Leader::Dungeon
                 std::string why = res.why;
                 bool allowed = res.needed;
                 if (!allowed)
-                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(res.spell))
-                        allowed = cooldownVerdict(
-                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f, why);
+                    if (sSpellMgr->GetSpellInfo(res.spell))
+                        allowed = cooldownVerdict(RechargeAfterCastSec(res.caster, res.spell), why);  // [lead541]
                 std::string const note = "battle resurrection of " + res.dead->GetName() + ": " + why;
                 std::string& logged = lead.support.battleResLogged[res.dead->GetGUID()];
                 if (logged != note)
@@ -5220,8 +5278,7 @@ namespace Leader::Dungeon
                     return;
                 std::string verdictWhy;
                 bool const allowed =
-                    manaToolVerdict(caster, self, std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f,
-                                    verdictWhy);
+                    manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), verdictWhy);  // [lead541]
                 ManaTool& slot = allowed ? best : heldTool;
                 if (sec > slot.sec)
                 {
@@ -5326,8 +5383,11 @@ namespace Leader::Dungeon
                     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
                     {
                         std::string why;
-                        float const rechargeSec =
-                            std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f;
+                        // [lead541] the next one only after the group's Sated / Exhaustion ends (spell data)
+                        float rechargeSec = RechargeAfterCastSec(bot, spell);
+                        if (SpellInfo const* debuff =
+                                sSpellMgr->GetSpellInfo(spell == SPELL_HEROISM ? SPELL_EXHAUSTION : SPELL_SATED))
+                            rechargeSec = std::max(rechargeSec, debuff->GetMaxDuration() / 1000.0f);
                         bool const allowed = cooldownVerdict(rechargeSec, why);
                         std::string const note = "heroism / bloodlust: " + why;
                         LogBurnDecision(run, lead, bot, "heroism", allowed ? note : std::string(),
