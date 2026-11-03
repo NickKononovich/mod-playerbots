@@ -4193,7 +4193,66 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float healHps = 0.0f;       // [lead259] the healers' best rate together (GroupSupport::healHps)
         float healGapSec = 0.0f;    // [lead259] the time between two heals landing (GroupSupport::healGapSec)
         float dropScale = 1.0f;     // [lead259] the dungeon's measured drop ratio (DropCalibration)
+        // [lead650] the group's measured AoE (MeasuredGroupDamage): what every stacked mob takes per second on top of
+        // the focus target's `groupDps`, up to the most stacked mobs measured; > 0: the fight's length, cost and drop
+        // are the stack played out under it (EstimatePack), the single-target estimate before it is measured
+        float measuredAoeDps = 0.0f;
+        uint32 measuredAoeTargets = 0;
     };
+
+    // [lead261] [lead650] The stack's fight played out kill by kill: the focus target (the first one alive in the
+    // order, `reverse`: from the back) takes `focusDps` plus the AoE, every other stacked mob (up to `maxTargets`, 0:
+    // all, counted from the focus on) the AoE; a mob that keeps its range (`apart`) takes none of the AoE. The second
+    // each life dies.
+    std::vector<float> PlayOutKills(std::vector<float> left, std::vector<bool> const& apart, float focusDps,
+                                    float aoeDps, uint32 maxTargets, bool reverse)
+    {
+        size_t const count = left.size();
+        std::vector<float> died(count, 0.0f);
+        std::vector<bool> alive(count, true);
+        float now = 0.0f;
+        for (size_t kill = 0; kill < count; ++kill)
+        {
+            std::vector<float> rate(count, 0.0f);
+            size_t focus = count;
+            uint32 hit = 0;
+            for (size_t n = 0; n < count; ++n)
+            {
+                size_t const i = reverse ? count - 1 - n : n;
+                if (!alive[i])
+                    continue;
+                if (focus == count)
+                {
+                    focus = i;
+                    rate[i] += focusDps;
+                }
+                if (!apart[i] && (!maxTargets || hit < maxTargets))
+                {
+                    rate[i] += aoeDps;
+                    ++hit;
+                }
+            }
+            float step = -1.0f;
+            for (size_t i = 0; i < count; ++i)
+                if (alive[i] && rate[i] > 0.0f && (step < 0.0f || left[i] / rate[i] < step))
+                    step = left[i] / rate[i];
+            if (step < 0.0f)
+                break;
+            now += step;
+            for (size_t i = 0; i < count; ++i)
+            {
+                if (!alive[i])
+                    continue;
+                left[i] -= rate[i] * step;
+                if (left[i] <= rate[i] * step * 1e-4f)
+                {
+                    alive[i] = false;
+                    died[i] = now;
+                }
+            }
+        }
+        return died;
+    }
 
     // [lead259] The deepest the tank's health falls (health units) under a damage profile - each life lands its rate
     // until it dies - against healing at `healHps` from the first heal on (`gapSec` in: the first heal lands one gap
@@ -4327,27 +4386,53 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         if (groupDps > 0.0f && tank->GetMaxHealth())
         {
+            // each life's seconds: its own kill time plus, on average, half of the others' ([b36_scholo] a quick
+            // summon its own only)
+            std::vector<float> lifeSec(lives.size(), 0.0f);
+            for (size_t i = 0; i < lives.size(); ++i)
+                lifeSec[i] = (quick[i] ? lives[i].second : lives[i].second + (totalHealth - lives[i].second) / 2.0f) /
+                             groupDps;
+            estimate.fightSec = totalHealth / groupDps;
+            // [lead650] with the group's AoE measured: the stack played out under it (PlayOutKills), in no known
+            // order - each life the mean of its death killed from the front and from the back (with no AoE exactly
+            // the lives above), the fight the mean of the two ends; a quick summon dies to the focus and the AoE
+            if (mode.measuredAoeDps > 0.0f && !estimate.boss && !lives.empty())
+            {
+                std::vector<float> health;
+                for (auto const& life : lives)
+                    health.push_back(life.second);
+                std::vector<float> const front =
+                    PlayOutKills(health, apart, groupDps, mode.measuredAoeDps, mode.measuredAoeTargets, false);
+                std::vector<float> const back =
+                    PlayOutKills(health, apart, groupDps, mode.measuredAoeDps, mode.measuredAoeTargets, true);
+                float frontEnd = 0.0f;
+                float backEnd = 0.0f;
+                for (size_t i = 0; i < lives.size(); ++i)
+                {
+                    frontEnd = std::max(frontEnd, front[i]);
+                    backEnd = std::max(backEnd, back[i]);
+                    lifeSec[i] = quick[i] ? lives[i].second / (groupDps + (apart[i] ? 0.0f : mode.measuredAoeDps))
+                                          : (front[i] + back[i]) / 2.0f;
+                }
+                if (frontEnd > 0.0f && backEnd > 0.0f)
+                    estimate.fightSec = (frontEnd + backEnd) / 2.0f;
+            }
+
             float damage = 0.0f;
             float spellDamage = 0.0f;
             for (size_t i = 0; i < lives.size(); ++i)
             {
-                auto const& [landed, health] = lives[i];
-                float const life =
-                    (quick[i] ? health : health + (totalHealth - health) / 2.0f) / groupDps;  // [b36_scholo]
-                damage += landed * life;
-                spellDamage += spells[i] * life;
+                damage += lives[i].first * lifeSec[i];
+                spellDamage += spells[i] * lifeSec[i];
             }
 
             float const tankHealth = PlanTankHealth(tank);  // [b32_smpull] a bear out of form: its bear's health
             estimate.cost = damage / tankHealth;
             estimate.spellCost = spellDamage / tankHealth;
-            estimate.fightSec = totalHealth / groupDps;
             // [lead259] the drop: every life's rate until it dies against the healers' rate after their first heal
             std::vector<std::pair<float, float>> profile;
             for (size_t i = 0; i < lives.size(); ++i)
-                profile.emplace_back(
-                    lives[i].first,
-                    (quick[i] ? lives[i].second : lives[i].second + (totalHealth - lives[i].second) / 2.0f) / groupDps);
+                profile.emplace_back(lives[i].first, lifeSec[i]);
             float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.fightSec;
             estimate.dropRaw = std::min(DropOver(profile, mode.healHps, gapSec) / tankHealth, estimate.cost);
             estimate.drop = estimate.dropRaw * mode.dropScale;
@@ -4365,48 +4450,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             std::vector<float> left;
             for (auto const& life : lives)
                 left.push_back(life.second);
-            std::vector<float> died(lives.size(), 0.0f);
-            std::vector<bool> alive(lives.size(), true);
+            std::vector<float> const died =
+                PlayOutKills(left, apart, groupDps, mode.aoeTargetDps, mode.aoeMaxTargets, false);
             float now = 0.0f;
-            for (size_t kill = 0; kill < lives.size(); ++kill)
-            {
-                std::vector<float> rate(lives.size(), 0.0f);
-                size_t focus = lives.size();
-                uint32 hit = 0;
-                for (size_t i = 0; i < lives.size(); ++i)
-                {
-                    if (!alive[i])
-                        continue;
-                    if (focus == lives.size())
-                    {
-                        focus = i;
-                        rate[i] += groupDps;
-                    }
-                    if (!apart[i] && (!mode.aoeMaxTargets || hit < mode.aoeMaxTargets))
-                    {
-                        rate[i] += mode.aoeTargetDps;
-                        ++hit;
-                    }
-                }
-                float step = -1.0f;
-                for (size_t i = 0; i < lives.size(); ++i)
-                    if (alive[i] && rate[i] > 0.0f && (step < 0.0f || left[i] / rate[i] < step))
-                        step = left[i] / rate[i];
-                if (step < 0.0f)
-                    break;
-                now += step;
-                for (size_t i = 0; i < lives.size(); ++i)
-                {
-                    if (!alive[i])
-                        continue;
-                    left[i] -= rate[i] * step;
-                    if (left[i] <= rate[i] * step * 1e-4f)
-                    {
-                        alive[i] = false;
-                        died[i] = now;
-                    }
-                }
-            }
+            for (float const when : died)
+                now = std::max(now, when);
 
             float const tankHealth = PlanTankHealth(tank);
             estimate.aoeSec = now;
@@ -6714,6 +6762,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float dropScale = 1.0f;            // [lead259] the measured drop ratio `drop` was planned with
         float tankStartPct = 0.0f;         // [lead259] the tank's health when the fight began
         float tankLowPct = 100.0f;         // [lead259] ... and the lowest in it
+        // [lead650] the stacked mobs (alive, on the group, not keeping their range) over the fight's seconds: each
+        // sample's count held to the next sample (the group's AoE hits each of them, MeasuredGroupDamage)
+        float stackedSec = 0.0f;
+        uint32 stackedNow = 0;
+        uint32 stackedMs = 0;
+        uint32 stackedPeak = 0;
     };
 
     std::mutex pullCheckLock;
@@ -6731,6 +6785,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     struct MeasuredDps
     {
         std::vector<MeasuredSample> fights;  // killed health over the fight's seconds
+        std::vector<float> stackedSec;       // [lead650] parallel to `fights`: its stacked mob-seconds
+        uint32 stackedPeak = 0;              // [lead650] the most stacked mobs a measured fight had at once
         uint32 instanceId = 0;
     };
     std::unordered_map<uint64, MeasuredDps> measuredDps;  // by tank, under pullCheckLock
@@ -6963,6 +7019,56 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return out;
     }
 
+    // [lead650] User 2026-11-03: «чем больше мобов сразу, тем больше АОЕ, тем меньше время на моба» (b218 rfc-h engage
+    // pulls, s per mob: 1 mob 6.8, 2: 6.5, 3: 5.2, 4-5: 5.9, 6+: 4.8). The group's damage in this instance, measured
+    // over its fights: the focus target takes `single` per second and every stacked mob (alive, on the group, not
+    // keeping its range: the focus too) `aoe` per second more - each fight's killed health = single x its seconds +
+    // aoe x its stacked mob-seconds, fitted over the fights (least squares, each fight weighted by its length) once
+    // fights with a different stack per second are measured. `single` is then the same spread as before
+    // (MEASURED_QUANTILE: all but the slowest tenth of the fights' seconds) of each fight's health less its AoE part;
+    // no AoE measured (aoe 0): the old quantile of killed health per second. `stackedPeak`: the most stacked mobs a
+    // measured fight had - past it the AoE is not measured (EstimatePack hits no more).
+    struct GroupDamage
+    {
+        float single = 0.0f;  // 0: no fight measured
+        float aoe = 0.0f;
+        uint32 stackedPeak = 0;
+        uint32 fights = 0;
+    };
+
+    GroupDamage MeasuredGroupDamageLocked(MeasuredDps const& measured)
+    {
+        GroupDamage out;
+        out.fights = uint32(measured.fights.size());
+        float sumSec = 0.0f, sumStacked = 0.0f, sumKilled = 0.0f, sumStacked2 = 0.0f, sumKilledStacked = 0.0f;
+        for (size_t i = 0; i < measured.fights.size() && i < measured.stackedSec.size(); ++i)
+        {
+            float const sec = measured.fights[i].weight;
+            if (sec <= 0.0f)
+                continue;
+            float const stacked = measured.stackedSec[i];
+            sumSec += sec;
+            sumStacked += stacked;
+            sumKilled += measured.fights[i].value;
+            sumStacked2 += stacked * stacked / sec;
+            sumKilledStacked += measured.fights[i].value * stacked / sec;
+        }
+        // the fights tell the two apart only when their stack per second differs (Cauchy-Schwarz: det >= 0, 0 when
+        // every fight has the same ratio); the relative bound is the float rounding of the sums
+        float const det = sumSec * sumStacked2 - sumStacked * sumStacked;
+        if (det > 1e-4f * sumSec * sumStacked2)
+            out.aoe = std::max((sumSec * sumKilledStacked - sumStacked * sumKilled) / det, 0.0f);
+        std::vector<MeasuredSample> single = measured.fights;
+        if (out.aoe > 0.0f)
+            for (size_t i = 0; i < single.size() && i < measured.stackedSec.size(); ++i)
+                single[i].value = std::max(single[i].value - out.aoe * measured.stackedSec[i], 0.0f);
+        out.single = std::max(WeightedQuantile(single, 1.0f - MEASURED_QUANTILE), 0.0f);
+        out.stackedPeak = measured.stackedPeak;
+        if (out.single <= 0.0f)
+            out.aoe = 0.0f;
+        return out;
+    }
+
     // The fight is over: the health of what it killed over its length (corpses still in the world), kept as the
     // tank's measured group damage. Under pullCheckLock.
     void NoteMeasuredDps(PlayerbotAI* botAI, Player* tank, PullRecord const& record, uint32 now)
@@ -6982,34 +7088,57 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (killed <= 0.0f)
             return;
 
+        // [lead650] the last sample's stacked count up to the fight's end
+        float stackedSec = record.stackedSec;
+        if (record.stackedMs)
+            stackedSec +=
+                float(record.stackedNow) * float(getMSTimeDiff(record.stackedMs, now)) / float(IN_MILLISECONDS);
+
         MeasuredDps& entry = measuredDps[tank->GetGUID().GetRawValue()];
         if (entry.instanceId != tank->GetInstanceId())
             entry = MeasuredDps();  // this dungeon's fights only
         entry.instanceId = tank->GetInstanceId();
         entry.fights.push_back({killed, float(fightMs) / float(IN_MILLISECONDS)});
+        entry.stackedSec.push_back(stackedSec);
+        entry.stackedPeak = std::max(entry.stackedPeak, record.stackedPeak);
+        GroupDamage const fit = MeasuredGroupDamageLocked(entry);
+        LOG_INFO("playerbots",
+                 "[lead650] {}: fight killed {:.0f} health in {:.1f} s, {:.1f} stacked mob-s (peak {}); group damage "
+                 "{:.0f}/s on the focus + {:.0f}/s on each stacked mob (up to {}) over {} fights",
+                 tank->GetName(), killed, float(fightMs) / float(IN_MILLISECONDS), stackedSec, record.stackedPeak,
+                 fit.single, fit.aoe, fit.stackedPeak, fit.fights);
     }
 
-    // The tank's measured group damage in this instance: the dps it reached over all but the slowest tenth of its
-    // fights' seconds (MEASURED_QUANTILE); `mean`: over all of them. 0 when none is known.
+    GroupDamage MeasuredGroupDamage(Player* tank)
+    {
+        std::lock_guard<std::mutex> guard(pullCheckLock);
+        auto const found = measuredDps.find(tank->GetGUID().GetRawValue());
+        if (found == measuredDps.end() || found->second.instanceId != tank->GetInstanceId())
+            return GroupDamage();
+        return MeasuredGroupDamageLocked(found->second);
+    }
+
+    // The tank's measured group damage in this instance: [lead650] the focus target's part (MeasuredGroupDamage:
+    // all but the slowest tenth of its fights' seconds, MEASURED_QUANTILE, less the measured AoE); `mean`: the killed
+    // health over all its fights' seconds (the AoE in it). 0 when none is known.
     float MeasuredGroupDps(Player* tank, bool mean = false)
     {
+        if (!mean)
+            return MeasuredGroupDamage(tank).single;
+
         std::lock_guard<std::mutex> guard(pullCheckLock);
         auto const found = measuredDps.find(tank->GetGUID().GetRawValue());
         if (found == measuredDps.end() || found->second.instanceId != tank->GetInstanceId())
             return 0.0f;
 
-        if (mean)
+        float killed = 0.0f;
+        float sec = 0.0f;
+        for (MeasuredSample const& fight : found->second.fights)
         {
-            float killed = 0.0f;
-            float sec = 0.0f;
-            for (MeasuredSample const& fight : found->second.fights)
-            {
-                killed += fight.value;
-                sec += fight.weight;
-            }
-            return sec > 0.0f ? killed / sec : 0.0f;
+            killed += fight.value;
+            sec += fight.weight;
         }
-        return std::max(WeightedQuantile(found->second.fights, 1.0f - MEASURED_QUANTILE), 0.0f);
+        return sec > 0.0f ? killed / sec : 0.0f;
     }
 
     bool IsAnyoneFighting(Player* bot)
@@ -7407,6 +7536,19 @@ namespace PullCheck
                     record.cameHealth.push_back(mob ? mob->GetMaxHealth() : 0);
                 }
             }
+
+            // [lead650] the stacked mobs now: the last count held since the last sample, this one from here on
+            uint32 stacked = 0;
+            for (ObjectGuid const& guid : attackers)
+                if (Unit* mob = botAI->GetUnit(guid); mob && mob->IsAlive())
+                    if (Creature* creature = mob->ToCreature(); !creature || !KeepsRange(creature))
+                        ++stacked;
+            if (record.stackedMs)
+                record.stackedSec +=
+                    float(record.stackedNow) * float(getMSTimeDiff(record.stackedMs, now)) / float(IN_MILLISECONDS);
+            record.stackedNow = stacked;
+            record.stackedMs = now ? now : 1;
+            record.stackedPeak = std::max(record.stackedPeak, stacked);
 
             record.deaths = std::max(record.deaths, CountDeadMembers(bot));
             record.tankLowPct = std::min(record.tankLowPct, bot->IsAlive() ? bot->GetHealthPct() : 0.0f);
@@ -8589,11 +8731,26 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     std::vector<PackOverlap> chosenOverlaps;
     // The fight's length and cost, in every careful mode: the tank's health carries part of the fight.
     // [lead265] the dungeon's measured spread once a fight is measured (MeasuredGroupDps), else the model
-    float const fightsDps = MeasuredGroupDps(bot);
+    // [lead650] and the group's AoE measured with it (MeasuredGroupDamage: the stack's fight played out under it)
+    GroupDamage const measuredDamage = MeasuredGroupDamage(bot);
+    float const fightsDps = measuredDamage.single;
     float const groupDps =
         fightsDps > 0.0f ? fightsDps : std::max(PlanGroupDps(), GroupWeaponDps(bot));  // [lead7] [lead259]
     EstimateMode estimateMode;
     estimateMode.measured = measured;
+    if (fightsDps > 0.0f)
+    {
+        estimateMode.measuredAoeDps = measuredDamage.aoe;
+        estimateMode.measuredAoeTargets = measuredDamage.stackedPeak;
+    }
+    // [lead650] the fight estimate's damage, named in the comparisons (plan_compare, corner vs where it stands)
+    std::string const damageNote =
+        estimateMode.measuredAoeDps > 0.0f
+            ? Acore::StringFormat("group damage {:.0f}/s + AoE {:.0f}/s per stacked mob up to {} ({} fights)",
+                                  groupDps, estimateMode.measuredAoeDps, estimateMode.measuredAoeTargets,
+                                  measuredDamage.fights)
+            : Acore::StringFormat("group damage {:.0f}/s, {}", groupDps,
+                                  fightsDps > 0.0f ? "no AoE measured" : "not measured yet");
     estimateMode.healHps = support.healHps;  // [lead259]
     estimateMode.healGapSec = support.healGapSec;
     estimateMode.dropScale = DropCalibration(bot);
@@ -9250,9 +9407,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 FightWindowSec(estimate) + FightWindowSec(aloneEstimate) + PULL_TOGETHER_OVERHEAD_SEC;
             bool const safe = planFits(togetherEstimate, togetherOverload);
             std::string const compare = Acore::StringFormat(
-                "plan_compare: combined {} mobs {:.0f} s (overload {:.2f}, {}) vs one by one {} + {} mobs {:.0f} s",
+                "plan_compare: combined {} mobs {:.0f} s (overload {:.2f}, {}) vs one by one {} + {} mobs {:.0f} s "
+                "({})",
                 togetherEstimate.mobs, togetherSec, togetherOverload, safe ? "fits" : "over the gate", estimate.mobs,
-                aloneEstimate.mobs, separateSec);
+                aloneEstimate.mobs, separateSec, damageNote);
             LOG_INFO("playerbots", "[lead26] {}: {} ({})", bot->GetName(), compare, FightIntruderNote(intruder));
             // [lead27] user: one lone mob joining is no danger - within the gate it is engaged in place (combined),
             // whichever is faster; pull back stays for real packs that would overload
@@ -9623,10 +9781,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             cornerNote = Acore::StringFormat(
                 "corner {} mobs {:.0f} s (+ rest {} mobs {:.0f} s; {:.1f} s per mob) vs where it stands {} mobs {:.0f} "
                 "s{} ({:.1f} s per mob; healing over the healers {:.0f} s, ranged tools hold {} of {}; the corner's "
-                "{:.0f} s): {}",
+                "{:.0f} s; {}): {}",
                 cost.cornerMobs, cost.cornerSec - cost.restSec, cost.restMobs, cost.restSec, cornerPerMob,
                 cost.standMobs, cost.standSec, _planPullBack ? " pulled back" : "", standPerMob, cost.lossSec,
-                cost.held, cost.ranged, cost.cornerLossSec, stand ? "no corner" : "the corner");
+                cost.held, cost.ranged, cost.cornerLossSec, damageNote, stand ? "no corner" : "the corner");
             LOG_DEBUG("playerbots", "[lead206] {}: {}: {}", bot->GetName(), candidate->GetName(), cornerNote);
             if (stand)
             {
@@ -13014,10 +13172,16 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     PartyStrength const strength = PlanStrength();
     GroupSupport const support = CountSupport(bot);
     TankKit const kit = PartyStrengthShared::GetTankKit(bot);
-    float const fightsDps = MeasuredGroupDps(bot);  // [lead265] as PlanCarefulPull
+    GroupDamage const measuredDamage = MeasuredGroupDamage(bot);  // [lead265] [lead650] as PlanCarefulPull
+    float const fightsDps = measuredDamage.single;
     float const groupDps = fightsDps > 0.0f ? fightsDps : std::max(PlanGroupDps(), GroupWeaponDps(bot));
     EstimateMode mode;
     mode.measured = true;
+    if (fightsDps > 0.0f)
+    {
+        mode.measuredAoeDps = measuredDamage.aoe;
+        mode.measuredAoeTargets = measuredDamage.stackedPeak;
+    }
     mode.healHps = support.healHps;  // [lead259]
     mode.healGapSec = support.healGapSec;
     mode.dropScale = DropCalibration(bot);
