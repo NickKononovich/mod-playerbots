@@ -124,16 +124,29 @@ namespace Leader::Fight
 
     Player* FleeStopper(std::vector<Player*> const& members, Unit* mob)
     {
+        // [lead1210] the member whose ready stop holds the runner most (a stun before a root before a snare, by spell
+        // data); a runner already snared takes only a stronger hold; the members' order breaks a tie
+        uint8 const held = FleeStopAction::HeldBy(mob);
+        Player* best = nullptr;
+        uint8 bestHold = 0;
         for (Player* member : members)
         {
             PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
             if (!memberAI || !member->IsAlive() || PlayerbotAI::IsHeal(member))
                 continue;
-            if (auto* stop = dynamic_cast<FleeStopAction*>(memberAI->GetAiObjectContext()->GetAction("flee stop"));
-                stop && stop->CanStop(mob))
-                return member;
+            auto* stop = dynamic_cast<FleeStopAction*>(memberAI->GetAiObjectContext()->GetAction("flee stop"));
+            if (!stop || !stop->CanStop(mob))
+                continue;
+            uint8 const hold = stop->BestHold(mob);
+            if (held != FleeStopAction::HOLD_NONE && hold <= held)
+                continue;
+            if (!best || hold > bestHold)
+            {
+                best = member;
+                bestHold = hold;
+            }
         }
-        return nullptr;
+        return best;
     }
 
     bool MobComesToTank(Player* tank, Unit* mob)

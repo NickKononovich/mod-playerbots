@@ -8564,16 +8564,30 @@ namespace Leader::Dungeon
                                                           .Real("health", fleer->GetHealthPct()));
                 }
                 else
-                {
                     lead.fleeStoppers.erase(fightMob);
-                    killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), fightMob), killOrder.end());
-                    killOrder.insert(killOrder.begin(), fightMob);  // nobody can stop it: the focus bursts it
-                    if (lead.fleeFocusLogged != fightMob)
-                    {
-                        lead.fleeFocusLogged = fightMob;
-                        Decisions().Write(run, "leader", "flee_focus", fightMob, fleer->GetName(), true,
-                                                      JsonObject().Real("health", fleer->GetHealthPct()));
-                    }
+            }
+            // [lead1210] user: a fight mob that flees, or is at its flee health, is stopped AND then the focus bursts
+            // it - before b245 only the unstopped one was the focus (a stopped runner went on with its stun's seconds
+            // spent on another target). A crowd-controlled mob is no fleer's focus (the CC holds it)
+            for (ObjectGuid const& fightMob : std::vector<ObjectGuid>(killOrder))
+            {
+                Unit* fleer = ObjectAccessor::GetUnit(*tank, fightMob);
+                if (!Leader::Fight::IsFleer(fleer) || fleer->HasBreakableByDamageCrowdControlAura())
+                    continue;
+                killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), fightMob), killOrder.end());
+                killOrder.insert(killOrder.begin(), fightMob);
+                if (lead.fleeFocusLogged != fightMob)
+                {
+                    lead.fleeFocusLogged = fightMob;
+                    auto const kept = lead.fleeStoppers.find(fightMob);
+                    Player* stopper = kept != lead.fleeStoppers.end() ? ObjectAccessor::FindPlayer(kept->second)
+                                                                      : nullptr;
+                    Decisions().Write(run, "leader", "flee_focus", fightMob, fleer->GetName(), true,
+                                      JsonObject()
+                                          .Real("health", fleer->GetHealthPct())
+                                          .Str("stopper", stopper ? stopper->GetName() : "-")
+                                          .Num("held", FleeStopAction::HeldBy(fleer))
+                                          .Bool("running", FledMobs::IsRunning(fleer)));
                 }
             }
         }

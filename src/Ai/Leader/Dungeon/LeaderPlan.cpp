@@ -975,12 +975,23 @@ namespace Leader::Dungeon
                                     lead.extraLogged.end())
                             {
                                 lead.extraLogged.push_back(attacker->GetGUID());
+                                // [lead1210] the runner that brought it: the nearest living mob of this instance
+                                // the group saw flee (FledMobs), with its distance to the add
+                                Unit* fleer = nullptr;
+                                for (ObjectGuid const& fled : FledMobs::Noted(tank->GetMapId(), tank->GetInstanceId()))
+                                    if (Unit* ran = ObjectAccessor::GetUnit(*tank, fled);
+                                        ran && ran != attacker && ran->IsAlive() &&
+                                        (!fleer || ran->GetExactDist(attacker) < fleer->GetExactDist(attacker)))
+                                        fleer = ran;
                                 Decisions().Write(
                                     run, "leader", "extra_aggro", attacker->GetGUID(), attacker->GetName(), true,
                                     JsonObject().Str("add", attacker->GetName()).Str("on", member.name)
                                         .Real("fightSpotDistance", attacker->GetExactDist(lead.meetPoint))
                                         .Real("fightX", lead.meetPoint.GetPositionX())
-                                        .Real("fightY", lead.meetPoint.GetPositionY()));
+                                        .Real("fightY", lead.meetPoint.GetPositionY())
+                                        .Str("fleer", fleer ? fleer->GetName() : "-")
+                                        .Num("fleerLow", fleer ? int64(fleer->GetGUID().GetCounter()) : 0)
+                                        .Real("fleerDistance", fleer ? fleer->GetExactDist(attacker) : -1.0f));
                             }
             }
             // [lead908] user 2026-11-03 (42): an unplanned fight cancels the open pull - a mob of none of this pull's

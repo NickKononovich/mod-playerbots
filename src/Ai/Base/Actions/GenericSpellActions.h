@@ -359,6 +359,11 @@ class FleeStopAction : public Action
 {
 public:
     static constexpr float SELF_REACH = 10.0f;
+    // [lead1210] what a stop does to the runner, by its spell's auras (HoldOf): the higher holds more
+    static constexpr uint8 HOLD_NONE = 0;  // a pull (Death Grip) or no aura of its own
+    static constexpr uint8 HOLD_SNARE = 1;
+    static constexpr uint8 HOLD_ROOT = 2;
+    static constexpr uint8 HOLD_STUN = 3;
 
     FleeStopAction(PlayerbotAI* botAI) : Action(botAI, "flee stop") {}
 
@@ -366,6 +371,11 @@ public:
     bool Execute(Event event) override;
     // [lead104] the leader's question: this member has a stop ready that takes `mob` now (in range and sight)
     bool CanStop(Unit* mob) { return mob && Pick(mob) != nullptr; }
+    // [lead1210] the hold of the stop this member would cast on `mob` now (HOLD_NONE also when it has none)
+    uint8 BestHold(Unit* mob);
+    static uint8 HoldOf(uint32 spellId);
+    // the hold already on `mob` (a stun, a root or a snare aura)
+    static uint8 HeldBy(Unit* mob);
 
 private:
     struct Stop
@@ -374,8 +384,8 @@ private:
         bool aroundSelf;
     };
 
-    // The first of the class's stops that takes `mob` now, nullptr when none.
-    Stop const* Pick(Unit* mob);
+    // The class's stop that takes `mob` now and holds it most, nullptr when none; `holdOut`: its hold.
+    Stop const* Pick(Unit* mob, uint8* holdOut = nullptr);
 };
 
 // The tank's area threat spell around itself (Consecration, Thunder Clap, Swipe, Blood Boil) for the peel: useful

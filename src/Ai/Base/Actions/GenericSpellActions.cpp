@@ -1111,16 +1111,54 @@ bool TauntReactionAction::Execute(Event /*event*/)
     return true;
 }
 
-FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob)
+uint8 FleeStopAction::HoldOf(uint32 spellId)
 {
-    static Stop const PALADIN[] = {{"hammer of justice", false}};
+    // [lead1210] the hold by the spell's own auras: a stun stops the run, a root holds it in place, a snare slows it;
+    // none (Death Grip's pull, a totem's summon) holds nothing by itself
+    SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!info)
+        return HOLD_NONE;
+    uint8 hold = HOLD_NONE;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+    {
+        if (!effect.IsAura())
+            continue;
+        if (effect.ApplyAuraName == SPELL_AURA_MOD_STUN)
+            hold = std::max(hold, HOLD_STUN);
+        else if (effect.ApplyAuraName == SPELL_AURA_MOD_ROOT)
+            hold = std::max(hold, HOLD_ROOT);
+        else if (effect.ApplyAuraName == SPELL_AURA_MOD_DECREASE_SPEED)
+            hold = std::max(hold, HOLD_SNARE);
+    }
+    return hold;
+}
+
+uint8 FleeStopAction::HeldBy(Unit* mob)
+{
+    if (!mob)
+        return HOLD_NONE;
+    if (mob->HasAuraType(SPELL_AURA_MOD_STUN))
+        return HOLD_STUN;
+    if (mob->HasAuraType(SPELL_AURA_MOD_ROOT))
+        return HOLD_ROOT;
+    if (mob->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED))
+        return HOLD_SNARE;
+    return HOLD_NONE;
+}
+
+FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob, uint8* holdOut)
+{
+    // [lead1210] the class's stops; the one cast is the usable one that holds the runner most by spell data (HoldOf)
+    static Stop const PALADIN[] = {{"hammer of justice", false}, {"avenger's shield", false}};
     static Stop const HUNTER[] = {{"concussive shot", false}, {"wing clip", false}};
     static Stop const MAGE[] = {{"frost nova", true}, {"frostbolt", false}};
-    static Stop const WARRIOR[] = {{"concussion blow", false}, {"hamstring", false}, {"piercing howl", true}};
+    static Stop const WARRIOR[] = {
+        {"concussion blow", false}, {"intercept", false}, {"hamstring", false}, {"piercing howl", true}};
     static Stop const SHAMAN[] = {{"frost shock", false}, {"earthbind totem", true}};
-    static Stop const DRUID[] = {{"bash", false}, {"entangling roots", false}};
-    static Stop const DEATH_KNIGHT[] = {{"death grip", false}, {"chains of ice", false}};
-    static Stop const ROGUE[] = {{"kidney shot", false}, {"gouge", false}};
+    static Stop const DRUID[] = {{"bash", false}, {"maim", false}, {"feral charge - bear", false},
+                                 {"entangling roots", false}};
+    static Stop const DEATH_KNIGHT[] = {{"chains of ice", false}, {"death grip", false}};
+    static Stop const ROGUE[] = {{"kidney shot", false}, {"gouge", false}, {"deadly throw", false}};
     static Stop const WARLOCK[] = {{"curse of exhaustion", false}};
     static Stop const PRIEST[] = {{"mind flay", false}};
 
@@ -1167,18 +1205,38 @@ FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob)
             return nullptr;
     }
 
+    // [lead1210] b240 rfc-h 5G-15 106 s: the frost DK's stop on a Ragefire Shaman at 0.5 yd was Death Grip (the
+    // list's first) - a pull with no hold, at its feet it held nothing; the shaman ran 87 yd and brought Shaman 27.
+    // A spell with no hold of its own (a pull) is a stop only on a runner out of the caster's melee (it brings it
+    // back); the others rank by their hold, the list's order breaks a tie
+    Stop const* best = nullptr;
+    uint8 bestHold = 0;
     for (Stop const* stop = begin; stop != end; ++stop)
     {
+        uint8 const hold = HoldOf(AI_VALUE2(uint32, "spell id", stop->spell));
+        if (hold == HOLD_NONE && !stop->aroundSelf && bot->IsWithinMeleeRange(mob))
+            continue;
+        if (best && hold <= bestHold)
+            continue;
+        bool usable = false;
         if (stop->aroundSelf)
-        {
-            if (bot->IsWithinDistInMap(mob, SELF_REACH) && TauntReactionAction::Usable(botAI, stop->spell, bot))
-                return stop;
-        }
-        else if (TauntReactionAction::Usable(botAI, stop->spell, mob))
-            return stop;
+            usable = bot->IsWithinDistInMap(mob, SELF_REACH) && TauntReactionAction::Usable(botAI, stop->spell, bot);
+        else
+            usable = TauntReactionAction::Usable(botAI, stop->spell, mob);
+        if (!usable)
+            continue;
+        best = stop;
+        bestHold = hold;
     }
+    if (holdOut)
+        *holdOut = bestHold;
+    return best;
+}
 
-    return nullptr;
+uint8 FleeStopAction::BestHold(Unit* mob)
+{
+    uint8 hold = HOLD_NONE;
+    return mob && Pick(mob, &hold) ? hold : HOLD_NONE;
 }
 
 bool FleeStopAction::isUseful()
@@ -1191,17 +1249,22 @@ bool FleeStopAction::isUseful()
     if (mob->HasAuraType(SPELL_AURA_MOD_STUN) || mob->HasAuraType(SPELL_AURA_MOD_ROOT) || IsCrowdControlled(mob))
         return false;
 
-    return Pick(mob) != nullptr;
+    // [lead1210] a snared runner takes only a stronger hold
+    uint8 hold = HOLD_NONE;
+    return Pick(mob, &hold) != nullptr && (HeldBy(mob) == HOLD_NONE || hold > HeldBy(mob));
 }
 
 bool FleeStopAction::Execute(Event /*event*/)
 {
     Unit* mob = AI_VALUE(Unit*, "fleeing mob");
-    Stop const* stop = mob ? Pick(mob) : nullptr;
+    uint8 hold = HOLD_NONE;
+    Stop const* stop = mob ? Pick(mob, &hold) : nullptr;
     if (!stop || !botAI->CastSpell(stop->spell, stop->aroundSelf ? static_cast<Unit*>(bot) : mob))
         return false;
 
-    FledMobs::MarkStopped(mob);
+    // [lead1210] only a hold marks the runner stopped: after a pull the next member's stop goes at once
+    if (hold != HOLD_NONE || stop->aroundSelf)
+        FledMobs::MarkStopped(mob);
     MotionMaster* motion = mob->GetMotionMaster();
     char const* kind =
         motion && motion->GetCurrentMovementGeneratorType() == ASSISTANCE_MOTION_TYPE ? "for help" : "in fear";
@@ -1213,6 +1276,7 @@ bool FleeStopAction::Execute(Event /*event*/)
                                             .Str("mob", mob->GetName())
                                             .Num("entry", mob->GetEntry())
                                             .Str("spell", stop->spell)
+                                            .Num("hold", hold)
                                             .Str("kind", kind)
                                             .Real("hpPct", mob->GetHealthPct())
                                             .Real("distance", distance));
