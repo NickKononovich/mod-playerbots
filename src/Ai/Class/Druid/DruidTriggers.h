@@ -730,6 +730,11 @@ public:
 // [b31_sd] Roar / Rip desync (wowsims clipRoar, FERAL_CAT_AUDIT.md 2.2.2): with Rip up, Savage Roar ending no later
 // than Rip + ROAR_RIP_LEEWAY_MS, and a Roar cast now outlasting Rip by MIN_ROAR_OFFSET_MS, recast Roar early so the
 // two never come due on the same points. Roar lasts 9 s + 5 s per point (14-34 s). Two aura lookups.
+// [rot460] as wowsims feral rotation.go clipRoar in full: no clip once the fight ends within RIP_MIN_TARGET_LIFETIME
+// (endThresh) after the current Rip or before the current Roar runs out, and Rip's end projected with the Glyph of
+// Shred extensions still to come (maxRipTicks). Was the bare remaining Rip with no fight end: b239 rfc-h 5H Rtdruaf
+// clipped Roar 4 times on 8 bosses with Rip at 3-6 s and the boss dying - the 5 points went to a Roar the fight did not
+// need, the Rip fell off (boss uptime 48 % vs the sim's 75 %) and the next points to an execute Bite.
 class SavageRoarClipTrigger : public Trigger
 {
 public:
@@ -737,25 +742,7 @@ public:
     static constexpr int32 MIN_ROAR_OFFSET_MS = 25 * IN_MILLISECONDS;
 
     SavageRoarClipTrigger(PlayerbotAI* botAI) : Trigger(botAI, "savage roar clip") {}
-    bool IsActive() override
-    {
-        uint8 const combo = AI_VALUE2(uint8, "combo", "current target");
-        Unit* target = AI_VALUE(Unit*, "current target");
-        if (!combo || !target)
-            return false;
-
-        Aura* roar = botAI->GetAura("savage roar", bot);
-        Aura* rip = roar ? botAI->GetAura("rip", target, true) : nullptr;
-        if (!rip)
-            return false;
-
-        int32 const ripLeft = rip->GetDuration();
-        if (roar->GetDuration() > ripLeft + ROAR_RIP_LEEWAY_MS)
-            return false;
-
-        int32 const newRoar = (9 + 5 * combo) * IN_MILLISECONDS;
-        return newRoar >= ripLeft + MIN_ROAR_OFFSET_MS;
-    }
+    bool IsActive() override;
 };
 
 class HurricaneChannelCheckTrigger : public Trigger

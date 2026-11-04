@@ -647,6 +647,57 @@ bool CatRipTicksOut(PlayerbotAI* botAI, Unit* target)
     return ticksOut;
 }
 
+// [rot460] Glyph of Shred / Glyph of Rip / T7 2-piece, as the core's spell_dru_glyph_of_shred caps the extensions
+inline constexpr uint32 SPELL_DRUID_GLYPH_OF_SHRED = 54815;
+inline constexpr uint32 SPELL_DRUID_GLYPH_OF_RIP = 54818;
+inline constexpr uint32 SPELL_DRUID_T7_RIP_DURATION = 60141;
+inline constexpr int32 GLYPH_OF_SHRED_MAX_EXTENSIONS = 3;  // core / wowsims: 3 Shreds of +2 s (6 s)
+inline constexpr int32 GLYPH_OF_RIP_MS = 4 * IN_MILLISECONDS;
+inline constexpr int32 T7_RIP_DURATION_MS = 4 * IN_MILLISECONDS;
+
+bool SavageRoarClipTrigger::IsActive()
+{
+    uint8 const combo = AI_VALUE2(uint8, "combo", "current target");
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!combo || !target)
+        return false;
+
+    Aura* roar = botAI->GetAura("savage roar", bot);
+    Aura* rip = roar ? botAI->GetAura("rip", target, true) : nullptr;
+    if (!rip)
+        return false;
+
+    int32 const ripLeft = rip->GetDuration();
+    int32 const roarLeft = roar->GetDuration();
+
+    // wowsims clipRoar: no clip when the fight ends within endThresh of the current Rip, nor before the current Roar
+    float const fight = ExpectedFightLifetime(botAI, target);
+    if (fight * IN_MILLISECONDS - ripLeft < RIP_MIN_TARGET_LIFETIME * IN_MILLISECONDS ||
+        roarLeft > fight * IN_MILLISECONDS)
+    {
+        LOG_DEBUG("playerbots", "[rot460] {} keeps Savage Roar ({} ms) on {}: the fight ends in {:.1f} s (Rip {} ms)",
+                  bot->GetName(), roarLeft, target->GetName(), fight, ripLeft);
+        return false;
+    }
+
+    // Rip's end with the Glyph of Shred extensions still to come (wowsims maxRipTicks, the core's cap)
+    int32 ripEnd = ripLeft;
+    if (AuraEffect const* shred = bot->GetAuraEffect(SPELL_DRUID_GLYPH_OF_SHRED, EFFECT_0))
+    {
+        int32 fullMax = rip->GetSpellInfo()->GetMaxDuration() +
+                        GLYPH_OF_SHRED_MAX_EXTENSIONS * shred->GetAmount() * IN_MILLISECONDS;
+        fullMax += bot->HasAura(SPELL_DRUID_GLYPH_OF_RIP) ? GLYPH_OF_RIP_MS : 0;
+        fullMax += bot->HasAura(SPELL_DRUID_T7_RIP_DURATION) ? T7_RIP_DURATION_MS : 0;
+        ripEnd += std::max(0, fullMax - rip->GetMaxDuration());
+    }
+
+    if (roarLeft > ripEnd + ROAR_RIP_LEEWAY_MS)
+        return false;
+
+    int32 const newRoar = (9 + 5 * combo) * IN_MILLISECONDS;
+    return newRoar >= ripEnd + MIN_ROAR_OFFSET_MS;
+}
+
 // [rot330] Mangle (Bear) on its cooldown with less than `withinMs` of it left (wowsims spellTimeToReady < x and not
 // spellIsReady). Under Berserk Mangle has no cooldown, so nothing waits.
 bool BearMangleDueWithin(PlayerbotAI* botAI, Player* bot, uint32 withinMs)
