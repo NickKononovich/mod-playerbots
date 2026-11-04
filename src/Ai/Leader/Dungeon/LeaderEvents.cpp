@@ -3381,8 +3381,19 @@ namespace Leader::Dungeon
                 std::string name;
                 float pullSec;  // seconds from now to his pull (0: this fight)
                 float fightSec;
+                float danger;  // [lead1088] the planner's overload of his pull (JudgePack: tank health / healer mana)
             };
-            std::vector<Use> uses{{fightBoss->GetName(), 0.0f, std::max(lead.fightSecLeft, 0.0f)}};
+            // [lead1088] user 2026-11-04 (Q27: "like saving money and never spending it"): the leader ranks the
+            // bosses - a cooldown's gain on a boss counts his danger too (the overload JudgePack read for his pull:
+            // a dangerous boss's seconds cut are worth more), so a long cooldown (Heroism / Bloodlust) goes on the
+            // boss it matters most on, the others on every boss they are back for
+            auto const dangerOf = [&](ObjectGuid bossGuid)
+            {
+                auto const need = lead.bossNeeds.find(bossGuid);
+                return need != lead.bossNeeds.end() ? std::max(0.0f, need->second.overload) : 0.0f;
+            };
+            std::vector<Use> uses{{fightBoss->GetName(), 0.0f, std::max(lead.fightSecLeft, 0.0f),
+                                   dangerOf(fightBoss->GetGUID())}};
             // [lead852] b223 rfc-h 5D Oggleflint 259.7-273.0 s: Army of the Dead "allowed" (here, Taragaman,
             // Bazzalan: 81352) then "held for Taragaman, Bazzalan, Jergosh (81352)" - the same gain, and the tie went
             // by the fights' lengths with this one counted by its seconds left: 66 + 97 + 70 > 97 + 70 + 64 at
@@ -3421,7 +3432,8 @@ namespace Leader::Dungeon
                           (lead.stretches ? lead.stretchSecSum / float(lead.stretches)
                                           : Leader::WalkYd(tank, prev->GetPosition(), boss->GetPosition()) / speed);
                 auto const need = lead.bossNeeds.find(boss->GetGUID());
-                uses.push_back({boss->GetName(), at, need != lead.bossNeeds.end() ? need->second.fightSec : 0.0f});
+                uses.push_back({boss->GetName(), at, need != lead.bossNeeds.end() ? need->second.fightSec : 0.0f,
+                                dangerOf(boss->GetGUID())});
                 prev = boss;
             }
             // every subset in the bosses' order (this fight and at most the next 9 bosses)
@@ -3443,7 +3455,7 @@ namespace Leader::Dungeon
                         // an effect with no duration (an instant) gains the same anywhere in a fight
                         float const covered = effectSec > 0.0f ? std::min(effectSec, fightLeft) : 1.0f;
                         fits = fightLeft > 0.0f && covered > 0.0f;
-                        gain += dps * covered;
+                        gain += dps * covered * (1.0f + uses[i].danger);  // [lead1088]
                         length += dps * (uses[i].fightSec + (i ? 0.0f : foughtSec));  // [lead852]
                         ready = cast + rechargeSec + (spentEffect ? effectSec : 0.0f);  // [lead854]
                     }
