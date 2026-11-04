@@ -778,6 +778,24 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
             victim && victim->IsAlive() && bot->GetExactDist(victim) <= botAI->GetRange("spell") &&
             bot->IsWithinLOSInMap(victim))
             return false;
+    // [lead1044] b230 rfc-h 5B-10 1028-1036 s: Rtpriaa's combat spot (-321.2, 240.3, -5.6) stood 4.6 yd above the
+    // ground its walk ended on, 2.7 yd off (tolerance 2); standing at that end, the walk was asked again every tick
+    // (a 0 yd spline), executed, and its spells were "not evaluated: leader move order ran first" (about 25 s of
+    // idle a batch). A walk to this spot that already ended where the member stands has nothing left to walk: the
+    // spot as the ground lets it be reached is reached, the tick is the rotation's
+    if (!bot->isMoving())
+    {
+        LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
+        if (last.lastMoveAsked.GetExactDist(events.spot.GetPositionX(), events.spot.GetPositionY(),
+                                            events.spot.GetPositionZ()) <= 0.01f &&
+            bot->GetExactDist2d(last.lastMoveToX, last.lastMoveToY) <= events.tolerance)
+        {
+            Leader::Events::Ack(bot->GetGUID(), events.seq,
+                                events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
+                                "[lead1044] on the spot: its walk's end on the ground");
+            return false;
+        }
+    }
     // [lead27] already walking there: the same move again is no refusal
     // [lead44] ... and no execution either: the member's other actions run meanwhile (no starvation)
     if (IsDuplicateMove(events.spot.GetPositionX(), events.spot.GetPositionY(), events.spot.GetPositionZ()))
