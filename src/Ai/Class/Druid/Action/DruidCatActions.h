@@ -90,7 +90,7 @@ public:
 // too little energy for a finisher that is due (Savage Roar ending with points on the target, Rip missing at 5
 // points on a long-lived target). Never under Clearcasting (the builder is free).
 bool CatBuilderStarvesFinisher(PlayerbotAI* botAI, Player* bot, std::string const& spell);
-// [b31_sd] On a boss without this druid's Rip, at 5 points, Swipe (cat) waits for Rip.
+// [b31_sd] [rot421] Swipe (cat) waits while its target lives out a Rip of this druid that is not on it yet.
 bool CatSwipeWaitsForRip(PlayerbotAI* botAI, Player* bot);
 // [b31_sd] Shred and Ravage need the cat behind the target (SPELL_FAILED_NOT_BEHIND, Spell::CheckCast).
 inline bool CatIsBehind(Player* bot, Unit* target)

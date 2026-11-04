@@ -80,13 +80,16 @@ bool CatBuilderStarvesFinisher(PlayerbotAI* botAI, Player* bot, std::string cons
 bool CatSwipeWaitsForRip(PlayerbotAI* botAI, Player* bot)
 {
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-    Creature* creature = target ? target->ToCreature() : nullptr;
-    if (!creature || !(creature->IsDungeonBoss() || creature->isWorldBoss()))
+    if (!target || !botAI->HasSpell("rip") || botAI->GetAura("rip", target, true))
         return false;
 
-    if (botAI->GetAiObjectContext()->GetValue<uint8>("combo", "current target")->Get() < 5 ||
-        !botAI->HasSpell("rip"))
+    // [rot421] Swipe builds no point: while the target lives out a missing Rip the energy builds that Rip (wowsims
+    // doRotation never swipes; b230 rfc-h 5H swiped on boss + 2 adds and cast Rip 1.3 / min vs the sim's 2.1)
+    if (!CatRipTicksOut(botAI, target))
         return false;
 
-    return !botAI->GetAura("rip", target, true);
+    LOG_DEBUG("playerbots", "[rot421] {} holds Swipe (Cat): {} lives out a Rip that is not on it ({} points)",
+              bot->GetName(), target->GetName(),
+              botAI->GetAiObjectContext()->GetValue<uint8>("combo", "current target")->Get());
+    return true;
 }
