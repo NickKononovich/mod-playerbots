@@ -7,6 +7,7 @@
 #include "PaladinTriggers.h"
 #include "HealthTriggers.h"  // [lead87] RestState::OwnManaLine
 #include "LeaderOrders.h"    // [lead1040] the leader's open pull order
+#include <map>
 #include <set>
 #include "SpellMgr.h"
 #include "GenericBuffUtils.h"
@@ -359,6 +360,26 @@ bool ai::paladin::TankPleaNow(Player* bot)
         Creature const* creature = unit ? unit->ToCreature() : nullptr;
         return creature && (creature->IsDungeonBoss() || creature->isWorldBoss());
     };
+    // [lead1063] one line per tank and verdict (a log throttle of the aura's own duration, no decision): b231 never
+    // logged the trash verdicts, and 5A-1 cast Plea on pull 38 with Jergosh's pull ~10 s off (aura 810 s, pulled
+    // 832 s, on its cooldown all his fight)
+    float const durationSec = float(std::max(info->GetMaxDuration(), 0)) / float(IN_MILLISECONDS);
+    auto const note = [bot, durationSec](char const* verdict, float toBoss, float rechargeSec)
+    {
+        thread_local std::map<std::pair<uint64, std::string>, uint32> logged;
+        uint32 const now = getMSTime() ? getMSTime() : 1;
+        uint32& at = logged[{bot->GetGUID().GetRawValue(), verdict}];
+        if (at && getMSTimeDiff(at, now) < uint32(durationSec * IN_MILLISECONDS))
+            return;
+        at = now;
+        LOG_INFO("playerbots",
+                 "[lead1040] {}: Divine Plea {} (the next boss pull in {:.0f} s, recharge {:.0f} s, aura {:.0f} s)",
+                 bot->GetName(), verdict, toBoss, rechargeSec, durationSec);
+    };
+    int32 rechargeMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+    bot->ApplySpellMod(SPELL_DIVINE_PLEA, SPELLMOD_COOLDOWN, rechargeMs);
+    float const rechargeSec = float(std::max(rechargeMs, 0)) / float(IN_MILLISECONDS);
+    float const toBoss = RestState::BossPullSecOf(bot);
     if (bot->IsInCombat())
     {
         if (isBoss(bot->GetVictim()))
@@ -366,20 +387,36 @@ bool ai::paladin::TankPleaNow(Player* bot)
         for (Unit* attacker : bot->getAttackers())
             if (isBoss(attacker))
                 return true;
-        float const toBoss = RestState::BossPullSecOf(bot);
         if (toBoss < 0.0f)
+        {
+            note("on trash: no boss estimate", toBoss, rechargeSec);
             return true;  // no boss left (or no estimate): the trash has it
-        int32 rechargeMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
-        bot->ApplySpellMod(SPELL_DIVINE_PLEA, SPELLMOD_COOLDOWN, rechargeMs);
-        return float(std::max(rechargeMs, 0)) / float(IN_MILLISECONDS) <= toBoss;
+        }
+        if (rechargeSec <= toBoss)
+        {
+            note("on trash: back before the boss", toBoss, rechargeSec);
+            return true;
+        }
+        return false;
+    }
+    // [lead1063] b231: the pre-pull Plea never fired - the leader's boss pull order and the tank's pull are one tick
+    // ("pull_trace execute: 1 ms after the issue"), and the pull action outranks the non-combat Plea, so an open boss
+    // order out of a fight was never seen here. The leader's own estimate of the boss pull (BossPullSecOf: this
+    // fight's rest, the trash, the rest and the walk to him) within the aura's duration is the moment: cast now it is
+    // still up at his pull, and Guarded by the Light keeps it the whole fight (wowsims prot: before the pull)
+    if (!Leader::LedBot(bot))
+        return false;
+    if (toBoss >= 0.0f && toBoss <= durationSec)
+    {
+        note("before the boss pull (its estimate within the aura)", toBoss, rechargeSec);
+        return true;
     }
     Leader::PullOrder order;
-    if (!Leader::LedBot(bot) || !Leader::Orders::GetOpen(bot->GetGUID(), order))
+    if (!Leader::Orders::GetOpen(bot->GetGUID(), order))
         return false;
     Creature* boss = bot->GetMap() ? bot->GetMap()->GetCreature(order.target) : nullptr;
     if (!boss || !boss->IsAlive() || !isBoss(boss))
         return false;
-    float const durationSec = float(std::max(info->GetMaxDuration(), 0)) / float(IN_MILLISECONDS);
     float const walkSec = std::max(bot->GetExactDist(boss) - bot->GetMeleeRange(boss), 0.0f) /
                           std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
     if (walkSec > durationSec)
