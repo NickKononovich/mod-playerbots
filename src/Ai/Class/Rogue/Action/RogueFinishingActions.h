@@ -48,10 +48,14 @@ public:
     }
 };
 
+// [rot432] Kick's fallback when Kick cannot go (its cooldown, its energy). User rule (WotLK PvE practice): a rogue
+// interrupts a boss with Kick only, Kidney Shot never; on trash it stops a mob that hits a non-tank member.
 class CastKidneyShotAction : public CastMeleeSpellAction
 {
 public:
     CastKidneyShotAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "kidney shot") {}
+    bool isUseful() override;
+    bool Execute(Event event) override;
 };
 
 #endif

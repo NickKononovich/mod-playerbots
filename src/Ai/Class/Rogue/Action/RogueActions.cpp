@@ -282,3 +282,30 @@ namespace RoguePoisons
         }
     }
 }
+
+// [rot432]
+bool CastKidneyShotAction::isUseful()
+{
+    Unit* target = GetTarget();
+    if (!target || !CastMeleeSpellAction::isUseful())
+        return false;
+
+    Creature const* creature = target->ToCreature();
+    if (creature && (creature->IsDungeonBoss() || creature->isWorldBoss()))
+        return false;
+
+    Player* victim = target->GetVictim() ? target->GetVictim()->ToPlayer() : nullptr;
+    return victim && victim != bot && victim->IsInSameGroupWith(bot) && !PlayerbotAI::IsTank(victim);
+}
+
+bool CastKidneyShotAction::Execute(Event event)
+{
+    Unit* target = GetTarget();
+    Unit* victim = target ? target->GetVictim() : nullptr;
+    if (!CastMeleeSpellAction::Execute(event))
+        return false;
+
+    LOG_DEBUG("playerbots", "[rot432] {} Kidney Shot on {}: it hits the non-tank {}", bot->GetName(),
+              target ? target->GetName() : "?", victim ? victim->GetName() : "?");
+    return true;
+}
