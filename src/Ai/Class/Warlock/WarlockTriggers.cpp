@@ -9,9 +9,12 @@
 #include "DynamicObject.h"
 #include "GameObject.h"
 #include "GenericTriggers.h"
+#include "DBCStores.h"       // [rot461] IsSharedDifficultyMap
+#include "InstanceScript.h"  // [rot461]
 #include "Item.h"
 #include "LeaderOrders.h"  // [lead955] Leader::ExecutorMember
 #include "Map.h"
+#include "ObjectMgr.h"  // [rot461] GetDungeonEncounterList
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -304,8 +307,57 @@ bool InfernoBossTrigger::IsActive()
     if (!target || !target->IsAlive() || target->IsPlayer() || !ai::raidutil::IsBossUnit(target))
         return false;
 
-    return ExpectedLifetime(botAI, target) <= INFERNO_MAX_TARGET_LIFETIME &&
-           bot->HasItemCount(INFERNO_REAGENT_ITEM, 1);
+    if (ExpectedLifetime(botAI, target) > INFERNO_MAX_TARGET_LIFETIME || !bot->HasItemCount(INFERNO_REAGENT_ITEM, 1))
+        return false;
+
+    // [rot461] wowsims' remainingTime is the rest of the simulation: the Infernal takes the pet slot (Pet.Disable) and
+    // nothing comes after. In an instance another boss comes after, and the warlock has to resummon its demon (a 10 s
+    // cast) once the Infernal is gone. So Inferno goes only where wowsims' "end of the fight" is real: on the last
+    // boss of the instance, or with no demon out to lose
+    if (!bot->GetPet())
+        return true;
+
+    bool const last = InfernoOnLastEncounter(bot, target);
+    if (!last)
+        LOG_DEBUG("playerbots", "[rot461] {} holds Inferno on {}: not the instance's last boss, its demon would need a "
+                  "resummon", bot->GetName(), target->GetName());
+    return last;
+}
+
+// [rot461] Every other DungeonEncounter.dbc encounter of the map is in the instance's completed mask (the core sets
+// it per killed credit creature, Map::UpdateEncounterState). No list or no instance script: unknown, false.
+bool InfernoOnLastEncounter(Player* bot, Unit* target)
+{
+    Map* map = bot->GetMap();
+    InstanceMap* instanceMap = map ? map->ToInstanceMap() : nullptr;
+    InstanceScript* instance = instanceMap ? instanceMap->GetInstanceScript() : nullptr;
+    if (!instance)
+        return false;
+
+    // the difficulty Map::UpdateEncounterState credits the kills under
+    Difficulty const difficulty =
+        IsSharedDifficultyMap(map->GetId()) ? Difficulty(map->GetDifficulty() % 2) : map->GetDifficulty();
+    DungeonEncounterList const* encounters = sObjectMgr->GetDungeonEncounterList(map->GetId(), difficulty);
+    if (!encounters || encounters->empty())
+        return false;
+
+    uint32 const done = instance->GetCompletedEncounterMask();
+    bool targetIsOne = false;
+    for (DungeonEncounter const* encounter : *encounters)
+    {
+        if (!encounter || !encounter->dbcEntry)
+            continue;
+
+        if (encounter->creditType == ENCOUNTER_CREDIT_KILL_CREATURE && encounter->creditEntry == target->GetEntry())
+        {
+            targetIsOne = true;
+            continue;
+        }
+
+        if (!(done & (1u << encounter->dbcEntry->encounterIndex)))
+            return false;
+    }
+    return targetIsOne;
 }
 
 bool CurseOfTonguesTrigger::IsActive()

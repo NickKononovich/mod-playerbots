@@ -431,6 +431,10 @@ public:
 // [b35_lock] wowsims destro: Inferno while the fight has less than INFERNO_MAX_TARGET_LIFETIME left (on a boss pull
 // that ends within it, at once). Bosses only: its 2 s AoE stun breaks crowd control on trash. Cooldown ready
 // (10 min), an Infernal Stone in the bags.
+// [rot461] and with a demon out only on the instance's last boss (InfernoOnLastEncounter): wowsims' fight end is the
+// simulation's end, here the next boss needs the demon resummoned (10 s). b239 rfc-h: Inferno on every boss cost the
+// affliction (5D) ~50 s and the destruction (5E) warlock ~31 s of resummons over 2 runs.
+bool InfernoOnLastEncounter(Player* bot, Unit* target);
 class InfernoBossTrigger : public Trigger
 {
 public:
