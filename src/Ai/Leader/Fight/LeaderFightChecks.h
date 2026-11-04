@@ -31,6 +31,7 @@
 #include <vector>
 
 class PlayerbotAI;
+class SpellInfo;
 class Unit;
 
 namespace PullPlanner
@@ -183,6 +184,18 @@ namespace Leader::Fight
     // [lead1096] the longest lasting ground field among the bot's spells (a persistent area aura's duration, spell
     // data), seconds; 0: none
     float LeaderMaxFieldSec(Player* bot);
+    // [lead1100] the bot's longest ground field: its spell (0: none) and its radius (spell data)
+    uint32 LeaderFieldSpell(Player* bot);
+    float LeaderMaxFieldRadius(Player* bot);
+    // [lead1100] user 2026-11-04 (Q9): an unpulled mob walks into a ground field of `radius` round `center` before
+    // it ends (`fieldSec`): a patrol only when its waypoint walk (its walker's forecast) enters the radius within the
+    // field's seconds, a wanderer only when its wander radius round its home reaches the field and its walk gets
+    // there in time, any other walk under way only when it ends inside. Returns how ("patrol" / "wanderer" /
+    // "walk"); empty: it does not come.
+    std::string FieldWalkerEnters(Creature* mob, Position const& center, float radius, float fieldSec);
+    // [lead1100] the damage one cast of the field `info` deals on one target over its duration (the core's
+    // damage bonus with the caster's spell power / attack power coefficients, spell data ticks)
+    float FieldDamagePerTarget(Player* bot, Unit* target, SpellInfo const* info);
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);

@@ -11,6 +11,7 @@
 #include "Group.h"
 #include "LeaderCommand.h"  // [rot2]
 #include "LeaderCommandState.h"  // [rot3]
+#include "LeaderFightChecks.h"   // [lead1100] FieldWalkerEnters
 #include "LeaderOrders.h"        // [lead282] the leader's Attack
 #include "Log.h"
 #include "Map.h"
@@ -1117,11 +1118,13 @@ float LeaderCommandMultiplier::GetValue(Action* action)
                          (info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA) ||
                           info->HasAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL));
     // [lead1096] user 2026-11-04 (Q9): a ground field (a persistent area aura) is not placed where an unpulled walker
-    // - a patrol, a wanderer - can walk into it before it ends: its worst-case path is any way at its own walk speed
-    // (the core's speed) over the field's duration (spell data), a wanderer only within its wander radius of its home
+    // can walk into it before it ends (spell data duration)
+    // [lead1100] b235 rfc-h: 191 holds on any-way walks at walk speed; a patrol counts only when its waypoint walk
+    // enters the radius while the field lasts, a wanderer only when its wander radius reaches it
+    // (Leader::Fight::FieldWalkerEnters). A walker the leader takes into the fight is no longer on its spared list
     bool const field = info && info->GetDuration() > 0 && info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA);
     float const fieldSec = field ? float(info->GetMaxDuration()) / 1000.0f : 0.0f;
-    bool walkerIn = false;
+    std::string walkerKind;
     if (Unit* spared = SparedInArea(
             [&](Unit* mob)
             {
@@ -1130,20 +1133,18 @@ float LeaderCommandMultiplier::GetValue(Action* action)
                 Unit* const mobVictim = lasting ? mob->GetVictim() : nullptr;
                 if (mobVictim && mobVictim->IsWithinDist3d(&center, radius))
                     return true;
-                Creature* const walker = field && !mob->IsInCombat() ? mob->ToCreature() : nullptr;
-                if (!walker || (!walker->isMoving() && walker->GetDefaultMovementType() == IDLE_MOTION_TYPE))
+                if (!field || !mob->ToCreature())
                     return false;
-                float const reach = radius + mob->GetCombatReach();
-                if (walker->GetDefaultMovementType() == RANDOM_MOTION_TYPE &&
-                    walker->GetHomePosition().GetExactDist(&center) > reach + walker->GetWanderDistance())
-                    return false;
-                walkerIn = mob->GetExactDist(&center) - reach <= mob->GetSpeed(MOVE_WALK) * fieldSec;
-                return walkerIn;
+                walkerKind = Leader::Fight::FieldWalkerEnters(mob->ToCreature(), center, radius, fieldSec);
+                return !walkerKind.empty();
             }))
     {
-        Log(action, (walkerIn ? "[lead1096] the field's " + Acore::StringFormat("{:.0f}", fieldSec) +
-                                    " s let the leader's spared walker " + spared->GetName() + " walk into it"
-                              : "the area reaches the leader's spared " + spared->GetName())
+        Log(action, (!walkerKind.empty()
+                         ? Acore::StringFormat("[lead1100] the field's {:.0f} s let the leader's spared {} {} (low {}, "
+                                               "{:.1f} yd) walk into it",
+                                               fieldSec, walkerKind, spared->GetName(),
+                                               spared->GetGUID().GetCounter(), spared->GetExactDist(&center))
+                         : "the area reaches the leader's spared " + spared->GetName())
                         .c_str());
         return 0.0f;
     }

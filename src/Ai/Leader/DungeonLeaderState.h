@@ -311,6 +311,9 @@ namespace Leader
         std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
         std::map<ObjectGuid, uint32> engageRangeOrder;  // [lead68] the order the range spot was computed for
+        std::map<ObjectGuid, ObjectGuid> engagePreSearched;  // [lead1102] the mob of its pre-order spot search
+        std::map<ObjectGuid, float> engagePreGap;           // [lead1102] its gap to that spot last tick
+        ObjectGuid engagePreHeldFor;                        // [lead1102] the commit the first wait tick held
         // [lead1030] the order and the member's place a range spot search found none from: not searched again
         // until the order changes or the member moved off that place (the search's own spot tolerance)
         std::map<ObjectGuid, std::pair<uint32, Position>> engageRangeNone;
@@ -334,6 +337,8 @@ namespace Leader
         std::map<ObjectGuid, std::string> manaWayLogged;  // [lead955] the warlock mana way last logged
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
         std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
+        std::set<ObjectGuid> fieldJudged;  // [lead1100] walkers into a ground field judged this fight
+        std::set<ObjectGuid> fieldTaken;   // [lead1100] their packs the field may take (spared no longer)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
         std::string fightMoveWhy;                      // [lead909] its purpose (empty: away from a pack)
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
@@ -468,6 +473,7 @@ namespace Leader
         std::map<ObjectGuid, Precast> precast;
         ObjectGuid precastMob;  // [lead1091] the pull mob the pre-cast window was open on last tick
         std::set<ObjectGuid> precastRead;  // [lead1080] members whose first cast of this fight was read
+        std::set<ObjectGuid> precastRotationRead;  // [lead1101] members whose rotation opener was read
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
         std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived

@@ -15,7 +15,9 @@
 #include "EstimatedLifetimeValue.h"  // [lead454] ExpectedLifetime
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "LeaderPlannerShared.h"  // [lead1100] PatrolForecast
 #include "Map.h"
+#include "MoveSpline.h"            // [lead1100]
 #include "MovementActions.h"
 #include "MovementTypedefs.h"  // [lead691] Movement::gravity
 #include "SpellAuraEffects.h"  // [lead691] AuraEffect
@@ -318,31 +320,122 @@ namespace Leader::Fight
         return radius;
     }
 
-    float LeaderMaxFieldSec(Player* bot)
+    namespace
     {
-        // cached per bot while its spells stay the same (a lookup, no clock)
-        struct Cached
+        // [lead1100] the bot's longest ground field (a persistent area aura, spell data), cached per bot while its
+        // spells stay the same (a lookup, no clock)
+        struct FieldSpells
         {
             size_t spells = 0;
             float sec = 0.0f;
+            float radius = 0.0f;
+            uint32 spell = 0;
         };
-        thread_local std::unordered_map<uint64, Cached> cache;
-        Cached& cached = cache[bot->GetGUID().GetRawValue()];
-        if (cached.spells == bot->GetSpellMap().size())
-            return cached.sec;
-        float sec = 0.0f;
-        for (auto const& [spellId, known] : bot->GetSpellMap())
+
+        FieldSpells const& BotFields(Player* bot)
         {
-            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
-                continue;
-            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-            if (!info || info->IsPassive() || info->IsPositive() ||
-                !info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA))
-                continue;
-            sec = std::max(sec, float(std::max(info->GetMaxDuration(), 0)) / 1000.0f);
+            thread_local std::unordered_map<uint64, FieldSpells> cache;
+            FieldSpells& cached = cache[bot->GetGUID().GetRawValue()];
+            if (cached.spells == bot->GetSpellMap().size())
+                return cached;
+            FieldSpells found;
+            for (auto const& [spellId, known] : bot->GetSpellMap())
+            {
+                if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+                if (!info || info->IsPassive() || info->IsPositive() ||
+                    !info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA))
+                    continue;
+                float const sec = float(std::max(info->GetMaxDuration(), 0)) / 1000.0f;
+                if (sec <= found.sec)
+                    continue;
+                found.sec = sec;
+                found.spell = spellId;
+                found.radius = 0.0f;
+                for (SpellEffectInfo const& effect : info->GetEffects())
+                    if (effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA)
+                        found.radius = std::max(found.radius, effect.CalcRadius(bot));
+            }
+            found.spells = bot->GetSpellMap().size();
+            cached = found;
+            return cached;
         }
-        cached = {bot->GetSpellMap().size(), sec};
-        return sec;
+    }
+
+    float LeaderMaxFieldSec(Player* bot) { return BotFields(bot).sec; }
+
+    uint32 LeaderFieldSpell(Player* bot) { return BotFields(bot).spell; }
+
+    float LeaderMaxFieldRadius(Player* bot) { return BotFields(bot).radius; }
+
+    std::string FieldWalkerEnters(Creature* mob, Position const& center, float radius, float fieldSec)
+    {
+        if (!mob || !mob->IsAlive() || mob->IsInCombat() || fieldSec <= 0.0f)
+            return std::string();
+        // the game's area test: the unit's size counts (AnyAoETargetUnitInObjectRangeCheck, IsWithinDistInMap)
+        float const reach = radius + mob->GetCombatReach();
+        // a patrol: its walker's forecast from now, one sample a second; a formation member walks its leader's
+        // track at its own offset from it
+        std::vector<G3D::Vector3> track;
+        float sampleSec = 0.0f;
+        if (PullPlanning::PatrolForecast(mob, track, sampleSec) && sampleSec > 0.0f && !track.empty())
+        {
+            G3D::Vector3 const at(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
+            float const offset = (at - track.front()).length();
+            for (size_t i = 0; i < track.size() && float(i) * sampleSec <= fieldSec; ++i)
+                if (center.GetExactDist(track[i].x, track[i].y, track[i].z) <= reach + offset)
+                    return "patrol";
+            return std::string();
+        }
+        // a wanderer: the core draws its points round its home within its wander distance
+        // (RandomMovementGenerator), at its walk speed
+        if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+        {
+            if (mob->GetHomePosition().GetExactDist(&center) > reach + mob->GetWanderDistance())
+                return std::string();
+            return mob->GetExactDist(&center) - reach <= mob->GetSpeed(MOVE_WALK) * fieldSec ? "wanderer"
+                                                                                               : std::string();
+        }
+        // any other walk under way: where it ends
+        if (mob->isMoving() && mob->movespline && !mob->movespline->Finalized())
+        {
+            G3D::Vector3 const end = mob->movespline->FinalDestination();
+            return center.GetExactDist(end.x, end.y, end.z) <= reach ? "walk" : std::string();
+        }
+        return std::string();
+    }
+
+    float FieldDamagePerTarget(Player* bot, Unit* target, SpellInfo const* info)
+    {
+        if (!bot || !target || !info)
+            return 0.0f;
+        float const durationMs = float(std::max(info->GetMaxDuration(), 0));
+        float damage = 0.0f;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            SpellEffectInfo const& effect = info->Effects[i];
+            if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                damage += float(bot->SpellDamageBonusDone(
+                    target, info, uint32(std::max(0, bot->CalculateSpellDamage(target, info, i))), SPELL_DIRECT_DAMAGE,
+                    i));
+            if (effect.Effect != SPELL_EFFECT_PERSISTENT_AREA_AURA || !effect.Amplitude)
+                continue;
+            float const ticks = durationMs / float(effect.Amplitude);
+            if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE)
+                damage += ticks * float(bot->SpellDamageBonusDone(
+                                      target, info, uint32(std::max(0, bot->CalculateSpellDamage(target, info, i))),
+                                      DOT, i));
+            else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && effect.TriggerSpell)
+                if (SpellInfo const* hit = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                    for (uint8 j = 0; j < MAX_SPELL_EFFECTS; ++j)
+                        if (hit->Effects[j].Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                            damage += ticks * float(bot->SpellDamageBonusDone(
+                                                  target, hit,
+                                                  uint32(std::max(0, bot->CalculateSpellDamage(target, hit, j))),
+                                                  SPELL_DIRECT_DAMAGE, j));
+        }
+        return damage;
     }
 
     namespace

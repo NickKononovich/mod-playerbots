@@ -23,6 +23,7 @@
 #include "EscortProtect.h"  // [b36_ohb] EscortGossipHeld
 #include "EstimatedLifetimeValue.h"
 #include "GameObject.h"
+#include "GenericSpellActions.h"  // [lead1101] CastSpellAction
 #include "GameObjectModel.h"
 #include "GameTime.h"
 #include "GDTriggers.h"
@@ -75,6 +76,7 @@
 #include "Spell.h"
 #include "SpellAuraEffects.h"  // [lead852] the member's periodic damage on a mob
 #include "SpellAuras.h"
+#include "Strategy.h"  // [lead1101] the rotation's default actions
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StuckWatchdog.h"
@@ -488,6 +490,32 @@ namespace Leader::Dungeon
                 !info->NeedsExplicitUnitTarget() || info->IsAutoRepeatRangedSpell() || !info->CalcCastTime())
                 return false;
             return info->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE);
+        }
+
+        // [lead1101] b235 rfc-h: 177 pulls "no opener read yet" - the opener was learned only from the member's first
+        // cast of a fight. Before that it is read once from its own rotation: the highest-relevance default action of
+        // its combat strategies (the class strategy's filler) that is a spell it knows and can pre-cast
+        uint32 RotationOpener(Player* bot)
+        {
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (!botAI)
+                return 0;
+            std::vector<std::pair<float, std::string>> actions;
+            for (std::string const& name : botAI->GetStrategies(BOT_STATE_COMBAT))
+                if (Strategy* strategy = botAI->GetStrategy(name, BOT_STATE_COMBAT))
+                    for (NextAction next : strategy->getDefaultActions())
+                        actions.emplace_back(next.getRelevance(), next.getName());
+            std::stable_sort(actions.begin(), actions.end(),
+                             [](auto const& a, auto const& b) { return a.first > b.first; });
+            AiObjectContext* context = botAI->GetAiObjectContext();
+            for (auto const& [relevance, name] : actions)
+            {
+                CastSpellAction* cast = dynamic_cast<CastSpellAction*>(context->GetAction(name));
+                uint32 const id = cast ? context->GetValue<uint32>("spell id", cast->getSpell())->Get() : 0;
+                if (id && bot->HasSpell(id) && PrecastSpell(sSpellMgr->GetSpellInfo(id)))
+                    return id;
+            }
+            return 0;
         }
 
         // [lead1080] the threat one cast of `info` puts on `mob` (its direct damage with the member's bonuses, the
@@ -1960,6 +1988,156 @@ namespace Leader::Dungeon
                                           { return LeaderAoeRule(tank, target, range, lead.aoeWhy, lead.aoeSpared); }));
                 lead.aoeTarget = target->GetGUID();
                 lead.aoeMs = now;
+                // [lead1100] user 2026-11-04 (Q9): a spared walker that walks into the members' ground field while it
+                // lasts (FieldWalkerEnters: a patrol's waypoint walk, a wanderer's wander radius) - the leader
+                // compares (a) the field takes it in: it and its pack are on the route and the tank holds them with
+                // the fight (the overload gate, JudgePack) - they join the pull and are spared no longer, no time
+                // lost (an on-route mob is fought anyway); (b) the field is skipped this fight (the members' own
+                // hold): the field's damage on the fight's other mobs over the group's dps; (c) the fight moves out
+                // of its reach: the tank's walk at its run speed. The fastest safe one goes
+                {
+                    float fieldRadius = 0.0f;
+                    float fieldLong = 0.0f;
+                    std::vector<Player*> fielders;
+                    for (Player* bot : seats)
+                        if (LeaderFieldSpell(bot))
+                        {
+                            fielders.push_back(bot);
+                            fieldRadius = std::max(fieldRadius, LeaderMaxFieldRadius(bot));
+                            fieldLong = std::max(fieldLong, LeaderMaxFieldSec(bot));
+                        }
+                    std::vector<ObjectGuid> keep;
+                    for (ObjectGuid const& guid : lead.aoeSpared)
+                    {
+                        if (lead.fieldTaken.count(guid))
+                            continue;
+                        keep.push_back(guid);
+                        Creature* walker = fielders.empty() || lead.fieldJudged.count(guid) ? nullptr
+                                                                                             : map->GetCreature(guid);
+                        std::string const how =
+                            walker ? FieldWalkerEnters(walker, target->GetPosition(), fieldRadius, fieldLong) : "";
+                        if (how.empty())
+                            continue;
+                        lead.fieldJudged.insert(guid);
+                        // (a) on the route, with its pack, and the tank holds them all
+                        std::vector<ObjectGuid> const pack = packOf(walker);
+                        bool onPath = true;
+                        for (ObjectGuid const& mate : pack)
+                        {
+                            auto const verdict = group.PathVerdicts().find(mate);
+                            Creature const* mob = map->GetCreature(mate);
+                            if (verdict == group.PathVerdicts().end() || !verdict->second.on ||
+                                (mob && mob->IsDungeonBoss()))
+                                onPath = false;
+                        }
+                        float overload = 0.0f;
+                        std::string judged;
+                        bool fits = false;
+                        if (onPath)
+                        {
+                            std::vector<ObjectGuid> combined;
+                            for (Unit* attacker : tank->getAttackers())
+                                if (attacker && attacker->IsAlive())
+                                    combined.push_back(attacker->GetGUID());
+                            combined.insert(combined.end(), pack.begin(), pack.end());
+                            fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                        }
+                        // (b) the field skipped: its damage on every fight mob in it but the one the next spell hits
+                        uint32 inField = 0;
+                        for (ObjectGuid const& other : killOrder)
+                            if (Unit* mob = ObjectAccessor::GetUnit(*tank, other);
+                                mob && mob->IsAlive() &&
+                                mob->GetExactDist(target) <= fieldRadius + mob->GetCombatReach())
+                                ++inField;
+                        float gain = 0.0f;
+                        for (Player* bot : fielders)
+                            gain += FieldDamagePerTarget(bot, target, sSpellMgr->GetSpellInfo(LeaderFieldSpell(bot))) *
+                                    float(inField > 1 ? inField - 1 : 0);
+                        PlayerbotAI* fieldAI = GET_PLAYERBOT_AI(tank);
+                        float const fieldDps = std::max(
+                            1.0f, fieldAI ? fieldAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get()
+                                          : 0.0f);
+                        float const skipSec = gain / fieldDps;
+                        // (c) the fight out of its reach: from the nearest point it comes to, the tank steps away
+                        Position from = walker->GetHomePosition();
+                        float extra = walker->GetWanderDistance();
+                        if (how == "patrol")
+                        {
+                            std::vector<G3D::Vector3> track;
+                            float sampleSec = 0.0f;
+                            if (PullPlanning::PatrolForecast(walker, track, sampleSec) && !track.empty())
+                            {
+                                G3D::Vector3 const at(walker->GetPositionX(), walker->GetPositionY(),
+                                                      walker->GetPositionZ());
+                                extra = (at - track.front()).length();
+                                float best = -1.0f;
+                                for (size_t i = 0; i < track.size() && float(i) * sampleSec <= fieldLong; ++i)
+                                    if (float const gap = target->GetExactDist(track[i].x, track[i].y, track[i].z);
+                                        best < 0.0f || gap < best)
+                                    {
+                                        best = gap;
+                                        from.Relocate(track[i].x, track[i].y, track[i].z);
+                                    }
+                            }
+                        }
+                        else if (how == "walk" && walker->movespline)
+                        {
+                            G3D::Vector3 const end = walker->movespline->FinalDestination();
+                            from.Relocate(end.x, end.y, end.z);
+                            extra = 0.0f;
+                        }
+                        float const need = fieldRadius + walker->GetCombatReach() + extra - from.GetExactDist2d(target);
+                        float const dx = tank->GetPositionX() - from.GetPositionX();
+                        float const dy = tank->GetPositionY() - from.GetPositionY();
+                        float const length = std::max(0.1f, std::hypot(dx, dy));
+                        float const moveSec = need / std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
+                        std::optional<Position> moveTo;
+                        if (need > 0.0f && moveSec < skipSec && moveSec < lead.fightSecLeft && !lead.fightMoveTo)
+                        {
+                            float x = tank->GetPositionX() + dx / length * need;
+                            float y = tank->GetPositionY() + dy / length * need;
+                            float z = tank->GetPositionZ();
+                            if (map->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
+                                                                     tank->GetPositionZ(), x, y, z))
+                                moveTo = Position(x, y, z);
+                        }
+                        std::string option;
+                        if (onPath && fits)
+                        {
+                            option = "take";
+                            joinPack(walker, pack);
+                            lead.fieldTaken.insert(pack.begin(), pack.end());
+                            keep.pop_back();
+                        }
+                        else if (moveTo)
+                        {
+                            option = "move";
+                            lead.fightMoveTo = moveTo;
+                            lead.fightMoveWhy =
+                                "[lead1100] the field: the fight moves out of " + walker->GetName() + "'s walk";
+                        }
+                        else
+                            option = "skip";
+                        Decisions().Write(run, "leader", "field_walker", guid, walker->GetName(), true,
+                                          JsonObject()
+                                              .Str("option", option)
+                                              .Str("how", how)
+                                              .Bool("onPath", onPath)
+                                              .Bool("fits", fits)
+                                              .Real("overload", overload)
+                                              .Str("judged", judged)
+                                              .Num("packMobs", int64(pack.size()))
+                                              .Num("inField", int64(inField))
+                                              .Real("skipSec", skipSec)
+                                              .Real("moveSec", need > 0.0f ? moveSec : 0.0f)
+                                              .Real("fieldSec", fieldLong)
+                                              .Real("radius", fieldRadius)
+                                              .Real("gap", walker->GetExactDist(target))
+                                              .Str("why", "[lead1100] a walker into the field: take it in / skip "
+                                                          "the field / move the fight, the fastest safe"));
+                    }
+                    lead.aoeSpared = std::move(keep);
+                }
             }
             aoe = Leader::AoeRule(lead.aoeRule);
             aoeWhy = lead.aoeWhy;
@@ -3117,6 +3295,8 @@ namespace Leader::Dungeon
             lead.fightMoveTo.reset();
             lead.joinedPack.clear();
             lead.joinedMobs.clear();
+            lead.fieldJudged.clear();  // [lead1100]
+            lead.fieldTaken.clear();
         }
         else if (lead.fightMoveTo)
         {
@@ -3744,6 +3924,17 @@ namespace Leader::Dungeon
             // the member's opener: its first cast-time damage spell of a fight, on a mob it had no threat on yet
             if (!fighting)
                 lead.precastRead.clear();
+            // [lead1101] a ranged damage dealer with no opener yet takes its rotation's (read once per member; a cast
+            // read in a fight replaces it below)
+            for (Player* bot : seats)
+                if (!PlayerbotAI::IsHeal(bot) && !PlayerbotAI::IsTank(bot) && PlayerbotAI::IsRanged(bot) &&
+                    !lead.precast[bot->GetGUID()].opener && lead.precastRotationRead.insert(bot->GetGUID()).second)
+                    if (uint32 const opener = RotationOpener(bot))
+                    {
+                        lead.precast[bot->GetGUID()].opener = opener;
+                        LOG_INFO("playerbots", "[lead1101] {}: its opener read from its rotation: {}", bot->GetName(),
+                                 opener);
+                    }
             for (Player* bot : seats)
             {
                 if (!fighting || lead.precastRead.count(bot->GetGUID()) || PlayerbotAI::IsHeal(bot) ||
@@ -3822,7 +4013,7 @@ namespace Leader::Dungeon
                 {
                     // [lead1091] no pull mob this tick: the gate the window closed on stays for its line
                     if (pullMob)
-                        pre.skip = !pre.opener ? "no opener read yet" : !tankOpen ? "no tank rate yet" : "";
+                        pre.skip = !pre.opener ? "no opener in its rotation" : !tankOpen ? "no tank rate yet" : "";
                     continue;
                 }
                 SpellInfo const* info = sSpellMgr->GetSpellInfo(pre.opener);
@@ -3901,7 +4092,8 @@ namespace Leader::Dungeon
                         auto const found = lead.precast.find(bot->GetGUID());
                         if (found != lead.precast.end() && found->second.toldOn == lead.precastMob)
                             continue;
-                        std::string const why = found == lead.precast.end() ? "no opener read yet"
+                        std::string const why = found == lead.precast.end() || !found->second.opener
+                                                    ? "no opener in its rotation"
                                                 : found->second.skip.empty() ? "no window seen (one tick)"
                                                                              : found->second.skip;
                         logEvent(bot, "PrecastNone",
@@ -3983,6 +4175,72 @@ namespace Leader::Dungeon
                 }
                 if (!kicker || busy.count(kicker->GetGUID()))
                     continue;
+                // [lead1104] b235 rfc-h 5E: the assassination rogue's Kicks on bosses (1-4 a fight, 25 energy each)
+                // - the energy is its damage. On a boss an interrupt paid in energy goes only on a cast that matters:
+                // a heal or buff of his, or a cast whose damage on the members it reaches (spell data with his damage
+                // bonus, the members within its radius, else its one target) is more than the kicker's damage the
+                // energy would have bought (its cost over the core's energy regen, Player::Regenerate, at the
+                // kicker's share of the group's dps). Kidney Shot never on a boss (rot432) stands
+                if (Creature const* bossCaster = caster->ToCreature(); bossCaster && bossCaster->IsDungeonBoss())
+                    if (SpellInfo const* kick = sSpellMgr->GetSpellInfo(LeaderReadyInterrupt(kicker));
+                        kick && kick->PowerType == POWER_ENERGY)
+                        if (Spell const* cast = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                            cast && cast->GetSpellInfo() && !cast->GetSpellInfo()->IsPositive())
+                        {
+                            SpellInfo const* castInfo = cast->GetSpellInfo();
+                            Unit* victim = cast->m_targets.GetUnitTarget() ? cast->m_targets.GetUnitTarget() : tank;
+                            float damage = 0.0f;
+                            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                            {
+                                SpellEffectInfo const& effect = castInfo->Effects[i];
+                                float hit = 0.0f;
+                                if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                                    hit = float(caster->SpellDamageBonusDone(
+                                        victim, castInfo, uint32(std::max(0, caster->CalculateSpellDamage(victim,
+                                                                                                         castInfo, i))),
+                                        SPELL_DIRECT_DAMAGE, i));
+                                else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
+                                    hit = float(std::max(castInfo->GetMaxDuration(), 0)) / float(effect.Amplitude) *
+                                          float(caster->SpellDamageBonusDone(
+                                              victim, castInfo,
+                                              uint32(std::max(0, caster->CalculateSpellDamage(victim, castInfo, i))),
+                                              DOT, i));
+                                if (hit <= 0.0f)
+                                    continue;
+                                uint32 reached = 1;
+                                if (float const radius = effect.CalcRadius(caster); radius > 0.0f)
+                                {
+                                    reached = tank->IsWithinDist(caster, radius) ? 1 : 0;
+                                    for (Player* bot : seats)
+                                        if (bot->IsAlive() && bot->IsWithinDist(caster, radius))
+                                            ++reached;
+                                }
+                                damage += hit * float(reached);
+                            }
+                            PlayerbotAI* kickAI = GET_PLAYERBOT_AI(tank);
+                            float const groupDps =
+                                kickAI ? kickAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get()
+                                       : 0.0f;
+                            uint32 dealers = 0;
+                            for (Player* bot : seats)
+                                if (!PlayerbotAI::IsHeal(bot))
+                                    ++dealers;
+                            float const regen =
+                                (kicker->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + POWER_ENERGY) + 10.0f) *
+                                sWorld->getRate(RATE_POWER_ENERGY);
+                            float const cost = float(std::max(kick->CalcPowerCost(kicker, kick->GetSchoolMask()), 0));
+                            float const loss =
+                                regen > 0.0f && dealers ? cost / regen * groupDps / float(dealers) : 0.0f;
+                            if (damage <= loss)
+                            {
+                                thread_local std::set<std::pair<uint64, uint32>> kickLogged;
+                                if (kickLogged.insert({kicker->GetGUID().GetRawValue(), castInfo->Id}).second)
+                                    LOG_INFO("playerbots", "[lead1104] {}: no Kick on {}'s {} ({:.0f} damage on the "
+                                             "members it reaches <= {:.0f} of the kicker's damage for {:.0f} energy)",
+                                             kicker->GetName(), caster->GetName(), castInfo->Id, damage, loss, cost);
+                                continue;
+                            }
+                        }
                 busy.insert(kicker->GetGUID());
                 lead.kickers[caster->GetGUID()] = kicker->GetGUID();
                 if (LeaderInterruptReaches(kicker, caster))
@@ -6404,6 +6662,20 @@ namespace Leader::Dungeon
                 if ((!pullWalk || !healing) && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
                     !melee && Leader::Orders::GetOpen(group.LeaderGuid(), engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+                // [lead1102] b235 rfc-h: 402 pulls with no pre-cast "walking" - the range spot went out with the tank's
+                // order and the tank hit 1-3 s later, before the member stood. A committed engage of a still mob gives
+                // a ranged damage dealer its range spot before the order goes (the issue waits while it walks there:
+                // LeaderPlan's lead1102 gate), so it stands in reach of the mob when the pre-cast window opens
+                bool preIssue = false;
+                if (!engaged && !healing && !melee && PlayerbotAI::IsRanged(bot) && lead.commit && !lead.commitIssued &&
+                    lead.commit->kind == "engage")
+                    if (Unit* still = ObjectAccessor::GetUnit(*tank, lead.commitMob);
+                        still && still->IsAlive() && !still->IsInCombat() && !still->isMoving() &&
+                        (!still->ToCreature() || still->ToCreature()->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE))
+                    {
+                        engaged = still;
+                        preIssue = true;
+                    }
                 // [lead81] b124 rfc-h 147.6-166 s: the group walked 120 yd to the engage's range / meeting point while
                 // the tank never left (-90,-40) - the tank leads the walk: a walk-along point nearer the engaged mob
                 // than the tank stands is ahead of the tank, the member follows the tank until the tank is past it
@@ -6459,7 +6731,7 @@ namespace Leader::Dungeon
                     // [lead68] b113: the spot moved with the tank (re-issued every ~0.6 s) - it is computed once per
                     // order (the leader's plan) and kept until a new order
                     if (kept != lead.engageRangeSpots.end() && kept->second.first == engaged->GetGUID() &&
-                        lead.engageRangeOrder[guid] == engage.id)
+                        (lead.engageRangeOrder[guid] == engage.id || !lead.engageRangeOrder[guid]))  // [lead1102]
                     {
                         rangeSpot = kept->second.second;
                         rangeValid = true;
@@ -6475,7 +6747,7 @@ namespace Leader::Dungeon
                                                                  : LeaderSpellReach(bot) - 4.0f;
                     // [lead68] from the leader's meeting point back toward the member (the group's side), not from
                     // the walking tank
-                    Position const meet = lead.meetPoint;
+                    Position const meet = preIssue ? engaged->GetPosition() : lead.meetPoint;  // [lead1102]
                     float const dx = bot->GetPositionX() - meet.GetPositionX();
                     float const dy = bot->GetPositionY() - meet.GetPositionY();
                     float const length = std::max(0.1f, std::hypot(dx, dy));
@@ -6532,6 +6804,8 @@ namespace Leader::Dungeon
                                                   .Real("reach", range + 4.0f));
                     if (!rangeValid)
                         lead.engageRangeNone[guid] = {engage.id, bot->GetPosition()};
+                    if (preIssue)
+                        lead.engagePreSearched[guid] = engaged->GetGUID();  // [lead1102]
                 }
                 if (meleeToMeeting)
                 {
@@ -6554,10 +6828,11 @@ namespace Leader::Dungeon
                         aheadHolds = true;
                     else if (!refusedOnWalk())
                     {
-                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
-                                        "along with the tank: to range of the engage"))
-                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                                     JsonObject().Str("why", "along with the tank: to range of the engage"));
+                        std::string const rangeWhy = preIssue
+                                                         ? "[lead1102] to its range spot of the engage before the order"
+                                                         : "along with the tank: to range of the engage";
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE, rangeWhy))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo), JsonObject().Str("why", rangeWhy));
                         moved = !refusedOnWalk();
                     }
                 }
