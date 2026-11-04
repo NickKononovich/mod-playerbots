@@ -9512,6 +9512,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
             Position const fightSpot = candidate->GetPosition();
             std::vector<Unit*> alonePack;
+            std::vector<Unit*> stayedMobs;  // [lead1094]
             std::string stayed;
             for (Unit* mob : spawnPack)
             {
@@ -9522,7 +9523,139 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 if (joins)
                     alonePack.push_back(mob);
                 else
+                {
+                    stayedMobs.push_back(mob);
                     stayed += (stayed.empty() ? "" : ", ") + mob->GetName();
+                }
+            }
+            // [lead1094] user 2026-11-04 (Q61b): the wanderer's neighbours on the route are taken in the same pull,
+            // with the fight placed so they really join. The planner sees the on-path mobs only (pull-only-on-path),
+            // so a neighbour that stays is a later pull of the route anyway. The fight spot moves from the engaged
+            // mob toward the staying neighbours to the first point where every one of them stands within the
+            // assistance radius (CreatureFamilyAssistanceRadius: the engaged mobs' call there brings them, the core's
+            // rule): the line's entry into each one's circle (the latest entry wins). Taken only when that spot has a
+            // route, the healer sees it, it is off a hazard, no other idle mob reaches it, the whole set passes the
+            // overload gate and it clears faster than the pulls one by one (the tank's walk of the fight there added)
+            if (!stayedMobs.empty() && assistRadius > 0.0f)
+            {
+                float cx = 0.0f;
+                float cy = 0.0f;
+                float cz = 0.0f;
+                for (Unit* mob : stayedMobs)
+                {
+                    cx += mob->GetPositionX();
+                    cy += mob->GetPositionY();
+                    cz += mob->GetPositionZ();
+                }
+                cx /= float(stayedMobs.size());
+                cy /= float(stayedMobs.size());
+                cz /= float(stayedMobs.size());
+                float const fx = fightSpot.GetPositionX();
+                float const fy = fightSpot.GetPositionY();
+                float const dx = cx - fx;
+                float const dy = cy - fy;
+                float const a = dx * dx + dy * dy;
+                float tEnter = 0.0f;
+                float tLeave = 1.0f;
+                bool line = a > 0.0f;
+                for (Unit* mob : stayedMobs)
+                {
+                    if (!line)
+                        break;
+                    float const px = fx - mob->GetPositionX();
+                    float const py = fy - mob->GetPositionY();
+                    float const b = 2.0f * (dx * px + dy * py);
+                    float const c = px * px + py * py - assistRadius * assistRadius;
+                    float const disc = b * b - 4.0f * a * c;
+                    if (disc < 0.0f)
+                    {
+                        line = false;
+                        break;
+                    }
+                    tEnter = std::max(tEnter, (-b - std::sqrt(disc)) / (2.0f * a));
+                    tLeave = std::min(tLeave, (-b + std::sqrt(disc)) / (2.0f * a));
+                }
+                std::string joinFail;
+                Position join;
+                if (!line || tEnter > tLeave)
+                    joinFail = "no spot on the line to them within the assistance radius of each";
+                else
+                {
+                    join.Relocate(fx + dx * tEnter, fy + dy * tEnter,
+                                  fightSpot.GetPositionZ() + (cz - fightSpot.GetPositionZ()) * tEnter);
+                    for (Unit* mob : stayedMobs)
+                        if (mob->GetExactDist(join) > assistRadius)
+                            joinFail = mob->GetName() + " out of the assistance radius of it (height)";
+                    if (joinFail.empty() && !Leader::Route(bot, join).found)
+                        joinFail = "no route to it";
+                    if (joinFail.empty() && !HealerSees(bot, join))
+                        joinFail = "the healer does not see it";
+                    if (joinFail.empty() && hazardMap &&
+                        NearHazard(hazardMap, bot->GetPhaseMask(), join.GetPositionX(), join.GetPositionY(),
+                                   join.GetPositionZ(), TERRAIN_HAZARD_FIGHT_RADIUS))
+                        joinFail = "by a hazard";
+                    if (joinFail.empty())
+                        for (ObjectGuid const& guid : possible)
+                        {
+                            Unit* mob = botAI->GetUnit(guid);
+                            if (!mob || mob == candidate || std::find(pack.begin(), pack.end(), mob) != pack.end() ||
+                                std::find(spawnPack.begin(), spawnPack.end(), mob) != spawnPack.end() ||
+                                mob == intruder.mob || !IsIdleEnemy(bot, mob) || !ReachesSpot(bot, mob, join))
+                                continue;
+                            joinFail = "in the reach of " + mob->GetName();
+                            break;
+                        }
+                }
+                if (joinFail.empty())
+                {
+                    std::vector<Unit*> all = pack;
+                    for (Unit* mob : spawnPack)
+                        if (std::find(all.begin(), all.end(), mob) == all.end())
+                            all.push_back(mob);
+                    if (std::find(all.begin(), all.end(), intruder.mob) == all.end())
+                        all.push_back(intruder.mob);
+                    std::vector<Unit*> rest = spawnPack;
+                    if (std::find(rest.begin(), rest.end(), intruder.mob) == rest.end())
+                        rest.push_back(intruder.mob);
+                    PackEstimate const allEstimate = EstimatePack(all, bot, groupDps, estimateMode);
+                    PackEstimate const restEstimate = EstimatePack(rest, bot, groupDps, estimateMode);
+                    OverloadTerms allTerms;
+                    CarefulOverload(bot, allEstimate, strength, support, kit, measured, &allTerms);
+                    float const allOverload = allTerms.Max(comfort);
+                    float const allSec = FightWindowSec(allEstimate) +
+                                         candidate->GetExactDist(join) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+                    float const oneByOneSec =
+                        FightWindowSec(estimate) + FightWindowSec(restEstimate) + PULL_TOGETHER_OVERHEAD_SEC;
+                    if (!planFits(allEstimate, allOverload))
+                        joinFail = Acore::StringFormat("over the gate ({:.2f})", allOverload);
+                    else if (allSec >= oneByOneSec)
+                        joinFail = Acore::StringFormat("not faster ({:.0f} s vs {:.0f} s)", allSec, oneByOneSec);
+                    else
+                    {
+                        LOG_INFO("playerbots", "[lead1094] {}: pull together with {}: its neighbours {} join at the "
+                                 "fight spot ({:.1f} {:.1f} {:.1f}), {:.0f} yd from {} (within {:.0f} yd of each); {} "
+                                 "mobs {:.0f} s (overload {:.2f}) vs {:.0f} s one by one",
+                                 bot->GetName(), intruder.mob->GetName(), stayed, join.GetPositionX(),
+                                 join.GetPositionY(), join.GetPositionZ(), candidate->GetExactDist(join),
+                                 candidate->GetName(), assistRadius, allEstimate.mobs, allSec, allOverload,
+                                 oneByOneSec);
+                        pack = all;
+                        estimate = allEstimate;
+                        terms = allTerms;
+                        takeEngage(Acore::StringFormat("pull together: {} mobs, the fight placed where the wanderer "
+                                                       "{}'s neighbours join [lead1094] ({})",
+                                                       allEstimate.mobs, intruder.mob->GetName(),
+                                                       FightIntruderNote(intruder)));
+                        _planFightFor = candidate->GetGUID();
+                        _planFight = join;
+                        _planFightBack = candidate->GetExactDist(join);
+                        _planFightNote = Acore::StringFormat("[lead1094] the wanderer {}'s neighbours join here",
+                                                             intruder.mob->GetName());
+                        return true;
+                    }
+                }
+                LOG_INFO("playerbots", "[lead1094] {}: pull together with {}: its neighbours {} not joined: {}",
+                         bot->GetName(), intruder.mob->GetName(), stayed, joinFail);
             }
             if (!stayed.empty())
                 LOG_INFO("playerbots", "[lead1081] {}: pull together with {}: its neighbours {} stay (no aggro reach "
