@@ -1066,10 +1066,16 @@ namespace Leader::Dungeon
                 // "brings a boss, pulled as his fight"), JudgePack's "a boss" made the pair over the budget. A patrol
                 // the boss brings is his fight: taken along
                 Creature* const bossPull = mob ? mob->ToCreature() : nullptr;
+                // [lead1216] b240 rfc-h 5G-15 671 s: this took the patrol Enforcer along with Taragaman as "the
+                // combined fight fits the budget ... overload 1.78" - it did not fit; the boss brings it by game
+                // rule, so it is his fight whatever the budget (the 1.78 itself came from the group damage fit a
+                // deadlock broke, lead1213). Named as what it is
+                bool broughtByBoss = false;
                 if (!fits && bossPull && IsBossLook(tank, bossPull->GetGUID()) &&
                     Leader::Travel::BossBroughtBy(tank, bossPull, patrol))
                 {
                     fits = true;
+                    broughtByBoss = true;
                     judged += "; the boss brings it: his fight";
                 }
                 if (lead.patrolDangerFor != patrol->GetGUID() || lead.patrolDangerFits != fits)
@@ -1110,7 +1116,10 @@ namespace Leader::Dungeon
                                                   true,
                                                   JsonObject().Str("choice", "along")
                                                       .Str("pull", mob ? mob->GetName() : "?")
-                                                      .Str("reason", "the combined fight fits the budget: " + judged)
+                                                      .Str("reason", (broughtByBoss
+                                                                          ? "over the budget, the boss brings it: "
+                                                                          : "the combined fight fits the budget: ") +
+                                                                         judged)
                                                       .Real("overload", overload).Real("gap", patrolGap));
                 }
                 if (Leader::LEADER_PATROL_IS_TARGET && (!fits || patrolGap > 2.0f * patrolReach))
