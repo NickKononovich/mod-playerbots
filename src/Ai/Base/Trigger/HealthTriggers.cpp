@@ -417,14 +417,25 @@ namespace
     {
         float sec = -1.0f;
         uint32 notedMs = 0;
+        bool bossLeft = true;  // [lead1083]
     };
     std::unordered_map<uint64, BossPullNote> bossPullSec;  // [lead990] by group, under manaRateLock
 }
 
-void NoteBossPullSec(ObjectGuid group, float sec)
+void NoteBossPullSec(ObjectGuid group, float sec, bool bossLeft)
 {
     std::lock_guard<std::mutex> lock(manaRateLock);
-    bossPullSec[group.GetRawValue()] = {sec, getMSTime()};
+    bossPullSec[group.GetRawValue()] = {sec, getMSTime(), bossLeft};
+}
+
+bool NoBossLeftOf(Player* bot)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    if (!group)
+        return false;
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    auto const found = bossPullSec.find(group->GetGUID().GetRawValue());
+    return found != bossPullSec.end() && !found->second.bossLeft;
 }
 
 float BossPullSecOf(Player* bot)

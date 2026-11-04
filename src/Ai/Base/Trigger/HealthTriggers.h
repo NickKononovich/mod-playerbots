@@ -315,9 +315,12 @@ float BossRotationRate(Player* bot, float fightSec, std::string* why = nullptr);
 // [lead990] the leader notes its group's estimate of the seconds to the next boss pull (bossPullSec's parts, the one
 // its trash cooldown verdict reads; -1: no boss left): a trash line counts a mana tool of the member's own only when
 // that verdict would give it on trash (back before that pull)
-void NoteBossPullSec(ObjectGuid group, float sec);
+// [lead1083] `bossLeft` false: no boss left (its own state, not a -1 estimate)
+void NoteBossPullSec(ObjectGuid group, float sec, bool bossLeft = true);
 // [lead990] that estimate now (the seconds since it was noted taken off), -1: none known / no boss left
 float BossPullSecOf(Player* bot);
+// [lead1083] the leader noted that no boss is left for the bot's group (false: a boss is left, or nothing noted)
+bool NoBossLeftOf(Player* bot);
 // [lead421] the mana per second (% of max mana) the best drink in the bot's bags gives; 0 without one
 float DrinkPctPerSecOf(Player* bot);
 // [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon

@@ -1641,6 +1641,162 @@ namespace Leader::Dungeon
             }
         }
 
+        // [lead1083] user 2026-11-04 (Q59): the boss-pull estimate always exists while a boss lives - every leader
+        // tick, in a fight and out of it (b233: the estimate was made only in a fight; out of one it stood stale, -1
+        // before the first fight). "No boss left" is its own state (lead.bossLeft), never a -1. The route plan's
+        // walk / health are a table built once per plan (BossPullTable: no path search per tick)
+        auto const estimateBossPull = [&](float groupDps, float fightLeft)
+        {
+            float bossYd = -1.0f;
+            Creature* nextBoss = nullptr;
+            for (ObjectGuid const& bossGuid : group.BossCreatures())
+                if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive() && !boss->IsInCombat())
+                    if (bossYd < 0.0f || tank->GetExactDist(boss) < bossYd)
+                    {
+                        bossYd = tank->GetExactDist(boss);
+                        nextBoss = boss;
+                    }
+            // [lead421] the next boss is the one the route's plan walks to (route_plan), the nearest only without one
+            GroupRouteState const& route = group.Route();
+            if (Creature* planned = route.routePlanBoss.IsEmpty() ? nullptr : map->GetCreature(route.routePlanBoss);
+                planned && planned->IsAlive() && !planned->IsInCombat())
+            {
+                nextBoss = planned;
+                bossYd = tank->GetExactDist(planned);
+            }
+            lead.nextBossGuid = nextBoss ? nextBoss->GetGUID() : ObjectGuid::Empty;
+            lead.nextBossName = nextBoss ? nextBoss->GetName() : std::string();
+            lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+            // [lead178] the time to the next boss pull: what is left of this fight, the fights of the idle mobs the
+            // leader holds on the path (their health over the group's dps) and the walk; no boss left: -1
+            // [lead421] b201 rfc-h 5B: Shadowfiend was held on Oggleflint for Jergosh "his pull in >= 130 s" (the
+            // fight left + the straight line) - he was pulled 667 s later. Along the route's plan now: its stops'
+            // fights (their mobs' health over the group's dps), the rest they cost (each mana user's line for those
+            // fight seconds over its best drink's rate; the group waits for the slowest drinker) and the walk from
+            // stop to stop to the boss; without a plan to him the on-path mobs and the straight walk, as before
+            // [lead1083] no boss left is its own state; while one lives the estimate is set below (>= 0)
+            lead.bossLeft = nextBoss != nullptr;
+            lead.bossPullSec = -1.0f;
+            lead.bossPullPartsSec = -1.0f;
+            lead.bossPullParts.clear();
+            if (nextBoss)
+            {
+                float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+                float trashHealth = 0.0f;
+                float walkYd = 0.0f;
+                // [lead632] b218 rfc-h 5G 714 s: the route's plan to Jergosh had no stop left ("stops":0, 52.5 yd)
+                // and read as no plan: the stretch floor (lead513) made his pull "110 s" at 722.7 s and "76 s" at
+                // 756.8 s - he was pulled at 758 s; the blood DK tank's Dancing Rune Weapon (90 s) went on that trash
+                // as "back before the pull". A plan the route made to him (routePlanBoss) with no stop left is the way
+                // to him with no trash on it: its walk alone
+                bool const planToHim = route.routePlanBoss == nextBoss->GetGUID();
+                if (planToHim)
+                {
+                    // [lead1083] the plan's table (built once per plan: its stops' walk to the boss, the path's
+                    // length over the straight legs, and the health of the stops after each one); per tick only the
+                    // tank's leg to the next stop and that stop's live mobs
+                    auto& table = lead.bossPullTable;
+                    if (table.boss != nextBoss->GetGUID() || table.stops != route.routePlan.size() ||
+                        table.length != route.routePlanLength)
+                    {
+                        table.boss = nextBoss->GetGUID();
+                        table.stops = route.routePlan.size();
+                        table.length = route.routePlanLength;
+                        size_t const n = route.routePlan.size();
+                        table.walkFrom.assign(n + 1, 0.0f);
+                        table.healthFrom.assign(n + 1, 0.0f);
+                        Position next = nextBoss->GetPosition();
+                        for (size_t i = n; i-- > 0;)
+                        {
+                            GroupRouteState::PlannedStop const& stop = route.routePlan[i];
+                            table.walkFrom[i] = table.walkFrom[i + 1] + stop.spot.GetExactDist(next);
+                            next = stop.spot;
+                            float health = 0.0f;
+                            for (ObjectGuid const& mobGuid : stop.mobs)
+                                if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive())
+                                    health += float(mob->GetHealth());
+                            table.healthFrom[i] = table.healthFrom[i + 1] + health;
+                        }
+                        if (!n)
+                            table.walkFrom[0] = 0.0f;
+                        float const straight = tank->GetExactDist(next) + table.walkFrom[0];
+                        table.pathFactor = straight > 1.0f ? std::max(1.0f, route.routePlanLength / straight) : 1.0f;
+                    }
+                    if (route.routePlan.empty())
+                        walkYd = bossYd;
+                    else
+                    {
+                        GroupRouteState::PlannedStop const& first = route.routePlan.front();
+                        walkYd = (tank->GetExactDist(first.spot) + table.walkFrom[0]) * table.pathFactor;
+                        for (ObjectGuid const& mobGuid : first.mobs)
+                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() && !mob->IsInCombat())
+                                trashHealth += float(mob->GetHealth());
+                        trashHealth += table.healthFrom.size() > 1 ? table.healthFrom[1] : 0.0f;
+                    }
+                }
+                else
+                {
+                    for (auto const& [mobGuid, verdict] : group.PathVerdicts())
+                        if (verdict.on)
+                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() &&
+                                                                          !mob->IsInCombat() && !mob->IsDungeonBoss() &&
+                                                                          !mob->isWorldBoss())
+                                trashHealth += float(mob->GetHealth());
+                    walkYd = bossYd;
+                }
+                // [lead513] b210 rfc-h 5C 944 s: the plan to Bazzalan (5 stops, 232 yd) was estimated 86.6 s, his
+                // pull came 148 s later - its 12 mobs fought 91 s, the estimate gave them about half (the expected
+                // group dps: no run-in, no ramp, no switch). The trash seconds go by the run's measured trash fights
+                // (the full health of the mobs they killed over their seconds) once there is one
+                float const trashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
+                                            ? lead.trashKilledHealth / lead.trashFightSec
+                                            : groupDps;
+                float const trashSec = trashHealth / std::max(trashRate, 1.0f);
+                float restSec = 0.0f;
+                if (trashSec > 0.0f)
+                {
+                    std::vector<Player*> drinkers = seats;
+                    drinkers.push_back(tank);
+                    for (Player* member : drinkers)
+                        if (member->IsAlive() && member->GetMaxPower(POWER_MANA))
+                            if (float const drink = RestState::DrinkPctPerSecOf(member); drink > 0.0f)
+                                restSec =
+                                    std::max(restSec, RestState::FightManaLine(member, trashSec, 0.0f) / drink);
+                }
+                lead.bossWalkSec = walkYd / speed;
+                lead.bossPullSec = fightLeft + trashSec + restSec + lead.bossWalkSec;
+                lead.bossPullPartsSec = lead.bossPullSec;  // [lead771]
+                // [lead513] b210 rfc-h 5C 875.9 s: Starfall / Force of Nature held on Jergosh for Bazzalan "his pull
+                // in >= 78 s" - he was pulled 217 s later. The route plans the way to the next boss only once the boss
+                // fight under way ends (5C route_plan "first plan" to Bazzalan at 922 s, 7 stops 307 yd): until then
+                // the estimate read the current path's on-path mobs and the straight line (no trash between the two
+                // bosses). Without a plan to him the run's measured stretch between bosses (their mean, lead421) less
+                // the part of it already walked is the floor of the estimate
+                if (!planToHim && lead.stretches)
+                {
+                    float const walked =
+                        lead.stretchFromMs ? getMSTimeDiff(lead.stretchFromMs, now) / 1000.0f : 0.0f;
+                    float const stretchLeft =
+                        std::max(0.0f, lead.stretchSecSum / float(lead.stretches) - walked);
+                    lead.bossPullSec = std::max(lead.bossPullSec, fightLeft + stretchLeft);
+                    lead.bossPullParts = Acore::StringFormat("stretch floor {:.0f}; ", fightLeft + stretchLeft);
+                }
+                // [lead724] b219 rfc-h (8 runs): 239 of 918 burn verdicts read the next boss's pull more than 10 s
+                // later than it came (5A 15.9 s: 294 s, pulled 214 s later; 5F 461.5 s: 396 vs 263 s) - Bladestorm,
+                // Gargoyle, Icy Veins "back before the pull" on trash that was not back. The estimate's parts are
+                // logged with each verdict to find the part that overshoots
+                lead.bossPullParts += Acore::StringFormat(
+                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s{}) + rest {:.0f} + walk {:.0f} ({:.0f} yd{})",
+                    fightLeft, trashSec, trashHealth, trashRate, lead.trashFightSec > 0.0f ? " measured" : "",
+                    restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
+            }
+            // [lead990] the trash lines' own mana cooldowns read the same "back before the pull" as the verdict
+            if (Group* tankGroup = tank->GetGroup())
+                RestState::NoteBossPullSec(tankGroup->GetGUID(),
+                                           lead.bossPullPartsSec >= 0.0f ? lead.bossPullPartsSec : lead.bossPullSec,
+                                           lead.bossLeft);
+        };
+
         // the fight's rules around the target: the kill order (the target, then the rest of what fights the group,
         // nearest to the target first), the AoE rule, the intensity, the casting mobs
         std::vector<ObjectGuid> killOrder;
@@ -1713,24 +1869,6 @@ namespace Leader::Dungeon
                 tankAI ? tankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
             lead.fightSecLeft = health / std::max(groupDps, 1.0f);
             lead.groupDps = groupDps;  // [lead700]
-            float bossYd = -1.0f;
-            Creature* nextBoss = nullptr;
-            for (ObjectGuid const& bossGuid : group.BossCreatures())
-                if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive() && !boss->IsInCombat())
-                    if (bossYd < 0.0f || tank->GetExactDist(boss) < bossYd)
-                    {
-                        bossYd = tank->GetExactDist(boss);
-                        nextBoss = boss;
-                    }
-            // [lead421] the next boss is the one the route's plan walks to (route_plan), the nearest only without one
-            GroupRouteState const& route = group.Route();
-            if (Creature* planned = route.routePlanBoss.IsEmpty() ? nullptr : map->GetCreature(route.routePlanBoss);
-                planned && planned->IsAlive() && !planned->IsInCombat())
-            {
-                nextBoss = planned;
-                bossYd = tank->GetExactDist(planned);
-            }
-            lead.nextBossGuid = nextBoss ? nextBoss->GetGUID() : ObjectGuid::Empty;
             // [lead421] a boss fight ends the run's walk to him: its seconds (the last boss fight's end, or the
             // run's first tick, to this pull) are a measured stretch between bosses
             // [lead631] b218 rfc-h 5C Oggleflint (pull 15, 267.7 s): the fight's target on its first tick was a
@@ -1807,102 +1945,14 @@ namespace Leader::Dungeon
                 lead.fightJudged.clear();
                 PullPlanner::JudgePack(tank, fightGuids, lead.fightOverload, lead.fightJudged);
             }
-            lead.nextBossName = nextBoss ? nextBoss->GetName() : std::string();
-            lead.bossWalkSec = bossYd < 0.0f ? -1.0f : bossYd / std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
-            // [lead178] the time to the next boss pull: what is left of this fight, the fights of the idle mobs the
-            // leader holds on the path (their health over the group's dps) and the walk; no boss left: -1
-            // [lead421] b201 rfc-h 5B: Shadowfiend was held on Oggleflint for Jergosh "his pull in >= 130 s" (the
-            // fight left + the straight line) - he was pulled 667 s later. Along the route's plan now: its stops'
-            // fights (their mobs' health over the group's dps), the rest they cost (each mana user's line for those
-            // fight seconds over its best drink's rate; the group waits for the slowest drinker) and the walk from
-            // stop to stop to the boss; without a plan to him the on-path mobs and the straight walk, as before
-            lead.bossPullSec = -1.0f;
-            lead.bossPullPartsSec = -1.0f;
-            lead.bossPullParts.clear();
-            if (nextBoss)
-            {
-                float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
-                float trashHealth = 0.0f;
-                float walkYd = 0.0f;
-                // [lead632] b218 rfc-h 5G 714 s: the route's plan to Jergosh had no stop left ("stops":0, 52.5 yd)
-                // and read as no plan: the stretch floor (lead513) made his pull "110 s" at 722.7 s and "76 s" at
-                // 756.8 s - he was pulled at 758 s; the blood DK tank's Dancing Rune Weapon (90 s) went on that trash
-                // as "back before the pull". A plan the route made to him (routePlanBoss) with no stop left is the way
-                // to him with no trash on it: its walk alone
-                bool const planToHim = route.routePlanBoss == nextBoss->GetGUID();
-                if (planToHim)
-                {
-                    Position at = tank->GetPosition();
-                    for (GroupRouteState::PlannedStop const& stop : route.routePlan)
-                    {
-                        walkYd += at.GetExactDist(stop.spot);
-                        at = stop.spot;
-                        for (ObjectGuid const& mobGuid : stop.mobs)
-                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() && !mob->IsInCombat())
-                                trashHealth += float(mob->GetHealth());
-                    }
-                    walkYd += at.GetExactDist(nextBoss->GetPosition());
-                }
-                else
-                {
-                    for (auto const& [mobGuid, verdict] : group.PathVerdicts())
-                        if (verdict.on)
-                            if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() &&
-                                                                          !mob->IsInCombat() && !mob->IsDungeonBoss() &&
-                                                                          !mob->isWorldBoss())
-                                trashHealth += float(mob->GetHealth());
-                    walkYd = bossYd;
-                }
-                // [lead513] b210 rfc-h 5C 944 s: the plan to Bazzalan (5 stops, 232 yd) was estimated 86.6 s, his
-                // pull came 148 s later - its 12 mobs fought 91 s, the estimate gave them about half (the expected
-                // group dps: no run-in, no ramp, no switch). The trash seconds go by the run's measured trash fights
-                // (the full health of the mobs they killed over their seconds) once there is one
-                float const trashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
-                                            ? lead.trashKilledHealth / lead.trashFightSec
-                                            : groupDps;
-                float const trashSec = trashHealth / std::max(trashRate, 1.0f);
-                float restSec = 0.0f;
-                if (trashSec > 0.0f)
-                {
-                    std::vector<Player*> drinkers = seats;
-                    drinkers.push_back(tank);
-                    for (Player* member : drinkers)
-                        if (member->IsAlive() && member->GetMaxPower(POWER_MANA))
-                            if (float const drink = RestState::DrinkPctPerSecOf(member); drink > 0.0f)
-                                restSec =
-                                    std::max(restSec, RestState::FightManaLine(member, trashSec, 0.0f) / drink);
-                }
-                lead.bossWalkSec = walkYd / speed;
-                lead.bossPullSec = lead.fightSecLeft + trashSec + restSec + lead.bossWalkSec;
-                lead.bossPullPartsSec = lead.bossPullSec;  // [lead771]
-                // [lead513] b210 rfc-h 5C 875.9 s: Starfall / Force of Nature held on Jergosh for Bazzalan "his pull
-                // in >= 78 s" - he was pulled 217 s later. The route plans the way to the next boss only once the boss
-                // fight under way ends (5C route_plan "first plan" to Bazzalan at 922 s, 7 stops 307 yd): until then
-                // the estimate read the current path's on-path mobs and the straight line (no trash between the two
-                // bosses). Without a plan to him the run's measured stretch between bosses (their mean, lead421) less
-                // the part of it already walked is the floor of the estimate
-                if (!planToHim && lead.stretches)
-                {
-                    float const walked =
-                        lead.stretchFromMs ? getMSTimeDiff(lead.stretchFromMs, now) / 1000.0f : 0.0f;
-                    float const stretchLeft =
-                        std::max(0.0f, lead.stretchSecSum / float(lead.stretches) - walked);
-                    lead.bossPullSec = std::max(lead.bossPullSec, lead.fightSecLeft + stretchLeft);
-                    lead.bossPullParts = Acore::StringFormat("stretch floor {:.0f}; ", lead.fightSecLeft + stretchLeft);
-                }
-                // [lead724] b219 rfc-h (8 runs): 239 of 918 burn verdicts read the next boss's pull more than 10 s
-                // later than it came (5A 15.9 s: 294 s, pulled 214 s later; 5F 461.5 s: 396 vs 263 s) - Bladestorm,
-                // Gargoyle, Icy Veins "back before the pull" on trash that was not back. The estimate's parts are
-                // logged with each verdict to find the part that overshoots
-                lead.bossPullParts += Acore::StringFormat(
-                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s{}) + rest {:.0f} + walk {:.0f} ({:.0f} yd{})",
-                    lead.fightSecLeft, trashSec, trashHealth, trashRate, lead.trashFightSec > 0.0f ? " measured" : "",
-                    restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
-            }
-            // [lead990] the trash lines' own mana cooldowns read the same "back before the pull" as the verdict
-            if (Group* tankGroup = tank->GetGroup())
-                RestState::NoteBossPullSec(tankGroup->GetGUID(), lead.bossPullPartsSec >= 0.0f ? lead.bossPullPartsSec
-                                                                                               : lead.bossPullSec);
+            estimateBossPull(groupDps, lead.fightSecLeft);
+        }
+        else
+        {
+            // [lead1083] out of a fight: the estimate from where the group stands (no fight left)
+            PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
+            estimateBossPull(
+                tankAI ? tankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f, 0.0f);
         }
 
         // [lead20] the tank holds every fight mob near `to` and the walk from `from` (its victim is the tank, or it is
@@ -3239,7 +3289,7 @@ namespace Leader::Dungeon
             }
             if (!fightBoss)
             {
-                if (lead.bossPullSec < 0.0f)
+                if (!lead.bossLeft)  // [lead1083] no boss left: its own state
                 {
                     why = "trash, no boss left";
                     return true;

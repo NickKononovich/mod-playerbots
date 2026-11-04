@@ -387,10 +387,17 @@ bool ai::paladin::TankPleaNow(Player* bot)
         for (Unit* attacker : bot->getAttackers())
             if (isBoss(attacker))
                 return true;
+        // [lead1083] user 2026-11-04 (Q59): no estimate never means "spend it on trash" - only the leader's "no boss
+        // left" does (a bot no leader leads keeps its own rule: the trash has it)
         if (toBoss < 0.0f)
         {
-            note("on trash: no boss estimate", toBoss, rechargeSec);
-            return true;  // no boss left (or no estimate): the trash has it
+            if (!Leader::LedBot(bot) || RestState::NoBossLeftOf(bot))
+            {
+                note("on trash: no boss left", toBoss, rechargeSec);
+                return true;
+            }
+            note("held: no boss estimate yet", toBoss, rechargeSec);
+            return false;
         }
         if (rechargeSec <= toBoss)
         {

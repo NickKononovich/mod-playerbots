@@ -341,6 +341,22 @@ namespace Leader
         float groupDps = 0.0f;  // [lead700] the estimated group dps the fight's seconds were judged by
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss
         float bossPullSec = -1.0f;  // [lead178] seconds to the next boss pull: this fight, the on-path fights, the walk
+        // [lead1083] a living boss not in the fight is ahead (false: no boss left - the estimate's own state; while
+        // true bossPullSec >= 0 on every leader tick, in a fight and out of it)
+        bool bossLeft = false;
+        // [lead1083] the route plan's estimate table, built once per plan (its boss, stop count and length): from each
+        // stop the straight walk on to the boss, the plan's path length over its straight legs, the health of the
+        // stops from each one on
+        struct BossPullTable
+        {
+            ObjectGuid boss;
+            size_t stops = 0;
+            float length = -1.0f;
+            float pathFactor = 1.0f;
+            std::vector<float> walkFrom;
+            std::vector<float> healthFrom;
+        };
+        BossPullTable bossPullTable;
         std::string bossPullParts;  // [lead724] bossPullSec's parts, logged with each burn_decision
         // [lead771] bossPullSec from its parts alone (no stretch floor): what a trash verdict's "back before" reads
         float bossPullPartsSec = -1.0f;

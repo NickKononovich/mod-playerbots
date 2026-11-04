@@ -768,7 +768,7 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 return Acore::StringFormat("a critical pull: overload {:.2f}", lead.fightOverload);
             if (std::string const dry = HealerOutOfMana(members, lead.fightSecLeft); !dry.empty())  // [lead903]
                 return "critical: " + dry;
-            if (lead.bossPullSec < 0.0f)
+            if (!lead.bossLeft)  // [lead1083]
                 return "trash, no boss left";
             if (lead.bossPullSec >= backSec)
                 return Acore::StringFormat("trash: back before the pull of {} (in {:.0f} s, back in {:.0f} s)",
