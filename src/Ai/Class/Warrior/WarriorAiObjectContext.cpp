@@ -122,6 +122,7 @@ public:
         creators["shockwave"] = &WarriorTriggerFactoryInternal::shockwave;
         creators["shockwave on snare target"] = &WarriorTriggerFactoryInternal::shockwave_on_snare_target;
         creators["taste for blood"] = &WarriorTriggerFactoryInternal::taste_for_blood;
+        creators["fury rend weave"] = &WarriorTriggerFactoryInternal::fury_rend_weave;  // [rot440]
         creators["thunder clap and rage"] = &WarriorTriggerFactoryInternal::thunderclap_and_rage;
         // [b31_deep] "intercept can cast" / "intercept and far enemy" / "intercept and rage" removed (unused, dead)
         // creators["slam"] = &WarriorTriggerFactoryInternal::slam;
@@ -180,6 +181,7 @@ private:
     static Trigger* intercept_on_snare_target(PlayerbotAI* botAI) { return new InterceptSnareTrigger(botAI); }
     static Trigger* spell_reflection(PlayerbotAI* botAI) { return new SpellReflectionTrigger(botAI); }
     static Trigger* taste_for_blood(PlayerbotAI* botAI) { return new TasteForBloodTrigger(botAI); }
+    static Trigger* fury_rend_weave(PlayerbotAI* botAI) { return new FuryRendWeaveTrigger(botAI); }
     static Trigger* shockwave_on_snare_target(PlayerbotAI* botAI) { return new ShockwaveSnareTrigger(botAI); }
     static Trigger* shockwave(PlayerbotAI* botAI) { return new ShockwaveTrigger(botAI); }
     static Trigger* instant_slam(PlayerbotAI* botAI) { return new SlamInstantTrigger(botAI); }

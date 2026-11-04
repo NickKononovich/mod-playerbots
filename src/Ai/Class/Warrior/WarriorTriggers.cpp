@@ -10,6 +10,7 @@
 #include "RaidUtilityAssignment.h"
 #include "SpellAuraEffects.h"  // [b33_class]
 #include "SpellAuras.h"        // [b33_class]
+#include "TargetValue.h"  // [rot440] HasEnoughAoeTargets
 #include "ThreatManager.h"
 #include <algorithm>         // [b33_class]
 #include <initializer_list>  // [b33_class]
@@ -458,4 +459,54 @@ bool BattleStanceTrigger::IsActive()
 
     Trigger* recklessness = context->GetTrigger("recklessness ready");
     return !recklessness || !recklessness->IsActive();
+}
+
+// [rot440]
+bool FuryRendWeaveTrigger::IsActive()
+{
+    // wowsims warrior__fury.apl.json rend row: spellTimeToReady(Bloodthirst) >= 1 s, spellTimeToReady(Whirlwind) >=
+    // 1.5 s, numberTargets == 1
+    constexpr uint32 BLOODTHIRST_READY_MIN_MS = 1000;
+    constexpr uint32 WHIRLWIND_READY_MIN_MS = 1500;
+    // the game's Execute threshold (the APL's isExecutePhase E20 row ranks above the weave)
+    constexpr float EXECUTE_PHASE_PCT = 20.0f;
+
+    uint32 const rend = AI_VALUE2(uint32, "spell id", "rend");
+    uint32 const bloodthirst = AI_VALUE2(uint32, "spell id", "bloodthirst");
+    uint32 const whirlwind = AI_VALUE2(uint32, "spell id", "whirlwind");
+    if (!rend || !bloodthirst || !whirlwind || !bot->IsInCombat())
+        return false;
+
+    // the sim's fight is the boss on one target: a mob near it (the Whirlwind reach) takes the APL's area rows
+    Unit* target = AI_VALUE(Unit*, "current target");
+    Creature const* boss = target ? target->ToCreature() : nullptr;
+    if (!boss || !boss->IsAlive() || !(boss->IsDungeonBoss() || boss->isWorldBoss()) ||
+        !bot->IsWithinMeleeRange(target))
+        return false;
+
+    SpellInfo const* rendInfo = sSpellMgr->GetSpellInfo(rend);
+    SpellInfo const* whirlwindInfo = sSpellMgr->GetSpellInfo(whirlwind);
+    if (!rendInfo || !whirlwindInfo || target->IsImmunedToSpell(rendInfo, bot))
+        return false;
+
+    if (botAI->GetAura("rend", target, true) || target->GetHealthPct() < EXECUTE_PHASE_PCT ||
+        botAI->HasAura("slam!", bot))
+        return false;
+
+    if (bot->GetSpellCooldownDelay(bloodthirst) < BLOODTHIRST_READY_MIN_MS ||
+        bot->GetSpellCooldownDelay(whirlwind) < WHIRLWIND_READY_MIN_MS)
+        return false;
+
+    // the Rend itself must be affordable, or the stance would flip without it
+    int32 const cost = rendInfo->CalcPowerCost(bot, rendInfo->GetSchoolMask());
+    if (bot->GetPower(POWER_RAGE) < static_cast<uint32>(std::max(cost, 0)))
+        return false;
+
+    if (HasEnoughAoeTargets(botAI, bot->GetPosition(), whirlwindInfo->Effects[EFFECT_0].CalcRadius(bot), 2))
+        return false;
+
+    LOG_DEBUG("playerbots", "[rot440] {} Rend weave on {}: Bloodthirst {} ms, Whirlwind {} ms, rage {}",
+              bot->GetName(), boss->GetName(), bot->GetSpellCooldownDelay(bloodthirst),
+              bot->GetSpellCooldownDelay(whirlwind), bot->GetPower(POWER_RAGE) / 10);
+    return true;
 }

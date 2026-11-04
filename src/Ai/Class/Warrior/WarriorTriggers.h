@@ -292,6 +292,18 @@ public:
     RendDebuffTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "rend", 1, true) {}
 };
 
+// [rot440] wowsims warrior__fury.apl.json: the Rend weave on one target - Battle Stance, Rend, Berserker Stance -
+// while the own Rend is off the target, Bloodthirst is 1 s+ and Whirlwind 1.5 s+ from ready, under the APL's
+// Slam! and execute-phase Execute rows. b235 rfc-h 5C Rtwarab: Rend 0 a minute against the sim's 2.3 (-92 DPS),
+// Battle / Berserker Stance 0 against 2.9 each.
+class FuryRendWeaveTrigger : public Trigger
+{
+public:
+    FuryRendWeaveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "fury rend weave") {}
+
+    bool IsActive() override;
+};
+
 namespace WarriorVigilance
 {
     // Group member that should carry this warrior's Vigilance: in a fight the non-tank with the most threat on
