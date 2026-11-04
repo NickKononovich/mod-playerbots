@@ -1835,6 +1835,23 @@ namespace Leader::Dungeon
                     fightLeft, trashSec, trashHealth, trashRate, lead.trashFightSec > 0.0f ? " measured" : "",
                     restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
             }
+            // [lead1092] b234 rfc-h: the estimate was -1 224 times, every one in the run's last boss fight - the next
+            // boss is one that stands out of combat, and the last boss in his fight left none, so "no boss left" and
+            // -1 while he lived. A boss in combat that is alive is the boss of the estimate when no other stands: his
+            // pull is under way (0 s), a boss is left; "no boss left" only once every boss is dead
+            else
+                for (ObjectGuid const& bossGuid : group.BossCreatures())
+                    if (Creature* boss = map->GetCreature(bossGuid); boss && boss->IsAlive())
+                    {
+                        lead.bossLeft = true;
+                        lead.nextBossGuid = boss->GetGUID();
+                        lead.nextBossName = boss->GetName();
+                        lead.bossWalkSec = 0.0f;
+                        lead.bossPullSec = 0.0f;
+                        lead.bossPullPartsSec = 0.0f;
+                        lead.bossPullParts = "[lead1092] his fight under way: his pull is now";
+                        break;
+                    }
             // [lead990] the trash lines' own mana cooldowns read the same "back before the pull" as the verdict
             if (Group* tankGroup = tank->GetGroup())
                 RestState::NoteBossPullSec(tankGroup->GetGUID(),
