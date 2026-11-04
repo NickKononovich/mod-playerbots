@@ -383,6 +383,9 @@ inline constexpr float GARGOYLE_INSTANCE_PACK_LIFETIME_S = 90.0f;
 
 // [b35_uh] Empower Rune Weapon (47568, 5 min): every ready rune and 25 runic power at once.
 inline constexpr uint32 SPELL_DK_EMPOWER_RUNE_WEAPON = 47568;
+// [rot451] Sigil of Virulence's proc (wowsims deathknight/items.go CreateVirulenceProcAura: 200 Strength, 20 s);
+// wowsims unholy_dw_ss casts the pre-Gargoyle Scourge Strike only while it is down.
+inline constexpr uint32 SPELL_DK_SIGIL_OF_VIRULENCE_PROC = 67383;
 // [b35_uh] At most this many ready runes (any type) when Empower Rune Weapon fires under the Gargoyle.
 inline constexpr uint8 ERW_MAX_READY_RUNES = 1;
 // [b35_uh] wowsims unholy_dw_ss: Scourge Strike / Blood Strike / Blood Boil only while Death and Decay is more than

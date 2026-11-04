@@ -71,12 +71,30 @@ float DeathAndDecayPoolingMultiplier::GetValue(Action* action)
     if (!delay && HasReadyRunes(bot, 1, 1, 1))
         return 1.0f;
 
-    if (!scourgeStrike)
+    if (scourgeStrike)
     {
-        // Empower Rune Weapon about to refill the runes ("empower rune weapon under gargoyle")
-        if (bot->HasSpell(SPELL_DK_EMPOWER_RUNE_WEAPON) && !bot->HasSpellCooldown(SPELL_DK_EMPOWER_RUNE_WEAPON) &&
-            IsGargoyleOut(bot))
+        // [rot451] wowsims unholy_dw_ss row 9: Scourge Strike while Summon Gargoyle is ready (and no Sigil of
+        // Virulence proc 67383), above Death and Decay: no pooling before the Gargoyle in its fight
+        if (IsGargoyleWaiting(botAI) && !bot->HasAura(SPELL_DK_SIGIL_OF_VIRULENCE_PROC))
+        {
+            LOG_DEBUG("playerbots", "[rot451] {} {} with Summon Gargoyle ready: no Death and Decay pooling ({} ms)",
+                      bot->GetName(), name, delay);
             return 1.0f;
+        }
+    }
+    else
+    {
+        // [rot451] wowsims unholy_dw_ss rows 13 / 14: Blood Strike / Blood Boil while Empower Rune Weapon is ready
+        // ("spellIsReady 47568"), Gargoyle out or not: it refills the runes in its fight (a boss, "empower rune
+        // weapon under gargoyle"). Was "ERW ready and the Gargoyle out": the boss opener before the Gargoyle pooled
+        // the Blood runes. b238 rfc-h 5D Rtdekab: 16 rune-seconds idle before Death and Decay casts
+        if (bot->HasSpell(SPELL_DK_EMPOWER_RUNE_WEAPON) && !bot->HasSpellCooldown(SPELL_DK_EMPOWER_RUNE_WEAPON) &&
+            IsDKBossFight(botAI, "empower rune weapon"))
+        {
+            LOG_DEBUG("playerbots", "[rot451] {} {} with Empower Rune Weapon ready: no Death and Decay pooling ({} ms)",
+                      bot->GetName(), name, delay);
+            return 1.0f;
+        }
 
         // wowsims "Blood Strike if no Desolation" (66817: Desolation 5/5, as DesolationTrigger)
         if (bloodStrike && bot->HasAura(66817) && !botAI->GetAura("desolation", bot, false, true))
