@@ -6005,7 +6005,15 @@ namespace Leader::Dungeon
                             LOG_INFO("playerbots", "[lead800] {}: its front place at {} holds while it walks",
                                      bot->GetName(), target->GetName());
                     }
-                    else if (decided && !side->second.second)
+                    // [lead1150] b240 rfc-h (16 runs): 399 s of melee walks under the chase / "behind" spot began in
+                    // the target's reach in its front half, 217 member x target backs held for the target's life: a
+                    // back weighed on the walk in held after the mob turned (the tank turned it, took another) and
+                    // sent the member round each time. The back holds while the member walks; one that stands in
+                    // the mob's reach in its front half is a new fact - the walk round from here against the front
+                    // is weighed again (below), the side it gives held as before
+                    else if (decided && !side->second.second &&
+                             !(!bot->isMoving() && bot->IsWithinMeleeRange(target) &&
+                               target->HasInArc(float(M_PI), bot) && bot->IsWithinLOSInMap(target)))
                     {
                         if (lead.sideHeldLogged.insert({guid, target->GetGUID()}).second)
                             LOG_INFO("playerbots", "[lead800] {}: its side behind {} holds for this target",
@@ -6037,7 +6045,12 @@ namespace Leader::Dungeon
                                          bot->GetName(), target->GetName());
                         }
                         else if (!frontWhy.empty())
+                        {
+                            if (frontHere && decided && !side->second.second)
+                                LOG_INFO("playerbots", "[lead1150] {}: stands in front of {} in its reach: the front "
+                                         "now ({})", bot->GetName(), target->GetName(), frontWhy);
                             lead.meleeSide[guid] = {target->GetGUID(), frontHere};
+                        }
                     }
                 }
                 if (frontHere && !frontWhy.empty())
@@ -6912,7 +6925,35 @@ namespace Leader::Dungeon
                     // ahead of the walking tank (5E-5 t=107, 5F-14 t=340), 5E-13 t=213 woke a Trogg the tank never
                     // had. No member walks ahead of the tank's own progress to the mob: while its spot is nearer the
                     // mob than the tank, it walks along with the tank (lead81's healer rule, for every ranged)
-                    if (aheadOfTank(rangeSpot))
+                    // [lead1151] b240 rfc-h (16 runs): a ranged member >36 yd from the mob at the tank's first hit
+                    // hit 4.1-4.8 s after it (<=28 yd: 2.3-2.9 s); 111 caster pulls with a range spot followed the
+                    // tank behind it to its opener (Avenger's Shield, Faerie Fire, Shoot: 30 yd) because the spot
+                    // (25-35 yd from the mob) was nearer the mob than the walking tank. The tank's progress is where
+                    // it opens: a spot no nearer the mob than its ready opener's range, walked no faster than the
+                    // tank walks to that range (it arrives no earlier), is not ahead of the tank
+                    bool aheadAtOpener = aheadOfTank(rangeSpot);
+                    if (aheadAtOpener && engagedMob && tank->isMoving())
+                        if (SpellInfo const* opener = TankReadyOpener(tank))
+                        {
+                            float const opensAt = opener->GetMaxRange(false);
+                            float const tankLeft = std::max(0.0f, tank->GetExactDist(engagedMob) - opensAt);
+                            float const tankSpeed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
+                            float const botSpeed = std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
+                            if (engagedMob->GetExactDist(rangeSpot) >= opensAt &&
+                                bot->GetExactDist(rangeSpot) / botSpeed >= tankLeft / tankSpeed)
+                            {
+                                aheadAtOpener = false;
+                                thread_local std::set<std::pair<ObjectGuid, uint32>> openerLogged;
+                                if (openerLogged.size() > 4096)
+                                    openerLogged.clear();
+                                if (openerLogged.insert({guid, engage.id}).second)
+                                    LOG_INFO("playerbots", "[lead1151] {}: its range spot {:.1f} yd from {} is no "
+                                             "nearer than the tank's opener ({:.0f} yd): walks there with the tank",
+                                             bot->GetName(), engagedMob->GetExactDist(rangeSpot),
+                                             engagedMob->GetName(), opensAt);
+                            }
+                        }
+                    if (aheadAtOpener)
                         aheadHolds = true;
                     else if (!refusedOnWalk())
                     {
