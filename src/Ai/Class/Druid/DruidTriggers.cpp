@@ -14,6 +14,7 @@
 #include "LeaderCommandState.h"  // [rot2] [rot3]
 #include "LeaderOrders.h"        // [rot10] Leader::ExecutorMember
 #include "Log.h"  // [rot1]
+#include "SpellAuraEffects.h"  // [rot460] AuraEffect (Glyph of Shred amount)
 #include "Player.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"

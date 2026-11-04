@@ -2145,7 +2145,7 @@ namespace Leader::Dungeon
                         if (onPath && fits)
                         {
                             option = "take";
-                            joinPack(walker, pack);
+                            joinPack(walker, pack, true);  // [lead1140] the tank opens on the taken walker
                             lead.fieldTaken.insert(pack.begin(), pack.end());
                             keep.pop_back();
                         }
