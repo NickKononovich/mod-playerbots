@@ -3939,16 +3939,22 @@ namespace Leader::Dungeon
         {
             // [lead852] one verdict per fact: a cooldown allowed in this boss fight stays allowed in it (b223 5D
             // Oggleflint: Army of the Dead allowed / held / allowed as the bosses' pull estimates moved a second)
+            // [lead1200] b243 rfc-h: 534 allowed <-> held changes inside fights (208 on bosses; b241 ~145): a trash
+            // verdict's "back before the boss" flipped with the pull estimate's second (190 -> 180 s), a danger
+            // verdict ended 0.3 s after it allowed, lead1163's walk / reach / mana test went on and off tick to tick,
+            // and lead852's keep ended with the boss's death while his adds fought on. A cooldown allowed in a fight
+            // stays allowed for that whole fight, trash and boss alike (the fight is lead.fightStartMs; on its first
+            // tick, before the tick sets it, this tick)
+            uint32 const fightKey = lead.fightStartMs ? lead.fightStartMs : now;
             auto& kept = lead.burnKept[who->GetGUID()];
             for (auto entry = kept.begin(); entry != kept.end();)
-                entry = !fightBoss || entry->second != fightBoss->GetGUID() ? kept.erase(entry) : std::next(entry);
+                entry = entry->second != fightKey ? kept.erase(entry) : std::next(entry);
             auto const judged = [&](std::string const& name, std::string const& why, bool allowed)
             {
                 if (allowed)
                 {
                     allowedOut.push_back(name);
-                    if (fightBoss)
-                        kept[name] = fightBoss->GetGUID();
+                    kept[name] = fightKey;
                 }
                 std::string& note = allowed ? allowedNote : heldNote;
                 note += Acore::StringFormat("{}{}: {}", note.empty() ? "" : "; ", name, why);
@@ -3958,12 +3964,12 @@ namespace Leader::Dungeon
                 thread_local std::set<std::tuple<uint64, std::string, uint64>> logged;  // one log per fact
                 if (kept.count(name))
                 {
-                    if (logged.insert({who->GetGUID().GetRawValue(), "kept " + name,
-                                       fightBoss->GetGUID().GetRawValue()})
-                            .second)
-                        LOG_INFO("playerbots", "[lead852] {}: {} stays allowed in the fight with {}", who->GetName(),
-                                 name, fightBoss->GetName());
-                    judged(name, "kept: allowed in this boss fight already", true);
+                    if (logged.size() > 4096)
+                        logged.clear();
+                    if (logged.insert({who->GetGUID().GetRawValue(), "kept " + name, uint64(fightKey)}).second)
+                        LOG_INFO("playerbots", "[lead1200] {}: {} stays allowed in this fight ({})", who->GetName(),
+                                 name, fightBoss ? fightBoss->GetName() : std::string("trash"));
+                    judged(name, "kept: allowed in this fight already", true);
                     return true;
                 }
                 if (!bossEngaged)
