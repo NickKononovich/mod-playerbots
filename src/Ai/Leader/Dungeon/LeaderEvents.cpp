@@ -3842,6 +3842,56 @@ namespace Leader::Dungeon
                 }
                 return false;
             };
+            // [lead1163] b240 rfc-h 5D-4 Oggleflint 306.3 s: Arcane Power and Icy Veins were allowed at the tank's
+            // first threat while the arcane mage stood at 1-3 % mana with no spot that cast at the boss (a 38.7 yd
+            // re-spot, Blink) - its first 7 s went to the mana potion, the gem, the walk, an interrupt and an add,
+            // no Arcane Blast under its burn. A burn pays its damage over its effect only while the member deals
+            // damage in it: it is not started while the member's next seconds are not damage - a ranged member that
+            // casts at its Attack target from nowhere it stands (MemberCastsHere: range and sight, the walk to its
+            // spot first), a melee member out of its target's melee reach, or a mana user whose mana does not pay
+            // its rotation's filler (its potion / gem / drink first). Facts read every tick: the burn goes the tick
+            // they hold. A summon's burn (Army of the Dead, the Gargoyle, Mirror Image) fights on its own and is not
+            // held here; a burn already allowed in this boss fight stays allowed (lead852)
+            auto const actsNow = [&](std::string const& name, SpellInfo const* info) -> bool
+            {
+                if (info && (info->HasEffect(SPELL_EFFECT_SUMMON) || name == "army of the dead"))
+                    return true;
+                Leader::MemberEvents current;
+                Unit* on = Leader::Events::Get(who->GetGUID(), current) &&
+                                   current.attack == Leader::AttackEvent::Attack
+                               ? ObjectAccessor::GetUnit(*who, current.target)
+                               : nullptr;
+                std::string why;
+                if (on && on->IsAlive())
+                {
+                    if (PlayerbotAI::IsRanged(who) && !MemberCastsHere(who, on))
+                        why = "it casts at " + on->GetName() + " from nowhere it stands: its walk first";
+                    else if (!PlayerbotAI::IsRanged(who) && !who->IsWithinMeleeRange(on))
+                        why = "out of " + on->GetName() + "'s melee reach: its walk first";
+                }
+                // a hunter's Auto Shot deals its damage with no mana (its burn speeds it): no mana test for it
+                if (why.empty() && who->getPowerType() == POWER_MANA && who->getClass() != CLASS_HUNTER)
+                {
+                    std::vector<char const*> const rotation = LeaderRotationSpellNames(who);
+                    uint32 const filler =
+                        rotation.empty() ? 0 : whoAI->GetAiObjectContext()->GetValue<uint32>("spell id",
+                                                                                            rotation.front())->Get();
+                    if (SpellInfo const* fill = filler ? sSpellMgr->GetSpellInfo(filler) : nullptr;
+                        fill && fill->PowerType == POWER_MANA &&
+                        fill->CalcPowerCost(who, fill->GetSchoolMask()) > int32(who->GetPower(POWER_MANA)))
+                        why = Acore::StringFormat("its mana ({:.0f} %) does not pay its {}: the mana's seconds first",
+                                                  who->GetPowerPct(POWER_MANA), rotation.front());
+                }
+                if (why.empty())
+                    return true;
+                thread_local std::set<std::tuple<uint64, std::string, std::string>> logged;  // one log per fact
+                if (logged.size() > 4096)
+                    logged.clear();
+                if (logged.insert({who->GetGUID().GetRawValue(), name, why}).second)
+                    LOG_INFO("playerbots", "[lead1163] {}: {} held: {}", who->GetName(), name, why);
+                judged(name, "[lead1163] held: " + why, false);
+                return false;
+            };
             for (char const* burn : Leader::BURN_COOLDOWNS)
             {
                 std::string const name(burn);
@@ -3861,7 +3911,7 @@ namespace Leader::Dungeon
                                             : nullptr;
                 if (!info)
                     continue;
-                if (keptOrEngage(name))  // [lead852] [lead853]
+                if (keptOrEngage(name) || !actsNow(name, info))  // [lead852] [lead853] [lead1163]
                     continue;
                 float const rechargeSec = RechargeAfterCastSec(who, spell);  // [lead541] the game's, not the base
                 // [lead812] b221 rfc-h 5G: the blood tank's Raise Dead was judged "effect 0 s" (46584 has no duration:
@@ -3915,7 +3965,7 @@ namespace Leader::Dungeon
                 if (!Leader::BoostTrinket(trinket, spell, rechargeSec) || who->HasSpellCooldown(spell))
                     continue;
                 std::string const name = trinket->GetTemplate()->Name1;
-                if (keptOrEngage(name))  // [lead852] [lead853]
+                if (keptOrEngage(name) || !actsNow(name, nullptr))  // [lead852] [lead853] [lead1163]
                     continue;
                 std::string why;
                 SpellInfo const* use = sSpellMgr->GetSpellInfo(spell);
