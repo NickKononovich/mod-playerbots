@@ -783,17 +783,39 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     // (a 0 yd spline), executed, and its spells were "not evaluated: leader move order ran first" (about 25 s of
     // idle a batch). A walk to this spot that already ended where the member stands has nothing left to walk: the
     // spot as the ground lets it be reached is reached, the tick is the rotation's
+    // [lead1062] b231: lead1044 never fired - LastMovement keeps the spot's own x / y as the walk's end (MoveTo's Set
+    // with the floor search's z only), so "standing at the walk's end" was "standing at the spot" (the check above).
+    // The end the ground gives is the leader route's own end (FindBotPath: a complete route, PATHFIND_NORMAL, ends on
+    // the spot's navmesh point - SearchForBestPath walks exactly that). Only here, standing after a walk to this very
+    // spot, where the re-asked walk would search the same route anyway. Its ack shares the walk's (seq, kind) and is
+    // dropped as a repeat: the log line names it once per order
     if (!bot->isMoving())
     {
         LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
         if (last.lastMoveAsked.GetExactDist(events.spot.GetPositionX(), events.spot.GetPositionY(),
-                                            events.spot.GetPositionZ()) <= 0.01f &&
-            bot->GetExactDist2d(last.lastMoveToX, last.lastMoveToY) <= events.tolerance)
+                                            events.spot.GetPositionZ()) <= 0.01f)
         {
-            Leader::Events::Ack(bot->GetGUID(), events.seq,
-                                events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
-                                "[lead1044] on the spot: its walk's end on the ground");
-            return false;
+            BotPath const route =
+                FindBotPath(bot, events.spot.GetPositionX(), events.spot.GetPositionY(), events.spot.GetPositionZ());
+            if (route.leaderRoute && (route.type & PATHFIND_NORMAL) && !route.points.empty() &&
+                bot->GetExactDist2d(route.points.back().x, route.points.back().y) <= events.tolerance)
+            {
+                Leader::Events::Ack(bot->GetGUID(), events.seq,
+                                    events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
+                                    "[lead1044] on the spot: its walk's end on the ground");
+                thread_local std::unordered_map<ObjectGuid, uint32> loggedSeq;
+                if (uint32& seen = loggedSeq[bot->GetGUID()]; seen != events.seq)
+                {
+                    seen = events.seq;
+                    LOG_INFO("playerbots",
+                             "[lead1044] {}: on its spot ({}): the route's end on the ground, {:.1f} yd off the spot "
+                             "(tolerance {:.1f})",
+                             bot->GetName(), events.moveWhy,
+                             bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()),
+                             events.tolerance);
+                }
+                return false;
+            }
         }
     }
     // [lead27] already walking there: the same move again is no refusal
