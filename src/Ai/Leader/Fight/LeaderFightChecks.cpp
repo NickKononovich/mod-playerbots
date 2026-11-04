@@ -318,6 +318,33 @@ namespace Leader::Fight
         return radius;
     }
 
+    float LeaderMaxFieldSec(Player* bot)
+    {
+        // cached per bot while its spells stay the same (a lookup, no clock)
+        struct Cached
+        {
+            size_t spells = 0;
+            float sec = 0.0f;
+        };
+        thread_local std::unordered_map<uint64, Cached> cache;
+        Cached& cached = cache[bot->GetGUID().GetRawValue()];
+        if (cached.spells == bot->GetSpellMap().size())
+            return cached.sec;
+        float sec = 0.0f;
+        for (auto const& [spellId, known] : bot->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive() ||
+                !info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA))
+                continue;
+            sec = std::max(sec, float(std::max(info->GetMaxDuration(), 0)) / 1000.0f);
+        }
+        cached = {bot->GetSpellMap().size(), sec};
+        return sec;
+    }
+
     namespace
     {
         // the tank's own state that stops its walks (MovementAction::UpdateMovementState's restriction)

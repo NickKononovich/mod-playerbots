@@ -1116,16 +1116,35 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     bool const lasting = info && info->GetDuration() > 0 &&
                          (info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA) ||
                           info->HasAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL));
+    // [lead1096] user 2026-11-04 (Q9): a ground field (a persistent area aura) is not placed where an unpulled walker
+    // - a patrol, a wanderer - can walk into it before it ends: its worst-case path is any way at its own walk speed
+    // (the core's speed) over the field's duration (spell data), a wanderer only within its wander radius of its home
+    bool const field = info && info->GetDuration() > 0 && info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA);
+    float const fieldSec = field ? float(info->GetMaxDuration()) / 1000.0f : 0.0f;
+    bool walkerIn = false;
     if (Unit* spared = SparedInArea(
             [&](Unit* mob)
             {
                 if (mob->IsWithinDist3d(&center, radius) && AreaSees(info, mob, center))  // [lead813]
                     return true;
                 Unit* const mobVictim = lasting ? mob->GetVictim() : nullptr;
-                return mobVictim && mobVictim->IsWithinDist3d(&center, radius);
+                if (mobVictim && mobVictim->IsWithinDist3d(&center, radius))
+                    return true;
+                Creature* const walker = field && !mob->IsInCombat() ? mob->ToCreature() : nullptr;
+                if (!walker || (!walker->isMoving() && walker->GetDefaultMovementType() == IDLE_MOTION_TYPE))
+                    return false;
+                float const reach = radius + mob->GetCombatReach();
+                if (walker->GetDefaultMovementType() == RANDOM_MOTION_TYPE &&
+                    walker->GetHomePosition().GetExactDist(&center) > reach + walker->GetWanderDistance())
+                    return false;
+                walkerIn = mob->GetExactDist(&center) - reach <= mob->GetSpeed(MOVE_WALK) * fieldSec;
+                return walkerIn;
             }))
     {
-        Log(action, ("the area reaches the leader's spared " + spared->GetName()).c_str());
+        Log(action, (walkerIn ? "[lead1096] the field's " + Acore::StringFormat("{:.0f}", fieldSec) +
+                                    " s let the leader's spared walker " + spared->GetName() + " walk into it"
+                              : "the area reaches the leader's spared " + spared->GetName())
+                        .c_str());
         return 0.0f;
     }
 

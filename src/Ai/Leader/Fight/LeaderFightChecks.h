@@ -180,6 +180,9 @@ namespace Leader::Fight
 
     // [lead420] the largest area radius among the bot's known offensive spells (spell data, cached per spell set)
     float LeaderMaxAreaRadius(Player* bot);
+    // [lead1096] the longest lasting ground field among the bot's spells (a persistent area aura's duration, spell
+    // data), seconds; 0: none
+    float LeaderMaxFieldSec(Player* bot);
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);

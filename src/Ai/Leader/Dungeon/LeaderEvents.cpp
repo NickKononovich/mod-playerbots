@@ -1944,12 +1944,18 @@ namespace Leader::Dungeon
                 // area radius among the members' spells (spell data: Starfall's 30 yd, not the rule's 10)
                 float farthest = tank->GetExactDist(target);
                 float areaRadius = LeaderMaxAreaRadius(tank);
+                float fieldSec = LeaderMaxFieldSec(tank);  // [lead1096]
                 for (Player* bot : seats)
                 {
                     farthest = std::max(farthest, bot->GetExactDist(target));
                     areaRadius = std::max(areaRadius, LeaderMaxAreaRadius(bot));
+                    fieldSec = std::max(fieldSec, LeaderMaxFieldSec(bot));
                 }
-                float const range = farthest + std::max(areaRadius, LEADER_AOE_RADIUS) + LEADER_AOE_GUARD_YD;
+                // [lead1096] user 2026-11-04 (Q9): a ground field is held while an unpulled walker (a patrol, a
+                // wanderer) can walk into it before it ends - the spared list reaches as far as one walks at the
+                // core's base run speed (the worst case) over the members' longest field
+                float const range = farthest + std::max(areaRadius, LEADER_AOE_RADIUS) + LEADER_AOE_GUARD_YD +
+                                    fieldSec * baseMoveSpeed[MOVE_RUN];
                 lead.aoeRule = uint8(slow([&]
                                           { return LeaderAoeRule(tank, target, range, lead.aoeWhy, lead.aoeSpared); }));
                 lead.aoeTarget = target->GetGUID();
