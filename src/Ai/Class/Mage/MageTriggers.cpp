@@ -351,8 +351,21 @@ bool ImprovedScorchTrigger::IsActive()
     if (!own)
         return DebuffTrigger::IsActive();
 
-    return own->GetDuration() >= 0 && own->GetDuration() <= IMPROVED_SCORCH_REFRESH_MS &&
-           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
+    if (own->GetDuration() < 0 || own->GetDuration() > IMPROVED_SCORCH_REFRESH_MS)
+        return false;
+
+    // [rot452] a boss: the APL's refresh row has no lifetime condition (its fight-end rows spam Scorch). b238 rfc-h 5C
+    // Rtmagab: the health / group-dps lifetime fell under the 12 s first and the debuff dropped 2-8 s before the end
+    // of 4 of 8 boss fights (re-applied by the "estimated lifetime" path in Taragaman, 4 s down); boss uptime 71 %
+    Creature const* creature = target->ToCreature();
+    if (creature && (creature->IsDungeonBoss() || creature->isWorldBoss()))
+    {
+        LOG_DEBUG("playerbots", "[rot452] {} refreshes Improved Scorch on {} ({} ms left)", bot->GetName(),
+                  target->GetName(), own->GetDuration());
+        return true;
+    }
+
+    return (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
 }
 
 const std::unordered_set<uint32> BlizzardChannelCheckTrigger::BLIZZARD_SPELL_IDS = {
