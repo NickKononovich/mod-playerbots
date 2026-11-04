@@ -445,13 +445,31 @@ bool AoePaysTrigger::IsActive()
         return false;
 
     float const radius = SpellPayoff::AreaRadius(bot, aoeId);
-    uint32 const breakEven = SpellPayoff::AoeBreakEvenTargets(bot, target, aoeId, fillerId);
+    float const scale = FillerScale();
+    uint32 const breakEven = SpellPayoff::AoeBreakEvenTargets(bot, target, aoeId, fillerId, scale);
     if (radius <= 0.0f || !breakEven)
         return false;
 
     uint32 const needed = std::max(breakEven, AOE_MIN_TARGETS) + (excludesTarget ? 1 : 0);
     Position const center = selfCentred ? bot->GetPosition() : target->GetPosition();
-    return HasEnoughAoeTargets(botAI, center, radius, needed);
+    if (HasEnoughAoeTargets(botAI, center, radius, needed))
+        return true;
+
+    // [rot420] the steady-state filler held an area the filler read now would have cast: logged for the triage
+    uint32 const now = getMSTime();
+    if (scale > 1.0f && (!_scaleLoggedMs || getMSTimeDiff(_scaleLoggedMs, now) >= AOE_SCALE_LOG_MS))
+    {
+        uint32 const nowBreakEven = SpellPayoff::AoeBreakEvenTargets(bot, target, aoeId, fillerId);
+        uint32 const nowNeeded = std::max(nowBreakEven, AOE_MIN_TARGETS) + (excludesTarget ? 1 : 0);
+        if (nowBreakEven && nowNeeded < needed && HasEnoughAoeTargets(botAI, center, radius, nowNeeded))
+        {
+            _scaleLoggedMs = now ? now : 1;
+            LOG_INFO("playerbots", "[rot420] {} holds {} on {}: {} beats it from {} targets at its steady x{:.2f} "
+                     "(from {} at its damage now)", bot->GetName(), aoeSpell, target->GetName(), Filler(), needed,
+                     scale, nowNeeded);
+        }
+    }
+    return false;
 }
 
 bool NoFoodTrigger::IsActive()

@@ -193,10 +193,11 @@ namespace SpellPayoff
         return verdict;
     }
 
-    uint32 AoeBreakEvenTargets(Player* bot, Unit* target, uint32 aoeSpellId, uint32 fillerSpellId)
+    uint32 AoeBreakEvenTargets(Player* bot, Unit* target, uint32 aoeSpellId, uint32 fillerSpellId,
+                               float fillerScale)
     {
         Cast area;
-        float const fillerDps = FillerDps(bot, target, fillerSpellId);
+        float const fillerDps = FillerDps(bot, target, fillerSpellId) * fillerScale;
         if (fillerDps <= 0.0f || !Read(bot, target, aoeSpellId, area))
             return 0;
 

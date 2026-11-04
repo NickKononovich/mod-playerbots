@@ -486,6 +486,9 @@ public:
 protected:
     // the filler the area is weighed against; a class with a spec-dependent filler overrides it
     virtual std::string const Filler() { return filler; }
+    // [rot420] the filler's damage at the rotation's steady state over its damage read now (SpellPayoff reads the
+    // caster's current auras); 1 unless a class's filler ramps up (Arcane Blast stacks)
+    virtual float FillerScale() { return 1.0f; }
 
     std::string aoeSpell;
     std::string filler;
@@ -494,6 +497,8 @@ protected:
 
 private:
     static constexpr uint32 AOE_MIN_TARGETS = 2;
+    static constexpr uint32 AOE_SCALE_LOG_MS = 5000;
+    uint32 _scaleLoggedMs = 0;
 };
 
 class BuffTrigger : public SpellTrigger

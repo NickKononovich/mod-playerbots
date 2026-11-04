@@ -450,6 +450,35 @@ bool ScorchFightEndTrigger::IsActive()
     return FireFightEndTarget(bot, target) && FightRemainingSec(botAI, target) <= FIRE_FIGHT_END_SCORCH_SEC;
 }
 
+float MageAoePaysTrigger::FillerScale()
+{
+    if (AiFactory::GetPlayerSpecTab(bot) != MAGE_TAB_ARCANE)
+        return 1.0f;
+
+    // Spell.dbc 36032: arcane damage done +15 % per stack (SPELL_AURA_MOD_DAMAGE_PERCENT_DONE, school arcane; the core
+    // multiplies the amount by the stacks, and SpellDamageBonusDone applies the aura as its own factor)
+    constexpr uint32 SPELL_ARCANE_BLAST_STACK = 36032;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_ARCANE_BLAST_STACK);
+    uint32 const fillerId = AI_VALUE2(uint32, "spell id", Filler());
+    SpellInfo const* filler = fillerId ? sSpellMgr->GetSpellInfo(fillerId) : nullptr;
+    if (!info || !filler || info->StackAmount <= 1)
+        return 1.0f;
+
+    int32 perStack = 0;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+        if (effect.ApplyAuraName == SPELL_AURA_MOD_DAMAGE_PERCENT_DONE &&
+            (effect.MiscValue & static_cast<int32>(filler->GetSchoolMask())))
+            perStack += effect.CalcValue(bot);
+    if (perStack <= 0)
+        return 1.0f;
+
+    Aura const* stacks = bot->GetAura(SPELL_ARCANE_BLAST_STACK);
+    uint32 const current = stacks ? stacks->GetStackAmount() : 0;
+    float const full = 100.0f + static_cast<float>(perStack) * static_cast<float>(info->StackAmount);
+    float const now = 100.0f + static_cast<float>(perStack) * static_cast<float>(current);
+    return std::max(1.0f, full / now);
+}
+
 std::string const MageAoePaysTrigger::Filler()
 {
     switch (AiFactory::GetPlayerSpecTab(bot))

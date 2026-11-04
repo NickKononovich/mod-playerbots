@@ -384,6 +384,9 @@ public:
 
 protected:
     std::string const Filler() override;
+    // [rot420] Arcane: the wowsims APL repeats Arcane Blast at full stacks (36032 up 82 % of the sim's boss time); at
+    // 0 stacks every area paid on 2 mobs (b230 rfc-h 5D: a quarter of the boss time in them, rotation 81.5 %)
+    float FillerScale() override;
 };
 
 class BlizzardChannelCheckTrigger : public Trigger

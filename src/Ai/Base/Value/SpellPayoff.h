@@ -59,7 +59,10 @@ namespace SpellPayoff
 
     // [rot401] The fewest targets on which one cast of `aoeSpellId` deals at least the filler's damage in the same
     // execute time: ceil(filler dps / area dps per target). 0 when either is unknown (no verdict).
-    uint32 AoeBreakEvenTargets(Player* bot, Unit* target, uint32 aoeSpellId, uint32 fillerSpellId);
+    // [rot420] `fillerScale`: the filler's damage at the rotation's steady state over its damage now (an Arcane Blast
+    // at its full stacks, read while the stacks are down)
+    uint32 AoeBreakEvenTargets(Player* bot, Unit* target, uint32 aoeSpellId, uint32 fillerSpellId,
+                               float fillerScale = 1.0f);
 
     // [rot401] The area's radius from its damage effects (or its periodically triggered spell's); 0 when none
     float AreaRadius(Player* bot, uint32 aoeSpellId);
