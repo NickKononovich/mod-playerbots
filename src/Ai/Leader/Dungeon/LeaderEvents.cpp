@@ -5569,6 +5569,30 @@ namespace Leader::Dungeon
                             logRespotHeld(bot, target, breaks);
                             breaks.clear();
                         }
+                        // [lead1082] user 2026-11-04 (Q60): a caster moves only when it cannot cast at any wanted
+                        // target from where it stands (range / sight), or for a hazard / cleave. b233 rfc-h: 347
+                        // in-fight re-spots "out of spell range", 6025 yd (2230 yd of them re-spot chains). Its target
+                        // walked off its reach or sight while another fight mob on the tank (the tank's threat on it)
+                        // is in its cast reach and sight from here: no walk - its Attack goes to that mob (the
+                        // pick's cast-here pass below); a fleeing target out of its reach is left the same way
+                        if (!melee && bot != healer && !PlayerbotAI::IsHeal(bot) &&
+                            (breaks == "out of spell range of the target" ||
+                             breaks == "no line of sight to the target" ||
+                             breaks == "it cannot cast on its target from its spot"))
+                            for (ObjectGuid const& next : killOrder)
+                                if (Unit* other = ObjectAccessor::GetUnit(*tank, next);
+                                    other && other != target && other->IsAlive() && other->IsInCombat() &&
+                                    other->GetVictim() == tank && other->GetThreatMgr().GetThreat(tank) > 0.0f &&
+                                    MemberCastsHere(bot, other))
+                                {
+                                    Decisions().Write(run, "leader", "respot_skipped", guid, bot->GetName(), true,
+                                                      JsonObject().Str("member", bot->GetName())
+                                                          .Str("target", target->GetName())
+                                                          .Str("castsAt", other->GetName()).Str("why", breaks)
+                                                          .Real("targetGap", bot->GetExactDist(target)));
+                                    breaks.clear();
+                                    break;
+                                }
                         lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         // [lead190] b180 rfc-h 5G 103.2-105.0 s: the ret paladin's spot "behind" a Ragefire Shaman
                         // that walked off broke "out of melee reach" every tick, each new StandAt stopped its walk to
@@ -6975,7 +6999,9 @@ namespace Leader::Dungeon
                     // is a mob it sees from where it stands first; an unseen one only when it sees none (its spot
                     // walk brings it into sight then)
                     bool const sightFirst = PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
-                    auto const seesMob = [&](Unit* mob) { return bot->IsWithinLOSInMap(mob); };
+                    // [lead1082] user 2026-11-04 (Q60): ... and in its cast reach from where it stands (a mob it can
+                    // cast at without a walk first: no re-spot while one is there)
+                    auto const seesMob = [&](Unit* mob) { return MemberCastsHere(bot, mob); };
                     // [lead991] b228 rfc-h 5H-8: the fire mage's Attack was a fire-immune Molten Elemental while
                     // other kill-order mobs fought (40 s a run on the wand, "fireball ... target immune"; 5C 9 s). A
                     // ranged damage dealer's pick is a mob its rotation's school hurts first (the mob's own immunity,
