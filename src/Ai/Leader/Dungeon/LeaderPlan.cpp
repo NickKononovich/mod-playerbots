@@ -113,6 +113,7 @@
 #include <vector>
 #include "LeaderEvents.h"
 #include "LeaderPrepull.h"  // [lead270]
+#include "LeaderConsumables.h"  // [lead1090] BossBuffPassHolds, OpenBossBuffPass
 
 namespace Leader::Dungeon
 {
@@ -177,18 +178,8 @@ namespace Leader::Dungeon
         }
         if (group.NeedBuff())
             return "the group buffs";
-        // [lead1084] user 2026-11-04 (Q55): the boss pull opens only after the buff pass for him is complete, out of
-        // combat. A boss the pass is for (BossBuffPass's own pick: an idle dungeon boss within BOSS_BUFF_DISTANCE)
-        // that has had no pass yet holds every pull until it ran (the pass opens once no pull is open and no fight
-        // is on)
-        if (!leader->IsInCombat())
-            for (ObjectGuid const& bossGuid : group.BossCreatures())
-                if (Creature* boss = leader->GetMap()->GetCreature(bossGuid);
-                    boss && boss->IsAlive() && !boss->IsInCombat() && boss->IsDungeonBoss() &&
-                    leader->GetExactDist(boss) < Travel::BOSS_BUFF_DISTANCE &&
-                    !group.Route().bossBuffed.count(bossGuid) && group.Route().watchedRift <= 0 &&
-                    !Travel::EventWaveFresh(group.InstanceId(), bossGuid))
-                    return "[lead1084] the buff pass before " + boss->GetName() + " first";
+        // [lead1084] [lead1090] the boss pull's wait for his buff pass is no group readiness: it holds only the pull
+        // of that boss or a pull that brings him (TickLeaderPlanner's bossPassHold, BossBuffPassHolds)
         // [lead940] a heal over time another member cast out of the last fight (a top-up with no direct heal to cast)
         // still runs: its ticks would forward threat to its caster from the pull's first second (ThreatManager::
         // ForwardThreatForAssistingMe over every mob with the healed member on its threat list) - the pull waits for
@@ -789,6 +780,22 @@ namespace Leader::Dungeon
             return creature && creature->IsInWorld() && creature->IsAlive() && !creature->IsInCombat() ? creature
                                                                                                      : nullptr;
         };
+        // [lead1090] user 2026-11-04 (Q55): a boss's pull opens only after his buff pass, and no pass opens while a
+        // pull is open or a fight is on. The wait holds only the pull of that boss or a pull that brings him
+        // (BossBuffPassHolds), and the leader opens the pass it waits for itself, out of combat, whatever the
+        // harness phase (BossBuffPass runs on the harness's travel step only). b234 rfc-h 5F-14 840-1096 s:
+        // lead1084 held the Jergosh pull for a Bazzalan pass that nothing opened - the run stalled
+        auto const bossPassHold = [&](Unit* pull) -> std::string
+        {
+            Creature* boss = BossBuffPassHolds(group, tank, pull);
+            if (!boss)
+                return std::string();
+            bool const needBuffBefore = group.NeedBuff();
+            if (OpenBossBuffPass(group, boss) && !needBuffBefore)
+                Decisions().Write(run, "leader", "boss_buff_pass_opened", boss->GetGUID(), boss->GetName(), true,
+                                  JsonObject().Str("pull", pull->GetName()).Str("tag", "[lead1090]"));
+            return "[lead1084] the buff pass before " + boss->GetName() + " first";
+        };
 
         // The issued decision's pull_order line: one per new order (another mob or kind), or again after
         // PULL_ORDER_LOG_MS. `pickWhy`: [lead5] what the leader's pick was.
@@ -1326,6 +1333,11 @@ namespace Leader::Dungeon
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
+                // [lead1090] the pull of a boss, or one that brings him, waits for his buff pass (opened at once)
+                if (waitFor.empty() && mob)
+                    waitFor = bossPassHold(mob);
+                if (Creature* boss = waitFor.empty() ? PullBoss(tank->GetMap(), mob, committed) : nullptr)
+                    waitFor = bossPassHold(boss);
                 // [lead270] a prepull Army's channel under way ends before the boss pull goes
                 // [lead541] the boss the pull brings too (PullBoss)
                 if (Creature* boss = waitFor.empty() ? PullBoss(tank->GetMap(), mob, committed) : nullptr)
@@ -1395,6 +1407,8 @@ namespace Leader::Dungeon
             // the boss readiness (the planner's own BossReadyGap) BEFORE it issues; not ready: no order - the group
             // rests to its boss top-up line (the Rest commands) and the boss pull comes when it is ready
             std::string notReady = boss ? PullReadiness::BossNotReady(tank, boss) : std::string();
+            if (boss && notReady.empty())
+                notReady = bossPassHold(boss);  // [lead1090] his buff pass first (opened at once)
             // [lead77] b120 537.5 s: "boss pulled where it stands" with the group ~100 yd away
             if (boss && notReady.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
                 notReady = "a member cannot follow (trailing / its walk blocked)";
@@ -1807,6 +1821,14 @@ namespace Leader::Dungeon
                     }
                 if (!inputs.pick.IsEmpty())
                     lead.pickConflictFor.Clear();
+                // [lead1090] the leader's pick that is a boss, or brings one, waits for his buff pass (opened at
+                // once); any other pick is not held by a boss's pass
+                if (!inputs.pick.IsEmpty() && !tank->IsInCombat())
+                    if (std::string const passHold = bossPassHold(map->GetCreature(inputs.pick)); !passHold.empty())
+                    {
+                        inputs.ready = false;
+                        inputs.notReadyWhy = passHold;
+                    }
                 inputs.pickWhy = pickWhy;
                 // [lead253] the off-path verdicts for the planner (onPath's rule, without its log)
                 for (auto const& [mobGuid, verdict] : group.PathVerdicts())

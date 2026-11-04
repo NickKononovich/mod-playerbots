@@ -112,16 +112,83 @@ namespace Leader::Dungeon
         return true;
     }
 
+    namespace
+    {
+        // [lead1084] user 2026-11-04 (Q55, "inadmissible"): no buff pass while a pull is open or a fight is on - a
+        // buff on a member in combat puts the buffer in combat, a threat-making buff can pull the boss onto it. The
+        // pass opens once the open pull is fought; the boss pull waits for it (BossBuffPassHolds)
+        bool PassMayOpen(LeaderGroup& group, Player* leader)
+        {
+            return leader && !leader->IsInCombat() && !group.FightOn(leader) &&
+                   !Leader::Orders::IsOpen(group.LeaderGuid());
+        }
+
+        // the pass before `boss` opens (`gone`: the buffs that went since the last pass before him)
+        void OpenPass(LeaderGroup& group, Creature* boss, std::string const& gone)
+        {
+            GroupRouteState& route = group.Route();
+            route.bossBuffed.insert(boss->GetGUID());
+            // Black Morass: the shield drains during buffs + ready check (50 -> 30 % before Temporus, 33 -> 11 %
+            // before Deja in bm-n 2026-10-25); a rift boss is pulled at once.
+            if (route.watchedRift > 0)
+                return;
+            // [brd_seven_fast] a scripted wave that just became attackable: no buff pass / ready check, pulled at
+            // once (the Tomb of the Seven resets after 15 s with no dwarf in combat).
+            if (Travel::EventWaveFresh(group.InstanceId(), boss->GetGUID()))
+            {
+                group.LogEvent("event_wave_no_ready_check",
+                               JsonObject().Str("name", boss->GetName()).Num("entry", boss->GetEntry()));
+                return;
+            }
+            route.needBuff = true;
+            route.buffStep = 0;
+            route.buffReason =
+                std::string("before ") + boss->GetName() + (gone.empty() ? "" : " (gone: " + gone + ")");
+        }
+    }
+
+    Creature* BossBuffPassHolds(LeaderGroup& group, Player* leader, Unit* pull)
+    {
+        Creature* const pulled = pull ? pull->ToCreature() : nullptr;
+        if (!leader || !pulled || leader->IsInCombat())
+            return nullptr;
+        GroupRouteState const& route = group.Route();
+        if (route.watchedRift > 0)
+            return nullptr;
+        Map* map = leader->GetMap();
+        for (ObjectGuid const& bossGuid : group.BossCreatures())
+        {
+            Creature* boss = map->GetCreature(bossGuid);
+            if (!boss || !boss->IsAlive() || boss->IsInCombat() || !boss->IsDungeonBoss() ||
+                leader->GetExactDist(boss) >= Travel::BOSS_BUFF_DISTANCE || route.bossBuffed.count(bossGuid) ||
+                Travel::EventWaveFresh(group.InstanceId(), bossGuid))
+                continue;
+            // [lead1090] b234 rfc-h 5F-14 840-1096 s: lead1084 held every pull for Bazzalan's pass (an idle boss
+            // within BOSS_BUFF_DISTANCE), the pull of Jergosh (the route's target) too - and BossBuffPass's pick was
+            // Jergosh (his pass done at 839 s): Bazzalan's never opened, the group stood 4 minutes. Only the pull of
+            // this boss or a pull that brings him (his formation, script or aggro reach: BossBroughtBy) waits
+            if (boss == pulled || Travel::BossBroughtBy(leader, boss, pulled))
+                return boss;
+        }
+        return nullptr;
+    }
+
+    bool OpenBossBuffPass(LeaderGroup& group, Creature* boss)
+    {
+        Player* leader = ObjectAccessor::FindPlayer(group.LeaderGuid());
+        if (!boss || !PassMayOpen(group, leader))
+            return false;
+        if (group.Route().needBuff)
+            return true;  // a pass is under way: the pull waits for it
+        OpenPass(group, boss, std::string());
+        return true;
+    }
+
     void BossBuffPass(LeaderGroup& group)
     {
         GroupRouteState& route = group.Route();
         Player* leader = ObjectAccessor::FindPlayer(group.LeaderGuid());
-        if (!leader)
-            return;
-        // [lead1084] user 2026-11-04 (Q55, "inadmissible"): no buff pass while a pull is open or a fight is on - a
-        // buff on a member in combat puts the buffer in combat, a threat-making buff can pull the boss onto it. The
-        // pass opens once the open pull is fought; the boss pull waits for it (LeaderReadyWhy)
-        if (leader->IsInCombat() || group.FightOn(leader) || Leader::Orders::IsOpen(group.LeaderGuid()))
+        if (!PassMayOpen(group, leader))
             return;
         Map* map = leader->GetMap();
         // the route's boss target; [lead775] b220 rfc-h 5E 703.0 s: the planner pulled Taragaman as its nearest pick
@@ -175,21 +242,6 @@ namespace Leader::Dungeon
             if (gone.empty())
                 return;
         }
-        route.bossBuffed.insert(boss->GetGUID());
-        // Black Morass: the shield drains during buffs + ready check (50 -> 30 % before Temporus, 33 -> 11 % before
-        // Deja in bm-n 2026-10-25); a rift boss is pulled at once.
-        if (route.watchedRift > 0)
-            return;
-        // [brd_seven_fast] a scripted wave that just became attackable: no buff pass / ready check, pulled at once
-        // (the Tomb of the Seven resets after 15 s with no dwarf in combat).
-        if (Travel::EventWaveFresh(group.InstanceId(), boss->GetGUID()))
-        {
-            group.LogEvent("event_wave_no_ready_check",
-                           JsonObject().Str("name", boss->GetName()).Num("entry", boss->GetEntry()));
-            return;
-        }
-        route.needBuff = true;
-        route.buffStep = 0;
-        route.buffReason = std::string("before ") + boss->GetName() + (gone.empty() ? "" : " (gone: " + gone + ")");
+        OpenPass(group, boss, gone);
     }
 }
