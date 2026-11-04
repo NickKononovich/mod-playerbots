@@ -31,6 +31,9 @@ constexpr uint32 SPELL_COLD_BLOOD = 14177;
 constexpr uint32 SPELL_HUNGER_FOR_BLOOD = 51662;
 constexpr uint32 ADRENALINE_RUSH_MIN_KILLING_SPREE_CD_MS = 15 * IN_MILLISECONDS;
 constexpr float BLADE_FLURRY_CC_CHECK_RANGE = 8.0f;
+// [rot431] Blade Flurry hits one extra target: on trash it pays on a pack of two (user rule: the cooldown rule, packs
+// of 2+); on a boss it stays on cooldown on one target (wowsims rogue__combat.apl.json)
+constexpr uint32 BLADE_FLURRY_TRASH_MIN_TARGETS = 2;
 constexpr uint8 SND_MIN_COMBO_POINTS = 2;
 constexpr uint8 SND_EARLY_REFRESH_MIN_COMBO_POINTS = 4;  // a running SnD is only refreshed with 4+ points
 constexpr int32 SND_PRE_REFRESH_MS = 6000;
@@ -214,7 +217,17 @@ bool BladeFlurryReadyTrigger::IsActive()
         return false;
 
     // false as well when a crowd-controlled attacker stands within the range (TargetValue.cpp veto)
-    return HasEnoughAoeTargets(botAI, bot->GetPosition(), BLADE_FLURRY_CC_CHECK_RANGE, 1);
+    Creature const* boss = AI_VALUE(Unit*, "current target")->ToCreature();
+    bool const bossFight = boss && (boss->IsDungeonBoss() || boss->isWorldBoss());
+    if (bossFight)
+        return HasEnoughAoeTargets(botAI, bot->GetPosition(), BLADE_FLURRY_CC_CHECK_RANGE, 1);
+
+    bool const pack =
+        HasEnoughAoeTargets(botAI, bot->GetPosition(), BLADE_FLURRY_CC_CHECK_RANGE, BLADE_FLURRY_TRASH_MIN_TARGETS);
+    if (!pack)
+        LOG_DEBUG("playerbots", "[rot431] {} holds Blade Flurry on trash: fewer than {} mobs in its reach",
+                  bot->GetName(), BLADE_FLURRY_TRASH_MIN_TARGETS);
+    return pack;
 }
 
 // [b31_wr]
