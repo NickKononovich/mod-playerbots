@@ -39,6 +39,7 @@
 #include <cmath>
 #include <list>  // [b33_move]
 #include <mutex>
+#include <set>  // [lead1041]
 #include <unordered_map>
 #include <vector>
 
@@ -608,6 +609,11 @@ bool ReachMeleeAction::isUseful()
             LOG_INFO("playerbots", "[lead792] {}: stops its walk to {} ({:.1f} yd, low {}, {:.1f} yd of it left): it "
                      "comes to the tank", bot->GetName(), target->GetName(), bot->GetExactDist(target),
                      target->GetGUID().GetCounter(), left);
+        thread_local std::set<std::pair<uint64, uint64>> waitLogged;  // [lead1041] one line per tank and mob
+        if (!target->isMoving() && waitLogged.insert({bot->GetGUID().GetRawValue(), target->GetGUID().GetRawValue()})
+                                       .second)
+            LOG_INFO("playerbots", "[lead1041] {}: waits for {} ({:.1f} yd): on the tank, its chase not begun yet",
+                     bot->GetName(), target->GetName(), bot->GetExactDist(target));
         return false;
     }
     // [lead760] the fight stands where the leader planned it after the tank's opener: no walk to a mob away from the

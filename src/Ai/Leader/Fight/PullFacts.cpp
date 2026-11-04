@@ -17,6 +17,7 @@
 #include "Player.h"
 #include "Playerbots.h"
 #include "LeaderOrders.h"  // [lead108] Leader::Route
+#include "MobRoles.h"      // [lead1041] HoldsRange
 #include "RouteSteer.h"  // [lead167] BossBroughtBy
 #include "ChooseTargetActions.h"  // [lead760] FightSpot
 #include "LeaderFightChecks.h"   // [lead760] TANK_TAUNTS
@@ -127,11 +128,21 @@ namespace Leader::Fight
 
     bool MobComesToTank(Player* tank, Unit* mob)
     {
-        if (!tank || !mob || !mob->IsAlive() || !mob->IsInCombat() || mob->GetVictim() != tank || !mob->isMoving() ||
+        if (!tank || !mob || !mob->IsAlive() || !mob->IsInCombat() || mob->GetVictim() != tank ||
             mob->HasUnitState(UNIT_STATE_ROOT) || tank->IsWithinMeleeRange(mob))
             return false;
         Creature* creature = mob->ToCreature();
-        return !creature || !creature->CanNotReachTarget();
+        if (creature && creature->CanNotReachTarget())
+            return false;
+        if (mob->isMoving())
+            return true;
+        // [lead1041] b230 rfc-h (16 runs): the tank's "reach melee" walked 26 s after a mob it had just taunted and
+        // 73 s toward a mob already on it ("same mob, coming at the tank") - on the first ticks after the victim switch
+        // the mob has not started its chase yet (isMoving false). A mob whose victim is the tank chases it by the
+        // game's combat movement: one that may move in combat (Creature::IsCombatMovementAllowed), is not held (stun,
+        // fear, confuse, its own cast) and does not stand to cast from range (MobRoles::HoldsRange) comes to the tank
+        return creature && creature->IsCombatMovementAllowed() && !MobRoles::HoldsRange(mob) &&
+               !mob->HasUnitState(UNIT_STATE_CONTROLLED | UNIT_STATE_CASTING);
     }
 
     uint32 TauntReachesFromHere(Player* tank, Unit* mob)
