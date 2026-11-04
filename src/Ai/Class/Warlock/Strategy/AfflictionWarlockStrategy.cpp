@@ -79,11 +79,14 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
     );
 
     // Shadow Trance for free casts; Drain Soul is the filler at or below 25 % (four times its damage there)
+    // [rot472] the instant Shadow Bolt ranks below the execute Drain Soul (was 16.0): wowsims
+    // warlock__affliction.apl.json has no Shadow Trance row, its Shadow Bolt (instant or not) is the filler below the
+    // execute-phase channel
     triggers.push_back(
         new TriggerNode(
             "shadow trance",
             {
-                NextAction("shadow bolt", 16.0f)
+                NextAction("shadow bolt", 15.4f)
             }
         )
     );

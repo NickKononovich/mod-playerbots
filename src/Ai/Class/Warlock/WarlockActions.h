@@ -287,7 +287,9 @@ uint32 ImmolateRefreshMs(PlayerbotAI* botAI, Player* bot);
 // the filler cast it replaces; on a dying target the warlock keeps casting the filler / Drain Soul instead.
 constexpr float CORRUPTION_MIN_TARGET_LIFETIME = 6.0f;           // instant, two 3 s ticks beat one filler GCD
 constexpr float IMMOLATE_MIN_TARGET_LIFETIME = 6.0f;             // direct hit plus two ticks
-constexpr float UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME = 9.0f;  // 1.5 s cast, needs about three ticks
+// [rot471] wowsims warlock__affliction.apl.json row 18: Unstable Affliction only while remainingTime > 10 s (was 9 s,
+// "1.5 s cast, needs about three ticks")
+constexpr float UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME = 10.0f;
 // [b31_deep] wowsims affliction / demo APL: Curse of Agony only when the fight lasts more than 22 s (its first
 // ticks are the weak ones; was 12 s).
 constexpr float CURSE_OF_AGONY_MIN_TARGET_LIFETIME = 22.0f;
@@ -299,8 +301,6 @@ constexpr uint32 INFERNO_REAGENT_ITEM = 5565;  // Infernal Stone
 constexpr float CURSE_OF_THE_ELEMENTS_MIN_TARGET_LIFETIME = 10.0f;
 // Drain Soul deals four times its damage at or below this target health percent (Unit::SpellDamageBonusDone).
 constexpr int32 DRAIN_SOUL_EXECUTE_HEALTH_PCT = 25;
-// [ranged_audit_b30] Two 3 s ticks at four times the damage, about what the Shadow Bolts in that time deal.
-constexpr float DRAIN_SOUL_EXECUTE_MIN_TARGET_LIFETIME = 6.0f;
 // [b31_deep] Demonology: Immolate only on a target that lives this long (wowsims demo APL, fight >= 12 s).
 constexpr float DEMO_IMMOLATE_MIN_TARGET_LIFETIME = 12.0f;
 // [b31_deep] Demonology multi-dot (Corruption / Immolate on other attackers): only on adds living this long.

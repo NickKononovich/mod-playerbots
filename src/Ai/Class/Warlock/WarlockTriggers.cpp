@@ -6,6 +6,7 @@
 
 #include "WarlockTriggers.h"
 #include "AiFactory.h"  // [rot400] GetPlayerSpecTab
+#include "Creature.h"   // [rot470] EncounterCreditDead
 #include "DynamicObject.h"
 #include "GameObject.h"
 #include "GenericTriggers.h"
@@ -24,6 +25,8 @@
 #include "SpellAuras.h"        // [rot350]
 #include "SpellMgr.h"          // [rot350]
 #include "TargetValue.h"
+
+#include <unordered_map>  // [rot470]
 
 static const uint32 SOUL_SHARD_ITEM_ID = 6265;
 
@@ -326,38 +329,87 @@ bool InfernoBossTrigger::IsActive()
 
 // [rot461] Every other DungeonEncounter.dbc encounter of the map is in the instance's completed mask (the core sets
 // it per killed credit creature, Map::UpdateEncounterState). No list or no instance script: unknown, false.
+// [rot470] b240 rfc-h: 142 "holds Inferno on Bazzalan: not the instance's last boss" with Bazzalan the last boss
+// standing, so no Inferno at all. A classic map runs as a heroic here (difficulty 1) and DungeonEncounter.dbc lists
+// only its normal mode: GetDungeonEncounterList(389, 1) is empty, and Map::UpdateEncounterState, which looks the list
+// up under the same difficulty, never sets the completed mask. The list falls back to the normal mode (as the harness'
+// LoadEncounters does), and an encounter is done by the mask or by its kill-credit creature lying dead in the map (an
+// instance creature stays in the map's store once its grid is loaded; one never loaded counts as standing). Looked
+// up once per boss target (the store walk is no per-tick work)
+namespace
+{
+    bool EncounterCreditDead(Map* map, uint32 creditEntry)
+    {
+        for (auto const& [spawnId, creature] : map->GetCreatureBySpawnIdStore())
+            if (creature && creature->GetEntry() == creditEntry && !creature->IsAlive())
+                return true;
+        return false;
+    }
+
+    bool LastEncounterLookup(Player* bot, Unit* target)
+    {
+        Map* map = bot->GetMap();
+        InstanceMap* instanceMap = map ? map->ToInstanceMap() : nullptr;
+        if (!instanceMap)
+            return false;
+
+        // the difficulty Map::UpdateEncounterState credits the kills under
+        Difficulty const difficulty =
+            IsSharedDifficultyMap(map->GetId()) ? Difficulty(map->GetDifficulty() % 2) : map->GetDifficulty();
+        DungeonEncounterList const* encounters = sObjectMgr->GetDungeonEncounterList(map->GetId(), difficulty);
+        if ((!encounters || encounters->empty()) && difficulty != DUNGEON_DIFFICULTY_NORMAL)
+            encounters = sObjectMgr->GetDungeonEncounterList(map->GetId(), DUNGEON_DIFFICULTY_NORMAL);
+        if (!encounters || encounters->empty())
+            return false;
+
+        InstanceScript* instance = instanceMap->GetInstanceScript();
+        uint32 const done = instance ? instance->GetCompletedEncounterMask() : 0;
+        bool targetIsOne = false;
+        for (DungeonEncounter const* encounter : *encounters)
+        {
+            if (!encounter || !encounter->dbcEntry)
+                continue;
+
+            bool const killCredit = encounter->creditType == ENCOUNTER_CREDIT_KILL_CREATURE;
+            if (killCredit && encounter->creditEntry == target->GetEntry())
+            {
+                targetIsOne = true;
+                continue;
+            }
+
+            if (done & (1u << encounter->dbcEntry->encounterIndex))
+                continue;
+            if (!killCredit || !EncounterCreditDead(map, encounter->creditEntry))
+                return false;
+        }
+        return targetIsOne;
+    }
+}
+
 bool InfernoOnLastEncounter(Player* bot, Unit* target)
 {
-    Map* map = bot->GetMap();
-    InstanceMap* instanceMap = map ? map->ToInstanceMap() : nullptr;
-    InstanceScript* instance = instanceMap ? instanceMap->GetInstanceScript() : nullptr;
-    if (!instance)
-        return false;
-
-    // the difficulty Map::UpdateEncounterState credits the kills under
-    Difficulty const difficulty =
-        IsSharedDifficultyMap(map->GetId()) ? Difficulty(map->GetDifficulty() % 2) : map->GetDifficulty();
-    DungeonEncounterList const* encounters = sObjectMgr->GetDungeonEncounterList(map->GetId(), difficulty);
-    if (!encounters || encounters->empty())
-        return false;
-
-    uint32 const done = instance->GetCompletedEncounterMask();
-    bool targetIsOne = false;
-    for (DungeonEncounter const* encounter : *encounters)
+    struct Looked
     {
-        if (!encounter || !encounter->dbcEntry)
-            continue;
+        uint32 instanceId = 0;
+        ObjectGuid target;
+        bool last = false;
+    };
+    thread_local std::unordered_map<ObjectGuid, Looked> looked;
+    if (looked.size() > 4096)
+        looked.clear();
 
-        if (encounter->creditType == ENCOUNTER_CREDIT_KILL_CREATURE && encounter->creditEntry == target->GetEntry())
-        {
-            targetIsOne = true;
-            continue;
-        }
-
-        if (!(done & (1u << encounter->dbcEntry->encounterIndex)))
-            return false;
+    Looked& entry = looked[bot->GetGUID()];
+    uint32 const instanceId = bot->GetInstanceId();
+    if (entry.target != target->GetGUID() || entry.instanceId != instanceId)
+    {
+        entry.instanceId = instanceId;
+        entry.target = target->GetGUID();
+        entry.last = LastEncounterLookup(bot, target);
+        if (entry.last)
+            LOG_DEBUG("playerbots", "[rot470] {}: {} is the instance's last boss standing (every other encounter done)",
+                      bot->GetName(), target->GetName());
     }
-    return targetIsOne;
+    return entry.last;
 }
 
 bool CurseOfTonguesTrigger::IsActive()
@@ -532,6 +584,60 @@ const std::set<uint32> RainOfFireChannelCheckTrigger::RAIN_OF_FIRE_SPELL_IDS = {
     47820   // Rain of Fire Rank 7
 };
 
+// [rot472] wowsims warlock__affliction.apl.json channels Drain Soul in the execute phase (isExecutePhase E25) to the
+// fight's end, and CastTimeMultiplier counts a channel as worth starting once its first tick lands; the trigger asked
+// for 6 s of the target's life (two unhasted ticks). b240 rfc-h 5D: the last 6 s of every boss went to Shadow Bolt
+// (4517 a cast in the sim's log) for Drain Soul ticks of 9939 at four times their damage. The first tick: the
+// channel's periodic amplitude, hasted as AuraEffect::CalculatePeriodic hastes it (SPELL_AURA_PERIODIC_HASTE on the
+// spell or SPELL_ATTR5_SPELL_HASTE_AFFECTS_PERIODIC: UNIT_MOD_CAST_SPEED)
+float DrainSoulFirstTickSec(PlayerbotAI* botAI, Player* bot)
+{
+    uint32 const id = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "drain soul")->Get();
+    SpellInfo const* info = id ? sSpellMgr->GetSpellInfo(id) : nullptr;
+    if (!info)
+        return 0.0f;
+
+    int32 amplitude = 0;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+        if (effect.ApplyAuraName != SPELL_AURA_NONE && effect.Amplitude > 0)
+            amplitude = amplitude ? std::min(amplitude, int32(effect.Amplitude)) : int32(effect.Amplitude);
+    if (amplitude <= 0)
+        return 0.0f;
+
+    if (bot->HasAuraTypeWithAffectMask(SPELL_AURA_PERIODIC_HASTE, info) ||
+        info->HasAttribute(SPELL_ATTR5_SPELL_HASTE_AFFECTS_PERIODIC))
+        amplitude = int32(amplitude * bot->GetFloatValue(UNIT_MOD_CAST_SPEED));
+    return float(amplitude) / IN_MILLISECONDS;
+}
+
+bool DrainSoulExecuteTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive() || target->HealthAbovePct(DRAIN_SOUL_EXECUTE_HEALTH_PCT))
+        return false;
+
+    float const firstTick = DrainSoulFirstTickSec(botAI, bot);
+    float const lifetime = ExpectedLifetime(botAI, target);
+    if (firstTick <= 0.0f || lifetime < firstTick)
+        return false;
+
+    // one line per target where the 6 s rule would have held the channel
+    if (lifetime < 2.0f * firstTick)
+    {
+        thread_local std::unordered_map<ObjectGuid, ObjectGuid> logged;
+        if (logged.size() > 4096)
+            logged.clear();
+        ObjectGuid& last = logged[bot->GetGUID()];
+        if (last != target->GetGUID())
+        {
+            last = target->GetGUID();
+            LOG_DEBUG("playerbots", "[rot472] {} channels Drain Soul on {}: lives {:.1f} s, its first tick in {:.1f} s",
+                      bot->GetName(), target->GetName(), lifetime, firstTick);
+        }
+    }
+    return true;
+}
+
 bool DrainSoulClipTrigger::IsActive()
 {
     constexpr uint32 SPELLFAMILYFLAG0_DRAIN_SOUL = 0x00004000;
@@ -568,17 +674,24 @@ bool DrainSoulClipTrigger::IsActive()
         }
     }
 
-    if (!AI_VALUE2(uint32, "spell id", "unstable affliction") ||
-        target->GetHealth() / AI_VALUE(float, "estimated group dps") < UNSTABLE_AFFLICTION_MIN_TARGET_LIFETIME)
+    if (!AI_VALUE2(uint32, "spell id", "unstable affliction"))
         return false;
-
-    Aura* unstableAffliction = botAI->GetAura("unstable affliction", target, true);
-    if (!unstableAffliction)
-        return true;
 
     // [rot352] due at its hasted cast time left (the APL's row 18): the recast then lands as the dot ends, so
     // waiting for the next tick would only let it lapse
-    return unstableAffliction->GetDuration() < int32(UnstableAfflictionRefreshMs(botAI, bot));
+    // [rot471] The clip is for the recast the "unstable affliction" trigger makes, so it asks that trigger: its own
+    // refresh time, the lifetime and the rot400 payoff against the filler. b240 rfc-h 5D-12 Taragaman 50.3-54.3 s:
+    // the clip read health / group dps (>= 9 s) and cancelled the execute Drain Soul for an Unstable Affliction the
+    // trigger then held ("[rot400] holds unstable affliction on Taragaman the Hungerer: lives 6.1 s, 1 tick(s)"),
+    // and the channel restarted from its first tick (wowsims warlockShouldRecastDrainSoul: the recast is for the
+    // refresh the rotation then casts)
+    Trigger* unstableAffliction = context->GetTrigger("unstable affliction");
+    if (!unstableAffliction || !unstableAffliction->IsActive())
+        return false;
+
+    LOG_DEBUG("playerbots", "[rot471] {} clips Drain Soul on {} for Unstable Affliction", bot->GetName(),
+              target->GetName());
+    return true;
 }
 
 bool RainOfFireChannelCheckTrigger::IsActive()

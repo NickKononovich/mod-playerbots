@@ -313,6 +313,9 @@ public:
     std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
 };
 
+// [rot472] seconds to a Drain Soul channel's first tick (its hasted periodic amplitude); 0: not known
+float DrainSoulFirstTickSec(PlayerbotAI* botAI, Player* bot);
+
 // Execute phase: Drain Soul deals four times its damage while the target is at or below 25 % health (3.3.5).
 // Its ticks also roll Corruption through Everlasting Affliction, so it replaces Shadow Bolt as the filler.
 class DrainSoulExecuteTrigger : public Trigger
@@ -320,20 +323,13 @@ class DrainSoulExecuteTrigger : public Trigger
 public:
     DrainSoulExecuteTrigger(PlayerbotAI* botAI) : Trigger(botAI, "drain soul execute") {}
     std::string const GetTargetName() override { return "current target"; }
-    bool IsActive() override
-    {
-        Unit* target = GetTarget();
-        if (!target || !target->IsAlive() || target->HealthAbovePct(DRAIN_SOUL_EXECUTE_HEALTH_PCT))
-            return false;
-
-        // [ranged_audit_b30] Its first tick comes 3 s into the channel: build 30 trash at <= 25 % died before it
-        // (804 damage per Drain Soul against 3.6k per Shadow Bolt, ~10 % of the affliction warlock's time). Only a
-        // target the group still needs DRAIN_SOUL_EXECUTE_MIN_TARGET_LIFETIME to kill gets the channel.
-        // [b31_deep] Same estimator as CastTimeMultiplier (ExpectedLifetime: the measured health drop as well as
-        // the dps model). The model alone let 105 channels start that the multiplier had already cut to x0.1
-        // ("drain soul (1.55)"): no tick landed and the channel blocked Haunt / Shadow Bolt.
-        return ExpectedLifetime(botAI, target) >= DRAIN_SOUL_EXECUTE_MIN_TARGET_LIFETIME;
-    }
+    // [ranged_audit_b30] Its first tick comes 3 s into the channel: build 30 trash at <= 25 % died before it
+    // (804 damage per Drain Soul against 3.6k per Shadow Bolt, ~10 % of the affliction warlock's time).
+    // [b31_deep] Same estimator as CastTimeMultiplier (ExpectedLifetime: the measured health drop as well as
+    // the dps model). The model alone let 105 channels start that the multiplier had already cut to x0.1
+    // ("drain soul (1.55)"): no tick landed and the channel blocked Haunt / Shadow Bolt.
+    // [rot472] the target lives to the channel's first tick (DrainSoulFirstTickSec), was 6 s
+    bool IsActive() override;
 };
 
 // [rot350] Haunt off cooldown and due by the wowsims affliction APL (HauntDue: the own debuff about to fall off), not
@@ -434,6 +430,8 @@ public:
 // [rot461] and with a demon out only on the instance's last boss (InfernoOnLastEncounter): wowsims' fight end is the
 // simulation's end, here the next boss needs the demon resummoned (10 s). b239 rfc-h: Inferno on every boss cost the
 // affliction (5D) ~50 s and the destruction (5E) warlock ~31 s of resummons over 2 runs.
+// [rot470] a classic map run as a heroic has its encounters in the normal-mode list only and no completed mask: done
+// is then its kill-credit creature lying dead in the map; looked up once per boss target
 bool InfernoOnLastEncounter(Player* bot, Unit* target);
 class InfernoBossTrigger : public Trigger
 {
