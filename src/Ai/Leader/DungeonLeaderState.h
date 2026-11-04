@@ -310,6 +310,7 @@ namespace Leader
         ObjectGuid patrolTarget;                          // [lead34] a patrol the leader pulls as its own pull
         std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
+        Position idleScanAt;  // [lead1121] where the tank stood at the last idle-mob scan (lead18)
         std::map<ObjectGuid, uint32> engageRangeOrder;  // [lead68] the order the range spot was computed for
         // [lead1030] the order and the member's place a range spot search found none from: not searched again
         // until the order changes or the member moved off that place (the search's own spot tolerance)

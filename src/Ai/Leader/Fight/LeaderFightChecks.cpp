@@ -30,6 +30,7 @@
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "TerrainHazard.h"
+#include "Timer.h"  // [lead1121] getMSTime
 #include <algorithm>
 #include <cmath>
 #include <map>  // [lead991]
@@ -512,6 +513,7 @@ namespace Leader::Fight
     }
 
     std::vector<Creature*> const* g_leaderIdle = nullptr;
+    Position const* g_leaderIdleAt = nullptr;  // [lead1121]
     std::vector<Position> const* g_leaderCleared = nullptr;
     std::vector<ObjectGuid> const* g_leaderExempt = nullptr;  // [lead24] the committed pull's mobs
     std::set<ObjectGuid> const* g_leaderJoined = nullptr;     // [lead600] the packs decided into the fight
@@ -587,16 +589,76 @@ namespace Leader::Fight
         }
     }
 
+    namespace
+    {
+        // [lead1121] b237 rfc-h 5A-9 t=327 / 5F-6 t=349 (both deaths): the guard's idle mobs were those within
+        // LEADER_IDLE_SCAN_YD of the tank, so a spot or a walk 135 yd ahead of it was judged against none of the mobs
+        // standing there. A point the tank's scan does not cover (its distance from the scan's centre plus the
+        // farthest aggro radius the core gives a mob, MAX_AGGRO_RADIUS, and the guard's margin is beyond the scan)
+        // gets a scan of its own, of the same size, kept for the tick (the same idle list) and shared by every point
+        // it covers the same way
+        struct IdleExtra
+        {
+            std::vector<Creature*> const* base = nullptr;
+            uint32 ms = 0;
+            std::vector<Position> centres;
+            std::vector<ObjectGuid> mobs;
+        };
+        IdleExtra g_idleExtra;
+
+        bool ScanCovers(Position const& centre, Position const& at)
+        {
+            return centre.GetExactDist(at) + MAX_AGGRO_RADIUS + Leader::LEADER_SPOT_AGGRO_MARGIN <=
+                   LEADER_IDLE_SCAN_YD;
+        }
+
+        // the idle mobs round `at` that the tank's scan missed (empty when it covers `at`)
+        std::vector<ObjectGuid> const& IdleBeyondScan(Player* bot, Position const& at)
+        {
+            static std::vector<ObjectGuid> const none;
+            uint32 const now = getMSTime();
+            if (g_idleExtra.base != g_leaderIdle || g_idleExtra.ms != now)
+                g_idleExtra = IdleExtra{g_leaderIdle, now, {}, {}};
+            if (g_leaderIdleAt && ScanCovers(*g_leaderIdleAt, at))
+                return none;
+            for (Position const& centre : g_idleExtra.centres)
+                if (ScanCovers(centre, at))
+                    return g_idleExtra.mobs;
+            std::list<Creature*> found;
+            IdleAggroCheck check{bot};
+            Acore::CreatureListSearcher<IdleAggroCheck> searcher(bot, found, check);
+            Cell::VisitObjects(at.GetPositionX(), at.GetPositionY(), bot->GetMap(), searcher, LEADER_IDLE_SCAN_YD);
+            g_idleExtra.centres.push_back(at);
+            for (Creature* mob : found)
+                if (std::find(g_leaderIdle->begin(), g_leaderIdle->end(), mob) == g_leaderIdle->end() &&
+                    std::find(g_idleExtra.mobs.begin(), g_idleExtra.mobs.end(), mob->GetGUID()) ==
+                        g_idleExtra.mobs.end())
+                    g_idleExtra.mobs.push_back(mob->GetGUID());
+            return g_idleExtra.mobs;
+        }
+
+        // the first idle mob round `at` the guard knows (the tank's scan, [lead1121] and the point's own) for which
+        // `visit(mob)` is true; nullptr: none
+        template <typename Visit>
+        Creature* IdleAround(Player* bot, Position const& at, Visit const& visit)
+        {
+            for (Creature* mob : *g_leaderIdle)
+                if (visit(mob))
+                    return mob;
+            for (ObjectGuid const& guid : IdleBeyondScan(bot, at))
+                if (Creature* mob = bot->GetMap()->GetCreature(guid); mob && visit(mob))
+                    return mob;
+            return nullptr;
+        }
+    }
+
     // the unpulled mob whose reach (the planner's IdleMobReachesSpot, plus LEADER_SPOT_AGGRO_MARGIN towards it)
     // covers the spot; nullptr: none
     Creature* LeaderAggroAt(Player* bot, Position const& spot)
     {
         if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
             return nullptr;
-        for (Creature* mob : *g_leaderIdle)
-            if (IdleMobCovers(bot, mob, spot))
-                return mob;
-        return nullptr;
+        return IdleAround(bot, spot, [&](Creature* mob) { return IdleMobCovers(bot, mob, spot); });
     }
 
     Creature* LeaderFightAggroAt(Player* bot, Position const& spot, Unit* target)
@@ -606,10 +668,10 @@ namespace Leader::Fight
         // the one the target fights (the tank): it stands where it is, in the fight, without waking the mob
         Unit* const holder = target->GetVictim();
         bool const held = holder && holder != bot && holder->IsAlive() && holder->IsInCombat();
-        for (Creature* mob : *g_leaderIdle)
+        return IdleAround(bot, spot, [&](Creature* mob)
         {
             if (!IdleMobCovers(bot, mob, spot))
-                continue;
+                return false;
             // the fight already stands in this mob's modelled reach without waking it: the target's victim (a player)
             // where it stands. A spot no nearer the mob than it is no deeper into its reach than the fight itself. A
             // place out of the modelled reach proves nothing (its sight / height facts differ from the spot's): not
@@ -619,10 +681,8 @@ namespace Leader::Fight
             float fightGap = -1.0f;
             if (held && IdleMobCovers(bot, mob, holder->GetPosition()))
                 fightGap = mob->GetExactDist2d(holder);
-            if (fightGap < 0.0f || mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) < fightGap)
-                return mob;
-        }
-        return nullptr;
+            return fightGap < 0.0f || mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) < fightGap;
+        });
     }
 
     // the walk to the spot passes no unpulled mob's reach (and there is a walk)

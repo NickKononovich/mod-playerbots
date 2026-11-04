@@ -382,10 +382,12 @@ namespace Leader::Dungeon
         {
             IdleAggroCheck check{tank};
             Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idleNear, check);
-            Cell::VisitObjects(tank, searcher, 80.0f);
+            Cell::VisitObjects(tank, searcher, LEADER_IDLE_SCAN_YD);
         }
         std::vector<Creature*> const idleVector(idleNear.begin(), idleNear.end());
+        Position const idleAt = tank->GetPosition();  // [lead1121]
         g_leaderIdle = &idleVector;
+        g_leaderIdleAt = &idleAt;
         g_leaderCleared = &lead.clearedGround;
         std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
         pullMobs.insert(pullMobs.end(), pack.begin(), pack.end());
@@ -614,6 +616,7 @@ namespace Leader::Dungeon
             }
         }
         g_leaderIdle = nullptr;
+        g_leaderIdleAt = nullptr;
         g_leaderCleared = nullptr;
         g_leaderExempt = nullptr;
         return !lead.spots.empty();

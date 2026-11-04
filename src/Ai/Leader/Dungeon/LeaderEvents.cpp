@@ -805,7 +805,8 @@ namespace Leader::Dungeon
             std::list<Creature*> idle;
             IdleAggroCheck check{tank};
             Acore::CreatureListSearcher<IdleAggroCheck> searcher(tank, idle, check);
-            Cell::VisitObjects(tank, searcher, 80.0f);
+            Cell::VisitObjects(tank, searcher, LEADER_IDLE_SCAN_YD);
+            lead.idleScanAt = tank->GetPosition();  // [lead1121]
             lead.idleGuids.clear();
             for (Creature* mob : idle)
                 lead.idleGuids.push_back(mob->GetGUID());
@@ -815,6 +816,7 @@ namespace Leader::Dungeon
             if (Creature* mob = map->GetCreature(guid); mob && mob->IsAlive() && !mob->IsInCombat())
                 idleMobs.push_back(mob);
         g_leaderIdle = &idleMobs;
+        g_leaderIdleAt = &lead.idleScanAt;  // [lead1121]
         g_leaderCleared = &lead.clearedGround;
         std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
         pullMobs.insert(pullMobs.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());  // [lead76]
@@ -854,6 +856,7 @@ namespace Leader::Dungeon
             ~GuardReset()
             {
                 g_leaderIdle = nullptr;
+                g_leaderIdleAt = nullptr;
                 g_leaderCleared = nullptr;
                 g_leaderExempt = nullptr;
                 g_leaderJoined = nullptr;
@@ -6745,6 +6748,29 @@ namespace Leader::Dungeon
                     float const length = std::max(0.1f, std::hypot(dx, dy));
                     LeaderMoveOrderAction* mover = dynamic_cast<LeaderMoveOrderAction*>(
                         botAI->GetAiObjectContext()->GetAction("leader move order"));
+                    // [lead1121] a damage dealer's range spot is in a healer's reach from where that healer will
+                    // heal: its own range spot of this engage, else the meeting point (it walks with the tank there)
+                    std::vector<std::pair<Player*, Position>> healFrom;
+                    if (!healing)
+                        for (ObjectGuid const& other : group.MemberGuids())
+                            if (Player* healer = ObjectAccessor::FindPlayer(other);
+                                healer && healer != bot && healer->IsAlive() && healer->GetMap() == map &&
+                                PlayerbotAI::IsHeal(healer))
+                            {
+                                auto const own = lead.engageRangeSpots.find(other);
+                                bool const hasOwn = own != lead.engageRangeSpots.end() &&
+                                                    own->second.first == engaged->GetGUID();
+                                healFrom.emplace_back(healer, hasOwn ? own->second.second : lead.meetPoint);
+                            }
+                    auto const healerReaches = [&](Position const& at)
+                    {
+                        if (healFrom.empty())
+                            return true;
+                        for (auto const& [healer, from] : healFrom)
+                            if (HealReaches(tank, from, at, healer))
+                                return true;
+                        return false;
+                    };
                     auto const candidate = [&](float angle, float at) -> bool
                     {
                         float x = meet.GetPositionX() + std::cos(angle) * at;
@@ -6755,7 +6781,8 @@ namespace Leader::Dungeon
                             NearHazard(map, bot->GetPhaseMask(), x, y, z, LEADER_TERRAIN_EDGE))
                             return false;
                         Position const spot(x, y, z);
-                        if (LeaderAggroAt(bot, spot) || (mover && !mover->WalkRefusal(spot).empty()))
+                        if (!healerReaches(spot) || LeaderAggroAt(bot, spot) ||
+                            (mover && !mover->WalkRefusal(spot).empty()))
                             return false;
                         rangeSpot = spot;
                         rangeValid = true;
@@ -6814,7 +6841,11 @@ namespace Leader::Dungeon
                         return pullWalk && verdict != lead.spotChecked.end() && !verdict->second.reject.empty() &&
                                verdict->second.spot.GetExactDist(rangeSpot) <= 1.0f;
                     };
-                    if (healing && aheadOfTank(rangeSpot))
+                    // [lead1121] b237 (triage 13b): "along with the tank: to range of the engage" stood 55-60 yd
+                    // ahead of the walking tank (5E-5 t=107, 5F-14 t=340), 5E-13 t=213 woke a Trogg the tank never
+                    // had. No member walks ahead of the tank's own progress to the mob: while its spot is nearer the
+                    // mob than the tank, it walks along with the tank (lead81's healer rule, for every ranged)
+                    if (aheadOfTank(rangeSpot))
                         aheadHolds = true;
                     else if (!refusedOnWalk())
                     {

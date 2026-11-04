@@ -46,6 +46,10 @@ namespace Leader::Fight
     constexpr float DETOUR_RATIO = 3.0f;
     constexpr float DETOUR_EXTRA = 60.0f;
 
+    // [lead18] the spot guard's idle-mob scan round the tank (the event tick, LeaderAssignSpots); [lead1121] the
+    // guard scans round a spot or walk point this scan does not cover (LeaderAggroAt)
+    constexpr float LEADER_IDLE_SCAN_YD = 80.0f;
+
     struct IdleAggroCheck
     {
         Player* leader;
@@ -214,6 +218,9 @@ namespace Leader::Fight
     // [lead18] the spot guard of every leader spot: the idle mobs around the group (refreshed by the event tick),
     // the group's walked ground (cleared, LEADER_PREFER_CLEARED). World thread only.
     extern std::vector<Creature*> const* g_leaderIdle;
+    // [lead1121] where g_leaderIdle was scanned from (LEADER_IDLE_SCAN_YD round it); nullptr: unknown, every point
+    // is scanned round itself too
+    extern Position const* g_leaderIdleAt;
     extern std::vector<Position> const* g_leaderCleared;
     extern std::vector<ObjectGuid> const* g_leaderExempt;  // [lead24] the committed pull's mobs
     // [lead600] the idle packs the leader decided into the fight (lead76 pack_joins): no member keeps away from them
