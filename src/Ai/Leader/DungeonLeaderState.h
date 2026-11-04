@@ -446,11 +446,17 @@ namespace Leader
         std::map<std::string, uint32> commandRepeats;                      // [lead55] member|why -> repeats
         ObjectGuid dragFor;            // [lead50] fight_drag logged for this loose mob
         // [lead41] unreachable / detour verdicts: kept until the tank or the mob moved off where it was judged
+        // [lead1011] ... or another fact it was judged under changed: the tank's own state (a stun / root / loss of
+        // control), its fight state, a fight that ended since, the mob's fight state (LeaderUnreachableChanged)
         struct Unreachable
         {
             Position tankAt;
             Position mobAt;
             std::string why;
+            bool tankHeld = false;
+            bool tankFighting = false;
+            uint32 peaceSinceMs = 0;
+            bool mobFighting = false;
         };
         std::map<ObjectGuid, Unreachable> unreachable;
         std::string keptPickWhy;

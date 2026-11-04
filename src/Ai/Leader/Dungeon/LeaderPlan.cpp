@@ -1128,7 +1128,7 @@ namespace Leader::Dungeon
                             verdict = "the tank's walk guards refuse the walk in";
                 if (!verdict.empty())
                 {
-                    lead.unreachable[mob->GetGUID()] = {tank->GetPosition(), mob->GetPosition(), verdict};
+                    lead.unreachable[mob->GetGUID()] = LeaderUnreachable(tank, mob, verdict, lead.peaceSinceMs);
                     Decisions().Write(run, "leader", "pick_unreachable", mob->GetGUID(), mob->GetName(),
                                                   true,
                                                   JsonObject().Str("why", verdict).Str("pick", "before the order"));
@@ -1514,10 +1514,14 @@ namespace Leader::Dungeon
                     if (found == lead.unreachable.end())
                         return false;
                     Creature const* mob = map->GetCreature(guid);
-                    if (!mob || !mob->IsAlive() ||
-                        tank->GetExactDist(found->second.tankAt) > Leader::LEADER_COMMIT_MOVED_YD ||
-                        mob->GetExactDist(found->second.mobAt) > Leader::LEADER_COMMIT_MOVED_YD)
+                    if (std::string const changed =
+                            LeaderUnreachableChanged(found->second, tank, mob, lead.peaceSinceMs);
+                        !changed.empty())
                     {
+                        Decisions().Write(run, "leader", "unreachable_released", guid,
+                                          mob ? mob->GetName() : std::string("?"), true,
+                                          JsonObject().Str("why", changed).Str("verdict", found->second.why)
+                                              .Bool("boss", mob && (mob->IsDungeonBoss() || mob->isWorldBoss())));
                         lead.unreachable.erase(found);
                         return false;
                     }
@@ -1742,7 +1746,7 @@ namespace Leader::Dungeon
                                                     : std::string();
                     if (!verdict.empty())
                     {
-                        lead.unreachable[inputs.pick] = {tank->GetPosition(), picked->GetPosition(), verdict};
+                        lead.unreachable[inputs.pick] = LeaderUnreachable(tank, picked, verdict, lead.peaceSinceMs);
                         Decisions().Write(run, "leader", "pick_unreachable", inputs.pick, picked->GetName(),
                                                       true,
                                                       JsonObject().Str("why", verdict).Str("pick", pickWhy));

@@ -181,9 +181,9 @@ namespace Leader::Dungeon
                 !group.State().unreachable.count(report.target))
             {
                 Creature* refusedMob = leader->GetMap()->GetCreature(report.target);
-                group.State().unreachable[report.target] = {leader->GetPosition(),
-                                                         refusedMob ? refusedMob->GetPosition() : leader->GetPosition(),
-                                                         "the tank's walk refused: " + report.why};
+                group.State().unreachable[report.target] =
+                    LeaderUnreachable(leader, refusedMob, "the tank's walk refused: " + report.why,
+                                      group.State().peaceSinceMs);  // [lead1011] with the facts it was judged under
                 Leader::Orders::Close(group.LeaderGuid(), Leader::OrderState::Aborted,
                                       "the tank's walk refused: " + report.why, leader->GetPosition(), nullptr);
                 // [lead109] b142 rfc-h 381.4-383 s: the leader had committed and issued the same mob again in the

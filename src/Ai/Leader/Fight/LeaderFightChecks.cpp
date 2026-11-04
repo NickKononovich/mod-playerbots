@@ -318,6 +318,54 @@ namespace Leader::Fight
         return radius;
     }
 
+    namespace
+    {
+        // the tank's own state that stops its walks (MovementAction::UpdateMovementState's restriction)
+        bool TankHeld(Player* tank)
+        {
+            return tank->HasUnitState(UNIT_STATE_LOST_CONTROL) || tank->IsRooted() || tank->isFrozen() ||
+                   tank->IsPolymorphed();
+        }
+    }
+
+    Leader::DungeonLeaderState::Unreachable LeaderUnreachable(Player* tank, Unit* mob, std::string const& why,
+                                                              uint32 peaceSinceMs)
+    {
+        Leader::DungeonLeaderState::Unreachable verdict;
+        verdict.tankAt = tank->GetPosition();
+        verdict.mobAt = mob ? mob->GetPosition() : tank->GetPosition();
+        verdict.why = why;
+        verdict.tankHeld = TankHeld(tank);
+        verdict.tankFighting = tank->IsInCombat();
+        verdict.peaceSinceMs = peaceSinceMs;
+        verdict.mobFighting = mob && mob->IsInCombat();
+        return verdict;
+    }
+
+    std::string LeaderUnreachableChanged(Leader::DungeonLeaderState::Unreachable const& verdict, Player* tank,
+                                         Unit const* mob, uint32 peaceSinceMs)
+    {
+        // [lead1011] b229 rfc-h 5H-16 724.8 s: Taragaman stored unreachable while the bear stood stunned at the end of
+        // the Enforcer fight; neither the tank nor the boss moved again, the entry was never cleared and the run
+        // stalled 240 s ("the route target out of the pick"). The verdict lasts while every fact it was judged
+        // under holds
+        if (!mob || !mob->IsAlive())
+            return "the mob is gone";
+        if (tank->GetExactDist(verdict.tankAt) > Leader::LEADER_COMMIT_MOVED_YD)
+            return "the tank moved";
+        if (mob->GetExactDist(verdict.mobAt) > Leader::LEADER_COMMIT_MOVED_YD)
+            return "the mob moved";
+        if (TankHeld(tank) != verdict.tankHeld)
+            return verdict.tankHeld ? "the tank's stun / root ended" : "the tank is stunned / rooted";
+        if (tank->IsInCombat() != verdict.tankFighting)
+            return verdict.tankFighting ? "the tank's fight ended" : "the tank fights";
+        if (peaceSinceMs != verdict.peaceSinceMs)
+            return "a fight ended since";
+        if (mob->IsInCombat() != verdict.mobFighting)
+            return verdict.mobFighting ? "the mob left its fight" : "the mob fights";
+        return std::string();
+    }
+
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank)
     {

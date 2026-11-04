@@ -13,6 +13,7 @@
 // room-edge, walk and reachability facts, the attackers' expected damage.
 
 #include "Creature.h"
+#include "DungeonLeaderState.h"  // [lead1011] Unreachable
 #include "HazardZone.h"
 #include "LeaderLog.h"
 #include "LeaderOrders.h"
@@ -182,6 +183,14 @@ namespace Leader::Fight
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);
+
+    // [lead1011] an unreachable verdict with the facts it was judged under (the tank's and the mob's positions, the
+    // tank's own state and fight state, the last fight's end, the mob's fight state)
+    Leader::DungeonLeaderState::Unreachable LeaderUnreachable(Player* tank, Unit* mob, std::string const& why,
+                                                              uint32 peaceSinceMs);
+    // [lead1011] "" while the verdict's facts hold - else the fact that changed (the verdict ends)
+    std::string LeaderUnreachableChanged(Leader::DungeonLeaderState::Unreachable const& verdict, Player* tank,
+                                         Unit const* mob, uint32 peaceSinceMs);
 
     // the member's walk-along spot behind the tank (two rows of two), on reachable ground
     Position LeaderFollowSpot(Player* tank, uint32 index);
