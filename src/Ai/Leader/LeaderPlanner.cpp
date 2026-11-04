@@ -6870,6 +6870,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         uint32 stackedNow = 0;
         uint32 stackedMs = 0;
         uint32 stackedPeak = 0;
+        // [lead1213] the fight's acting seconds: each sample's step counts while the damage done on what came rose
+        // within the group's slowest attack cycle (ActingCycleMs), the stacked mob-seconds with it
+        float actingSec = 0.0f;
+        float actingStackedSec = 0.0f;
+        float damageDone = -1.0f;  // the health taken off what came at the last sample that saw damage
+        uint32 damageMs = 0;
     };
 
     std::mutex pullCheckLock;
@@ -7171,11 +7177,35 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return out;
     }
 
-    // The fight is over: the health of what it killed over its length (corpses still in the world), kept as the
-    // tank's measured group damage. Under pullCheckLock.
+    // [lead1213] the longest gap between two hits of a group that acts: its members' slowest attack cycle - a weapon
+    // swing (melee or ranged) and the global cooldown (a DoT tick or a cast lands at least that often; the game's
+    // values). A fight step longer than this without damage is a step nobody acted in
+    uint32 ActingCycleMs(Player* tank)
+    {
+        uint32 cycle = 1500;  // the game's global cooldown
+        Group* group = tank ? tank->GetGroup() : nullptr;
+        if (!group)
+            return tank ? std::max(cycle, tank->GetAttackTime(BASE_ATTACK)) : cycle;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource();
+                member && member->IsAlive() && member->GetMap() == tank->GetMap() && !PlayerbotAI::IsHeal(member))
+            {
+                cycle = std::max(cycle, member->GetAttackTime(BASE_ATTACK));
+                if (member->getClass() == CLASS_HUNTER)
+                    cycle = std::max(cycle, member->GetAttackTime(RANGED_ATTACK));
+            }
+        return cycle;
+    }
+
+    // The fight is over: the health of what it killed over its acting seconds (corpses still in the world), kept as
+    // the tank's measured group damage. Under pullCheckLock.
+    // [lead1213] b240 rfc-h 5G-15: the 72.6 s fight S9 (43 s of it nobody hit anything: a deadlock) entered the fit
+    // with its wall seconds - group damage 7000/s -> 2300/s for the rest of the run, every pack planned three times
+    // longer, 4 LoS pulls for 1, Taragaman + Enforcer "fight 285 s". Only the seconds the group acted count
     void NoteMeasuredDps(PlayerbotAI* botAI, Player* tank, PullRecord const& record, uint32 now)
     {
-        uint32 const fightMs = record.startMs ? getMSTimeDiff(record.startMs, now) : 0;
+        uint32 const wallMs = record.startMs ? getMSTimeDiff(record.startMs, now) : 0;
+        uint32 const fightMs = record.damageMs ? uint32(record.actingSec * float(IN_MILLISECONDS)) : wallMs;
         if (!fightMs || record.deaths)
             return;
 
@@ -7190,9 +7220,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (killed <= 0.0f)
             return;
 
-        // [lead650] the last sample's stacked count up to the fight's end
+        // [lead650] the last sample's stacked count up to the fight's end ([lead1213] its acting seconds only)
         float stackedSec = record.stackedSec;
-        if (record.stackedMs)
+        if (record.damageMs)
+            stackedSec = record.actingStackedSec;
+        else if (record.stackedMs)
             stackedSec +=
                 float(record.stackedNow) * float(getMSTimeDiff(record.stackedMs, now)) / float(IN_MILLISECONDS);
 
@@ -7206,9 +7238,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         MeasuredDamage const fit = MeasuredGroupDamageLocked(entry);
         LOG_INFO("playerbots",
                  "[lead650] {}: fight killed {:.0f} health in {:.1f} s, {:.1f} stacked mob-s (peak {}); group damage "
-                 "{:.0f}/s on the focus + {:.0f}/s on each stacked mob (up to {}) over {} fights",
+                 "{:.0f}/s on the focus + {:.0f}/s on each stacked mob (up to {}) over {} fights; [lead1213] acting "
+                 "{:.1f} of {:.1f} s",
                  tank->GetName(), killed, float(fightMs) / float(IN_MILLISECONDS), stackedSec, record.stackedPeak,
-                 fit.single, fit.aoe, fit.stackedPeak, fit.fights);
+                 fit.single, fit.aoe, fit.stackedPeak, fit.fights, float(fightMs) / float(IN_MILLISECONDS),
+                 float(wallMs) / float(IN_MILLISECONDS));
     }
 
     MeasuredDamage MeasuredGroupDamage(Player* tank)
@@ -7639,6 +7673,25 @@ namespace PullCheck
                 }
             }
 
+            // [lead1213] the damage done on what came (a dead or gone mob: its whole health): risen since the last
+            // sample that saw damage - the step since then counts as acting, up to the group's slowest attack cycle
+            float done = 0.0f;
+            for (size_t i = 0; i < record.came.size() && i < record.cameHealth.size(); ++i)
+            {
+                Unit* mob = botAI->GetUnit(record.came[i]);
+                done += mob && mob->IsAlive() ? float(record.cameHealth[i]) - float(mob->GetHealth())
+                                              : float(record.cameHealth[i]);
+            }
+            if (done > record.damageDone)
+            {
+                uint32 const from = record.damageMs ? record.damageMs : record.startMs;
+                float const step =
+                    float(std::min(getMSTimeDiff(from, now), ActingCycleMs(bot))) / float(IN_MILLISECONDS);
+                record.actingSec += step;
+                record.actingStackedSec += float(record.stackedNow) * step;
+                record.damageDone = done;
+                record.damageMs = now ? now : 1;
+            }
             // [lead650] the stacked mobs now: the last count held since the last sample, this one from here on
             uint32 stacked = 0;
             for (ObjectGuid const& guid : attackers)
@@ -7664,9 +7717,11 @@ namespace PullCheck
         NoteMeasuredDps(botAI, bot, record, now);
         NoteMeasuredTaken(botAI, bot, record, now);
         NoteMeasuredHealing(bot, record, now);
-        if (record.startMs)  // [lead264] the group's measured seconds per mob
+        if (record.startMs)  // [lead264] the group's measured seconds per mob ([lead1213] its acting seconds)
             RestState::NoteFightLength(bot, uint32(record.came.size()),
-                                       float(getMSTimeDiff(record.startMs, now)) / float(IN_MILLISECONDS));
+                                       record.damageMs && record.actingSec > 0.0f
+                                           ? record.actingSec
+                                           : float(getMSTimeDiff(record.startMs, now)) / float(IN_MILLISECONDS));
         if (!record.deaths || record.tankLowPct <= 0.0f)  // [lead259] a wipe by others says nothing of the drop
             NoteMeasuredDrop(botAI, bot, record);
         pullChecks.erase(found);
