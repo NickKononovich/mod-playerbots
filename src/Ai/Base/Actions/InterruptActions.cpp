@@ -259,7 +259,12 @@ bool LeaderExternalAction::Execute(Event /*event*/)
         else
             return false;
         float const angle = bot->GetAbsoluteAngle(&walkTo);
-        bot->SetFacingTo(leapsBack ? Position::NormalizeOrientation(angle + float(M_PI)) : angle);
+        float const facing = leapsBack ? Position::NormalizeOrientation(angle + float(M_PI)) : angle;
+        bot->SetFacingTo(facing);
+        // [lead1050] b231 rfc-h 5D-12 388.6 s: the Blink went along the walk's spline heading (-2.2), not to its spot,
+        // onto a navmesh island: SetFacingTo turns the bot on its next spline update, while an instant spell picks
+        // its leap's destination in Spell::prepare (TARGET_DEST_CASTER_FRONT_LEAP: the caster's orientation now)
+        bot->SetOrientation(facing);
     }
     if (!botAI->CastSpell(spell, unit))
     {

@@ -92,6 +92,12 @@ namespace SelfTravel
     // floor. mech-n 20261026-014521-mech-n-5D-17: the tank stood 230 s on a 19-polygon pipe (268.3,-5.1,29.6), the
     // upper level's floor 4 yd below (271.4,-5.7,26.4). False: not on an island, or no such floor. Map thread.
     bool IslandStepDown(Player* bot, G3D::Vector3& landing);
+
+    // [lead1050] A bot whose navmesh part does not reach goal (its walk there ends where it stands) gets the nearest
+    // point of another part, within IslandStepDown's step (8 yd across, 13 yd down, 1 yd up, in sight), from which the
+    // leader's route reaches goal: the step off a rock a player takes. rfc-h 5D-12 (b231) 453-783 s: the mage stood on
+    // a 55-polygon rock 1.1 yd over the floor 3.9 yd off, every walk to the group ended at its feet. Map thread.
+    bool PartStepToward(Player* bot, G3D::Vector3 const& goal, G3D::Vector3& landing);
 }
 
 class InstancePortalTrigger : public Trigger

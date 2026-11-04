@@ -9,6 +9,7 @@
 
 #include "DBCStores.h"
 #include "Event.h"
+#include "LeaderOrders.h"  // [lead1050] Leader::Route
 #include "Map.h"
 #include "MoveSpline.h"
 #include "ObjectMgr.h"
@@ -497,18 +498,20 @@ namespace SelfTravel
         return true;
     }
 
+    // [b34_mech3] the step off a navmesh part (IslandStepDown, [lead1050] PartStepToward)
+    constexpr int ISLAND_QUERY_NODES = 2048;
+    constexpr float STEP_DOWN_REACH = 8.0f;      // across (2D) from the bot to the landing
+    constexpr float STEP_DOWN_MAX_DROP = 13.0f;  // under LEDGE_FALL_SAFE (13.4): no fall damage
+    constexpr float STEP_DOWN_MAX_RISE = 1.0f;   // a gap at about the same height counts too
+    constexpr float STAND_ON_POLY_DZ = 2.0f;     // the bot's own polygon: this close under / over it
+    constexpr int STEP_DOWN_NEAR_POLYS = 64;
+    constexpr size_t STEP_DOWN_TRIES = 6;        // candidates (nearest first) whose part is measured
+
     // [b34_mech3] See the declaration. The navmesh's own connectivity (bot filter: ground and water, no steep).
     bool IslandStepDown(Player* bot, G3D::Vector3& landing)
     {
-        constexpr int ISLAND_MAX_POLYS = 48;        // a part this small (all of it) is an island
+        constexpr int ISLAND_MAX_POLYS = 48;  // a part this small (all of it) is an island
         constexpr float ISLAND_SEARCH_RADIUS = 200.0f;
-        constexpr int ISLAND_QUERY_NODES = 2048;
-        constexpr float STEP_DOWN_REACH = 8.0f;     // across (2D) from the bot to the landing
-        constexpr float STEP_DOWN_MAX_DROP = 13.0f;  // under LEDGE_FALL_SAFE (13.4): no fall damage
-        constexpr float STEP_DOWN_MAX_RISE = 1.0f;  // a gap at about the same height counts too
-        constexpr float STAND_ON_POLY_DZ = 2.0f;    // the bot's own polygon: this close under / over it
-        constexpr int STEP_DOWN_NEAR_POLYS = 64;
-        constexpr size_t STEP_DOWN_TRIES = 6;       // candidates (nearest first) whose part is measured
 
         Map* map = bot ? bot->GetMap() : nullptr;
         dtNavMesh const* navMesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
@@ -613,6 +616,108 @@ namespace SelfTravel
                      "[b34_mech3] {}: island_step_down: on a navmesh island of {} polygons at ({:.1f},{:.1f},{:.1f}) "
                      "-> ({:.1f},{:.1f},{:.1f}), {:.1f} yd across, {:.1f} yd down",
                      bot->GetName(), ownSize, here.x, here.y, here.z, landing.x, landing.y, landing.z,
+                     candidate.across, here.z - landing.z);
+            return true;
+        }
+        return false;
+    }
+
+    // [lead1050] See the declaration. IslandStepDown's step (reach, drop, rise, sight), judged by the goal: a landing
+    // counts when the leader's route from it reaches the goal (its own part does not, by the caller's partial route)
+    bool PartStepToward(Player* bot, G3D::Vector3 const& goal, G3D::Vector3& landing)
+    {
+        Map* map = bot ? bot->GetMap() : nullptr;
+        dtNavMesh const* navMesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
+        if (!navMesh || bot->IsFlying() || bot->Unit::IsInWater() || bot->GetTransport())
+            return false;
+        thread_local std::unordered_map<dtNavMesh const*, std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree>> queries;
+        auto& query = queries[navMesh];
+        if (!query)
+        {
+            query.reset(dtAllocNavMeshQuery());
+            if (!query || dtStatusFailed(query->init(navMesh, ISLAND_QUERY_NODES)))
+            {
+                query.reset();
+                return false;
+            }
+        }
+        // the route's polygons (Leader::Route: ground, water, steep as its fallback): the bot's own part counts whole
+        dtQueryFilter filter;
+        filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
+
+        // Detour works in (y, z, x).
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        float const hereDetour[3] = {here.y, here.z, here.x};
+        float const standExtents[3] = {1.0f, STAND_ON_POLY_DZ, 1.0f};
+        float onPoly[3];
+        dtPolyRef hereRef = 0;
+        if (dtStatusFailed(query->findNearestPoly(hereDetour, standExtents, &filter, &hereRef, onPoly)) || !hereRef)
+            return false;
+
+        // the polygons the bot walks to inside the step's reach: its own part there, no step
+        std::array<dtPolyRef, STEP_DOWN_NEAR_POLYS> ownPolys{};
+        int ownCount = 0;
+        if (dtStatusFailed(query->findPolysAroundCircle(hereRef, onPoly, STEP_DOWN_REACH, &filter, ownPolys.data(),
+                                                        nullptr, nullptr, &ownCount, STEP_DOWN_NEAR_POLYS)))
+            return false;
+        auto const own = [&](dtPolyRef ref)
+        { return std::find(ownPolys.begin(), ownPolys.begin() + ownCount, ref) != ownPolys.begin() + ownCount; };
+
+        float const boxMiddleZ = here.z - (STEP_DOWN_MAX_DROP - STEP_DOWN_MAX_RISE) * 0.5f;
+        float const boxCenter[3] = {here.y, boxMiddleZ, here.x};
+        float const boxExtents[3] = {STEP_DOWN_REACH, (STEP_DOWN_MAX_DROP + STEP_DOWN_MAX_RISE) * 0.5f,
+                                     STEP_DOWN_REACH};
+        std::array<dtPolyRef, STEP_DOWN_NEAR_POLYS> nearPolys{};
+        int nearCount = 0;
+        if (dtStatusFailed(query->queryPolygons(boxCenter, boxExtents, &filter, nearPolys.data(), &nearCount,
+                                                STEP_DOWN_NEAR_POLYS)))
+            return false;
+        struct Candidate
+        {
+            float across;
+            G3D::Vector3 at;
+        };
+        std::vector<Candidate> candidates;
+        for (int index = 0; index < nearCount; ++index)
+        {
+            dtPolyRef const ref = nearPolys[size_t(index)];
+            if (ref == hereRef || own(ref))
+                continue;
+            float closest[3];
+            if (dtStatusFailed(query->closestPointOnPoly(ref, hereDetour, closest, nullptr)))
+                continue;
+            G3D::Vector3 const at(closest[2], closest[0], closest[1]);
+            float const across = std::hypot(at.x - here.x, at.y - here.y);
+            float const drop = here.z - at.z;
+            if (across > STEP_DOWN_REACH || drop > STEP_DOWN_MAX_DROP || drop < -STEP_DOWN_MAX_RISE)
+                continue;
+            candidates.push_back({across, at});
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](Candidate const& a, Candidate const& b) { return a.across < b.across; });
+
+        uint32 const phase = bot->GetPhaseMask();
+        size_t tried = 0;
+        for (Candidate const& candidate : candidates)
+        {
+            if (tried >= STEP_DOWN_TRIES)
+                break;
+            if (!map->isInLineOfSight(here.x, here.y, here.z + 2.0f, candidate.at.x, candidate.at.y,
+                                      candidate.at.z + 2.0f, phase, LINEOFSIGHT_ALL_CHECKS,
+                                      VMAP::ModelIgnoreFlags::Nothing))
+                continue;
+            ++tried;
+            // a polygon of the bot's own part routes no further than the bot's own walk did: only another part's
+            // complete route to the goal is a way there
+            if (!Leader::Route(bot, candidate.at, goal).complete)
+                continue;
+            landing = candidate.at;
+            LOG_INFO("playerbots",
+                     "[lead1050] {}: part_step: its navmesh part at ({:.1f},{:.1f},{:.1f}) does not reach "
+                     "({:.1f},{:.1f},{:.1f}); the step to ({:.1f},{:.1f},{:.1f}), {:.1f} yd across, {:.1f} yd down, "
+                     "routes there",
+                     bot->GetName(), here.x, here.y, here.z, goal.x, goal.y, goal.z, landing.x, landing.y, landing.z,
                      candidate.across, here.z - landing.z);
             return true;
         }

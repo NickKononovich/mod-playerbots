@@ -21,6 +21,7 @@
 #include "GameObject.h"
 #include "Group.h"
 #include "LastMovementValue.h"
+#include "LeaderFightChecks.h"  // [lead1050] LeaderAggroAt
 #include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
 #include "DungeonTactics.h"   // [lead231] IsKnownCleaver
 #include "LeaderKnowledge.h"  // [lead231] HasFrontalAttack
@@ -1887,6 +1888,33 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             return refuse(path.empty() && UsesLeaderRoute(bot) ? "no route (the leader's route search)"
                                                                : "SearchForBestPath (no floor at the destination)");
         float distance = bot->GetExactDist(x, y, modifiedZ);
+        // [lead1050] b231 rfc-h 5D-12 453-783 s: a Blink put the mage on a 55-polygon rock 1.1 yd over the floor; every
+        // walk to the group (Follow, combat spot) was the route's partial end - the rock's point nearest the goal,
+        // where it stood - a 0 yd spline executed every tick, the group waited 330 s and the run stalled. A walk whose
+        // route ends where the member stands, short of the goal, goes nowhere: the member steps off its navmesh part
+        // to the one the route from reaches the goal (SelfTravel::PartStepToward), or stays and reports
+        if (Leader::LedBot(bot) && UsesLeaderRoute(bot) && !path.empty() && distance > Leader::LEADER_SPOT_TOLERANCE &&
+            bot->GetExactDist(path.back().x, path.back().y, path.back().z) <= Leader::LEADER_SPOT_TOLERANCE &&
+            !Leader::Route(bot, Position(x, y, modifiedZ)).complete)
+        {
+            G3D::Vector3 landing;
+            if (!SelfTravel::PartStepToward(bot, G3D::Vector3(x, y, modifiedZ), landing))
+                return refuse("PartStepToward (its navmesh part does not reach the destination, no step off it)");
+            if (Leader::Fight::LeaderAggroAt(bot, Position(landing.x, landing.y, landing.z)))
+                return refuse("PartStepToward (the step lands in an idle mob's reach)");
+            if (dry)
+                return true;
+            if (bot->IsSitState())
+                bot->SetStandState(UNIT_STAND_STATE_STAND);
+            if (!JumpTo(mapId, landing.x, landing.y, landing.z, priority))
+                return refuse("PartStepToward (the step's own guards)");
+            // the walk under way is the walk to the destination (the step its first leg): no re-ask mid-step, and
+            // once landed the walk there goes on (lead1044 reads a walk that ended at its end as reached)
+            LastMovement& last = AI_VALUE(LastMovement&, "last movement");
+            last.Set(mapId, x, y, modifiedZ, bot->GetOrientation(), last.lastdelayTime, priority);
+            last.lastMoveAsked = WorldPosition(mapId, origX, origY, origZ);
+            return true;
+        }
         if (distance > 0.01f)
         {
             if (dry)
