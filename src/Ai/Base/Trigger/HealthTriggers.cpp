@@ -1209,6 +1209,16 @@ void NoteFightLength(Player* tank, uint32 mobs, float sec)
     entry.mobs += float(mobs);
 }
 
+float FightSecNoted(Player* bot)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    if (!group)
+        return 0.0f;
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    auto const found = fightLengths.find(group->GetGUID().GetRawValue());
+    return found != fightLengths.end() && found->second.instanceId == bot->GetInstanceId() ? found->second.sec : 0.0f;
+}
+
 float FightSecOf(Player* bot, NextFight const& fight)
 {
     if (fight.fightSec > 0.0f)

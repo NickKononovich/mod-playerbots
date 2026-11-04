@@ -5063,12 +5063,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // passed with no trace of what it credited (Evocation, the potion, the gem), and the mage was dry before the
         // kill. The boss gate's pass is logged once per boss: each mana member's mana against its line and the line's
         // terms
+        // [lead1043] b230 rfc-h 5E-5: the pass logged at 310.1 s (the hunter at 49 %) was the only line for
+        // Oggleflint - the leader then took a Trogg first (los pull, 311-327 s) and pulled him at 327.6 s with the
+        // gate judged again and the hunter at 14 %, unlogged. The pass is logged once per boss and fight state: a
+        // fight ended since (the group's noted fight seconds) logs the re-check
         if (missing.empty() && boss)
         {
-            thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> passLogged;
+            thread_local std::set<std::tuple<ObjectGuid, ObjectGuid, int32>> passLogged;
             if (passLogged.size() > 1024)
                 passLogged.clear();
-            if (passLogged.insert({bot->GetGUID(), boss->GetGUID()}).second)
+            int32 const fightsNoted = int32(RestState::FightSecNoted(bot) * 10.0f);
+            if (passLogged.insert({bot->GetGUID(), boss->GetGUID(), fightsNoted}).second)
                 if (Group* group = bot->GetGroup())
                     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                         if (Player* member = ref->GetSource();
@@ -5078,8 +5083,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                             std::string why;
                             float const line = RestState::FightManaLine(member, bossSec, 0.0f, &why, true);
                             LOG_INFO("playerbots", "[lead811] {}: boss gate for {} passes {} at {:.0f} % mana, its "
-                                     "line {:.0f} % ({})", bot->GetName(), boss->GetName(), member->GetName(),
-                                     member->GetPowerPct(POWER_MANA), line, why);
+                                     "line {:.0f} % ({}) [lead1043] after {:.0f} s of fights", bot->GetName(),
+                                     boss->GetName(), member->GetName(), member->GetPowerPct(POWER_MANA), line, why,
+                                     fightsNoted / 10.0f);
                         }
         }
 

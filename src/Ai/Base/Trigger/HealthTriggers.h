@@ -322,6 +322,8 @@ float BossPullSecOf(Player* bot);
 float DrinkPctPerSecOf(Player* bot);
 // [lead264] the leader notes a finished fight's length and the mobs that came, for its group in this dungeon
 void NoteFightLength(Player* tank, uint32 mobs, float sec);
+// [lead1043] the fight seconds the group noted in this dungeon so far (a new fight changes it)
+float FightSecNoted(Player* bot);
 // [lead264] the next fight's length: the plan's estimate, else the group's measured seconds per mob in this dungeon
 // times its mobs, else the game's: a creature of the bot's level (its base health) per mob over the group's
 // estimated damage.
