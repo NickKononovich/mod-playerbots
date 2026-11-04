@@ -828,6 +828,39 @@ namespace
     };
 }
 
+namespace
+{
+    // [lead1103] b235 rfc-h 5B: the elemental shaman's boss line read "Flame Shock 403 + Lightning Bolt 237 ... - 18 %
+    // (Elemental Focus)" = 0.70 %/s (its real burn 1.33-2.13 %/s): the cost was read while Elemental Focus's
+    // Clearcasting (-40 %) was up and cached, then the proc was netted out again; 5D's arcane mage read "Arcane Blast
+    // 1425 x 4.50 stack ramp" (its stacks up, then the ramp again). A spell's cost in the rotation is its cost
+    // without the mods of the auras that come and go (Player::ApplySpellMod's sum: the non-passive auras' pct and
+    // flat cost mods taken out); talents (passive) stay
+    float SteadyCost(Player* bot, SpellInfo const* info, int32 cost)
+    {
+        float all = 1.0f;
+        float steady = 1.0f;
+        int32 transientFlat = 0;
+        for (SpellModifier* mod : bot->GetSpellModList(SPELLMOD_COST))
+        {
+            if (!mod || !info->IsAffectedBySpellMod(mod))
+                continue;
+            bool const transient = mod->ownerAura && !mod->ownerAura->IsPassive();
+            if (mod->type == SPELLMOD_PCT)
+            {
+                all += float(mod->value) / 100.0f;
+                if (!transient)
+                    steady += float(mod->value) / 100.0f;
+            }
+            else if (mod->type == SPELLMOD_FLAT && transient)
+                transientFlat += mod->value;
+        }
+        if (all <= 0.0f)
+            return float(cost);
+        return std::max((float(cost) / all - float(transientFlat)) * steady, 0.0f);
+    }
+}
+
 float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
 {
     float const maxMana = float(bot->GetMaxPower(POWER_MANA));
@@ -865,6 +898,11 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
         };
         Pick filler;
         std::unordered_map<uint32, Pick> dots;  // by spell specific (one curse / sting), else by spell
+        // [lead1103] b235 5B: Lava Burst (8 s) and Chain Lightning (6 s) were in no term of the elemental's line - a
+        // spell with a cooldown was neither filler nor damage over time. A cast-time damage spell with a cooldown whose
+        // damage per cast second beats the filler is cast on its cooldown (wowsims elemental: Lava Burst, Chain
+        // Lightning; shadow: Mind Blast), its cost over that cooldown, its cast seconds out of the filler's share
+        std::unordered_map<uint32, Pick> onCooldown;  // by first rank
         std::vector<SpellInfo const*> burnSpells;
         std::vector<RotationBurn> burns;
         for (auto const& [spellId, known] : bot->GetSpellMap())
@@ -898,8 +936,11 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                 info->HasAura(SPELL_AURA_MOD_FEAR) || info->HasAura(SPELL_AURA_MOD_CONFUSE) ||
                 info->HasAura(SPELL_AURA_MOD_PACIFY))
                 continue;
-            int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
-            if (cost <= 0)
+            int32 const rawCost = info->CalcPowerCost(bot, info->GetSchoolMask());
+            if (rawCost <= 0)
+                continue;
+            float const cost = SteadyCost(bot, info, rawCost);  // [lead1103]
+            if (cost <= 0.0f)
                 continue;
             SpellSchoolMask const school = info->GetSchoolMask();
             float const sp = float(bot->SpellBaseDamageBonusDone(school));
@@ -985,7 +1026,7 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             if (sec <= 0.0f)
                 continue;
             float const cooldownSec = float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) / 1000.0f;
-            Pick const pick{info, float(cost), sec, damage / sec, std::max(durationMs / 1000.0f, cooldownSec),
+            Pick const pick{info, cost, sec, damage / sec, std::max(durationMs / 1000.0f, cooldownSec),
                             direct || info->IsChanneled()};
             if (periodic && !info->IsChanneled() && castSec <= gcdSec + 0.01f)
             {
@@ -1000,6 +1041,13 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
             }
             else if (cooldownSec <= 0.0f && pick.value > filler.value)
                 filler = pick;  // the spell it casts nonstop: no cooldown of its own
+            else if (cooldownSec > 0.0f && castMs > 0 && !info->IsChanneled() && !periodic)
+            {
+                uint32 const slot = info->GetFirstRankSpell()->Id;
+                if (auto const found = onCooldown.find(slot);
+                    found == onCooldown.end() || found->second.value < pick.value)
+                    onCooldown[slot] = Pick{info, float(cost), sec, damage / sec, cooldownSec, true};
+            }
         }
 
         float gross = -1.0f;
@@ -1014,6 +1062,16 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                 dotTime += dot.sec / dot.interval;
                 terms += Acore::StringFormat("{}{} {:.0f} / {:.0f} s", terms.empty() ? "" : " + ",
                                              dot.info->SpellName[0], dot.cost, dot.interval);
+            }
+            for (auto const& [slot, cast] : onCooldown)  // [lead1103]
+            {
+                if (filler.info && cast.value <= filler.value)
+                    continue;
+                gross += cast.cost / cast.interval;
+                dotTime += cast.sec / cast.interval;
+                dots.emplace(slot | 0x40000000u, cast);  // its direct part can crit (Moonkin-style returns)
+                terms += Acore::StringFormat("{}{} {:.0f} / {:.0f} s cooldown", terms.empty() ? "" : " + ",
+                                             cast.info->SpellName[0], cast.cost, cast.interval);
             }
             if (filler.info)
             {
