@@ -4422,10 +4422,15 @@ namespace Leader::Dungeon
                 // holds where it stands because its walk is blocked is placed by the leader: the block's pull frees it
                 // [lead730] a member walking to / waiting at the pull's stop point (melee) or its range spot of the
                 // engage (ranged) is placed there by the leader (it may stand ahead of the walking tank)
+                // [lead1110] b236 rfc-h 5E-5 108-348 s (stalled): the pre-order range spot (lead1102) stood 72 yd
+                // ahead of the tank, so the member was "trailing" and the order waited for it while it waited for the
+                // order. A member on its pre-order range spot is placed by the leader too
                 Leader::MemberEvents waits;
-                bool const atStopPoint = Leader::Events::Get(guid, waits) &&
-                                         (waits.moveWhy.rfind("to the tank's stop point", 0) == 0 ||
-                                          waits.moveWhy.rfind("along with the tank: to range of the engage", 0) == 0);
+                bool const atStopPoint =
+                    Leader::Events::Get(guid, waits) &&
+                    (waits.moveWhy.rfind("to the tank's stop point", 0) == 0 ||
+                     waits.moveWhy.rfind("along with the tank: to range of the engage", 0) == 0 ||
+                     waits.moveWhy.rfind("[lead1102] to its range spot of the engage before the order", 0) == 0);
                 bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
                                     lead.combatSpots.count(guid) || lead.pullWalkSpots.count(guid) || walkRejected ||
                                     lead.groupBlockedBy.count(guid) || atStopPoint;
