@@ -906,20 +906,44 @@ void LeaderCommandMultiplier::Refresh()
             float const radius = AreaRadius(bot, info, spell);
             Position const center = bot->GetPosition();
             std::string why;
+            // [lead1160] b240 rfc-h: 14 Starfalls cancelled 1-2 s after the cast ("the area reaches the leader's
+            // spared Searing Blade Enforcer"; "AoE outside the leader's pack" 3), Taragaman's Starfall 0 damage in
+            // 5C-11 against the sim's ~450 dps from it. A cancel gives no cooldown back (Starfall's 60 s recharge
+            // runs from the cast): it is worth only the mob it keeps out of the fight. A running area is cancelled
+            // only when its next star really hits a spared mob - the game's own target test, not the cast gate's
+            // forecast: the mob within the area's radius plus its size (WorldObjectSpellAreaTargetCheck, a player's
+            // spell on a creature), a valid target for the caster, and seen by the caster from its eyes both ways
+            // the game reads it (spell_dru_starfall_dummy::FilterTargets: caster->IsWithinLOS(target); Spell::
+            // CheckEffectTarget: caster->IsWithinLOSInMap(target, M2)) - or an unpulled walker that gets there
+            // within the aura's next tick (FieldWalkerEnters over the periodic amplitude), or a pulled spared mob
+            // whose victim stands where the caster's stars reach. The pack's centre moving off the caster is no
+            // hit on anyone: that test stays the cast gate's (AreaHolds)
+            float const tickSec = float(std::max<int32>(effect->GetAmplitude(), 1)) / 1000.0f;
+            auto const hit = [&](Unit* mob)
+            {
+                return bot->IsValidAttackTarget(mob) && mob->GetExactDist(&center) <= radius + mob->GetCombatReach() &&
+                       (info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) ||
+                        (bot->IsWithinLOS(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ()) &&
+                         bot->IsWithinLOSInMap(mob, VMAP::ModelIgnoreFlags::M2)));
+            };
             if (stop)
                 why = "the leader's Stop";
-            else if (!LeaderCommand::AoeAllowed(bot, center, radius))  // [rot310] on the caster: its own reach
-                why = _command.aoe == Leader::AoeRule::Forbidden ? "the leader forbids AoE"
-                                                                 : "AoE outside the leader's pack";
+            else if (_command.aoe == Leader::AoeRule::Forbidden)
+                why = "the leader forbids AoE";
             else if (Unit* spared = SparedInArea(
                          [&](Unit* mob)
                          {
-                             if (mob->IsWithinDist3d(&center, radius) && AreaSees(info, mob, center))  // [lead813]
+                             if (hit(mob))
                                  return true;
+                             if (!mob->IsInCombat())
+                                 return mob->ToCreature() &&
+                                        !Leader::Fight::FieldWalkerEnters(mob->ToCreature(), center, radius, tickSec)
+                                             .empty();
                              Unit* const mobVictim = mob->GetVictim();
-                             return mobVictim && mobVictim->IsWithinDist3d(&center, radius);
+                             return mobVictim && mobVictim->GetExactDist(&center) <= radius &&
+                                    bot->IsWithinLOSInMap(mobVictim, VMAP::ModelIgnoreFlags::M2);
                          }))
-                why = "the area reaches the leader's spared " + spared->GetName();
+                why = "[lead1160] its next star hits the leader's spared " + spared->GetName();
             if (why.empty())
                 continue;
             uint32 const id = info->Id;
@@ -1137,8 +1161,12 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     // [lead1100] b235 rfc-h: 191 holds on any-way walks at walk speed; a patrol counts only when its waypoint walk
     // enters the radius while the field lasts, a wanderer only when its wander radius reaches it
     // (Leader::Fight::FieldWalkerEnters). A walker the leader takes into the fight is no longer on its spared list
+    // [lead1160] b240 rfc-h: 14 Starfalls passed this gate and were cancelled 1-2 s later when a walker came into
+    // their 30 yd (Taragaman's room: a Searing Blade Enforcer patrol). Every lasting area - a ground field or a
+    // periodic area on the caster (Starfall's stars, Bladestorm's Whirlwind) - is judged against the spared walkers
+    // over its whole duration (spell data), as the field is
     bool const field = info && info->GetDuration() > 0 && info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA);
-    float const fieldSec = field ? float(info->GetMaxDuration()) / 1000.0f : 0.0f;
+    float const fieldSec = lasting ? float(info->GetMaxDuration()) / 1000.0f : 0.0f;
     std::string walkerKind;
     if (Unit* spared = SparedInArea(
             [&](Unit* mob)
@@ -1148,16 +1176,17 @@ float LeaderCommandMultiplier::GetValue(Action* action)
                 Unit* const mobVictim = lasting ? mob->GetVictim() : nullptr;
                 if (mobVictim && mobVictim->IsWithinDist3d(&center, radius))
                     return true;
-                if (!field || !mob->ToCreature())
+                if (!lasting || !mob->ToCreature())
                     return false;
                 walkerKind = Leader::Fight::FieldWalkerEnters(mob->ToCreature(), center, radius, fieldSec);
                 return !walkerKind.empty();
             }))
     {
         Log(action, (!walkerKind.empty()
-                         ? Acore::StringFormat("[lead1100] the field's {:.0f} s let the leader's spared {} {} (low {}, "
+                         ? Acore::StringFormat("[{}] the {}'s {:.0f} s let the leader's spared {} {} (low {}, "
                                                "{:.1f} yd) walk into it",
-                                               fieldSec, walkerKind, spared->GetName(),
+                                               field ? "lead1100" : "lead1160", field ? "field" : "area", fieldSec,
+                                               walkerKind, spared->GetName(),
                                                spared->GetGUID().GetCounter(), spared->GetExactDist(&center))
                          : "the area reaches the leader's spared " + spared->GetName())
                         .c_str());

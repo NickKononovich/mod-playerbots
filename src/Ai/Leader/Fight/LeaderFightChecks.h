@@ -188,6 +188,9 @@ namespace Leader::Fight
     // [lead1096] the longest lasting ground field among the bot's spells (a persistent area aura's duration, spell
     // data), seconds; 0: none
     float LeaderMaxFieldSec(Player* bot);
+    // [lead1160] the longest lasting area among the bot's spells: a ground field or a periodic area on the caster
+    // (Starfall, Bladestorm), its spell data duration in seconds; 0: none
+    float LeaderMaxLastingAreaSec(Player* bot);
     // [lead1100] the bot's longest ground field: its spell (0: none) and its radius (spell data)
     uint32 LeaderFieldSpell(Player* bot);
     float LeaderMaxFieldRadius(Player* bot);

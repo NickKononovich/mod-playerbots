@@ -2012,12 +2012,14 @@ namespace Leader::Dungeon
                 // area radius among the members' spells (spell data: Starfall's 30 yd, not the rule's 10)
                 float farthest = tank->GetExactDist(target);
                 float areaRadius = LeaderMaxAreaRadius(tank);
-                float fieldSec = LeaderMaxFieldSec(tank);  // [lead1096]
+                // [lead1160] every lasting area, not the ground fields alone: a Starfall's 10 s hit the walkers
+                // that come within its 30 yd while it lasts, and they must be on the spared list at its cast
+                float fieldSec = LeaderMaxLastingAreaSec(tank);  // [lead1096]
                 for (Player* bot : seats)
                 {
                     farthest = std::max(farthest, bot->GetExactDist(target));
                     areaRadius = std::max(areaRadius, LeaderMaxAreaRadius(bot));
-                    fieldSec = std::max(fieldSec, LeaderMaxFieldSec(bot));
+                    fieldSec = std::max(fieldSec, LeaderMaxLastingAreaSec(bot));
                 }
                 // [lead1096] user 2026-11-04 (Q9): a ground field is held while an unpulled walker (a patrol, a
                 // wanderer) can walk into it before it ends - the spared list reaches as far as one walks at the

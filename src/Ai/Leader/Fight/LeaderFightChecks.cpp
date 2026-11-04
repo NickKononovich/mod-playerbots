@@ -308,6 +308,54 @@ namespace Leader::Fight
             }
             return radius;
         }
+
+        // [lead1160] a self aura whose periodic trigger hits enemies (Starfall 53201 -> 53198
+        // TARGET_UNIT_SRC_AREA_ENEMY, Bladestorm 46924 -> 50622): the core counts it positive (SpellInfo::
+        // _IsPositiveEffect keeps a periodic trigger positive unless its trigger hits a friendly target negatively),
+        // so the offensive-spell scans that skip positive spells never read Starfall's 30 yd or its 10 s
+        bool PeriodicEnemyArea(SpellInfo const* info)
+        {
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                if (effect.Effect != SPELL_EFFECT_APPLY_AURA ||
+                    effect.ApplyAuraName != SPELL_AURA_PERIODIC_TRIGGER_SPELL || !effect.TriggerSpell)
+                    continue;
+                if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                    for (SpellEffectInfo const& hit : triggered->GetEffects())
+                        if (hit.IsEffect() && (hit.TargetA.GetCheckType() == TARGET_CHECK_ENEMY ||
+                                               hit.TargetB.GetCheckType() == TARGET_CHECK_ENEMY))
+                            return true;
+            }
+            return false;
+        }
+    }
+
+    float LeaderMaxLastingAreaSec(Player* bot)
+    {
+        // the spell scan is cached per bot while its spells stay the same (a lookup, no clock)
+        struct Cached
+        {
+            size_t spells = 0;
+            float sec = 0.0f;
+        };
+        thread_local std::unordered_map<uint64, Cached> cache;
+        Cached& cached = cache[bot->GetGUID().GetRawValue()];
+        if (cached.spells == bot->GetSpellMap().size())
+            return cached.sec;
+        float sec = 0.0f;
+        for (auto const& [spellId, known] : bot->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->GetMaxDuration() <= 0)
+                continue;
+            bool const field = !info->IsPositive() && info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA);
+            if (field || PeriodicEnemyArea(info))
+                sec = std::max(sec, float(info->GetMaxDuration()) / 1000.0f);
+        }
+        cached = {bot->GetSpellMap().size(), sec};
+        return sec;
     }
 
     float LeaderMaxAreaRadius(Player* bot)
@@ -328,7 +376,7 @@ namespace Leader::Fight
             if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
                 continue;
             SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-            if (!info || info->IsPassive() || info->IsPositive())
+            if (!info || info->IsPassive() || (info->IsPositive() && !PeriodicEnemyArea(info)))  // [lead1160]
                 continue;
             radius = std::max(radius, SpellAreaRadius(bot, info, 2));
         }
