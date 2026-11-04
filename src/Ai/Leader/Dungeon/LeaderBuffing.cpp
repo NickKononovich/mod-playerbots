@@ -449,6 +449,20 @@ namespace Leader::Dungeon
         GroupRouteState& route = group.Route();
         uint32 const now = getMSTime();
         group.ClearWaypoint(group.LeaderGuid());
+        // [lead1022] b229 rfc-h 5G-15: the pass before Taragaman opened at 555 s while the tank walked in to his
+        // pack (the leader's order of 553 s), pull 33 fought 558-587 s and step 1 ended at 588 s "after 33.0 s" -
+        // the triage read 33 s of buffing. The fight's seconds are the fight's: the step's clock resumes after it
+        if (route.buffFightMs)
+        {
+            uint32 const fightMs = getMSTimeDiff(route.buffFightMs, now);
+            route.buffStepMs += fightMs;
+            route.buffFightMs = 0;
+            LOG_INFO("playerbots", "[lead1022] the buff pass ({}) resumes at step {} after a fight of {:.1f} s ({})",
+                     route.buffReason, uint32(route.buffStep), fightMs / 1000.0f, group.Run().runId);
+            group.LogEvent("buff_pass_fight", JsonObject().Num("step", route.buffStep)
+                                                  .Real("fightSec", fightMs / 1000.0f)
+                                                  .Str("reason", route.buffReason));
+        }
         // A step done goes on to the next one in the same tick while that one has nothing to wait for (no flask, no
         // food): nothing missing takes about 4 s.
         for (uint32 pass = 0; pass < 4 && route.needBuff; ++pass)

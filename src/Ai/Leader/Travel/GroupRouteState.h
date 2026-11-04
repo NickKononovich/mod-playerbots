@@ -474,6 +474,7 @@ namespace Leader
         uint8 buffStep = 0;
         uint32 buffStepMs = 0;
         uint32 buffSinceMs = 0;  // the buffing pass started (for the logs)
+        uint32 buffFightMs = 0;  // [lead1022] a fight under the open pass started (its seconds are no step's)
         std::string buffReason = "run start";
         // waits
         uint32 waitSinceMs = 0;

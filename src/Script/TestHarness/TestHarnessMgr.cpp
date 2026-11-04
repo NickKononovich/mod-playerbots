@@ -3594,6 +3594,10 @@ namespace TestHarness
                     rest.regenAboveLineLogged = false;
                 }
                 SetPhase(party, activeBoss ? Phase::BossFight : Phase::Clearing);
+                // [lead1022] a fight under an open buff pass: the pass waits for it (TickBuffing does not run), its
+                // step's seconds do not count the fight (b229 5G-15 555-588 s: step 1 "33 s" was pull 33's 29 s)
+                if (party.needBuff && party.buffStep >= 1 && !party.buffFightMs)
+                    party.buffFightMs = now ? now : 1;
                 {
                     PartyLeaderGroup group(*this, party);
                     Leader::Travel::AssistMember(group, players, leader);  // [lead345] the leader's (RouteMeet.h)
