@@ -1602,6 +1602,17 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // rate where that is higher (AoE)
     float const rotation =
         boss ? BossRotationRate(bot, fightSec, &rotationWhy) : RotationSpendPctPerSec(bot, fightSec, &rotationWhy);
+    // [lead1162] b240 rfc-h 5D: the arcane mage came to the bosses at 2 / 34 / 52 % (5D-4) and 41 / 16 / 68 / 80 %
+    // (5D-12): the gate read "1.36 %/s (its acting seconds)", "0.95 %/s (its acting seconds on bosses)" against its
+    // rotation's 2.46-2.67 %/s nonstop (Arcane Blast at its stacks, lead1103's steady costs), so 62 s x 1.36 + 5 - 89
+    // cooldowns left a 0 % line; 5C's balance druid the same (0.83-1.18 %/s on bosses vs 1.49-1.76 nonstop). A rate
+    // measured on a boss the caster came to short of mana is the fight it could not cast (lead563's words): its
+    // potion, gem and drinks went first and its rotation waited. On a boss a damage caster casts its rotation the
+    // whole fight (wowsims): its line's rate is never below the rotation's nonstop spend
+    std::string nonstopWhy;
+    float const nonstop = boss && rotation < 0.0f && !PlayerbotAI::IsHeal(bot)
+                              ? RotationSpendPctPerSec(bot, fightSec, &nonstopWhy)
+                              : -1.0f;
     bool bossMeasured = false;  // [lead855] the boss line reads a boss fight's measured rate
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
@@ -1669,6 +1680,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 rate = rotation;
                 measured = true;
                 source = "its rotation nonstop, no boss measured";
+            }
+            else if (nonstop > rate)  // [lead1162] a boss rate below its rotation's: a starved fight
+            {
+                rate = nonstop;
+                measured = true;
+                source = "its rotation nonstop (above its rate measured on bosses) [lead1162]";
+                rotationWhy = nonstopWhy;
             }
         }
         else if (rotation > rate)  // [lead990] a trash line: the rotation's nonstop rate when higher
@@ -2079,7 +2097,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
     if (why)
         *why += timeline;
-    if (why && rotation >= 0.0f)  // [lead855]
+    if (why && (rotation >= 0.0f || (nonstop >= 0.0f && rate == nonstop)))  // [lead855] [lead1162]
         *why += "; its rotation " + rotationWhy;
     if (why && perTankHealth > 0.0f)  // [lead258]
         *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
