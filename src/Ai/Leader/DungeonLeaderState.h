@@ -269,6 +269,8 @@ namespace Leader
             ObjectGuid target;  // the mob the point is for
             Position meet;      // the leader's meeting point it was computed from
             Position point;     // the member's place at it
+            bool follows = false;  // [lead1031] its walk there is blocked short of the pull: along with the tank
+            Position from;         // [lead1031] where the member stood when that was judged
         };
         // [lead730] the melee wait before the pull: the last point of its walk to the pull's stop point outside
         // every unpulled mob's reach (target: the pull's mob, meet: the stop point it was computed for)
@@ -309,6 +311,9 @@ namespace Leader
         std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
         std::map<ObjectGuid, uint32> engageRangeOrder;  // [lead68] the order the range spot was computed for
+        // [lead1030] the order and the member's place a range spot search found none from: not searched again
+        // until the order changes or the member moved off that place (the search's own spot tolerance)
+        std::map<ObjectGuid, std::pair<uint32, Position>> engageRangeNone;
         ObjectGuid keptPick;  // [lead39] the leader's pick, kept until dead / fought / refused / out of reach
         ObjectGuid pickJudgedFor;  // [lead40] the pick the reachability verdict was taken for
         Position pickJudgedAt;     // [lead41] the tank where it was judged

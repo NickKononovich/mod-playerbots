@@ -1131,7 +1131,8 @@ namespace Leader::Dungeon
         // the spot guard's margin; the pull's own mobs are unpulled for a member until the tank has them) - the
         // closest place to the goal it reaches without waking anything. None while it stands in such a reach itself
         // (no safe walk to judge from)
-        auto const lastSafeOnWalk = [&](Player* bot, Position const& goal) -> std::optional<Position>
+        auto const lastSafeOnWalk = [&](Player* bot, Position const& goal,
+                                        Creature** blocker = nullptr) -> std::optional<Position>
         {
             Position last = bot->GetPosition();
             if (LeaderAggroAt(bot, last))
@@ -1151,8 +1152,12 @@ namespace Leader::Dungeon
                 {
                     G3D::Vector3 const point = from + (to - from) * (at / length);
                     Position const sample(point.x, point.y, point.z);
-                    if (LeaderAggroAt(bot, sample))
+                    if (Creature* mob = LeaderAggroAt(bot, sample))
+                    {
+                        if (blocker)
+                            *blocker = mob;
                         return last;
+                    }
                     last = sample;
                     if (at >= length)
                         break;
@@ -1175,13 +1180,40 @@ namespace Leader::Dungeon
             Position back;
             if (lead.commit && lead.commit->kind == "engage" && FightSpot::Ahead(tank, back))
                 goal = back;
-            if (kept.target != lead.commitMob || kept.meet.GetExactDist(goal) > 1.0f)
+            // [lead1031] b230 rfc-h 5G-15 263.5 s: the paladin and the warrior got their wait 133 yd short of the
+            // engage's meeting point - their own walk there entered the reach of a mob on the way that was no mob of
+            // the pull (the tank walked past it on its route) - and stood there 22 s while the tank walked on; at
+            // the pull they walked 120 yd (15-18 s to their first hits; 49 waits >= 60 yd from the stop point this
+            // batch). A walk blocked by a mob that is not the pull's and does not reach the stop point is no wait
+            // before the pull: the member walks along with the tank and is judged again once it has moved by the
+            // leader's own moved measure (or the tank stands); the pull's own mobs (and one reaching the stop point)
+            // keep the wait out of their reach
+            bool const judgedHere = kept.target == lead.commitMob && kept.meet.GetExactDist(goal) <= 1.0f &&
+                                    (!kept.follows || (tank->isMoving() && bot->GetExactDist(kept.from) <=
+                                                                                Leader::LEADER_COMMIT_MOVED_YD));
+            if (!judgedHere)
             {
-                std::optional<Position> const point = slow([&] { return lastSafeOnWalk(bot, goal); });
+                Creature* blocker = nullptr;
+                std::optional<Position> const point = slow([&] { return lastSafeOnWalk(bot, goal, &blocker); });
                 if (!point)
                     return std::nullopt;  // judged again next tick, from where it walked
-                kept = {lead.commitMob, goal, *point};
+                std::vector<ObjectGuid> pulled = LeaderPullMobs(lead.commit, lead.commitMob);
+                pulled.insert(pulled.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
+                bool const onTheWay = blocker && tank->isMoving() &&
+                                      std::find(pulled.begin(), pulled.end(), blocker->GetGUID()) == pulled.end() &&
+                                      !IdleMobReachesSpot(bot, blocker, goal);
+                if (onTheWay && !(kept.follows && kept.target == lead.commitMob))
+                    Decisions().Write(run, "leader", "melee_wait_follow", bot->GetGUID(), bot->GetName(), true,
+                                      JsonObject().Str("member", bot->GetName())
+                                          .Str("why", "[lead1031] its walk to the pull meets the reach of " +
+                                                          blocker->GetName() + ", no mob of the pull: along with "
+                                                                               "the tank")
+                                          .Real("stopGap", point->GetExactDist(goal))
+                                          .Real("blockerGap", blocker->GetExactDist(goal)));
+                kept = {lead.commitMob, goal, *point, onTheWay, bot->GetPosition()};
             }
+            if (kept.follows)
+                return std::nullopt;
             return kept.point;
         };
         // [lead730] at the tank's opener the pulled mob runs to its victim: where they meet is the fight's stop point
@@ -5488,7 +5520,10 @@ namespace Leader::Dungeon
                                         .Str("target", target->GetName())
                                         .Str("hereFails", hereFails)
                                         .Real("walk", bot->GetExactDist(spot))
-                                        .Real("targetGap", bot->GetExactDist(target)));
+                                        .Real("targetGap", bot->GetExactDist(target))
+                                        // [lead1030] the plan's meeting point against where the target stands
+                                        .Real("meetGap", bot->GetExactDist(lead.meetPoint))
+                                        .Real("targetMeetGap", target->GetExactDist(lead.meetPoint)));
                             lead.combatSpots[guid] = {target->GetGUID(), spot};
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         }
@@ -5920,7 +5955,11 @@ namespace Leader::Dungeon
                         rangeValid = true;
                     }
                 }
-                if (engaged && !rangeValid && !lead.engageRefused.count(guid))
+                auto const noneFrom = lead.engageRangeNone.find(guid);
+                bool const searchedHere = noneFrom != lead.engageRangeNone.end() &&
+                                          noneFrom->second.first == engage.id &&
+                                          bot->GetExactDist(noneFrom->second.second) <= LEADER_FOLLOW_TOLERANCE;
+                if (engaged && !rangeValid && !lead.engageRefused.count(guid) && !searchedHere)
                 {
                     float const range = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEALER_TANK_YD - 4.0f
                                                                  : LeaderSpellReach(bot) - 4.0f;
@@ -5932,21 +5971,57 @@ namespace Leader::Dungeon
                     float const length = std::max(0.1f, std::hypot(dx, dy));
                     LeaderMoveOrderAction* mover = dynamic_cast<LeaderMoveOrderAction*>(
                         botAI->GetAiObjectContext()->GetAction("leader move order"));
-                    for (float at = std::min(range, length); at <= length && !rangeValid; at += 3.0f)
+                    auto const candidate = [&](float angle, float at) -> bool
                     {
-                        float x = meet.GetPositionX() + dx / length * at;
-                        float y = meet.GetPositionY() + dy / length * at;
+                        float x = meet.GetPositionX() + std::cos(angle) * at;
+                        float y = meet.GetPositionY() + std::sin(angle) * at;
                         float z = meet.GetPositionZ();
                         if (!map->CheckCollisionAndGetValidCoords(engaged, meet.GetPositionX(), meet.GetPositionY(),
                                                                   meet.GetPositionZ(), x, y, z) ||
                             NearHazard(map, bot->GetPhaseMask(), x, y, z, LEADER_TERRAIN_EDGE))
-                            continue;
+                            return false;
                         Position const spot(x, y, z);
                         if (LeaderAggroAt(bot, spot) || (mover && !mover->WalkRefusal(spot).empty()))
-                            continue;
+                            return false;
                         rangeSpot = spot;
                         rangeValid = true;
+                        return true;
+                    };
+                    float const side = std::atan2(dy, dx);
+                    // [lead1030] b230 rfc-h (16 runs): 351 s of caster walks and 414 s of first-hit delay were
+                    // "StandAt first spot: out of spell range of the target" after a spot given before the pull - this
+                    // search walked outward from `range` toward the member when the spot there was in a pack mate's
+                    // reach, so the spot it kept stood beyond the spell's reach of the mob the tank meets (76 such
+                    // spots), or found none and the member followed the tank (176). The spot is first searched in its
+                    // reach of the meeting point: on the member's side from `range` in, then turned round the mob as
+                    // the pull spots are (LeaderAssignSpots' turns); only when none passes, the nearest safe wait out
+                    // of reach on the member's line as before
+                    static constexpr float TURN[] = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f};
+                    float const inReach = std::min(range, length);
+                    for (float turn : TURN)
+                    {
+                        for (float at = inReach; at > 0.0f && !rangeValid; at -= 3.0f)
+                            candidate(side + turn, at);
+                        if (rangeValid)
+                        {
+                            Decisions().Write(run, "leader", "engage_range_spot", guid, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName())
+                                                  .Str("why", "[lead1030] a spot in its reach of the meeting point")
+                                                  .Real("turn", turn).Real("meetGap", rangeSpot.GetExactDist(meet))
+                                                  .Real("reach", range + 4.0f));
+                            break;
+                        }
                     }
+                    for (float at = inReach + 3.0f; at <= length && !rangeValid; at += 3.0f)
+                        if (candidate(side, at))
+                            Decisions().Write(run, "leader", "engage_range_spot", guid, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName())
+                                                  .Str("why", "[lead1030] no spot in its reach passes: the nearest "
+                                                              "safe wait out of it")
+                                                  .Real("turn", 0.0f).Real("meetGap", rangeSpot.GetExactDist(meet))
+                                                  .Real("reach", range + 4.0f));
+                    if (!rangeValid)
+                        lead.engageRangeNone[guid] = {engage.id, bot->GetPosition()};
                 }
                 if (meleeToMeeting)
                 {
