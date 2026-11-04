@@ -2123,12 +2123,34 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         float const share = std::max(DamageShare(bot, dealers), 1.0f / float(dealers));
         if (shortPct > 0.0f && share < 1.0f)
         {
-            float const drySec = std::min(shortPct / rate, fightSec);
+            float drySec = std::min(shortPct / rate, fightSec);
             float const extendSec = drySec * share / (1.0f - share);
+            // [lead1200] b243 rfc-h 5B elemental shaman 75 % of the sim (b242 86-95 %): 19 boss lines pulled short
+            // (100 -> 1-15 %, "36-43 s of its rotation x 25-28 % share = the fight 12-17 s longer vs 16-25 s of the
+            // group's wait drinking"); 5B-10 Jergosh at 8 %: 7 Lightning Bolts in 39 s, busy 34 %, "not enough
+            // power (64 of 702)". A boss fight is judged by the member's own boss damage against the sim's (wowsims
+            // starts every boss at full mana): on a boss its dry seconds cost that damage whole, over the boss
+            // fight's full length (its seconds plus the longer seconds it stays dry in), not diluted by its share
+            // of the group's dps. The boss line is pulled short only when those seconds are fewer than the group's
+            // wait its drink adds; trash keeps the group's cost (lead1182)
+            if (boss)
+                drySec = std::min(shortPct / rate, fightSec + extendSec);
+            float const costSec = boss ? drySec : extendSec;
             float const ownDrinkSec = shortPct / drinkRate;
             float const drinkWaitSec =
                 overlap ? std::max(otherWaitSec, ownDrinkSec) - otherWaitSec : ownDrinkSec;
-            if (extendSec < drinkWaitSec)
+            if (boss && extendSec < drinkWaitSec && costSec >= drinkWaitSec)
+            {
+                thread_local std::set<std::pair<uint64, int32>> bossDryLogged;
+                if (bossDryLogged.size() > 4096)
+                    bossDryLogged.clear();
+                if (!nestedManaLine && bossDryLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec)}).second)
+                    LOG_INFO("playerbots",
+                             "[lead1200] {}: its boss line is not pulled short ({:.0f} -> {:.0f} %): {:.1f} s of its "
+                             "boss rotation dry >= {:.1f} s of the group's wait drinking",
+                             bot->GetName(), lineRaw, mana, drySec, drinkWaitSec);
+            }
+            if (costSec < drinkWaitSec)
             {
                 std::string uncovered;
                 if (Group* group = bot->GetGroup())
