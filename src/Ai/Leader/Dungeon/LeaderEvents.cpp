@@ -5173,7 +5173,15 @@ namespace Leader::Dungeon
             // [lead67] only a victim beyond the tank's pick-up reach (its taunt's range, in sight) runs: one standing in
             // it is picked up where it stands (b112: the shaman behind the target flipped run <-> combat spot)
             auto const loose = looseOn.find(guid);
-            float const pickUp = LeaderTauntReach(tank);
+            // [lead1089] user 2026-11-04 (Q52): the victim walks into the zone the tank takes the mob back with -
+            // with its taunt ready, the taunt's range in the tank's sight (not closer); with the taunt on cooldown,
+            // the tank's own area reach (its spells' radius, spell data); the combat spot takes it back out once the
+            // tank has the mob (the run holds only until it arrived)
+            bool tauntReady = false;
+            for (uint32 taunt : TANK_TAUNTS)
+                if (tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt))
+                    tauntReady = true;
+            float const pickUp = tauntReady ? LeaderTauntReach(tank) : LeaderMaxAreaRadius(tank);
             bool const inPickUp = pickUp > 0.0f && bot->GetExactDist(tank) <= pickUp && tank->IsWithinLOSInMap(bot);
             // [lead217] ... nor does a mob that stands off it (a caster at range): the run would only take the member
             // out of its spot; the tank goes to that mob (above)
@@ -5214,8 +5222,16 @@ namespace Leader::Dungeon
                 float const dx = bot->GetPositionX() - tank->GetPositionX();
                 float const dy = bot->GetPositionY() - tank->GetPositionY();
                 float const length = std::max(0.1f, std::hypot(dx, dy));
-                float x = tank->GetPositionX() + dx / length * LEADER_LOOSE_TANK_YD;
-                float y = tank->GetPositionY() + dy / length * LEADER_LOOSE_TANK_YD;
+                // [lead1089] the zone's edge on its side of the tank (inside by its own combat reach), in the tank's
+                // sight; none: next to the tank as before
+                float zoneYd = std::max(LEADER_LOOSE_TANK_YD, pickUp - bot->GetCombatReach());
+                if (zoneYd > LEADER_LOOSE_TANK_YD &&
+                    !tank->IsWithinLOS(tank->GetPositionX() + dx / length * zoneYd,
+                                       tank->GetPositionY() + dy / length * zoneYd,
+                                       tank->GetPositionZ() + bot->GetCollisionHeight()))
+                    zoneYd = LEADER_LOOSE_TANK_YD;
+                float x = tank->GetPositionX() + dx / length * zoneYd;
+                float y = tank->GetPositionY() + dy / length * zoneYd;
                 float z = tank->GetPositionZ();
                 Position spot = tank->GetPosition();
                 if (map->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
@@ -5227,7 +5243,7 @@ namespace Leader::Dungeon
                 Leader::MemberEvents runEvents;
                 if (Leader::Events::Get(guid, runEvents) && runEvents.move == Leader::MoveEvent::MoveTo &&
                     runEvents.moveWhy == "aggro loss: to the tank" &&
-                    runEvents.spot.GetExactDist(tank->GetPosition()) <= LEADER_LOOSE_TANK_YD + 1.5f)
+                    runEvents.spot.GetExactDist(tank->GetPosition()) <= zoneYd + 1.5f)
                     spot = runEvents.spot;
                 lead.runHold.insert(guid);  // [lead59]
                 bool runs = checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: to the tank");
