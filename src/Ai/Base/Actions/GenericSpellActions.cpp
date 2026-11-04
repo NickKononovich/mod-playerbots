@@ -476,8 +476,8 @@ bool CastBuffSpellAction::Execute(Event /*event*/)
 {
     // [lead86] only a buff really cast is buff work (a failed cast kept the rebuff window open)
     bool const cast = botAI->CastSpell(spell, GetTarget());
-    if (cast)
-        botAI->forceRebuff.NoteBuffWork();
+    if (cast && botAI->forceRebuff.IsPending())
+        botAI->forceRebuff.NoteBuffWork(AI_VALUE2(uint32, "spell id", spell));  // [lead1095]
     return cast;
 }
 

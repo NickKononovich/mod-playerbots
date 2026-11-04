@@ -8,11 +8,17 @@
 #include "GenericSpellActions.h"
 #include "HealthTriggers.h"  // [lead152] RestState::PredictNextFight
 #include "LeaderOrders.h"
+#include "Log.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "StringFormat.h"
 #include "Timer.h"
 #include <algorithm>
+#include <set>
+#include <utility>
 
 // [lead44] user rule (no forcing timers): the window has no time limit - it closes when its buffs are done ("ready
 // reply", ReadyReplyAction, once a cycle runs no buff)
@@ -35,20 +41,45 @@ bool ForceRebuffState::IsPending() const
     return pending;
 }
 
-void ForceRebuffState::NoteBuffWork()
+void ForceRebuffState::NoteBuffWork(uint32 spellId)
 {
-    if (!bot || !IsPending() || bot->IsInCombat())
+    if (!bot || !IsPending() || bot->IsInCombat() || OwnerMaintained(spellId))
         return;
 
     buffPendingThisCycle = true;
 }
 
-void ForceRebuffState::NoteBuffProposed()
+void ForceRebuffState::NoteBuffProposed(uint32 spellId)
 {
-    if (!bot || !IsPending() || bot->IsInCombat())
+    if (!bot || !IsPending() || bot->IsInCombat() || OwnerMaintained(spellId))
         return;
 
     buffProposedThisCycle = true;
+}
+
+bool ForceRebuffState::OwnerMaintained(uint32 spellId) const
+{
+    SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!info)
+        return false;
+    // [lead1095] charges its use spends: recast as they go, whatever its duration; a full duration shorter than the
+    // next fight: no pass makes it last that fight
+    int32 const duration = info->GetMaxDuration();
+    RestState::NextFight fight;
+    bool const charges = info->ProcCharges > 0;
+    bool const shorter = !charges && bot && duration > 0 && Leader::LedBot(bot) &&
+                         RestState::PredictNextFight(bot, fight) && fight.fightSec > 0.0f &&
+                         float(duration) < fight.fightSec * float(IN_MILLISECONDS);
+    if (!charges && !shorter)
+        return false;
+    thread_local std::set<std::pair<uint64, uint32>> logged;
+    if (bot && logged.insert({bot->GetGUID().GetRawValue(), spellId}).second)
+        LOG_INFO("playerbots", "[lead1095] {}: {} is kept up by its owner ({}): no work of the rebuff window",
+                 bot->GetName(), info->SpellName[LOCALE_enUS],
+                 charges ? Acore::StringFormat("{} charges", info->ProcCharges)
+                         : Acore::StringFormat("{:.0f} s < the next fight's {:.0f} s", duration / 1000.0f,
+                                               fight.fightSec));
+    return true;
 }
 
 bool ForceRebuffState::BuffBelowRefreshTarget(int32 remaining, int32 maxDuration, uint32 baseBeforeDuration) const

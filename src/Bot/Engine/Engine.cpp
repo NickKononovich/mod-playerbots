@@ -722,8 +722,11 @@ void Engine::ProcessTriggers(bool minimal)
             if (!event)
                 continue;
 
-            if (trigger->IsBuffTrigger() && !trigger->IsDebuffTrigger())
-                botAI->forceRebuff.NoteBuffProposed();
+            // [lead1095] a buff trigger names its spell (BuffTrigger: the spell's name); a buff its owner keeps up
+            // is no work of the rebuff window
+            if (trigger->IsBuffTrigger() && !trigger->IsDebuffTrigger() && botAI->forceRebuff.IsPending())
+                botAI->forceRebuff.NoteBuffProposed(
+                    aiObjectContext->GetValue<uint32>("spell id", trigger->getName())->Get());
 
             fires[trigger] = event;
             LogAction("T:%s", trigger->getName().c_str());
