@@ -1089,6 +1089,9 @@ namespace TestHarness
                      seals);
 
         bot->DurabilityRepairAll(false, 1.0f, false);
+        // [lead1180] user Q64: the preparation saves the character with every cooldown ready (the run start resets
+        // them again, the pet's too: TestHarnessMgr::BuffPassSetup)
+        bot->RemoveAllSpellCooldown();
         bot->SetFullHealth();
         if (bot->GetMaxPower(POWER_MANA))
             bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));

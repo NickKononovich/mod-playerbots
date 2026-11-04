@@ -3565,6 +3565,21 @@ namespace TestHarness
                     bot->SetFullHealth();
                     if (bot->GetMaxPower(POWER_MANA))
                         bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
+                    // [lead1180] user Q64 (2026-11-04): every cooldown ready at the run start, the pet's too. Wave 2
+                    // runs the same characters ~10 min after wave 1, so long cooldowns are still running (b240 5C-11:
+                    // the blood tank's Army of the Dead from the previous run's Bazzalan at Oggleflint); wowsims'
+                    // fights start with every cooldown ready. Player::RemoveAllSpellCooldown leaves the pet's own
+                    // map (Creature::m_CreatureSpellCooldowns): cleared here the way RemoveArenaSpellCooldowns does
+                    bot->RemoveAllSpellCooldown();
+                    Pet* pet = bot->GetPet();
+                    if (pet)
+                    {
+                        for (auto const& cooldown : pet->m_CreatureSpellCooldowns)
+                            bot->SendClearCooldown(cooldown.first, pet);
+                        pet->m_CreatureSpellCooldowns.clear();
+                    }
+                    LOG_INFO("playerbots", "[lead1180] {}: run start cooldowns reset{}", bot->GetName(),
+                             pet ? " (pet too)" : "");
                 }
     }
 
