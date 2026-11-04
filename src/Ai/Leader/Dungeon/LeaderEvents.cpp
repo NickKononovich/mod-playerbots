@@ -47,6 +47,7 @@
 #include "MovementActions.h"
 #include "LeaderCommand.h"  // [lead410] SPELL_MASTER_OF_GHOULS
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
+#include "LeaderPlannerShared.h"  // [lead1091] TankEngageOpeners
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PartyMemberToHeal.h"  // [lead945] [lead946] HealTriage
@@ -507,24 +508,68 @@ namespace Leader::Dungeon
             return threat;
         }
 
+        // [lead1091] the tank's first ready engage opener (TankEngageOpeners: the engage's own list, best first; no gap
+        // closer: a gap closer's hit only comes sooner, and a sooner hit lands a pre-cast later, never first)
+        SpellInfo const* TankReadyOpener(Player* tank)
+        {
+            PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
+            if (!tankAI)
+                return nullptr;
+            for (char const* opener : PullPlanning::TankEngageOpeners(tank, false))
+                if (uint32 const spell = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", opener)->Get();
+                    spell && tank->HasSpell(spell) && !tank->HasSpellCooldown(spell))
+                    return sSpellMgr->GetSpellInfo(spell);
+            return nullptr;
+        }
+
         // [lead1080] the seconds until the tank's first hit on `mob` in an engage: its walk's remainder (the spline's
         // own time, the game's) plus the straight rest from the walk's end to its melee reach of the mob at its run
         // speed. < 0: the tank does not come (it stands out of its reach): no prediction, the tank is late
+        // [lead1091] b234 rfc-h: 12 pre-casts in 1175 caster pulls. The engage walks the tank to its opener's range
+        // (ChooseTargetActions "engage: walks to its opener's range") and the first hit is that ranged opener at the
+        // walk's end - the melee rest read the hit 20-30 yd / 3-4 s late, so the window (cast time + travel reach the
+        // hit) opened only after the tank had hit. Now: a walk that ends within the ready opener's reach of the mob
+        // (spell data range plus both combat reaches, lead791's reach) hits at the walk's end plus the opener's
+        // travel; a standing tank's cast at the mob at the cast's end plus its travel; a mob that runs in at the tank
+        // (its victim, the tank's walk-in body pull) meets it at their closing speed; else the melee walk as before
         float TankHitEtaSec(Player* tank, Unit* mob)
         {
             float const reach = tank->GetMeleeRange(mob);
             if (tank->IsWithinMeleeRange(mob))
                 return 0.0f;
-            if (!tank->isMoving() || tank->movespline->Finalized())
-                return -1.0f;
             float const speed = tank->GetSpeed(MOVE_RUN);
-            if (speed <= 0.0f)
+            bool const walks = tank->isMoving() && !tank->movespline->Finalized();
+            G3D::Vector3 end(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ());
+            float remain = 0.0f;
+            if (walks)
+            {
+                end = tank->movespline->FinalDestination();
+                remain = std::max(0, tank->movespline->Duration() - tank->movespline->timePassed()) / 1000.0f;
+            }
+            float const endDist = mob->GetExactDist(end.x, end.y, end.z);
+            // a tank that stands and casts at the mob hits at its cast's end plus the travel; one that stands and
+            // casts nothing at it has no predictable hit (a pre-cast under way is cancelled: the tank is late)
+            if (Spell const* cast = tank->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                !walks && cast && cast->m_targets.GetUnitTarget() == mob)
+                return std::max(0, cast->GetCastTimeRemaining()) / 1000.0f +
+                       (cast->GetSpellInfo()->Speed > 0.0f ? endDist / cast->GetSpellInfo()->Speed : 0.0f);
+            if (SpellInfo const* opener = walks ? TankReadyOpener(tank) : nullptr)
+            {
+                float const openerReach = opener->GetMaxRange(false) + tank->GetCombatReach() + mob->GetCombatReach();
+                if (endDist <= openerReach)
+                    return remain + (opener->Speed > 0.0f ? endDist / opener->Speed : 0.0f);
+            }
+            if (mob->IsInCombat() && mob->GetVictim() == tank && mob->isMoving())
+            {
+                // a tank that walks off it (a pull back's run) meets it later than the closing speed says: none
+                if (walks && endDist >= tank->GetExactDist(mob))
+                    return -1.0f;
+                float const closing = mob->GetSpeed(MOVE_RUN) + (walks ? speed : 0.0f);
+                return closing > 0.0f ? std::max(0.0f, tank->GetExactDist(mob) - reach) / closing : -1.0f;
+            }
+            if (!walks || speed <= 0.0f)
                 return -1.0f;
-            G3D::Vector3 const end = tank->movespline->FinalDestination();
-            float const remain =
-                std::max(0, tank->movespline->Duration() - tank->movespline->timePassed()) / 1000.0f;
-            float const rest = std::max(0.0f, mob->GetExactDist(end.x, end.y, end.z) - reach);
-            return remain + rest / speed;
+            return remain + std::max(0.0f, endDist - reach) / speed;
         }
 
         // [lead901] the threat a member's running periodic effects still put on a mob, which no Stop takes back:
@@ -3691,11 +3736,20 @@ namespace Leader::Dungeon
                 else if (!bot->GetThreatMgr().GetThreatenedByMeList().empty())
                     lead.precastRead.insert(bot->GetGUID());  // it opened with no cast: its opener stays
             }
+            // [lead1091] b234 rfc-h: 12 pre-casts in 1175 caster pulls - only an "engage" commit out of a fight, on a
+            // mob that stood still out of combat. Every open pull order now (engage, pull together, one, pull back)
+            // while the tank has not hit its mob yet: a wanderer walks (the tank's hit is read live each tick, the
+            // cancel stands), and a mob that aggroed on the tank and runs in at it (the group in combat now) is the
+            // walk-in the tank's hit comes at; the member pre-casts only its first damage of the pull (no threat on
+            // any mob yet)
             Leader::PullOrder order;
             Unit* pullMob = nullptr;
-            if (!fighting && lead.commit && lead.commit->kind == "engage" &&
-                Leader::Orders::GetOpen(group.LeaderGuid(), order) && !order.target.IsEmpty())
-                pullMob = ObjectAccessor::GetUnit(*tank, order.target);
+            if (lead.commit && Leader::Orders::GetOpen(group.LeaderGuid(), order) && !order.target.IsEmpty())
+                if (Unit* mob = ObjectAccessor::GetUnit(*tank, order.target);
+                    mob && mob->IsAlive() && mob->GetThreatMgr().GetThreat(tank) <= 0.0f &&
+                    (!mob->IsInCombat() || mob->GetVictim() == tank))
+                    pullMob = mob;
+            float const pullEta = pullMob ? TankHitEtaSec(tank, pullMob) : -1.0f;
             float tankOpen = 0.0f;
             if (auto const measured = lead.openTps.find(tank->GetGUID());
                 measured != lead.openTps.end() && measured->second.second)
@@ -3740,29 +3794,55 @@ namespace Leader::Dungeon
                     pre.spell = 0;
                     pre.started = false;
                 }
-                if (!pullMob || !pullMob->IsAlive() || pullMob->IsInCombat() || pullMob->isMoving() || !pre.opener ||
-                    !tankOpen || PlayerbotAI::IsHeal(bot) || PlayerbotAI::IsTank(bot) || !PlayerbotAI::IsRanged(bot))
+                if (!pullMob || !pre.opener || !tankOpen || PlayerbotAI::IsHeal(bot) || PlayerbotAI::IsTank(bot) ||
+                    !PlayerbotAI::IsRanged(bot))
+                {
+                    // [lead1091] no pull mob this tick: the gate the window closed on stays for its line
+                    if (pullMob)
+                        pre.skip = !pre.opener ? "no opener read yet" : !tankOpen ? "no tank rate yet" : "";
                     continue;
+                }
                 SpellInfo const* info = sSpellMgr->GetSpellInfo(pre.opener);
-                if (!PrecastSpell(info) || !bot->HasSpell(pre.opener) || bot->HasSpellCooldown(pre.opener) ||
-                    bot->isMoving() || (bot->IsNonMeleeSpellCast(false) && !running) ||
-                    !bot->IsWithinCombatRange(pullMob, info->GetMaxRange(false, bot)) ||
-                    !bot->IsWithinLOSInMap(pullMob))
+                // [lead1091] the gate that held it, kept for the pull's line once the tank hits (PrecastNone)
+                auto const gate = [&]() -> char const*
+                {
+                    if (!PrecastSpell(info) || !bot->HasSpell(pre.opener))
+                        return "opener not castable";
+                    if (bot->HasSpellCooldown(pre.opener))
+                        return "opener on cooldown";
+                    if (!running && !bot->GetThreatMgr().GetThreatenedByMeList().empty())
+                        return "already fights another mob";
+                    if (bot->isMoving())
+                        return "walking";
+                    if (bot->IsNonMeleeSpellCast(false) && !running)
+                        return "casting another spell";
+                    if (!bot->IsWithinCombatRange(pullMob, info->GetMaxRange(false, bot)))
+                        return "out of its range";
+                    if (!bot->IsWithinLOSInMap(pullMob))
+                        return "out of sight";
+                    if (info->PowerType < MAX_POWERS && info->CalcPowerCost(bot, info->GetSchoolMask()) >
+                                                            int32(bot->GetPower(Powers(info->PowerType))))
+                        return "no power";
+                    if (pullEta < 0.0f)
+                        return "the tank's hit not predictable";
+                    return "";
+                };
+                pre.skip = gate();
+                if (!pre.skip.empty())
                     continue;
-                if (info->PowerType < MAX_POWERS &&
-                    info->CalcPowerCost(bot, info->GetSchoolMask()) > int32(bot->GetPower(Powers(info->PowerType))))
-                    continue;
-                float const eta = TankHitEtaSec(tank, pullMob);
-                if (eta < 0.0f)
-                    continue;
+                float const eta = pullEta;
                 float const travel = info->Speed > 0.0f ? bot->GetExactDist(pullMob) / info->Speed : 0.0f;
                 float const lands = info->CalcCastTime(bot) / 1000.0f + travel;
                 if (!running && lands < eta + tick)
+                {
+                    pre.skip = "waits: it would land before the tank's hit";
                     continue;  // not yet: it would land before the tank's hit
+                }
                 float const mine = SpellCastThreat(bot, pullMob, info);
                 float const tankAt = tankOpen * (HEADROOM_GCD_SEC + std::max(0.0f, lands - eta));
                 if (mine >= THREAT_OVERTAKE_RANGED * tankAt)
                 {
+                    pre.skip = "its threat over the tank's at the landing";
                     thread_local std::set<std::pair<uint64, uint32>> heldLogged;
                     if (heldLogged.insert({bot->GetGUID().GetRawValue(), pre.opener}).second)
                         LOG_INFO("playerbots", "[lead1080] {}: no pre-cast of {} on {}: {:.0f} threat vs the tank's "
@@ -3773,6 +3853,7 @@ namespace Leader::Dungeon
                 if (Leader::Events::SetExternal(bot->GetGUID(), pre.opener, pullMob->GetGUID()))
                 {
                     pre.mob = pullMob->GetGUID();
+                    pre.toldOn = pullMob->GetGUID();
                     pre.spell = pre.opener;
                     pre.toldMs = now;
                     logEvent(bot, "Precast",
@@ -3784,6 +3865,27 @@ namespace Leader::Dungeon
                                  .Str("why", "[lead1080] lands just after the tank's predicted first hit"));
                 }
             }
+            // [lead1091] the pull's window closed (the tank hit its mob, or another order): each ranged member with
+            // no pre-cast on it logs the gate that held it last (the triage's precast gates)
+            if (!lead.precastMob.IsEmpty() && (!pullMob || pullMob->GetGUID() != lead.precastMob))
+            {
+                Unit* was = ObjectAccessor::GetUnit(*tank, lead.precastMob);
+                if (was && was->IsAlive() && was->GetThreatMgr().GetThreat(tank) > 0.0f)
+                    for (Player* bot : seats)
+                    {
+                        if (PlayerbotAI::IsHeal(bot) || PlayerbotAI::IsTank(bot) || !PlayerbotAI::IsRanged(bot))
+                            continue;
+                        auto const found = lead.precast.find(bot->GetGUID());
+                        if (found != lead.precast.end() && found->second.toldOn == lead.precastMob)
+                            continue;
+                        std::string const why = found == lead.precast.end() ? "no opener read yet"
+                                                : found->second.skip.empty() ? "no window seen (one tick)"
+                                                                             : found->second.skip;
+                        logEvent(bot, "PrecastNone",
+                                 JsonObject().Str("target", was->GetName()).Str("why", "[lead1091] " + why));
+                    }
+            }
+            lead.precastMob = pullMob ? pullMob->GetGUID() : ObjectGuid::Empty;
         }
         // [lead270] the prepull Army of the Dead, timed into the boss's preparation (replaces lead16's 4.5 s
         // LEADER_BOSS_PREPARE wait: an elapsed-time rule, and the tank never channelled under it)

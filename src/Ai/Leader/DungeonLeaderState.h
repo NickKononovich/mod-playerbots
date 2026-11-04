@@ -462,8 +462,11 @@ namespace Leader
             uint32 spell = 0;
             uint32 toldMs = 0;
             bool started = false;
+            ObjectGuid toldOn;  // [lead1091] the mob its last pre-cast was told on (kept after it landed)
+            std::string skip;   // [lead1091] the gate that held its pre-cast on this tick's pull mob
         };
         std::map<ObjectGuid, Precast> precast;
+        ObjectGuid precastMob;  // [lead1091] the pull mob the pre-cast window was open on last tick
         std::set<ObjectGuid> precastRead;  // [lead1080] members whose first cast of this fight was read
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
