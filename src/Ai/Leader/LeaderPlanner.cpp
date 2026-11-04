@@ -9501,9 +9501,33 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             intruder.mob && !intruder.mob->IsInCombat() && !IsBossMob(intruder.mob) &&
             intruder.motion != MobMotion::Patrol)
         {
-            std::vector<Unit*> alonePack;
-            CollectPack(botAI, bot, intruder.mob, intruder.mob->GetPosition(), possible, alonePack,
+            std::vector<Unit*> spawnPack;
+            CollectPack(botAI, bot, intruder.mob, intruder.mob->GetPosition(), possible, spawnPack,
                         FightHere(intruder.mob->GetPosition()), measured, false, nullptr);
+            // [lead1081] user 2026-11-04 (Q61b): the wanderer engages where it walks into the fight, not at its
+            // pack. b233 rfc-h: ~49 mobs planned per run in these pulls, ~26 killed - the wanderer's pack stayed and
+            // was the next pull. A neighbour of it comes only by its own aggro reach of the fight spot or by the
+            // wanderer's assistance call there (CreatureFamilyAssistanceRadius round the fight spot; RFC has no
+            // creature_formations); the others are not planned in this pull
+            float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+            Position const fightSpot = candidate->GetPosition();
+            std::vector<Unit*> alonePack;
+            std::string stayed;
+            for (Unit* mob : spawnPack)
+            {
+                bool const joins = mob == intruder.mob ||
+                                   std::find(pack.begin(), pack.end(), mob) != pack.end() ||
+                                   (assistRadius > 0.0f && mob->GetExactDist(fightSpot) <= assistRadius) ||
+                                   ReachesSpot(bot, mob, fightSpot);
+                if (joins)
+                    alonePack.push_back(mob);
+                else
+                    stayed += (stayed.empty() ? "" : ", ") + mob->GetName();
+            }
+            if (!stayed.empty())
+                LOG_INFO("playerbots", "[lead1081] {}: pull together with {}: its neighbours {} stay (no aggro reach "
+                         "of the fight spot, out of the assistance radius {:.0f} yd of it): not planned in this pull",
+                         bot->GetName(), intruder.mob->GetName(), stayed, assistRadius);
             std::vector<Unit*> together = pack;
             for (Unit* mob : alonePack)
                 if (std::find(together.begin(), together.end(), mob) == together.end())
