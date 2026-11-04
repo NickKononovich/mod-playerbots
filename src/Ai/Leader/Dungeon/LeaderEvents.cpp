@@ -1413,6 +1413,12 @@ namespace Leader::Dungeon
                 return "";
             if (tankWalksMobTo(target, stop))
                 return "the tank's walk";
+            // [lead1171] the leader's meeting verdict while the mob still comes: the tank walks in to meet it or closes
+            // the gap - the fight stands where they meet (PlanTankMeet's landing)
+            if (Leader::Fight::MobComesToTank(tank, target))
+                if (Leader::Fight::TankMeet const meet = Leader::Fight::TankMeetFor(tank, target, nullptr, &stop);
+                    meet == Leader::Fight::TankMeet::Walk || meet == Leader::Fight::TankMeet::Closer)
+                    return "the tank meets it";
             if (FightSpot::Ahead(tank, stop))
                 return "the fight spot back";
             // ... while the tank goes back there: not once it stands holding the mob elsewhere (b220 5F 580 s: the
@@ -1445,8 +1451,11 @@ namespace Leader::Dungeon
             float const gap = victim->GetExactDist2d(target);
             float const reaches = victim->GetCombatReach() + target->GetCombatReach();
             float const mobSpeed = target->GetSpeed(MOVE_RUN);
-            float const victimSpeed =
-                victim == tank && lead.commit && lead.commit->kind == "engage" ? tank->GetSpeed(MOVE_RUN) : 0.0f;
+            // [lead1171] a stand / grip verdict of the leader: the tank does not walk in, the mob runs the gap
+            float const victimSpeed = victim == tank && lead.commit && lead.commit->kind == "engage" &&
+                                              Leader::Fight::TankMeetFor(tank, target) == Leader::Fight::TankMeet::None
+                                          ? tank->GetSpeed(MOVE_RUN)
+                                          : 0.0f;
             float const along =
                 mobSpeed + victimSpeed > 0.0f ? std::max(0.0f, gap - reaches) * victimSpeed / (mobSpeed + victimSpeed)
                                               : 0.0f;
@@ -2274,6 +2283,87 @@ namespace Leader::Dungeon
                 lead.fightOverload = 0.0f;
                 lead.fightJudged.clear();
                 PullPlanner::JudgePack(tank, fightGuids, lead.fightOverload, lead.fightJudged);
+            }
+            // [lead1170] user 2026-11-04 (Q65): the chain pull - the next pack of the route's plan opened while this
+            // trash fight finishes (Leader::Fight::JudgeChainPull: due when the fight's seconds left are fewer than
+            // the pack's run in plus the tank's opening; the overload gate on the union, the tank's health, healer
+            // reach and mana, nothing more joins). Taken: joined into the fight, the tank opens on it from where it
+            // stands (lead1140's held pack); one pack at a time. Every verdict once per pack and kind: chain_pull
+            if (!lead.bossFightOn && lead.joinedTankOpens.empty())
+            {
+                if (lead.chainLoggedFight != lead.fightStartMs)
+                {
+                    lead.chainLoggedFight = lead.fightStartMs;
+                    lead.chainLogged.clear();
+                }
+                Leader::Fight::ChainPull const chain =
+                    Leader::Fight::JudgeChainPull(group, tank, fightingMobs, lead.fightSecLeft, packOf);
+                if (chain.anchor && !chain.waiting &&
+                    lead.chainLogged.insert({chain.anchor->GetGUID(), chain.kind}).second)
+                    Decisions().Write(run, "leader", "chain_pull", chain.anchor->GetGUID(), chain.anchor->GetName(),
+                                      true,
+                                      JsonObject()
+                                          .Str("verdict", chain.taken ? "taken" : "rejected")
+                                          .Str("kind", chain.kind)
+                                          .Str("why", chain.why)
+                                          .Bool("due", chain.due)
+                                          .Num("stop", int64(chain.stop))
+                                          .Num("packMobs", int64(chain.mobs.size()))
+                                          .Num("fightMobs", int64(fightingMobs.size()))
+                                          .Num("unionMobs", int64(chain.unionMobs))
+                                          .Real("fightSecLeft", chain.fightSecLeft)
+                                          .Real("runInSec", chain.runInSec)
+                                          .Real("openSec", chain.openSec)
+                                          .Str("opener", chain.opener)
+                                          .Real("distance", chain.distance)
+                                          .Real("overload", chain.overload)
+                                          .Real("drop", chain.drop)
+                                          .Real("tankHealth", chain.tankHealth)
+                                          .Real("unionSec", chain.unionSec)
+                                          .Real("groupDps", groupDps)
+                                          .Str("tag", "[lead1170]"));
+                if (chain.taken)
+                    joinPack(chain.anchor, chain.mobs, true);
+            }
+            // [lead1171] user 2026-11-04 (Q66, full freedom): a mob that comes at the tank (its opener landed, no
+            // planned fight spot back, no ranged pull's own spot) - the leader picks, once per mob, how the tank meets
+            // it (Leader::Fight::PlanTankMeet: stand / walk in / gap closer / grip, the group's fastest first hits that
+            // pass the landing's safety); the melee places follow its landing (fightStopAhead): tank_meet
+            {
+                Leader::PullOrder meetOrder;
+                bool const ordered = Leader::Orders::GetOpen(group.LeaderGuid(), meetOrder);
+                Position back;
+                if ((!ordered || meetOrder.method == Leader::PullMethod::Engage ||
+                     meetOrder.method == Leader::PullMethod::Body) &&
+                    !FightSpot::Ahead(tank, back))
+                    for (Unit* mob : fightingMobs)
+                        if (mob->GetVictim() == tank && Leader::Fight::MobComesToTank(tank, mob) &&
+                            Leader::Fight::TankMeetFor(tank, mob) == Leader::Fight::TankMeet::None)
+                        {
+                            Leader::Fight::TankMeetPlan const meet = Leader::Fight::PlanTankMeet(tank, mob, seats);
+                            if (meet.meet == Leader::Fight::TankMeet::None)
+                                continue;
+                            Leader::Fight::SetTankMeet(tank, mob, meet);
+                            Decisions().Write(run, "leader", "tank_meet", mob->GetGUID(), mob->GetName(), true,
+                                              JsonObject()
+                                                  .Str("meet", Leader::Fight::TankMeetName(meet.meet))
+                                                  .Str("spell", meet.spell)
+                                                  .Real("gap", meet.gap)
+                                                  .Real("distance", tank->GetExactDist(mob))
+                                                  .Real("standSec", meet.standSec)
+                                                  .Real("walkSec", meet.walkSec)
+                                                  .Real("closerSec", meet.closerSec)
+                                                  .Real("gripSec", meet.gripSec)
+                                                  .Real("standGroup", meet.standGroup)
+                                                  .Real("walkGroup", meet.walkGroup)
+                                                  .Real("closerGroup", meet.closerGroup)
+                                                  .Real("gripGroup", meet.gripGroup)
+                                                  .Real("x", meet.landing.GetPositionX())
+                                                  .Real("y", meet.landing.GetPositionY())
+                                                  .Real("z", meet.landing.GetPositionZ())
+                                                  .Str("why", meet.why)
+                                                  .Str("tag", "[lead1171]"));
+                        }
             }
             estimateBossPull(groupDps, lead.fightSecLeft);
         }

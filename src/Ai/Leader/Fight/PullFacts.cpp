@@ -26,6 +26,15 @@
 #include "HealthTriggers.h"  // [lead925] RestState::HealerThroughput
 #include "Log.h"             // [lead925]
 #include "StringFormat.h"    // [lead925]
+#include "GroupRouteState.h"      // [lead1170] the route's plan
+#include "LeaderGroup.h"          // [lead1170]
+#include "LeaderPlannerShared.h"  // [lead1170] TankEngageOpeners
+#include "LeaderSupport.h"        // [lead1170] HealerOutOfMana
+#include "Map.h"                  // [lead1171]
+#include "MotionMaster.h"         // [lead1171] SPEED_CHARGE
+#include "ObjectAccessor.h"       // [lead1170]
+#include "ReachTargetActions.h"   // [lead1171] TankWalkIntoIdlePack
+#include "TankAoeThreat.h"        // [lead1171] IsGapCloser
 #include <algorithm>
 #include <mutex>          // [lead925]
 #include <set>            // [lead925]
@@ -181,7 +190,8 @@ namespace Leader::Fight
             return "the plan's fight spot back is not where the mob is";
         if (!target->IsInCombat())
             return std::string();
-        if (!gapCloser && MobComesToTank(tank, target))  // [lead925]
+        // [lead1171] user 2026-11-04 (Q66): the leader's meeting verdict walks the tank in to meet it
+        if (!gapCloser && MobComesToTank(tank, target) && TankMeetFor(tank, target) != TankMeet::Walk)  // [lead925]
             return "it comes to the tank";
         Unit* victim = target->GetVictim();
         if (victim && victim != tank && victim->GetCharmerOrOwnerPlayerOrPlayerItself() &&
@@ -323,5 +333,387 @@ namespace Leader::Fight
                      save ? Acore::StringFormat("; its save {} asked for first", save)
                           : std::string("; no save ready"));
         return false;
+    }
+
+    // [lead1170] [lead1171] the chain pull and the tank's meeting of its incoming mob (PullFacts.h)
+    namespace
+    {
+        // [lead1171] the core's Death Grip jump: Spell::EffectJumpDest gives spell 57604 (Death Grip's jump of the
+        // gripped mob to the caster) speedXY 50 yd/s
+        constexpr float DEATH_GRIP_JUMP_SPEED = 50.0f;
+
+        std::mutex tankMeetLock;
+        struct TankMeetEntry
+        {
+            ObjectGuid mob;
+            TankMeet meet = TankMeet::None;
+            std::string spell;
+            Position landing;
+        };
+        std::unordered_map<uint64, std::vector<TankMeetEntry>> tankMeets;  // under tankMeetLock: tank -> its verdicts
+
+        // the seconds from now to `member`'s first hit on `mob` fought at `landing`, the tank's contact after
+        // `contactSec`: a ranged member's walk into its spell range of the landing (it hits while the mob runs), a
+        // melee member's walk into its melee range there, no sooner than the contact
+        float MemberFirstHitSec(Player* member, Unit* mob, Position const& landing, float contactSec)
+        {
+            float const speed = std::max(member->GetSpeed(MOVE_RUN), 0.1f);
+            float const gap = member->GetExactDist2d(landing.GetPositionX(), landing.GetPositionY());
+            if (PlayerbotAI::IsRanged(member))
+            {
+                PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+                float const range = memberAI ? memberAI->GetRange("spell") : 0.0f;
+                return std::max(gap - range, 0.0f) / speed;
+            }
+            return std::max(contactSec, std::max(gap - member->GetMeleeRange(mob), 0.0f) / speed);
+        }
+    }
+
+    char const* TankMeetName(TankMeet meet)
+    {
+        switch (meet)
+        {
+            case TankMeet::Stand:
+                return "stand";
+            case TankMeet::Walk:
+                return "walk";
+            case TankMeet::Closer:
+                return "gap closer";
+            case TankMeet::Grip:
+                return "grip";
+            default:
+                return "none";
+        }
+    }
+
+    ChainPull JudgeChainPull(LeaderGroup& group, Player* tank, std::vector<Unit*> const& fightMobs, float fightSecLeft,
+                             std::function<std::vector<ObjectGuid>(Creature*)> const& packOf)
+    {
+        ChainPull chain;
+        chain.fightSecLeft = fightSecLeft;
+        PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        Map* map = tank ? tank->GetMap() : nullptr;
+        if (!tankAI || !map || !tank->IsAlive())
+            return chain;
+        auto const inFight = [&](ObjectGuid guid)
+        {
+            return std::any_of(fightMobs.begin(), fightMobs.end(),
+                               [&](Unit* mob) { return mob && mob->GetGUID() == guid; });
+        };
+        // the route plan's next stop with an idle mob left (its order: the stops fought already hold none)
+        GroupRouteState const& route = group.Route();
+        GroupRouteState::PlannedStop const* stop = nullptr;
+        std::vector<Creature*> idle;
+        for (size_t i = 0; i < route.routePlan.size() && !stop; ++i)
+        {
+            for (ObjectGuid const& guid : route.routePlan[i].mobs)
+                if (Creature* mob = map->GetCreature(guid);
+                    mob && mob->IsInWorld() && mob->IsAlive() && !mob->IsInCombat() && !inFight(guid))
+                    idle.push_back(mob);
+            if (!idle.empty())
+            {
+                stop = &route.routePlan[i];
+                chain.stop = i;
+            }
+        }
+        if (!stop)
+            return chain;
+        for (Creature* mob : idle)
+            if (!chain.anchor || tank->GetExactDist(mob) < tank->GetExactDist(chain.anchor))
+                chain.anchor = mob;
+        Creature* const anchor = chain.anchor;
+        chain.distance = tank->GetExactDist(anchor);
+        for (Creature* mob : idle)
+            chain.mobs.push_back(mob->GetGUID());
+        auto const reject = [&](char const* kind, std::string const& why)
+        {
+            chain.kind = kind;
+            chain.why = why;
+            return chain;
+        };
+        // the run in and the opening (spell data): the opener that reaches the anchor from where the tank stands now
+        float const runSpeed = std::max(anchor->GetSpeed(MOVE_RUN), 0.1f);
+        float const walk = Leader::WalkYd(anchor, anchor->GetPosition(), tank->GetPosition());
+        chain.runInSec = std::max(walk - tank->GetMeleeRange(anchor), 0.0f) / runSpeed;
+        SpellInfo const* opener = nullptr;
+        bool onCooldown = false;
+        for (char const* name : PullPlanning::TankEngageOpeners(tank, false))
+        {
+            uint32 const spell = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+            SpellInfo const* info = spell && tank->HasSpell(spell) ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+            if (!info || !tank->IsWithinCombatRange(anchor, info->GetMaxRange(false)) ||
+                !tank->IsWithinLOSInMap(anchor))
+                continue;
+            if (tank->HasSpellCooldown(spell))
+            {
+                onCooldown = true;
+                continue;
+            }
+            opener = info;
+            chain.opener = name;
+            break;
+        }
+        if (opener)
+            chain.openSec = opener->CalcCastTime(tank) / 1000.0f +
+                            (opener->Speed > 0.0f ? chain.distance / opener->Speed : 0.0f);
+        chain.due = fightSecLeft < chain.runInSec + chain.openSec;
+        // the facts that do not change while the fight goes on first
+        for (ObjectGuid const& guid : chain.mobs)
+            if (Creature* mob = map->GetCreature(guid); mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+                return reject("boss", mob->GetName() + " is a boss: his own pull (the buff pass first)");
+        if (stop->patrol)
+            return reject("walker", anchor->GetName() + "'s stop is a walker's: it meets the plan where it walks");
+        for (GroupRouteState::PlannedStop const& meets : route.routePlanMeets)
+            if (meets.meetsAt == stop->anchor)
+                if (Creature* walker = map->GetCreature(meets.anchor); walker && walker->IsAlive())
+                    return reject("walker", walker->GetName() + " walks to that stop's fight");
+        if (!opener)
+            return reject("opener", Acore::StringFormat("no ranged opener {} {} from where the tank stands ({:.1f} yd)",
+                                                        onCooldown ? "off its cooldown reaches" : "reaches",
+                                                        anchor->GetName(), chain.distance));
+        for (ObjectGuid const& guid : chain.mobs)
+            if (Creature* mob = map->GetCreature(guid); mob && !TankOpensFromHere(tankAI, tank, mob))
+                return reject("pack_reach", mob->GetName() + " of the pack: no opener of the tank reaches it from "
+                                                             "where it stands (it would come unheld)");
+        if (!chain.due)
+        {
+            chain.waiting = true;
+            return reject("waits", Acore::StringFormat("fight left {:.1f} s >= run in {:.1f} s + opening {:.1f} s",
+                                                       fightSecLeft, chain.runInSec, chain.openSec));
+        }
+        // the pack: the stop's idle mobs and every idle pack mate of theirs (the core's assistance takes them along);
+        // searched once due (a grid visit per stop mob)
+        for (Creature* mob : idle)
+            for (ObjectGuid const& guid : packOf(mob))
+                if (std::find(chain.mobs.begin(), chain.mobs.end(), guid) == chain.mobs.end())
+                    chain.mobs.push_back(guid);
+        for (ObjectGuid const& guid : chain.mobs)
+            if (Creature* mob = map->GetCreature(guid); mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+                return reject("boss", mob->GetName() + " is a boss: his own pull (the buff pass first)");
+        for (ObjectGuid const& guid : chain.mobs)
+            if (Creature* mob = map->GetCreature(guid); mob && !TankOpensFromHere(tankAI, tank, mob))
+                return reject("pack_reach", mob->GetName() + " of the pack: no opener of the tank reaches it from "
+                                                             "where it stands (it would come unheld)");
+        // the facts of the fight now
+        if (group.NeedBuff())
+            return reject("buff", "the group needs its buffs (a buff pass first, out of the fight)");
+        std::vector<Player*> everyone;
+        for (LeaderGroup::MemberInfo const& member : group.Members())
+            if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
+            {
+                if (!bot->IsAlive())
+                    return reject("dead", bot->GetName() + " is dead");
+                everyone.push_back(bot);
+            }
+        for (Unit* mob : fightMobs)
+            if (mob && mob->IsAlive() && mob->GetVictim() != tank && !mob->HasBreakableByDamageCrowdControlAura())
+                return reject("holds", "the tank does not hold " + mob->GetName());
+        std::vector<ObjectGuid> combined;
+        for (Unit* mob : fightMobs)
+            if (mob && mob->IsAlive())
+                combined.push_back(mob->GetGUID());
+        combined.insert(combined.end(), chain.mobs.begin(), chain.mobs.end());
+        chain.unionMobs = uint32(combined.size());
+        std::string judged;
+        bool const fits =
+            PullPlanner::JudgePack(tank, combined, chain.overload, judged, &chain.drop, &chain.unionSec);
+        chain.tankHealth = tank->GetHealthPct() / 100.0f;
+        if (!fits)
+            return reject("overload", "the overload gate: " + judged);
+        if (chain.tankHealth <= chain.drop)
+            return reject("health", Acore::StringFormat("the tank at {:.0f} % health, the union's drop {:.0f} %",
+                                                        chain.tankHealth * 100.0f, chain.drop * 100.0f));
+        bool anyHealer = false;
+        bool reaches = false;
+        for (Player* bot : everyone)
+            if (bot != tank && PlayerbotAI::IsHeal(bot))
+            {
+                anyHealer = true;
+                reaches = reaches || HealReaches(tank, bot->GetPosition(), tank->GetPosition(), bot);
+            }
+        if (anyHealer && !reaches)
+            return reject("healer", "no healer reaches the tank from where it stands");
+        if (std::string const dry = Leader::Support::HealerOutOfMana(everyone, chain.unionSec); !dry.empty())
+            return reject("mana", dry);
+        if (Unit* woken = WalkInWakes(tank, anchor, combined))
+            return reject("wakes", "its way in wakes " + woken->GetName());
+        chain.taken = true;
+        chain.kind = "taken";
+        chain.why = Acore::StringFormat("{} mobs with {} left, {:.1f} s fight left < run in {:.1f} s + {} {:.1f} s; {}",
+                                        chain.mobs.size(), fightMobs.size(), fightSecLeft, chain.runInSec,
+                                        chain.opener, chain.openSec, judged);
+        return chain;
+    }
+
+    TankMeetPlan PlanTankMeet(Player* tank, Unit* mob, std::vector<Player*> const& members)
+    {
+        TankMeetPlan plan;
+        PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        Map* map = tank ? tank->GetMap() : nullptr;
+        if (!tankAI || !map || !mob || !mob->IsAlive())
+            return plan;
+        float const dist = std::max(tank->GetExactDist2d(mob), 0.1f);
+        plan.gap = std::max(dist - tank->GetMeleeRange(mob), 0.0f);
+        float const mobSpeed = std::max(mob->GetSpeed(MOVE_RUN), 0.1f);
+        float const tankSpeed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);
+        float const dx = (mob->GetPositionX() - tank->GetPositionX()) / dist;
+        float const dy = (mob->GetPositionY() - tank->GetPositionY()) / dist;
+        // the point `along` yd from the tank toward the mob, on its ground (false: none)
+        auto const pointAt = [&](float along, Position& out) -> bool
+        {
+            float x = tank->GetPositionX() + dx * along;
+            float y = tank->GetPositionY() + dy * along;
+            float z = tank->GetPositionZ();
+            if (!map->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
+                                                      tank->GetPositionZ(), x, y, z))
+                return false;
+            out.Relocate(x, y, z);
+            return true;
+        };
+        auto const groupSec = [&](Position const& landing, float contactSec)
+        {
+            float sum = contactSec;
+            for (Player* member : members)
+                if (member && member != tank && member->IsAlive() && !PlayerbotAI::IsHeal(member))
+                    sum += MemberFirstHitSec(member, mob, landing, contactSec);
+            return sum;
+        };
+        // stand: the mob runs the gap
+        plan.meet = TankMeet::Stand;
+        plan.landing = tank->GetPosition();
+        plan.standSec = plan.gap / mobSpeed;
+        plan.standGroup = groupSec(plan.landing, plan.standSec);
+        float best = plan.standGroup;
+        // grip: the mob jumps to the tank (spell data range and cast, the core's jump speed)
+        if (uint32 const grip = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", "death grip")->Get();
+            grip && tank->HasSpell(grip) && !tank->HasSpellCooldown(grip))
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(grip);
+                info && tank->IsWithinCombatRange(mob, info->GetMaxRange(false)) && tank->IsWithinLOSInMap(mob) &&
+                tankAI->CanCastSpell("death grip", mob))
+            {
+                plan.gripSec = info->CalcCastTime(tank) / 1000.0f + dist / DEATH_GRIP_JUMP_SPEED;
+                plan.gripGroup = groupSec(tank->GetPosition(), plan.gripSec);
+                if (plan.gripGroup < best)
+                {
+                    best = plan.gripGroup;
+                    plan.meet = TankMeet::Grip;
+                    plan.spell = "death grip";
+                }
+            }
+        // a landing off the tank's spot: no drag, no unpulled mob's reach there or on the way, a healer reaches it
+        for (Unit* attacker : tank->getAttackers())
+            if (attacker && attacker != mob && attacker->IsAlive() && tank->IsWithinMeleeRange(attacker))
+            {
+                plan.why = "the tank holds " + attacker->GetName() + " in its melee";
+                return plan;
+            }
+        auto const landingSafe = [&](Position const& landing) -> std::string
+        {
+            if (Creature* idleMob = LeaderAggroAt(tank, landing))
+                return "the landing is in " + idleMob->GetName() + "'s reach";
+            bool noPath = false;
+            if (Creature* idleMob = LeaderAggroOnWalk(tank, landing, noPath))
+                return "the way there passes " + idleMob->GetName() + "'s reach";
+            if (noPath)
+                return "no walk to the landing";
+            bool anyHealer = false;
+            for (Player* member : members)
+                if (member && member != tank && member->IsAlive() && PlayerbotAI::IsHeal(member))
+                {
+                    anyHealer = true;
+                    if (HealReaches(tank, member->GetPosition(), landing, member))
+                        return std::string();
+                }
+            return anyHealer ? "no healer reaches the landing from where it stands" : std::string();
+        };
+        // walk: both run, the gap closes at both speeds; they meet where the tank's share of it ends
+        Position walkTo;
+        plan.walkSec = plan.gap / (tankSpeed + mobSpeed);
+        if (!pointAt(plan.gap * tankSpeed / (tankSpeed + mobSpeed), walkTo))
+            plan.why = "walk: no ground toward the mob";
+        else if (std::string const unsafe = landingSafe(walkTo); !unsafe.empty())
+            plan.why = "walk: " + unsafe;
+        else
+        {
+            plan.walkGroup = groupSec(walkTo, plan.walkSec);
+            if (plan.walkGroup < best)
+            {
+                best = plan.walkGroup;
+                plan.meet = TankMeet::Walk;
+                plan.landing = walkTo;
+                plan.spell.clear();
+            }
+        }
+        // a gap closer: the core's charge speed (SPEED_CHARGE); it lands the tank at the mob
+        for (char const* name : PullPlanning::TankEngageOpeners(tank, true))
+        {
+            uint32 const spell = tankAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+            SpellInfo const* info = spell && tank->HasSpell(spell) ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+            if (!info || !TankPeel::IsGapCloser(info) || tank->HasSpellCooldown(spell) ||
+                !tank->IsWithinCombatRange(mob, info->GetMaxRange(false)) ||
+                tank->GetExactDist(mob) < info->GetMinRange(false) || !tankAI->CanCastSpell(name, mob))
+                continue;
+            Position landing;
+            float const closerSec = plan.gap / (SPEED_CHARGE + mobSpeed);
+            if (!pointAt(plan.gap * SPEED_CHARGE / (SPEED_CHARGE + mobSpeed), landing))
+                continue;
+            plan.closerSec = closerSec;
+            plan.closerGroup = groupSec(landing, closerSec);
+            if (plan.closerGroup >= best)
+                break;
+            if (std::string const unsafe = landingSafe(landing); !unsafe.empty())
+            {
+                plan.why += std::string(plan.why.empty() ? "" : "; ") + name + ": " + unsafe;
+                break;
+            }
+            if (TankWalkIntoIdlePack(tankAI, tank, mob) || !TankGapCloserAllowed(tank, mob, name))
+            {
+                plan.why += std::string(plan.why.empty() ? "" : "; ") + name + ": the landing check refuses it";
+                break;
+            }
+            best = plan.closerGroup;
+            plan.meet = TankMeet::Closer;
+            plan.landing = landing;
+            plan.spell = name;
+            break;
+        }
+        return plan;
+    }
+
+    void SetTankMeet(Player* tank, Unit* mob, TankMeetPlan const& plan)
+    {
+        if (!tank || !mob)
+            return;
+        std::lock_guard<std::mutex> guard(tankMeetLock);
+        std::vector<TankMeetEntry>& entries = tankMeets[tank->GetGUID().GetRawValue()];
+        // the verdicts of mobs that are gone or dead go (resolved on the leader's tick, the tank's map)
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&](TankMeetEntry const& entry)
+                                     {
+                                         Unit* other = ObjectAccessor::GetUnit(*tank, entry.mob);
+                                         return !other || !other->IsAlive() || entry.mob == mob->GetGUID();
+                                     }),
+                      entries.end());
+        entries.push_back({mob->GetGUID(), plan.meet, plan.spell, plan.landing});
+    }
+
+    TankMeet TankMeetFor(Player* tank, Unit* mob, std::string* spell, Position* landing)
+    {
+        if (!tank || !mob)
+            return TankMeet::None;
+        std::lock_guard<std::mutex> guard(tankMeetLock);
+        auto const found = tankMeets.find(tank->GetGUID().GetRawValue());
+        if (found == tankMeets.end())
+            return TankMeet::None;
+        for (TankMeetEntry const& entry : found->second)
+            if (entry.mob == mob->GetGUID())
+            {
+                if (spell)
+                    *spell = entry.spell;
+                if (landing)
+                    *landing = entry.landing;
+                return entry.meet;
+            }
+        return TankMeet::None;
     }
 }

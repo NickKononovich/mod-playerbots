@@ -77,6 +77,8 @@ private:
     // threat, no victim, it never comes) is pulled from range instead: Execute casts the taunt / ranged threat spell
     // from here, or steps into its range on a spot no idle mob reaches. Empty: the ordinary walk.
     bool PullPhantomFromRange(Unit* target);
+    // [lead1171] the leader's meeting verdict for the incoming mob is a gap closer or a grip: Execute casts it
+    std::string _meetSpell;
     ObjectGuid _phantomPull;
     uint32 _phantomLogMs = 0;
     ObjectGuid _phantomTaunted;    // [b33_arc] the phantom target the last taunt landed on, and when

@@ -522,9 +522,12 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         // and the open order's mob was opened here as it came into range - with the old list, Taunt before Charge /
         // Shoot (no threat on a mob that fights nobody). An untouched mob gets the leader's engage openers (damage
         // first: TankEngageOpeners); a mob on another member the taunts first (TANK_OPENERS)
+        // [lead1170] a joined idle pack the tank opens on while it fights (a chain pull, lead1140's joined pack) is
+        // opened from where it stands: the pack comes, no gap closer takes the tank (and the fight) to it
+        bool const heldWhileFighting = !takeBack && fromHere && !mob->IsInCombat() && bot->IsInCombat();
         std::vector<char const*> const openers =
             takeBack ? std::vector<char const*>(std::begin(TANK_OPENERS), std::end(TANK_OPENERS))
-                     : TankEngageOpeners(bot, !TankWalkIntoIdlePack(botAI, bot, mob));
+                     : TankEngageOpeners(bot, !heldWhileFighting && !TankWalkIntoIdlePack(botAI, bot, mob));
         // [lead237] b188 rfc-h: "tank open incoming" was the tank's second walk in fights (about 1900 yd in the 8 runs
         // with its "reach melee" walks), "move fight spot back" (936 yd) walked it back. CanCastSpell passes an out of
         // range opener and the cast walks to it: a mob already coming at the tank (its victim) is opened on only

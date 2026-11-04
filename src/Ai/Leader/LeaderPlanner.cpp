@@ -13490,7 +13490,8 @@ float AggressiveTargetAction::PlanGroupDps()
 
 // [lead33] the planner's danger model on a set of mobs: the same estimate (EstimatePack, the measured mode) and
 // overload terms (CarefulOverload) as a plan, against the plan's limit (1.0)
-bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why)
+bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why, float* drop,
+                                       float* fightSec)
 {
     PartyStrength const strength = PlanStrength();
     GroupSupport const support = CountSupport(bot);
@@ -13538,6 +13539,10 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
             terms.peak = AverageDtps(estimate, PlanTankHealth(bot)) / support.healHps;
     }
     overload = terms.Max();
+    if (drop)  // [lead1170]
+        *drop = terms.drop;
+    if (fightSec)
+        *fightSec = estimate.fightSec;
     bool const fits = !estimate.boss && overload <= 1.0f;
     why = Acore::StringFormat("{} mobs, cost {:.2f} tank hp, fight {:.0f} s, overload {:.2f} of 1.00{}", estimate.mobs,
                               estimate.cost, estimate.fightSec, overload, estimate.boss ? ", a boss" : "");
@@ -13910,7 +13915,8 @@ namespace PullPlanner
         return true;
     }
 
-    bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why)
+    bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why, float* drop,
+                   float* fightSec)
     {
         PlayerbotAI* ai = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
         if (!ai)
@@ -13933,7 +13939,7 @@ namespace PullPlanner
             if (Unit* unit = ObjectAccessor::GetUnit(*tank, guid);
                 unit && unit->IsAlive() && std::find(units.begin(), units.end(), unit) == units.end())
                 units.push_back(unit);
-        return planner->JudgeMobs(units, overload, why);
+        return planner->JudgeMobs(units, overload, why, drop, fightSec);
     }
 
     bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out)

@@ -213,7 +213,10 @@ namespace PullPlanner
     void Release(ObjectGuid tank);
     // [lead33] the planner's danger model on a set of mobs (the same estimate and overload gate as a plan): true when
     // the group takes them in one fight; `why` the cost against the budget
-    bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why);
+    // [lead1170] `drop`: the tank's deepest modelled health drop over that fight (share of its health, the overload's
+    // drop term, DropP90); `fightSec`: the fight's seconds (their health over the group's damage); null: not wanted
+    bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why,
+                   float* drop = nullptr, float* fightSec = nullptr);
     // [lead33] the leader's synchronous question for its own chosen target: a plan, or a refusal / hold with its
     // reason (Decision::verdict / why)
     bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out);
@@ -416,7 +419,8 @@ public:
     // state as after the tank executed a Go decision (MirrorExecute). `shadow`: no side effect, no log line.
     bool LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out);
     // [lead33] the danger judge of a set of mobs (PullPlanner::JudgePack)
-    bool JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why);
+    bool JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why, float* drop = nullptr,
+                   float* fightSec = nullptr);  // [lead1170]
 
 private:
     // [lead7] The look itself (the tank's own isUseful before step 7): the readiness gates, the plan, the verdicts.

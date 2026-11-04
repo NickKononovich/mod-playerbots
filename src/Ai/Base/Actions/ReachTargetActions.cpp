@@ -568,6 +568,19 @@ bool StopPullWalkInFight(PlayerbotAI* botAI, Player* bot)
 
 bool ReachMeleeAction::Execute(Event event)
 {
+    // [lead1171] the leader's meeting verdict (isUseful): the gap closer onto / the grip of the incoming mob
+    if (!_meetSpell.empty())
+    {
+        std::string const spell = _meetSpell;
+        _meetSpell.clear();
+        Unit* target = GetTarget();
+        if (!target || !botAI->CastSpell(spell, target))
+            return false;
+        LOG_INFO("playerbots", "[lead1171] {}: meets {} ({:.1f} yd) with {}", bot->GetName(), target->GetName(),
+                 bot->GetExactDist(target), spell);
+        return true;
+    }
+
     // [b46_ohb] a standing shooter nobody else sees (isUseful): the tank steps out of its sight, it comes
     if (!_sightBreak.IsEmpty())
     {
@@ -593,6 +606,7 @@ bool ReachMeleeAction::isUseful()
 {
     _phantomPull.Clear();  // [b32_arc] set again below only for a phantom-combat target
     _sightBreak.Clear();   // [b46_ohb] likewise, for a standing shooter nobody else sees
+    _meetSpell.clear();    // [lead1171] likewise, for the leader's meeting verdict
     if (!ReachTargetAction::isUseful())
         return false;
 
@@ -603,7 +617,22 @@ bool ReachMeleeAction::isUseful()
     // [lead146] b162 20261101-121409: after the opener at range the led tank walked "reach melee" to meet its
     // incoming mob (17 of 42 pulls >5 yd in the first 12 s, 10 of them a plain "engage at its spot"), and every
     // ranged / healer spot followed. The mob runs to the tank: the fight is where the tank took it
+    // [lead1171] user 2026-11-04 (Q66): the leader's meeting verdict for that mob (PlanTankMeet) - the tank walks in
+    // to meet it (the walk below), or casts its gap closer / grip (Execute); a stand verdict or none keeps the wait
+    Leader::Fight::TankMeet meet = Leader::Fight::TankMeet::None;
     if (PlayerbotAI::IsTank(bot) && Leader::LedBot(bot) && Leader::Fight::MobComesToTank(bot, target))
+    {
+        std::string meetSpell;
+        meet = Leader::Fight::TankMeetFor(bot, target, &meetSpell);
+        if ((meet == Leader::Fight::TankMeet::Closer || meet == Leader::Fight::TankMeet::Grip) &&
+            !meetSpell.empty() && botAI->CanCastSpell(meetSpell, target))
+        {
+            _meetSpell = meetSpell;
+            return true;
+        }
+    }
+    if (meet != Leader::Fight::TankMeet::Walk && PlayerbotAI::IsTank(bot) && Leader::LedBot(bot) &&
+        Leader::Fight::MobComesToTank(bot, target))
     {
         if (float const left = StopOwnWalkToMob(botAI, bot, target); left > 0.0f)
             LOG_INFO("playerbots", "[lead792] {}: stops its walk to {} ({:.1f} yd, low {}, {:.1f} yd of it left): it "

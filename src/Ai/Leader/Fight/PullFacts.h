@@ -11,12 +11,19 @@
 // leader judges before it issues an engage and in a fight; the harness only calls them and logs.
 
 #include "ObjectGuid.h"
+#include "Position.h"
+#include <functional>
 #include <string>
 #include <vector>
 
 class Creature;
 class Player;
 class Unit;
+
+namespace Leader
+{
+    class LeaderGroup;
+}
 
 namespace Leader::Fight
 {
@@ -70,6 +77,83 @@ namespace Leader::Fight
     // [lead760] the tank's taunt that is ready and reaches `mob` (or Righteous Defense its victim) from where the tank
     // stands, in sight (spell data, the game's combat range); 0: none
     uint32 TauntReachesFromHere(Player* tank, Unit* mob);
+
+    // [lead1170] user 2026-11-04 (Q65): the chain pull. While a trash fight finishes, the leader opens the next pack
+    // of the route's plan (GroupRouteState::routePlan, its order: never an off-route mob) so that it comes in as the
+    // fight ends. Due when the fight's seconds left (its mobs' health over the group's measured dps) are fewer than the
+    // pack's run in to the tank (its walk over its run speed) plus the tank's opening (its ranged opener's cast and
+    // flight, spell data). Taken only when the tank opens every mob of the pack from where it stands (a ranged opener
+    // ready, in range and sight: the fight stays where it is), the union of the fight's mobs and the pack passes the
+    // overload gate (PullPlanner::JudgePack: tank health drop, healers' rate and mana), the tank's health now is above
+    // the union's modelled drop, a healer reaches the tank, no healer runs out of mana over the union's fight
+    // (Support::HealerOutOfMana), no member is dead, the tank holds the fight, and nothing more joins: no boss, no
+    // walker stop or walker meeting there, no idle mob woken on its way in (WalkInWakes)
+    struct ChainPull
+    {
+        Creature* anchor = nullptr;    // the pack's mob nearest the tank (null: no idle on-route pack left)
+        std::vector<ObjectGuid> mobs;  // the pack: the stop's idle mobs and their pack mates (`packOf`)
+        bool due = false;              // the trigger holds (fight left < run in + opening)
+        bool waiting = false;          // only the trigger holds it back: not yet due (no verdict to log)
+        bool taken = false;
+        std::string kind;              // the verdict's class: taken / boss / walker / opener / pack_reach / waits /
+                                       // buff / dead / holds / overload / health / healer / mana / wakes
+        std::string why;               // the verdict's reason (taken: the numbers' summary)
+        std::string opener;
+        size_t stop = 0;               // the stop's index in the route's plan
+        float fightSecLeft = 0.0f;
+        float runInSec = 0.0f;
+        float openSec = 0.0f;
+        float distance = 0.0f;
+        float overload = 0.0f;
+        float drop = 0.0f;
+        float unionSec = 0.0f;
+        float tankHealth = 0.0f;  // share of its health now
+        uint32 unionMobs = 0;
+    };
+    ChainPull JudgeChainPull(LeaderGroup& group, Player* tank, std::vector<Unit*> const& fightMobs, float fightSecLeft,
+                             std::function<std::vector<ObjectGuid>(Creature*)> const& packOf);
+
+    // [lead1171] user 2026-11-04 (Q66, full freedom): the tank meets the mob. A mob coming at the led tank after its
+    // ranged opener no longer waits the mob's whole run (lead146): the leader compares, from the walk times and the
+    // spell data, the tank standing (the mob runs the gap), walking in (both run: the gap closes at both speeds), a
+    // gap closer (Charge / Feral Charge: the core's charge speed, SPEED_CHARGE) and a pull to the tank (Death Grip:
+    // the core's grip jump speed) by the group's time to its first hits at the landing (the tank's contact, each
+    // melee member's walk to it, each ranged member's walk into its range of it) and takes the fastest. A landing off
+    // the tank's spot needs: no other mob in the tank's melee (no drag), no unpulled mob's reach at the landing or on
+    // the walk there (the leader's spot guard), a healer that reaches the landing from where it stands, and for a gap
+    // closer the leader's landing check (TankGapCloserAllowed). Once per mob; the melee places follow the landing
+    enum class TankMeet : uint8
+    {
+        None,
+        Stand,   // the mob comes to the tank
+        Walk,    // the tank walks in to meet it
+        Closer,  // a gap closer onto it
+        Grip     // pulled to the tank (Death Grip)
+    };
+    char const* TankMeetName(TankMeet meet);
+    struct TankMeetPlan
+    {
+        TankMeet meet = TankMeet::None;
+        std::string spell;  // Closer / Grip: the spell the tank casts
+        Position landing;   // where the fight lands
+        float gap = 0.0f;   // the gap to close (yd, the combat reaches off)
+        // each option's seconds to the tank's contact and the group's summed seconds to its first hits (< 0: not
+        // judged - the option was out)
+        float standSec = -1.0f;
+        float walkSec = -1.0f;
+        float closerSec = -1.0f;
+        float gripSec = -1.0f;
+        float standGroup = -1.0f;
+        float walkGroup = -1.0f;
+        float closerGroup = -1.0f;
+        float gripGroup = -1.0f;
+        std::string why;    // why the moving options were out (empty: none was)
+    };
+    TankMeetPlan PlanTankMeet(Player* tank, Unit* mob, std::vector<Player*> const& members);
+    // the leader's verdict for `mob`, published for the tank's own actions (under a lock: the leader's thread writes,
+    // the tank's map thread reads); TankMeet::None: none decided
+    void SetTankMeet(Player* tank, Unit* mob, TankMeetPlan const& plan);
+    TankMeet TankMeetFor(Player* tank, Unit* mob, std::string* spell = nullptr, Position* landing = nullptr);
 }
 
 #endif

@@ -339,6 +339,8 @@ namespace Leader
         std::set<ObjectGuid> joinedHeld;               // [lead1140] of those: idle, the tank opens on them from here
         std::set<ObjectGuid> fieldJudged;  // [lead1100] walkers into a ground field judged this fight
         std::set<ObjectGuid> fieldTaken;   // [lead1100] their packs the field may take (spared no longer)
+        uint32 chainLoggedFight = 0;                                 // [lead1170] the fight (start ms) logged below
+        std::set<std::pair<ObjectGuid, std::string>> chainLogged;   // [lead1170] chain_pull verdicts (pack, kind)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
         std::string fightMoveWhy;                      // [lead909] its purpose (empty: away from a pack)
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
