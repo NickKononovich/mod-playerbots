@@ -1089,10 +1089,6 @@ namespace TestHarness
                      seals);
 
         bot->DurabilityRepairAll(false, 1.0f, false);
-        // [lead1164] b240 rfc-h 5C-11: the blood tank came to Oggleflint with Army of the Dead on its 10 min cooldown
-        // from the previous run's Bazzalan (5C-3, 3.5 min before; a cooldown this long is saved with the character)
-        // - the run is judged against wowsims, whose fights start with every cooldown ready: so does the run
-        bot->RemoveAllSpellCooldown();
         bot->SetFullHealth();
         if (bot->GetMaxPower(POWER_MANA))
             bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
