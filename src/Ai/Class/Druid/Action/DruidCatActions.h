@@ -41,6 +41,8 @@ class CastBerserkAction : public CastBuffSpellAction
 {
 public:
     CastBerserkAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "berserk") {}
+    // [rot430] by id: the Berserking enchant's "Berserk" proc is no Berserk of the druid's
+    bool isUseful() override { return CastSpellAction::isUseful() && !bot->HasAura(SPELL_DRUID_BERSERK); }
 };
 
 class CastTigersFuryAction : public CastBuffSpellAction

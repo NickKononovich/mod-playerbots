@@ -7658,13 +7658,14 @@ void PlayerbotAI::TraceRogueGcd(Action* action, std::string const& source)
         Aura const* rip = GetAura("rip", boss, true);
         Aura const* rake = GetAura("rake", boss, true);
         Aura const* roar = GetAura("savage roar", bot);
+        constexpr uint32 SPELL_DRUID_BERSERK = 50334;  // [rot430] the Berserking enchant's proc is "Berserk" too
         LOG_DEBUG("playerbots",
                   "[cat gcd] {} on {}: after the cast energy {} cp {} -> {} (trigger {}) | {} ms after the last cast "
                   "(energy {}) | clearcasting {}, berserk {}, tiger's fury {} | rip {} s, rake {} s, savage roar {} s "
                   "| melee {}, behind {}, swinging {}",
                   bot->GetName(), boss->GetName(), energy, bot->GetComboPoints(target), action->getName(),
                   source.empty() ? "default" : source, sinceMs, rogueGcdLastEnergy, HasAura("clearcasting", bot),
-                  HasAura("berserk", bot), HasAura("tiger's fury", bot),
+                  bot->HasAura(SPELL_DRUID_BERSERK), HasAura("tiger's fury", bot),
                   rip ? rip->GetDuration() / IN_MILLISECONDS : 0, rake ? rake->GetDuration() / IN_MILLISECONDS : 0,
                   roar ? roar->GetDuration() / IN_MILLISECONDS : 0, bot->IsWithinMeleeRange(target),
                   boss->isInBack(bot), bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING));

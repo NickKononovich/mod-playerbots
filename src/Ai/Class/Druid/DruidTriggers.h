@@ -22,6 +22,10 @@
 
 inline constexpr uint32 AURA_OMEN_OF_CLARITY = 16864;
 inline constexpr uint32 SPELL_TREE_OF_LIFE = 33891;
+// [rot430] the druid's Berserk by id: the Berserking weapon enchant's proc (59620) is named "Berserk" too, and by name
+// it held Tiger's Fury and Berserk under the proc (b233 rfc-h 5H Rtdruaf: Tiger's Fury 0 on Jergosh / Bazzalan, held
+// 49-61 s on Taragaman at 0-11 energy)
+inline constexpr uint32 SPELL_DRUID_BERSERK = 50334;
 // [rot322] Rake, Rip and Savage Roar are recast only once they are gone, as wowsims feral rotation.go (rakeNow / ripNow
 // !Dot.IsActive(), roarNow !SavageRoarAura.IsActive() or clipRoar). A recast before the end loses a tick in the core:
 // Aura::RefreshDuration resets the tick count (ResetTicks) but not the periodic timer, so the pending tick becomes
@@ -227,7 +231,7 @@ public:
         // b211 rfc-h 5H Rtdruaf 5.18 Faerie Fire (Feral) a minute vs the sim's 8.85, none in Berserk ([b31_sd] had
         // blocked it there)
         uint8 const energy = AI_VALUE2(uint8, "energy", "self target");
-        uint8 const maxEnergy = botAI->HasAura("berserk", bot) ? CAT_FF_BERSERK_MAX_ENERGY : CAT_FF_MAX_ENERGY;
+        uint8 const maxEnergy = bot->HasAura(SPELL_DRUID_BERSERK) ? CAT_FF_BERSERK_MAX_ENERGY : CAT_FF_MAX_ENERGY;
         if (botAI->HasAura("clearcasting", bot) || energy >= maxEnergy)
             return false;
         if (Unit* fought = AI_VALUE(Unit*, "current target"); fought && energy >= CAT_RIP_ENERGY &&
@@ -284,6 +288,9 @@ public:
 
         return BoostTrigger::IsActive();
     }
+
+protected:
+    Aura* FindBuff(Unit* target) override { return target->GetAura(SPELL_DRUID_BERSERK); }  // [rot430]
 };
 
 // [b31_sd] Tiger's Fury below TIGERS_FURY_MAX_ENERGY, never under Berserk (CASTER_AURASTATE: 31 refused casts in the
@@ -296,7 +303,7 @@ public:
     bool IsActive() override
     {
         return AI_VALUE2(uint8, "energy", "self target") < TIGERS_FURY_MAX_ENERGY &&
-               !botAI->HasAura("berserk", bot) && !botAI->HasAura("tiger's fury", bot);
+               !bot->HasAura(SPELL_DRUID_BERSERK) && !botAI->HasAura("tiger's fury", bot);  // [rot430]
     }
 };
 
@@ -304,6 +311,7 @@ class BerserkActiveTrigger : public HasAuraTrigger
 {
 public:
     BerserkActiveTrigger(PlayerbotAI* botAI) : HasAuraTrigger(botAI, "berserk") {}
+    bool IsActive() override { return bot->HasAura(SPELL_DRUID_BERSERK); }  // [rot430]
 };
 
 class SavageRoarTrigger : public BuffTrigger

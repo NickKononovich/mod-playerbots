@@ -300,9 +300,11 @@ bool BuffTrigger::IsActive()
     if (!target)
         return false;
 
-    Aura* aura = botAI->GetAura(spell, target, checkIsOwner, checkDuration);
+    Aura* aura = FindBuff(target);
     return ai::buff::BuffBelowRefreshTarget(botAI, aura, beforeDuration);
 }
+
+Aura* BuffTrigger::FindBuff(Unit* target) { return botAI->GetAura(spell, target, checkIsOwner, checkDuration); }
 
 Value<Unit*>* BuffOnPartyTrigger::GetTargetValue()
 {

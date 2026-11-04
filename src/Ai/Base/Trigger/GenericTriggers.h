@@ -519,6 +519,9 @@ public:
     bool IsActive() override;
 
 protected:
+    // [rot430] the buff's aura on target; by name unless a class trigger knows the spell id (a proc that shares it)
+    virtual Aura* FindBuff(Unit* target);
+
     bool checkIsOwner;
     bool checkDuration;
     uint32 beforeDuration;
