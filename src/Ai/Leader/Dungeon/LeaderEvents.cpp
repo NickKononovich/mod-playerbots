@@ -549,7 +549,7 @@ namespace Leader::Dungeon
             float const endDist = mob->GetExactDist(end.x, end.y, end.z);
             // a tank that stands and casts at the mob hits at its cast's end plus the travel; one that stands and
             // casts nothing at it has no predictable hit (a pre-cast under way is cancelled: the tank is late)
-            if (Spell const* cast = tank->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (Spell* cast = tank->GetCurrentSpell(CURRENT_GENERIC_SPELL);
                 !walks && cast && cast->m_targets.GetUnitTarget() == mob)
                 return std::max(0, cast->GetCastTimeRemaining()) / 1000.0f +
                        (cast->GetSpellInfo()->Speed > 0.0f ? endDist / cast->GetSpellInfo()->Speed : 0.0f);
