@@ -780,6 +780,58 @@ namespace Leader::Travel
         return false;
     }
 
+    bool PatrolOnRouteAtArrival(Player* walker, Creature* patrol, WaypointPath const& path, float reach,
+                                RouteBackbone const& backbone, Creature* boss)
+    {
+        if (PatrolCrossesRoute(walker, path, reach, RouteBackbone(), boss))
+            return true;  // its walk passes within its reach of the next boss
+        std::vector<G3D::Vector3> track;
+        float sampleSec = 0.0f;
+        if (!patrol || !PullPlanning::PatrolForecast(patrol, track, sampleSec) || track.empty() || sampleSec <= 0.0f)
+            return PatrolCrossesRoute(walker, path, reach, backbone, boss);
+        float const speed = walker->GetSpeed(MOVE_RUN);
+        if (speed <= 0.0f)
+            return PatrolCrossesRoute(walker, path, reach, backbone, boss);
+        float const step = speed * sampleSec;  // the walk per forecast sample
+        auto const meets = [&](G3D::Vector3 const& at, float along) -> bool
+        {
+            float const index = along / step;
+            for (size_t sample : {size_t(index), size_t(index) + 1})
+            {
+                if (sample >= track.size())
+                    continue;
+                G3D::Vector3 const& patrolAt = track[sample];
+                if (std::fabs(patrolAt.z - at.z) <= BOSS_ROOM_TRASH_DZ &&
+                    (G3D::Vector2(patrolAt.x, patrolAt.y) - G3D::Vector2(at.x, at.y)).length() < reach)
+                    return true;
+            }
+            return false;
+        };
+        for (Movement::PointsArray const& points : backbone)
+        {
+            float along = 0.0f;  // every leg starts at the walker (a link's far leg: its arrival read early)
+            for (size_t point = 1; point < points.size(); ++point)
+            {
+                G3D::Vector3 const& from = points[point - 1];
+                G3D::Vector3 const& to = points[point];
+                float const length = (to - from).length();
+                for (float walked = 0.0f; walked < length; walked += step)
+                {
+                    if ((along + walked) / step >= float(track.size()))
+                        break;
+                    if (meets(from + (to - from) * (walked / length), along + walked))
+                        return true;
+                }
+                along += length;
+                if (along / step >= float(track.size()))
+                    break;  // past the forecast
+            }
+            if (points.size() >= 2 && along / step < float(track.size()) && meets(points.back(), along))
+                return true;
+        }
+        return false;
+    }
+
     // Closed parts of the instance (AreaGateDef): the gate is meant for this run (onlyContent), a point is inside.
     bool AreaGateForContent(AreaGateDef const& gate, char const* contentKey)
     {
@@ -3057,8 +3109,12 @@ namespace Leader::Travel
                                                        anchor.GetPositionZ())))
                             return "event chain";
                 }
+                // [lead1215] b240 rfc-h 5G-15 388 s: Ragefire Shaman 38 "patrol crosses route" (its walk anywhere
+                // near the route) - the group detoured south for it and woke Shaman 37's pack (+4 mobs, ~28 s); the
+                // fast run judged it off the path where it stood then. Only its forecast place at our arrival counts
                 WaypointPath const* patrol = PatrolWalkPath(creature);
-                return patrol && PatrolCrossesRoute(leader, *patrol, AggroReach(creature, leader), backbone, nextBoss)
+                return patrol && PatrolOnRouteAtArrival(leader, creature, *patrol, AggroReach(creature, leader),
+                                                        backbone, nextBoss)
                            ? "patrol crosses route"
                            : nullptr;
             }();

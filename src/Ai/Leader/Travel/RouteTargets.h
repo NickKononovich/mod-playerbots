@@ -865,6 +865,12 @@ namespace Leader::Travel
     // floor (it aggroes on the group fighting him: JoinsBossFight "aggro").
     bool PatrolCrossesRoute(Player* walker, WaypointPath const& path, float reach, RouteBackbone const& backbone,
                             Creature* boss);
+    // [lead1215] user 2026-11-04: a patrol is on the route only where its forecast (PullPlanning::PatrolForecast)
+    // puts it within `reach` of a route point when the walker gets there at its run speed; past the forecast it is
+    // not (a later retarget judges it again nearer); no forecast (it does not walk its path now): PatrolCrossesRoute.
+    // The boss part (within its reach of the next boss) stays PatrolCrossesRoute's
+    bool PatrolOnRouteAtArrival(Player* walker, Creature* patrol, WaypointPath const& path, float reach,
+                                RouteBackbone const& backbone, Creature* boss);
 
     // A route through the aggro reach of an idle mob the route skipped (a pack the tank refused, one the tank did
     // not see): the walk would stop at that pack's edge (ApproachStop) and wait for a pull the tank already
