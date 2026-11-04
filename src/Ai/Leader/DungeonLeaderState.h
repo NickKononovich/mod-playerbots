@@ -344,6 +344,7 @@ namespace Leader
         // [lead1083] a living boss not in the fight is ahead (false: no boss left - the estimate's own state; while
         // true bossPullSec >= 0 on every leader tick, in a fight and out of it)
         bool bossLeft = false;
+        ObjectGuid bossOrderFirst;  // [lead1085] the computed first mob of a fight with a boss (Empty: none)
         // [lead1083] the route plan's estimate table, built once per plan (its boss, stop count and length): from each
         // stop the straight walk on to the boss, the plan's path length over its straight legs, the health of the
         // stops from each one on

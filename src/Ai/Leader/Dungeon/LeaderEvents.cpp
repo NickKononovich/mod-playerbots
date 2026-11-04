@@ -1825,6 +1825,46 @@ namespace Leader::Dungeon
                               return a == target;
                           return target->GetExactDist(a) < target->GetExactDist(b);
                       });
+            // [lead1085] user 2026-11-04 (Q49): with a boss and other mobs in the fight the leader computes the kill
+            // order from the damage taken and the time to kill. Killing mob i before mob j saves dps_i x T_j and
+            // costs dps_j x T_i of damage on the group, so the order that takes the least damage runs by dps / T
+            // (each mob's damage per second on its victim, AttackerDps, over its seconds to kill at the group's
+            // dps), highest first: a mob that hits hard and dies fast goes before the boss, else the boss first and
+            // the mobs cleaved. The tank holds them all either way (the pull's overload gate took them)
+            if (fightingMobs.size() > 1 &&
+                std::any_of(fightingMobs.begin(), fightingMobs.end(), [](Unit* mob)
+                            { return mob->ToCreature() && mob->ToCreature()->IsDungeonBoss(); }))
+            {
+                PlayerbotAI* orderAI = GET_PLAYERBOT_AI(tank);
+                float const dps = std::max(
+                    1.0f, orderAI ? orderAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f);
+                std::map<Unit*, float> ratio;
+                for (Unit* mob : fightingMobs)
+                {
+                    float part = 0.0f;
+                    Unit* victim = mob->GetVictim() ? mob->GetVictim() : tank;
+                    float const hits = Leader::Fight::AttackerDps(mob, victim, part);
+                    float const killSec = std::max(float(mob->GetHealth()) / dps, 0.1f);
+                    ratio[mob] = hits / killSec;
+                }
+                std::stable_sort(fightingMobs.begin(), fightingMobs.end(),
+                                 [&ratio](Unit* a, Unit* b) { return ratio[a] > ratio[b]; });
+                if (fightingMobs.front()->GetGUID() != lead.bossOrderFirst)
+                {
+                    lead.bossOrderFirst = fightingMobs.front()->GetGUID();
+                    JsonArray order;
+                    for (Unit* mob : fightingMobs)
+                        order.Raw(JsonObject().Str("name", mob->GetName()).Real("ratio", ratio[mob])
+                                      .Real("killSec", float(mob->GetHealth()) / dps).Build());
+                    Decisions().Write(run, "leader", "boss_kill_order", fightingMobs.front()->GetGUID(),
+                                      fightingMobs.front()->GetName(), true,
+                                      JsonObject().Raw("order", order.Build()).Real("groupDps", dps)
+                                          .Str("why", "[lead1085] dps on its victim / seconds to kill, highest "
+                                                      "first"));
+                }
+            }
+            else
+                lead.bossOrderFirst = ObjectGuid::Empty;
             for (Unit* mob : fightingMobs)
             {
                 killOrder.push_back(mob->GetGUID());
@@ -7079,8 +7119,16 @@ namespace Leader::Dungeon
                         // passed and failed the test in turn, and each switch opened a fresh mob: 16 aggro losses for
                         // Rtpalae. The mob it attacks now stays its target while it keeps headroom on it (one command
                         // per fact)
+                        // [lead1085] in a boss fight the computed first mob goes before the held target once
+                        // it is in reach (a melee member: its melee reach; ranged: its cast reach and sight)
+                        if (!lead.bossOrderFirst.IsEmpty() && !lead.looseIsTarget)
+                            if (Unit* first = ObjectAccessor::GetUnit(*tank, lead.bossOrderFirst);
+                                first && first->IsAlive() && first->IsInCombat() && pickHere(first) &&
+                                (splashes ? bot->IsWithinMeleeRange(first) : MemberCastsHere(bot, first)))
+                                mine = first;
                         if (Leader::MemberEvents current;
-                            Leader::Events::Get(guid, current) && current.attack == Leader::AttackEvent::Attack)
+                            !mine && Leader::Events::Get(guid, current) &&
+                            current.attack == Leader::AttackEvent::Attack)
                             if (Unit* held = ObjectAccessor::GetUnit(*tank, current.target);
                                 held && held->IsAlive() && held->IsInCombat() &&
                                 std::find(killOrder.begin(), killOrder.end(), held->GetGUID()) != killOrder.end() &&
