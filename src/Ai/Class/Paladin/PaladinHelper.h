@@ -28,6 +28,11 @@ inline bool KeepsDivinePleaUpByHits(Player* bot)
     return bot && (bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R1) || bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R2));
 }
 
+// [lead1040] a Guarded by the Light tank's Divine Plea now: in a boss fight; on trash only when its recharge is back
+// before the next boss pull (the leader's estimate, the cooldowns-for-bosses rule); out of a fight just before the
+// leader's pull of a boss (wowsims prot: cast before the pull) - its walk to the boss within the aura's duration
+bool TankPleaNow(Player* bot);
+
 inline bool HasHandFromCaster(Unit* target, Unit* caster, std::initializer_list<uint32> spellIds)
 {
     if (!target || !caster)

@@ -6,6 +6,8 @@
 
 #include "PaladinTriggers.h"
 #include "HealthTriggers.h"  // [lead87] RestState::OwnManaLine
+#include "LeaderOrders.h"    // [lead1040] the leader's open pull order
+#include <set>
 #include "SpellMgr.h"
 #include "GenericBuffUtils.h"
 #include "PaladinActions.h"
@@ -337,9 +339,56 @@ bool TankDivinePleaTrigger::IsActive()
     // 1243 s, 60 s stood as "the tank rests" and 56 s drinking. Cast between pulls it gives its 25 % once (15 s, no
     // hits to refresh it) and is on its cooldown when the next pull opens; cast in the fight the hits keep it up and
     // it gives 5 % every 3 s for the whole fight. A tank with Guarded by the Light keeps it for the fight.
+    // [lead1040] b230 rfc-h 5E: Divine Plea was up 40 % of the boss fights (5A 100 %) - cast on the trash pull ~20 s
+    // before Oggleflint, it ran out in the gap and was on its cooldown at his pull (2.67 %/s boss mana rate against
+    // 0.81, 25 s drinking). TankPleaNow: the boss fights first, as every long cooldown (wowsims casts it before the
+    // pull)
     if (ai::paladin::KeepsDivinePleaUpByHits(bot))
-        return bot->IsInCombat();
+        return ai::paladin::TankPleaNow(bot);
     return bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA);
+}
+
+bool ai::paladin::TankPleaNow(Player* bot)
+{
+    constexpr uint32 SPELL_DIVINE_PLEA = 54428;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_DIVINE_PLEA);
+    if (!bot || !info)
+        return false;
+    auto const isBoss = [](Unit* unit)
+    {
+        Creature const* creature = unit ? unit->ToCreature() : nullptr;
+        return creature && (creature->IsDungeonBoss() || creature->isWorldBoss());
+    };
+    if (bot->IsInCombat())
+    {
+        if (isBoss(bot->GetVictim()))
+            return true;
+        for (Unit* attacker : bot->getAttackers())
+            if (isBoss(attacker))
+                return true;
+        float const toBoss = RestState::BossPullSecOf(bot);
+        if (toBoss < 0.0f)
+            return true;  // no boss left (or no estimate): the trash has it
+        int32 rechargeMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+        bot->ApplySpellMod(SPELL_DIVINE_PLEA, SPELLMOD_COOLDOWN, rechargeMs);
+        return float(std::max(rechargeMs, 0)) / float(IN_MILLISECONDS) <= toBoss;
+    }
+    Leader::PullOrder order;
+    if (!Leader::LedBot(bot) || !Leader::Orders::GetOpen(bot->GetGUID(), order))
+        return false;
+    Creature* boss = bot->GetMap() ? bot->GetMap()->GetCreature(order.target) : nullptr;
+    if (!boss || !boss->IsAlive() || !isBoss(boss))
+        return false;
+    float const durationSec = float(std::max(info->GetMaxDuration(), 0)) / float(IN_MILLISECONDS);
+    float const walkSec = std::max(bot->GetExactDist(boss) - bot->GetMeleeRange(boss), 0.0f) /
+                          std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
+    if (walkSec > durationSec)
+        return false;
+    thread_local std::set<std::pair<uint64, uint32>> logged;  // one line per tank and order
+    if (logged.insert({bot->GetGUID().GetRawValue(), order.id}).second)
+        LOG_INFO("playerbots", "[lead1040] {}: Divine Plea before the pull of {} ({:.1f} s walk <= its {:.0f} s)",
+                 bot->GetName(), boss->GetName(), walkSec, durationSec);
+    return true;
 }
 
 namespace
