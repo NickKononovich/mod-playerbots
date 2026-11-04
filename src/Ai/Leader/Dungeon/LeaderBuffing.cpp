@@ -205,6 +205,14 @@ namespace Leader::Dungeon
                 SpellInfo const* info = known ? sSpellMgr->GetSpellInfo(known) : nullptr;
                 if (!info)
                     continue;
+                // [lead1012] b229 rfc-h 5G-7 801 s / 5G-15 799 s (and 5B): the leader ordered Battle Shout out of a
+                // fight, the arms warrior had 0 rage (the game's cost, 10) and the cast failed - the buff pass waited
+                // 6-9 s on it and missed it anyway. A buff paid in rage / runic power (no rest refills it) is
+                // givable only while the caster has its cost now (Spell::CheckPower's test)
+                if ((info->PowerType == POWER_RAGE || info->PowerType == POWER_RUNIC_POWER) &&
+                    int32(caster->GetPower(Powers(info->PowerType))) <
+                        info->CalcPowerCost(caster, info->GetSchoolMask()))
+                    continue;
                 if (caster->CanNoReagentCast(info))
                     return true;
                 bool reagents = true;
