@@ -797,6 +797,21 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
                 bot->GetMotionMaster()->Clear();
             }
         }
+        // [lead1087] user 2026-11-04 (Q11: "how can anyone lose its target?"): a ranged member ran ~2 yd past its
+        // stop (its run speed over a tick), lost its target's sight there and got a new spot. On the spot with a walk
+        // under way that ends off it (an older walk's spline, a walk on past it), the walk stops here: the member
+        // stands on the spot it was told
+        if (bot->isMoving() && !bot->movespline->Finalized())
+        {
+            G3D::Vector3 const end = bot->movespline->FinalDestination();
+            if (events.spot.GetExactDist2d(end.x, end.y) > events.tolerance)
+            {
+                bot->StopMoving();
+                bot->GetMotionMaster()->Clear();
+                LOG_INFO("playerbots", "[lead1087] {}: stops on its spot ({}): its walk ran on {:.1f} yd past it",
+                         bot->GetName(), events.moveWhy, events.spot.GetExactDist2d(end.x, end.y));
+            }
+        }
         Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
                             "on the spot");
         // [lead159] standing on the spot is no work: the tick is the rotation's (it was executed every tick)

@@ -5321,8 +5321,28 @@ namespace Leader::Dungeon
                         2.0f &&
                     !MemberCastsHere(bot, target))
                 {
-                    blindOnSpot = true;
-                    LeaveCombatSpot(lead.combatSpotLeft[guid], held->second);
+                    // [lead1087] user 2026-11-04 (Q11): a member that ran past its spot and lost the sight there
+                    // goes back onto the spot when the spot itself still reaches and sees the target (no new spot):
+                    // its StandAt again, its tolerance the member's own combat reach (on the spot, not near it)
+                    Position const& heldAt = held->second.second;
+                    if (bot->GetExactDist2d(heldAt.GetPositionX(), heldAt.GetPositionY()) > bot->GetCombatReach() &&
+                        LeaderCastsFrom(bot, target, heldAt) && LeaderSeesFrom(bot, target, heldAt))
+                    {
+                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, heldAt, bot->GetCombatReach(),
+                                                    "combat spot: back onto its spot"))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
+                                     JsonObject().Str("why", "combat spot: back onto its spot")
+                                         .Str("target", target->GetName())
+                                         .Real("off", bot->GetExactDist2d(heldAt.GetPositionX(), heldAt.GetPositionY()))
+                                         .Real("x", heldAt.GetPositionX()).Real("y", heldAt.GetPositionY())
+                                         .Real("z", heldAt.GetPositionZ()));
+                        moved = true;
+                    }
+                    else
+                    {
+                        blindOnSpot = true;
+                        LeaveCombatSpot(lead.combatSpotLeft[guid], held->second);
+                    }
                 }
                 // [lead137] never back to the spot it just left for this target
                 auto const left = lead.combatSpotLeft.find(guid);
