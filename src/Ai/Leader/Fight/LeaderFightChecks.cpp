@@ -532,6 +532,7 @@ namespace Leader::Fight
     std::vector<Position> const* g_leaderCleared = nullptr;
     std::vector<ObjectGuid> const* g_leaderExempt = nullptr;  // [lead24] the committed pull's mobs
     std::set<ObjectGuid> const* g_leaderJoined = nullptr;     // [lead600] the packs decided into the fight
+    std::set<ObjectGuid> const* g_leaderJoinedHeld = nullptr; // [lead1140]
 
     // [lead24] the committed pull's own mobs (target, pack, expected pack)
     std::vector<ObjectGuid> LeaderPullMobs(std::shared_ptr<PullPlanner::Decision> const& commit, ObjectGuid mob)
@@ -586,7 +587,12 @@ namespace Leader::Fight
             // stood 27 s where the pull found them, the blood DK died alone out of the healer's sight and the group
             // wiped. A pack the leader decided into the fight is the fight's (its capacity verdict counts it): it
             // blocks nobody's spot or walk
-            if (g_leaderJoined && g_leaderJoined->count(mob->GetGUID()))
+            // [lead1140] b239 rfc-h: 49 of 92 "the tank never had it" in pulls with a joined pack, a member walking
+            // into it. One the tank opens on from where it stands blocks the other members until the tank has it
+            // (in combat: no idle mob); one it cannot reach blocks nobody (lead600: no member waits on a pull that
+            // never comes)
+            if (g_leaderJoined && g_leaderJoined->count(mob->GetGUID()) &&
+                (PlayerbotAI::IsTank(bot) || !g_leaderJoinedHeld || !g_leaderJoinedHeld->count(mob->GetGUID())))
                 return false;
             if (IdleMobReachesSpot(bot, mob, spot))
                 return true;

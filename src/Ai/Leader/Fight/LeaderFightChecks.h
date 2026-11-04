@@ -225,6 +225,8 @@ namespace Leader::Fight
     extern std::vector<ObjectGuid> const* g_leaderExempt;  // [lead24] the committed pull's mobs
     // [lead600] the idle packs the leader decided into the fight (lead76 pack_joins): no member keeps away from them
     extern std::set<ObjectGuid> const* g_leaderJoined;
+    // [lead1140] the joined idle mobs the tank opens on from where it stands: they block every other member's spot
+    extern std::set<ObjectGuid> const* g_leaderJoinedHeld;
 
     // [lead24] the committed pull's own mobs (target, pack, expected pack)
     std::vector<ObjectGuid> LeaderPullMobs(std::shared_ptr<PullPlanner::Decision> const& commit, ObjectGuid mob);

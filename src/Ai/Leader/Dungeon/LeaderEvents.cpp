@@ -822,6 +822,24 @@ namespace Leader::Dungeon
         pullMobs.insert(pullMobs.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());  // [lead76]
         g_leaderExempt = &pullMobs;
         g_leaderJoined = &lead.joinedMobs;  // [lead600]
+        // [lead1140] the joined packs' idle mobs the tank opens on from where it stands (TankOpensFromHere): held out
+        // of the other members' reach (spot guard and their own guards) until the tank has them
+        PlayerbotAI* const tankAI = GET_PLAYERBOT_AI(tank);
+        auto const publishHeld = [&]()
+        {
+            lead.joinedHeld.clear();
+            for (ObjectGuid const& guid : lead.joinedTankOpens)
+                if (Creature* mob = map->GetCreature(guid);
+                    mob && mob->IsAlive() && !mob->IsInCombat() && tank->IsValidAttackTarget(mob) &&
+                    !mob->HasBreakableByDamageCrowdControlAura() && TankOpensFromHere(tankAI, tank, mob))
+                    lead.joinedHeld.insert(guid);
+            if (Group* tankGroup = tank->GetGroup())
+                Leader::PullPack::SetHeld(tankGroup->GetGUID(),
+                                          std::vector<ObjectGuid>(lead.joinedHeld.begin(), lead.joinedHeld.end()));
+        };
+        if (!lead.joinedTankOpens.empty() || !lead.joinedHeld.empty())
+            publishHeld();
+        g_leaderJoinedHeld = &lead.joinedHeld;
         // [lead115] the pull walks: the engage order open (not fighting yet) and the tank without threat on its mob
         bool pullWalk = false;
         uint32 pullWalkOrder = 0;
@@ -860,6 +878,7 @@ namespace Leader::Dungeon
                 g_leaderCleared = nullptr;
                 g_leaderExempt = nullptr;
                 g_leaderJoined = nullptr;
+                g_leaderJoinedHeld = nullptr;
             }
         } guardReset;
         // [lead18] every MoveTo / StandAt the leader issues: the spot and the walk out of every unpulled mob's reach;
@@ -885,10 +904,28 @@ namespace Leader::Dungeon
         };
         // the pack is the fight's: its mobs block no spot or walk (lead600) and are the pull's for the members' own
         // guards (Leader::PullPack)
-        auto const joinPack = [&](Creature* mob, std::vector<ObjectGuid> const& packMobs)
+        // [lead1140] `tankOpens`: joined for a member's blocked spot or walk - the tank opens on it (held), not the
+        // healer's walk to the tank under attack (lead830: that walk goes at once)
+        auto const joinPack = [&](Creature* mob, std::vector<ObjectGuid> const& packMobs, bool tankOpens)
         {
             lead.joinedPack[mob->GetGUID()] = mob->GetGUID();
             lead.joinedMobs.insert(packMobs.begin(), packMobs.end());
+            if (tankOpens)
+            {
+                lead.joinedTankOpens.insert(packMobs.begin(), packMobs.end());
+                publishHeld();
+                LOG_INFO("playerbots", "[lead1140] {}: {} of the {} mobs of {}'s joined pack held out of the members' "
+                         "reach until the tank opens on them",
+                         tank->GetName(), lead.joinedHeld.size(), packMobs.size(), mob->GetName());
+            }
+            else
+            {
+                size_t erased = 0;
+                for (ObjectGuid const& guid : packMobs)
+                    erased += lead.joinedTankOpens.erase(guid);
+                if (erased)
+                    publishHeld();  // the healer's walk goes now, held or not
+            }
             if (Group* group = tank->GetGroup())
             {
                 std::vector<ObjectGuid> all = LeaderPullMobs(lead.commit, lead.commitMob);
@@ -912,7 +949,7 @@ namespace Leader::Dungeon
             bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
             lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
             if (fits)
-                joinPack(mob, packMobs);
+                joinPack(mob, packMobs, true);
             else
             {
                 // away from the pack, out of its reach (its aggro range + the spot guard's margin)
@@ -3298,6 +3335,13 @@ namespace Leader::Dungeon
             lead.fightMoveTo.reset();
             lead.joinedPack.clear();
             lead.joinedMobs.clear();
+            if (!lead.joinedTankOpens.empty() || !lead.joinedHeld.empty())  // [lead1140]
+            {
+                lead.joinedTankOpens.clear();
+                lead.joinedHeld.clear();
+                if (Group* tankGroup = tank->GetGroup())
+                    Leader::PullPack::SetHeld(tankGroup->GetGUID(), {});
+            }
             lead.fieldJudged.clear();  // [lead1100]
             lead.fieldTaken.clear();
         }
@@ -5878,7 +5922,8 @@ namespace Leader::Dungeon
                     {
                         Creature* const blocker = map->GetCreature(held.blocker);
                         fresh = !blocker || !blocker->IsAlive() || blocker->IsInCombat() ||
-                                lead.joinedMobs.count(held.blocker);
+                                (lead.joinedMobs.count(held.blocker) &&
+                                 !lead.joinedHeld.count(held.blocker));  // [lead1140] held: still a blocker
                     }
                     if (!fresh)
                     {
@@ -9223,7 +9268,7 @@ namespace Leader::Dungeon
                                     !joined.insert(blocker->GetGUID()).second)
                                     break;
                                 std::vector<ObjectGuid> const packMobs = packOf(blocker);
-                                joinPack(blocker, packMobs);
+                                joinPack(blocker, packMobs, false);
                                 lead.fightMoveTo.reset();  // the fight stays: no walk away from a pack it holds
                                 Decisions().Write(run, "leader", "pack_joins", blocker->GetGUID(),
                                                   blocker->GetName(), true,

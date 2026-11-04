@@ -15,6 +15,7 @@
 #include "Map.h"
 #include "MoveSpline.h"
 #include "Player.h"
+#include "PlayerbotAI.h"  // [lead1140] IsTank
 #include "Timer.h"
 #include "Unit.h"
 
@@ -402,6 +403,7 @@ namespace Leader
         {
             std::mutex packLock;
             std::unordered_map<ObjectGuid, std::vector<ObjectGuid>> packs;
+            std::unordered_map<ObjectGuid, std::vector<ObjectGuid>> held;  // [lead1140]
         }
 
         void Set(ObjectGuid group, std::vector<ObjectGuid> const& mobs)
@@ -414,6 +416,7 @@ namespace Leader
         {
             std::lock_guard<std::mutex> lock(packLock);
             packs.erase(group);
+            held.erase(group);
         }
 
         bool Contains(Player* bot, ObjectGuid mob)
@@ -421,10 +424,35 @@ namespace Leader
             Group* group = bot ? bot->GetGroup() : nullptr;
             if (!group || mob.IsEmpty())
                 return false;
+            bool const tank = PlayerbotAI::IsTank(bot);
             std::lock_guard<std::mutex> lock(packLock);
+            if (!tank)
+                if (auto const kept = held.find(group->GetGUID());
+                    kept != held.end() &&
+                    std::find(kept->second.begin(), kept->second.end(), mob) != kept->second.end())
+                    return false;
             auto const found = packs.find(group->GetGUID());
             return found != packs.end() &&
                    std::find(found->second.begin(), found->second.end(), mob) != found->second.end();
+        }
+
+        void SetHeld(ObjectGuid group, std::vector<ObjectGuid> const& mobs)
+        {
+            std::lock_guard<std::mutex> lock(packLock);
+            if (mobs.empty())
+                held.erase(group);
+            else
+                held[group] = mobs;
+        }
+
+        std::vector<ObjectGuid> Held(Player* bot)
+        {
+            Group* group = bot ? bot->GetGroup() : nullptr;
+            if (!group)
+                return {};
+            std::lock_guard<std::mutex> lock(packLock);
+            auto const found = held.find(group->GetGUID());
+            return found != held.end() ? found->second : std::vector<ObjectGuid>{};
         }
     }
 

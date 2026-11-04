@@ -385,6 +385,8 @@ public:
 // tank's own fight duty: a mob in the fight that the tank has no threat on yet, beyond its melee, in sight and in an
 // opener's range, gets the tank's first ready ranged opener (Avenger's Shield, Hand of Reckoning, ...) as it comes
 Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener = nullptr);
+// [lead1140] a ranged engage opener of the tank reaches `mob` from where it stands (spell range, in sight)
+bool TankOpensFromHere(PlayerbotAI* botAI, Player* tank, Unit* mob);
 
 class TankOpenIncomingAction : public Action
 {

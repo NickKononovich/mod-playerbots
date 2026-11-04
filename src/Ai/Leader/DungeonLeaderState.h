@@ -335,6 +335,8 @@ namespace Leader
         std::map<ObjectGuid, std::string> manaWayLogged;  // [lead955] the warlock mana way last logged
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
         std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
+        std::set<ObjectGuid> joinedTankOpens;          // [lead1140] joined for a member's blocked spot / walk
+        std::set<ObjectGuid> joinedHeld;               // [lead1140] of those: idle, the tank opens on them from here
         std::set<ObjectGuid> fieldJudged;  // [lead1100] walkers into a ground field judged this fight
         std::set<ObjectGuid> fieldTaken;   // [lead1100] their packs the field may take (spared no longer)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)

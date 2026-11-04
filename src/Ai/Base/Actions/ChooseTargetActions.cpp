@@ -424,6 +424,22 @@ bool AggressiveTargetAction::Execute(Event event)
                       commitMobs, commitCost, single);
 }
 
+// [lead1140] a ranged engage opener the tank knows (TankEngageOpeners, no gap closer) reaches `mob` from where it
+// stands (spell data range, in sight); its cooldown aside: the tank opens with it, or the next one, once ready
+bool TankOpensFromHere(PlayerbotAI* botAI, Player* tank, Unit* mob)
+{
+    if (!botAI || !tank || !mob || !tank->IsWithinLOSInMap(mob))
+        return false;
+    for (char const* name : TankEngageOpeners(tank, false))
+    {
+        uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+        SpellInfo const* info = spell && tank->HasSpell(spell) ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (info && tank->IsWithinCombatRange(mob, info->GetMaxRange(false)))
+            return true;
+    }
+    return false;
+}
+
 Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
 {
     // [lead112] b147 rfc-h 59.9-78 s: two Earthborers on the healer and the shaman while the tank, not in combat
@@ -457,6 +473,14 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
     if (Leader::Orders::GetOpen(bot->GetGUID(), order) && order.state != Leader::OrderState::Fighting)
         if (Unit* engaged = botAI->GetUnit(order.target))
             fight.push_back(engaged);
+    // [lead1140] b239 rfc-h: 49 of 92 "the tank never had it" came in a pull with a pack the leader joined into the
+    // fight (lead76 pack_joins), woken by a member walking in (5C-11 725.9 s: the Enforcer pack joined, the fury
+    // warrior's combat spot 0.5 s later woke it). A joined pack the tank reaches from where it stands is the tank's to
+    // open on (the leader keeps the other members out of its reach until then: PullPack::SetHeld)
+    std::vector<ObjectGuid> const held = Leader::PullPack::Held(bot);
+    for (ObjectGuid const& guid : held)
+        if (Unit* joined = botAI->GetUnit(guid); joined && !joined->IsInCombat())
+            fight.push_back(joined);
     // [lead106] b140 rfc-h 262.7-286.7 s: a Ragefire Shaman on the mage for 24 s while Hand of Reckoning went to
     // mobs that only came at the tank (the first match in the list) - two passes: every mob on another member first
     // (Righteous Defense on the attacked friend first: it takes up to three), then the untouched incoming ones
@@ -479,7 +503,8 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         // an out of range opener and the cast walks to it. A mob in the fight is opened on or taken back only from
         // where the tank stands (in range and sight: the leader's aggro-loss rule walks the tank to its taunt's reach
         // when none reaches); only the open order's mob not yet in combat keeps the engage's walk to its range
-        bool const fromHere = mob->IsInCombat();
+        bool const fromHere =
+            mob->IsInCombat() || std::find(held.begin(), held.end(), mob->GetGUID()) != held.end();  // [lead1140]
         auto const reachesFromHere = [&](char const* name, Unit* on)
         {
             uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();

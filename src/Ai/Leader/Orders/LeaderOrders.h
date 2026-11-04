@@ -489,6 +489,10 @@ namespace Leader
         void Set(ObjectGuid group, std::vector<ObjectGuid> const& mobs);
         void Clear(ObjectGuid group);
         bool Contains(Player* bot, ObjectGuid mob);
+        // [lead1140] the joined packs' idle mobs the tank opens on from where it stands: no pull mob for the other
+        // members' guards until the tank has them (Contains is false for them but for the tank)
+        void SetHeld(ObjectGuid group, std::vector<ObjectGuid> const& mobs);
+        std::vector<ObjectGuid> Held(Player* bot);
     }
     // [lead15] LEADER_MEMBER_EXECUTOR: a member of a led group inside a dungeon, not the tank (the tank executes its
     // PullOrder and walks the route itself): it executes the leader's commands only.
