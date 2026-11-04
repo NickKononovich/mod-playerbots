@@ -791,6 +791,29 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
                 channel ? Acore::StringFormat("channels, {:.1f} s left", channel->GetCastTimeRemaining() / 1000.0f)
                         : std::string("starts the channel"));
     }
+    // [lead1164] b240 rfc-h 5C-11: the blood tank's Army was "on cooldown" at Oggleflint (its 10 min from 5C-3's
+    // Bazzalan, 3.5 min before the run) and "held for Bazzalan" in 5C-3's Jergosh fight: what each gate saw, once per
+    // knight, boss, gate and verdict - the plan's state, the cooldown left and what the gate holds
+    for (Player* dk : GroupPlayers(group, boss->GetMap()))
+    {
+        if (!ArmyCaster(dk))
+            continue;
+        DungeonLeaderState::ArmyPrepull const& plan = plans[dk->GetGUID()];
+        std::string const state = Acore::StringFormat(
+            "{}: plan {}, cooldown {:.0f} s, last blocked '{}', last wait '{}', holds '{}'",
+            orderNow ? "the buff pass end" : "the boss pull",
+            plan.done ? "done" : plan.startedMs ? "channel started" : plan.orderedMs ? "ordered" : "not ordered",
+            dk->GetSpellCooldownDelay(SPELL_ARMY_OF_THE_DEAD) / 1000.0f, plan.blockedLogged, plan.waitLogged, holds);
+        thread_local std::map<std::pair<uint64, uint64>, std::string> logged;
+        if (logged.size() > 1024)
+            logged.clear();
+        std::string& was = logged[{dk->GetGUID().GetRawValue(), boss->GetGUID().GetRawValue()}];
+        if (was != state)
+        {
+            was = state;
+            LOG_INFO("playerbots", "[lead1164] {}: Army before {} at {}", dk->GetName(), boss->GetName(), state);
+        }
+    }
     return holds;
 }
 
