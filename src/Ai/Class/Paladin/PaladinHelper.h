@@ -23,9 +23,14 @@ static constexpr uint32 SPELL_GUARDED_BY_THE_LIGHT_R2 = 53585;
 // [rot150] Guarded by the Light (Spell.dbc 53583 / 53585: effect 2 PROC_TRIGGER_SPELL 63521 on a melee swing or melee
 // spell hit, 50 / 100 %; spell_pal_guarded_by_the_light refreshes Divine Plea, whose 5 % of max mana ticks every 3 s go
 // on). Rawr ClassTalents.cs:2037-2041. A tank with it keeps one Divine Plea up for the whole fight by hitting.
+// [lead1071] b230-b232: never true - a passive talent is in the core's talent map only
+// (Player::_addTalentAurasAndSpells casts its aura, Player::HasSpell reads m_spells), so the Plea gates [rot150]
+// [lead1040] [lead1063] never ran (0 [lead1040] lines in three batches) and the tank cast Plea whenever its mana was
+// not full. Player::HasTalent on the active spec reads the talent
 inline bool KeepsDivinePleaUpByHits(Player* bot)
 {
-    return bot && (bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R1) || bot->HasSpell(SPELL_GUARDED_BY_THE_LIGHT_R2));
+    return bot && (bot->HasTalent(SPELL_GUARDED_BY_THE_LIGHT_R1, bot->GetActiveSpec()) ||
+                   bot->HasTalent(SPELL_GUARDED_BY_THE_LIGHT_R2, bot->GetActiveSpec()));
 }
 
 // [lead1040] a Guarded by the Light tank's Divine Plea now: in a boss fight; on trash only when its recharge is back
