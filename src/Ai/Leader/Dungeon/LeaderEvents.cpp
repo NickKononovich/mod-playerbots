@@ -7672,16 +7672,13 @@ namespace Leader::Dungeon
                 }
                 else
                 {
-                    if (lead.fightSecLeft <= 0.0f || pct >= RestState::VIPER_START_MANA_PCT)
+                    // [lead1086] user 2026-11-04 (Viper per wowsims / Rawr): wowsims' hunter enters Viper below its
+                    // 10 % line whatever the fight's need (the need test kept hunters dry at 0-10 % mana)
+                    if (pct >= RestState::VIPER_START_MANA_PCT)
                         return 0;
-                    float const need =
-                        RestState::FightManaLine(hunter, lead.fightSecLeft, 0.0f, nullptr, fightBoss != nullptr, false);
-                    wantViper = pct < need;
-                    why = Acore::StringFormat(
-                        "{}: mana {:.0f} % < wowsims' line {:.0f} %, {} its need for the fight's {:.0f} s left "
-                        "{:.0f} %",
-                        wantViper ? "Viper" : "its attack aspect", pct, RestState::VIPER_START_MANA_PCT,
-                        wantViper ? "<" : ">=", lead.fightSecLeft, need);
+                    wantViper = true;
+                    why = Acore::StringFormat("Viper: mana {:.0f} % < wowsims' line {:.0f} % [lead1086]", pct,
+                                              RestState::VIPER_START_MANA_PCT);
                 }
             }
             else
