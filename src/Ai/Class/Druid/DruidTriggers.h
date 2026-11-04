@@ -302,8 +302,14 @@ public:
 
     bool IsActive() override
     {
-        return AI_VALUE2(uint8, "energy", "self target") < TIGERS_FURY_MAX_ENERGY &&
-               !bot->HasAura(SPELL_DRUID_BERSERK) && !botAI->HasAura("tiger's fury", bot);  // [rot430]
+        if (AI_VALUE2(uint8, "energy", "self target") >= TIGERS_FURY_MAX_ENERGY ||
+            bot->HasAura(SPELL_DRUID_BERSERK) || botAI->HasAura("tiger's fury", bot))
+            return false;
+
+        if (botAI->HasAura("berserk", bot))  // [rot430] only the Berserking enchant's proc
+            LOG_DEBUG("playerbots", "[rot430] {} Tiger's Fury under the Berserking proc (no Berserk of its own)",
+                      bot->GetName());
+        return true;
     }
 };
 
