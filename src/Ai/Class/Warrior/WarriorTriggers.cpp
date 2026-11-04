@@ -489,17 +489,28 @@ bool FuryRendWeaveTrigger::IsActive()
     if (!rendInfo || !whirlwindInfo || target->IsImmunedToSpell(rendInfo, bot))
         return false;
 
-    if (botAI->GetAura("rend", target, true) || target->GetHealthPct() < EXECUTE_PHASE_PCT ||
-        botAI->HasAura("slam!", bot))
-        return false;
-
-    if (bot->GetSpellCooldownDelay(bloodthirst) < BLOODTHIRST_READY_MIN_MS ||
-        bot->GetSpellCooldownDelay(whirlwind) < WHIRLWIND_READY_MIN_MS)
+    if (botAI->GetAura("rend", target, true))
         return false;
 
     // the Rend itself must be affordable, or the stance would flip without it
     int32 const cost = rendInfo->CalcPowerCost(bot, rendInfo->GetSchoolMask());
     if (bot->GetPower(POWER_RAGE) < static_cast<uint32>(std::max(cost, 0)))
+        return false;
+
+    // [rot450] the sequence started (Battle Stance taken by it): its Rend comes next, the start conditions are not
+    // tested again (wowsims strictSequence)
+    if (bot->GetShapeshiftForm() == FORM_BATTLESTANCE)
+        return true;
+
+    if (target->GetHealthPct() < EXECUTE_PHASE_PCT || botAI->HasAura("slam!", bot))
+        return false;
+
+    // [rot450] the APL's gcdIsReady: the stance is not taken inside the GCD
+    if (botAI->GetGlobalCooldownRemaining() > botAI->GetReactDelay())
+        return false;
+
+    if (bot->GetSpellCooldownDelay(bloodthirst) < BLOODTHIRST_READY_MIN_MS ||
+        bot->GetSpellCooldownDelay(whirlwind) < WHIRLWIND_READY_MIN_MS)
         return false;
 
     if (HasEnoughAoeTargets(botAI, bot->GetPosition(), whirlwindInfo->Effects[EFFECT_0].CalcRadius(bot), 2))
@@ -509,4 +520,21 @@ bool FuryRendWeaveTrigger::IsActive()
               bot->GetName(), boss->GetName(), bot->GetSpellCooldownDelay(bloodthirst),
               bot->GetSpellCooldownDelay(whirlwind), bot->GetPower(POWER_RAGE) / 10);
     return true;
+}
+
+// [rot450]
+bool FuryBerserkerStanceTrigger::IsActive()
+{
+    if (!BuffTrigger::IsActive())
+        return false;
+
+    if (bot->GetShapeshiftForm() != FORM_BATTLESTANCE)
+        return true;
+
+    Trigger* weave = context->GetTrigger("fury rend weave");
+    if (!weave || !weave->IsActive())
+        return true;
+
+    LOG_DEBUG("playerbots", "[rot450] {} stays in Battle Stance for the Rend weave's Rend", bot->GetName());
+    return false;
 }

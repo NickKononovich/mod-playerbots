@@ -89,9 +89,10 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot450] "fury berserker stance": not while the Rend weave waits in Battle Stance for its Rend
     triggers.push_back(
         new TriggerNode(
-            "berserker stance", {
+            "fury berserker stance", {
                 NextAction("berserker stance", ACTION_HIGH + 9)
             }
         )

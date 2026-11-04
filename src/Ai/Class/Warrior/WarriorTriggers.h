@@ -296,10 +296,24 @@ public:
 // while the own Rend is off the target, Bloodthirst is 1 s+ and Whirlwind 1.5 s+ from ready, under the APL's
 // Slam! and execute-phase Execute rows. b235 rfc-h 5C Rtwarab: Rend 0 a minute against the sim's 2.3 (-92 DPS),
 // Battle / Berserker Stance 0 against 2.9 each.
+// [rot450] The APL's row is a strictSequence gated on gcdIsReady: it starts (Battle Stance) only with the GCD ready,
+// and once in Battle Stance it runs to its Rend without re-testing the Bloodthirst / Whirlwind timings. b238 rfc-h 5C
+// Rtwarab: Battle Stance 2.2 a minute against Rend 1.0 - the stance flipped inside the GCD, the timings lapsed before
+// the GCD ended and "berserker stance" swapped back with no Rend (each flip truncating the rage).
 class FuryRendWeaveTrigger : public Trigger
 {
 public:
     FuryRendWeaveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "fury rend weave") {}
+
+    bool IsActive() override;
+};
+
+// [rot450] Fury's "berserker stance": not while the Rend weave stands in Battle Stance waiting for its Rend (the
+// strictSequence's last step comes after the Rend).
+class FuryBerserkerStanceTrigger : public BuffTrigger
+{
+public:
+    FuryBerserkerStanceTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "berserker stance") {}
 
     bool IsActive() override;
 };
