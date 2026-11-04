@@ -1348,6 +1348,18 @@ namespace Leader::Dungeon
                                           fields);
             wake(bot);
         };
+        // [lead1060] a ranged damage dealer's re-spot held while no mob leaves it threat headroom: one line per member
+        // and target (the log only)
+        auto const logRespotHeld = [&](Player* bot, Unit* target, std::string const& breaks)
+        {
+            thread_local std::set<std::pair<uint64, uint64>> held;
+            if (!target || !held.insert({bot->GetGUID().GetRawValue(), target->GetGUID().GetRawValue()}).second)
+                return;
+            Decisions().Write(run, "leader", "respot_held", bot->GetGUID(), bot->GetName(), true,
+                              JsonObject().Str("member", bot->GetName()).Str("target", target->GetName())
+                                  .Str("why", "[lead1060] no threat headroom: no walk for " + breaks)
+                                  .Real("targetGap", bot->GetExactDist(target)));
+        };
         // where a member will stand: its fresh MoveTo / StandAt spot, else where it is
         auto const plannedAt = [](Player* bot)
         {
@@ -5347,6 +5359,18 @@ namespace Leader::Dungeon
                             breaks.clear();
                         if (breaks.empty() && blindOnSpot)  // [lead218]
                             breaks = "it cannot cast on its target from its spot";
+                        // [lead1060] a ranged damage dealer with no mob it has threat headroom on (the leader's Stop)
+                        // casts at nothing: its spot is not left for a target it cannot reach or see from it (the
+                        // spot that reaches it is taken once it may cast); a hazard, a cleave, a mob's melee reach,
+                        // a drop-off still move it
+                        if (!melee && bot != healer && !PlayerbotAI::IsHeal(bot) && lead.noHeadroom[guid] &&
+                            (breaks == "out of spell range of the target" ||
+                             breaks == "no line of sight to the target" ||
+                             breaks == "it cannot cast on its target from its spot"))
+                        {
+                            logRespotHeld(bot, target, breaks);
+                            breaks.clear();
+                        }
                         lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         // [lead190] b180 rfc-h 5G 103.2-105.0 s: the ret paladin's spot "behind" a Ragefire Shaman
                         // that walked off broke "out of melee reach" every tick, each new StandAt stopped its walk to
@@ -7111,7 +7135,15 @@ namespace Leader::Dungeon
                         bool const tankSettling = runningIn && tank->isMoving() && kept != lead.combatSpots.end() &&
                                                   kept->second.first == attackOn->GetGUID();
                         bool const shootsHere = shootsFrom(bot->GetPosition()) && (runningIn || castsNow);
-                        if (!tankSettling && !castsNow && !shootsHere && !spotShoots)
+                        // [lead1060] b231 rfc-h: 45 of the 414 in-fight re-spots "out of spell range" (766 yd, 5H-16
+                        // Rtmagad 242.4 s: 35.6 yd toward a Ragefire Shaman, back on a Trogg 2 s later) walked toward
+                        // an Attack target the member had no threat headroom on - it casts nothing there until the
+                        // tank leads (the Stop below). No mob with headroom: no walk to reach its target; the spot is
+                        // taken once it may cast (a hazard, a cleave, a mob's melee reach still move it)
+                        bool const waitsForTank = lead.noHeadroom[guid] && bot != healer && !PlayerbotAI::IsHeal(bot);
+                        if (waitsForTank && !tankSettling && !castsNow && !shootsHere && !spotShoots)
+                            logRespotHeld(bot, attackOn, "out of its reach / sight of its Attack target");
+                        if (!tankSettling && !castsNow && !shootsHere && !spotShoots && !waitsForTank)
                         {
                             std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                             // [lead137] never back to the spot it just left for this target
