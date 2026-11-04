@@ -20,7 +20,6 @@ std::vector<NextAction> DestructionWarlockStrategy::getDefaultActions()
        NextAction("conflagrate", 5.8f),
        NextAction("chaos bolt", 5.7f),
        NextAction("incinerate", 5.6f),
-       NextAction("corruption", 5.3f),      // Note: Corruption and Shadow Bolt won't be used after the character learns Incinerate at level 64
        NextAction("shadow bolt", 5.2f),
        NextAction("shoot", 5.0f)
     };
@@ -67,25 +66,9 @@ void DestructionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         )
     );
 
-    // [rot24] no Corruption above Incinerate (wowsims destro never casts it); the movement / levelling filler stays
-
-    // Leveling filler: these rank below Incinerate once it is learned at level 64
-    triggers.push_back(
-        new TriggerNode(
-            "corruption on attacker",
-            {
-                NextAction("corruption on attacker", 5.5f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "corruption",
-            {
-                NextAction("corruption", 5.4f)
-            }
-        )
-    );
+    // [rot410] no Corruption at all: the wowsims destro APL (warlock__destro) never casts it - b229 rfc-h the
+    // destruction warlock still cast it below Incinerate (the leveling filler triggers, an instant while it moved or
+    // Incinerate waited); Shadow Bolt stays the filler before Incinerate is learned
 
     // Shadowburn as execute if target is low HP. [b35_lock] Below Incinerate (5.6): standing still, Incinerate deals
     // more per second (bot logs, Thalnos: Shadowburn 3157 per 1.33 s GCD = 2374 dps, Incinerate 5441 per ~1.77 s =
