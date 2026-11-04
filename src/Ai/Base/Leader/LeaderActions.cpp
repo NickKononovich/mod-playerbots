@@ -114,7 +114,11 @@ bool LeaderReadyCheckAction::Execute(Event /*event*/)
     bot->GetSession()->HandleRaidReadyCheckOpcode(request);
 
     // The leader does not receive its own check, so it starts its own rebuff pass.
-    if (sPlayerbotAIConfig.ForceRebuffOnReadyCheck && botAI->HasStrategy("force rebuff", BOT_STATE_NON_COMBAT))
+    // [lead1084] user 2026-11-04 (Q12 / Q55): in a dungeon group the leader leads, the buff pass before the boss is
+    // the one common pass (the tank's own buffs included: its step 1 opened every member's window); the ready check
+    // and the pull come after it, so no second rebuff pass of the tank's here (b233: the pull waited ~14 s on it)
+    if (sPlayerbotAIConfig.ForceRebuffOnReadyCheck && botAI->HasStrategy("force rebuff", BOT_STATE_NON_COMBAT) &&
+        !Leader::LedBot(bot) && !Leader::Orders::IsTracked(bot->GetGUID()))
         botAI->forceRebuff.Begin(false);
 
     if (attempt == 1)

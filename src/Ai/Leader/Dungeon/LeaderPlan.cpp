@@ -53,6 +53,7 @@
 #include "RouteLegs.h"  // [lead110] PackMobCheck
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "RouteSteer.h"   // [lead167] BossBroughtBy
+#include "RouteTargets.h"  // [lead1084] EventWaveFresh
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "Pet.h"  // [lead38] the pet redirect
@@ -176,6 +177,18 @@ namespace Leader::Dungeon
         }
         if (group.NeedBuff())
             return "the group buffs";
+        // [lead1084] user 2026-11-04 (Q55): the boss pull opens only after the buff pass for him is complete, out of
+        // combat. A boss the pass is for (BossBuffPass's own pick: an idle dungeon boss within BOSS_BUFF_DISTANCE)
+        // that has had no pass yet holds every pull until it ran (the pass opens once no pull is open and no fight
+        // is on)
+        if (!leader->IsInCombat())
+            for (ObjectGuid const& bossGuid : group.BossCreatures())
+                if (Creature* boss = leader->GetMap()->GetCreature(bossGuid);
+                    boss && boss->IsAlive() && !boss->IsInCombat() && boss->IsDungeonBoss() &&
+                    leader->GetExactDist(boss) < Travel::BOSS_BUFF_DISTANCE &&
+                    !group.Route().bossBuffed.count(bossGuid) && group.Route().watchedRift <= 0 &&
+                    !Travel::EventWaveFresh(group.InstanceId(), bossGuid))
+                    return "[lead1084] the buff pass before " + boss->GetName() + " first";
         // [lead940] a heal over time another member cast out of the last fight (a top-up with no direct heal to cast)
         // still runs: its ticks would forward threat to its caster from the pull's first second (ThreatManager::
         // ForwardThreatForAssistingMe over every mob with the healed member on its threat list) - the pull waits for

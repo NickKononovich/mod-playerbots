@@ -11,6 +11,7 @@
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "LeaderBuffing.h"
+#include "LeaderOrders.h"  // [lead1084] Orders::IsOpen
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -116,6 +117,11 @@ namespace Leader::Dungeon
         GroupRouteState& route = group.Route();
         Player* leader = ObjectAccessor::FindPlayer(group.LeaderGuid());
         if (!leader)
+            return;
+        // [lead1084] user 2026-11-04 (Q55, "inadmissible"): no buff pass while a pull is open or a fight is on - a
+        // buff on a member in combat puts the buffer in combat, a threat-making buff can pull the boss onto it. The
+        // pass opens once the open pull is fought; the boss pull waits for it (LeaderReadyWhy)
+        if (leader->IsInCombat() || group.FightOn(leader) || Leader::Orders::IsOpen(group.LeaderGuid()))
             return;
         Map* map = leader->GetMap();
         // the route's boss target; [lead775] b220 rfc-h 5E 703.0 s: the planner pulled Taragaman as its nearest pick

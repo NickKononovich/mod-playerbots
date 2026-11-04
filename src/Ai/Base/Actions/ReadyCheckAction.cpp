@@ -10,6 +10,7 @@
 #include "Pet.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "LeaderOrders.h"  // [lead1084] Leader::LedBot
 #include "RaidLeaderState.h"
 
 namespace
@@ -112,6 +113,10 @@ bool ReadyCheckAction::Execute(Event event)
         // boss pulls up to the leader's 150 s (mgt-n 153 s, pos-h 148 s with everyone at full health); a missing buff
         // never makes a member not ready (EvaluateReadiness), and the tank's planner waits for buffs by itself.
         constexpr bool READY_REPLY_ON_RECEIPT = true;
+        // [lead1084] user 2026-11-04 (Q55): a member the dungeon leader leads was buffed in the leader's common pass
+        // before this check; it answers at once and opens no second rebuff pass (it would hold the pull)
+        if (Leader::LedBot(bot))
+            return ReadyCheck();
         if (READY_REPLY_ON_RECEIPT && sPlayerbotAIConfig.ForceRebuffOnReadyCheck && !bot->IsInCombat() &&
             botAI->HasStrategy("force rebuff", BOT_STATE_NON_COMBAT))
         {
