@@ -1142,8 +1142,22 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                                          share * 100.0f);
     }
     // the in-combat (casting) regen per second: Player::UpdateManaRegen, Player::Regenerate's rate
-    float const regen = bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) *
-                        sWorld->getRate(RATE_POWER_MANA);
+    // [lead1020] b229 rfc-h 5H-8 362-480 s: the fire mage's boss line read "- 20 regen" standing and the drink's
+    // regen once it sat: UpdateManaRegen puts the drink aura's SPELL_AURA_MOD_POWER_REGEN (mp5) into this field, the
+    // drink paid more than the rotation spends, the line fell to 0 % on the drink's first tick, MemberBossGap came
+    // back empty, the leader ended its Rest, it stood up (the drink gone, the line back at 95 %) and sat again - 66
+    // times (and the hunter's / priest's lines, reading the mage's wait "for Rtmagad anyway", ended with it). The
+    // fight's regen is the regen without the food / drink aura (it breaks when the bot stands up for the fight)
+    float drinkMp5 = 0.0f;
+    for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_MOD_POWER_REGEN))
+        if (effect->GetMiscValue() == POWER_MANA)
+            if (SpellSpecificType const specific = effect->GetSpellInfo()->GetSpellSpecific();
+                specific == SPELL_SPECIFIC_DRINK || specific == SPELL_SPECIFIC_FOOD_AND_DRINK)
+                drinkMp5 += float(effect->GetAmount());
+    float const regen =
+        std::max(bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) - drinkMp5 / 5.0f,
+                 0.0f) *
+        sWorld->getRate(RATE_POWER_MANA);
     float const pct = 100.0f * std::max(gross - regen, 0.0f) / maxMana;
     if (why)
         *why = Acore::StringFormat("{:.2f} %/s = ({}){} - {:.0f} regen, mana per s of {:.0f}", pct, cached.terms,

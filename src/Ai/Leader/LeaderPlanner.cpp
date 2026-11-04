@@ -5955,8 +5955,10 @@ std::string PullReadiness::BossNotReady(Player* bot, Unit* boss)
     return BossReadyGap(bot, true, IsEncounterBoss(boss), boss);
 }
 
-std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
+std::string PullReadiness::MemberBossGap(Player* member, Unit* boss, float* manaLine)
 {
+    if (manaLine)
+        *manaLine = -1.0f;
     bool const realBoss = IsEncounterBoss(boss);
     float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
     // [lead51] the mana THIS boss fight takes from this member
@@ -5964,6 +5966,8 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss)
         return std::string();
     std::string terms;
     float const readyMana = RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, &terms, true);
+    if (manaLine && member->getPowerType() == POWER_MANA)
+        *manaLine = readyMana;
     if (member->GetHealthPct() < readyHealth)
         return Acore::StringFormat("health {:.0f} % < {:.0f} % for {}", member->GetHealthPct(), readyHealth,
                                    boss->GetName());

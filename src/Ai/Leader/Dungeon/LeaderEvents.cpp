@@ -3884,6 +3884,8 @@ namespace Leader::Dungeon
             lead.plannerRestFor.clear();
             lead.restEndMana.clear();  // [lead230] a fight's spend is the fight line's
             lead.restExtra.clear();
+            lead.restBossLine.clear();  // [lead1021] the fight starts: a boss-wait Rest ends
+            lead.restBossHoldLogged.clear();
         }
         // [lead51] the members' measured mana spend in fights (% of max mana per second of fight): the model's rate
         {
@@ -4282,6 +4284,8 @@ namespace Leader::Dungeon
                     logged.clear();
                     lead.restEndMana.erase(guid);  // a fight's spend is no standing spend between two Rests
                     lead.restExtra.erase(guid);
+                    lead.restBossLine.erase(guid);  // [lead1021]
+                    lead.restBossHoldLogged.erase(guid);
                 }
             // 1. readiness, out of combat: Rest to whoever needs it (to full), Ready? while the pull waits for the
             // spots, Prepare (buffs, forms, a resurrection) while the group stands
@@ -4302,11 +4306,50 @@ namespace Leader::Dungeon
                 if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
                     waitBoss && waitBoss->IsAlive())
                 {
-                    std::string const gap =
-                        healerTopsUp(bot, waitBoss) ? std::string() : PullReadiness::MemberBossGap(bot, waitBoss);
+                    float bossLine = -1.0f;
+                    std::string gap = healerTopsUp(bot, waitBoss)
+                                          ? std::string()
+                                          : PullReadiness::MemberBossGap(bot, waitBoss, &bossLine);
+                    // [lead1021] b229 rfc-h 5H-8 362-480 s: the Rests of the fire mage, the hunter and the priest
+                    // ended together for one tick 66 times (the gap read empty on the mage's first drink tick,
+                    // lead1020) and started again the tick after. One decision per fact: a boss-wait Rest holds to the
+                    // boss mana line it read while it held; it ends when the member's mana reaches that line, when
+                    // the fight starts or when the boss wait ends - an empty read below that line ends nothing
+                    float const mana = bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f;
+                    auto const held = lead.restBossLine.find(guid);
+                    if (!gap.empty())
+                    {
+                        if (bossLine > mana)
+                            lead.restBossLine[guid] = bossLine;
+                        else if (held != lead.restBossLine.end())
+                            lead.restBossLine.erase(held);  // a health gap: no mana line to hold
+                        lead.restBossHoldLogged.erase(guid);
+                    }
+                    else if (held != lead.restBossLine.end() && !lead.restLogged[guid].empty() &&
+                             mana < held->second)
+                    {
+                        gap = Acore::StringFormat("mana {:.0f} % < {:.0f} %, the line its Rest holds to, for {}", mana,
+                                                  held->second, waitBoss->GetName());
+                        if (lead.restBossHoldLogged.insert(guid).second)
+                            LOG_INFO("playerbots",
+                                     "[lead1021] {}: its boss-wait Rest holds to its {:.0f} % line (mana {:.0f} %): "
+                                     "the gap read empty, its boss line read now {:.0f} % ({})",
+                                     bot->GetName(), held->second, mana, bossLine, run.runId);
+                    }
+                    else
+                    {
+                        if (held != lead.restBossLine.end())
+                            lead.restBossLine.erase(held);
+                        lead.restBossHoldLogged.erase(guid);
+                    }
                     needsRest = !gap.empty();  // [lead433] a health gap the healer tops up: no Rest
                     restWhy = gap.empty() ? restWhy : "the boss pull waits: " + gap;
                     lead.restingToFull.erase(guid);
+                }
+                else
+                {
+                    lead.restBossLine.erase(guid);  // [lead1021] the boss wait ended: its line holds no Rest
+                    lead.restBossHoldLogged.erase(guid);
                 }
                 // [lead50] the planner's held answer waits for this member: it rests
                 if (!lead.plannerRestFor.empty() && bot->GetName() == lead.plannerRestFor && !MemberFull(bot) &&
