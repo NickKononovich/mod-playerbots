@@ -435,6 +435,19 @@ namespace Leader
         std::map<ObjectGuid, std::map<ObjectGuid, ThreatSeen>> threatSeen;  // [lead243] fight mob -> who -> seen
         std::map<ObjectGuid, std::string> stopProjection;        // [lead246] the headroom projection a Stop was read on
         std::map<ObjectGuid, std::pair<float, uint32>> openTps;  // [lead243] its threat / s on each mob it hit: sum, n
+        // [lead1080] the pre-cast (user 2026-11-04 Q58): a caster's first damage cast started so it lands just after
+        // the tank's predicted first hit on an engaged mob. `opener` is the cast-time damage spell the member opened
+        // its last fight with (read from its own cast, no list); `mob` / `spell` the pre-cast told now
+        struct Precast
+        {
+            uint32 opener = 0;
+            ObjectGuid mob;
+            uint32 spell = 0;
+            uint32 toldMs = 0;
+            bool started = false;
+        };
+        std::map<ObjectGuid, Precast> precast;
+        std::set<ObjectGuid> precastRead;  // [lead1080] members whose first cast of this fight was read
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
         std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived
