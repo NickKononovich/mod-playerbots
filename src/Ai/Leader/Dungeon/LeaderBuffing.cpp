@@ -132,6 +132,14 @@ namespace Leader::Dungeon
 
     bool HasWellFed(Player* bot) { return HasAuraNamed(bot, "Well Fed"); }
 
+    int32 NextFightNeedMs(Player* leader)
+    {
+        CarefulPlanVerdict::Fight nextFight;
+        return leader && CarefulPlanVerdict::GetNextFight(leader->GetGUID(), nextFight)
+                   ? int32(nextFight.fightSec * IN_MILLISECONDS)
+                   : 0;
+    }
+
     bool HasAuraLasting(Player* bot, char const* text, int32 needMs)
     {
         for (auto const& [spellId, aurApp] : bot->GetAppliedAuras())
@@ -343,6 +351,13 @@ namespace Leader::Dungeon
                     MissingBlessings(players, leader, needMs, missing, orders);
                     continue;
                 }
+                // [lead1214] b240 rfc-h 5G-15 before Oggleflint / Jergosh: step 1 waited 10 s / 9 s on the arms
+                // warrior's Battle Shout ("1 queued", never cast: out of a fight its rage decays to 0). A buff paid in
+                // rage (Battle / Commanding Shout: spell data) is kept up by its owner in the fight, where the rage
+                // is; it is no part of the pass and never holds it (user Q12 addendum)
+                if (SpellInfo const* first = def.spells.empty() ? nullptr : sSpellMgr->GetSpellInfo(def.spells[0]);
+                    first && first->PowerType == POWER_RAGE)
+                    continue;
                 bool givable = false;
                 Player* giver = nullptr;
                 for (Player* caster : players)
@@ -397,6 +412,10 @@ namespace Leader::Dungeon
 
         // Who still buffs: casting, its rebuff window open (ForceRebuffState closes it once no buff trigger fires),
         // or walking (to a buff target out of range).
+        // [lead1214] b240 rfc-h 5G-15 before Taragaman: step 1 waited 15.1 s on "Rtpalad rebuff window open" with no
+        // cast (boss_prep "no cast"): its buff trigger fired but nothing was proposed or cast. An open window whose
+        // member casts nothing, is off the global cooldown and proposed no buff on its last tick is empty: it is
+        // closed at once (the leader orders a buff still missing)
         std::string BuffWorkers(std::vector<Player*> const& players, Player* leader)
         {
             std::string workers;
@@ -406,6 +425,13 @@ namespace Leader::Dungeon
                     continue;
                 PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
                 char const* what = nullptr;
+                if (botAI && botAI->forceRebuff.IsPending() && !bot->IsNonMeleeSpellCast(false) &&
+                    !botAI->forceRebuff.IsOnGlobalCooldown() && !botAI->forceRebuff.IsBuffProposedThisCycle())
+                {
+                    botAI->forceRebuff.End();
+                    LOG_INFO("playerbots", "[lead1214] {}: its rebuff window holds nothing to cast: closed",
+                             bot->GetName());
+                }
                 if (bot->IsNonMeleeSpellCast(false))
                     what = "casting";
                 else if (botAI && botAI->forceRebuff.IsPending())
@@ -440,6 +466,10 @@ namespace Leader::Dungeon
             bool consumableUsed = false;  // step 1 -> 2: a flask was used; step 2 -> 3: food was used
             std::set<ObjectGuid> fed;     // step 2 -> 3: the members given food
             bool ordering = false;  // [lead165] [lead975] step 1: the leader orders the missing buffs
+            // [lead1214] the members whose flask / food went during step 1 (their buff work done): the flask's
+            // time (its global cooldown before the food), the members whose food was judged
+            std::map<ObjectGuid, uint32> flaskMs;
+            std::set<ObjectGuid> foodJudged;
         };
         std::unordered_map<uint32, BuffWait> buffWaits;  // per instance, world thread only
     }
@@ -487,9 +517,13 @@ namespace Leader::Dungeon
                 route.buffStepMs = now;
                 bool const consumableUsed = wait.consumableUsed;
                 std::set<ObjectGuid> const fed = wait.fed;
+                std::map<ObjectGuid, uint32> const flaskMs = wait.flaskMs;    // [lead1214]
+                std::set<ObjectGuid> const foodJudged = wait.foodJudged;  // [lead1214]
                 wait = BuffWait();
                 wait.consumableUsed = consumableUsed;
                 wait.fed = fed;
+                wait.flaskMs = flaskMs;
+                wait.foodJudged = foodJudged;
             };
             auto const waitingFor = [&wait](std::string const& what)
             {
@@ -576,6 +610,35 @@ namespace Leader::Dungeon
                             if (!queued)
                                 orderState.buffQueue.push_back({order.caster, order.spell, order.target, order.what});
                         }
+                    // [lead1214] b240 rfc-h 5G-15: the buff step, the flask and the food went one after another
+                    // (Oggleflint 10 + 10 s, Taragaman 15 + 2 + 10 s) though all of them are standing in one place.
+                    // A member with no buff work left (no cast, no walk, no rebuff window, no buff order of its own)
+                    // takes its flask and its food now, while the others still buff; a buff cast on an eating member
+                    // does not stand it up
+                    {
+                        std::set<ObjectGuid> ordered;
+                        for (BuffOrder const& order : orders)
+                            ordered.insert(order.caster);
+                        for (Player* bot : players)
+                        {
+                            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                            if (!botAI || !InBuffRange(bot, leader) || wait.foodJudged.count(bot->GetGUID()) ||
+                                ordered.count(bot->GetGUID()) || bot->IsNonMeleeSpellCast(false) || bot->isMoving() ||
+                                botAI->forceRebuff.IsPending())
+                                continue;
+                            auto const flask = wait.flaskMs.find(bot->GetGUID());
+                            if (flask == wait.flaskMs.end())
+                            {
+                                wait.flaskMs[bot->GetGUID()] = UseConsumables(group, bot, false) ? (now ? now : 1) : 0;
+                                continue;
+                            }
+                            if (flask->second && getMSTimeDiff(flask->second, now) < FLASK_GCD_MS)
+                                continue;
+                            wait.foodJudged.insert(bot->GetGUID());
+                            if (UseConsumables(group, bot, true))
+                                wait.fed.insert(bot->GetGUID());
+                        }
+                    }
                     if (!orderState.buffQueue.empty())
                         workers += (workers.empty() ? "" : ", ") +
                                    (orderState.buffOrderWork.empty()
@@ -627,7 +690,8 @@ namespace Leader::Dungeon
                     route.buffEndMissing = missing;  // [lead775] what this pass could not give
                     stepDone(2, why);
                     for (Player* bot : players)
-                        wait.consumableUsed = UseConsumables(group, bot, false) || wait.consumableUsed;
+                        if (!wait.flaskMs.count(bot->GetGUID()))  // [lead1214] not flasked during the step
+                            wait.consumableUsed = UseConsumables(group, bot, false) || wait.consumableUsed;
                     break;
                 }
                 case 2:
@@ -638,10 +702,10 @@ namespace Leader::Dungeon
                         waitingFor("flask global cooldown");
                         break;
                     }
-                    uint32 eating = 0;
-                    wait.fed.clear();
+                    // [lead1214] the members fed during step 1 eat already (wait.fed kept), the others now
+                    uint32 eating = uint32(wait.fed.size());
                     for (Player* bot : players)
-                        if (UseConsumables(group, bot, true))
+                        if (!wait.foodJudged.count(bot->GetGUID()) && UseConsumables(group, bot, true))
                         {
                             ++eating;
                             wait.fed.insert(bot->GetGUID());
@@ -657,7 +721,8 @@ namespace Leader::Dungeon
                     // has no Well Fed yet; one that stood up without it is no longer waited for
                     std::string eaters;
                     for (Player* bot : players)
-                        if (wait.fed.count(bot->GetGUID()) && InBuffRange(bot, leader) && !HasWellFed(bot) &&
+                        if (wait.fed.count(bot->GetGUID()) && InBuffRange(bot, leader) &&
+                            !HasAuraLasting(bot, "Well Fed", NextFightNeedMs(leader)) &&  // [lead1214] a refresh
                             (RestState::IsEating(bot) || bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)))
                             eaters += (eaters.empty() ? "" : ", ") + bot->GetName();
                     waitingFor(eaters.empty() ? std::string() : "eating: " + eaters);

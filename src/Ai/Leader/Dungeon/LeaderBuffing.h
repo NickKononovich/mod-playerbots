@@ -28,6 +28,8 @@ namespace Leader::Dungeon
     bool HasWellFed(Player* bot);
     // [lead136] an aura named like `text` that lasts `needMs` more (or has no end)
     bool HasAuraLasting(Player* bot, char const* text, int32 needMs);
+    // [lead1214] the next fight's length the buffs must last (the planner's estimate, CarefulPlanVerdict); 0: none
+    int32 NextFightNeedMs(Player* leader);
 
     // one step of the buffing pass while the group needs its buffs (LeaderGroup::NeedBuff)
     void TickBuffing(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);

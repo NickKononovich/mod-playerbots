@@ -56,6 +56,25 @@ namespace Leader::Dungeon
         return false;
     }
 
+    namespace
+    {
+        // [lead1214] a flask aura on the bot that lasts `needMs` more (or has no end)
+        bool HasFlaskLasting(Player* bot, int32 needMs)
+        {
+            std::set<uint32> const& flasks = FlaskSpells();
+            for (auto const& [spellId, aurApp] : bot->GetAppliedAuras())
+            {
+                if (!flasks.count(spellId))
+                    continue;
+                Aura const* aura = aurApp ? aurApp->GetBase() : nullptr;
+                int32 const left = aura ? aura->GetDuration() : -1;
+                if (left < 0 || left >= needMs)
+                    return true;
+            }
+            return false;
+        }
+    }
+
     bool UseItem(Player* bot, uint32 itemId)
     {
         if (!bot || !itemId || !bot->IsAlive() || bot->IsNonMeleeSpellCast(false))
@@ -92,16 +111,21 @@ namespace Leader::Dungeon
         if (!botAI || !bot->IsAlive() || bot->IsInCombat() || !group.MemberConsumables(bot, flaskItem, foodItem))
             return false;
 
+        // [lead1214] b240 rfc-h 5G-15: the run started on Well Fed / flasks left from the instance's last run ("Well
+        // Fed on everyone, no food needed"), which ran out mid-run - three members ate before Oggleflint, the flask
+        // and the food again before Taragaman. Present is not enough: they must last the next fight (the planner's
+        // estimate, the same need as the buffs: NextFightNeedMs)
+        int32 const needMs = NextFightNeedMs(ObjectAccessor::FindPlayer(group.LeaderGuid()));
         if (!food)
         {
-            if (!flaskItem || HasFlaskAura(bot) || !UseItem(bot, flaskItem))
+            if (!flaskItem || HasFlaskLasting(bot, needMs) || !UseItem(bot, flaskItem))
                 return false;
             group.LogEvent("consumable",
                            JsonObject().Str("name", bot->GetName()).Str("kind", "flask").Num("item", flaskItem));
             return true;
         }
 
-        if (HasWellFed(bot))
+        if (HasAuraLasting(bot, "Well Fed", needMs))
             return false;
 
         if (!UseItem(bot, foodItem))
