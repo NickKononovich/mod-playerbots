@@ -4576,12 +4576,22 @@ namespace Leader::Dungeon
                     std::string& logged = lead.restLogged[guid];
                     if (needsRest != !logged.empty())
                     {
+                        // [lead1013] b229 rfc-h 5H-8 362-480 s: the boss wait's Rests of the fire mage, the hunter and
+                        // the priest ended together for one tick every ~2.3 s (66 restarts, the mage drank 2 -> 17 %
+                        // in 35 s). The end names the boss line read at that tick, the wait's boss and the gap
+                        Creature* const endBoss =
+                            needsRest || lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
                         Decisions().Write(
                             run, "leader", "rest_line", guid, bot->GetName(), false,
                             JsonObject().Str("member", bot->GetName()).Str("state", needsRest ? "start" : "end")
                                 .Str("line", needsRest ? restWhy : logged)
                                 .Real("mana", bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f)
-                                .Real("health", bot->GetHealthPct()));
+                                .Real("health", bot->GetHealthPct())
+                                .Str("endBoss", endBoss ? endBoss->GetName() : std::string("-"))
+                                .Real("endBossLine",
+                                      endBoss ? PullReadiness::MemberBossManaLine(bot, endBoss) : -1.0f)
+                                .Str("endBossGap", endBoss ? PullReadiness::MemberBossGap(bot, endBoss)
+                                                           : std::string("-")));
                         logged = state;
                     }
                 }
@@ -6152,13 +6162,13 @@ namespace Leader::Dungeon
                 // health + absorbs now, and a healer that reaches it (heal reach, sight) above its own mana line.
                 // Never before the tank's first threat on the mob (lead875 stays). Any check failing: the headroom
                 // Stop stands
-                auto const survivesOn = [&](Unit* mob) -> bool
+                // [lead1010] user 2026-11-03 (aggro-loss-if-survives) for area spells: the mobs one area cast takes off
+                // the tank at once are judged together - each mob's damage on the member until the tank has that
+                // mob back (its ready taunt for the one with the longest catch-up, the others by its threat
+                // catch-up there), the mobs already on the member over the longest of those times. One mob: lead985
+                auto const survivesSet = [&](std::vector<Unit*> const& mobs) -> bool
                 {
-                    if (!mob || !mob->IsAlive() || bot == tank || PlayerbotAI::IsHeal(bot) ||
-                        PlayerbotAI::IsTank(bot))
-                        return false;
-                    Projection const p = project(mob);
-                    if (p.tank <= 0.0f || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                    if (mobs.empty() || bot == tank || PlayerbotAI::IsHeal(bot) || PlayerbotAI::IsTank(bot))
                         return false;
                     bool looseNow = false;
                     for (ObjectGuid const& other : killOrder)
@@ -6166,38 +6176,81 @@ namespace Leader::Dungeon
                             fought && fought->IsAlive() && fought->GetVictim() && fought->GetVictim() != tank &&
                             fought->GetVictim()->IsPlayer())
                             looseNow = true;
-                    float takeBack = -1.0f;
-                    std::string how;
+                    float tauntSec = -1.0f;
+                    float tauntRange = 0.0f;
+                    std::string tauntName;
                     if (!looseNow)
                         for (uint32 taunt : TANK_TAUNTS)
                             if (tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt))
-                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
-                                    info && tank->IsWithinCombatRange(mob, info->GetMaxRange(false)) &&
-                                    tank->IsWithinLOSInMap(mob))
+                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt))
                                 {
-                                    takeBack = HEADROOM_GCD_SEC + LEADER_FIGHT_TICK_MS / 1000.0f;
-                                    how = Acore::StringFormat("{} ready", info->SpellName[LOCALE_enUS]);
+                                    tauntSec = HEADROOM_GCD_SEC + LEADER_FIGHT_TICK_MS / 1000.0f;
+                                    tauntRange = info->GetMaxRange(false);
+                                    tauntName = info->SpellName[LOCALE_enUS];
                                     break;
                                 }
-                    if (takeBack < 0.0f)
+                    struct Taken
                     {
-                        float const tankRate =
-                            rateOf(seenOn(mob, tank), tankOpensOn(mob) ? tankOpen : 0.0f);
-                        if (tankRate <= 0.0f)
+                        Unit* mob;
+                        Projection p;
+                        float catchUp;  // < 0: the tank's threat does not grow there
+                        bool tauntable;
+                        float rate;
+                    };
+                    std::vector<Taken> taken;
+                    for (Unit* mob : mobs)
+                    {
+                        if (!mob || !mob->IsAlive())
                             return false;
-                        takeBack = std::max(HEADROOM_GCD_SEC,
-                                            (THREAT_OVERTAKE_MELEE * p.mineNext - p.tankNext) / tankRate);
-                        how = Acore::StringFormat("threat catch-up at {:.0f} tps", tankRate);
+                        Projection const p = project(mob);
+                        if (p.tank <= 0.0f || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                            return false;
+                        float const tankRate = rateOf(seenOn(mob, tank), tankOpensOn(mob) ? tankOpen : 0.0f);
+                        float const catchUp =
+                            tankRate > 0.0f ? std::max(HEADROOM_GCD_SEC,
+                                                       (THREAT_OVERTAKE_MELEE * p.mineNext - p.tankNext) / tankRate)
+                                            : -1.0f;
+                        bool const tauntable = tauntSec > 0.0f && tank->IsWithinCombatRange(mob, tauntRange) &&
+                                               tank->IsWithinLOSInMap(mob);
+                        taken.push_back({mob, p, catchUp, tauntable, tankRate});
                     }
+                    // the one taunt goes to the mob the tank's threat would take longest to catch up on
+                    int taunted = -1;
+                    for (size_t i = 0; i < taken.size(); ++i)
+                        if (taken[i].tauntable &&
+                            (taunted < 0 || taken[i].catchUp < 0.0f ||
+                             (taken[taunted].catchUp >= 0.0f && taken[i].catchUp > taken[taunted].catchUp)))
+                            taunted = int(i);
+                    float damage = 0.0f;
+                    float longest = 0.0f;
+                    float incoming = 0.0f;
                     float spellPart = 0.0f;
-                    float incoming = AttackerDps(mob, bot, spellPart);
+                    std::string how;
+                    for (size_t i = 0; i < taken.size(); ++i)
+                    {
+                        float const back = int(i) == taunted ? tauntSec : taken[i].catchUp;
+                        if (back < 0.0f)
+                            return false;
+                        float part = 0.0f;
+                        float const dps = AttackerDps(taken[i].mob, bot, part);
+                        incoming += dps;
+                        spellPart += part;
+                        damage += dps * back;
+                        longest = std::max(longest, back);
+                        if (how.empty())
+                            how = int(i) == taunted
+                                      ? Acore::StringFormat("{} ready", tauntName)
+                                      : Acore::StringFormat("threat catch-up at {:.0f} tps", taken[i].rate);
+                    }
                     for (Unit* attacker : bot->getAttackers())
-                        if (attacker && attacker != mob && attacker->IsAlive() && attacker->GetVictim() == bot)
+                        if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot &&
+                            std::find(mobs.begin(), mobs.end(), attacker) == mobs.end())
                         {
                             float part = 0.0f;
-                            incoming += AttackerDps(attacker, bot, part);
+                            float const dps = AttackerDps(attacker, bot, part);
+                            incoming += dps;
+                            damage += dps * longest;
                         }
-                    float const damage = incoming * takeBack;
                     float const health =
                         float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
                     bool const healed = healer && healer != bot && healer->IsAlive() &&
@@ -6206,24 +6259,38 @@ namespace Leader::Dungeon
                                         (!healer->GetMaxPower(POWER_MANA) ||
                                          healer->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(healer));
                     bool const survives = damage < health && healed;
-                    // logged on a change of the verdict per member and mob
-                    thread_local std::map<std::pair<uint64, uint64>, bool> verdicts;
+                    // logged on a change of the verdict per member, first mob and set size
+                    thread_local std::map<std::tuple<uint64, uint64, size_t>, bool> verdicts;
                     if (verdicts.size() > 4096)
                         verdicts.clear();
-                    auto const key = std::make_pair(bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue());
+                    Projection const& p = taken.front().p;
+                    Unit* const first = taken.front().mob;
+                    auto const key =
+                        std::make_tuple(bot->GetGUID().GetRawValue(), first->GetGUID().GetRawValue(), taken.size());
                     if (auto const was = verdicts.find(key); was == verdicts.end() || was->second != survives)
                     {
                         verdicts[key] = survives;
-                        LOG_INFO("playerbots",
-                                 "[lead985] {}: no headroom on {} ({:.0f} -> {:.0f} vs tank {:.0f} -> {:.0f}); "
-                                 "{} dps on it ({:.0f} cast) x {:.1f} s to take it back ({}) = {:.0f} vs {:.0f} "
-                                 "health, healer {}: {}",
-                                 bot->GetName(), mob->GetName(), p.mine, p.mineNext, p.tank, p.tankNext, incoming,
-                                 spellPart, takeBack, how, damage, health, healed ? "reaches it" : "does not",
-                                 survives ? "keeps its damage" : "the Stop stands");
+                        if (taken.size() == 1)
+                            LOG_INFO("playerbots",
+                                     "[lead985] {}: no headroom on {} ({:.0f} -> {:.0f} vs tank {:.0f} -> {:.0f}); "
+                                     "{} dps on it ({:.0f} cast) x {:.1f} s to take it back ({}) = {:.0f} vs {:.0f} "
+                                     "health, healer {}: {}",
+                                     bot->GetName(), first->GetName(), p.mine, p.mineNext, p.tank, p.tankNext,
+                                     incoming, spellPart, longest, how, damage, health,
+                                     healed ? "reaches it" : "does not",
+                                     survives ? "keeps its damage" : "the Stop stands");
+                        else
+                            LOG_INFO("playerbots",
+                                     "[lead1010] {}: its area takes {} mobs without headroom ({} first); {:.0f} dps on "
+                                     "it ({:.0f} cast), {:.0f} damage until the tank has them back (longest {:.1f} s, "
+                                     "{}) vs {:.0f} health, healer {}: {}",
+                                     bot->GetName(), taken.size(), first->GetName(), incoming, spellPart, damage,
+                                     longest, how, health, healed ? "reaches it" : "does not",
+                                     survives ? "the area may take them" : "they stay spared");
                     }
                     return survives;
                 };
+                auto const survivesOn = [&](Unit* mob) -> bool { return survivesSet({mob}); };
                 if (bot == healer || PlayerbotAI::IsHeal(bot))
                 {
                     // [lead61] user: the leader starts the heals - once every fight mob is on the tank (no heal
@@ -6769,16 +6836,50 @@ namespace Leader::Dungeon
                     std::string memberAoeWhy = aoeWhy;
                     // [lead415] the fight's mobs this member has no headroom on are spared too: each AoE's own
                     // footprint (spell data) decides whether it reaches one
+                    // [lead1010] b228 / b229 rfc-h: Flamestrike / Blizzard ~300, Seed of Corruption ~200 holds "the
+                    // area reaches the leader's spared <mob>" on pack mates the tank held - every fight mob without
+                    // headroom was spared (the headroom lambda, its melee splash-neighbour test too), while lead985
+                    // let the same member keep its single-target damage on such a mob when it survives the take-back.
+                    // An area spell takes the same survival verdict: the mobs without headroom (its own headroom on
+                    // each, nearest to its Attack target first) join the area's set while the member survives them
+                    // all together (survivesSet); only the ones past that stay spared. The leader's own spared mobs
+                    // (crowd-controlled, not pulled, no tank threat yet: LeaderAoeRule) stay spared
                     std::vector<ObjectGuid> memberSpared = lead.aoeSpared;
+                    std::vector<Unit*> areaTakes;
                     if (memberAoe != Leader::AoeRule::Forbidden)
+                    {
+                        std::vector<Unit*> without;
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* mob = ObjectAccessor::GetUnit(*tank, other);
-                                mob && mob->IsAlive() && !headroom(mob))
+                                mob && mob->IsAlive() && !headroomOn(mob))
+                                without.push_back(mob);
+                        std::sort(without.begin(), without.end(),
+                                  [&](Unit* a, Unit* b)
+                                  {
+                                      if ((a == attackOn) != (b == attackOn))
+                                          return a == attackOn;
+                                      return a->GetExactDist(attackOn) < b->GetExactDist(attackOn);
+                                  });
+                        size_t keptByArea = 0;
+                        for (Unit* mob : without)
+                        {
+                            std::vector<Unit*> trial = areaTakes;
+                            trial.push_back(mob);
+                            if (survivesSet(trial))
                             {
-                                if (memberSpared.size() == lead.aoeSpared.size())
-                                    memberAoeWhy = "spares " + mob->GetName() + " (no threat headroom)";
-                                memberSpared.push_back(mob->GetGUID());
+                                areaTakes = std::move(trial);
+                                ++keptByArea;
+                                continue;
                             }
+                            if (memberSpared.size() == lead.aoeSpared.size())
+                                memberAoeWhy = "spares " + mob->GetName() + " (no threat headroom)";
+                            memberSpared.push_back(mob->GetGUID());
+                        }
+                        if (keptByArea && memberSpared.size() == lead.aoeSpared.size() && lead.aoeSpared.empty())
+                            memberAoeWhy = Acore::StringFormat("[lead1010] the pack only: {} mobs without headroom "
+                                                               "it survives",
+                                                               keptByArea);
+                    }
                     // [lead731] the arrival the pick was taken with, kept for the held target (see heldTarget)
                     if (mine)
                         if (auto const arrived = arrivals.find(mine->GetGUID()); arrived != arrivals.end())
@@ -6809,10 +6910,12 @@ namespace Leader::Dungeon
                     // without headroom. The leader names the mobs it allows this member's multi-DoT / cleave on: its
                     // Attack target and every kill-order mob it has threat headroom on (the leader's one threat
                     // verdict, ThreatStrategy follows it); a mob without headroom is not named, so not hit
+                    // [lead1010] ... and the mobs without headroom its area may take (the survival verdict above)
                     std::vector<ObjectGuid> named = {attackOn->GetGUID()};
                     for (ObjectGuid const& other : killOrder)
                         if (Unit* mob = ObjectAccessor::GetUnit(*tank, other);
-                            mob && mob != attackOn && mob->IsAlive() && mob->IsInCombat() && headroom(mob))
+                            mob && mob != attackOn && mob->IsAlive() && mob->IsInCombat() &&
+                            (headroom(mob) || std::find(areaTakes.begin(), areaTakes.end(), mob) != areaTakes.end()))
                             named.push_back(other);
                     bool const changed = Leader::Events::SetAttack(guid, Leader::AttackEvent::Attack,
                                                                    attackOn->GetGUID(), named);

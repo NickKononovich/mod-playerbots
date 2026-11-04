@@ -657,6 +657,20 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
     }
     float const added = AI_VALUE(float, "next cast threat") * commit / NextCastThreatValue::NEXT_CAST_SECONDS;
 
+    // [lead1010] the leader's threat verdict is final (lead282 for the single target): the mobs its Attack names for
+    // this member - the target, the mobs it has headroom on, the mobs without headroom it survives taking all at once
+    // (lead985's survival math for an area) - are not held here again; b229 rfc-h: "[aoe-threat]" held Flamestrike /
+    // Fan of Knives / Death and Decay / Seed of Corruption / Chain Lightning ~800 times (one line per 10 s) on pack
+    // mates the tank held. The leader's spared mobs are held by LeaderCommandMultiplier
+    std::vector<ObjectGuid> leaderNamed;
+    if (Leader::ExecutorMember(bot))
+    {
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack &&
+            events.intensity != Leader::Intensity::Stop && events.aoe != Leader::AoeRule::Forbidden)
+            leaderNamed = events.killOrder;
+    }
+
     std::vector<ObjectGuid> seen;
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
@@ -673,6 +687,8 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
             if (std::find(seen.begin(), seen.end(), mob->GetGUID()) != seen.end())
                 continue;
             seen.push_back(mob->GetGUID());
+            if (std::find(leaderNamed.begin(), leaderNamed.end(), mob->GetGUID()) != leaderNamed.end())
+                continue;  // [lead1010]
 
             if (mob->IsControlledByPlayer() || mob->IsInEvadeMode() || mob->GetVictim() == bot ||
                 FledMobs::IsRunning(mob))
