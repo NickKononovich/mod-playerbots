@@ -750,6 +750,42 @@ namespace Leader::Fight
             float fightGap = -1.0f;
             if (held && IdleMobCovers(bot, mob, holder->GetPosition()))
                 fightGap = mob->GetExactDist2d(holder);
+            // [lead1201] b243 rfc-h 5G-15 Taragaman 595-624 s: the ret paladin, the arms warrior and the frost DK
+            // stood 30 s at 4 yd out of melee ("combat spot: behind the target: stays (... in the reach of Searing
+            // Blade Enforcer)", the leader's attack hold "Taragaman stands in Searing Blade Enforcer's aggro
+            // reach"): a patrol walking in from behind the boss, every melee spot behind him a yard or two nearer
+            // its position now than the tank. A patrol's distance now is no fact about where it walks: the walk
+            // it is on (its forecast, PatrolForecast) comes into its aggro reach of the fight's holder at some
+            // sample, and a spot it reaches no sooner wakes it no sooner than the fight itself does
+            if (fightGap >= 0.0f)
+            {
+                std::vector<G3D::Vector3> track;
+                float sampleSec = 0.0f;
+                if (PullPlanning::PatrolForecast(mob, track, sampleSec) && !track.empty())
+                {
+                    float const reach = mob->GetAggroRange(bot);
+                    auto const firstIn = [&](float x, float y) -> size_t
+                    {
+                        for (size_t i = 0; i < track.size(); ++i)
+                            if (std::hypot(track[i].x - x, track[i].y - y) <= reach)
+                                return i;
+                        return track.size();
+                    };
+                    size_t const holderIn = firstIn(holder->GetPositionX(), holder->GetPositionY());
+                    if (holderIn < track.size() && firstIn(spot.GetPositionX(), spot.GetPositionY()) >= holderIn)
+                    {
+                        thread_local std::set<std::pair<uint64, uint64>> logged;
+                        if (logged.size() > 4096)
+                            logged.clear();
+                        if (logged.insert({bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots",
+                                     "[lead1201] {}: a spot at {} is no deeper into patrol {}'s walk than its holder "
+                                     "{} (the patrol reaches the fight first, sample {})",
+                                     bot->GetName(), target->GetName(), mob->GetName(), holder->GetName(), holderIn);
+                        return false;
+                    }
+                }
+            }
             return fightGap < 0.0f || mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) < fightGap;
         });
     }
