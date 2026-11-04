@@ -12,11 +12,13 @@
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
+#include "SpellMgr.h"  // [lead1061]
 #include "TargetValue.h"
 #include "Timer.h"  // [rot1]
 #include "LeaderOrders.h"  // [rot38] Leader::ExecutorMember, [rot371] Leader::LedBot
 
 #include <unordered_map>  // [rot371]
+#include <unordered_set>  // [lead1061]
 
 constexpr uint32 SPELL_ECLIPSE_SOLAR = 48517;
 constexpr uint32 SPELL_ECLIPSE_LUNAR = 48518;
@@ -119,6 +121,28 @@ namespace
 
 bool DruidLunarProcReady(AiObjectContext* context, Player* bot) { return LunarProcReady(context, bot); }
 
+namespace
+{
+    // [lead1061] b231 rfc-h 5C-3 pull 25: the balance druid stood 20 s at a Molten Elemental with the leader's Attack
+    // order: "wrath ... target immune" (its nature school), Starfire held for the Wrath that fishes for Lunar Eclipse,
+    // Moonfire ticking. A nuke that cannot hit the target (Unit::IsImmunedToDamageOrSchool, the core's own immunity
+    // check that refuses its cast) fishes for nothing: the other nuke goes.
+    bool NukeCannotHit(AiObjectContext* context, Unit* target, char const* nuke)
+    {
+        if (!target)
+            return false;
+        uint32 const spellId = context->GetValue<uint32>("spell id", nuke)->Get();
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        if (!info || !target->IsImmunedToDamageOrSchool(info->GetSchoolMask()))
+            return false;
+        // one line per target (the log only)
+        thread_local std::unordered_set<uint64> logged;
+        if (logged.insert(target->GetGUID().GetRawValue() ^ spellId).second)
+            LOG_INFO("playerbots", "[lead1061] {} is immune to {}: the other nuke goes", target->GetName(), nuke);
+        return true;
+    }
+}
+
 // [rot38] b179 rfc-h 5C (run 20261101-182149): the balance druid's own "medium mana" Innervate went out 10 times as
 // "own_decision external: an external without a leader assignment". In a led group Innervate is the leader's
 // external ("leader external"); a led healer keeps its own mana Innervate (the 5A resto druid's mana tool).
@@ -159,7 +183,8 @@ bool CastWrathAction::isUseful()
 
     // Under Lunar Eclipse Starfire is the nuke; outside an eclipse Wrath only fishes for a ready Lunar proc. A druid
     // without the Eclipse talent keeps the plain order (Starfire default above Wrath).
-    if (bot->HasAura(SPELL_ECLIPSE_LUNAR) || (HasEclipseTalent(bot) && !lunarReady))
+    if ((bot->HasAura(SPELL_ECLIPSE_LUNAR) || (HasEclipseTalent(bot) && !lunarReady)) &&
+        !NukeCannotHit(context, GetTarget(), "starfire"))
         return false;
 
     return CastSpellAction::isUseful();
@@ -172,7 +197,8 @@ bool CastStarfireAction::isUseful()
     if (bot->HasAura(SPELL_LUNAR_SURGE) || bot->HasAura(SPELL_ECLIPSE_LUNAR))
         return CastSpellAction::isUseful();
 
-    if (bot->HasAura(SPELL_ECLIPSE_SOLAR) || (HasEclipseTalent(bot) && lunarReady))
+    if ((bot->HasAura(SPELL_ECLIPSE_SOLAR) || (HasEclipseTalent(bot) && lunarReady)) &&
+        !NukeCannotHit(context, GetTarget(), "wrath"))
         return false;
 
     return CastSpellAction::isUseful();
