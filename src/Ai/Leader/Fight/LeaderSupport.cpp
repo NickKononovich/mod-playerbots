@@ -937,6 +937,7 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
     GroupRouteState const& route = group.Route();
     if (route.buffStep != 1 || st.buffQueue.empty())
     {
+        st.buffManaNeed.clear();  // [lead1133]
         st.buffTold.clear();
         st.buffOrderWork.clear();
         return;
@@ -995,6 +996,27 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
         }
         ++it;
     }
+    // [lead1133] b238 rfc-h 5H-8 630-727 s (97 s): the disc priest at 3-5 % mana gave Shadow Protection to one member
+    // every ~20 s - each order waited for "its mana for the cast" from the game's out-of-combat regeneration. The
+    // mana a caster's standing orders cost (each order's own spell cost) is a fact the leader's Rest reads: below
+    // it, it drinks to it (LeaderEvents' rest decision), then casts them one after another
+    st.buffManaNeed.clear();
+    for (DungeonLeaderState::Support::BuffOrder const& order : st.buffQueue)
+    {
+        Player* caster = memberOf(order.caster);
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(order.spell);
+        if (caster && info && info->PowerType == POWER_MANA &&
+            !st.buffFailed.count(BuffKey{order.caster, order.spell, order.target}))
+            st.buffManaNeed[order.caster] += uint32(std::max(0, info->CalcPowerCost(caster, info->GetSchoolMask())));
+    }
+    for (auto it = st.buffManaNeed.begin(); it != st.buffManaNeed.end();)
+    {
+        Player* caster = memberOf(it->first);
+        if (!caster || caster->GetPower(POWER_MANA) >= it->second)
+            it = st.buffManaNeed.erase(it);
+        else
+            ++it;
+    }
     // one order per caster: the one it holds (asserted again: a tick asserts every command it wants), else its next
     std::string work;
     std::set<ObjectGuid> busy;
@@ -1024,7 +1046,10 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
         }
         // mana comes back out of a fight by itself (the game's regeneration); a rage cost does not: that order is
         // issued and the caster's cast check reports it
-        if (info->PowerType == POWER_MANA && !Affords(caster, info))
+        // [lead1133] a caster drinking for its orders' mana drinks on to it: no order stands it up for one cast
+        bool const drinksForPass = st.buffManaNeed.count(order.caster) && caster->IsSitState() &&
+                                   RestState::IsDrinking(caster);
+        if (info->PowerType == POWER_MANA && (!Affords(caster, info) || drinksForPass))
         {
             work += (work.empty() ? "" : ", ") + order.what + " (its mana for the cast)";
             continue;

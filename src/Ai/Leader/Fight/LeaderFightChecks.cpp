@@ -164,6 +164,21 @@ namespace Leader::Fight
                                                       target->GetPositionZ(), x, y, z) ||
                 !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
                 continue;
+            // [lead1136] b238 rfc-h 5C-3 Bazzalan 1063-1101 s: the fury warrior's chase place (-395.2, 170.7, 9.1) had
+            // no floor under it (grid and vmap: none; the navmesh 2.9 yd above, [height_gap]) - its walk never ended
+            // there and it stepped 0-2 yd every tick, 3 Bloodthirsts in 48 s. A place the game has no ground under
+            // (Map::GetHeight from the member's height above it: INVALID_HEIGHT) is no place to stand
+            if (map->GetHeight(bot->GetPhaseMask(), x, y, z + bot->GetCollisionHeight(), true) <= INVALID_HEIGHT)
+            {
+                thread_local std::set<uint64> groundLogged;
+                if (groundLogged.size() > 4096)
+                    groundLogged.clear();
+                if (groundLogged.insert(bot->GetGUID().GetRawValue() ^ target->GetGUID().GetRawValue()).second)
+                    LOG_INFO("playerbots", "[lead1136] {}: no ground under the melee place ({:.1f}, {:.1f}, {:.1f}) "
+                             "round {}: no place",
+                             bot->GetName(), x, y, z, target->GetName());
+                continue;
+            }
             Position const at(x, y, z);
             if (!LeaderMeleeReachesFrom(bot, target, at))
                 continue;

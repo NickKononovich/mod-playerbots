@@ -5083,6 +5083,15 @@ namespace Leader::Dungeon
                     lead.restBossLine.erase(guid);  // [lead1021] the boss wait ended: its line holds no Rest
                     lead.restBossHoldLogged.erase(guid);
                 }
+                // [lead1133] the buff pass waits for this caster's mana (its standing orders' spell costs,
+                // TickBuffOrders): it drinks to that mana, not the game's standing regeneration (b238 5H-8: 97 s)
+                if (auto const need = lead.support.buffManaNeed.find(guid);
+                    !needsRest && need != lead.support.buffManaNeed.end() && bot->GetPower(POWER_MANA) < need->second)
+                {
+                    needsRest = true;
+                    restWhy = Acore::StringFormat("[lead1133] the buff pass: mana {} < {} its buff orders cost",
+                                                  bot->GetPower(POWER_MANA), need->second);
+                }
                 // [lead50] the planner's held answer waits for this member: it rests
                 if (!lead.plannerRestFor.empty() && bot->GetName() == lead.plannerRestFor && !MemberFull(bot) &&
                     BelowPlannerLine(bot, lead.plannerRestLine))  // [lead221] up to the line it named
@@ -6185,7 +6194,20 @@ namespace Leader::Dungeon
                                      "takes its first spot now",
                                      bot->GetName(), target->GetName());
                     }
-                    if (breaks == "first spot" && target->isMoving() && !blindToFight &&
+                    // [lead1130] b238 rfc-h 5C-11 151.9 / 179 s: the balance druid "stays" 22.7 yd from an idle
+                    // Ragefire Shaman (reach 23) - the tank never had the Trogg that came, then the druid's own pull.
+                    // A ranged member whose place is in an unpulled mob's reach (the spot guard's LeaderAggroAt) does
+                    // not stay there: it takes its first spot now, judged by checkedMove like every spot
+                    Creature* const idleHere = !melee ? LeaderAggroAt(bot, bot->GetPosition()) : nullptr;
+                    if (idleHere && breaks == "first spot" && target->isMoving())
+                    {
+                        thread_local std::set<uint64> idleLogged;
+                        if (idleLogged.insert(bot->GetGUID().GetRawValue() ^ idleHere->GetGUID().GetRawValue()).second)
+                            LOG_INFO("playerbots", "[lead1130] {}: stands in the reach of the unpulled {} ({:.1f} yd): "
+                                     "takes its first spot now, no stay",
+                                     bot->GetName(), idleHere->GetName(), bot->GetExactDist(idleHere));
+                    }
+                    if (breaks == "first spot" && target->isMoving() && !blindToFight && !idleHere &&
                         (target->GetVictim() != tank || !tank->IsWithinMeleeRange(target)))
                     {
                         breaks.clear();
@@ -7218,8 +7240,7 @@ namespace Leader::Dungeon
                 {
                     // [lead61] user: the leader starts the heals - once every fight mob is on the tank (no heal
                     // threat on a mob still coming), or at once when a member is about to die (the config's critical
-                    // health)
-                    bool allOnTank = true;
+                    // health); [lead1134] a mob on another member: while the heals take it off nobody (below)
                     // [lead62] user: no fixed line - a member is about to die when its time to death (its health over
                     // the damage it took per second in this fight) is within the healer's time to land a heal (its
                     // fastest known heal's cast + the global cooldown + the walk into heal reach) plus the next cast
@@ -7241,10 +7262,6 @@ namespace Leader::Dungeon
                     watched.push_back(tank);
                     for (Player* member : watched)
                     {
-                        if (member != tank)
-                            for (Unit* attacker : member->getAttackers())
-                                if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
-                                    allOnTank = false;
                         // [lead63] predictive: the dps its attackers deal it now (AttackerDps), a new attacker counts
                         // before its first hit; time to death = health + absorbs over that sum
                         float incoming = 0.0f;
@@ -7301,9 +7318,6 @@ namespace Leader::Dungeon
                             break;
                         }
                     }
-                    for (Unit* attacker : tank->getAttackers())
-                        if (attacker && attacker->IsAlive() && attacker->GetVictim() != tank)
-                            allOnTank = false;
                     // [lead390] b201 rfc-h 5B: the holy paladin took 14 mobs off the warrior. 740.5 s: Heal "every
                     // fight mob is on the tank" 0.3 s before the pull started - the kill order held the target alone,
                     // its four pack mates were in no member's attackers yet; at 742.6 s the paladin had 32.2 threat on
@@ -7385,12 +7399,43 @@ namespace Leader::Dungeon
                                                                            : THREAT_OVERTAKE_RANGED;
                         return mineNext < share * tankNext;
                     };
-                    std::string closedOn = allOnTank ? "" : "a fight mob attacks a member";
+                    // [lead1134] b238 rfc-h (16 runs): the heals waited 506 s "a fight mob attacks a member" and 372 +
+                    // 105 + 90 + 45 + 34 + 32 s "<mob> is not on the tank" (5D-12 Rtshaad 107 s), the member the mob
+                    // hit left without heals unless about to die. A mob turns to a new attacker only past its current
+                    // victim's threat by the game's share (ThreatManager: 110 % in melee reach, 130 % beyond): while
+                    // the healer's threat after its next heal (the projection above, its periodic heals included)
+                    // stays under that share of the threat of the member the mob is on, its heals take nothing
+                    auto const healHeadroomUnder = [&](Unit* mob, Player* holder)
+                    {
+                        auto const& mine = seenOn(mob, bot);
+                        float const fresh = mine.threat > 0.0f && getMSTimeDiff(mine.firstMs, mine.riseMs) / 1000.0f >=
+                                                                      HEADROOM_GCD_SEC
+                                                ? riseRate(mine)
+                                                : std::max(riseRate(mine), healFresh);
+                        float mineNext = mine.threat + fresh * HEADROOM_GCD_SEC;
+                        if (PeriodicLeft const periodic = PeriodicThreatLeft(bot, mob); periodic.threat > 0.0f)
+                            mineNext = mine.threat + std::max(mineNext - mine.threat, periodic.within) +
+                                       (periodic.threat - periodic.within);
+                        float const share =
+                            mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE : THREAT_OVERTAKE_RANGED;
+                        return mineNext < share * mob->GetThreatMgr().GetThreat(holder);
+                    };
+                    for (Unit* attacker : tank->getAttackers())
+                        addReach(attacker);
+                    std::string closedOn;
                     for (Unit* mob : healReach)
                     {
                         if (!closedOn.empty())
                             break;
-                        if (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                        Player* const holder = mob->GetVictim() ? mob->GetVictim()->ToPlayer() : nullptr;
+                        if (holder && holder != tank && holder != bot && holder->IsInSameGroupWith(bot) &&
+                            mob->GetThreatMgr().GetThreat(holder) > 0.0f)
+                        {
+                            if (!healHeadroomUnder(mob, holder))
+                                closedOn = Acore::StringFormat("its heal threat would take {} off {} [lead1134]",
+                                                               mob->GetName(), holder->GetName());
+                        }
+                        else if (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
                         {
                             // [lead574] its victim and the tank's threat named (a pet / totem it hits is not the tank)
                             Unit* const on = mob->GetVictim();
@@ -8634,6 +8679,24 @@ namespace Leader::Dungeon
                 std::string verdictWhy;
                 bool allowed = manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), durationSec,
                                                verdictWhy);  // [lead541] [lead651]
+                // [lead1132] b238 rfc-h 5H-8 832.7 s: Hymn of Hope told in the tick the priest got its first combat
+                // spot (a walk), the walk cut it 2 s in. A channel (spell data) waits while the caster walks to the
+                // place the leader gave it (its walk or a live MoveTo / StandAt it is not on yet): the walk would
+                // cut the channel; it is told once the caster stands
+                if (allowed && info->IsChanneled())
+                {
+                    Leader::MemberEvents place;
+                    bool const offPlace = Leader::Events::Get(caster->GetGUID(), place) &&
+                                          (place.move == Leader::MoveEvent::MoveTo ||
+                                           place.move == Leader::MoveEvent::StandAt) &&
+                                          caster->GetExactDist2d(place.spot.GetPositionX(), place.spot.GetPositionY()) >
+                                              std::max(place.tolerance, Leader::LEADER_SPOT_TOLERANCE);
+                    if (caster->isMoving() || offPlace)
+                    {
+                        allowed = false;
+                        verdictWhy = "waits: it walks to its place, the walk would cut the channel [lead1132]";
+                    }
+                }
                 // [lead931] b226 rfc-h: 9 of the 98 healer "cast in flight" aggro losses came 0.2-3.3 s after
                 // the leader's Innervate (5A-9 132.0 s on Rthunaa, the restoration druid Rtdruaa at 186 threat on a
                 // Ragefire Trogg against the bear's 83 at 134.7 s): each Innervate tick forwards half the mana it gives

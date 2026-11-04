@@ -839,6 +839,21 @@ bool LeaderCommandMultiplier::AreaSees(SpellInfo const* info, Unit* mob, Positio
     if (!info || info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) ||
         mob->IsWithinLOS(center.GetPositionX(), center.GetPositionY(), center.GetPositionZ()))
         return true;
+    // [lead1135] b238 rfc-h 5C-11 409.5-412.5 s: Starfall from the ledge (-152.6, 0.8, -40.1) woke a Ragefire Shaman
+    // and a Trogg 13-18 yd below - "out of its Starfall's sight" by the line from the mob to the druid's feet, which
+    // the ledge's edge cuts. A caster-centred area's targets are picked by the caster's sight from its eyes
+    // (spell_dru_starfall_dummy::FilterTargets: caster->IsWithinLOS(target)); either line seeing it is in the area
+    if (center.GetExactDist(bot) <= 0.1f &&
+        bot->IsWithinLOS(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ()))
+    {
+        thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> eyesLogged;
+        if (eyesLogged.size() > 4096)
+            eyesLogged.clear();
+        if (eyesLogged.insert({bot->GetGUID(), mob->GetGUID()}).second)
+            LOG_INFO("playerbots", "[lead1135] {}: the spared {} is in its {}'s sight from its eyes: in the area",
+                     bot->GetName(), mob->GetName(), info->SpellName[0] ? info->SpellName[0] : "area");
+        return true;
+    }
     thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> logged;
     if (logged.size() > 4096)
         logged.clear();

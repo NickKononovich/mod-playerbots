@@ -136,6 +136,21 @@ namespace Leader::Dungeon
             float const line = std::strtof(why.c_str() + needs + std::strlen("(needs "), nullptr);
             return line > 0.0f ? line : -1.0f;
         }
+
+        // [lead1131] a warlock with no pet (NoPetTrigger's fact) that can cast a summon: Summon Imp takes no reagent,
+        // Voidwalker / Succubus / Felhunter / Felguard a Soul Shard (Spell.dbc reagents)
+        bool WarlockSummonsPet(Player* bot)
+        {
+            constexpr uint32 SPELL_SUMMON_IMP = 688;
+            constexpr uint32 SPELL_SHARD_SUMMONS[] = {697, 712, 691, 30146};
+            constexpr uint32 ITEM_SOUL_SHARD = 6265;
+            if (!bot || bot->getClass() != CLASS_WARLOCK || !bot->IsAlive() || bot->IsMounted() ||
+                !bot->GetMinionGUID().IsEmpty() || bot->GetGuardianPet() || bot->GetFirstControlled())
+                return false;
+            bool const shardSummon = std::any_of(std::begin(SPELL_SHARD_SUMMONS), std::end(SPELL_SHARD_SUMMONS),
+                                                 [bot](uint32 spell) { return bot->HasSpell(spell); });
+            return shardSummon ? bot->HasItemCount(ITEM_SOUL_SHARD, 1) : bot->HasSpell(SPELL_SUMMON_IMP);
+        }
     }
 
     // [lead6] The one readiness judge: the group here (alive, in the instance, within LEADER_READY_RANGE, the
@@ -164,6 +179,18 @@ namespace Leader::Dungeon
                     return member.name + " trails the group";
                 if (bot->IsSitState() && !MemberFull(bot))
                     return member.name + " sits";
+                // [lead1131] b238 rfc-h 5H-8 478.4 s: the pull was committed as the fight ended, the fire mage still
+                // in combat at 14 % mana; 0.2 s later its combat dropped, the leader's Rest (its own line, 43 %) sat
+                // it down and the tank walked the engage 60 yd away from it. A member still in combat below its own
+                // rest line (the Rest's rule, RestState::BelowOwnLine) rests as soon as its combat drops: not ready
+                if (bot->IsInCombat() && !MemberFull(bot) && RestState::BelowOwnLine(bot))
+                    return member.name + " rests below its line [lead1131]";
+                // [lead1131] b238 5D-4 414.6 s / 5D-12 374.5 s / 5E-13 411.6 s: the warlock's pet died in the fight,
+                // the engage went, the warlock stood casting its summon (691 / 688, its "no pet" trigger) and the
+                // tank walked 60-85 yd away from it. A warlock without a pet that can summon one (Summon Imp needs
+                // no reagent, the others a Soul Shard: Spell.dbc reagents) summons it before it follows
+                if (WarlockSummonsPet(bot))
+                    return member.name + " summons its pet [lead1131]";
                 continue;
             }
             // a far member the far wait gave up on (far_wait_dropped) holds no readiness while far, never a healer

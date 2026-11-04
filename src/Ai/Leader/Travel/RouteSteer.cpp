@@ -732,7 +732,7 @@ namespace Leader::Travel
     {
         static char const* const READINESS[] = {
             "not topped up", "not all here", "not with the group", "not with the tank", "from the tank",
-            "rests below its line", " buffing", "the group rests or gathers", "group not ready",
+            "rests below its line", " buffing", " summons its pet", "the group rests or gathers", "group not ready",
             "a group member still fights", "the tank rests", "waits for ", "resurrection sickness", " dead",
             "no dps with the group", "% mana", "% health"};
         for (char const* const part : READINESS)

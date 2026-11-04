@@ -615,6 +615,8 @@ namespace Leader
             std::set<BuffKey> buffIssuedKeys;            // every order issued in this pass
             uint32 buffCast = 0;                         // orders that ended with the buff on its target
             std::string buffOrderWork;                   // the orders standing / waiting (the step waits for it)
+            // [lead1133] caster -> the mana its buff orders still standing in the pass cost, while it has less
+            std::map<ObjectGuid, uint32> buffManaNeed;
         };
         Support support;
     };
