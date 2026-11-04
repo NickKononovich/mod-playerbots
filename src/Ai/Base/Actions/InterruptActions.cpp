@@ -376,6 +376,23 @@ namespace
         return item && bot->GetLastPotionId() && (item->IsPotion() || (info && info->IsCooldownStartedOnEvent()));
     }
 
+    // [lead1220] b245 rfc-h 5F-6 (20261104-235734) 329-565 s: Rtlocac "used" its Demonic Soulstone on Rtdruad 632
+    // times (Soulstone Resurrection: a 3 s cast) - each use went out, no cast began, the stone stayed in its bags with
+    // no cooldown, and every use counted as done: no report, the leader's order stood and the buff pass before
+    // Oggleflint waited on "soulstone: Rtlocac on Rtdruad" until the stall. A use the game took shows in the game's
+    // own state: the item's cast is under way, its request waits in the spell queue (Player::SpellQueue: the global
+    // cooldown or a cast ends first), its spell is on cooldown or the item left the bags. None of them: refused
+    bool UseTaken(Player* bot, uint32 itemId, uint32 spell, uint32 countBefore)
+    {
+        if (bot->IsNonMeleeSpellCast(false) || bot->GetItemCount(itemId) < countBefore ||
+            (spell && bot->HasSpellCooldown(spell)))
+            return true;
+        for (PendingSpellCastRequest const& request : bot->SpellQueue)
+            if (request.isItem && request.spellId == spell)
+                return true;
+        return false;
+    }
+
     uint32 OnUseSpell(Item* item)
     {
         ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
@@ -434,6 +451,8 @@ bool LeaderConsumeAction::Execute(Event /*event*/)
     if (!item)
         return false;
     std::string const name = item->GetTemplate()->Name1;
+    uint32 const useSpell = OnUseSpell(item);              // [lead1220]
+    uint32 const countBefore = bot->GetItemCount(itemId);  // [lead1220]
     // [lead407] b198 rfc-h 5G-7 603.0 s: the tank's pre-pull potion went through UseItemAction::UseItem, which stops a
     // walking bot and clears its chase - the tank's engage walk to Taragaman stopped, its pull lost its target and the
     // order stood Issued for 221 s ("use failed" reported after the stop). An instant item on the bot itself is used
@@ -462,6 +481,15 @@ bool LeaderConsumeAction::Execute(Event /*event*/)
                 Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "the use failed");
             return false;
         }
+    }
+    // [lead1220] the use went out: the game took it, or refused it with no word - reported, the leader drops the
+    // order (the soulstone for this pass: TickBuffPass) instead of waiting on it
+    if (!UseTaken(bot, itemId, useSpell, countBefore))
+    {
+        LOG_INFO("playerbots", "[lead1220] [leader consume] {}: the game refused {} ({}) on {}: no cast, no cooldown, "
+                 "the item still in its bags", bot->GetName(), name, itemId, on->GetName());
+        Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "the game refused the use (no cast, no cooldown)");
+        return false;
     }
     LOG_INFO("playerbots", "[lead402] [leader consume] {} uses {} ({}) on {}: {}", bot->GetName(), name, itemId,
              on->GetName(), why);
