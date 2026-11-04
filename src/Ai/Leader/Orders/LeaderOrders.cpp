@@ -719,10 +719,25 @@ namespace Leader
                 e.tolerance = tolerance;
                 e.moveWhy = why;
                 e.moveMode = mode;
+                e.moveReachOf = ObjectGuid::Empty;  // [lead1070] a new move has its own purpose
+                e.moveReachRange = 0.0f;
             }
             e.moveMs = slot.gen;
             if (changed)
                 ++e.seq;
+            return changed;
+        }
+
+        bool SetMoveReach(ObjectGuid member, ObjectGuid unit, float range)
+        {
+            std::lock_guard<std::mutex> lock(eventLock);
+            auto const it = eventSlots.find(member);
+            if (it == eventSlots.end() || it->second.events.move != MoveEvent::MoveTo)
+                return false;
+            MemberEvents& e = it->second.events;
+            bool const changed = e.moveReachOf != unit || e.moveReachRange != range;
+            e.moveReachOf = unit;
+            e.moveReachRange = range;
             return changed;
         }
 

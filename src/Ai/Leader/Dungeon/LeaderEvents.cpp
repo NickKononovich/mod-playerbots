@@ -2961,6 +2961,26 @@ namespace Leader::Dungeon
             std::string const pickUpWhy =
                 toMob ? "aggro loss: the tank goes to the mob" : "aggro loss: the tank goes to the member";
             bool pickUpIssued = false;
+            // [lead1070] nothing out of the pick-up's reach now: a pick-up walk (its purpose a unit in reach) has done
+            // its job - it ends once its walk to the spot is not under way (the executor stops that walk in reach), so
+            // the arbiter holds no aggro-loss move the tank no longer needs
+            if (!alone)
+            {
+                Leader::MemberEvents tankMove;
+                if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.move == Leader::MoveEvent::MoveTo &&
+                    !tankMove.moveReachOf.IsEmpty())
+                {
+                    bool walksThere = false;
+                    if (tank->isMoving() && !tank->movespline->Finalized())
+                    {
+                        G3D::Vector3 const end = tank->movespline->FinalDestination();
+                        walksThere = tankMove.spot.GetExactDist2d(end.x, end.y) <= Leader::LEADER_SPOT_TOLERANCE;
+                    }
+                    if (!walksThere)
+                        Leader::Events::SetMove(tank->GetGUID(), Leader::MoveEvent::None, tankMove.spot, 0.0f,
+                                                tankMove.moveWhy);
+                }
+            }
             if (alone)
             {
                 // [lead983] b228 rfc-h 5D-12 (20261103-224121) 805-865 s: a Searing Blade Warlock cast on the unholy
@@ -3037,6 +3057,13 @@ namespace Leader::Dungeon
                     }
                 }
             }
+            // [lead1070] b232 rfc-h (16 runs): under 84 pick-ups of a member the leader's walk went on 924 yd after the
+            // member already stood in the taunt's reach (5G-7 105 s: 65 yd - the walk to the spot, "move fight spot
+            // back", the walk again); 315 yd were walked before. The pick-up's purpose is `goTo` in the taunt's range
+            // and sight (the test above): the walk is reached there, wherever it is - the tank taunts from where it
+            // stands
+            if (pickUpIssued && pickUp > 0.0f)
+                Leader::Events::SetMoveReach(tank->GetGUID(), goTo->GetGUID(), arrive);
             if (pickUpIssued)
                 Decisions().Write(run, "leader", "fight_spot_to_member", alone->GetGUID(),
                                               alone->GetName(), true,

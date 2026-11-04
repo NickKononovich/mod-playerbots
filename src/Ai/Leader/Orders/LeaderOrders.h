@@ -581,6 +581,11 @@ namespace Leader
         float tolerance = LEADER_SPOT_TOLERANCE;
         std::string moveWhy;
         MoveMode moveMode = MoveMode::Hard;  // [lead371]
+        // [lead1070] a MoveTo whose purpose is a unit in the member's reach (the tank's pick-up: the loose mob or its
+        // victim in the taunt's range): reached once `moveReachOf` stands within `moveReachRange` and in its sight,
+        // wherever the walk is. Cleared by every new move
+        ObjectGuid moveReachOf;
+        float moveReachRange = 0.0f;
         ObjectGuid healTarget;  // [lead76] the leader's "top up X"
         uint32 healTargetMs = 0;
         uint32 moveMs = 0;
@@ -701,6 +706,9 @@ namespace Leader
         // Leader side (world thread). Each returns true when the field changed (a new event to log).
         bool SetMove(ObjectGuid member, MoveEvent move, Position const& spot, float tolerance, std::string const& why,
                      MoveMode mode = MoveMode::Hard);
+        // [lead1070] the live MoveTo's purpose is `unit` within `range` and sight (MemberEvents::moveReachOf); no new
+        // command (no seq bump): the walk under way just ends earlier. False with no live MoveTo
+        bool SetMoveReach(ObjectGuid member, ObjectGuid unit, float range);
         // [lead64] the position arbiter's precedence of a move by its purpose (hazard 5 ... walk-along 0)
         // [lead320] the table: 5 "hazard: ...", "out of a cleave cone"; 4 "aggro loss: to the tank"; 3 "heal reach",
         // "sight ..."; 2 "combat spot ...", "chase: behind the target", "trap weave ..."; 1 "its spot for the pull",

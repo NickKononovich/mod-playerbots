@@ -744,6 +744,37 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         return false;
     if (!bot->IsStandState())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
+    // [lead1070] a MoveTo whose purpose is a unit in reach (the tank's pick-up: its taunt's range, in sight) is reached
+    // where that holds: the walk under way stops, the tick is the rotation's (the taunt from where it stands)
+    if (events.move == Leader::MoveEvent::MoveTo && !events.moveReachOf.IsEmpty() && events.moveReachRange > 0.0f)
+        if (Unit* reachOf = botAI->GetUnit(events.moveReachOf);
+            reachOf && reachOf->IsAlive() && bot->GetExactDist(reachOf) <= events.moveReachRange &&
+            bot->IsWithinLOSInMap(reachOf))
+        {
+            // only the walk to this order's spot (lead762's test): the tank's own fight moves (reach melee, a charge)
+            // are its own
+            if (bot->isMoving() && !bot->movespline->Finalized())
+            {
+                G3D::Vector3 const end = bot->movespline->FinalDestination();
+                if (events.spot.GetExactDist2d(end.x, end.y) <= Leader::LEADER_SPOT_TOLERANCE)
+                {
+                    bot->StopMoving();
+                    bot->GetMotionMaster()->Clear();
+                }
+            }
+            Leader::Events::Ack(bot->GetGUID(), events.seq, "move", "[lead1070] in reach of its purpose's unit");
+            thread_local std::unordered_map<ObjectGuid, uint32> reachLogged;
+            if (uint32& seen = reachLogged[bot->GetGUID()]; seen != events.seq)
+            {
+                seen = events.seq;
+                LOG_INFO("playerbots",
+                         "[lead1070] {}: {} reached: {} {:.1f} yd off (reach {:.1f}), {:.1f} yd short of the spot",
+                         bot->GetName(), events.moveWhy, reachOf->GetName(), bot->GetExactDist(reachOf),
+                         events.moveReachRange,
+                         bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()));
+            }
+            return false;
+        }
     if (bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()) <= events.tolerance)
     {
         // [lead762] b220 rfc-h (8 runs): "aggro loss: the tank goes to the member" / "... to the mob" walked the tank
