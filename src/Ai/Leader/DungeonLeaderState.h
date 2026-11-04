@@ -311,9 +311,6 @@ namespace Leader
         std::map<ObjectGuid, std::string> bossPrepLogged;  // [lead37] the boss_prep state last logged
         std::map<ObjectGuid, std::pair<ObjectGuid, Position>> engageRangeSpots;  // [lead38] per member
         std::map<ObjectGuid, uint32> engageRangeOrder;  // [lead68] the order the range spot was computed for
-        std::map<ObjectGuid, ObjectGuid> engagePreSearched;  // [lead1102] the mob of its pre-order spot search
-        std::map<ObjectGuid, float> engagePreGap;           // [lead1102] its gap to that spot last tick
-        ObjectGuid engagePreHeldFor;                        // [lead1102] the commit the first wait tick held
         // [lead1030] the order and the member's place a range spot search found none from: not searched again
         // until the order changes or the member moved off that place (the search's own spot tolerance)
         std::map<ObjectGuid, std::pair<uint32, Position>> engageRangeNone;

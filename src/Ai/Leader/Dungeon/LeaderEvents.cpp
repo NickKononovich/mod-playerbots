@@ -4422,15 +4422,11 @@ namespace Leader::Dungeon
                 // holds where it stands because its walk is blocked is placed by the leader: the block's pull frees it
                 // [lead730] a member walking to / waiting at the pull's stop point (melee) or its range spot of the
                 // engage (ranged) is placed there by the leader (it may stand ahead of the walking tank)
-                // [lead1110] b236 rfc-h 5E-5 108-348 s (stalled): the pre-order range spot (lead1102) stood 72 yd
-                // ahead of the tank, so the member was "trailing" and the order waited for it while it waited for the
-                // order. A member on its pre-order range spot is placed by the leader too
+                // [lead1120] lead1110's pre-order range spot (lead1102) is gone with it
                 Leader::MemberEvents waits;
-                bool const atStopPoint =
-                    Leader::Events::Get(guid, waits) &&
-                    (waits.moveWhy.rfind("to the tank's stop point", 0) == 0 ||
-                     waits.moveWhy.rfind("along with the tank: to range of the engage", 0) == 0 ||
-                     waits.moveWhy.rfind("[lead1102] to its range spot of the engage before the order", 0) == 0);
+                bool const atStopPoint = Leader::Events::Get(guid, waits) &&
+                                         (waits.moveWhy.rfind("to the tank's stop point", 0) == 0 ||
+                                          waits.moveWhy.rfind("along with the tank: to range of the engage", 0) == 0);
                 bool const placed = lead.spots.count(guid) || lead.hazardSpots.count(guid) ||
                                     lead.combatSpots.count(guid) || lead.pullWalkSpots.count(guid) || walkRejected ||
                                     lead.groupBlockedBy.count(guid) || atStopPoint;
@@ -6667,20 +6663,11 @@ namespace Leader::Dungeon
                 if ((!pullWalk || !healing) && lead.commit && lead.commitIssued && lead.commit->kind == "engage" &&
                     !melee && Leader::Orders::GetOpen(group.LeaderGuid(), engage))
                     engaged = ObjectAccessor::GetUnit(*tank, lead.commitMob);
-                // [lead1102] b235 rfc-h: 402 pulls with no pre-cast "walking" - the range spot went out with the tank's
-                // order and the tank hit 1-3 s later, before the member stood. A committed engage of a still mob gives
-                // a ranged damage dealer its range spot before the order goes (the issue waits while it walks there:
-                // LeaderPlan's lead1102 gate), so it stands in reach of the mob when the pre-cast window opens
-                bool preIssue = false;
-                if (!engaged && !healing && !melee && PlayerbotAI::IsRanged(bot) && lead.commit && !lead.commitIssued &&
-                    lead.commit->kind == "engage")
-                    if (Unit* still = ObjectAccessor::GetUnit(*tank, lead.commitMob);
-                        still && still->IsAlive() && !still->IsInCombat() && !still->isMoving() &&
-                        (!still->ToCreature() || still->ToCreature()->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE))
-                    {
-                        engaged = still;
-                        preIssue = true;
-                    }
+                // [lead1120] b237 rfc-h 5A-9 t=327 / 5F-6 t=349 (both deaths): lead1102's range spot before the order
+                // sent the ranged 135-145 yd ahead of a tank that stood (its route walk refused, its rest), to a spot
+                // 2-4 yd from the engage's mob: the spot guard's idle mobs are those within 80 yd of the tank, so the
+                // mob and its pack there were no idle mobs for the spot or its walk. The mage and the hunter woke them
+                // alone, the healer 116 / 53 yd away. Gone: the range spot goes with the order as before lead1102
                 // [lead81] b124 rfc-h 147.6-166 s: the group walked 120 yd to the engage's range / meeting point while
                 // the tank never left (-90,-40) - the tank leads the walk: a walk-along point nearer the engaged mob
                 // than the tank stands is ahead of the tank, the member follows the tank until the tank is past it
@@ -6736,7 +6723,7 @@ namespace Leader::Dungeon
                     // [lead68] b113: the spot moved with the tank (re-issued every ~0.6 s) - it is computed once per
                     // order (the leader's plan) and kept until a new order
                     if (kept != lead.engageRangeSpots.end() && kept->second.first == engaged->GetGUID() &&
-                        (lead.engageRangeOrder[guid] == engage.id || !lead.engageRangeOrder[guid]))  // [lead1102]
+                        lead.engageRangeOrder[guid] == engage.id)
                     {
                         rangeSpot = kept->second.second;
                         rangeValid = true;
@@ -6752,7 +6739,7 @@ namespace Leader::Dungeon
                                                                  : LeaderSpellReach(bot) - 4.0f;
                     // [lead68] from the leader's meeting point back toward the member (the group's side), not from
                     // the walking tank
-                    Position const meet = preIssue ? engaged->GetPosition() : lead.meetPoint;  // [lead1102]
+                    Position const meet = lead.meetPoint;
                     float const dx = bot->GetPositionX() - meet.GetPositionX();
                     float const dy = bot->GetPositionY() - meet.GetPositionY();
                     float const length = std::max(0.1f, std::hypot(dx, dy));
@@ -6809,8 +6796,6 @@ namespace Leader::Dungeon
                                                   .Real("reach", range + 4.0f));
                     if (!rangeValid)
                         lead.engageRangeNone[guid] = {engage.id, bot->GetPosition()};
-                    if (preIssue)
-                        lead.engagePreSearched[guid] = engaged->GetGUID();  // [lead1102]
                 }
                 if (meleeToMeeting)
                 {
@@ -6833,11 +6818,10 @@ namespace Leader::Dungeon
                         aheadHolds = true;
                     else if (!refusedOnWalk())
                     {
-                        std::string const rangeWhy = preIssue
-                                                         ? "[lead1102] to its range spot of the engage before the order"
-                                                         : "along with the tank: to range of the engage";
-                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE, rangeWhy))
-                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo), JsonObject().Str("why", rangeWhy));
+                        if (checkedMove(guid, Leader::MoveEvent::MoveTo, rangeSpot, LEADER_FOLLOW_TOLERANCE,
+                                        "along with the tank: to range of the engage"))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                     JsonObject().Str("why", "along with the tank: to range of the engage"));
                         moved = !refusedOnWalk();
                     }
                 }

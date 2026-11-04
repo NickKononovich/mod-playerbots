@@ -1346,42 +1346,6 @@ namespace Leader::Dungeon
                     if (waitFor.empty())
                         waitFor = Leader::Prepull::StealthHolds(group, boss);  // [lead773]
                 }
-                // [lead1102] a committed engage of a still mob goes once its ranged damage dealers stand on their range
-                // spots of it (LeaderEvents gives them before the order): it waits while one walks there and comes
-                // nearer, and one tick for the spots not searched yet; a member that stopped short walks along with
-                // the tank as before (no clock: the walk's own progress)
-                if (waitFor.empty() && committed.kind == "engage" && mob && !mob->isMoving() && !mob->IsInCombat())
-                {
-                    bool unsearched = false;
-                    for (LeaderGroup::MemberInfo const& member : group.Members())
-                    {
-                        Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                        if (!bot || bot == tank || !bot->IsAlive() || bot->GetMap() != tank->GetMap() ||
-                            PlayerbotAI::IsHeal(bot) || !PlayerbotAI::IsRanged(bot) || bot->IsSitState())
-                            continue;
-                        auto const searched = lead.engagePreSearched.find(member.guid);
-                        if (searched == lead.engagePreSearched.end() || searched->second != mob->GetGUID())
-                        {
-                            unsearched = true;
-                            continue;
-                        }
-                        auto const spot = lead.engageRangeSpots.find(member.guid);
-                        if (spot == lead.engageRangeSpots.end() || spot->second.first != mob->GetGUID())
-                            continue;
-                        float const gap = bot->GetExactDist(spot->second.second);
-                        auto const last = lead.engagePreGap.find(member.guid);
-                        bool const nearer = last == lead.engagePreGap.end() || gap < last->second;
-                        lead.engagePreGap[member.guid] = gap;
-                        if (gap > LEADER_FOLLOW_TOLERANCE && (bot->isMoving() || nearer))
-                            waitFor += (waitFor.empty() ? "[lead1102] " : ", ") +
-                                       Acore::StringFormat("{} {:.0f} yd from its range spot", member.name, gap);
-                    }
-                    if (waitFor.empty() && unsearched && lead.engagePreHeldFor != lead.commitMob)
-                    {
-                        lead.engagePreHeldFor = lead.commitMob;
-                        waitFor = "[lead1102] the ranged range spots of the engage";
-                    }
-                }
                 if (!waitFor.empty())
                 {
                     lead.spotsWaiting = gate;
@@ -1397,7 +1361,6 @@ namespace Leader::Dungeon
                 }
                 lead.spotsWaiting = false;
                 lead.spotsIssuedMs = now;
-                lead.engagePreGap.clear();  // [lead1102]
                 issue(committed, "committed: " + lead.commitWhy);
                 lead.patrolJoinLogged = false;
                 if (Group* group = tank->GetGroup())  // [lead29] the combined plan's every mob is the pull
