@@ -689,6 +689,9 @@ namespace Leader::Dungeon
 
     namespace
     {
+        // [lead1212] Banish's first rank: a second cast on a banished target removes it (spell_warl_banish, -710)
+        constexpr uint32 SPELL_BANISH_FIRST_RANK = 710;
+
         // [lead217] a loose mob that stands off its victim (out of its melee reach, not moving: a caster at range, a
         // rooted mob) does not follow the victim anywhere
         bool LooseStandsOff(Unit* mob, Unit* victim)
@@ -1123,6 +1126,13 @@ namespace Leader::Dungeon
                                 memberAI->GetAiObjectContext()->GetAction("leader move order")))
                         {
                             reject = mover->WalkRefusal(spot);
+                            // [lead1211] b240 rfc-h 5G-15 112-155 s / b244 5B-10 830-847 s: the member's own guard
+                            // refused every melee place ("would wake Ragefire Trogg (19.5 yd of reach 19.6)") with no
+                            // mob named to the leader, so the pack it would wake was never judged (pack_joins /
+                            // fight_moves_away): 43 s and 17 s standing. The mob its walk wakes is the blocker
+                            if (reject.rfind("would wake", 0) == 0 && group.FightOn(tank))
+                                if (Unit* woken = mover->WalkWakes(spot, ObjectGuid::Empty))
+                                    mob = woken->ToCreature();
                             // [lead71] b115 220.8 s: Rtshaab refused the leader's meeting-point move ("a straight
                             // move over open air") - one verdict: the member's own MoveTo guards, run dry from where
                             // it stands, before the move is issued
@@ -3013,7 +3023,29 @@ namespace Leader::Dungeon
             if (other)
                 target = other;
             else
+            {
                 stopDps = true;
+                // [lead1212] b244 rfc-h 5F-14 457-480 s: the last fight mob was the warlock's banished Molten
+                // Elemental (the leader's Cc) - immune, the whole group stood 23 s on StopDps until the Banish ran
+                // out. A Banish of a group member on the last fight mob holds nothing for the fight: its caster
+                // casts it again, which removes it (the core's spell_warl_banish)
+                for (auto const& [auraId, application] : target->GetAppliedAuras())
+                {
+                    Aura const* aura = application ? application->GetBase() : nullptr;
+                    Player* caster = aura ? ObjectAccessor::FindPlayer(aura->GetCasterGUID()) : nullptr;
+                    if (!caster || !caster->IsAlive() || caster->GetGroup() != tank->GetGroup() ||
+                        sSpellMgr->GetFirstSpellInChain(auraId) != SPELL_BANISH_FIRST_RANK ||
+                        !caster->HasSpell(auraId))
+                        continue;
+                    if (Leader::Events::SetExternal(caster->GetGUID(), auraId, target->GetGUID()))
+                        Decisions().Write(run, "leader", "cc_last_mob_cancel", target->GetGUID(), target->GetName(),
+                                          true,
+                                          JsonObject().Str("caster", caster->GetName()).Num("spell", auraId)
+                                              .Str("why", "the last fight mob is banished: its caster recasts "
+                                                          "Banish, which removes it"));
+                    break;
+                }
+            }
         }
         // [lead16] LEADER_TANK_EXECUTES: the tank's target (no aggro loss: its own victim, else the kill order's head)
         if (fighting && Leader::LEADER_TANK_EXECUTES && !Leader::LEADER_TANK_OWNS_FIGHT && looseOn.empty() &&
@@ -3498,6 +3530,19 @@ namespace Leader::Dungeon
             else if (checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, *lead.fightMoveTo, 2.0f, moveWhy))
                 LogFightDrag(run, tank, *lead.fightMoveTo, lead.meetPoint,
                              lead.fightMoveWhy.empty() ? "away from an unpulled pack" : "to the blocked healer");
+            // [lead1211] b240 rfc-h 5G-15 94.4 s / b244 5B-10 830.9 s: the fight's move away was itself refused
+            // ("stays (the spot or its walk is in the reach of ...)") and stayed the fight's move to its end - it held
+            // every pick-up below (`!lead.fightMoveTo`) while the group stood 43 s / 17 s. A move its guards refuse
+            // is no move: the next option takes over (the tank's pick-up, the unreached mob's resolve)
+            Leader::MemberEvents tankMove;
+            if (lead.fightMoveTo && Leader::Events::Get(tank->GetGUID(), tankMove) &&
+                tankMove.moveWhy.rfind(moveWhy + ": stays (", 0) == 0)
+            {
+                Decisions().Write(run, "leader", "fight_move_refused", tank->GetGUID(), tank->GetName(), true,
+                                  JsonObject().Str("why", moveWhy).Str("stay", tankMove.moveWhy));
+                lead.fightMoveTo.reset();
+                lead.fightMoveWhy.clear();
+            }
         }
         if (!lead.fightMoveTo)
             lead.fightMoveWhy.clear();
@@ -3655,19 +3700,226 @@ namespace Leader::Dungeon
             // tank goes to: at it (melee reach), where it sees it. A mob walking in (a LoS pull) is not touched
             else if (!alone)
             {
+                // [lead1211] user 2026-11-04: a fight mob on the tank that nobody can act on - out of the tank's
+                // sight, or standing off it while every melee member on it holds a refused place out of its reach
+                // ("stays (...)") - is never waited for. The cheapest fact-based option, in order: (1) acting from
+                // where they stand / the front is the melee_front weighing (above); (2) the mob to the group: a
+                // ready Death Grip (the tank's, or a death knight's in the tank's taunt reach and sight, so the tank
+                // picks it up) or the tank's step back along its own trail out of the mob's sight (a mob that may
+                // move in combat walks in to its victim); (3) the sleeping mob a place would wake joins the fight
+                // when the tank holds the union (judgeBlockingPack from the refusal, lead76); (4) the tank walks to
+                // the mob where it sees it (its melee, else a place in its taunt's reach and sight: lead983's ring),
+                // the fight goes with it
+                thread_local std::map<ObjectGuid, std::pair<ObjectGuid, Position>> losSteps;  // tank -> mob, spot
+                thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> losStepSpent;          // tank, mob
+                thread_local std::map<ObjectGuid, std::string> resolveLogged;                   // tank -> mob|option
+                if (losSteps.size() > 4096)
+                    losSteps.clear();
+                if (losStepSpent.size() > 4096)
+                    losStepSpent.clear();
+                if (resolveLogged.size() > 4096)
+                    resolveLogged.clear();
+                std::string const stepWhy = "the tank steps out of its mob's sight: it walks in";
+                auto const meleeMember = [](Player* bot)
+                { return !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot); };
+                // the melee members on `mob` that hold a refused place out of its reach
+                auto const barred = [&](Unit* mob, std::string* who) -> uint32
+                {
+                    uint32 count = 0;
+                    for (Player* bot : seats)
+                    {
+                        Leader::MemberEvents events;
+                        if (!bot->IsAlive() || !meleeMember(bot) || !Leader::Events::Get(bot->GetGUID(), events) ||
+                            events.attack != Leader::AttackEvent::Attack || events.target != mob->GetGUID() ||
+                            events.moveWhy.find(": stays (") == std::string::npos || bot->IsWithinMeleeRange(mob))
+                            continue;
+                        ++count;
+                        if (who)
+                            *who += (who->empty() ? "" : ", ") + bot->GetName();
+                    }
+                    return count;
+                };
                 Unit* stuck = nullptr;
+                Unit* unreached = nullptr;
                 for (Unit* attacker : tank->getAttackers())
-                    if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank && attacker->ToCreature() &&
-                        LeaderFightMob(tank, attacker) && !attacker->isMoving() && !IsCrowdControlled(attacker) &&
-                        !tank->IsWithinLOSInMap(attacker) &&
-                        (!stuck || attacker->GetExactDist(tank) < stuck->GetExactDist(tank)))
-                        stuck = attacker;
-                if (stuck && checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, stuck->GetPosition(),
-                                         NOMINAL_MELEE_RANGE, "the tank goes to its mob out of its sight"))
-                    Decisions().Write(run, "leader", "fight_spot_to_mob", stuck->GetGUID(), stuck->GetName(), true,
-                                      JsonObject().Str("mob", stuck->GetName())
-                                          .Real("distance", stuck->GetExactDist(tank))
-                                          .Real("dz", stuck->GetPositionZ() - tank->GetPositionZ()));
+                {
+                    if (!attacker || !attacker->IsAlive() || attacker->GetVictim() != tank || !attacker->ToCreature() ||
+                        !LeaderFightMob(tank, attacker) || attacker->isMoving() || IsCrowdControlled(attacker))
+                        continue;
+                    if (!tank->IsWithinLOSInMap(attacker))
+                    {
+                        if (!stuck || attacker->GetExactDist(tank) < stuck->GetExactDist(tank))
+                            stuck = attacker;
+                    }
+                    else if (!tank->IsWithinMeleeRange(attacker) && barred(attacker, nullptr) &&
+                             (!unreached || attacker->GetExactDist(tank) < unreached->GetExactDist(tank)))
+                        unreached = attacker;
+                }
+                // a LoS step under way holds while its mob walks in
+                if (auto const step = losSteps.find(tank->GetGUID()); step != losSteps.end())
+                {
+                    Unit* stepMob = ObjectAccessor::GetUnit(*tank, step->second.first);
+                    bool const live = stepMob && stepMob->IsAlive() && stepMob->GetVictim() == tank &&
+                                      !tank->IsWithinMeleeRange(stepMob) && !tank->IsWithinLOSInMap(stepMob);
+                    bool const arrived =
+                        tank->GetExactDist(step->second.second) <= Leader::LEADER_SPOT_TOLERANCE && !tank->isMoving();
+                    if (live && arrived && !stepMob->isMoving())
+                        losStepSpent.insert({tank->GetGUID(), stepMob->GetGUID()});  // it did not come: next option
+                    if (!live || (arrived && !stepMob->isMoving()))
+                        losSteps.erase(step);
+                    else
+                    {
+                        if (stuck == stepMob)
+                            stuck = nullptr;  // out of sight by the step itself
+                        checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, step->second.second,
+                                    Leader::LEADER_SPOT_TOLERANCE, stepWhy);
+                    }
+                }
+                Unit* const unreachedMob = stuck ? stuck : unreached;
+                std::string option;
+                Player* gripper = nullptr;
+                Leader::MemberEvents tankMove;
+                if (unreachedMob)
+                {
+                    // (2) a ready Death Grip on it
+                    std::vector<Player*> grippers{tank};
+                    float const pickUp = LeaderTauntReach(tank);
+                    for (Player* bot : seats)
+                        if (bot->IsAlive() && bot->getClass() == CLASS_DEATH_KNIGHT && pickUp > 0.0f &&
+                            bot->GetExactDist(tank) <= pickUp && tank->IsWithinLOSInMap(bot))
+                            grippers.push_back(bot);
+                    for (Player* dk : grippers)
+                    {
+                        PlayerbotAI* dkAI = GET_PLAYERBOT_AI(dk);
+                        if (!dkAI || dk->getClass() != CLASS_DEATH_KNIGHT)
+                            continue;
+                        uint32 const grip =
+                            dkAI->GetAiObjectContext()->GetValue<uint32>("spell id", "death grip")->Get();
+                        SpellInfo const* info = grip ? sSpellMgr->GetSpellInfo(grip) : nullptr;
+                        if (!info || !dk->HasSpell(grip) || dk->HasSpellCooldown(grip) ||
+                            !dk->IsWithinCombatRange(unreachedMob, info->GetMaxRange(false)) ||
+                            !dk->IsWithinLOSInMap(unreachedMob) || !dkAI->CanCastSpell(grip, unreachedMob))
+                            continue;
+                        Leader::Events::SetExternal(dk->GetGUID(), grip, unreachedMob->GetGUID());
+                        gripper = dk;
+                        option = "death grip by " + dk->GetName();
+                        break;
+                    }
+                }
+                // (2) the tank's step back along its own trail out of the mob's sight, for a mob in its sight that
+                // may move in combat and reaches it (Creature::IsCombatMovementAllowed, CanNotReachTarget)
+                if (unreachedMob && option.empty() && unreachedMob == unreached && !losSteps.count(tank->GetGUID()) &&
+                    !losStepSpent.count({tank->GetGUID(), unreachedMob->GetGUID()}))
+                    if (Creature* creature = unreachedMob->ToCreature();
+                        creature && creature->IsCombatMovementAllowed() && !creature->CanNotReachTarget() &&
+                        !creature->HasUnitState(UNIT_STATE_ROOT))
+                    {
+                        float const reach = LeaderTauntReach(tank);
+                        std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(tank);
+                        for (auto point = trail.rbegin(); point != trail.rend() && reach > 0.0f; ++point)
+                        {
+                            Position const spot(point->x, point->y, point->z);
+                            if (tank->GetExactDist(spot) > reach)
+                                break;
+                            if (map->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(),
+                                                     spot.GetPositionZ() + 2.0f, unreachedMob->GetPositionX(),
+                                                     unreachedMob->GetPositionY(), unreachedMob->GetPositionZ() + 2.0f,
+                                                     tank->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                     VMAP::ModelIgnoreFlags::Nothing))
+                                continue;
+                            checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot,
+                                        Leader::LEADER_SPOT_TOLERANCE, stepWhy);
+                            if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == stepWhy)
+                            {
+                                losSteps[tank->GetGUID()] = {unreachedMob->GetGUID(), spot};
+                                option = Acore::StringFormat("los step: the tank {:.1f} yd back on its trail",
+                                                             tank->GetExactDist(spot));
+                            }
+                            break;
+                        }
+                    }
+                // (4) the tank walks to the mob where it sees it
+                if (unreachedMob && option.empty() && !losSteps.count(tank->GetGUID()))
+                {
+                    std::string const why = stuck ? "the tank goes to its mob out of its sight"
+                                                  : "the tank goes to its mob its melee cannot reach";
+                    checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, unreachedMob->GetPosition(),
+                                NOMINAL_MELEE_RANGE, why);
+                    if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == why)
+                        option = "the tank walks to it";
+                    else if (float const arrive = LeaderTauntReach(tank); stuck && arrive > 0.0f)
+                    {
+                        // lead983's ring: a place in its taunt's reach and sight out of every idle mob's reach
+                        std::vector<Position> ring;
+                        for (float radius : {arrive - 4.0f, arrive * 0.66f, arrive * 0.33f})
+                            for (uint32 i = 0; i < 12 && radius > NOMINAL_MELEE_RANGE; ++i)
+                            {
+                                float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
+                                float x = unreachedMob->GetPositionX() + std::cos(angle) * radius;
+                                float y = unreachedMob->GetPositionY() + std::sin(angle) * radius;
+                                float z = unreachedMob->GetPositionZ();
+                                if (!map->CheckCollisionAndGetValidCoords(
+                                        unreachedMob, unreachedMob->GetPositionX(), unreachedMob->GetPositionY(),
+                                        unreachedMob->GetPositionZ(), x, y, z))
+                                    continue;
+                                Position const spot(x, y, z);
+                                if (map->isInLineOfSight(x, y, z + 2.0f, unreachedMob->GetPositionX(),
+                                                         unreachedMob->GetPositionY(),
+                                                         unreachedMob->GetPositionZ() + 2.0f, tank->GetPhaseMask(),
+                                                         LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing) &&
+                                    !LeaderAggroAt(tank, spot))
+                                    ring.push_back(spot);
+                            }
+                        std::sort(ring.begin(), ring.end(), [&](Position const& a, Position const& b)
+                                  { return tank->GetExactDist(a) < tank->GetExactDist(b); });
+                        constexpr size_t RING_TRIES = 6;  // lead983's
+                        if (ring.size() > RING_TRIES)
+                            ring.resize(RING_TRIES);
+                        std::string const ringWhy = why + " (a spot in its taunt's reach and sight)";
+                        for (Position const& spot : ring)
+                        {
+                            checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.5f, ringWhy);
+                            if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == ringWhy)
+                            {
+                                option = Acore::StringFormat("the tank walks to a spot {:.1f} yd off it in its sight",
+                                                             unreachedMob->GetExactDist(spot));
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (unreachedMob)
+                {
+                    std::string who;
+                    uint32 const members = barred(unreachedMob, &who);
+                    std::string const verdict = option.empty() ? std::string("none allowed") : option;
+                    std::string& logged = resolveLogged[tank->GetGUID()];
+                    std::string const key = unreachedMob->GetGUID().ToString() + "|" + verdict;
+                    if (logged != key)
+                    {
+                        logged = key;
+                        Decisions().Write(run, "leader", "no_place_resolve", unreachedMob->GetGUID(),
+                                          unreachedMob->GetName(), true,
+                                          JsonObject()
+                                              .Str("mob", unreachedMob->GetName())
+                                              .Str("case", stuck ? "out of the tank's sight"
+                                                                 : "its melee members' places refused")
+                                              .Str("option", verdict)
+                                              .Str("barred", who.empty() ? "-" : who)
+                                              .Num("barredCount", members)
+                                              .Str("gripper", gripper ? gripper->GetName() : "-")
+                                              .Real("distance", unreachedMob->GetExactDist(tank))
+                                              .Real("dz", unreachedMob->GetPositionZ() - tank->GetPositionZ()));
+                        if (stuck && option == "the tank walks to it")
+                            Decisions().Write(run, "leader", "fight_spot_to_mob", stuck->GetGUID(), stuck->GetName(),
+                                              true,
+                                              JsonObject().Str("mob", stuck->GetName())
+                                                  .Real("distance", stuck->GetExactDist(tank))
+                                                  .Real("dz", stuck->GetPositionZ() - tank->GetPositionZ()));
+                    }
+                }
+                else
+                    resolveLogged.erase(tank->GetGUID());
             }
         }
         // [lead29] member -> tank distance while the tank walks out of combat (run summary: max / median)
