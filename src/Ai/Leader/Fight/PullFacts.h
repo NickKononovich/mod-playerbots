@@ -88,6 +88,30 @@ namespace Leader::Fight
     // the union's modelled drop, a healer reaches the tank, no healer runs out of mana over the union's fight
     // (Support::HealerOutOfMana), no member is dead, the tank holds the fight, and nothing more joins: no boss, no
     // walker stop or walker meeting there, no idle mob woken on its way in (WalkInWakes)
+    // [lead1190] user 2026-11-04 (third round): the healer that keeps a landing of the tank (a meeting point, a
+    // chain pull's walk end) in its heal: one that reaches it from where it stands, else one that walks into its
+    // reach no later than the tank gets there (its run speed and walk against the tank's `inSec`) - the point on its
+    // line to the landing at the leader's healer band (LEADER_HEALER_TANK_YD, the acquire margin), else its spot
+    // kept at its offset to the tank - in heal reach and sight of the landing, its spot and walk past no unpulled
+    // mob's reach. "" when one does (or the group has no healer), else why none
+    struct HealerAlong
+    {
+        Player* healer = nullptr;  // null: no healer in the group
+        Position spot;             // where it heals from
+        bool walks = false;        // it walks there (false: it reaches the landing where it stands)
+        float walkSec = 0.0f;
+    };
+    std::string HealerKeepsLanding(Player* tank, Position const& landing, float inSec,
+                                   std::vector<Player*> const& members, HealerAlong& along);
+
+    // [lead1190] user 2026-11-04 (third round, full freedom): a chain pull whose pack no ranged opener of the tank
+    // reaches from where it stands walks the fight there - the tank goes (its mobs follow, they are on it) to the
+    // nearest point on its line to the pack's anchor from which its longest ready ranged opener reaches every pack
+    // mob in sight (`walkArriveYd`: the fight move's arrival tolerance off the range); due when the fight left is
+    // shorter than that walk plus the opening and the pack's run in from there. Every check of the chain stays, and
+    // the walk's: no unpulled mob's reach at its end or on the way (the pack's own included), a healer that keeps the
+    // walk's end by its own walk in time (HealerKeepsLanding: it is ordered along). At the end the chain is judged
+    // again from there (the opener reaches: taken as before)
     struct ChainPull
     {
         Creature* anchor = nullptr;    // the pack's mob nearest the tank (null: no idle on-route pack left)
@@ -109,9 +133,13 @@ namespace Leader::Fight
         float unionSec = 0.0f;
         float tankHealth = 0.0f;  // share of its health now
         uint32 unionMobs = 0;
+        bool walk = false;        // [lead1190] taken as a walk of the fight to `walkTo` (kind "walk")
+        Position walkTo;          // [lead1190]
+        float walkSec = 0.0f;     // [lead1190] the tank's walk there
+        HealerAlong healer;       // [lead1190] the healer that keeps the tank (its walk along)
     };
     ChainPull JudgeChainPull(LeaderGroup& group, Player* tank, std::vector<Unit*> const& fightMobs, float fightSecLeft,
-                             std::function<std::vector<ObjectGuid>(Creature*)> const& packOf);
+                             std::function<std::vector<ObjectGuid>(Creature*)> const& packOf, float walkArriveYd);
 
     // [lead1171] user 2026-11-04 (Q66, full freedom): the tank meets the mob. A mob coming at the led tank after its
     // ranged opener no longer waits the mob's whole run (lead146): the leader compares, from the walk times and the
@@ -122,6 +150,8 @@ namespace Leader::Fight
     // the tank's spot needs: no other mob in the tank's melee (no drag), no unpulled mob's reach at the landing or on
     // the walk there (the leader's spot guard), a healer that reaches the landing from where it stands, and for a gap
     // closer the leader's landing check (TankGapCloserAllowed). Once per mob; the melee places follow the landing
+    // [lead1190] the healer: one that keeps the landing where it stands or by its walk there before the tank's contact
+    // (HealerKeepsLanding; it is ordered there)
     enum class TankMeet : uint8
     {
         None,
@@ -148,6 +178,7 @@ namespace Leader::Fight
         float closerGroup = -1.0f;
         float gripGroup = -1.0f;
         std::string why;    // why the moving options were out (empty: none was)
+        HealerAlong healer;  // [lead1190] Walk / Closer: the healer that keeps the landing (its walk there)
     };
     TankMeetPlan PlanTankMeet(Player* tank, Unit* mob, std::vector<Player*> const& members);
     // the leader's verdict for `mob`, published for the tank's own actions (under a lock: the leader's thread writes,

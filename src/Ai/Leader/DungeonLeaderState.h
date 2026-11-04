@@ -343,6 +343,10 @@ namespace Leader
         std::set<std::pair<ObjectGuid, std::string>> chainLogged;   // [lead1170] chain_pull verdicts (pack, kind)
         std::optional<Position> fightMoveTo;           // [lead76] the fight moves away from a pack (the tank)
         std::string fightMoveWhy;                      // [lead909] its purpose (empty: away from a pack)
+        // [lead1190] where the tank will stand: a chain pull's walk end (planAheadMob empty) or a tank meet's landing
+        // (its mob) - the fight anchor while the tank goes there
+        std::optional<Position> planAhead;
+        ObjectGuid planAheadMob;
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
         float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
         float groupDps = 0.0f;  // [lead700] the estimated group dps the fight's seconds were judged by

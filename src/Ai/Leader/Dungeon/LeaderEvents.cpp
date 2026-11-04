@@ -2296,14 +2296,19 @@ namespace Leader::Dungeon
                     lead.chainLoggedFight = lead.fightStartMs;
                     lead.chainLogged.clear();
                 }
+                // [lead1190] a pack out of the tank's opener reach: the fight walks there (the fight move, its
+                // own 2 yd arrival tolerance), the healer along; at the walk's end the chain is judged again
                 Leader::Fight::ChainPull const chain =
-                    Leader::Fight::JudgeChainPull(group, tank, fightingMobs, lead.fightSecLeft, packOf);
-                if (chain.anchor && !chain.waiting &&
+                    Leader::Fight::JudgeChainPull(group, tank, fightingMobs, lead.fightSecLeft, packOf, 2.0f);
+                bool const walkNow = chain.taken && chain.walk && !lead.fightMoveTo;
+                if (chain.anchor && !chain.waiting && (!chain.walk || !chain.taken || walkNow) &&
                     lead.chainLogged.insert({chain.anchor->GetGUID(), chain.kind}).second)
                     Decisions().Write(run, "leader", "chain_pull", chain.anchor->GetGUID(), chain.anchor->GetName(),
                                       true,
                                       JsonObject()
-                                          .Str("verdict", chain.taken ? "taken" : "rejected")
+                                          .Str("verdict", chain.walk && chain.taken ? "walk"
+                                                          : chain.taken             ? "taken"
+                                                                                    : "rejected")
                                           .Str("kind", chain.kind)
                                           .Str("why", chain.why)
                                           .Bool("due", chain.due)
@@ -2321,9 +2326,33 @@ namespace Leader::Dungeon
                                           .Real("tankHealth", chain.tankHealth)
                                           .Real("unionSec", chain.unionSec)
                                           .Real("groupDps", groupDps)
-                                          .Str("tag", "[lead1170]"));
-                if (chain.taken)
+                                          .Real("walkSec", chain.walkSec)
+                                          .Real("walkYd", chain.walk ? tank->GetExactDist(chain.walkTo) : 0.0f)
+                                          .Str("healer", chain.healer.healer ? chain.healer.healer->GetName() : "")
+                                          .Bool("healerWalks", chain.healer.walks)
+                                          .Real("healerSec", chain.healer.walkSec)
+                                          .Str("tag", chain.walk ? "[lead1190]" : "[lead1170]"));
+                if (chain.taken && !chain.walk)
+                {
                     joinPack(chain.anchor, chain.mobs, true);
+                    // [lead1190] the healer that walks into the tank's reach by the pack's arrival goes there
+                    if (chain.healer.walks && chain.healer.healer)
+                        checkedMove(chain.healer.healer->GetGUID(), Leader::MoveEvent::MoveTo, chain.healer.spot,
+                                    1.5f, "heal reach");
+                }
+                else if (walkNow)
+                {
+                    // [lead1190] the fight walks to the opener's reach: the tank goes (its mobs follow), the fight is
+                    // planned at the walk's end (the anchor ahead) and the healer is ordered to its spot there
+                    lead.fightMoveTo = chain.walkTo;
+                    lead.fightMoveWhy = "[lead1190] the chain pull: the fight walks to " + chain.anchor->GetName() +
+                                        "'s opener reach";
+                    lead.planAhead = chain.walkTo;
+                    lead.planAheadMob = ObjectGuid::Empty;
+                    if (chain.healer.walks && chain.healer.healer)
+                        checkedMove(chain.healer.healer->GetGUID(), Leader::MoveEvent::MoveTo, chain.healer.spot,
+                                    1.5f, "heal reach");
+                }
             }
             // [lead1171] user 2026-11-04 (Q66, full freedom): a mob that comes at the tank (its opener landed, no
             // planned fight spot back, no ranged pull's own spot) - the leader picks, once per mob, how the tank meets
@@ -2344,6 +2373,22 @@ namespace Leader::Dungeon
                             if (meet.meet == Leader::Fight::TankMeet::None)
                                 continue;
                             Leader::Fight::SetTankMeet(tank, mob, meet);
+                            // [lead1190] a landing off the tank's spot: the fight is planned there (the anchor ahead,
+                            // beyond the anchor's own move) and the healer that walks into its reach is ordered there
+                            if (meet.meet == Leader::Fight::TankMeet::Walk ||
+                                meet.meet == Leader::Fight::TankMeet::Closer)
+                            {
+                                if (!lead.planAhead &&
+                                    (!lead.fightAnchorSerial || lead.fightAnchor.GetExactDist(meet.landing) >
+                                                                    Leader::LEADER_ANCHOR_MOVE_YD))
+                                {
+                                    lead.planAhead = meet.landing;
+                                    lead.planAheadMob = mob->GetGUID();
+                                }
+                                if (meet.healer.walks && meet.healer.healer)
+                                    checkedMove(meet.healer.healer->GetGUID(), Leader::MoveEvent::MoveTo,
+                                                meet.healer.spot, 1.5f, "heal reach");
+                            }
                             Decisions().Write(run, "leader", "tank_meet", mob->GetGUID(), mob->GetName(), true,
                                               JsonObject()
                                                   .Str("meet", Leader::Fight::TankMeetName(meet.meet))
@@ -2362,6 +2407,10 @@ namespace Leader::Dungeon
                                                   .Real("y", meet.landing.GetPositionY())
                                                   .Real("z", meet.landing.GetPositionZ())
                                                   .Str("why", meet.why)
+                                                  .Str("healer", meet.healer.healer ? meet.healer.healer->GetName()
+                                                                                    : "")
+                                                  .Bool("healerWalks", meet.healer.walks)
+                                                  .Real("healerSec", meet.healer.walkSec)
                                                   .Str("tag", "[lead1171]"));
                         }
             }
@@ -4534,6 +4583,8 @@ namespace Leader::Dungeon
             lead.walkEndHeldLogged.clear();    // [lead802]
             lead.fightAnchorSerial = 0;
             lead.fightAnchorAhead = false;  // [lead466]
+            lead.planAhead.reset();         // [lead1190]
+            lead.planAheadMob = ObjectGuid::Empty;
             lead.healReachSpots.clear();  // [lead120] the next fight's heal reach is decided anew
             lead.healReachAnchor = 0;
             lead.healReachFrom.reset();
@@ -4578,11 +4629,47 @@ namespace Leader::Dungeon
                                           .Real("z", stop.GetPositionZ()).Real("tankGap", tank->GetExactDist(stop)));
                 }
             }
+            // [lead1190] the chain pull's walk (its fight move still the one decided) or the tank's meeting of its
+            // mob (still coming, the verdict still a walk / gap closer): the fight is planned where the tank will
+            // stand until it gets there (within LEADER_ANCHOR_MOVE_YD); then the anchor's own rule
+            if (lead.planAhead)
+            {
+                bool holds = tank->GetExactDist(*lead.planAhead) > Leader::LEADER_ANCHOR_MOVE_YD;
+                if (lead.planAheadMob.IsEmpty())
+                    holds = holds && lead.fightMoveTo && lead.fightMoveTo->GetExactDist(*lead.planAhead) <= 0.1f;
+                else
+                {
+                    Unit* meetMob = ObjectAccessor::GetUnit(*tank, lead.planAheadMob);
+                    Leader::Fight::TankMeet const meet =
+                        meetMob ? Leader::Fight::TankMeetFor(tank, meetMob) : Leader::Fight::TankMeet::None;
+                    holds = holds && meetMob && meetMob->IsAlive() && Leader::Fight::MobComesToTank(tank, meetMob) &&
+                            (meet == Leader::Fight::TankMeet::Walk || meet == Leader::Fight::TankMeet::Closer);
+                }
+                if (!holds)
+                {
+                    lead.planAhead.reset();
+                    lead.planAheadMob = ObjectGuid::Empty;
+                }
+                else if (!lead.fightAnchorSerial || lead.fightAnchor.GetExactDist(*lead.planAhead) > 0.1f)
+                {
+                    lead.fightAnchor = *lead.planAhead;
+                    lead.fightAnchorAhead = false;
+                    ++lead.fightAnchorSerial;
+                    Decisions().Write(run, "leader", "fight_anchor_ahead", tank->GetGUID(), tank->GetName(), true,
+                                      JsonObject()
+                                          .Str("kind", lead.planAheadMob.IsEmpty() ? "chain walk" : "tank meet")
+                                          .Real("x", lead.planAhead->GetPositionX())
+                                          .Real("y", lead.planAhead->GetPositionY())
+                                          .Real("z", lead.planAhead->GetPositionZ())
+                                          .Real("tankGap", tank->GetExactDist(*lead.planAhead))
+                                          .Str("tag", "[lead1190]"));
+                }
+            }
             bool const arrived = tank->GetExactDist(lead.fightAnchor) <= Leader::LEADER_ANCHOR_MOVE_YD;
             if (lead.fightAnchorAhead &&
                 (arrived || !tank->isMoving() || !target || target->GetGUID() != lead.commitMob))  // [lead490]
                 lead.fightAnchorAhead = false;
-            if (!lead.fightAnchorAhead &&
+            if (!lead.planAhead && !lead.fightAnchorAhead &&
                 (!lead.fightAnchorSerial || tank->GetExactDist(lead.fightAnchor) > Leader::LEADER_ANCHOR_MOVE_YD))
             {
                 // [lead18] the fight spot: where the tank holds the mobs; a new anchor re-spots every member once
