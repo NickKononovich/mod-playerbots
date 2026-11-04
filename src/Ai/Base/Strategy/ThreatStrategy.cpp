@@ -943,7 +943,7 @@ void LeaderCommandMultiplier::Refresh()
                              return mobVictim && mobVictim->GetExactDist(&center) <= radius &&
                                     bot->IsWithinLOSInMap(mobVictim, VMAP::ModelIgnoreFlags::M2);
                          }))
-                why = "[lead1160] its next star hits the leader's spared " + spared->GetName();
+                why = "[lead1160] its next tick hits the leader's spared " + spared->GetName();
             if (why.empty())
                 continue;
             uint32 const id = info->Id;

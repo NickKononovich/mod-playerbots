@@ -3856,10 +3856,10 @@ namespace Leader::Dungeon
             {
                 if (info && (info->HasEffect(SPELL_EFFECT_SUMMON) || name == "army of the dead"))
                     return true;
-                Leader::MemberEvents current;
-                Unit* on = Leader::Events::Get(who->GetGUID(), current) &&
-                                   current.attack == Leader::AttackEvent::Attack
-                               ? ObjectAccessor::GetUnit(*who, current.target)
+                Leader::MemberEvents told;
+                Unit* on = Leader::Events::Get(who->GetGUID(), told) &&
+                                   told.attack == Leader::AttackEvent::Attack
+                               ? ObjectAccessor::GetUnit(*who, told.target)
                                : nullptr;
                 std::string why;
                 if (on && on->IsAlive())
@@ -3872,15 +3872,15 @@ namespace Leader::Dungeon
                 // a hunter's Auto Shot deals its damage with no mana (its burn speeds it): no mana test for it
                 if (why.empty() && who->getPowerType() == POWER_MANA && who->getClass() != CLASS_HUNTER)
                 {
-                    std::vector<char const*> const rotation = LeaderRotationSpellNames(who);
+                    std::vector<char const*> const spells = LeaderRotationSpellNames(who);
                     uint32 const filler =
-                        rotation.empty() ? 0 : whoAI->GetAiObjectContext()->GetValue<uint32>("spell id",
-                                                                                            rotation.front())->Get();
+                        spells.empty() ? 0 : whoAI->GetAiObjectContext()->GetValue<uint32>("spell id",
+                                                                                            spells.front())->Get();
                     if (SpellInfo const* fill = filler ? sSpellMgr->GetSpellInfo(filler) : nullptr;
                         fill && fill->PowerType == POWER_MANA &&
                         fill->CalcPowerCost(who, fill->GetSchoolMask()) > int32(who->GetPower(POWER_MANA)))
                         why = Acore::StringFormat("its mana ({:.0f} %) does not pay its {}: the mana's seconds first",
-                                                  who->GetPowerPct(POWER_MANA), rotation.front());
+                                                  who->GetPowerPct(POWER_MANA), spells.front());
                 }
                 if (why.empty())
                     return true;
