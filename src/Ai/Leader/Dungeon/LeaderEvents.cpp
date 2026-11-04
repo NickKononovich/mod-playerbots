@@ -5154,8 +5154,10 @@ namespace Leader::Dungeon
                             lead.restBossLine.erase(held);  // a health gap: no mana line to hold
                         lead.restBossHoldLogged.erase(guid);
                     }
+                    // [lead1182] not a line its kill no longer needs: its boss line read now pulled short (the
+                    // others stopped drinking, its own drink is the group's wait) ends the Rest
                     else if (held != lead.restBossLine.end() && !lead.restLogged[guid].empty() &&
-                             mana < held->second)
+                             mana < held->second && !RestState::BossLinePulledShort(bot))
                     {
                         gap = Acore::StringFormat("mana {:.0f} % < {:.0f} %, the line its Rest holds to, for {}", mana,
                                                   held->second, waitBoss->GetName());
@@ -5293,9 +5295,15 @@ namespace Leader::Dungeon
                 // the healer's own drink for that heal's mana beyond its spare), drinking like any member (the line
                 // over its best drink's rate), or a druid's Innervate under the cooldown rule (cooldownVerdict: on
                 // trash only when back before the next boss pull). Game data and the members' own rates, no clock
+                // [lead1181] user 2026-11-04 (Q63): every mana user, not the warlock alone - before it sits to drink
+                // the leader uses the group's mana sources that work out of a fight (Leader::Support::BestRestManaTool:
+                // Innervate, Hymn of Hope, Mana Tide Totem, its own Evocation / Dispersion / mana gem) when one is
+                // faster than its drink. A member whose Rest its health holds keeps it (the Rest is for that too)
                 bool manaWayLive = false;
-                if (needsRest && HealTriage::DrainsOwnHealth(bot) && bot->GetMaxPower(POWER_MANA) &&
-                    !RestState::IsDrinking(bot))
+                bool const drainsOwn = HealTriage::DrainsOwnHealth(bot);
+                if (needsRest && bot->GetMaxPower(POWER_MANA) && !RestState::IsDrinking(bot) &&
+                    (drainsOwn || (bot->GetHealthPct() >= RestState::HealthLine(bot) &&
+                                   !RestState::WantsFood(bot) && restWhy.rfind("the boss pull waits: health", 0) != 0)))
                 {
                     float manaLine = RestState::OwnManaLine(bot);
                     if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
@@ -5367,71 +5375,46 @@ namespace Leader::Dungeon
                                                          "the healer's drink {:.1f} s",
                                                          taps, gcdSec, healBack, healSec, healerDrinkSec);
                         }
-                        // Innervate: a druid with it ready, in a form that casts it, not drinking, not short of its
-                        // own line (lead751), its cooldown verdict allowing it
-                        Player* innervator = nullptr;
-                        uint32 innervate = 0;
-                        float innervateSec = NONE;
-                        std::string innervateWhy = "no Innervate ready";
+                        // [lead1181] the group's mana tools (lead955's Innervate among them): the fastest one the
+                        // cooldown verdict allows (on trash only when back before the next boss pull)
                         std::vector<Player*> casters = seats;
                         casters.push_back(tank);
-                        for (Player* druid : casters)
-                        {
-                            uint32 const spell = druid != bot && druid->IsAlive() && !druid->IsSitState()
-                                                     ? LeaderReadySpell(druid, {SPELL_INNERVATE})
-                                                     : 0;
-                            SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
-                            if (!info || info->CheckShapeshift(druid->GetShapeshiftForm()) != SPELL_CAST_OK ||
-                                (druid->GetMaxPower(POWER_MANA) &&
-                                 druid->GetPowerPct(POWER_MANA) < RestState::OwnManaLine(druid)))
-                                continue;
-                            float const gainPct = RestState::ManaToolPct(druid, bot, spell);
-                            float const durationSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
-                            if (gainPct <= 0.0f || durationSec <= 0.0f)
-                                continue;
-                            std::string verdict;
-                            if (!cooldownVerdict(RechargeAfterCastSec(druid, spell), durationSec, verdict))
-                            {
-                                innervateWhy = "Innervate " + verdict;
-                                continue;
-                            }
-                            float const castSec =
-                                std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(druid)) / 1000.0f;
-                            float const left = needPct - gainPct;
-                            float const sec = left <= 0.0f      ? castSec + durationSec * needPct / gainPct
-                                              : drinkRate > 0.0f ? castSec + durationSec + left / drinkRate
-                                                                 : NONE;
-                            if (sec >= 0.0f && (innervateSec < 0.0f || sec < innervateSec))
-                            {
-                                innervator = druid;
-                                innervate = spell;
-                                innervateSec = sec;
-                                innervateWhy = Acore::StringFormat("{:.0f} % from {}, {}", gainPct, druid->GetName(),
-                                                                   verdict);
-                            }
-                        }
+                        Leader::Support::RestManaWay const tool = Leader::Support::BestRestManaTool(
+                            bot, casters, needPct, drinkRate,
+                            [&](float rechargeSec, float effectSec, std::string& why)
+                            { return cooldownVerdict(rechargeSec, effectSec, why); },
+                            [](Player* caster, uint32 spell) { return RechargeAfterCastSec(caster, spell); });
+                        float const toolSec = tool.caster ? tool.sec : NONE;
+                        std::string const toolWhy = tool.why.empty() ? "no mana tool ready" : tool.why;
                         auto const faster = [](float a, float b) { return a >= 0.0f && (b < 0.0f || a < b); };
-                        char const* way = faster(tapSec, drinkSec) && faster(tapSec, innervateSec) ? "life tap"
-                                          : faster(innervateSec, drinkSec)                        ? "innervate"
-                                                                                                   : "drink";
+                        char const* way = faster(tapSec, drinkSec) && faster(tapSec, toolSec) ? "life tap"
+                                          : faster(toolSec, drinkSec)                        ? "tool"
+                                                                                              : "drink";
                         // one decision per fact: the way taken stays while it is still a way (no A -> B -> A as the
                         // rates move with the mana)
                         if (std::string const& held = lead.manaWayLogged[guid];
-                            (held == "life tap" && tapSec >= 0.0f) || (held == "innervate" && innervateSec >= 0.0f))
-                            way = held == "life tap" ? "life tap" : "innervate";
+                            (held == "life tap" && tapSec >= 0.0f) || (held == "tool" && toolSec >= 0.0f))
+                            way = held == "life tap" ? "life tap" : "tool";
+                        bool const byTool = std::string(way) == "tool";
                         std::string const note = Acore::StringFormat(
-                            "{}: mana {:.0f} % < {:.0f} % line - life tap {:.1f} s ({}), drink {:.1f} s, innervate "
+                            "{}: mana {:.0f} % < {:.0f} % line - life tap {:.1f} s ({}), drink {:.1f} s, tool "
                             "{:.1f} s ({})",
-                            way, manaPct, manaLine, tapSec, tapWhy, drinkSec, innervateSec, innervateWhy);
+                            way, manaPct, manaLine, tapSec, tapWhy, drinkSec, toolSec, toolWhy);
                         if (std::string& logged = lead.manaWayLogged[guid]; logged != way)
                         {
                             logged = way;
-                            Decisions().Write(run, "leader", "warlock_mana_way", guid, bot->GetName(), true,
+                            // [lead1181] the warlock's decision keeps its name (lead955); every other member's is
+                            // rest_mana_way: its tool, its caster and the drink seconds against it (triage counters)
+                            Decisions().Write(run, "leader", drainsOwn ? "warlock_mana_way" : "rest_mana_way", guid,
+                                              bot->GetName(), true,
                                               JsonObject().Str("member", bot->GetName()).Str("way", way)
+                                                  .Str("tool", byTool ? tool.name : std::string("-"))
+                                                  .Str("caster", byTool ? tool.caster->GetName() : std::string("-"))
                                                   .Real("mana", manaPct).Real("line", manaLine)
                                                   .Real("lifeTapSec", tapSec).Real("drinkSec", drinkSec)
-                                                  .Real("innervateSec", innervateSec).Str("why", note));
-                            LOG_INFO("playerbots", "[lead955] {}: {}", bot->GetName(), note);
+                                                  .Real("toolSec", toolSec).Str("why", note));
+                            LOG_INFO("playerbots", "[{}] {}: {}", drainsOwn ? "lead955" : "lead1181", bot->GetName(),
+                                     note);
                         }
                         std::string const picked = way;
                         // the taps go while its health is at or above its health line; below it the healer's top-up
@@ -5440,10 +5423,16 @@ namespace Leader::Dungeon
                             Leader::Events::SetExternal(guid, tapSpell, ObjectGuid::Empty))
                             logEvent(bot, "External", JsonObject().Num("spell", tapSpell).Str("on", bot->GetName())
                                                           .Str("why", note));
-                        if (picked == "innervate" &&
-                            Leader::Events::SetExternal(innervator->GetGUID(), innervate, guid))
-                            logEvent(innervator, "External", JsonObject().Num("spell", innervate)
-                                                                 .Str("on", bot->GetName()).Str("why", note));
+                        if (byTool && tool.item &&
+                            Leader::Events::SetConsume(guid, tool.item, ObjectGuid::Empty, ObjectGuid::Empty, note))
+                            logEvent(bot, "Consume", JsonObject().Num("item", tool.item).Str("why", note));
+                        if (byTool && tool.spell &&
+                            Leader::Events::SetExternal(tool.caster->GetGUID(), tool.spell,
+                                                        tool.on ? tool.on->GetGUID() : ObjectGuid::Empty))
+                            logEvent(tool.caster, "External",
+                                     JsonObject().Num("spell", tool.spell)
+                                         .Str("on", tool.on ? tool.on->GetName() : tool.caster->GetName())
+                                         .Str("why", note));
                         if (picked != "drink")
                             needsRest = false;  // its mana comes on the move: no Rest
                     }

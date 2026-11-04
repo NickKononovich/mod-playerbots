@@ -12,6 +12,7 @@
 #include <cstring>
 #include <mutex>
 #include <set>  // [lead850]
+#include <tuple>  // [lead1182]
 #include <unordered_map>
 
 #include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
@@ -436,6 +437,20 @@ bool NoBossLeftOf(Player* bot)
     std::lock_guard<std::mutex> lock(manaRateLock);
     auto const found = bossPullSec.find(group->GetGUID().GetRawValue());
     return found != bossPullSec.end() && !found->second.bossLeft;
+}
+
+namespace
+{
+    std::unordered_map<uint64, bool> bossPulledShort;  // [lead1182] the member's last own boss line: pulled short
+}
+
+bool BossLinePulledShort(Player* bot)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    auto const found = bossPulledShort.find(bot->GetGUID().GetRawValue());
+    return found != bossPulledShort.end() && found->second;
 }
 
 float BossPullSecOf(Player* bot)
@@ -2087,7 +2102,84 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                        ? Acore::StringFormat("; on the fight's timeline {:.0f} % at {:.2f} %/s", burstLine, spread)
                        : Acore::StringFormat("; on the fight's timeline not even a full pool at {:.2f} %/s", spread);
     }
+    // [lead1182] user 2026-11-04 (Q63): the group does not stand while a damage caster drinks when its kill does not
+    // need that mana. The two costs lead525 weighs for a tool, for the shortfall itself: drinking it before the pull
+    // costs the group the wait it adds (nothing while it waits for someone else anyway); pulling without it costs the
+    // fight the rotation seconds that mana pays (shortfall over its spend rate), dealt by the others at the group's
+    // damage without its share - longer by those seconds x share / (1 - share). The cheaper one counts: pulled short,
+    // its line is the mana it has. Safety first: only a damage dealer (no healer, no tank: their mana is the fight's
+    // whole length), not a hunter (Aspect of the Viper is its dry rotation, credited above) nor a warlock (Life Tap,
+    // the leader's way), and only while every healer's and tank's mana covers the longer fight (their own lines for
+    // its seconds). Its share is never below an even one of the damage dealers' (a share measured while it was dry
+    // would make its mana look worth less)
+    std::string dryWhy;
+    if (credits && potion && drinkRate > 0.0f && rate > 0.0f && fightSec > 0.0f && !bot->IsInCombat() &&
+        bot->GetMaxPower(POWER_MANA) && !PlayerbotAI::IsHeal(bot) && !PlayerbotAI::IsTank(bot) &&
+        bot->getClass() != CLASS_HUNTER && bot->getClass() != CLASS_WARLOCK)
+    {
+        float const mana = bot->GetPowerPct(POWER_MANA);
+        float const shortPct = std::min(lineRaw, 100.0f) - mana;
+        uint32 const dealers = DamageDealers(bot);
+        float const share = std::max(DamageShare(bot, dealers), 1.0f / float(dealers));
+        if (shortPct > 0.0f && share < 1.0f)
+        {
+            float const drySec = std::min(shortPct / rate, fightSec);
+            float const extendSec = drySec * share / (1.0f - share);
+            float const ownDrinkSec = shortPct / drinkRate;
+            float const drinkWaitSec =
+                overlap ? std::max(otherWaitSec, ownDrinkSec) - otherWaitSec : ownDrinkSec;
+            if (extendSec < drinkWaitSec)
+            {
+                std::string uncovered;
+                if (Group* group = bot->GetGroup())
+                {
+                    bool const wasNested = nestedManaLine;
+                    nestedManaLine = true;
+                    float const longerSec = fightSec + extendSec;
+                    for (GroupReference* ref = group->GetFirstMember(); ref && uncovered.empty(); ref = ref->next())
+                    {
+                        Player* member = ref->GetSource();
+                        if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap() ||
+                            !member->GetMaxPower(POWER_MANA) || member->getPowerType() != POWER_MANA ||
+                            (!PlayerbotAI::IsHeal(member) && !PlayerbotAI::IsTank(member)))
+                            continue;
+                        float const needLonger =
+                            FightManaLine(member, longerSec, cost * longerSec / fightSec, nullptr, boss);
+                        if (member->GetPowerPct(POWER_MANA) < needLonger)
+                            uncovered = Acore::StringFormat("{} at {:.0f} % < {:.0f} % for {:.0f} s", member->GetName(),
+                                                            member->GetPowerPct(POWER_MANA), needLonger, longerSec);
+                    }
+                    nestedManaLine = wasNested;
+                }
+                dryWhy = Acore::StringFormat(
+                    "{:.0f} % short: {:.1f} s of its rotation x {:.0f} % share = the fight {:.1f} s longer vs {:.1f} s "
+                    "of the group's wait drinking",
+                    shortPct, drySec, share * 100.0f, extendSec, drinkWaitSec);
+                if (uncovered.empty())
+                {
+                    thread_local std::set<std::tuple<uint64, int32, bool>> dryLogged;
+                    if (dryLogged.size() > 4096)
+                        dryLogged.clear();
+                    if (!nestedManaLine &&
+                        dryLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec), boss}).second)
+                        LOG_INFO("playerbots", "[lead1182] {}: pulled short of its {} line {:.0f} -> {:.0f} % ({})",
+                                 bot->GetName(), boss ? "boss" : "trash", lineRaw, mana, dryWhy);
+                    lineRaw = mana;
+                    dryWhy = "pulled short [lead1182]: " + dryWhy;
+                }
+                else
+                    dryWhy = "drinks [lead1182]: " + dryWhy + "; not covered: " + uncovered;
+            }
+        }
+    }
+    if (boss && credits && potion && !nestedManaLine && !bot->IsInCombat())
+    {
+        std::lock_guard<std::mutex> lock(manaRateLock);
+        bossPulledShort[bot->GetGUID().GetRawValue()] = dryWhy.rfind("pulled short", 0) == 0;
+    }
     float const line = std::clamp(lineRaw, floorPct, 100.0f);
+    if (why && !dryWhy.empty())
+        timeline += "; " + dryWhy;
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? source : "spell data", fightSec, reserve,

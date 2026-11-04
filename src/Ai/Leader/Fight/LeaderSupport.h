@@ -66,6 +66,30 @@ std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecL
 // forwards to the caster (half the mana, split over every mob listing the receiver) takes the caster past its share
 // of the tank's threat (lead884's rule); empty: none
 std::string EnergizeSplitOvertakes(Player* receiver, Player* caster, Player* tank, uint32 mana);
+
+// [lead1181] user 2026-11-04 (Q63): before a member out of a fight sits to drink, the leader uses the group's mana
+// sources that work out of a fight - a druid's Innervate (on another member or on itself), a priest's Hymn of Hope
+// (the core gives it to the 3 members lowest on mana), a shaman's Mana Tide Totem (its tick's area), the member's own
+// Evocation / Dispersion, its mana gem - each held by the leader's cooldown verdict (`verdict`: on trash only when back
+// before the next boss pull). The way that brings `bot` the `needPct` (% of its max mana) in the fewest group seconds:
+// its cast (a channel or a totem's life: the group stands in it; an aura over time: its duration's share) plus the
+// drink at `drinkRate` %/s for what it leaves; sec < 0: no tool. A caster already told the same tool on another
+// member is no tool now (one order per fact)
+struct RestManaWay
+{
+    Player* caster = nullptr;
+    uint32 spell = 0;      // the caster's spell (its External), 0 with `item`
+    uint32 item = 0;       // a mana gem of `bot` itself (its Consume)
+    Player* on = nullptr;  // the External's target (Innervate's receiver); nullptr: the caster's own / its area
+    float sec = -1.0f;
+    std::string name;
+    std::string why;
+};
+// `recharge`: the seconds until the caster's spell is ready again once cast now (the leader's RechargeAfterCastSec)
+using CooldownVerdictFn = std::function<bool(float rechargeSec, float effectSec, std::string& why)>;
+using RechargeFn = std::function<float(Player* caster, uint32 spell)>;
+RestManaWay BestRestManaTool(Player* bot, std::vector<Player*> const& members, float needPct, float drinkRate,
+                             CooldownVerdictFn const& verdict, RechargeFn const& recharge);
 }  // namespace Leader::Support
 
 #endif

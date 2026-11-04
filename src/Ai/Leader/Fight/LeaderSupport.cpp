@@ -1347,4 +1347,131 @@ float MemberTakenPerSec(LeaderGroup& group, Player* member)
 {
     return member ? TakenPerSec(group.State().support, member, getMSTime() ? getMSTime() : 1) : 0.0f;
 }
+
+RestManaWay BestRestManaTool(Player* bot, std::vector<Player*> const& members, float needPct, float drinkRate,
+                             CooldownVerdictFn const& verdict, RechargeFn const& recharge)
+{
+    RestManaWay best;
+    if (!bot || needPct <= 0.0f || !bot->GetMaxPower(POWER_MANA))
+        return best;
+    std::vector<Player*> everyone = members;
+    if (std::find(everyone.begin(), everyone.end(), bot) == everyone.end())
+        everyone.push_back(bot);
+    std::string held;  // the last tool the cooldown verdict held (logged when none is allowed)
+    // the group seconds a tool of `gainPct` over `durationSec` after a cast of `castSec` takes to `needPct`: the
+    // lead955 Innervate rule - its duration's share when it covers the need, else its whole duration and the drink
+    // for what it leaves (no drink in the bags: no way)
+    auto const secOf = [&](float gainPct, float castSec, float durationSec) -> float
+    {
+        if (gainPct <= 0.0f)
+            return -1.0f;
+        float const left = needPct - gainPct;
+        if (left <= 0.0f)
+            return castSec + durationSec * needPct / gainPct;
+        return drinkRate > 0.0f ? castSec + durationSec + left / drinkRate : -1.0f;
+    };
+    auto const consider = [&](Player* caster, uint32 spell, Player* on, char const* name)
+    {
+        SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (!info || info->CheckShapeshift(caster->GetShapeshiftForm()) != SPELL_CAST_OK)
+            return;
+        // one order per fact: a caster told this tool on another member keeps it for that one
+        if (Leader::MemberEvents told; Leader::Events::Get(caster->GetGUID(), told) && told.externalSpell == spell &&
+                                       !told.externalTarget.IsEmpty() && on &&
+                                       told.externalTarget != on->GetGUID())
+            return;
+        float const gainPct = RestState::ManaToolPct(caster, bot, spell);
+        float const durationSec = std::max(info->GetMaxDuration(), 0) / 1000.0f;
+        if (gainPct <= 0.0f || durationSec <= 0.0f)
+            return;
+        float const castSec = std::max<uint32>(info->StartRecoveryTime, info->CalcCastTime(caster)) / 1000.0f;
+        float const sec = secOf(gainPct, info->IsChanneled() ? 0.0f : castSec, durationSec);
+        if (sec < 0.0f || (best.sec >= 0.0f && sec >= best.sec))
+            return;
+        std::string why;
+        if (!verdict(recharge(caster, spell), durationSec, why))
+        {
+            held = Acore::StringFormat("{} of {} {}", name, caster->GetName(), why);
+            return;
+        }
+        best.caster = caster;
+        best.spell = spell;
+        best.item = 0;
+        best.on = on;
+        best.sec = sec;
+        best.name = name;
+        best.why = Acore::StringFormat("{} {:.0f} % from {} over {:.0f} s, {}", name, gainPct, caster->GetName(),
+                                       durationSec, why);
+    };
+    // the 3 members lowest on mana (spell_pri_hymn_of_hope's pick)
+    std::vector<Player*> lowest;
+    for (Player* member : everyone)
+        if (member->IsAlive() && member->getPowerType() == POWER_MANA && member->GetMaxPower(POWER_MANA))
+            lowest.push_back(member);
+    std::sort(lowest.begin(), lowest.end(),
+              [](Player* a, Player* b) { return a->GetPowerPct(POWER_MANA) < b->GetPowerPct(POWER_MANA); });
+    if (lowest.size() > RestState::HYMN_OF_HOPE_TARGETS)
+        lowest.resize(RestState::HYMN_OF_HOPE_TARGETS);
+    bool const hymnReaches = std::find(lowest.begin(), lowest.end(), bot) != lowest.end();
+    for (Player* caster : everyone)
+    {
+        // a caster drinking keeps its drink; another member's druid is no tool while short of its own line
+        // (lead751); the member itself is one while it does not drink yet
+        if (!caster->IsAlive() || caster->IsInCombat() || (caster != bot && caster->IsSitState()))
+            continue;
+        if (uint32 const spell = Leader::Fight::LeaderReadySpell(caster, {RestState::SPELL_INNERVATE});
+            spell && (caster == bot || !caster->GetMaxPower(POWER_MANA) ||
+                      caster->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(caster)))
+            consider(caster, spell, bot, "Innervate");
+        if (hymnReaches)
+            if (uint32 const spell = Leader::Fight::LeaderReadySpell(caster, {RestState::SPELL_HYMN_OF_HOPE}))
+                consider(caster, spell, nullptr, "Hymn of Hope");
+        if (uint32 const spell = Leader::Fight::LeaderReadySpell(caster, {RestState::SPELL_MANA_TIDE_TOTEM}))
+            if (float const radius = RestState::ManaToolRadius(caster, spell);
+                radius <= 0.0f || bot->GetExactDist(caster) <= radius)
+                consider(caster, spell, nullptr, "Mana Tide Totem");
+        if (caster == bot)
+        {
+            if (uint32 const spell = Leader::Fight::LeaderReadySpell(caster, {RestState::SPELL_EVOCATION}))
+                consider(caster, spell, nullptr, "Evocation");
+            if (uint32 const spell = Leader::Fight::LeaderReadySpell(caster, {RestState::SPELL_DISPERSION}))
+                consider(caster, spell, nullptr, "Dispersion");
+        }
+    }
+    // the member's mana gem (its own cooldown, no potion slot): instant, by the same verdict on its item's recharge
+    if (uint32 amount = 0; uint32 const gem = RaidConsumables::FindManaGem(bot, amount))
+    {
+        float const gainPct = 100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA));
+        float const sec = secOf(gainPct, 0.0f, 0.0f);
+        float rechargeSec = 0.0f;
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(gem))
+            for (auto const& use : proto->Spells)
+                if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                {
+                    rechargeSec = std::max({rechargeSec, float(std::max(use.SpellCooldown, 0)) / 1000.0f,
+                                            float(std::max(use.SpellCategoryCooldown, 0)) / 1000.0f});
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(uint32(use.SpellId)))
+                        rechargeSec = std::max(rechargeSec,
+                                               std::max(info->RecoveryTime, info->CategoryRecoveryTime) / 1000.0f);
+                }
+        std::string why;
+        if (sec >= 0.0f && (best.sec < 0.0f || sec < best.sec))
+        {
+            if (verdict(rechargeSec, 0.0f, why))
+            {
+                best = RestManaWay();
+                best.caster = bot;
+                best.item = gem;
+                best.sec = sec;
+                best.name = "mana gem";
+                best.why = Acore::StringFormat("mana gem {:.0f} %, {}", gainPct, why);
+            }
+            else
+                held = "mana gem " + why;
+        }
+    }
+    if (!best.caster && !held.empty())
+        best.why = "held: " + held;
+    return best;
+}
 }  // namespace Leader::Support

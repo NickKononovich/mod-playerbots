@@ -319,6 +319,9 @@ float BossRotationRate(Player* bot, float fightSec, std::string* why = nullptr);
 void NoteBossPullSec(ObjectGuid group, float sec, bool bossLeft = true);
 // [lead990] that estimate now (the seconds since it was noted taken off), -1: none known / no boss left
 float BossPullSecOf(Player* bot);
+// [lead1182] the member's last own boss line (FightManaLine out of a fight) was pulled short: its kill does not
+// need the mana it lacks (the fight's longer seconds cost the group less than its drink)
+bool BossLinePulledShort(Player* bot);
 // [lead1083] the leader noted that no boss is left for the bot's group (false: a boss is left, or nothing noted)
 bool NoBossLeftOf(Player* bot);
 // [lead421] the mana per second (% of max mana) the best drink in the bot's bags gives; 0 without one
