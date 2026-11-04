@@ -123,6 +123,20 @@ bool CastUnstableAfflictionAction::isUseful()
     return CastDebuffSpellAction::isUseful();
 }
 
+// [rot453]
+uint32 ImmolateRefreshMs(PlayerbotAI* botAI, Player* bot)
+{
+    uint32 const id = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "immolate")->Get();
+    SpellInfo const* immolate = id ? sSpellMgr->GetSpellInfo(id) : nullptr;
+    return immolate ? immolate->CalcCastTime(bot) : IMMOLATE_REFRESH_MS;
+}
+
+bool CastImmolateAction::isUseful()
+{
+    beforeDuration = ImmolateRefreshMs(botAI, bot);
+    return CastDebuffSpellAction::isUseful();
+}
+
 // Checks if the bot has less than 26 soul shards, and if so, allows casting Drain Soul
 bool CastDrainSoulAction::isUseful()
 {

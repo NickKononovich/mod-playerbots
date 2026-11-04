@@ -224,6 +224,13 @@ class ImmolateTrigger : public DebuffTrigger
 public:
     ImmolateTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "immolate", 1, true, IMMOLATE_MIN_TARGET_LIFETIME, IMMOLATE_REFRESH_MS) {}
+
+    // [rot453] the refresh at the hasted cast time (ImmolateRefreshMs)
+    bool IsActive() override
+    {
+        beforeDuration = ImmolateRefreshMs(botAI, bot);
+        return DebuffTrigger::IsActive();
+    }
 };
 
 class ImmolateOnAttackerTrigger : public DebuffOnAttackerTrigger
@@ -241,6 +248,13 @@ public:
         : DebuffTrigger(botAI, "immolate", 1, true, DEMO_IMMOLATE_MIN_TARGET_LIFETIME, IMMOLATE_REFRESH_MS) {}
     std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }  // [rot400]
     std::string const getName() override { return "demo immolate"; }
+
+    // [rot453] the refresh at the hasted cast time (ImmolateRefreshMs)
+    bool IsActive() override
+    {
+        beforeDuration = ImmolateRefreshMs(botAI, bot);
+        return DebuffTrigger::IsActive();
+    }
 };
 
 // [b31_deep] Demonology multi-dot: wowsims demo APL keeps Corruption on the main target only (maxDots 1). Other

@@ -277,6 +277,11 @@ constexpr uint32 UNSTABLE_AFFLICTION_REFRESH_MS = 1500;  // [rot352] the unhaste
 // vs the sim's 3.3, 4704 a cast vs 8971.
 uint32 UnstableAfflictionRefreshMs(PlayerbotAI* botAI, Player* bot);
 constexpr uint32 IMMOLATE_REFRESH_MS = 2500;
+// [rot453] wowsims warlock__destro.apl.json row 4 / warlock__demo.apl.json: Immolate when its dot has less than its
+// (hasted) cast time left - the bot recast it at 2.5 s, so the new cast landed ~1 s before the last tick, which the
+// core then loses (Aura::RefreshTimers, as [rot352]). b238 rfc-h 5E Rtlocab: Immolate 4.1 a minute as the sim's,
+// 6022 / 6516 a cast vs the sim's 7383 / 7748 (82-84 %: one of its five ticks). IMMOLATE_REFRESH_MS without a spell id.
+uint32 ImmolateRefreshMs(PlayerbotAI* botAI, Player* bot);
 
 // A DoT is only applied when the target lives long enough (seconds, "estimated group dps") for it to out-damage
 // the filler cast it replaces; on a dying target the warlock keeps casting the filler / Drain Soul instead.
@@ -343,6 +348,8 @@ public:
     {
         beforeDuration = IMMOLATE_REFRESH_MS;
     }
+
+    bool isUseful() override;  // [rot453] the refresh at the hasted cast time
 };
 
 class CastImmolateOnAttackerAction : public CastDebuffSpellOnAttackerAction
