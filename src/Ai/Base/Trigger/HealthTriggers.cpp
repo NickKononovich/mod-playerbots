@@ -16,6 +16,7 @@
 
 #include "AKTriggers.h"   // [b47_patrol] AKJedogaRoom::OwnsPull
 #include "Bag.h"          // [lead177] the drinks in the bags
+#include "DBCStores.h"    // [lead1038] GetTalentSpellPos
 #include "BuyAction.h"    // [lead177] RESTOCK_SPELL_CATEGORY_DRINK
 #include "ANTriggers.h"   // [b47_patrol] ANWatcherRoom::OwnsPull / HoldsRally
 #include "CoSTriggers.h"  // [b33_cos] CoSHelpers::IsGuardianTimerRunning (timed run rest lines)
@@ -864,6 +865,13 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
                 continue;
             if (uint32 const next = sSpellMgr->GetNextSpellInChain(spellId); next && bot->HasSpell(next))
                 continue;  // a lower rank
+            // [lead1038] b230 rfc-h 5D: the arcane mage's line read "Living Bomb 718 / 12 s" (7.04 %/s nonstop
+            // against 1.29 %/s measured) - Living Bomb is the fire tree's talent, its higher ranks stay in the spell
+            // book of a member whose active spec has not that talent (the core keeps them). A spell whose first rank
+            // is a talent the active spec does not have is no spell of its rotation (wowsims arcane never casts it)
+            if (SpellInfo const* first = info->GetFirstRankSpell();
+                first && GetTalentSpellPos(first->Id) && !bot->HasTalent(first->Id, bot->GetActiveSpec()))
+                continue;
             if (info->IsPositive())
             {
                 if (std::max(info->RecoveryTime, info->CategoryRecoveryTime) > 0)
