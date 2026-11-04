@@ -76,6 +76,7 @@
 #include "Spell.h"
 #include "SpellAuraEffects.h"  // [lead852] the member's periodic damage on a mob
 #include "SpellAuras.h"
+#include "SpellPayoff.h"  // [lead1161] the boss dots' tick rate
 #include "Strategy.h"  // [lead1101] the rotation's default actions
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -7700,6 +7701,123 @@ namespace Leader::Dungeon
                     // Unit::IsImmunedToDamageOrSchool); an immune one only when no other is (its spot then reads the
                     // reach of the spells that hurt it, LeaderCastReach)
                     bool const schoolFirst = PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
+                    // [lead1161] b240 rfc-h: with adds first in the boss's kill order (lead1085: 141 of 151 orders)
+                    // the dot casters' boss dots landed 5-14 s into the fight (5D affliction's Haunt and 5E destro's
+                    // Seed on the adds, Immolate on the boss at ~11 s). The kill order's exchange rule (the least
+                    // damage taken) holds for the group's direct damage; a dot on the boss is not a share of it - it
+                    // runs from its cast to the boss's death however the adds go, so every second it waits for the
+                    // adds is its tick rate lost (SpellPayoff: tick / amplitude with the caster's spell power, crit
+                    // and haste). Dotting the boss first delays the adds by the dots' execute time times the caster's
+                    // share of the group's dps, and the adds hit their victim that much longer. A ranged dot caster
+                    // opens on the boss with the rotation's dots it has ready and not on him when, as the hazard rule
+                    // judges a stay (lead780): the dots' gain over the adds' seconds to kill beats that extra damage
+                    // taken, every add ahead of the boss is on the tank (nobody else takes it), the healers' rate
+                    // covers the tank's damage taken and the tank outlives that delay plus a healer's gap between
+                    // two heals. The kill order stands for everything else: once its dots are up, the adds
+                    Unit* dotBoss = nullptr;
+                    if (!lead.bossOrderFirst.IsEmpty() && !lead.looseIsTarget && PlayerbotAI::IsRanged(bot) &&
+                        !PlayerbotAI::IsHeal(bot))
+                    {
+                        Unit* boss = nullptr;
+                        std::vector<Unit*> ahead;
+                        for (ObjectGuid const& next : killOrder)
+                        {
+                            Unit* mob = ObjectAccessor::GetUnit(*tank, next);
+                            if (!mob || !mob->IsAlive())
+                                continue;
+                            if (mob->ToCreature() && mob->ToCreature()->IsDungeonBoss())
+                            {
+                                boss = mob;
+                                break;
+                            }
+                            ahead.push_back(mob);
+                        }
+                        PlayerbotAI* dotAI = GET_PLAYERBOT_AI(bot);
+                        PlayerbotAI* dotTankAI = GET_PLAYERBOT_AI(tank);
+                        bool const tankHolds = boss && !ahead.empty() && boss->IsInCombat() &&
+                                               boss->GetVictim() == tank &&
+                                               std::all_of(ahead.begin(), ahead.end(),
+                                                           [&](Unit* mob) { return mob->GetVictim() == tank; });
+                        float const groupDps =
+                            dotTankAI ? dotTankAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get()
+                                      : 0.0f;
+                        if (tankHolds && dotAI && groupDps > 0.0f)
+                        {
+                            float addsSec = 0.0f;   // the adds' seconds to kill at the group's dps
+                            float addsHits = 0.0f;  // what they deal the tank a second
+                            for (Unit* mob : ahead)
+                            {
+                                float part = 0.0f;
+                                addsSec += float(mob->GetHealth()) / groupDps;
+                                addsHits += AttackerDps(mob, tank, part);
+                            }
+                            float gain = 0.0f;
+                            float executeSec = 0.0f;
+                            std::string dots;
+                            for (char const* name : LeaderRotationSpellNames(bot))
+                            {
+                                uint32 const id =
+                                    dotAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+                                SpellInfo const* info = id ? sSpellMgr->GetSpellInfo(id) : nullptr;
+                                SpellPayoff::Cast cast;
+                                if (!info || info->IsPositive() || info->GetMaxDuration() <= 0 ||
+                                    info->IsAffectingArea() || bot->HasSpellCooldown(id) ||
+                                    boss->GetAura(id, bot->GetGUID()) || !SpellPayoff::Read(bot, boss, id, cast) ||
+                                    !cast.amplitudeMs || cast.tick <= 0.0f)
+                                    continue;
+                                gain += cast.tick / (float(cast.amplitudeMs) / 1000.0f) * addsSec;
+                                executeSec += cast.executeMs / 1000.0f;
+                                dots += (dots.empty() ? "" : ", ") + std::string(name);
+                            }
+                            float const own = GroupDamage::MemberSustainedDps(bot);
+                            float const delaySec = executeSec * (own > 0.0f ? std::min(own / groupDps, 1.0f) : 1.0f);
+                            float const extraTaken = addsHits * delaySec;
+                            float onTank = 0.0f;
+                            for (Unit* attacker : tank->getAttackers())
+                                if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank)
+                                {
+                                    float part = 0.0f;
+                                    onTank += AttackerDps(attacker, tank, part);
+                                }
+                            float const taken = std::max(Leader::Support::MemberTakenPerSec(group, tank), onTank);
+                            float hps = 0.0f;
+                            float gapSec = 0.0f;
+                            for (Player* member : seats)
+                                if (member->IsAlive() && PlayerbotAI::IsHeal(member))
+                                {
+                                    RestState::HealerFacts const facts = RestState::HealerThroughput(member, tank);
+                                    hps += facts.hps;
+                                    gapSec = gapSec > 0.0f ? std::min(gapSec, facts.gapSec) : facts.gapSec;
+                                }
+                            bool const survives = float(tank->GetHealth()) > taken * (delaySec + gapSec);
+                            bool const pays = !dots.empty() && gain > extraTaken && hps >= taken && survives;
+                            if (pays)
+                                dotBoss = boss;
+                            thread_local std::map<std::pair<uint64, uint64>, std::string> dotLogged;
+                            if (dotLogged.size() > 4096)
+                                dotLogged.clear();
+                            std::string& logged =
+                                dotLogged[{bot->GetGUID().GetRawValue(), boss->GetGUID().GetRawValue()}];
+                            std::string const verdict = (pays ? "opens on " : "keeps the kill order, not ") + dots;
+                            if (!dots.empty() && logged != verdict)
+                            {
+                                logged = verdict;
+                                LOG_INFO("playerbots",
+                                         "[lead1161] {}: {} on {}: the dots gain {:.0f} over the adds' {:.1f} s vs "
+                                         "{:.0f} more taken ({:.0f}/s x {:.1f} s delay); tank {:.0f} health vs "
+                                         "{:.0f}/s x {:.1f} s, heals {:.0f}/s",
+                                         bot->GetName(), verdict, boss->GetName(), gain, addsSec, extraTaken, addsHits,
+                                         delaySec, float(tank->GetHealth()), taken, delaySec + gapSec, hps);
+                                Decisions().Write(run, "leader", "boss_dot_opener", boss->GetGUID(), boss->GetName(),
+                                                  true,
+                                                  JsonObject().Str("member", bot->GetName()).Str("dots", dots)
+                                                      .Bool("opens", pays).Real("gain", gain).Real("addsSec", addsSec)
+                                                      .Real("extraTaken", extraTaken).Real("delaySec", delaySec)
+                                                      .Real("tankTaken", taken).Real("heals", hps)
+                                                      .Str("why", "[lead1161] boss dots first when they pay"));
+                            }
+                        }
+                    }
                     Unit* mine = nullptr;
                     for (uint8 pass = 0; pass < 8; ++pass)
                     {
@@ -7723,7 +7841,10 @@ namespace Leader::Dungeon
                         // per fact)
                         // [lead1085] in a boss fight the computed first mob goes before the held target once
                         // it is in reach (a melee member: its melee reach; ranged: its cast reach and sight)
-                        if (!lead.bossOrderFirst.IsEmpty() && !lead.looseIsTarget)
+                        // [lead1161] the boss for the dots that pay there first
+                        if (dotBoss && pickHere(dotBoss) && MemberCastsHere(bot, dotBoss))
+                            mine = dotBoss;
+                        if (!mine && !lead.bossOrderFirst.IsEmpty() && !lead.looseIsTarget)
                             if (Unit* first = ObjectAccessor::GetUnit(*tank, lead.bossOrderFirst);
                                 first && first->IsAlive() && first->IsInCombat() && pickHere(first) &&
                                 (splashes ? bot->IsWithinMeleeRange(first) : MemberCastsHere(bot, first)))
