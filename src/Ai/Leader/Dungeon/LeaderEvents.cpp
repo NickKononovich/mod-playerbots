@@ -1836,8 +1836,9 @@ namespace Leader::Dungeon
                             { return mob->ToCreature() && mob->ToCreature()->IsDungeonBoss(); }))
             {
                 PlayerbotAI* orderAI = GET_PLAYERBOT_AI(tank);
-                float const dps = std::max(
-                    1.0f, orderAI ? orderAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f);
+                float const estimated =
+                    orderAI ? orderAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
+                float const dps = std::max(1.0f, estimated);
                 std::map<Unit*, float> ratio;
                 for (Unit* mob : fightingMobs)
                 {
