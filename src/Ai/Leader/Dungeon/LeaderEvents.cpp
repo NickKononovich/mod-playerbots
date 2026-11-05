@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "LeaderEvents.h"
+#include "LeaderBuffing.h"  // [lead1333] BuffPassSec
 
 #include "AggressiveTargetValue.h"
 #include "AiObjectContext.h"
@@ -2082,6 +2083,19 @@ namespace Leader::Dungeon
                                            lead.bossPullPartsSec >= 0.0f ? lead.bossPullPartsSec : lead.bossPullSec,
                                            lead.bossLeft);
         };
+        // [lead1333] the buff pass the group waits anyway before its next pull: the boss gate prices a caster's drink
+        // only beyond it (RestState::GroupWaitSecOf in FightManaLine)
+        if (!fighting)
+            if (Group* tankGroup = tank->GetGroup())
+            {
+                std::vector<Player*> buffed;
+                for (Player* bot : seats)
+                    if (bot->IsAlive() && !bot->IsInCombat())
+                        buffed.push_back(bot);
+                if (tank->IsAlive())
+                    buffed.push_back(tank);
+                RestState::NoteGroupWaitSec(tankGroup->GetGUID(), BuffPassSec(group, buffed, tank));
+            }
 
         // the fight's rules around the target: the kill order (the target, then the rest of what fights the group,
         // nearest to the target first), the AoE rule, the intensity, the casting mobs

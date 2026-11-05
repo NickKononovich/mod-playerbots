@@ -437,6 +437,30 @@ void NoteBossPullSec(ObjectGuid group, float sec, bool bossLeft)
     bossPullSec[group.GetRawValue()] = {sec, getMSTime(), bossLeft};
 }
 
+namespace
+{
+    std::unordered_map<uint64, std::pair<float, uint32>> groupWaitSec;  // [lead1333] by group, under manaRateLock
+}
+
+void NoteGroupWaitSec(ObjectGuid group, float sec)
+{
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    groupWaitSec[group.GetRawValue()] = {sec, getMSTime()};
+}
+
+float GroupWaitSecOf(Player* bot)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    if (!group)
+        return 0.0f;
+    std::lock_guard<std::mutex> lock(manaRateLock);
+    auto const found = groupWaitSec.find(group->GetGUID().GetRawValue());
+    if (found == groupWaitSec.end())
+        return 0.0f;
+    // the wait as it stands now: the seconds gone since the leader noted it are part of it
+    return std::max(found->second.first - getMSTimeDiff(found->second.second, getMSTime()) / 1000.0f, 0.0f);
+}
+
 bool NoBossLeftOf(Player* bot)
 {
     Group* group = bot ? bot->GetGroup() : nullptr;
@@ -1816,6 +1840,22 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             }
             nestedManaLine = false;
         }
+    // [lead1333] user 2026-11-05 (Q70, delegated): the boss gate prices a drink only by the wait it adds beyond what
+    // the group waits anyway - the other members' rest lines (above), the buff pass's casts still to give and the
+    // ready check (answered on receipt: none). lead1328 (b256): the drink was read as the group's whole wait while
+    // the buff pass ran beside it. The longer of the two waits is the group's (the pass's givers cast while the
+    // sitters drink: they overlap)
+    float rested = otherWaitSec;
+    float passSec = 0.0f;
+    if (overlap && boss)
+    {
+        passSec = GroupWaitSecOf(bot);
+        if (passSec > otherWaitSec)
+        {
+            otherWaitSec = passSec;
+            waitFor = "the buff pass";
+        }
+    }
     // the group wait the drink of `pct` adds (-1: no drink in the bags, the tool it is)
     auto const drinkCost = [&](float pct) -> float
     {
@@ -1831,6 +1871,9 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     };
     if (overlap && otherWaitSec > 0.0f)
         pick += Acore::StringFormat("the group waits {:.1f} s for {} anyway", otherWaitSec, waitFor);
+    if (overlap && boss && (rested > 0.0f || passSec > 0.0f))  // [lead1333] its parts, for the triage
+        pick += Acore::StringFormat("{}[lead1333] extra wait only: rests {:.1f} s, buff pass {:.1f} s, ready check 0 s",
+                                    pick.empty() ? "" : "; ", rested, passSec);
     // [lead634] b218 rfc-h 5D 232.3-247.5 s: Oggleflint's pull held for "Rtmagac at 1 % mana (needs 60 %)" - its
     // Evocation (cast 162.1 s, 120 s recharge) was back at 282 s, 33 s into his 45 s fight (pulled 249.3 s; the leader
     // told it there at 282.7 s), and the line counted none of its 60 %: the mage drank 15 s. A cooldown that is back

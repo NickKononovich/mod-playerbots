@@ -825,4 +825,27 @@ namespace Leader::Dungeon
     {
         return leader ? MissingGivableBuffs(group, players, leader) : std::string();
     }
+
+    float BuffPassSec(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
+    {
+        if (!leader)
+            return 0.0f;
+        std::vector<BuffOrder> orders;
+        MissingGivableBuffs(group, players, leader, &orders);
+        std::map<ObjectGuid, float> perGiver;
+        for (BuffOrder const& order : orders)
+        {
+            Player* giver = ObjectAccessor::FindPlayer(order.caster);
+            SpellInfo const* info = order.spell ? sSpellMgr->GetSpellInfo(order.spell) : nullptr;
+            if (!giver || !info)
+                continue;
+            // its cast, at least its global cooldown (spell data: StartRecoveryTime)
+            perGiver[order.caster] +=
+                float(std::max<uint32>(info->CalcCastTime(giver), info->StartRecoveryTime)) / 1000.0f;
+        }
+        float slowest = 0.0f;
+        for (auto const& [giver, sec] : perGiver)
+            slowest = std::max(slowest, sec);
+        return slowest;
+    }
 }

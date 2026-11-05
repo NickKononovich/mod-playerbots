@@ -319,6 +319,12 @@ float BossRotationRate(Player* bot, float fightSec, std::string* why = nullptr);
 void NoteBossPullSec(ObjectGuid group, float sec, bool bossLeft = true);
 // [lead990] that estimate now (the seconds since it was noted taken off), -1: none known / no boss left
 float BossPullSecOf(Player* bot);
+// [lead1333] the leader notes the seconds its group waits before its next pull anyway besides the members' rests:
+// the buff pass's casts still to give (each giver's buffs x its cast or global cooldown, the slowest giver); the
+// ready check adds none (the bots answer it on receipt, LeaderBuffing READY_REPLY_ON_RECEIPT)
+void NoteGroupWaitSec(ObjectGuid group, float sec);
+// [lead1333] that wait now (the seconds since it was noted taken off), 0: none known
+float GroupWaitSecOf(Player* bot);
 // [lead1182] the member's last own boss line (FightManaLine out of a fight) was pulled short: its kill does not
 // need the mana it lacks (the fight's longer seconds cost the group less than its drink)
 bool BossLinePulledShort(Player* bot);

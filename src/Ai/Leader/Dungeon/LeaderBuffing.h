@@ -36,6 +36,9 @@ namespace Leader::Dungeon
     // [lead775] the buffs the group can give now that are not on every member they are for (lasting the next
     // fight): "<member> <buff>, ..."; empty: all present
     std::string GivableBuffsMissing(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
+    // [lead1333] the seconds the buff pass still takes: each giver's missing buffs x its cast (at least its global
+    // cooldown, spell data), the slowest giver - the group waits that anyway before its next pull
+    float BuffPassSec(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
 }
 
 #endif
