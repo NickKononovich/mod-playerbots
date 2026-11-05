@@ -422,6 +422,17 @@ void TickResurrect(LeaderGroup& group, Player* tank, std::vector<Player*> const&
         it = deadNow.count(it->second) ? std::next(it) : st.resFailed.erase(it);
     for (auto it = st.resNoneLogged.begin(); it != st.resNoneLogged.end();)
         it = deadNow.count(*it) ? std::next(it) : st.resNoneLogged.erase(it);
+    // [lead1367] a member up again (or released: no body left here): its resurrection verdict ends
+    for (auto it = st.resVerdicts.begin(); it != st.resVerdicts.end();)
+    {
+        if (deadNow.count(*it))
+        {
+            ++it;
+            continue;
+        }
+        RaidLeader::SetResurrectVerdict(*it, RaidLeader::ResurrectVerdict::Unknown);
+        it = st.resVerdicts.erase(it);
+    }
     std::map<ObjectGuid, ObjectGuid> kept;
     for (auto const& [deadGuid, caster] : st.resurrecters)
         if (deadNow.count(deadGuid))
@@ -460,6 +471,40 @@ void TickResurrect(LeaderGroup& group, Player* tank, std::vector<Player*> const&
         for (Player* bot : candidates)
             if (!picked && (spell = spellOf(bot)))
                 picked = bot;
+        // [lead1367] user 2026-11-05 (b259 rfc-h 5H-8): no elapsed-time release ("dead 160 s ... no resurrection
+        // came"). The body waits while a resurrection can come to it: a living member on its map that knows a
+        // resurrection, has not reported that it cannot cast it on this body (resFailed) and has a walk to it - its
+        // mana, cooldown or fight now only delay it (it drinks, the fight ends). None left: the dead member releases
+        // and runs back (AutoReleaseSpiritAction reads the verdict)
+        bool comes = picked != nullptr;
+        for (Player* bot : candidates)
+        {
+            if (comes)
+                break;
+            if (!bot || !bot->IsAlive() || bot->GetMap() != body->GetMap() ||
+                st.resFailed.count({bot->GetGUID(), body->GetGUID()}))
+                continue;
+            bool knows = false;
+            for (uint32 firstRank : RESURRECT_SPELLS)
+                knows = knows || KnownRank(bot, firstRank);
+            comes = knows && Leader::Route(bot, body->GetPosition()).found;
+        }
+        RaidLeader::ResurrectVerdict const verdict =
+            comes ? RaidLeader::ResurrectVerdict::Comes : RaidLeader::ResurrectVerdict::Cannot;
+        if (RaidLeader::GetResurrectVerdict(body) != verdict)
+        {
+            RaidLeader::SetResurrectVerdict(body->GetGUID(), verdict, tank->GetGUID());
+            Decisions().Write(group.Run(), "leader", "resurrect_verdict", body->GetGUID(), body->GetName(), true,
+                              JsonObject()
+                                  .Str("dead", body->GetName())
+                                  .Str("verdict", comes ? "comes" : "none")
+                                  .Str("why", comes ? (picked ? "a resurrecter is picked"
+                                                              : "a member that can raise it reaches it")
+                                                    : "no living member that knows a resurrection and has not "
+                                                      "reported it cannot cast it reaches the body: it releases")
+                                  .Str("tag", "[lead1367]"));
+        }
+        st.resVerdicts.insert(body->GetGUID());
         if (!picked)
         {
             if (st.resNoneLogged.insert(body->GetGUID()).second)

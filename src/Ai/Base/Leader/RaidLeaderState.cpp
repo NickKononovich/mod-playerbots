@@ -712,4 +712,50 @@ namespace RaidLeader
         auto const itr = orders.resurrectFirst.find(group->GetGUID());
         return itr == orders.resurrectFirst.end() ? ObjectGuid::Empty : itr->second;
     }
+
+    namespace
+    {
+        struct ResurrectVerdicts
+        {
+            std::mutex lock;
+            std::unordered_map<ObjectGuid, std::pair<ResurrectVerdict, ObjectGuid>> byBody;  // verdict, judge
+        };
+
+        ResurrectVerdicts& Verdicts()
+        {
+            static ResurrectVerdicts verdicts;
+            return verdicts;
+        }
+    }
+
+    void SetResurrectVerdict(ObjectGuid body, ResurrectVerdict verdict, ObjectGuid judge)
+    {
+        ResurrectVerdicts& verdicts = Verdicts();
+        std::lock_guard<std::mutex> guard(verdicts.lock);
+        if (verdict == ResurrectVerdict::Unknown)
+            verdicts.byBody.erase(body);
+        else
+            verdicts.byBody[body] = {verdict, judge};
+    }
+
+    ResurrectVerdict GetResurrectVerdict(Player* body)
+    {
+        if (!body)
+            return ResurrectVerdict::Unknown;
+        ResurrectVerdict verdict = ResurrectVerdict::Unknown;
+        ObjectGuid judge;
+        {
+            ResurrectVerdicts& verdicts = Verdicts();
+            std::lock_guard<std::mutex> guard(verdicts.lock);
+            auto const itr = verdicts.byBody.find(body->GetGUID());
+            if (itr == verdicts.byBody.end())
+                return ResurrectVerdict::Unknown;
+            verdict = itr->second.first;
+            judge = itr->second.second;
+        }
+        Player* const judging = judge.IsEmpty() ? nullptr : ObjectAccessor::FindPlayer(judge);
+        if (!judging || !judging->IsAlive() || judging->GetMap() != body->GetMap())
+            return ResurrectVerdict::Unknown;
+        return verdict;
+    }
 }

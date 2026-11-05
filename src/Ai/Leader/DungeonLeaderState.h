@@ -615,6 +615,7 @@ namespace Leader
             std::map<ObjectGuid, ObjectGuid> resurrecters;  // dead member -> its resurrecter (out of a fight)
             std::set<std::pair<ObjectGuid, ObjectGuid>> resFailed;  // (resurrecter, dead) refused for this death
             std::set<ObjectGuid> resNoneLogged;  // dead members nobody can raise, logged once per death
+            std::set<ObjectGuid> resVerdicts;    // [lead1367] dead members with a published resurrection verdict
             ObjectGuid prepotBoss;                // the boss the pre-pull potions are for
             std::set<ObjectGuid> prepotDone;      // members done (used it, have none, or refused) for that boss
             ObjectGuid prepopBoss;                // [lead774] the boss the cat's pre-pull Berserk is for

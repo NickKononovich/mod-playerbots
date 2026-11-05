@@ -172,6 +172,20 @@ namespace RaidLeader
     // "res <name>": the member the resurrecters take first, cleared once it is alive.
     void SetResurrectFirst(Player* member, ObjectGuid target);
     ObjectGuid GetResurrectFirst(Player* member);
+
+    // [lead1367] the leader's verdict, out of a fight, on whether a resurrection can come to a dead member's body:
+    // Unknown - no leader judges it (the release keeps its own rules); Comes - a living member that knows a
+    // resurrection and has not reported it cannot cast it on the body reaches the body; Cannot - no such member.
+    enum class ResurrectVerdict : uint8
+    {
+        Unknown,
+        Comes,
+        Cannot
+    };
+    // `judge`: the member whose leader tick judged it (the tank the leader's tick runs for); Unknown erases it
+    void SetResurrectVerdict(ObjectGuid body, ResurrectVerdict verdict, ObjectGuid judge = ObjectGuid::Empty);
+    // Unknown too once the judge is no longer alive on the body's map (its tick, which keeps the verdict, stopped)
+    ResurrectVerdict GetResurrectVerdict(Player* body);
 }
 
 #endif

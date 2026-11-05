@@ -259,23 +259,28 @@ bool AutoReleaseSpiritAction::isUseful()
         return ReleaseDelayElapsed();
     }
 
-    // [b47_plan] The honest end of every wait: in a dungeon a resurrection that has not come within
-    // INSTANCE_NO_RES_MAX_MS of the death will not come (a resurrecter stuck behind a closed door, in a phantom fight,
-    // or casting into a line of sight it never gets: strat-h 20261026-104908-strat-h-5B-2, 170 s of "no line of
-    // sight" Redemptions). The bot releases and runs back as a ghost, as a player would.
-    if (bot->GetGroup() && bot->GetMap()->IsDungeon() && !bot->isResurrectRequested() &&
-        GetMSTimeDiffToNow(_deadSince) >= INSTANCE_NO_RES_MAX_MS &&
-        !(instance && instance->IsEncounterInProgress()) && nobodyHit())
+    // [lead1367] user 2026-11-05 (no elapsed-time rule decides): b259 rfc-h 5H-8 the mage's body lay 219 s on "dead
+    // 160 s in a dungeon, no resurrection came" while the leader had dropped every resurrecter (each reported its
+    // cast failed). The leader judges, out of a fight, whether a resurrection can come to the body (a living member
+    // that knows one, has not reported it cannot cast it here and has a walk to it): while one can, the body waits
+    // for it - no clock ends that wait; once none can, it releases at once (no encounter in progress, nobody of
+    // the group hit) and runs back. A Soulstone / Reincarnation keeps the rules below (its own self resurrection)
+    RaidLeader::ResurrectVerdict const verdict = RaidLeader::GetResurrectVerdict(bot);
+    if (bot->GetGroup() && bot->GetMap()->IsDungeon() && verdict != RaidLeader::ResurrectVerdict::Unknown &&
+        !bot->GetUInt32Value(PLAYER_SELF_RES_SPELL))
     {
+        if (bot->isResurrectRequested() || verdict == RaidLeader::ResurrectVerdict::Comes ||
+            (instance && instance->IsEncounterInProgress()) || !nobodyHit())
+            return false;
         thread_local std::unordered_map<uint64, uint32> loggedFor;  // per dead bot, the death it was logged for
         uint32& logged = loggedFor[bot->GetGUID().GetRawValue()];
         if (logged != _deadSince)
         {
             logged = _deadSince;
-            LOG_INFO("playerbots", "[b47_plan] release_no_res: {} dead {} s in a dungeon, no resurrection came: "
-                     "releases and runs back", bot->GetName(), GetMSTimeDiffToNow(_deadSince) / IN_MILLISECONDS);
+            LOG_INFO("playerbots", "[lead1367] release_no_res: {} dead in a dungeon, the leader finds no member that "
+                     "can resurrect it reach it: releases and runs back", bot->GetName());
         }
-        return ReleaseDelayElapsed();
+        return true;
     }
 
     if (bot->GetGroup() && bot->GetMap()->IsDungeon() && GetMSTimeDiffToNow(_deadSince) >= INSTANCE_DEAD_MAX_MS &&
