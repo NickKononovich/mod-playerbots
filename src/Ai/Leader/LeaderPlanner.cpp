@@ -25,6 +25,7 @@
 #include "InstanceScript.h"
 #include "KillOrder.h"
 #include "LeaderFightChecks.h"  // [lead1240] LeaderCastsFrom
+#include "LeaderHazardVerdict.h"  // [lead1362] InstanceDamageFactor
 #include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
 #include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
 #include "LootObjectStack.h"
@@ -403,8 +404,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // against the tank's real mitigation and the group's throughput. Waves 6-8: a heroic tank chain pulled 22-32
     // mobs in Stratholme and Scholomance and the group wiped, while packs of 3-5 went through. [lead257] The melee is
     // read through the game's own attack table and armor (MeleeTakenShare, ArmorReduction) and the spells from the
-    // mob's spell data (GetMobSpells); the rescale's spell factor and what the spells really land on the tank (a
-    // caster casts on others too, is interrupted and controlled) come in by the measured spell ratio of the dungeon.
+    // mob's spell data (GetMobSpells, [lead1362] with the rescale's factor); what the spells really land on the
+    // tank (a caster casts on others too, is interrupted and controlled) comes in by the dungeon's measured ratio.
     // [lead258] What the healers heal (rate, health per mana, the gap between two heals) is read from their spells
     // and the dungeon's measured healing per mana (RestState::HealerThroughput, GroupSupport).
     // Measured careful pulls: [lead259] (a) the tank survives: its deepest drop over the pull (the estimate's lives
@@ -4067,17 +4068,27 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // spell list (at the fastest the spell's own cooldown or cast lets it), each cast's school damage and periodic
     // damage at the mob's level (SpellEffectInfo::CalcValue) in a magic school (a physical one is melee: armor
     // reduces it). Spells of a fixed count per fight (once, at a health percent) do not repeat and are left out; the
-    // measured spell ratio of this dungeon (LandedCalibration) corrects the rest, the rescale's spell factor too.
+    // measured spell ratio of this dungeon (LandedCalibration) corrects the rest; [lead1362] the rescale's factor
+    // is read from its own hooks.
     struct MobSpells
     {
         float dps = 0.0f;
         float castShare = 0.0f;  // the share of the fight it spends casting: no swing meanwhile
     };
 
+    // [lead1362] b258 rfc-h 5E-5: Bazzalan's Deadly Poison (2818, 6 a tick at its level) landed 25615 on the tank
+    // against a template of 542 (47 x): mod-raid-rescale multiplies a creature's spells by its map / difficulty /
+    // entry / spell factor (raid_rescale_map: Ragefire Chasm heroic x30) in its UnitScript hooks, and the template
+    // read the spell data alone, so every boss line and pack cost read RFC-H's spells at a 30th. Each damage effect is
+    // read through the rescale's own hooks (HazardVerdict::InstanceDamageFactor: a hit, or a periodic tick); the
+    // cache is keyed by the map and its difficulty too (the factors are per map and spawn mode)
     MobSpells const& GetMobSpells(Creature* creature)
     {
-        thread_local std::unordered_map<uint64, MobSpells> cache;  // by entry and level, per map thread
-        uint64 const key = (uint64(creature->GetEntry()) << 8) | creature->GetLevel();
+        // by entry, map, spawn mode and level, per map thread
+        thread_local std::unordered_map<uint64, MobSpells> cache;
+        Map const* map = creature->FindMap();
+        uint64 const key = (uint64(creature->GetEntry()) << 32) | (uint64(creature->GetMapId() & 0xFFFF) << 16) |
+                           (uint64(map ? map->GetSpawnMode() : 0) << 8) | creature->GetLevel();
         if (auto const found = cache.find(key); found != cache.end())
             return found->second;
 
@@ -4092,10 +4103,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             for (SpellEffectInfo const& effect : info->GetEffects())
             {
                 if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
-                    damage += float(std::max(effect.CalcValue(creature), 0));
+                    damage += float(std::max(effect.CalcValue(creature), 0)) *
+                              Leader::HazardVerdict::InstanceDamageFactor(creature, info, false);  // [lead1362]
                 else if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
                          effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
                     damage += float(std::max(effect.CalcValue(creature), 0)) *
+                              Leader::HazardVerdict::InstanceDamageFactor(creature, info, true) *  // [lead1362]
                               float(std::max(info->GetMaxDuration(), 0)) / float(effect.Amplitude);
             }
             if (damage <= 0.0f)
@@ -4128,6 +4141,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         }
 
         spells.castShare = std::min(spells.castShare, 1.0f);
+        // [lead1362] out of the world the rescale's hooks give no factor: not cached
+        if (!creature->IsInWorld())
+        {
+            thread_local MobSpells uncached;
+            uncached = spells;
+            return uncached;
+        }
         return cache.emplace(key, spells).first->second;
     }
 
@@ -6117,7 +6137,16 @@ float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
 
 bool PullReadiness::MemberNeedsManaPotion(Player* member, Unit* boss)
 {
-    return member && boss && RestState::NeedsManaPotion(member, NextPullSec(member, boss));
+    if (!member || !boss)
+        return false;
+    float const bossSec = NextPullSec(member, boss);
+    // [lead1362] the same heal cost as the boss line (a healer's need without it is its rate alone)
+    return RestState::NeedsManaPotion(member, bossSec, BossFightCost(member, boss, bossSec));
+}
+
+float PullReadiness::MemberBossFightCost(Player* member, Unit* boss, float fightSec)
+{
+    return BossFightCost(member, boss, fightSec);
 }
 
 namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execution
@@ -7110,6 +7139,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float templateMelee = 0.0f;
         float templateSpell = 0.0f;
         bool boss = false;
+        std::string bossName;
         uint32 oneEntry = 0;
         bool singleEntry = true;
         uint32 hitters = 0;
@@ -7118,6 +7148,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             Unit* mob = botAI->GetUnit(record.came[i]);
             if (!mob || !mob->ToCreature())
                 return;  // a mob the template cannot read: no measurement
+            if (IsBossMob(mob) && !boss)
+                bossName = mob->GetName();  // [lead1362] named in the log (the triage's template vs real per boss)
             boss = boss || IsBossMob(mob);
             // [lead1344] b256 5C-3: Taragaman's fight counted a Searing Blade Enforcer that never hit the tank in
             // the template, the measured ratio fell 0.49 -> 0.36 and Bazzalan's healer line read it. The template
@@ -7174,7 +7206,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                   "[lead256] {}: taken {:.0f} melee / {:.0f} spell against the template's {:.0f} / {:.0f} over "
                   "{:.1f} s ({} mobs, {} hit the tank{})",
                   tank->GetName(), realMelee, realSpell, templateMelee, templateSpell, fightSec, record.came.size(),
-                  hitters, boss ? ", a boss" : "");
+                  hitters, boss ? ", a boss: " + bossName : std::string());
     }
 
     // [lead259] The fight is over: the tank's deepest drop in it against the drop the plan expected before the

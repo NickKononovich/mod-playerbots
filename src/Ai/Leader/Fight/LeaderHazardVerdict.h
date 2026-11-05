@@ -43,6 +43,7 @@
 #include "ObjectGuid.h"
 
 class Player;
+class SpellInfo;
 class Unit;
 
 namespace Leader
@@ -96,6 +97,11 @@ Verdict JudgeZone(Facts const& facts, Player* member, HazardZone const& zone);
 
 // `member` stands in `cleaver`'s frontal cone, `exitYd` from the nearest spot out of it: stay or leave
 Verdict JudgeCleave(Facts const& facts, Player* member, Unit* cleaver, float exitYd);
+
+// [lead1362] the factor the instance's rescale multiplies `caster`'s damage of `info` by (a hit, or a tick when
+// `periodic`): what mod-raid-rescale's own UnitScript hooks (ModifySpellDamageTaken / ModifyPeriodicDamageAurasTick,
+// its per-map / per-entry / per-spell factors) make of a probe amount; 1 without the rescale or outside its maps
+float InstanceDamageFactor(Unit* caster, SpellInfo const* info, bool periodic);
 }  // namespace Leader::HazardVerdict
 
 #endif

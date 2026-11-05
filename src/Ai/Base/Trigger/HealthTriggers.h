@@ -381,7 +381,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = 
                     bool credits = true, bool potion = true, bool damageCost = false);
 // [lead520] a boss fight of `fightSec` needs the member's in-fight mana potion: its mana is under the boss line without
 // the potion (then it keeps the potions' cooldown for it and drinks no pre-pull potion)
-bool NeedsManaPotion(Player* bot, float fightSec);
+// [lead1362] `cost`: a healer's heal cost in tank healths (the boss line's, BossFightCost)
+bool NeedsManaPotion(Player* bot, float fightSec, float cost = 0.0f);
 // [lead423] the mana tools (Innervate, Shadowfiend, Hymn of Hope, Mana Tide Totem, Evocation, Divine Plea, Dispersion)
 constexpr uint32 SPELL_INNERVATE = 29166;
 constexpr uint32 SPELL_SHADOWFIEND = 34433;

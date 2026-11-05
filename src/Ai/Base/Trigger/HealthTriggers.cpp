@@ -2284,10 +2284,11 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     return line;
 }
 
-bool NeedsManaPotion(Player* bot, float fightSec)
+bool NeedsManaPotion(Player* bot, float fightSec, float cost)
 {
     return bot && bot->GetMaxPower(POWER_MANA) &&
-           bot->GetPowerPct(POWER_MANA) < FightManaLine(bot, fightSec, 0.0f, nullptr, true, true, false);
+           bot->GetPowerPct(POWER_MANA) <
+               FightManaLine(bot, fightSec, cost, nullptr, true, true, false, cost > 0.0f);  // [lead1362]
 }
 
 namespace

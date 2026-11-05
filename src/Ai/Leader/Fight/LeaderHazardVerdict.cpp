@@ -555,4 +555,15 @@ Verdict JudgeCleave(Facts const& facts, Player* member, Unit* cleaver, float exi
                       Acore::StringFormat("{:.1f} s", everySec),
                   burst, perSec, taken, awaySec, 0.0f, "(its casts in the fight's rest counted)");
 }
+
+float InstanceDamageFactor(Unit* caster, SpellInfo const* info, bool periodic)
+{
+    // a probe large enough that the hook's integer rounding does not count, small enough that no factor of the
+    // rescale's tables overflows its int32 hit
+    constexpr uint32 PROBE_DAMAGE = 1000000;
+    if (!caster || !info)
+        return 1.0f;
+    // the rescale's hooks do not read their target (`Unit* /*target*/`): the caster stands in for it
+    return float(InstanceFactorApplied(caster, caster, PROBE_DAMAGE, info, periodic)) / float(PROBE_DAMAGE);
+}
 }  // namespace Leader::HazardVerdict

@@ -348,6 +348,11 @@ namespace PullReadiness
     // [lead520] that member's boss fight needs its in-fight mana potion (RestState::NeedsManaPotion on the same fight
     // seconds): no pre-pull potion for it
     bool MemberNeedsManaPotion(Player* member, Unit* boss);
+    // [lead1362] the tank healths `member` (a healer; 0 for anyone else) heals in `fightSec` of `boss`'s fight - the
+    // boss line's heal cost (BossFightCost), for the in-fight verdicts that judge the same need as the gate: the
+    // mana tools, the mana potion / gem, the healer-out-of-mana test (a cost in tank damage: FightManaLine's
+    // `damageCost`)
+    float MemberBossFightCost(Player* member, Unit* boss, float fightSec);
 }
 
 class DpsAoeAction : public AttackAction

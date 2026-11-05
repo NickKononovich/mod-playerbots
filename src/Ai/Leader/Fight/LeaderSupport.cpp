@@ -744,11 +744,15 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
         return;
 
     bool bossFight = false;
+    Unit* fightBoss = nullptr;  // [lead1362] the boss whose fight it is: the healer's heal cost
     for (Player* bot : members)
         for (Unit* attacker : bot->getAttackers())
-            if (Creature const* mob = attacker ? attacker->ToCreature() : nullptr;
+            if (Creature* mob = attacker ? attacker->ToCreature() : nullptr;
                 mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+            {
                 bossFight = true;
+                fightBoss = mob;
+            }
     for (Player* bot : members)
     {
         if (!bot->IsInCombat())
@@ -805,7 +809,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 return "a boss fight";
             if (lead.fightOverload >= 1.0f)
                 return Acore::StringFormat("a critical pull: overload {:.2f}", lead.fightOverload);
-            if (std::string const dry = HealerOutOfMana(members, lead.fightSecLeft); !dry.empty())  // [lead903]
+            if (std::string const dry = HealerOutOfMana(members, lead.fightSecLeft, fightBoss);
+                !dry.empty())  // [lead903] [lead1362]
                 return "critical: " + dry;
             if (!lead.bossLeft)  // [lead1083]
                 return "trash, no boss left";
@@ -814,6 +819,11 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                                            lead.nextBossName, lead.bossPullSec, backSec);
             return "";
         };
+        // [lead1362] b258 rfc-h 5E-13 Bazzalan: the gate credited the holy priest's 13 % mana potion; this verdict
+        // read his line with no heal cost (0 tank healths at 0.14 %/s: 6 %) and never gave it while he ran dry. In a
+        // boss fight a healer's line heals the boss's damage for the fight's seconds left, as the gate's did
+        float const healCost =
+            fightBoss ? PullReadiness::MemberBossFightCost(bot, fightBoss, lead.fightSecLeft) : 0.0f;
         Leader::MemberEvents pending;
         bool const evocationTold = Leader::Events::Get(bot->GetGUID(), pending) &&
                                    pending.externalSpell == RestState::SPELL_EVOCATION;
@@ -826,7 +836,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 std::string lineWhy;
                 // [lead482] the line without the potion this verdict decides on
                 float const line =
-                    RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight, true, false);
+                    RestState::FightManaLine(bot, lead.fightSecLeft, healCost, &lineWhy, bossFight, true, false,
+                                             healCost > 0.0f);  // [lead1362]
                 if (bot->GetPowerPct(POWER_MANA) < line)
                 {
                     // [lead904] user 2026-11-03 (32 / 18): the mana potion on trash is kept for the next boss like the
@@ -878,7 +889,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 {
                     std::string lineWhy;
                     float const line =
-                        RestState::FightManaLine(bot, lead.fightSecLeft, 0.0f, &lineWhy, bossFight, true, false);
+                        RestState::FightManaLine(bot, lead.fightSecLeft, healCost, &lineWhy, bossFight, true, false,
+                                             healCost > 0.0f);  // [lead1362]
                     if (bot->GetPowerPct(POWER_MANA) < line)
                     {
                         float const rechargeSec = itemRechargeSec(gem);
@@ -1463,13 +1475,15 @@ bool PickBattleRes(LeaderGroup& group, Player* tank, std::vector<Player*> const&
 
 std::string BuffPassWork(LeaderGroup& group) { return group.State().support.buffWork; }
 
-std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft)
+std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft, Unit* boss)
 {
     if (fightSecLeft <= 0.0f)
         return "";
     for (Player* bot : members)
         if (bot && bot->IsAlive() && PlayerbotAI::IsHeal(bot) && bot->GetMaxPower(POWER_MANA))
-            if (float const line = RestState::FightManaLine(bot, fightSecLeft, 0.0f);
+            if (float const cost = boss ? PullReadiness::MemberBossFightCost(bot, boss, fightSecLeft) : 0.0f,
+                line = RestState::FightManaLine(bot, fightSecLeft, cost, nullptr, boss != nullptr, true, true,
+                                                cost > 0.0f);  // [lead1362]
                 bot->GetPowerPct(POWER_MANA) < line)
                 return Acore::StringFormat("the healer {} out of mana: {:.0f} % < the {:.0f} % the fight's {:.0f} s "
                                            "left need",

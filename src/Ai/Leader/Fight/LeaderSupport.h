@@ -26,6 +26,7 @@
 #include "LeaderLog.h"
 
 class Player;
+class Unit;
 
 namespace Leader::Support
 {
@@ -60,7 +61,8 @@ float MemberTakenPerSec(LeaderGroup& group, Player* member);
 // [lead903] user 2026-11-03 (36): a healer out of mana counts as critical for the cooldown rule: a living healer of
 // `members` whose mana is under the line the fight's `fightSecLeft` need (FightManaLine, its own mana cooldowns and the
 // potion credited) - it cannot heal this fight to its end. Empty: none; else the reason
-std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft);
+// [lead1362] `boss`: the boss fight under way - the line is his (the boss rate, the boss line's heal cost)
+std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecLeft, Unit* boss = nullptr);
 
 // [lead931] an energize of `mana` on `receiver` cast by `caster` (Innervate): the mob where the threat the game
 // forwards to the caster (half the mana, split over every mob listing the receiver) takes the caster past its share

@@ -4345,7 +4345,11 @@ namespace Leader::Dungeon
             {
                 std::vector<Player*> everyone = seats;
                 everyone.push_back(tank);
-                critical = Leader::Support::HealerOutOfMana(everyone, lead.fightSecLeft);
+                // [lead1362] a boss target: his line (the boss rate, the boss line's heal cost)
+                Creature* bossTarget = target && target->ToCreature() && target->ToCreature()->IsDungeonBoss()
+                                           ? target->ToCreature()
+                                           : nullptr;
+                critical = Leader::Support::HealerOutOfMana(everyone, lead.fightSecLeft, bossTarget);
                 if (!critical.empty())
                 {
                     thread_local std::set<uint64> dryLogged;
@@ -10050,8 +10054,18 @@ namespace Leader::Dungeon
                         ManaUser user;
                         user.who = member;
                         user.pct = member->GetPowerPct(POWER_MANA);
-                        user.need = RestState::FightManaLine(member, lead.fightSecLeft, 0.0f, nullptr,
-                                                             fightBoss != nullptr, false);
+                        // [lead1362] b258 rfc-h 5E-5 / 5E-13 Bazzalan: the gate passed the holy priest on his
+                        // Shadowfiend's 50 % "in the fight" / a 13 % mana potion, and in the fight his need here read
+                        // "0 % < 0 %" - this line passed no heal cost (0 tank healths), his rate measured on bosses was
+                        // 0.00 %/s: he was no mana user, Shadowfiend was never considered, the potion verdict never
+                        // fired, and Hymn of Hope was told only in the two ticks his ~0 % need rose above his mana (it
+                        // lasted one leader tick each, never cast). In a boss fight a healer's need heals the boss's
+                        // damage on the tank for the fight's seconds left, the boss line's cost (BossFightCost)
+                        float const healCost =
+                            fightBoss ? PullReadiness::MemberBossFightCost(member, fightBoss, lead.fightSecLeft)
+                                      : 0.0f;
+                        user.need = RestState::FightManaLine(member, lead.fightSecLeft, healCost, nullptr,
+                                                             fightBoss != nullptr, false, true, healCost > 0.0f);
                         user.ratePct = user.need / lead.fightSecLeft;
                         if (user.need > user.pct && user.ratePct > 0.0f)
                             manaUsers.push_back(user);
@@ -10123,8 +10137,10 @@ namespace Leader::Dungeon
                         if ((self && member != caster) || !member->IsAlive() ||
                             member->getPowerType() != POWER_MANA || !member->GetMaxPower(POWER_MANA))
                             continue;
-                        float const there =
-                            RestState::FightManaLine(member, need.fightSec, 0.0f, nullptr, true, false);
+                        // [lead1362] his fight's heal cost too (the boss line's, BossFightCost)
+                        float const laterCost = PullReadiness::MemberBossFightCost(member, later, need.fightSec);
+                        float const there = RestState::FightManaLine(member, need.fightSec, laterCost, nullptr, true,
+                                                                     false, true, laterCost > 0.0f);
                         if (there > 100.0f)
                         {
                             why = Acore::StringFormat(
@@ -10195,6 +10211,19 @@ namespace Leader::Dungeon
                 std::string verdictWhy;
                 bool allowed = manaToolVerdict(caster, self, RechargeAfterCastSec(caster, spell), durationSec,
                                                verdictWhy);  // [lead541] [lead651]
+                // [lead1362] the boss gate let the caster in on this tool's mana in this fight (FightManaLine's boss
+                // credits: Shadowfiend, Evocation, Divine Plea, its own Innervate): a later boss does not keep it -
+                // the gate's line was met only with it used here
+                bool const bossCredited = fightBoss &&
+                                          (spell == RestState::SPELL_SHADOWFIEND ||
+                                           spell == RestState::SPELL_EVOCATION ||
+                                           spell == RestState::SPELL_DIVINE_PLEA ||
+                                           (spell == SPELL_INNERVATE && on == caster));
+                if (!allowed && bossCredited)
+                {
+                    allowed = true;
+                    verdictWhy = "the boss gate counted its mana in this fight [lead1362]";
+                }
                 // [lead1132] b238 rfc-h 5H-8 832.7 s: Hymn of Hope told in the tick the priest got its first combat
                 // spot (a walk), the walk cut it 2 s in. A channel (spell data) waits while the caster walks to the
                 // place the leader gave it (its walk or a live MoveTo / StandAt it is not on yet): the walk would
@@ -10249,6 +10278,51 @@ namespace Leader::Dungeon
                     (allowed ? bestVerdict : heldVerdict) = verdictWhy;
                 }
             };
+            // [lead1362] b258 rfc-h 5E-5 Bazzalan t=1126.8 / 1134.3: Hymn of Hope was told to the holy priest twice
+            // and never cast - an External lives while the leader asserts it (EndTick), the next tick picked no tool
+            // (his ~0 % need fell back under his mana) and dropped it before his global cooldown ended. One decision
+            // per fact (lead752's Evocation, leader-commands-are-final): a told mana tool stays told until it is cast
+            // - while its caster still has it ready, stands (lead1132: a walk would cut a channel) and a mana user it
+            // was told for is still short (the caster itself for its own tools, the receiver for Innervate, any one
+            // for Hymn of Hope / Mana Tide Totem)
+            if (!manaUsers.empty())
+                for (Player* caster : seats)
+                {
+                    Leader::MemberEvents pending;
+                    if (!caster->IsAlive() || told.count(caster->GetGUID()) ||
+                        caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL) ||
+                        !Leader::Events::Get(caster->GetGUID(), pending) || !pending.externalSpell)
+                        continue;
+                    uint32 const spell = pending.externalSpell;
+                    bool const selfTool = spell == RestState::SPELL_SHADOWFIEND ||
+                                          spell == RestState::SPELL_EVOCATION ||
+                                          spell == RestState::SPELL_DISPERSION || spell == RestState::SPELL_DIVINE_PLEA;
+                    bool const groupTool = spell == SPELL_HYMN_OF_HOPE || spell == SPELL_MANA_TIDE_TOTEM;
+                    if ((!selfTool && !groupTool && spell != SPELL_INNERVATE) || !LeaderReadySpell(caster, {spell}))
+                        continue;
+                    Unit* on = pending.externalTarget.IsEmpty()
+                                   ? nullptr
+                                   : ObjectAccessor::GetUnit(*caster, pending.externalTarget);
+                    if (!pending.externalTarget.IsEmpty() && (!on || !on->IsAlive()))
+                        continue;
+                    bool stillShort = false;
+                    for (ManaUser const& user : manaUsers)
+                        if (groupTool || (selfTool && user.who == caster) ||
+                            (spell == SPELL_INNERVATE && on && user.who == on))
+                            stillShort = true;
+                    if (!stillShort)
+                        continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+                    Leader::MemberEvents place;
+                    bool const offPlace = Leader::Events::Get(caster->GetGUID(), place) &&
+                                          (place.move == Leader::MoveEvent::MoveTo ||
+                                           place.move == Leader::MoveEvent::StandAt) &&
+                                          caster->GetExactDist2d(place.spot.GetPositionX(), place.spot.GetPositionY()) >
+                                              std::max(place.tolerance, Leader::LEADER_SPOT_TOLERANCE);
+                    if (info && info->IsChanneled() && (caster->isMoving() || offPlace))
+                        continue;
+                    tell(caster, spell, on, "a told mana tool stays told until it is cast [lead1362]");
+                }
             if (!manaUsers.empty())
             {
                 for (Player* caster : seats)
