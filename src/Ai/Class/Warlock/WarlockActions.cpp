@@ -18,11 +18,13 @@
 #include "RtiValue.h"     // [b44_hos]
 #include "ServerFacade.h"
 #include "SpellAuras.h"  // [rot350]
+#include "SpellInfo.h"   // [rot481] the aura's radius
 #include "SpellMgr.h"    // [rot350]
 #include "Strategy.h"     // [b44_hos] TargetValueExclusionType
 #include "TargetValue.h"  // [b44_hos]
 #include "Timer.h"
 #include "Unit.h"
+#include <algorithm>  // [rot481] std::max
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -231,20 +233,39 @@ bool CastHellfireAction::isUseful()
     return bot->IsWithinCombatRange(target, 5.0f);  // 5 yard AoE radius
 }
 
-// Checks if the "meta melee aoe" strategy is active, OR if the bot is in melee range of the target
+// [rot481] see ImmolationAuraReaches (WarlockActions.h)
+bool ImmolationAuraReaches(Player* bot, Unit* target)
+{
+    constexpr uint32 SPELL_METAMORPHOSIS_FORM = 47241;
+    constexpr uint32 SPELL_IMMOLATION_AURA = 50589;
+    if (!bot || !target || !target->IsAlive() || !bot->HasAura(SPELL_METAMORPHOSIS_FORM))
+        return false;
+
+    SpellInfo const* aura = sSpellMgr->GetSpellInfo(SPELL_IMMOLATION_AURA);
+    if (!aura)
+        return false;
+
+    float radius = 0.0f;
+    for (SpellEffectInfo const& effect : aura->GetEffects())
+    {
+        if (effect.HasRadius())
+            radius = std::max(radius, effect.CalcRadius(bot));
+        if (effect.ApplyAuraName != SPELL_AURA_PERIODIC_TRIGGER_SPELL || !effect.TriggerSpell)
+            continue;
+        if (SpellInfo const* tick = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+            for (SpellEffectInfo const& tickEffect : tick->GetEffects())
+                if (tickEffect.HasRadius())
+                    radius = std::max(radius, tickEffect.CalcRadius(bot));
+    }
+    return radius > 0.0f && bot->IsWithinDist(target, radius);
+}
+
+// [rot481] Rawr 2.3.23 Rawr.Warlock (the Demonology rotation's Immolation Aura, Spells.cs ImmolationAura) and the
+// wowsims demo APL (castSpell 50589 right after the cooldowns) burn it in Metamorphosis on the target, so it is cast
+// only where its area reaches the target. It used to pass on the "meta melee" strategy alone, at any range
 bool CastImmolationAuraAction::isUseful()
 {
-    if (botAI->HasStrategy("meta melee", BOT_STATE_COMBAT))
-        return true;
-
-    Unit* target = AI_VALUE(Unit*, "current target");
-    if (!target)
-        return false;
-
-    if (!bot->HasAura(47241))  // 47241 is Metamorphosis spell ID (WotLK)
-        return false;
-
-    return bot->IsWithinCombatRange(target, 5.0f);  // 5 yard AoE radius
+    return ImmolationAuraReaches(bot, AI_VALUE(Unit*, "current target"));
 }
 
 // Checks if the "warlock tank" strategy is active, and if so, prevents the use of Soulshatter

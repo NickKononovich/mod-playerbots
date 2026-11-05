@@ -37,6 +37,9 @@ void DemonologyWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
             }
         )
     );
+    // [rot481] Rawr 2.3.23 (Demonology rotation: Immolation Aura) and the wowsims demo APL (castSpell 50589 right
+    // after the cooldowns): Immolation Aura in Metamorphosis on the target, a single one too, where its area reaches
+    triggers.push_back(new TriggerNode("immolation aura ready", { NextAction("immolation aura", 28.2f) }));
     triggers.push_back(
         new TriggerNode(
             "demonic empowerment",
@@ -149,6 +152,9 @@ MetaMeleeAoeStrategy::MetaMeleeAoeStrategy(PlayerbotAI* botAI) : CombatStrategy(
 
 void MetaMeleeAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // [rot481] in Metamorphosis the warlock walks to the target first, so Immolation Aura's area reaches it (the
+    // wowsims demo APL casts it on the target the whole form; the sim stands in range)
+    triggers.push_back(new TriggerNode("metamorphosis active", { NextAction("reach melee", 25.5f) }));
     triggers.push_back(
         new TriggerNode(
             "immolation aura active",

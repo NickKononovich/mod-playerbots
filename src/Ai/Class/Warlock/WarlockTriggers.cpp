@@ -26,6 +26,7 @@
 #include "SpellAuras.h"        // [rot350]
 #include "SpellMgr.h"          // [rot350]
 #include "TargetValue.h"
+#include "WarlockActions.h"  // [rot481] ImmolationAuraReaches
 
 #include <unordered_map>  // [rot470]
 
@@ -427,6 +428,19 @@ bool InfernoOnLastEncounter(Player* bot, Unit* target)
                       bot->GetName(), target->GetName());
     }
     return entry.last;
+}
+
+// [rot481] see ImmolationAuraReadyTrigger (WarlockTriggers.h)
+bool ImmolationAuraReadyTrigger::IsActive()
+{
+    if (!bot->IsInCombat())
+        return false;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", "immolation aura");
+    if (!spellId || bot->HasSpellCooldown(spellId) || botAI->HasAura("immolation aura", bot))
+        return false;
+
+    return ImmolationAuraReaches(bot, AI_VALUE(Unit*, "current target"));
 }
 
 bool CurseOfTonguesTrigger::IsActive()

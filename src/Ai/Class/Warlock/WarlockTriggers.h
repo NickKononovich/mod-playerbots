@@ -551,6 +551,22 @@ public:
     ImmolationAuraActiveTrigger(PlayerbotAI* botAI) : HasAuraTrigger(botAI, "immolation aura") {}
 };
 
+// [rot481] Immolation Aura castable on the current target: in Metamorphosis, off cooldown, not up, its area reaches the
+// target (ImmolationAuraReaches) - the wowsims demo APL's second row, on a single target as on a pack
+class ImmolationAuraReadyTrigger : public Trigger
+{
+public:
+    ImmolationAuraReadyTrigger(PlayerbotAI* botAI) : Trigger(botAI, "immolation aura ready") {}
+    bool IsActive() override;
+};
+
+// [rot481] the warlock is in Metamorphosis: the "meta melee" strategy walks it to the target for Immolation Aura
+class MetamorphosisActiveTrigger : public HasAuraTrigger
+{
+public:
+    MetamorphosisActiveTrigger(PlayerbotAI* botAI) : HasAuraTrigger(botAI, "metamorphosis") {}
+};
+
 class ShadowTranceTrigger : public HasAuraTrigger
 {
 public:

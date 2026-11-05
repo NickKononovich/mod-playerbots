@@ -643,6 +643,10 @@ public:
     bool isUseful() override { return botAI->HasSpell("shadowfury") && CastSpellAction::isUseful(); }
 };
 
+// [rot481] Immolation Aura (50589) reaches `target`: the warlock is in Metamorphosis (47241, the aura's caster form)
+// and the target stands inside the area of the aura's periodic damage spell (its radius from spell data: 50590, 8 yd)
+bool ImmolationAuraReaches(Player* bot, Unit* target);
+
 class CastImmolationAuraAction : public CastSpellAction
 {
 public:

@@ -181,6 +181,8 @@ public:
         creators["metamorphosis"] = &WarlockTriggerFactoryInternal::metamorphosis;
         creators["demonic empowerment"] = &WarlockTriggerFactoryInternal::demonic_empowerment;
         creators["immolation aura active"] = &WarlockTriggerFactoryInternal::immolation_aura_active;
+        creators["immolation aura ready"] = &WarlockTriggerFactoryInternal::immolation_aura_ready;  // [rot481]
+        creators["metamorphosis active"] = &WarlockTriggerFactoryInternal::metamorphosis_active;    // [rot481]
         creators["metamorphosis not active"] = &WarlockTriggerFactoryInternal::metamorphosis_not_active;
         creators["meta melee flee check"] = &WarlockTriggerFactoryInternal::meta_melee_flee_check;
         creators["curse of agony"] = &WarlockTriggerFactoryInternal::curse_of_agony;
@@ -249,6 +251,8 @@ private:
     static Trigger* metamorphosis(PlayerbotAI* botAI) { return new MetamorphosisTrigger(botAI); }
     static Trigger* demonic_empowerment(PlayerbotAI* botAI) { return new DemonicEmpowermentTrigger(botAI); }
     static Trigger* immolation_aura_active(PlayerbotAI* botAI) { return new ImmolationAuraActiveTrigger(botAI); }
+    static Trigger* immolation_aura_ready(PlayerbotAI* botAI) { return new ImmolationAuraReadyTrigger(botAI); }
+    static Trigger* metamorphosis_active(PlayerbotAI* botAI) { return new MetamorphosisActiveTrigger(botAI); }
     static Trigger* metamorphosis_not_active(PlayerbotAI* botAI) { return new MetamorphosisNotActiveTrigger(botAI); }
     static Trigger* meta_melee_flee_check(PlayerbotAI* botAI) { return new MetaMeleeEnemyTooCloseForSpellTrigger(botAI); }
     static Trigger* curse_of_agony(PlayerbotAI* botAI) { return new CurseOfAgonyTrigger(botAI); }
