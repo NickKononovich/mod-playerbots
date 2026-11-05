@@ -30,6 +30,7 @@
 #include "SpellAuraEffects.h"  // [b44_cos] AuraEffect::GetBase (LossOfControlTrigger)
 #include "SpellPayoff.h"       // [rot400]
 #include "SpellAuras.h"
+#include "Strategy.h"  // [rot490] TargetValueExclusionType
 #include "SpellMgr.h"
 #include "World.h"  // [rot70] RATE_POWER_ENERGY
 #include "TankAoeThreat.h"  // [b32_peel]
@@ -39,7 +40,9 @@
 #include "ThreatValues.h"  // [b44_hos]
 #include "Timer.h"
 #include <algorithm>
+#include <limits>
 #include <string>
+#include <vector>
 
 bool LowManaTrigger::IsActive()
 {
@@ -455,7 +458,7 @@ bool AoePaysTrigger::IsActive()
     uint32 const needed = std::max(breakEven, AOE_MIN_TARGETS) + (excludesTarget ? 1 : 0);
     Position const center = selfCentred ? bot->GetPosition() : target->GetPosition();
     if (HasEnoughAoeTargets(botAI, center, radius, needed))
-        return true;
+        return LandsOverFiller(target, aoeId, fillerId, scale, center, radius);
 
     // [rot420] the steady-state filler held an area the filler read now would have cast: logged for the triage
     uint32 const now = getMSTime();
@@ -470,6 +473,64 @@ bool AoePaysTrigger::IsActive()
                      "(from {} at its damage now)", bot->GetName(), aoeSpell, target->GetName(), Filler(), needed,
                      scale, nowNeeded);
         }
+    }
+    return false;
+}
+
+bool AoePaysTrigger::LandsOverFiller(Unit* target, uint32 aoeId, uint32 fillerId, float scale, Position const& center,
+                                     float radius)
+{
+    SpellPayoff::Cast area;
+    float const fillerDps = SpellPayoff::FillerDps(bot, target, fillerId) * scale;
+    if (fillerDps <= 0.0f || !SpellPayoff::Read(bot, target, aoeId, area))
+        return true;  // no verdict from the spells: the count decides
+
+    // the mobs HasEnoughAoeTargets counted: alive inside the area, no crowd control, no strategy exclusion
+    GuidSet const exclusions = botAI->HasTargetExclusions()
+                                   ? GatherStrategyTargetExclusions(botAI, TargetValueExclusionType::Aoe)
+                                   : GuidSet();
+    std::vector<std::pair<float, float>> mobs;  // lifetime ms, health
+    for (ObjectGuid const guid : AI_VALUE(GuidVector, "attackers"))
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsAlive() || unit->GetDistance(center) > radius || IsCrowdControlled(unit) ||
+            exclusions.count(guid) || (excludesTarget && unit == target))
+            continue;
+        mobs.emplace_back(ExpectedFightLifetime(botAI, unit) * static_cast<float>(IN_MILLISECONDS),
+                          static_cast<float>(unit->GetHealth()));
+    }
+    if (mobs.size() < AOE_MIN_TARGETS)
+        return false;
+
+    // a channel the class stops below the minimum lasts till the minimum-th longest life ends
+    float window = area.channelMs;
+    if (area.channel && ChannelStopsBelowMinimum())
+    {
+        std::nth_element(mobs.begin(), mobs.begin() + (AOE_MIN_TARGETS - 1), mobs.end(),
+                         [](auto const& a, auto const& b) { return a.first > b.first; });
+        window = std::min(window, mobs[AOE_MIN_TARGETS - 1].first);
+    }
+    float const spentMs = area.channel ? std::max(window, area.gcdMs) : area.executeMs;
+
+    float landed = 0.0f;
+    float shortest = std::numeric_limits<float>::max();
+    for (auto const& [lifetimeMs, health] : mobs)
+    {
+        landed += SpellPayoff::LandedOn(area, lifetimeMs, window, health);
+        shortest = std::min(shortest, lifetimeMs);
+    }
+    float const filler = fillerDps * spentMs / static_cast<float>(IN_MILLISECONDS);
+    if (landed >= filler)
+        return true;
+
+    uint32 const now = getMSTime();
+    if (!_landedLoggedMs || getMSTimeDiff(_landedLoggedMs, now) >= AOE_SCALE_LOG_MS)
+    {
+        _landedLoggedMs = now ? now : 1;
+        LOG_INFO("playerbots", "[rot490] {} holds {} on {}: it lands {:.0f} on {} mobs before they die (shortest "
+                 "{:.1f} s) vs {} {:.0f} in its {:.1f} s", bot->GetName(), aoeSpell, target->GetName(), landed,
+                 mobs.size(), shortest / static_cast<float>(IN_MILLISECONDS), Filler(), filler,
+                 spentMs / static_cast<float>(IN_MILLISECONDS));
     }
     return false;
 }

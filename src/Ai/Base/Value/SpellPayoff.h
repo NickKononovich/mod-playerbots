@@ -31,6 +31,8 @@ namespace SpellPayoff
         uint32 ticks = 0;          // ticks of its full duration
         float castMs = 0.0f;       // till it lands: the hasted cast time (0 for an instant and a channel)
         float executeMs = 0.0f;    // the caster's time for one cast: cast or channel, at least the global cooldown
+        float channelMs = 0.0f;    // [rot490] a channel's hasted length (0 for a cast)
+        float gcdMs = 0.0f;        // [rot490] its global cooldown
         bool channel = false;      // its ticks land while it is channelled
 
         float Total() const { return direct + tick * static_cast<float>(ticks); }
@@ -66,6 +68,11 @@ namespace SpellPayoff
 
     // [rot401] The area's radius from its damage effects (or its periodically triggered spell's); 0 when none
     float AreaRadius(Player* bot, uint32 aoeSpellId);
+
+    // [rot490] What one cast lands on a target that lives `lifetimeMs` more with `health` left: its direct hit once
+    // the cast lands, the ticks before the death (a channel's only within `channelWindowMs` from its start, the rest
+    // of the channel is not cast), at most the target's health. The DotPays landing rule for every target of an area.
+    float LandedOn(Cast const& cast, float lifetimeMs, float channelWindowMs, float health);
 }
 
 #endif

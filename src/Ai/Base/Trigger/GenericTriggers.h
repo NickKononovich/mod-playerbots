@@ -473,6 +473,8 @@ public:
 // bot for an area around the caster (Arcane Explosion, Blast Wave, Dragon's Breath). `excludesTarget`: the area
 // never hits its target (Mind Sear), which is not counted. Replaces the fixed 3 mobs in 8 yd ("medium aoe") for the
 // casters' area spells; the leader's AoE rule and the threat gate still decide the cast (multipliers).
+// [rot490] Then the mobs' lives: the damage the cast lands on each before it dies, at most its health, against the
+// filler in the same time (b256 rfc-h 5C Rtmagab: Blizzard / Flamestrike on a boss with one add at 4-45 % health).
 class AoePaysTrigger : public Trigger
 {
 public:
@@ -489,16 +491,26 @@ protected:
     // [rot420] the filler's damage at the rotation's steady state over its damage read now (SpellPayoff reads the
     // caster's current auras); 1 unless a class's filler ramps up (Arcane Blast stacks)
     virtual float FillerScale() { return 1.0f; }
+    // [rot490] true when the class stops this channel once fewer than AOE_MIN_TARGETS mobs stay inside it (the mage's
+    // Blizzard channel check): its length is then till that death
+    virtual bool ChannelStopsBelowMinimum() { return false; }
 
     std::string aoeSpell;
     std::string filler;
     bool selfCentred;
     bool excludesTarget;
 
-private:
     static constexpr uint32 AOE_MIN_TARGETS = 2;
+
+private:
+    // [rot490] the count of mobs alone cast an area on a boss with one add at a few % health: what the cast lands on
+    // each mob in it before that mob dies (SpellPayoff::LandedOn) against the filler in the caster's time for it
+    bool LandsOverFiller(Unit* target, uint32 aoeId, uint32 fillerId, float scale, Position const& center,
+                         float radius);
+
     static constexpr uint32 AOE_SCALE_LOG_MS = 5000;
     uint32 _scaleLoggedMs = 0;
+    uint32 _landedLoggedMs = 0;
 };
 
 class BuffTrigger : public SpellTrigger

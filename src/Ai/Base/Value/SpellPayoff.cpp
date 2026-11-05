@@ -154,8 +154,9 @@ namespace SpellPayoff
             return false;
 
         out.castMs = out.channel ? 0.0f : static_cast<float>(info->CalcCastTime(bot));
-        float const channelMs = out.channel ? ChannelMs(bot, info) : 0.0f;
-        out.executeMs = std::max({out.castMs, channelMs, GlobalCooldownMs(bot, info)});
+        out.channelMs = out.channel ? ChannelMs(bot, info) : 0.0f;
+        out.gcdMs = GlobalCooldownMs(bot, info);
+        out.executeMs = std::max({out.castMs, out.channelMs, out.gcdMs});
         return out.executeMs > 0.0f;
     }
 
@@ -205,6 +206,23 @@ namespace SpellPayoff
         if (perTargetDps <= 0.0f)
             return 0;
         return static_cast<uint32>(std::max(1.0f, std::ceil(fillerDps / perTargetDps)));
+    }
+
+    float LandedOn(Cast const& cast, float lifetimeMs, float channelWindowMs, float health)
+    {
+        // a channel's ticks land from its start, one amplitude apart, while it is channelled; a cast's direct hit and
+        // its periodic part from its landing
+        float const landMs = cast.channel ? 0.0f : cast.castMs;
+        float const liveMs = (cast.channel ? std::min(lifetimeMs, channelWindowMs) : lifetimeMs) - landMs;
+        if (liveMs < 0.0f || health <= 0.0f)
+            return 0.0f;
+
+        float damage = cast.direct;
+        // in floats: a mob whose life is unknown lives "forever" (an infinite lifetime)
+        if (cast.amplitudeMs)
+            damage += cast.tick * std::min(static_cast<float>(cast.ticks),
+                                           std::floor(liveMs / static_cast<float>(cast.amplitudeMs)));
+        return std::min(damage, health);
     }
 
     float AreaRadius(Player* bot, uint32 aoeSpellId)
