@@ -343,8 +343,27 @@ bool LeaderExternalAction::Execute(Event /*event*/)
                      bot->GetName(), info->SpellName[0], spell, unit->GetName(), refresh);
         }
     SpellInfo const* castInfo = cast == spell ? info : sSpellMgr->GetSpellInfo(cast);
+    // [lead1366] b259 rfc-h 5H-8 586.7-590.5 s: the dead mage's three resurrecters all reported "the cast failed"
+    // and the leader dropped each for good (resFailed): the cat's and the bear's Revive in their forms (Spell::
+    // CheckCast -> SpellInfo::CheckShapeshift: SPELL_FAILED_NOT_SHAPESHIFT, which CanCastSpell passes as castable),
+    // the priest's Resurrection while it sat drinking the leader's Rest (PlayerbotAI::CastSpell stands it up and
+    // fails that tick). The body lay 219 s until the release timer. Out of a fight a shapeshifted resurrecter leaves
+    // its form first, as the game client does for a spell its form cannot cast; a cast refused by a passing state
+    // (sitting: stood up now; a cast time while moving) is no refusal of the order - the next tick casts it
+    if (castInfo && RaisesDead(spell) && !bot->IsInCombat() && bot->GetShapeshiftForm() != FORM_NONE &&
+        castInfo->CheckShapeshift(bot->GetShapeshiftForm()) != SPELL_CAST_OK)
+    {
+        bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+        LOG_INFO("playerbots", "[lead1366] [leader external] {} leaves its form for {} ({}) on {}", bot->GetName(),
+                 castInfo->SpellName[0], cast, unit->GetName());
+        AckLeader(bot, "external", std::string("leaves its form for ") + castInfo->SpellName[0]);
+        return true;
+    }
+    bool const passing = !bot->IsStandState() || (castInfo && bot->isMoving() && castInfo->CalcCastTime(bot) > 0);
     if (!castInfo || !botAI->CastSpell(cast, unit))
     {
+        if (castInfo && passing)
+            return false;
         // [lead272] reported: the leader drops the order instead of waiting on it
         Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "the cast failed on " + unit->GetName());
         return false;
