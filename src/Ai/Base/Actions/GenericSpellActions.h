@@ -376,6 +376,13 @@ public:
     static uint8 HoldOf(uint32 spellId);
     // the hold already on `mob` (a stun, a root or a snare aura)
     static uint8 HeldBy(Unit* mob);
+    // [lead1345] the leader's question before a flee: the stop at range this member has ready (known, off cooldown)
+    // for `mob` wherever it stands, the one that holds most (`hold`), its reach by spell data (`range`); spells round
+    // the caster and pulls without a hold left out. nullptr: none
+    char const* ReadyRangedStop(Unit* mob, uint8& hold, float& range);
+    // [lead1345] the stop this member would cast on `mob` now (CanStop's pick) and its reach by spell data; nullptr:
+    // none
+    char const* StopNow(Unit* mob, float& range);
 
 private:
     struct Stop
@@ -383,6 +390,9 @@ private:
         char const* spell;
         bool aroundSelf;
     };
+
+    // the stops of the member's class (its list's order breaks a hold tie); false for a class without any
+    static bool ClassStops(Player* bot, Stop const*& begin, Stop const*& end);
 
     // The class's stop that takes `mob` now and holds it most, nullptr when none; `holdOut`: its hold.
     Stop const* Pick(Unit* mob, uint8* holdOut = nullptr);

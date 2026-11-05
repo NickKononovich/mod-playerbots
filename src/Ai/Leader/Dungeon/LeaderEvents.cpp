@@ -6017,6 +6017,140 @@ namespace Leader::Dungeon
         // Ritual of Souls / Soulwell: the leader's (the members' own are off)
         Leader::Support::Tick(group, tank, seats, healer, fighting, logEvent);
 
+        // [lead1345] approved (user-delegated): b256 rfc-h 5E-5 845 s a fleeing Searing Blade Warlock brought a
+        // Cultist, a Warlock and a Minion - nobody had a stop in range and sight of it, the hunter stood 36 yd off
+        // (Concussive Shot reaches 35). A fight mob that flees for help (its SmartAI's flee for assistance, the health
+        // it flees at: Knowledge::FleeForAssistHealthPct) and nears that health has one member with a stop ready in its
+        // range and sight: a member whose stop takes it now (FleeStopAction::StopNow), else the ranged member whose
+        // ready stop at range holds most (the shortest walk into its reach breaks a tie) gets its combat spot in that
+        // reach and sight (the combat spot rules below: hazards, cleaves, the fight mobs' melee, idle packs' reach and
+        // the heal reach as for every spot). It nears that health when the group's measured trash damage takes it
+        // there (the health above it over the damage per second; nothing measured: now) before the member's run into
+        // the stop's reach plus the game's global cooldown is done. A mob at its flee health or running is the
+        // lead1210 chain's (FleeStopper) and the focus's
+        lead.fleeReady.clear();
+        auto const logFleeReady = [&](Unit* mob, Player* member, char const* spell, float range, char const* state,
+                                      float toFleeSec, float walkSec)
+        {
+            std::string const key = std::string(member ? member->GetName() : "-") + "/" + state;
+            if (std::string& logged = lead.fleeReadyLogged[mob->GetGUID()]; logged != key)
+            {
+                logged = key;
+                Decisions().Write(run, "leader", "flee_stopper_ready", mob->GetGUID(), mob->GetName(),
+                                  std::string(state) != "none",
+                                  JsonObject()
+                                      .Str("mob", mob->GetName())
+                                      .Num("entry", mob->GetEntry())
+                                      .Real("health", mob->GetHealthPct())
+                                      .Real("fleeAt", Leader::Knowledge::FleeForAssistHealthPct(mob->GetEntry()))
+                                      .Str("member", member ? member->GetName() : "-")
+                                      .Str("spell", spell ? spell : "-")
+                                      .Real("range", range)
+                                      .Real("distance", member ? member->GetExactDist(mob) : -1.0f)
+                                      .Str("state", state)
+                                      .Real("toFleeSec", toFleeSec)
+                                      .Real("walkSec", walkSec));
+            }
+        };
+        if (fighting && Leader::LEADER_ATTACK_EVENTS)
+        {
+            float const groupDps = lead.trashFightSec > 0.0f ? lead.trashKilledHealth / lead.trashFightSec : 0.0f;
+            float const gcdSec = HEADROOM_GCD_SEC;  // the game's global cooldown
+            std::vector<Player*> stoppers = seats;
+            stoppers.push_back(tank);
+            for (ObjectGuid const& fightMob : killOrder)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, fightMob);
+                float const fleeAt =
+                    mob && mob->IsAlive() && mob->ToCreature() && mob->IsInCombat()
+                        ? Leader::Knowledge::FleeForAssistHealthPct(mob->GetEntry())
+                        : 0.0f;
+                if (fleeAt <= 0.0f || Leader::Fight::IsFleer(mob) || mob->HasBreakableByDamageCrowdControlAura())
+                    continue;
+                float const above = float(mob->GetHealth()) - fleeAt / 100.0f * float(mob->GetMaxHealth());
+                float const toFleeSec = groupDps > 0.0f ? std::max(above, 0.0f) / groupDps : 0.0f;
+                // the ranged members' ready stops at range first (spell data, no sight test): the walk into the
+                // reach decides whether the mob is near
+                Player* best = nullptr;
+                char const* bestSpell = nullptr;
+                uint8 bestHold = FleeStopAction::HOLD_NONE;
+                float bestRange = 0.0f;
+                float bestWalkSec = 0.0f;
+                for (Player* member : stoppers)
+                {
+                    PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
+                    // only a ranged member's combat spot is the leader's to move for it (the melee fight at the mob)
+                    if (!memberAI || member == tank || !member->IsAlive() || PlayerbotAI::IsHeal(member) ||
+                        member->GetMap() != tank->GetMap() || !PlayerbotAI::IsRanged(member) ||
+                        LeaderFightsMelee(member) || lead.fleeReady.count(member->GetGUID()))
+                        continue;
+                    auto* stop = dynamic_cast<FleeStopAction*>(memberAI->GetAiObjectContext()->GetAction("flee stop"));
+                    uint8 hold = FleeStopAction::HOLD_NONE;
+                    float range = 0.0f;
+                    char const* spell = stop ? stop->ReadyRangedStop(mob, hold, range) : nullptr;
+                    if (!spell)
+                        continue;
+                    float const gap = std::max(member->GetExactDist(mob) - range - member->GetCombatReach() -
+                                                   mob->GetCombatReach(), 0.0f);
+                    float const walkSec = gap / std::max(member->GetSpeed(MOVE_RUN), 0.1f);
+                    if (!best || hold > bestHold || (hold == bestHold && walkSec < bestWalkSec))
+                    {
+                        best = member;
+                        bestSpell = spell;
+                        bestHold = hold;
+                        bestRange = range;
+                        bestWalkSec = walkSec;
+                    }
+                }
+                if (toFleeSec > bestWalkSec + gcdSec)
+                    continue;  // not near yet
+                // a member whose stop takes it now (in range and sight) is the stopper ready
+                Player* inReach = nullptr;
+                char const* inReachSpell = nullptr;
+                float inReachRange = 0.0f;
+                for (Player* member : stoppers)
+                {
+                    PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
+                    if (!memberAI || !member->IsAlive() || PlayerbotAI::IsHeal(member) ||
+                        member->GetMap() != tank->GetMap())
+                        continue;
+                    auto* stop = dynamic_cast<FleeStopAction*>(memberAI->GetAiObjectContext()->GetAction("flee stop"));
+                    if (char const* spell = stop ? stop->StopNow(mob, inReachRange) : nullptr)
+                    {
+                        inReach = member;
+                        inReachSpell = spell;
+                        break;
+                    }
+                }
+                if (inReach)
+                {
+                    logFleeReady(mob, inReach, inReachSpell, inReachRange, "in_range", toFleeSec, 0.0f);
+                    continue;
+                }
+                if (!best)
+                {
+                    logFleeReady(mob, nullptr, nullptr, 0.0f, "none", toFleeSec, 0.0f);
+                    continue;
+                }
+                lead.fleeReady[best->GetGUID()] = {fightMob, bestSpell, bestRange};
+                logFleeReady(mob, best, bestSpell, bestRange, "respot", toFleeSec, bestWalkSec);
+            }
+        }
+
+        // [lead1345] a spot at `at` keeps the member the leader readies for a fleer in its stop's reach (the game's
+        // combat range: the spell's range plus both bodies' combat reach) and sight; true for every other member
+        auto const fleeStopFrom = [&](Player* member, Position const& at) -> bool
+        {
+            auto const ready = lead.fleeReady.find(member->GetGUID());
+            if (ready == lead.fleeReady.end())
+                return true;
+            Unit* mob = ObjectAccessor::GetUnit(*tank, ready->second.mob);
+            if (!mob || !mob->IsAlive())
+                return true;
+            return mob->GetExactDist(at) <= ready->second.range + member->GetCombatReach() + mob->GetCombatReach() &&
+                   LeaderSeesFrom(member, mob, at);
+        };
+
         uint32 seat = 0;
         for (Player* bot : seats)
         {
@@ -6878,8 +7012,9 @@ namespace Leader::Dungeon
                                                     was.second.GetExactDist(at) <= COMBAT_SPOT_LEFT_YD;
                                          }));
                 };
+                // [lead1345] the member the leader readies for a fleer: its new spot is in its stop's reach and sight
                 std::function<bool(Position const&)> const keeps = [&](Position const& at)
-                { return keepsBase(at) && notLeft(at); };
+                { return keepsBase(at) && notLeft(at) && fleeStopFrom(bot, at); };
                 // [lead380] the healer's own place keeps it when it heals the tank from there where the tank stands
                 // (its reach and sight, within LEADER_HEALER_TANK_YD); the other members' reach is the heal-reach
                 // rule's, on its facts
@@ -9234,9 +9369,17 @@ namespace Leader::Dungeon
                         // tank leads (the Stop below). No mob with headroom: no walk to reach its target; the spot is
                         // taken once it may cast (a hazard, a cleave, a mob's melee reach still move it)
                         bool const waitsForTank = lead.noHeadroom[guid] && bot != healer && !PlayerbotAI::IsHeal(bot);
-                        if (waitsForTank && !tankSettling && !castsNow && !shootsHere && !spotShoots)
+                        // [lead1345] the member the leader readies for a fleer near its flee health: out of its
+                        // stop's reach or sight where it stands and at its kept spot, it takes a spot in both (its
+                        // Attack target's cast reach and the stop's) - no damage is in that walk, the headroom wait
+                        // and the tank's settling do not hold it
+                        bool const needsStopSpot =
+                            lead.fleeReady.count(guid) && !fleeStopFrom(bot, bot->GetPosition()) &&
+                            !(kept != lead.combatSpots.end() && spotShoots && fleeStopFrom(bot, kept->second.second));
+                        if (waitsForTank && !tankSettling && !castsNow && !shootsHere && !spotShoots && !needsStopSpot)
                             logRespotHeld(bot, attackOn, "out of its reach / sight of its Attack target");
-                        if (!tankSettling && !castsNow && !shootsHere && !spotShoots && !waitsForTank)
+                        if ((!tankSettling && !castsNow && !shootsHere && !spotShoots && !waitsForTank) ||
+                            needsStopSpot)
                         {
                             std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                             // [lead137] never back to the spot it just left for this target
@@ -9247,6 +9390,7 @@ namespace Leader::Dungeon
                             std::function<bool(Position const&)> const keeps = [&](Position const& at)
                             {
                                 return keepsHealer(at) && !(blindHere && here.GetExactDist(at) <= 2.0f) &&
+                                       fleeStopFrom(bot, at) &&  // [lead1345]
                                        !(left != lead.combatSpotLeft.end() &&
                                          std::any_of(left->second.begin(), left->second.end(),
                                                      [&](std::pair<ObjectGuid, Position> const& was)
@@ -9274,14 +9418,20 @@ namespace Leader::Dungeon
                                 lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                                 Decisions().Write(run, "leader", "combat_respot", guid, bot->GetName(), true,
                                                   JsonObject().Str("member", bot->GetName())
-                                                      .Str("why", runningIn ? "out of its reach / sight of the "
-                                                                              "tank its Attack target runs to"
-                                                                            : "out of its reach / sight of its "
-                                                                              "Attack target")
+                                                      .Str("why", needsStopSpot
+                                                                      ? "a flee stop in reach and sight of the fleer"
+                                                                  : runningIn ? "out of its reach / sight of the "
+                                                                                "tank its Attack target runs to"
+                                                                              : "out of its reach / sight of its "
+                                                                                "Attack target")
                                                       .Str("target", attackOn->GetName())
                                                       .Str("hereFails", MemberCastsFails(bot, attackOn, killOrder))
                                                       .Real("walk", bot->GetExactDist(spot)));
                             }
+                            else if (needsStopSpot)  // [lead1345] no spot fits both reaches and every spot check
+                                if (Unit* fleer = ObjectAccessor::GetUnit(*tank, lead.fleeReady[guid].mob))
+                                    logFleeReady(fleer, bot, lead.fleeReady[guid].spell, lead.fleeReady[guid].range,
+                                                 "no_spot", -1.0f, -1.0f);
                         }
                     }
                 }

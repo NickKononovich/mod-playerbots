@@ -1146,7 +1146,7 @@ uint8 FleeStopAction::HeldBy(Unit* mob)
     return HOLD_NONE;
 }
 
-FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob, uint8* holdOut)
+bool FleeStopAction::ClassStops(Player* bot, Stop const*& begin, Stop const*& end)
 {
     // [lead1210] the class's stops; the one cast is the usable one that holds the runner most by spell data (HoldOf)
     static Stop const PALADIN[] = {{"hammer of justice", false}, {"avenger's shield", false}};
@@ -1162,8 +1162,8 @@ FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob, uint8* holdOut)
     static Stop const WARLOCK[] = {{"curse of exhaustion", false}};
     static Stop const PRIEST[] = {{"mind flay", false}};
 
-    Stop const* begin = nullptr;
-    Stop const* end = nullptr;
+    begin = nullptr;
+    end = nullptr;
     auto const use = [&begin, &end](auto const& list)
     {
         begin = std::begin(list);
@@ -1202,8 +1202,61 @@ FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob, uint8* holdOut)
             use(PRIEST);
             break;
         default:
-            return nullptr;
+            return false;
     }
+    return true;
+}
+
+char const* FleeStopAction::ReadyRangedStop(Unit* mob, uint8& hold, float& range)
+{
+    // [lead1345] the stop at range that holds most among the ready ones (known, off cooldown), wherever the member
+    // stands; its reach is the spell's own (SpellInfo::GetMaxRange with the member's range mods); a pull with no hold
+    // of its own (Death Grip), a spell round the caster and a melee stop are no stop the leader positions a member
+    // for
+    hold = HOLD_NONE;
+    range = 0.0f;
+    Stop const* begin = nullptr;
+    Stop const* end = nullptr;
+    if (!mob || !ClassStops(bot, begin, end))
+        return nullptr;
+    char const* best = nullptr;
+    for (Stop const* stop = begin; stop != end; ++stop)
+    {
+        if (stop->aroundSelf || !TauntReactionAction::SpellReady(botAI, stop->spell))
+            continue;
+        uint32 const spellId = AI_VALUE2(uint32, "spell id", stop->spell);
+        uint8 const stopHold = HoldOf(spellId);
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        float const reach = info ? info->GetMaxRange(false, bot) : 0.0f;
+        // a melee stop (the core's melee range) is the melee's, cast from where they fight
+        if (stopHold == HOLD_NONE || reach <= NOMINAL_MELEE_RANGE || (best && stopHold <= hold))
+            continue;
+        best = stop->spell;
+        hold = stopHold;
+        range = reach;
+    }
+    return best;
+}
+
+char const* FleeStopAction::StopNow(Unit* mob, float& range)
+{
+    range = 0.0f;
+    Stop const* stop = mob ? Pick(mob) : nullptr;
+    if (!stop)
+        return nullptr;
+    if (stop->aroundSelf)
+        range = SELF_REACH;
+    else if (SpellInfo const* info = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", stop->spell)))
+        range = info->GetMaxRange(false, bot);
+    return stop->spell;
+}
+
+FleeStopAction::Stop const* FleeStopAction::Pick(Unit* mob, uint8* holdOut)
+{
+    Stop const* begin = nullptr;
+    Stop const* end = nullptr;
+    if (!ClassStops(bot, begin, end))
+        return nullptr;
 
     // [lead1210] b240 rfc-h 5G-15 106 s: the frost DK's stop on a Ragefire Shaman at 0.5 yd was Death Grip (the
     // list's first) - a pull with no hold, at its feet it held nothing; the shaman ran 87 yd and brought Shaman 27.

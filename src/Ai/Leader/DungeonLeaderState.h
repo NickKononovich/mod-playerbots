@@ -242,6 +242,16 @@ namespace Leader
         ObjectGuid walkWakesReleased;      // [lead167] the pull released once for walkWakesFirst (one release per fact)
         std::map<ObjectGuid, ObjectGuid> fleeStoppers;  // [lead104] fleer -> the member the leader set to stop it
         ObjectGuid fleeFocusLogged;                     // [lead104] flee_focus logged for this fleer
+        // [lead1345] a fight mob that flees for help near its flee health -> the member with a stop at range the
+        // leader keeps in its range and sight (this tick's), and the flee_stopper_ready state logged per mob
+        struct FleeReady
+        {
+            ObjectGuid mob;
+            char const* spell = nullptr;
+            float range = 0.0f;
+        };
+        std::map<ObjectGuid, FleeReady> fleeReady;             // member -> its fleer
+        std::map<ObjectGuid, std::string> fleeReadyLogged;     // fleer -> "member/state" logged
         // [lead117] the pull walk's decision per member (one per order and per fact): the order, the reaching mob and
         // where it was judged, the spot, a hold (true) or the step back
         struct PullWalkSpot
