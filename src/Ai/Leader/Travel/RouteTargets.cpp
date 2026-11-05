@@ -1700,11 +1700,11 @@ namespace Leader::Travel
                     Creature* anchor = map->GetCreature(pack->anchor);
                     float const back = nearestTo(pack->spot, route.routePlanDone);
                     float const forward = nearestTo(pack->spot, ahead);
-                    float const far = start.GetExactDist(pack->spot);
+                    float const farYd = start.GetExactDist(pack->spot);
                     bool const pastCleared =
                         std::any_of(route.routePlanDone.begin(), route.routePlanDone.end(),
                                     [&](Position const& done)
-                                    { return start.GetExactDist(done) < far && done.GetExactDist(pack->spot) < far; });
+                                    { return start.GetExactDist(done) < farYd && done.GetExactDist(pack->spot) < farYd; });
                     behind = anchor && back >= 0.0f && forward >= 0.0f && back < forward && pastCleared &&
                              forward > AggroReach(anchor, leader);
                     if (behind)
@@ -1715,7 +1715,7 @@ namespace Leader::Travel
                                           .Real("back", back)
                                           .Real("ahead", forward)
                                           .Real("reach", AggroReach(anchor, leader))
-                                          .Real("fromTank", far)
+                                          .Real("fromTank", farYd)
                                           .Build());
                         LOG_INFO("playerbots", "[lead1283] {}: {} is behind the group ({:.0f} yd from the cleared "
                                  "walk, {:.0f} yd from the walk ahead): no stop",
