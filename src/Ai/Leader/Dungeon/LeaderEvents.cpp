@@ -9836,6 +9836,128 @@ namespace Leader::Dungeon
             std::vector<Player*> everyone = seats;
             everyone.push_back(tank);
             std::set<ObjectGuid> told;
+            // [lead1371] b259 rfc-h 5H-8 565.4-569 s: two Searing Blade Enforcers and a Cultist hit the frost mage in
+            // melee 32 yd from the tank, Growl on its cooldown, the bear's Feral Charge landed 2.8 s later, the
+            // disc priest at 1 % mana - the mage ran to the tank ("aggro loss: to the tank", the move order at 94) and
+            // died on the way with Frost Nova and Ice Block ready. Coordinator 2026-11-05 (approved): a member that
+            // does not survive until the tank has its attackers back gets the leader's order of its own defensive
+            // control, before the run. The take-back: the tank's ready taunt in range and sight for a lone attacker
+            // (its global cooldown + the leader's tick, lead985), else the tank's walk to it (its run speed, to its
+            // melee range) and one global cooldown of its area threat there; the damage: each attacker's dps on it
+            // (AttackerDps) over that time against its health + absorbs; survives only when that is less and a
+            // healer above its own mana line reaches it (lead985's verdict). Then, a mage: Frost Nova when every
+            // attacker stands in its radius (spell data, plus the mob's size: the game's area test), none is immune
+            // to it and no idle mob stands there (it would be pulled); else Ice Block when it dies before its next
+            // cast (the damage over one global cooldown + the tick reaches its health) and Hypothermia is not on it.
+            // The order is the leader's External above every other (EXTERNAL_PRECEDENCE_SELF_DEFENSE), executed above
+            // the move order ("leader self defense"); the Stop's AoE ban is the member's own area gate and does not
+            // hold the leader's External
+            for (Player* bot : seats)
+            {
+                if (bot == tank || bot == healer || bot->getClass() != CLASS_MAGE || !bot->IsAlive() ||
+                    !bot->IsInCombat())
+                    continue;
+                std::vector<Unit*> on;
+                float incoming = 0.0f;
+                for (Unit* attacker : bot->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->GetVictim() == bot &&
+                        !IsCrowdControlled(attacker) && attacker->IsWithinMeleeRange(bot))
+                    {
+                        float part = 0.0f;
+                        incoming += AttackerDps(attacker, bot, part);
+                        on.push_back(attacker);
+                    }
+                if (on.empty() || incoming <= 0.0f)
+                    continue;
+                float const tickSec = LEADER_FIGHT_TICK_MS / 1000.0f;
+                float backSec = -1.0f;
+                std::string how;
+                if (on.size() == 1)
+                    for (uint32 taunt : TANK_TAUNTS)
+                        if (tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt))
+                            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
+                                info && tank->IsWithinCombatRange(on.front(), info->GetMaxRange(false)) &&
+                                tank->IsWithinLOSInMap(on.front()))
+                            {
+                                backSec = HEADROOM_GCD_SEC + tickSec;
+                                how = std::string(info->SpellName[LOCALE_enUS]) + " ready";
+                                break;
+                            }
+                if (backSec < 0.0f)
+                {
+                    float const walkYd = std::max(0.0f, tank->GetExactDist(bot) - tank->GetMeleeRange(bot));
+                    backSec = walkYd / std::max(tank->GetSpeed(MOVE_RUN), 0.1f) + HEADROOM_GCD_SEC + tickSec;
+                    how = Acore::StringFormat("the tank's walk {:.1f} yd + its area threat", walkYd);
+                }
+                float const health =
+                    float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
+                bool const healed = healer && healer != bot && healer->IsAlive() &&
+                                    healer->IsWithinCombatRange(bot, Leader::LEADER_HEAL_REACH_YD) &&
+                                    healer->IsWithinLOSInMap(bot) &&
+                                    (!healer->GetMaxPower(POWER_MANA) ||
+                                     healer->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(healer));
+                float const damage = incoming * backSec;
+                if (damage < health && healed)
+                    continue;
+                uint32 spell = 0;
+                std::string why;
+                if (uint32 const nova = LeaderReadySpell(bot, {122, 865, 6131, 10230, 27088, 42917}))  // Frost Nova
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(nova))
+                    {
+                        float const radius = info->Effects[EFFECT_0].CalcRadius(bot);
+                        bool const covers =
+                            radius > 0.0f &&
+                            std::all_of(on.begin(), on.end(),
+                                        [&](Unit* mob)
+                                        {
+                                            return bot->GetExactDist(mob) <= radius + mob->GetCombatReach() &&
+                                                   !mob->IsImmunedToSpell(info, bot);
+                                        }) &&
+                            std::none_of(idleMobs.begin(), idleMobs.end(),
+                                         [&](Creature* idle)
+                                         { return bot->GetExactDist(idle) <= radius + idle->GetCombatReach(); });
+                        if (covers)
+                        {
+                            spell = nova;
+                            why = Acore::StringFormat("Frost Nova: its {} attackers in its {:.0f} yd", on.size(),
+                                                      radius);
+                        }
+                    }
+                constexpr uint32 SPELL_ICE_BLOCK = 45438;
+                constexpr uint32 SPELL_HYPOTHERMIA = 41425;
+                if (!spell && bot->HasSpell(SPELL_ICE_BLOCK) && !bot->HasSpellCooldown(SPELL_ICE_BLOCK) &&
+                    !bot->HasAura(SPELL_HYPOTHERMIA) && incoming * (HEADROOM_GCD_SEC + tickSec) >= health)
+                {
+                    spell = SPELL_ICE_BLOCK;
+                    why = Acore::StringFormat("Ice Block: {:.0f} damage before its next cast >= {:.0f} health",
+                                              incoming * (HEADROOM_GCD_SEC + tickSec), health);
+                }
+                if (!spell)
+                    continue;
+                told.insert(bot->GetGUID());
+                why += Acore::StringFormat("; {:.0f} dps on it x {:.1f} s to take them back ({}) = {:.0f} vs {:.0f} "
+                                           "health, healer {}",
+                                           incoming, backSec, how, damage, health,
+                                           healed ? "reaches it" : "does not reach it or is below its mana line");
+                if (Leader::Events::SetExternal(bot->GetGUID(), spell, ObjectGuid::Empty,
+                                                Leader::EXTERNAL_PRECEDENCE_SELF_DEFENSE, false, true))
+                {
+                    logEvent(bot, "External",
+                             JsonObject().Num("spell", spell).Str("on", bot->GetName()).Str("why", why));
+                    Decisions().Write(run, "leader", "self_defense_order", bot->GetGUID(), bot->GetName(), true,
+                                      JsonObject()
+                                          .Str("member", bot->GetName())
+                                          .Num("spell", spell)
+                                          .Num("attackers", int64(on.size()))
+                                          .Real("incomingDps", incoming)
+                                          .Real("backSec", backSec)
+                                          .Real("damage", damage)
+                                          .Real("health", health)
+                                          .Bool("healed", healed)
+                                          .Str("why", why)
+                                          .Str("tag", "[lead1371]"));
+                }
+            }
             auto const tell = [&](Player* caster, uint32 spell, Unit* on, char const* why)
             {
                 if (!caster || !spell || told.count(caster->GetGUID()))

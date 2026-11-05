@@ -23,6 +23,13 @@ bool LeaderExternalTrigger::IsActive()
            !bot->HasSpellCooldown(spell);
 }
 
+bool LeaderSelfDefenseTrigger::IsActive()
+{
+    Leader::MemberEvents command;
+    return LeaderCommand::CurrentCommand(bot, command) && command.externalSpell && command.externalSelfDefense &&
+           bot->HasSpell(command.externalSpell) && !bot->HasSpellCooldown(command.externalSpell);
+}
+
 bool LeaderThreatTrigger::IsActive()
 {
     uint32 spell = 0;

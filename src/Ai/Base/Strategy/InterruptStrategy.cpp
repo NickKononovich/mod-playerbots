@@ -18,6 +18,10 @@ void InterruptStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // save / buff (above the rotation and the heals, below the survival band's top), the tank's threat take-back (at
     // once, above the interrupts and its own taunts), the crowd control on the assigned mob.
     triggers.push_back(new TriggerNode("leader external", { NextAction("leader external", ACTION_EMERGENCY + 1) }));
+    // [lead1371] the leader's self-defence order (its External: Frost Nova on the member's own attackers, Ice Block)
+    // above the leader's move order (94: the run to the tank), below the wipe escape and the hazard leaves (95+)
+    triggers.push_back(
+        new TriggerNode("leader self defense", { NextAction("leader external", ACTION_EMERGENCY + 4.5f) }));
     triggers.push_back(new TriggerNode("leader threat", { NextAction("leader threat", ACTION_INTERRUPT + 4) }));
     triggers.push_back(new TriggerNode("leader cc", { NextAction("leader cc", ACTION_INTERRUPT + 2.5f) }));
     // [rot3] the leader's PreSave: the bot's best personal save, above everything but the leader's moves

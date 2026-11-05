@@ -622,6 +622,9 @@ namespace Leader
         // hostile unit with it as its victim, Unit::getAttackers()) - Life Tap (user rule: no Life Tap under attack).
         // An order issued on a free warlock ends the moment a mob attacks it, before the leader's next tick
         bool externalUnattacked = false;
+        // [lead1371] the leader's self-defence order (Frost Nova on the member's own attackers, Ice Block): executed
+        // above the leader's move order ("leader self defense", LeaderSelfDefenseTrigger) - the cast before the run
+        bool externalSelfDefense = false;
         uint32 threatSpell = 0;  // the tank: take `threatTarget` back with this (a taunt, else an AoE threat spell;
         ObjectGuid threatTarget; // 0 with a target: just attack it)
         uint32 threatMs = 0;
@@ -692,6 +695,9 @@ namespace Leader
     // [lead320] SetExternal's precedence: the fight's saves and buffs on a target (TickLeaderEvents 3c) above the
     // trap weave's, the prepull Army's and the buff pass's orders (0)
     constexpr int32 EXTERNAL_PRECEDENCE_FIGHT_SAVE = 1;
+    // [lead1371] the self-defence order (a member that does not survive until the tank has its attackers back) above
+    // every other External: no fight save or buff replaces it in the tick it is asserted
+    constexpr int32 EXTERNAL_PRECEDENCE_SELF_DEFENSE = 2;
     // [lead372] the member's walk could not reach the leader's X (no way round what would stop or kill it, or a guard
     // that would have ended the walk elsewhere): the member stays and reports, the leader decides again
     struct MoveRefusal
@@ -755,7 +761,7 @@ namespace Leader
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster);
         bool SetFleeStop(ObjectGuid member, ObjectGuid mob);  // [lead104]
         bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence = 0,
-                         bool unattackedOnly = false);  // [lead1320]
+                         bool unattackedOnly = false, bool selfDefense = false);  // [lead1320] [lead1371]
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob);
         bool SetLoot(ObjectGuid member, bool loot);

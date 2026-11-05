@@ -110,6 +110,7 @@ public:
         creators["need tank kill marks"] = &TriggerContext::need_tank_kill_marks;
         creators["assigned interrupt"] = &TriggerContext::assigned_interrupt;
         creators["leader external"] = &TriggerContext::leader_external;  // [rot2]
+        creators["leader self defense"] = &TriggerContext::leader_self_defense;  // [lead1371]
         creators["leader threat"] = &TriggerContext::leader_threat;      // [rot2]
         creators["leader cc"] = &TriggerContext::leader_cc;              // [rot2]
         creators["leader pre save"] = &TriggerContext::leader_pre_save;  // [rot3]
@@ -575,6 +576,10 @@ private:
     static Trigger* need_tank_kill_marks(PlayerbotAI* botAI) { return new NeedTankKillMarksTrigger(botAI); }
     static Trigger* assigned_interrupt(PlayerbotAI* botAI) { return new AssignedInterruptTrigger(botAI); }
     static Trigger* leader_external(PlayerbotAI* botAI) { return new LeaderExternalTrigger(botAI); }  // [rot2]
+    static Trigger* leader_self_defense(PlayerbotAI* botAI)  // [lead1371]
+    {
+        return new LeaderSelfDefenseTrigger(botAI);
+    }
     static Trigger* leader_threat(PlayerbotAI* botAI) { return new LeaderThreatTrigger(botAI); }      // [rot2]
     static Trigger* leader_cc(PlayerbotAI* botAI) { return new LeaderCcTrigger(botAI); }              // [rot2]
     static Trigger* leader_pre_save(PlayerbotAI* botAI) { return new LeaderPreSaveTrigger(botAI); }  // [rot3]

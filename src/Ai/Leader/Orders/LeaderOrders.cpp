@@ -961,13 +961,16 @@ namespace Leader
             return changed;
         }
 
-        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence, bool unattackedOnly)
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence, bool unattackedOnly,
+                         bool selfDefense)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
             MemberEvents& e = slot.events;
             // [lead320] a lower order never replaces a fight save asserted this tick or the last
-            if (spell && e.externalSpell && e.externalMs + 1 >= slot.gen && slot.externalPrecedence > precedence)
+            // [lead1371] ... and no lower rule's clear ends the self-defence order asserted this tick or the last
+            if ((spell || slot.externalPrecedence >= EXTERNAL_PRECEDENCE_SELF_DEFENSE) && e.externalSpell &&
+                e.externalMs + 1 >= slot.gen && slot.externalPrecedence > precedence)
                 return false;
             std::string const key = spell ? std::to_string(spell) + ":" + GuidKey(target) : std::string();
             if (!Arbitrate(slot, DOMAIN_EXTERNAL, key, key, precedence, e.externalSpell ? slot.externalPrecedence : -1,
@@ -979,6 +982,7 @@ namespace Leader
             e.externalSpell = spell;
             e.externalTarget = target;
             e.externalUnattacked = spell && unattackedOnly;  // [lead1320]
+            e.externalSelfDefense = spell && selfDefense;     // [lead1371]
             e.externalMs = slot.gen;
             if (changed)
                 ++e.seq;
@@ -1205,7 +1209,8 @@ namespace Leader
                 Dropped(slot, DOMAIN_EXTERNAL);
                 e.externalSpell = 0;
                 e.externalTarget.Clear();
-                e.externalUnattacked = false;  // [lead1320]
+                e.externalUnattacked = false;   // [lead1320]
+                e.externalSelfDefense = false;  // [lead1371]
                 changed = true;
             }
             if (e.ready != ReadyEvent::None && drop(e.readyMs))

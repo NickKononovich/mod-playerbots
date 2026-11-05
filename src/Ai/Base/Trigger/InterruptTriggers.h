@@ -30,6 +30,16 @@ public:
     bool IsActive() override;
 };
 
+// [lead1371] The leader's External is its self-defence order (Frost Nova on the member's own attackers, Ice Block):
+// the same "leader external" executes it, above the leader's move order (the cast before the run).
+class LeaderSelfDefenseTrigger : public Trigger
+{
+public:
+    LeaderSelfDefenseTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leader self defense") {}
+
+    bool IsActive() override;
+};
+
 // [rot2] The tank: the leader names a mob to take back (LeaderCommand::AssignedThreat).
 class LeaderThreatTrigger : public Trigger
 {
