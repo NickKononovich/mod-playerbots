@@ -924,6 +924,21 @@ namespace Leader::Dungeon
             else if (!decision.fightFor.IsEmpty() && decision.fightFor == decision.planTarget)
                 spot(fields, "fightSpot", decision.fight);
             spot(fields, "tank", tank->GetPosition());
+            // [lead1325] b255 rfc-h 5B-2 / 5B-10 pull 1 t=7: the same pull read "the walk in wakes Earthborer (41 yd)"
+            // (pull back, 4 mobs) in one run and "3 mobs at its spot" (engage) in the other - a wandering Earthborer
+            // stood on the walk in one, beside the pack in the other; the decision logged no mob's place, so the
+            // triage read the inputs as equal. The decision's mobs where they stand now (a wanderer's spot is RNG)
+            JsonArray packAt;
+            for (ObjectGuid const& guid : decision.pack)
+                if (Creature* packMob = tank->GetMap()->GetCreature(guid))
+                    packAt.Raw(JsonObject()
+                                   .Num("low", int64(guid.GetCounter()))
+                                   .Real("x", packMob->GetPositionX())
+                                   .Real("y", packMob->GetPositionY())
+                                   .Real("tankYd", tank->GetExactDist(packMob))
+                                   .Bool("wanders", packMob->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+                                   .Build());
+            fields.Raw("packAt", packAt.Build());
             Decisions().Write(run, "leader", "pull_order", mobGuid, mob ? mob->GetName() : std::string(),
                                           true, fields);
         };
