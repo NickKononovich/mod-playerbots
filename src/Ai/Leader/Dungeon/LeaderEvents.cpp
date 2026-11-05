@@ -10018,12 +10018,21 @@ namespace Leader::Dungeon
                                                      .Str("on", on ? on->GetName() : "group").Str("why", why));
                 return true;
             };
+            // [lead1413] b262 wave 1: Misdirection / Tricks of the Trade told on the tank 52 times the game refused
+            // (SPELL_FAILED_LINE_OF_SIGHT / OUT_OF_RANGE / NO_POWER) - the pick read the spell's cooldown only. The
+            // caster is a member the game lets cast it on `except` (the order's target in every call) now
+            // (PlayerbotAI::CheckCastNow); the next member that can, else nobody this tick
             auto const withSpell = [&](std::initializer_list<uint32> spells, Player* except)
             {
                 for (Player* bot : seats)
                     if (bot != except && !told.count(bot->GetGUID()))
                         if (uint32 const spell = LeaderReadySpell(bot, spells))
+                        {
+                            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                            if (botAI && except && botAI->CheckCastNow(spell, except).refusal != SPELL_CAST_OK)
+                                continue;
                             return std::make_pair(bot, spell);
+                        }
                 return std::make_pair(static_cast<Player*>(nullptr), uint32(0));
             };
             uint32 hurt = 0;

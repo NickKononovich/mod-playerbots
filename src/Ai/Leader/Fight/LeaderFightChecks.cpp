@@ -2272,6 +2272,22 @@ namespace Leader::Fight
 
         bool Ready(Player* bot, uint32 spell) { return spell && bot->HasSpell(spell) && !bot->HasSpellCooldown(spell); }
 
+        // [lead1413] b262 wave 1: Ghost Wolf told indoors (SPELL_FAILED_ONLY_OUTDOORS x10: the spell's
+        // SPELL_ATTR0_ONLY_OUTDOORS against the area's indoor flag) and Feral Charge - Cat told too close
+        // (SPELL_FAILED_TOO_CLOSE x5: the core's min range counts both bounding radii, the pick's GetExactDist does
+        // not). A movement skill is told only when the game takes its cast now (PlayerbotAI::CheckCastNow); Dash out
+        // of Cat Form asks for Cat Form, its first cast (LeaderMoveSkillForm)
+        bool CastableNow(Player* bot, uint32 spell, ObjectGuid on)
+        {
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (!botAI)
+                return true;
+            if (uint32 const form = LeaderMoveSkillForm(bot, spell))
+                spell = form;
+            Unit* unit = on.IsEmpty() ? bot : ObjectAccessor::GetUnit(*bot, on);
+            return unit && botAI->CheckCastNow(spell, unit).refusal == SPELL_CAST_OK;
+        }
+
         bool IsMoveSkill(uint32 spell)
         {
             if (!spell)
@@ -2378,7 +2394,7 @@ namespace Leader::Fight
             auto const consider = [&](Pick& pick, uint32 cost)
             {
                 if (pick.saved > pick.cost && (!best.spell || pick.Net() > best.Net()) &&
-                    ManaCovers(bot, cost, manaLine, pick.why))
+                    ManaCovers(bot, cost, manaLine, pick.why) && CastableNow(bot, pick.spell, pick.on))  // [lead1413]
                     best = pick;
             };
             bool const combat = bot->IsInCombat();
@@ -2512,7 +2528,8 @@ namespace Leader::Fight
                 pick.why = Acore::StringFormat("{}: {:.1f} s of the {:.0f} yd walk to {} (on the tank) saved vs "
                                                "{:.1f} s cast / GCD",
                                                info->SpellName[0], pick.saved, walk, target->GetName(), pick.cost);
-                if (pick.saved > pick.cost && (!best.spell || pick.Net() > best.Net()))
+                if (pick.saved > pick.cost && (!best.spell || pick.Net() > best.Net()) &&
+                    CastableNow(bot, spell, pick.on))  // [lead1413]
                     best = pick;
             }
             return best;
@@ -2645,7 +2662,8 @@ namespace Leader::Fight
                         "{:.1f} -> {:.1f} yd/s) vs {:.1f} s to its swap back (aspect category cooldown)",
                         pick.saved, routeLeft, before, after, pick.cost);
                     float const line = LeaderMoveManaLine(hunter, false, 0.0f, false, facts.waitBoss);
-                    if (pick.saved <= pick.cost || !ManaCovers(hunter, ManaCost(hunter, pack), line, pick.why))
+                    if (pick.saved <= pick.cost || !ManaCovers(hunter, ManaCost(hunter, pack), line, pick.why) ||
+                        !CastableNow(hunter, SPELL_ASPECT_OF_THE_PACK, ObjectGuid::Empty))  // [lead1413]
                         continue;
                 }
                 // the hunter already in it keeps it; else the one with the most mana over its line
