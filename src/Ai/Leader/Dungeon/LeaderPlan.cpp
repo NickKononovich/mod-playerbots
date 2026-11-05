@@ -939,6 +939,17 @@ namespace Leader::Dungeon
                                    .Bool("wanders", packMob->GetDefaultMovementType() != IDLE_MOTION_TYPE)
                                    .Build());
             fields.Raw("packAt", packAt.Build());
+            // [lead1331] the wanderers this plan judged by their wander area (spawn point + wander distance), and
+            // by which checks
+            std::map<uint32, std::string>& judged = Leader::Fight::WanderJudged();
+            if (!judged.empty())
+            {
+                JsonArray wanderArea;
+                for (auto const& [spawnId, checks] : judged)
+                    wanderArea.Raw(JsonObject().Num("spawn", int64(spawnId)).Str("checks", checks).Build());
+                fields.Raw("wanderArea", wanderArea.Build());
+                judged.clear();
+            }
             Decisions().Write(run, "leader", "pull_order", mobGuid, mob ? mob->GetName() : std::string(),
                                           true, fields);
         };
@@ -1628,19 +1639,23 @@ namespace Leader::Dungeon
                         (logged == group.PathVerdictLogged().end() || logged->second != on))
                     {
                         group.PathVerdictLogged()[guid] = on;
-                        Creature const* mob = map->GetCreature(guid);
+                        Creature* mob = map->GetCreature(guid);
                         std::string const why = guid == lead.intercept   ? std::string("the patrol the leader pulls")
                                                 : guid == lead.wholePack ? std::string("the pack the route must clear")
                                                 : guid == lead.walkWakesFirst
                                                     ? std::string("the walk in to the pull wakes it")
                                                 : blocksGroup ? std::string("it blocks the group's walk")  // [lead364]
                                                               : found->second.why;
+                        JsonObject verdict;
+                        verdict.Str("verdict", on ? "on_path" : "off_path")
+                            .Str("why", why)
+                            .Real("routeDist", found->second.routeDist)
+                            .Real("reach", found->second.reach);
+                        // [lead1331] a wanderer's route distance is its wander area's (BlocksRoute)
+                        if (Leader::Fight::WanderArea area; Leader::Fight::WanderAreaOf(mob, area))
+                            verdict.Real("wanderYd", area.radius);
                         Decisions().Write(run, "leader", "path_verdict", guid,
-                                                      mob ? mob->GetName() : std::string("?"), true,
-                                                      JsonObject().Str("verdict", on ? "on_path" : "off_path")
-                                                          .Str("why", why)
-                                                          .Real("routeDist", found->second.routeDist)
-                                                          .Real("reach", found->second.reach));
+                                                      mob ? mob->GetName() : std::string("?"), true, verdict);
                     }
                     return on;
                 };

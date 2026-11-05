@@ -494,30 +494,44 @@ namespace Leader::Travel
     // tests: a cave beside the corridor behind rock stays out.
     bool BlocksRoute(Player* leader, Creature* mob, float reach, RouteBackbone const& backbone, RouteCheck& check)
     {
-        G3D::Vector3 const position(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
+        // [lead1331] user 2026-11-05 (Q69): a wanderer is judged by its wander area - b255 rfc-h 5B-2 / 5B-10 pull 1:
+        // Earthborer's route distance 14.1 vs 27.3 yd where it stood at the tick. From its spawn point: the route
+        // distance is the area's (its wander distance off), its aggro reach (RouteReach without the wander part)
+        // round every point of the area (WanderAreaAggroes)
+        WanderArea area;
+        bool const wanders = WanderAreaOf(mob, area);
+        float const aggroReach = wanders ? reach - std::min(mob->GetWanderDistance(), APPROACH_WANDER_MAX) : reach;
+        float const areaReach = wanders ? aggroReach + area.radius : reach;
+        G3D::Vector3 const position = wanders ? G3D::Vector3(area.center.GetPositionX(), area.center.GetPositionY(),
+                                                             area.center.GetPositionZ())
+                                              : G3D::Vector3(mob->GetPositionX(), mob->GetPositionY(),
+                                                             mob->GetPositionZ());
         uint32 tries = 0;
         for (Movement::PointsArray const& points : backbone)
             for (size_t index = 1; index < points.size(); ++index)
             {
                 G3D::Vector3 const& from = points[index - 1];
                 G3D::Vector3 const& to = points[index];
-                if (position.x < std::min(from.x, to.x) - reach || position.x > std::max(from.x, to.x) + reach ||
-                    position.y < std::min(from.y, to.y) - reach || position.y > std::max(from.y, to.y) + reach)
+                if (position.x < std::min(from.x, to.x) - areaReach ||
+                    position.x > std::max(from.x, to.x) + areaReach ||
+                    position.y < std::min(from.y, to.y) - areaReach || position.y > std::max(from.y, to.y) + areaReach)
                     continue;
                 G3D::Vector3 const closest = ClosestOnSegment(position, from, to);
                 float const distance = (closest - position).length();
-                if (check.routeDist < 0.0f || distance < check.routeDist)
+                float const areaDistance =
+                    wanders ? WanderAreaDist(area, Position(closest.x, closest.y, closest.z)) : distance;
+                if (check.routeDist < 0.0f || areaDistance < check.routeDist)
                 {
-                    check.routeDist = distance;
+                    check.routeDist = areaDistance;
                     check.routeDz = position.z - closest.z;
                 }
-                if (distance >= reach || tries >= ROUTE_ONLY_LOS_TRIES)
+                if (distance >= areaReach || tries >= ROUTE_ONLY_LOS_TRIES)
                     continue;
 
                 G3D::Vector3 const segment = to - from;
                 float const length = segment.length();
                 float const along = length > 0.0f ? (closest - from).dot(segment) / length : 0.0f;
-                float const chord = std::sqrt(std::max(0.0f, reach * reach - distance * distance));
+                float const chord = std::sqrt(std::max(0.0f, areaReach * areaReach - distance * distance));
                 float tested[5];
                 uint32 testedCount = 0;
                 for (float const offset : {0.0f, -0.5f, 0.5f, -0.9f, 0.9f})
@@ -530,7 +544,9 @@ namespace Leader::Travel
                         continue;
                     tested[testedCount++] = at;
                     G3D::Vector3 const point = length > 0.0f ? from + segment * (at / length) : from;
-                    if (AggroesAtPoint(mob, leader, point, reach, true, &check.zGated))
+                    if (wanders ? WanderAreaAggroes(mob, leader, area, Position(point.x, point.y, point.z), aggroReach,
+                                                    true)
+                                : AggroesAtPoint(mob, leader, point, reach, true, &check.zGated))
                     {
                         check.routeLos = true;
                         return true;

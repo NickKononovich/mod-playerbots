@@ -709,6 +709,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // the group. Height is compared too (the core's Z gate), so a mob on the floor above the corridor does not count.
     bool IsOnPullPath(Player* bot, Position const& target, Unit* mob)
     {
+        // [lead1331] user 2026-11-05 (Q69): a wanderer by its wander area - the way's nearest point to its spawn, its
+        // aggro reach from anywhere in the area (WanderAreaAggroes)
+        Leader::Fight::WanderArea area;
+        Creature* const creature = mob->ToCreature();
+        bool const wanders = Leader::Fight::WanderAreaOf(creature, area);
+        float const mx = wanders ? area.center.GetPositionX() : mob->GetPositionX();
+        float const my = wanders ? area.center.GetPositionY() : mob->GetPositionY();
         float const ax = bot->GetPositionX();
         float const ay = bot->GetPositionY();
         float const dx = target.GetPositionX() - ax;
@@ -716,11 +723,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float const lengthSq = dx * dx + dy * dy;
         float t = 0.0f;
         if (lengthSq > 0.0f)
-            t = std::clamp(((mob->GetPositionX() - ax) * dx + (mob->GetPositionY() - ay) * dy) / lengthSq, 0.0f, 1.0f);
+            t = std::clamp(((mx - ax) * dx + (my - ay) * dy) / lengthSq, 0.0f, 1.0f);
 
         float const px = ax + dx * t;
         float const py = ay + dy * t;
         float const pz = bot->GetPositionZ() + (target.GetPositionZ() - bot->GetPositionZ()) * t;
+        if (wanders)
+        {
+            Leader::Fight::NoteWanderJudged(creature, "pull path");
+            return Leader::Fight::WanderAreaAggroes(creature, bot, area, Position(px, py, pz),
+                                                    MovementAction::IdleAggroReach(creature, bot, 0.0f), true);
+        }
         // the core's proximity aggro needs the mob to see the walker (Creature::CanStartAttack): a pack behind the
         // wall beside the straight line is no pull path (the real walk is judged by WalkEntersAggro)
         return InCoreAggroReach(mob, bot, px, py, pz, 0.0f) && mob->IsWithinLOS(px, py, pz + CAREFUL_EYE_HEIGHT);
@@ -1910,6 +1923,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         // the core's reach (MovementAction::IdleAggroReach: aggro range and combat distance, 3D) and Z gate
         float const aggroReach = MovementAction::IdleAggroReach(creature, bot, CAREFUL_AGGRO_MARGIN);
+        // [lead1331] user 2026-11-05 (Q69): a wanderer by its whole wander area - the Z gate from its spawn height,
+        // its aggro reach from anywhere in the area, the sight from its spawn or the area's edge nearest the spot -
+        // not by where it stands at the tick (its distance, height and sight from there)
+        if (Leader::Fight::WanderArea area; !IsPatrolling(creature) && Leader::Fight::WanderAreaOf(creature, area))
+        {
+            Leader::Fight::NoteWanderJudged(creature, "reaches spot");
+            return Leader::Fight::WanderAreaAggroes(creature, bot, area, spot, aggroReach, true);
+        }
         MovementGeneratorType const movement = creature->GetDefaultMovementType();
         bool const patrol = IsPatrolling(creature);
         float const distance = mob->GetExactDist(spot);
@@ -2269,7 +2290,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         walkable = true;
         float const walked = path.getPathLength();
-        std::vector<std::pair<Creature*, float>> reaches;
+        struct Reach
+        {
+            Creature* mob;
+            float reach;
+            bool wanders;
+            Leader::Fight::WanderArea area;
+        };
+        std::vector<Reach> reaches;
         for (ObjectGuid const& guid : possible)
         {
             Creature* mob = botAI->GetCreature(guid);
@@ -2278,11 +2306,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 continue;
 
             float const reach = MovementAction::IdleAggroReach(mob, bot, margin);  // the core's (CanStartAttack)
+            // [lead1331] user 2026-11-05 (Q69): a wanderer by its wander area (b255 rfc-h 5B-2 pull 1: "the walk in
+            // wakes Earthborer (41 yd)" in one run only, where the wanderer stood at the tick)
+            Leader::Fight::WanderArea area;
+            bool const wanders = Leader::Fight::WanderAreaOf(mob, area);
             // nowhere on the walk can be nearer to it than this
-            if (mob->GetExactDist(from) > walked + reach)
+            if ((wanders ? Leader::Fight::WanderAreaDist(area, from) : mob->GetExactDist(from)) > walked + reach)
                 continue;
 
-            reaches.emplace_back(mob, reach);
+            if (wanders)
+                Leader::Fight::NoteWanderJudged(mob, "walk");
+            reaches.push_back({mob, reach, wanders, area});
         }
 
         if (reaches.empty())
@@ -2297,12 +2331,15 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             for (float along = 0.0f; along <= length; along += WALK_SAMPLE_STEP)
             {
                 G3D::Vector3 const point = points[i - 1] + (length > 0.0f ? segment * (along / length) : segment);
-                for (auto const& [mob, reach] : reaches)
+                for (Reach const& entry : reaches)
                 {
-                    if (mob->GetExactDist(point.x, point.y, point.z) < reach &&
-                        MovementAction::PassesAggroZGate(mob, bot, point.z) &&
-                        mob->IsWithinLOS(point.x, point.y, point.z + eye))
-                        return mob;
+                    if (entry.wanders ? Leader::Fight::WanderAreaAggroes(entry.mob, bot, entry.area,
+                                                                         Position(point.x, point.y, point.z),
+                                                                         entry.reach, true)
+                                      : entry.mob->GetExactDist(point.x, point.y, point.z) < entry.reach &&
+                                            MovementAction::PassesAggroZGate(entry.mob, bot, point.z) &&
+                                            entry.mob->IsWithinLOS(point.x, point.y, point.z + eye))
+                        return entry.mob;
                 }
             }
         }
@@ -3011,11 +3048,31 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 continue;
 
             Creature* const mobCreature = mob->ToCreature();
+            // [lead1331] user 2026-11-05 (Q69): with a wanderer on either side, the neighbours by their wander areas
+            // (the gap between the areas, the sight between the spawn points), not by where they stand at the tick
+            Leader::Fight::WanderArea mobArea;
+            Leader::Fight::WanderArea targetArea;
+            bool const mobWanders = Leader::Fight::WanderAreaOf(mobCreature, mobArea);
+            bool const targetWanders = Leader::Fight::WanderAreaOf(targetCreature, targetArea);
+            bool const byArea = mobWanders || targetWanders;
+            Position const mobAt = mobWanders ? mobArea.center : mob->GetPosition();
+            Position const targetAt = targetWanders ? targetArea.center : target->GetPosition();
+            float const neighbourGap =
+                byArea ? std::max(0.0f, mobAt.GetExactDist(targetAt) - mobArea.radius - targetArea.radius)
+                       : mob->GetDistance(target);
+            bool const neighbourSees =
+                byArea ? bot->GetMap()->isInLineOfSight(
+                             targetAt.GetPositionX(), targetAt.GetPositionY(),
+                             targetAt.GetPositionZ() + target->GetCollisionHeight(), mobAt.GetPositionX(),
+                             mobAt.GetPositionY(), mobAt.GetPositionZ() + mob->GetCollisionHeight(),
+                             bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing)
+                       : target->IsWithinLOSInMap(mob);
+            if (byArea && neighbourGap <= socialRadius)
+                Leader::Fight::NoteWanderJudged(mobWanders ? mobCreature : targetCreature, "social");
             bool const social = socialRadius > 0.0f && CallsOnEngage(target) &&  // [b33_brs]
-                                mob->GetDistance(target) <= socialRadius &&
+                                neighbourGap <= socialRadius &&
                                 (!mobCreature || !targetCreature || mobCreature->CanAssistTo(targetCreature, bot)) &&
-                                target->IsWithinLOSInMap(mob) &&
-                                !crossing(target, target->GetPosition(), mob, socialRadius);
+                                neighbourSees && !crossing(target, target->GetPosition(), mob, socialRadius);
             // the same tests in the same order as one condition, the first that holds named for "[pack why]"
             bool joins = true;
             PackWhyKind kind = PackWhyKind::Social;
@@ -5699,13 +5756,22 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 IsBossMob(mob))
                 continue;
 
-            float const distance = mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
+            // [lead1331] user 2026-11-05 (Q69): a wanderer's distance is its wander area's (b255 rfc-h 5H-8 #21 /
+            // 5H-16 #23: the Searing Blade Enforcer 19 yd off vs inside the meeting point, by where it stood)
+            Leader::Fight::WanderArea area;
+            bool const wanders = MotionOf(mob) == MobMotion::Wanderer && Leader::Fight::WanderAreaOf(mob, area);
+            float const distance =
+                wanders ? std::max(0.0f, area.center.GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) -
+                                             area.radius)
+                        : mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
             if (distance > FIGHT_SPOT_SCAN || (out.mob && distance >= out.distance) || SpawnsWith(mob, target))
                 continue;
 
             MobMotion const motion = MotionOf(mob);
             if (motion == MobMotion::Static)
                 continue;
+            if (wanders)
+                Leader::Fight::NoteWanderJudged(mob, "walks into the fight");
 
             float const reach = MovementAction::IdleAggroReach(mob, bot, CAREFUL_AGGRO_MARGIN);
             bool const sameFloor = std::fabs(mob->GetPositionZ() - spot.GetPositionZ()) <= PULL_PATH_HEIGHT;
@@ -9672,9 +9738,17 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             intruder.mob && !intruder.mob->IsInCombat() && !IsBossMob(intruder.mob) &&
             intruder.motion != MobMotion::Patrol)
         {
+            // [lead1331] user 2026-11-05 (Q69): a wanderer's own pack round its spawn point (its area's center), not
+            // round the spot it stands on at the tick
+            Position intruderAt = intruder.mob->GetPosition();
+            if (Leader::Fight::WanderArea area; Leader::Fight::WanderAreaOf(intruder.mob, area))
+            {
+                intruderAt = area.center;
+                Leader::Fight::NoteWanderJudged(intruder.mob, "pull together");
+            }
             std::vector<Unit*> spawnPack;
-            CollectPack(botAI, bot, intruder.mob, intruder.mob->GetPosition(), possible, spawnPack,
-                        FightHere(intruder.mob->GetPosition()), measured, false, nullptr);
+            CollectPack(botAI, bot, intruder.mob, intruderAt, possible, spawnPack, FightHere(intruderAt), measured,
+                        false, nullptr);
             // [lead1081] user 2026-11-04 (Q61b): the wanderer engages where it walks into the fight, not at its
             // pack. b233 rfc-h: ~49 mobs planned per run in these pulls, ~26 killed - the wanderer's pack stayed and
             // was the next pull. A neighbour of it comes only by its own aggro reach of the fight spot or by the

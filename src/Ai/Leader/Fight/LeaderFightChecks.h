@@ -494,6 +494,32 @@ namespace Leader::Fight
     // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack
     // reaching it, a walk to it.
     bool LeaderSpotOk(Player* tank, Position const& fight, Position& spot, std::vector<ObjectGuid> const& pack);
+
+    // [lead1331] user 2026-11-05 (Q69, memory user-delegated-20261105): a wandering mob is judged by its whole wander
+    // area, not by the spot it stands on at this tick, so the same layout gives the same pull decision whatever tick
+    // the wanderer is on. b255 rfc-h 5B-2 / 5B-10 pull 1: Earthborer's route distance 14.1 vs 27.3 yd and "the walk in
+    // wakes Earthborer" in one run only; 5H-8 #21 / 5H-16 #23: the Searing Blade Enforcer 19 yd off vs inside the
+    // meeting point. The area: its spawn point (the creature row, Creature::GetRespawnPosition) and its wander
+    // distance (creature.wander_distance, RANDOM_MOTION_TYPE: RandomMovementGenerator walks within it)
+    struct WanderArea
+    {
+        Position center;
+        float radius = 0.0f;
+    };
+    // An idle wanderer (RANDOM_MOTION_TYPE with a wander distance, out of combat): its area in `out`
+    bool WanderAreaOf(Creature* mob, WanderArea& out);
+    // The nearest the area comes to `at`: the 2D distance from its center less its radius (never below 0), with the
+    // height between them
+    float WanderAreaDist(WanderArea const& area, Position const& at);
+    // The core's proximity aggro (Creature::CanStartAttack: the Z gate, the 3D range `reach`, the sight) of the
+    // wanderer on `who` standing at `at`, from anywhere in its area: the Z gate from its spawn height, the range from
+    // the area's nearest point, the sight (`checkLos`) from its spawn point or from that nearest point
+    bool WanderAreaAggroes(Creature* mob, Unit* who, WanderArea const& area, Position const& at, float reach,
+                           bool checkLos);
+    // The wanderers a pull plan judged by their area (spawn low -> the checks that did), drained into the next
+    // pull_order's wanderArea field (map thread)
+    std::map<uint32, std::string>& WanderJudged();
+    void NoteWanderJudged(Creature* mob, char const* check);
 }
 
 #endif

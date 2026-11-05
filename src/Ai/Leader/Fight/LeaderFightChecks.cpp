@@ -2789,4 +2789,76 @@ namespace Leader::Fight
                 return false;
         return Leader::Route(tank, spot).found;  // [lead99]
     }
+
+    bool WanderAreaOf(Creature* mob, WanderArea& out)
+    {
+        if (!mob || mob->IsInCombat() || mob->GetDefaultMovementType() != RANDOM_MOTION_TYPE ||
+            mob->GetWanderDistance() <= 0.0f)
+            return false;
+
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        mob->GetRespawnPosition(x, y, z);
+        out.center.Relocate(x, y, z);
+        out.radius = mob->GetWanderDistance();
+        return true;
+    }
+
+    float WanderAreaDist(WanderArea const& area, Position const& at)
+    {
+        float const flat = std::max(0.0f, area.center.GetExactDist2d(at) - area.radius);
+        float const dz = area.center.GetPositionZ() - at.GetPositionZ();
+        return std::sqrt(flat * flat + dz * dz);
+    }
+
+    bool WanderAreaAggroes(Creature* mob, Unit* who, WanderArea const& area, Position const& at, float reach,
+                           bool checkLos)
+    {
+        if (!mob->CanFly())
+        {
+            float const dz = std::fabs(area.center.GetPositionZ() - at.GetPositionZ()) -
+                             (mob->GetObjectSize() + who->GetObjectSize());
+            if (std::max(0.0f, dz) > CREATURE_Z_ATTACK_RANGE + mob->m_CombatDistance)
+                return false;
+        }
+
+        if (WanderAreaDist(area, at) >= reach)
+            return false;
+
+        if (!checkLos)
+            return true;
+
+        float const flat = area.center.GetExactDist2d(at);
+        float const toward = flat > 0.0f ? std::min(area.radius, flat) / flat : 0.0f;
+        Position const edge(area.center.GetPositionX() + (at.GetPositionX() - area.center.GetPositionX()) * toward,
+                            area.center.GetPositionY() + (at.GetPositionY() - area.center.GetPositionY()) * toward,
+                            area.center.GetPositionZ());
+        Map* map = mob->GetMap();
+        float const eye = at.GetPositionZ() + who->GetCollisionHeight();
+        for (Position const& from : {area.center, edge})
+            if (map->isInLineOfSight(from.GetPositionX(), from.GetPositionY(),
+                                     from.GetPositionZ() + mob->GetCollisionHeight(), at.GetPositionX(),
+                                     at.GetPositionY(), eye, who->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                     VMAP::ModelIgnoreFlags::Nothing))
+                return true;
+
+        return false;
+    }
+
+    std::map<uint32, std::string>& WanderJudged()
+    {
+        thread_local std::map<uint32, std::string> judged;
+        return judged;
+    }
+
+    void NoteWanderJudged(Creature* mob, char const* check)
+    {
+        std::map<uint32, std::string>& judged = WanderJudged();
+        if (judged.size() > 64)
+            judged.clear();
+        std::string& checks = judged[mob->GetSpawnId()];
+        if (checks.find(check) == std::string::npos)
+            checks += (checks.empty() ? "" : ",") + std::string(check);
+    }
 }
