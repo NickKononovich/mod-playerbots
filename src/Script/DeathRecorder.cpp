@@ -161,6 +161,7 @@ namespace
     std::unordered_map<ObjectGuid, uint64> toolMana;  // [lead1400] ManaReturned::FromTools, by player
     std::unordered_map<ObjectGuid, uint64> upkeepMana;  // [lead1431] ManaSpent::Upkeep, by player
     std::unordered_map<ObjectGuid, uint64> healMana;    // [lead1434] ManaSpent::OnHeals, by player
+    std::unordered_map<ObjectGuid, uint64> healReturns;  // [lead1441] ManaReturned::FromHeals, by player
     // [lead1431] an absorb aura's amount at its last apply: (target, caster, spell) -> absorb amount
     std::map<std::tuple<ObjectGuid, ObjectGuid, uint32>, int32> shieldAmounts;
 
@@ -231,6 +232,20 @@ namespace
             return spells;
         }();
         return consumables.count(spellId) != 0;
+    }
+
+    // [lead1441] a healer's own heal-tied mana returns (the core's energize spells): Lifebloom's bloom refund
+    // (spell_druid_lifebloom, half the cast's base cost per stack), Illumination (spell_pal_illumination: the
+    // talent's share of the critical heal's base cost, Holy Shock's too) and Rapture on the caster (SpellAuras.cpp: its
+    // Power Word: Shield broken by damage); Rapture's 63654 goes to the shield's target and is not the healer's own
+    constexpr uint32 SPELL_LIFEBLOOM_ENERGIZE = 64372;
+    constexpr uint32 SPELL_ILLUMINATION_ENERGIZE = 20272;
+    constexpr uint32 SPELL_RAPTURE_ENERGIZE = 47755;
+
+    bool IsHealManaReturn(uint32 spellId)
+    {
+        return spellId == SPELL_LIFEBLOOM_ENERGIZE || spellId == SPELL_ILLUMINATION_ENERGIZE ||
+               spellId == SPELL_RAPTURE_ENERGIZE;
     }
 
     // [lead256] a spell's damage armor does not reduce (any school but physical)
@@ -563,6 +578,13 @@ namespace ManaReturned
         auto const found = toolMana.find(player);
         return found != toolMana.end() ? found->second : 0;
     }
+
+    uint64 FromHeals(ObjectGuid player)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = healReturns.find(player);
+        return found != healReturns.end() ? found->second : 0;
+    }
 }
 
 namespace ManaSpent
@@ -634,14 +656,17 @@ public:
         shieldAmounts.erase(found);
     }
 
-    // [lead1400] the mana a credited return gave (what the bar took): ManaReturned::FromTools
+    // [lead1400] the mana a credited return gave (what the bar took): ManaReturned::FromTools; [lead1441] a return
+    // its own heal gave: ManaReturned::FromHeals
     void OnPowerGain(Unit* unit, uint8 power, int32 gain, uint8 source, uint32 spellId) override
     {
-        if (gain <= 0 || power != POWER_MANA || source != POWER_GAIN_SOURCE_SPELL || !IsTracked(unit) ||
-            !IsCreditedManaReturn(spellId))
+        if (gain <= 0 || power != POWER_MANA || source != POWER_GAIN_SOURCE_SPELL || !IsTracked(unit))
+            return;
+        bool const heal = IsHealManaReturn(spellId);
+        if (!heal && !IsCreditedManaReturn(spellId))
             return;
         std::lock_guard<std::mutex> lock(takenLock);
-        toolMana[unit->GetGUID()] += uint64(gain);
+        (heal ? healReturns : toolMana)[unit->GetGUID()] += uint64(gain);
     }
 
     // Amounts come from DealDamage, which sees the damage after armor, resistances, absorbs and avoidance. The

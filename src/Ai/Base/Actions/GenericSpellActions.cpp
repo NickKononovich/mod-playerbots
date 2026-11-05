@@ -583,10 +583,13 @@ bool CastHealingSpellAction::isUseful()
         return false;
     // [lead1434] no big heal on a member that misses less health than the healer's smallest heal heals: the next
     // action of the trigger (a smaller heal) or nothing - the big one would only overheal
+    // [lead1440] nor a heal over time (Rejuvenation, Renew, Riptide) that heals more than the member misses plus what
+    // the leader expects the main tank to take before it expires (RestState::HotOverheals)
     Unit* target = GetTarget();
     uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
-    return !(target && spellId &&
-             RestState::OverhealsSmallerHeal(bot, target, sSpellMgr->GetSpellInfo(spellId)));
+    SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    return !(target && info &&
+             (RestState::OverhealsSmallerHeal(bot, target, info) || RestState::HotOverheals(bot, target, info)));
 }
 
 // The threat strategy holds Aoe actions at 50 % (30 % careful) of the tank's threat on any mob near the bot or its
@@ -1689,7 +1692,13 @@ bool BuffOnMainTankAction::HotUpkeepYields()
     if (!spellInfo || !spellInfo->HasAura(SPELL_AURA_PERIODIC_HEAL))
         return false;
 
-    return HealTriage::TankUpkeepYields(botAI, GetTarget());
+    Unit* target = GetTarget();
+    // [lead1440] in a fight the upkeep follows the heal over time rule (RestState::HotOverheals: no Lifebloom /
+    // Rejuvenation / Renew / Riptide that heals more than the tank misses plus the leader's estimate of its damage
+    // before it expires); out of a fight it is the pre-pull HoT (the user's rule: buffs and HoTs before the pull)
+    if (target && target->IsInCombat() && RestState::HotOverheals(bot, target, spellInfo))
+        return true;
+    return HealTriage::TankUpkeepYields(botAI, target);
 }
 
 bool BuffOnMainTankAction::isUseful() { return !HotUpkeepYields() && CastBuffSpellAction::isUseful(); }

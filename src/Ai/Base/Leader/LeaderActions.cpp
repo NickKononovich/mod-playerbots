@@ -1214,6 +1214,11 @@ bool LeaderHealTargetAction::Execute(Event /*event*/)
             // while the member misses less than that one heals (spell data): the smaller heal of the list tops it up
             if (RestState::OverhealsSmallerHeal(bot, target, info))
                 continue;
+            // [lead1440] in a fight a heal over time first in the list (Rejuvenation) heals no more than the member
+            // misses plus the leader's estimate of the main tank's damage before it expires (RestState::HotOverheals);
+            // out of a fight lead940 / lead1263 hold it already (only when no direct heal can be cast)
+            if (periodic && !outOfFight && RestState::HotOverheals(bot, target, info))
+                continue;
             if (botAI->CanCastSpell(heal, target) && botAI->CastSpell(heal, target))
             {
                 if (outOfFight && periodic)

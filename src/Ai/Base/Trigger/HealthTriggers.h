@@ -314,6 +314,12 @@ float DirectHealAverage(Player* healer, SpellInfo const* info, Unit* target);
 // [lead1434] true when `info` is a direct heal bigger than the healer's smallest direct heal (the highest rank it
 // knows of each) while `target` misses less health than that smallest heal's average: the big heal would only overheal
 bool OverhealsSmallerHeal(Player* healer, Unit* target, SpellInfo const* info);
+// [lead1440] a heal over time's ticks on `target` over its duration from spell data (SPELL_AURA_PERIODIC_HEAL effects
+// with the healer's and the target's bonuses; 0: none)
+float HotHealAverage(Player* healer, SpellInfo const* info, Unit* target);
+// [lead1440] true when `info` heals over time and its cast (ticks plus direct part) heals more than `target` misses
+// plus, on the group's main tank in a fight with a mob on it, the leader's estimate of its damage over the duration
+bool HotOverheals(Player* healer, Unit* target, SpellInfo const* info);
 // [lead258] a healer's mana (% of its max) per tank health it heals: the group tank's health over its health per mana
 float HealerPctPerTankHealth(Player* healer);
 // [lead264] A member's mana spend from its spell data while nothing is measured (% of max mana per second): the mana

@@ -803,6 +803,53 @@ bool OverhealsSmallerHeal(Player* healer, Unit* target, SpellInfo const* info)
     return missing < cached.smallest && DirectHealAverage(healer, info, healer) > cached.smallest;
 }
 
+float HotHealAverage(Player* healer, SpellInfo const* info, Unit* target)
+{
+    if (!healer || !info || !target)
+        return 0.0f;
+    float amount = 0.0f;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+    {
+        int32 const base = effect.CalcValue(healer);
+        if (base <= 0 || effect.Effect != SPELL_EFFECT_APPLY_AURA || effect.ApplyAuraName != SPELL_AURA_PERIODIC_HEAL ||
+            !effect.Amplitude)
+            continue;
+        // HealerThroughput's sum: the ticks of its duration, each with the healer's and the target's bonuses
+        float const ticks = float(std::max(info->GetMaxDuration(), 0)) / float(effect.Amplitude);
+        amount += ticks * float(target->SpellHealingBonusTaken(
+                              healer, info,
+                              healer->SpellHealingBonusDone(target, info, uint32(base), DOT, effect.EffectIndex), DOT));
+    }
+    return amount;
+}
+
+bool HotOverheals(Player* healer, Unit* target, SpellInfo const* info)
+{
+    if (!healer || !target || !info || !target->IsAlive() || !info->HasAura(SPELL_AURA_PERIODIC_HEAL))
+        return false;
+    // [lead1440] coordinator 2026-11-05 (b263 rfc-h 5A-9: the resto druid cast Lifebloom 108 and Rejuvenation 54
+    // times, most on a full-health tank that took nothing in the fight): a heal over time follows lead1434's rule for
+    // direct heals. It heals what the member misses now plus what it takes before the heal expires; on the group's
+    // main tank in a fight with a mob on it that is the leader's estimate of the fight (the plan's tank healths over
+    // its seconds, PredictNextFight) over the heal's duration, on anybody else the missing health alone. A cast that
+    // heals more than that (its ticks and its direct part, spell data with the bonuses) only overheals
+    float const heal = HotHealAverage(healer, info, target) + DirectHealAverage(healer, info, target);
+    if (heal <= 0.0f)
+        return false;
+    float need = float(target->GetMaxHealth() - target->GetHealth());
+    Group* group = healer->GetGroup();
+    if (group && target->GetGUID() == PlayerbotAI::GetMainTankGuid(group) && target->IsInCombat() &&
+        !target->getAttackers().empty())
+    {
+        NextFight fight;
+        if (PredictNextFight(healer, fight) && fight.cost > 0.0f)
+            if (float const sec = FightSecOf(healer, fight); sec > 0.0f)
+                need += fight.cost * float(target->GetMaxHealth()) / sec *
+                        float(std::max(info->GetMaxDuration(), 0)) / float(IN_MILLISECONDS);
+    }
+    return need < heal;
+}
+
 float HealerPctPerTankHealth(Player* healer)
 {
     Group* group = healer ? healer->GetGroup() : nullptr;

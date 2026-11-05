@@ -324,6 +324,20 @@ bool HurricaneChannelCheckTrigger::IsActive()
     return false;
 }
 
+namespace
+{
+    // [rot510] b263 rfc-h 5A-9: "lifebloom on main tank" (20.8) and "rejuvenation on main tank" (20.7) ran in
+    // fights on a full-health tank that took nothing (108 Lifeblooms, 54 Rejuvenations). The upkeep triggers fire only
+    // when the cast heals no more than the tank misses plus the leader's estimate of its damage before the heal
+    // expires (RestState::HotOverheals, lead1440: the action's own check, here so the next trigger's heal runs)
+    bool MainTankHotOverheals(PlayerbotAI* botAI, Player* bot, Unit* tank, char const* spell)
+    {
+        uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", spell)->Get();
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        return info && RestState::HotOverheals(bot, tank, info);
+    }
+}
+
 bool LifebloomOnMainTankTrigger::IsActive()
 {
     Unit* target = GetTarget();
@@ -332,6 +346,8 @@ bool LifebloomOnMainTankTrigger::IsActive()
 
     Aura* lifebloom = botAI->GetAura("lifebloom", target, true, true);
     if (LifebloomLetBloom(bot, target, lifebloom))  // [b31_sd]
+        return false;
+    if (MainTankHotOverheals(botAI, bot, target, "lifebloom"))  // [rot510]
         return false;
 
     return !lifebloom || lifebloom->GetStackAmount() < 3 || lifebloom->GetDuration() < LIFEBLOOM_REFRESH_WINDOW_MS;
@@ -353,7 +369,8 @@ bool LifebloomLetBloom(Player* bot, Unit* tank, Aura* lifebloom)
 bool RejuvenationOnMainTankTrigger::IsActive()
 {
     Unit* target = GetTarget();
-    return target && target->IsAlive() && target->IsInCombat() && BuffOnMainTankTrigger::IsActive();
+    return target && target->IsAlive() && target->IsInCombat() && BuffOnMainTankTrigger::IsActive() &&
+           !MainTankHotOverheals(botAI, bot, target, "rejuvenation");  // [rot510]
 }
 
 // ---- [b32_brez] bear tank battle res ---------------------------------------------------------------------------

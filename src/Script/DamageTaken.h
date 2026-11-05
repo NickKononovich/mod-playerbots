@@ -34,6 +34,11 @@ namespace HealingDone
 namespace ManaReturned
 {
     uint64 FromTools(ObjectGuid player);
+    // [lead1441] ... and from its own heals' returns (the same hook): Lifebloom's bloom refund (64372,
+    // spell_druid_lifebloom), Illumination on a heal's crit (20272, spell_pal_illumination: Holy Shock's crit too)
+    // and Rapture on its shield's end (47755, AuraEffect removal in SpellAuras.cpp) - a healer's heal mana is its
+    // heals' cast costs less these (ManaSpent::OnHeals)
+    uint64 FromHeals(ObjectGuid player);
 }
 
 // [lead1431] Mana a player's own casts spent inside a dungeon or raid since the server started on spells that heal
