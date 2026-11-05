@@ -11,6 +11,7 @@
 #include "GameObject.h"
 #include "GenericTriggers.h"
 #include "DBCStores.h"       // [rot461] IsSharedDifficultyMap
+#include "GameTime.h"        // [rot480] the respawn times' clock
 #include "InstanceScript.h"  // [rot461]
 #include "Item.h"
 #include "LeaderOrders.h"  // [lead955] Leader::ExecutorMember
@@ -336,6 +337,12 @@ bool InfernoBossTrigger::IsActive()
 // LoadEncounters does), and an encounter is done by the mask or by its kill-credit creature lying dead in the map (an
 // instance creature stays in the map's store once its grid is loaded; one never loaded counts as standing). Looked
 // up once per boss target (the store walk is no per-tick work)
+// [rot480] b241-b255: rot470 never fired once ("holds Inferno on Bazzalan: not the instance's last boss" 145 times in
+// b255 with Bazzalan the last boss standing). The core runs the dynamic spawn mode (spawn group 0 has no
+// SPAWNGROUP_FLAG_COMPATIBILITY_MODE, Respawn.ForceCompatibilityMode = 0): Creature::RemoveCorpse saves the respawn
+// time and removes the dead creature from the map entirely (AddObjectToRemoveList), so a boss killed minutes ago is no
+// longer in the spawn-id store. Its spawn is then dead by the map's own record: a pending respawn time
+// (Map::GetCreatureRespawnTimes) for a spawn of the credit creature (CreatureData::id)
 namespace
 {
     bool EncounterCreditDead(Map* map, uint32 creditEntry)
@@ -343,6 +350,15 @@ namespace
         for (auto const& [spawnId, creature] : map->GetCreatureBySpawnIdStore())
             if (creature && creature->GetEntry() == creditEntry && !creature->IsAlive())
                 return true;
+        time_t const now = GameTime::GetGameTime().count();
+        for (auto const& [spawnId, respawnTime] : map->GetCreatureRespawnTimes())
+        {
+            if (respawnTime <= now)
+                continue;
+            CreatureData const* data = sObjectMgr->GetCreatureData(spawnId);
+            if (data && (data->id == creditEntry || data->id2 == creditEntry || data->id3 == creditEntry))
+                return true;
+        }
         return false;
     }
 
@@ -406,7 +422,8 @@ bool InfernoOnLastEncounter(Player* bot, Unit* target)
         entry.target = target->GetGUID();
         entry.last = LastEncounterLookup(bot, target);
         if (entry.last)
-            LOG_DEBUG("playerbots", "[rot470] {}: {} is the instance's last boss standing (every other encounter done)",
+            LOG_DEBUG("playerbots",
+                      "[rot470] [rot480] {}: {} is the instance's last boss standing (every other encounter done)",
                       bot->GetName(), target->GetName());
     }
     return entry.last;
