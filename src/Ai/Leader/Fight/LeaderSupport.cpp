@@ -981,7 +981,12 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
             it = st.buffTold.erase(it);
             continue;
         }
-        if (target && target->HasAura(told.spell, told.caster))
+        // [lead1251] b248 rfc-h (16 runs): 66 orders issued, 136 "cast" - a refresh order (the buff on but not
+        // lasting the next fight, MissingGivableBuffs) ended "cast" on the old aura, was told again by the next
+        // queue and ended again (5A-1 before Oggleflint: Blessing of Might on Rthunaa "cast" 4 times, step 1 12 s).
+        // Cast = the caster's aura on the target with more time left than it had when the order was told
+        Aura const* on = target ? target->GetAura(told.spell, told.caster) : nullptr;
+        if (on && (told.leftMs <= 0 || on->GetDuration() < 0 || on->GetDuration() > told.leftMs))
         {
             ++st.buffCast;
             ended(told, "cast");
@@ -1064,7 +1069,11 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
             work += (work.empty() ? "" : ", ") + order.what + " (its External holds another order)";
             continue;
         }
-        st.buffTold[order.caster] = order;
+        DungeonLeaderState::Support::BuffOrder& told = st.buffTold[order.caster];
+        told = order;
+        Unit* buffed = ObjectAccessor::GetUnit(*caster, order.target);
+        Aura const* before = buffed ? buffed->GetAura(order.spell, order.caster) : nullptr;
+        told.leftMs = before ? std::max(before->GetDuration(), 1) : 0;  // [lead1251]
         st.buffIssuedKeys.insert(key);
         work += (work.empty() ? "" : ", ") + order.what;
         if (changed)

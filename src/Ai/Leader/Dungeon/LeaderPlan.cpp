@@ -151,6 +151,22 @@ namespace Leader::Dungeon
                                                  [bot](uint32 spell) { return bot->HasSpell(spell); });
             return shardSummon ? bot->HasItemCount(ITEM_SOUL_SHARD, 1) : bot->HasSpell(SPELL_SUMMON_IMP);
         }
+
+        // [lead1250] the idle boss the held look's pull is (IsBossLook) or brings (his formation, script or aggro
+        // reach: Travel::BossBroughtBy, the buff pass's own test); nullptr: a pull with no boss in it
+        Creature* HeldLookBoss(LeaderGroup& group, Player* tank, ObjectGuid look)
+        {
+            Map* map = tank->GetMap();
+            Creature* mob = look.IsEmpty() || !map ? nullptr : map->GetCreature(look);
+            if (!mob || !mob->IsAlive() || mob->IsInCombat())
+                return nullptr;
+            if (IsBossLook(tank, look))
+                return mob;
+            for (ObjectGuid const& bossGuid : group.BossCreatures())
+                if (Creature* boss = map->GetCreature(bossGuid); boss && Leader::Travel::BossBroughtBy(tank, boss, mob))
+                    return boss;
+            return nullptr;
+        }
     }
 
     // [lead6] The one readiness judge: the group here (alive, in the instance, within LEADER_READY_RANGE, the
@@ -1478,6 +1494,7 @@ namespace Leader::Dungeon
             {
                 lead.bossWaitWhy.clear();
                 lead.bossWaitFor.Clear();
+                lead.bossWaitEarly = false;  // [lead1250]
                 if (lead.bossPullIssued != boss->GetGUID())
                 {
                     lead.bossPullIssued = boss->GetGUID();
@@ -1985,20 +2002,50 @@ namespace Leader::Dungeon
             // the boss wait: every member below its boss line rests at once (MemberBossGap, lead46)
             if (decision.verdict == PullPlanner::Verdict::Held && lineHold && !decision.lookTarget.IsEmpty() &&
                 IsBossLook(tank, decision.lookTarget))
+            {
                 lead.bossWaitFor = decision.lookTarget;
+                lead.bossWaitEarly = false;
+            }
             // [lead514] a trash pull that brings a boss is his pull: the planner's hold "boss pull: <boss> comes with
             // it, <member> at N % mana (needs M %)" is the wait for that boss, every member below its boss line rests
             // at once (lead85), the tank's Rest holds to its boss line (MemberBossGap)
             else if (decision.verdict == PullPlanner::Verdict::Held && lineHold &&
                      decision.why.rfind("boss pull: ", 0) == 0)
+            {
                 for (ObjectGuid const& bossGuid : group.BossCreatures())
                     if (Creature* boss = tank->GetMap()->GetCreature(bossGuid);
                         boss && boss->IsAlive() && !boss->IsInCombat() &&
                         decision.why.compare(std::strlen("boss pull: "), boss->GetName().size(), boss->GetName()) == 0)
                     {
                         lead.bossWaitFor = bossGuid;
+                        lead.bossWaitEarly = false;
                         break;
                     }
+            }
+            // [lead1250] b248 rfc-h 5B-10 1148-1191 s: the pull that brings Bazzalan was held for the buff pass and
+            // the priest's drink ("the group buffs", "Rtpriaa sits") 16 s before the planner's boss lines were read;
+            // only then did the elemental shaman (9 %, its line 100 %) start to drink - 20 s more, one wait after the
+            // other (5B-10 912-942 s Jergosh the same: the buff food's 10 s, then the shaman's 12 s). Any readiness
+            // hold of a pull that is or brings a boss is that boss's wait: every member below its boss line rests
+            // from the first held look, along with the buff pass and the others' rests. The early wait follows the
+            // look: a held look with no boss in its pull ends it
+            else if (decision.verdict == PullPlanner::Verdict::Held && decision.readinessHold &&
+                     (lead.bossWaitFor.IsEmpty() || lead.bossWaitEarly))
+            {
+                Creature* boss = HeldLookBoss(group, tank, decision.lookTarget);
+                if (boss && lead.bossWaitFor != boss->GetGUID())
+                {
+                    lead.bossWaitFor = boss->GetGUID();
+                    lead.bossWaitEarly = true;
+                    LOG_INFO("playerbots", "[lead1250] the boss wait for {} starts with the readiness hold: {} ({})",
+                             boss->GetName(), decision.why, run.runId);
+                }
+                else if (!boss && lead.bossWaitEarly)
+                {
+                    lead.bossWaitFor.Clear();
+                    lead.bossWaitEarly = false;
+                }
+            }
             if (restFor != lead.plannerRestFor)
             {
                 lead.plannerRestFor = restFor;
