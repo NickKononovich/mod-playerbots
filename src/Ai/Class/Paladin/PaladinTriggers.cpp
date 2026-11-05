@@ -6,9 +6,8 @@
 
 #include "PaladinTriggers.h"
 #include "HealthTriggers.h"  // [lead87] RestState::OwnManaLine
-#include "LeaderOrders.h"    // [lead1040] the leader's open pull order
+#include "LeaderOrders.h"    // [lead1083] Leader::LedBot
 #include <map>
-#include <set>
 #include "SpellMgr.h"
 #include "GenericBuffUtils.h"
 #include "PaladinActions.h"
@@ -406,33 +405,18 @@ bool ai::paladin::TankPleaNow(Player* bot)
         }
         return false;
     }
-    // [lead1063] b231: the pre-pull Plea never fired - the leader's boss pull order and the tank's pull are one tick
-    // ("pull_trace execute: 1 ms after the issue"), and the pull action outranks the non-combat Plea, so an open boss
-    // order out of a fight was never seen here. The leader's own estimate of the boss pull (BossPullSecOf: this
-    // fight's rest, the trash, the rest and the walk to him) within the aura's duration is the moment: cast now it is
-    // still up at his pull, and Guarded by the Light keeps it the whole fight (wowsims prot: before the pull)
-    if (!Leader::LedBot(bot))
-        return false;
-    if (toBoss >= 0.0f && toBoss <= durationSec)
-    {
-        note("before the boss pull (its estimate within the aura)", toBoss, rechargeSec);
-        return true;
-    }
-    Leader::PullOrder order;
-    if (!Leader::Orders::GetOpen(bot->GetGUID(), order))
-        return false;
-    Creature* boss = bot->GetMap() ? bot->GetMap()->GetCreature(order.target) : nullptr;
-    if (!boss || !boss->IsAlive() || !isBoss(boss))
-        return false;
-    float const walkSec = std::max(bot->GetExactDist(boss) - bot->GetMeleeRange(boss), 0.0f) /
-                          std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
-    if (walkSec > durationSec)
-        return false;
-    thread_local std::set<std::pair<uint64, uint32>> logged;  // one line per tank and order
-    if (logged.insert({bot->GetGUID().GetRawValue(), order.id}).second)
-        LOG_INFO("playerbots", "[lead1040] {}: Divine Plea before the pull of {} ({:.1f} s walk <= its {:.0f} s)",
-                 bot->GetName(), boss->GetName(), walkSec, durationSec);
-    return true;
+    // [lead1063] b231: the pre-pull Plea never fired - the leader's boss pull order and the tank's pull are one tick,
+    // so the gate cast it out of a fight on the leader's estimate of the boss pull (within the aura's 15 s) or on the
+    // tank's walk to an open boss order.
+    // [rot500] b257 rfc-h 5E: Plea up 4/18, 12/35, 1/23, 13/20 and 4/26, 9/32 samples of the boss fights - every
+    // pre-pull cast ran out before the tank's first melee hit (5E-5 Jergosh: cast ~15 s before his pull, 0.2 s left at
+    // it; Taragaman: cast at a 48 yd walk, Avenger's Shield pull, first swing 9 s later; Bazzalan: cast in the gap on
+    // an estimate of 5 s, the boss ~40 s off) and left it on its 60 s recharge for the fight. The core refreshes Plea
+    // only on the tank's melee hit (spell_pal_guarded_by_the_light, proc 63521; Avenger's Shield does not) and a
+    // Plea out of a fight gives its 25 % once. wowsims' prepull cast is the cast just before the first hit; the
+    // first moment that hit is sure is the boss fight itself (the branch above), one GCD into it, where every swing
+    // keeps it up and Plea's mana is the same
+    return false;
 }
 
 namespace
