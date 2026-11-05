@@ -178,6 +178,9 @@ Wake GhoulsWakeAt(Player* dk, Creature* boss, Position const& at)
 
 Wake GhoulsWake(Player* dk, Creature* boss) { return GhoulsWakeAt(dk, boss, dk->GetPosition()); }
 
+// [lead910] how near the tank knight's step move stops (the MoveTo tolerance its step order carries)
+constexpr float STEP_ARRIVE_YD = 1.0f;
+
 // [lead910] user 2026-11-03 (44): the tank knight's place where the boss's own aggro reach takes in its ghouls'
 // landing: the nearest spot by its walk (navmesh, Leader::WalkYd) round it where the ghouls wake nothing (the boss's
 // reach plus their spread, every other idle mob's too) and every group member still heals / sees it (HealReaches,
@@ -203,6 +206,10 @@ bool StepOutSpot(Player* dk, Creature* boss, std::vector<Player*> const& members
                 std::fabs(z - dk->GetPositionZ()) > 4.0f)
                 continue;
             Position const spot(x, y, z);
+            // [lead1270] b250 rfc-h 5C-3 646 s: the collision clip put a spot 0.2 yd off - inside the step move's
+            // stop, so the knight never walked and never left the boss's reach: no step
+            if (dk->GetExactDist(spot) <= STEP_ARRIVE_YD)
+                continue;
             if (best && dk->GetExactDist(spot) >= bestWalk)
                 continue;
             if (GhoulsWakeAt(dk, boss, spot).blocker)
@@ -230,6 +237,10 @@ bool StepOutSpot(Player* dk, Creature* boss, std::vector<Player*> const& members
     }
     return false;
 }
+
+// [lead881] a reason ArmyBlocked gives that ends by itself while the knight stands out of combat: its walk (it
+// stops at its spot) and its runes (they come back by their own cooldowns, Player::GetRuneCooldown)
+bool ArmyBlockPasses(std::string const& why) { return why == "walking" || why == "its runes are not ready"; }
 
 // [lead910] the tank knight's step for its prepull Army, kept per plan: searched once from where it stands when the
 // boss's own reach blocks its landing; true while the step is the way to its channel (the leader keeps the move on)
@@ -262,7 +273,25 @@ bool StepOut(LeaderGroup& group, DungeonLeaderState::ArmyPrepull& plan, Player* 
                                                 .Str("why", blocked)
                                                 .Real("walk", Leader::WalkYd(dk, spot)));
     }
-    Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, *plan.stepTo, 1.0f,
+    // [lead1270] b250 rfc-h 5C-3 646-885 s: the knight stood on its step and its ghouls still woke the boss there; the
+    // boss pull waited for the step forever. Standing at the step with a reason that does not pass by itself: the
+    // step does not clear it - dropped, the gate goes on without the Army (NoteArmyBlocked logs the reason)
+    if (!blocked.empty() && !ArmyBlockPasses(blocked) && !dk->isMoving() &&
+        dk->GetExactDist(*plan.stepTo) <= STEP_ARRIVE_YD)
+    {
+        LOG_INFO("playerbots", "[lead1270] {}: stands on its step and {}; no prepull Army before {}", dk->GetName(),
+                 blocked, boss->GetName());
+        group.LogEvent("army_prepull_step_failed", JsonObject()
+                                                       .Str("dk", dk->GetName())
+                                                       .Str("boss", boss->GetName())
+                                                       .Str("why", blocked)
+                                                       .Str("tag", "[lead1270]"));
+        plan.stepTo.reset();
+        plan.stepFrom = dk->GetPosition();
+        plan.stepNone = true;
+        return false;
+    }
+    Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, *plan.stepTo, STEP_ARRIVE_YD,
                             "army: steps out of the boss's reach to channel");
     return true;
 }
@@ -329,10 +358,6 @@ std::string ArmyBlocked(Player* dk, Creature* boss, bool atPrep)
     }
     return std::string();
 }
-
-// [lead881] a reason ArmyBlocked gives that ends by itself while the knight stands out of combat: its walk (it
-// stops at its spot) and its runes (they come back by their own cooldowns, Player::GetRuneCooldown)
-bool ArmyBlockPasses(std::string const& why) { return why == "walking" || why == "its runes are not ready"; }
 
 // [lead881] seconds until every rune is back (the longest rune cooldown; a log fact, no decision reads it)
 float RuneWaitSec(Player* dk)
@@ -607,7 +632,7 @@ void TickArmy(LeaderGroup& group, Player* tank, std::vector<Player*> const& seat
         // [lead910] the step's channel spot is kept while the channel runs; after it the knight walks back (until the
         // pull order takes it)
         if (plan.stepTo && plan.startedMs && !plan.done)
-            Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, *plan.stepTo, 1.0f,
+            Leader::Events::SetMove(dk->GetGUID(), Leader::MoveEvent::MoveTo, *plan.stepTo, STEP_ARRIVE_YD,
                                     "army: steps out of the boss's reach to channel");
         if (plan.stepTo && plan.done && !plan.stepBack)
         {

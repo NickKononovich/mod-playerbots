@@ -1399,6 +1399,18 @@ namespace Leader::Dungeon
                 if (!waitFor.empty())
                 {
                     lead.spotsWaiting = gate;
+                    // [lead1270] b250 rfc-h 5C-3 654.9-885 s: the Taragaman commit waited for the Army step with no
+                    // decision line (the run's leader_spots_wait only): each new reason a commit waits on is logged
+                    if (std::string const key = waitFor.substr(0, waitFor.find_first_of("0123456789"));
+                        key != lead.commitWaitKey)
+                    {
+                        lead.commitWaitKey = key;
+                        Decisions().Write(run, "leader", "commit_wait", lead.commitMob,
+                                          mob ? mob->GetName() : std::string(), true,
+                                          JsonObject().Str("why", waitFor).Str("kind", committed.kind)
+                                              .Real("sec", getMSTimeDiff(lead.commitSinceMs, now) / 1000.0f)
+                                              .Str("tag", "[lead1270]"));
+                    }
                     if (!lead.spotsLogMs || getMSTimeDiff(lead.spotsLogMs, now) >= 10 * IN_MILLISECONDS)
                     {
                         lead.spotsLogMs = now;
@@ -2252,6 +2264,7 @@ namespace Leader::Dungeon
                                                             mob->ToCreature()->GetDefaultMovementType() ==
                                                                 WAYPOINT_MOTION_TYPE);
                     lead.commitWhy = pickWhy;
+                    lead.commitWaitKey.clear();
                     Decisions().Write(run, "leader", "pull_commit", mobGuid, mob->GetName(), true,
                                                   JsonObject().Str("kind", decision.kind).Str("pick", pickWhy)
                                                       .Str("reason", decision.reason));

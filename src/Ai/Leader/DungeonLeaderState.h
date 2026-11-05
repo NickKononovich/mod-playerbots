@@ -186,6 +186,7 @@ namespace Leader
         bool commitOrderSeen = false;
         bool commitMoving = false;
         std::string commitWhy;
+        std::string commitWaitKey;  // [lead1270] the last commit_wait logged (its reason without numbers)
         bool patrolWindowOpen = true;
         std::string roomSig;  // [lead18] the last room_order logged
         // [lead18] the fight's anchor (LEADER_ANCHORED_SPOTS) and each spot's anchor serial
