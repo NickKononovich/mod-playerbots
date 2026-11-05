@@ -886,7 +886,8 @@ bool PrePullCcAction::ClaimTarget(PrePullCc::Plan const& plan)
 
             pool.push_back(creature);
             CrowdControlOption const* option = FindCrowdControl(botAI, creature, true);
-            if (!option)
+            // [lead1330] user 2026-11-05 (Q67): a fear is no dungeon crowd control (only the leader's emergency)
+            if (!option || (instance && IsFearCrowdControl(botAI, *option)))
                 continue;
 
             // A Sap is cast from next to the mob, before the tank pulls: only for a pack the tank is about to pull,

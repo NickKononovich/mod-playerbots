@@ -172,6 +172,12 @@ CrowdControlOption const* FindCrowdControl(PlayerbotAI* botAI, Unit* target, boo
     return nullptr;
 }
 
+bool IsFearCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option)
+{
+    return (option.flags & CC_FLAG_FEAR) ||
+           (GetCrowdControlMechanics(GetCrowdControlHoldInfo(botAI, option)) & (1ULL << MECHANIC_FEAR)) != 0;
+}
+
 bool KnowsCrowdControl(PlayerbotAI* botAI, bool prePull)
 {
     CrowdControlRole const* role = GetCrowdControlRole(botAI->GetBot()->getClass());

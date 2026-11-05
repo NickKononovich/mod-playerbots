@@ -394,6 +394,21 @@ namespace Leader::Dungeon
                 left.push_back(spot);
         }
 
+        // [lead62] the healer's fastest known heal's cast (its own cast time: haste, talents); 0: none known
+        float HealerFastestCastSec(Player* healer)
+        {
+            static constexpr uint32 HEALS[] = {2061, 8004, 19750, 8936, 50464, 331, 635, 5185, 2050};
+            float castSec = 0.0f;
+            for (uint32 spell : HEALS)
+                if (healer->HasSpell(spell))
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
+                    {
+                        float const sec = info->CalcCastTime(healer) / 1000.0f;
+                        castSec = castSec > 0.0f ? std::min(castSec, sec) : sec;
+                    }
+            return castSec;
+        }
+
         // [lead243] the seconds a threat was built in: its first sight to its last, at least the global cooldown
         // its first cast landed in
         float ThreatSeenSec(Leader::DungeonLeaderState::ThreatSeen const& seen)
@@ -2974,13 +2989,119 @@ namespace Leader::Dungeon
             // where the game lets it hold, on every tick: the member has a hold for the mob, nothing on the mob
             // breaks it (CrowdControlWouldBreak) unless it is held now, and a root alone is no hold on a mob in melee
             // with its victim
+            // [lead1330] user 2026-11-05 (Q67): a fear is no dungeon crowd control. b256 rfc-h 5E-13 748-759 s: the
+            // leader's Cc on a Searing Blade Warlock casting at the paladin from 30-45 yd out of its sight was the
+            // warlock's Fear, cast three times for nothing (the feared mob runs, comes back, casts again). A caster out
+            // of the tank's sight stays with what the fight already does: the kill order's ranged damage, the
+            // interrupts, the tank's line-of-sight pull. A fear is the leader's emergency only: the mob's victim dies
+            // before the tank has the mob back AND before the healer's next heal lands (its attackers' AttackerDps
+            // over its health + absorbs, lead62 / lead985), and the mob's run cannot reach a sleeping pack: the hold's
+            // duration (spell data) x the mob's run speed (FleeingMovementGenerator runs; creature data) + the core's
+            // assistance radius (Creature::CallAssistance, every CreatureFamilyAssistancePeriod in combat) round the
+            // mob holds no idle hostile (IdleAggroCheck)
+            auto const fearAllowed = [&](Player* member, Unit* mob, SpellInfo const* hold) -> bool
+            {
+                JsonObject fields;
+                fields.Str("member", member->GetName()).Str("spell", hold->SpellName[LOCALE_enUS]);
+                bool allowed = false;
+                std::string why;
+                Unit* const victimUnit = mob->GetVictim();
+                Player* const victim = victimUnit ? victimUnit->ToPlayer() : nullptr;
+                if (!victim || !victim->IsAlive() || !victim->IsInSameGroupWith(tank))
+                    why = "its victim is no member";
+                else
+                {
+                    float incoming = 0.0f;
+                    for (Unit* attacker : victim->getAttackers())
+                        if (attacker && attacker->IsAlive() && attacker->GetVictim() == victim)
+                        {
+                            float spellPart = 0.0f;
+                            incoming += AttackerDps(attacker, victim, spellPart);
+                        }
+                    float const health = float(victim->GetHealth()) +
+                                         float(victim->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
+                    float const toDeath = incoming > 0.0f ? health / incoming : -1.0f;
+                    // the tank's take-back: its ready taunt in range and sight (the global cooldown + the leader's
+                    // tick), else its walk into melee reach + one global cooldown; none on the tank itself
+                    float takeBack = -1.0f;
+                    if (victim != tank && tank->IsAlive())
+                    {
+                        for (uint32 taunt : TANK_TAUNTS)
+                            if (tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt))
+                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
+                                    info && tank->IsWithinCombatRange(mob, info->GetMaxRange(false)) &&
+                                    tank->IsWithinLOSInMap(mob))
+                                {
+                                    takeBack = HEADROOM_GCD_SEC + LEADER_FIGHT_TICK_MS / 1000.0f;
+                                    break;
+                                }
+                        if (takeBack < 0.0f)
+                            takeBack = std::max(0.0f, tank->GetExactDist(mob) - tank->GetMeleeRange(mob)) /
+                                           std::max(tank->GetSpeed(MOVE_RUN), 1.0f) +
+                                       HEADROOM_GCD_SEC;
+                    }
+                    // the healer's next heal on it (lead62): its fastest cast + the global cooldown + the walk into
+                    // heal reach + the next cast
+                    float healSec = -1.0f;
+                    if (healer && healer->IsAlive())
+                        if (float const cast = HealerFastestCastSec(healer); cast > 0.0f)
+                            healSec = cast + HEADROOM_GCD_SEC +
+                                      std::max(0.0f, healer->GetExactDist(victim) - Leader::LEADER_HEAL_REACH_YD) /
+                                          std::max(healer->GetSpeed(MOVE_RUN), 1.0f) +
+                                      cast;
+                    bool const dies = toDeath >= 0.0f && (takeBack < 0.0f || toDeath <= takeBack) &&
+                                      (healSec < 0.0f || toDeath <= healSec);
+                    fields.Str("victim", victim->GetName())
+                        .Real("toDeath", toDeath)
+                        .Real("takeBack", takeBack)
+                        .Real("healSec", healSec);
+                    if (!dies)
+                        why = "its victim lives without it";
+                    else
+                    {
+                        float const durationSec = std::max(hold->GetMaxDuration(), 0) / 1000.0f;
+                        float const runYd = mob->GetSpeed(MOVE_RUN) * durationSec;
+                        float const assistYd = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+                        std::list<Creature*> idle;
+                        IdleAggroCheck check{tank};
+                        Acore::CreatureListSearcher<IdleAggroCheck> searcher(mob, idle, check);
+                        Cell::VisitObjects(mob, searcher, runYd + assistYd);
+                        Creature* closest = nullptr;
+                        for (Creature* other : idle)
+                            if (other != mob && (!closest || mob->GetExactDist(other) < mob->GetExactDist(closest)))
+                                closest = other;
+                        fields.Real("runYd", runYd).Real("assistYd", assistYd);
+                        if (closest)
+                            fields.Str("sleeper", closest->GetName()).Real("sleeperYd", mob->GetExactDist(closest));
+                        allowed = durationSec > 0.0f && !closest;
+                        why = durationSec <= 0.0f ? "no hold duration"
+                              : closest           ? "its run reaches a sleeping pack"
+                                                  : "its victim dies otherwise, no sleeping pack in its run";
+                    }
+                }
+                // logged on a change of the verdict per member and mob
+                thread_local std::map<std::pair<uint64, uint64>, bool> verdicts;
+                if (verdicts.size() > 4096)
+                    verdicts.clear();
+                auto const key = std::make_pair(member->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue());
+                if (auto const was = verdicts.find(key); was == verdicts.end() || was->second != allowed)
+                {
+                    verdicts[key] = allowed;
+                    Decisions().Write(run, "leader", "cc_fear", mob->GetGUID(), mob->GetName(), true,
+                                      fields.Str("verdict", allowed ? "emergency" : "refused").Str("why", why));
+                }
+                return allowed;
+            };
             auto const ccHolds = [&](Player* member, Unit* mob) -> bool
             {
                 PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
                 CrowdControlOption const* option = memberAI ? FindCrowdControl(memberAI, mob, false) : nullptr;
                 if (!option)
                     return false;
-                uint64 const mechanics = GetCrowdControlMechanics(GetCrowdControlHoldInfo(memberAI, *option));
+                SpellInfo const* const holdInfo = GetCrowdControlHoldInfo(memberAI, *option);
+                if (IsFearCrowdControl(memberAI, *option) && (!holdInfo || !fearAllowed(member, mob, holdInfo)))
+                    return false;  // [lead1330]
+                uint64 const mechanics = GetCrowdControlMechanics(holdInfo);
                 if (IsHeldByCrowdControl(mob, mechanics))
                     return true;
                 if (CrowdControlWouldBreak(memberAI, mob))
@@ -8212,17 +8333,7 @@ namespace Leader::Dungeon
                     // [lead62] user: no fixed line - a member is about to die when its time to death (its health over
                     // the damage it took per second in this fight) is within the healer's time to land a heal (its
                     // fastest known heal's cast + the global cooldown + the walk into heal reach) plus the next cast
-                    float castSec = 0.0f;
-                    {
-                        static constexpr uint32 HEALS[] = {2061, 8004, 19750, 8936, 50464, 331, 635, 5185, 2050};
-                        for (uint32 spell : HEALS)
-                            if (bot->HasSpell(spell))
-                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell))
-                                {
-                                    float const sec = info->CalcCastTime(bot) / 1000.0f;
-                                    castSec = castSec > 0.0f ? std::min(castSec, sec) : sec;
-                                }
-                    }
+                    float const castSec = HealerFastestCastSec(bot);
                     constexpr float GCD_SEC = 1.5f;  // the game's global cooldown
                     std::string emergencyWhy;
                     bool emergency = false;

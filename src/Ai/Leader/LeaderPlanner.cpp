@@ -6847,8 +6847,13 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
             PlayerbotAI::IsTank(member) || !memberAI || !GetCrowdControlRole(member->getClass()))
             continue;
 
-        bool const capable = std::any_of(tail.begin(), tail.end(), [memberAI](Unit* mob)
-                                         { return FindCrowdControl(memberAI, mob, true) != nullptr; });
+        // [lead1330] user 2026-11-05 (Q67): a fear is no dungeon crowd control (only the leader's emergency)
+        bool const dungeon = map->IsDungeon();
+        bool const capable = std::any_of(tail.begin(), tail.end(), [memberAI, dungeon](Unit* mob)
+                                         {
+                                             CrowdControlOption const* option = FindCrowdControl(memberAI, mob, true);
+                                             return option && !(dungeon && IsFearCrowdControl(memberAI, *option));
+                                         });
         if (!capable)
         {
             incapable += (incapable.empty() ? "" : ", ") + member->GetName();

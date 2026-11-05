@@ -61,6 +61,10 @@ bool CanCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option, Unit*
 // The first option of the bot's class that can hold the mob, or nullptr.
 CrowdControlOption const* FindCrowdControl(PlayerbotAI* botAI, Unit* target, bool prePull);
 
+// [lead1330] The option holds by fear (CC_FLAG_FEAR or a fear mechanic on its hold spell): the mob runs off. User
+// 2026-11-05 (Q67): no dungeon crowd control, only the leader's emergency (LeaderEvents, the Cc block).
+bool IsFearCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option);
+
 // The bot has crowd control it can use in a fight, or (`prePull`) also one it can only place before the pull.
 bool KnowsCrowdControl(PlayerbotAI* botAI, bool prePull);
 
