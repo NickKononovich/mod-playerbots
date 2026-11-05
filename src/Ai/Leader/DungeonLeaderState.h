@@ -541,6 +541,15 @@ namespace Leader
         // [lead1332] fight mobs that cannot come to their victim (standing, out of its melee reach, no navmesh walk
         // to it - PathGenerator - and no cast of their own): they deal nobody damage where they stand
         std::set<ObjectGuid> harmlessMobs;
+        // [lead1420] the in-fight deadlock guarantee: the leader's last tick ended with no member acting (none walking
+        // or with a walk ordered, none damaging a fight mob from where it stands, none on a new target, no fight mob
+        // coming) - a state the next tick judges its own decision by; the mob the break hands the no-place resolver,
+        // each member's attack target at the last tick and the break last logged
+        bool fightIdle = false;
+        std::string fightIdleWhy;
+        ObjectGuid fightDeadlockMob;
+        std::map<ObjectGuid, ObjectGuid> fightIdleTargets;
+        std::string fightDeadlockLogged;
         ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
         std::vector<ObjectGuid> planMobs;
         bool patrolDangerFits = false;

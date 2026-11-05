@@ -831,6 +831,15 @@ namespace Leader::Dungeon
                 i == waited && !orderFor ? waitWhy.substr(0, waitWhy.find_first_of("0123456789")) : std::string();
             note(member, "wait_without_order", waitState,
                  waitWhy + "; no order moves or readies " + member.name);
+            // [lead1420] fight_no_action: wait_without_order judges the pull's readiness out of a fight only - b262
+            // rfc-h 5G-15 123-177 s (52 s, no member acting in the fight) raised nothing. In a fight: the leader's
+            // tick ended with no member acting (lead.fightIdle, the deadlock guarantee's own state), on the tank's
+            // line; its state is the verdict's text without its numbers
+            std::string const& idleWhy = lead.fightIdleWhy;
+            std::string const idleState = member.guid == tank->GetGUID() && lead.fightIdle && tank->IsInCombat()
+                                              ? idleWhy.substr(0, idleWhy.find_first_of("0123456789"))
+                                              : std::string();
+            note(member, "fight_no_action", idleState, lead.fightIdleWhy);
 
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
             PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;

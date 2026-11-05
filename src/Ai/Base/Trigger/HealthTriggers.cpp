@@ -1376,6 +1376,8 @@ namespace
     // [lead1390] the credits each member's last own mana line counted ready now (ManaLineCredits)
     std::mutex manaCreditLock;
     std::unordered_map<uint64, std::vector<ManaLineCredit>> manaLineCredits;
+    // [lead1420] the mana potion each member's last boss line out of combat (the boss gate's) credited, % of max mana
+    std::unordered_map<uint64, float> bossPotionCredits;
 }
 
 std::vector<ManaLineCredit> ManaLineCredits(ObjectGuid member)
@@ -1383,6 +1385,13 @@ std::vector<ManaLineCredit> ManaLineCredits(ObjectGuid member)
     std::lock_guard<std::mutex> lock(manaCreditLock);
     auto const found = manaLineCredits.find(member.GetRawValue());
     return found != manaLineCredits.end() ? found->second : std::vector<ManaLineCredit>();
+}
+
+float BossPotionCredit(ObjectGuid member)
+{
+    std::lock_guard<std::mutex> lock(manaCreditLock);
+    auto const found = bossPotionCredits.find(member.GetRawValue());
+    return found != bossPotionCredits.end() ? found->second : 0.0f;
 }
 
 namespace
@@ -2154,6 +2163,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // combat's end and was over 18 s into the next 33 s fight. A potion whose cooldown ends within the fight counts:
     // the line then holds at least the mana it spends until the potion is ready
     float potionFloor = 0.0f;
+    float potionCredit = 0.0f;  // [lead1420]
     if (credits && potion && bot->GetMaxPower(POWER_MANA))
     {
         uint32 amount = 0;
@@ -2175,6 +2185,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             float const potionPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                              std::max(need + reserve - returned, 0.0f));
             returned += potionPct;
+            potionCredit = potionPct;
             if (!readyMs && potionPct > 0.0f)  // [lead1390]
                 readyCredits.push_back({0, potionItem, "mana potion"});
             // [lead850] on the fight timeline: its whole return once ready, where the pool has room for it
@@ -2228,6 +2239,9 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     {
         std::lock_guard<std::mutex> lock(manaCreditLock);
         manaLineCredits[bot->GetGUID().GetRawValue()] = readyCredits;
+        // [lead1420] the boss gate's line (a boss line out of combat with the potion): the potion it counted on
+        if (boss && potion && !bot->IsInCombat())
+            bossPotionCredits[bot->GetGUID().GetRawValue()] = potionCredit;
     }
     // [lead251] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
     // need 2-12 % - the config's LowMana as the floor (80 s of its drinks); b192's floor at its mean deepest drop in a

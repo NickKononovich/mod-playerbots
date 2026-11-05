@@ -897,17 +897,29 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 float const line =
                     RestState::FightManaLine(bot, lead.fightSecLeft, healCost, &lineWhy, bossFight, true, false,
                                              healCost > 0.0f);  // [lead1362]
-                if (bot->GetPowerPct(POWER_MANA) < line)
+                // [lead1420] b262 rfc-h 5E-5 Jergosh / Bazzalan (the holy priest's lowest 8 % / 22 % against the
+                // gate's 11 % / 27 % potion credit), 5A-9 / 5G-15 Jergosh: the boss gate let the healer in on the
+                // potion's mana and this verdict never gave it - the line of the fight's seconds left (without the
+                // potion) stayed under the pool while the pool fell under the credit. The gate's credit is mana the
+                // fight was judged to spend from the potion: in that boss fight, once the pool is under it (the
+                // potion's whole return fits the pool, above), the potion is drunk
+                float const credited = bossFight ? RestState::BossPotionCredit(bot->GetGUID()) : 0.0f;
+                bool const underCredit = credited > 0.0f && bot->GetPowerPct(POWER_MANA) < credited;
+                if (bot->GetPowerPct(POWER_MANA) < line || underCredit)
                 {
                     // [lead904] user 2026-11-03 (32 / 18): the mana potion on trash is kept for the next boss like the
                     // mana gem (the cooldown rule, except critical); its cooldown starts once the fight ends
                     float const backSec = lead.fightSecLeft + itemRechargeSec(potion);
                     std::string const rule = cooldownRule(backSec);
                     item = rule.empty() ? 0 : potion;
+                    if (underCredit && bot->GetPowerPct(POWER_MANA) >= line)
+                        lineWhy += Acore::StringFormat("; under the {:.0f} % the boss gate credited it [lead1420]",
+                                                       credited);
                     verdict = Acore::StringFormat(
                         "mana potion {}: {:.0f} % < the {:.0f} % the fight's {:.0f} s left "
                         "need ({}); {}",
-                        item ? "used" : "held", bot->GetPowerPct(POWER_MANA), line, lead.fightSecLeft, lineWhy,
+                        item ? "used" : "held", bot->GetPowerPct(POWER_MANA), std::max(line, credited),
+                        lead.fightSecLeft, lineWhy,
                         rule.empty() ? Acore::StringFormat("held for {} (his pull in {:.0f} s, back in {:.0f} s)",
                                                            lead.nextBossName, lead.bossPullSec, backSec)
                                      : rule);

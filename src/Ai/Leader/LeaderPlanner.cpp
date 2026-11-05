@@ -8002,9 +8002,15 @@ namespace PullCheck
                 record.damageMs = now ? now : 1;
             }
             // [lead650] the stacked mobs now: the last count held since the last sample, this one from here on
+            // [lead1420] b262 rfc-h 5H-16: the fit's focus rate fell 4262 -> 2341/s after fights 6 and 7 (t 96-155),
+            // each with a Polymorph on one of its mobs (110.7 s, 138.1 s) counted as stacked - the AoE spares a
+            // crowd-controlled mob (its hit would break the hold), so the least-squares AoE part read 1086 -> 1604/s
+            // per stacked mob and fight 6's single part (226008 - 1604 x 101.1) / 27.3 s = 2338/s became the slowest
+            // tenth: every later plan read a one-mob rate of ~3900/s against ~7000/s measured on lone mobs. A
+            // crowd-controlled mob is no stacked mob (IsCrowdControlled)
             uint32 stacked = 0;
             for (ObjectGuid const& guid : attackers)
-                if (Unit* mob = botAI->GetUnit(guid); mob && mob->IsAlive())
+                if (Unit* mob = botAI->GetUnit(guid); mob && mob->IsAlive() && !IsCrowdControlled(mob))
                     if (Creature* creature = mob->ToCreature(); !creature || !KeepsRange(creature))
                         ++stacked;
             if (record.stackedMs)

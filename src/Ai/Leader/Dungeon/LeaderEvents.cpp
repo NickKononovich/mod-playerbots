@@ -4116,10 +4116,29 @@ namespace Leader::Dungeon
                 };
                 Unit* stuck = nullptr;
                 Unit* unreached = nullptr;
+                // [lead1420] b262 rfc-h 5G-15 123-177 s (52 s deadlock): Repentance (t 115.2, 60 s on a creature) held
+                // the Ragefire Shaman, the fight's last mob once the Troggs died - 26 yd off the tank out of its
+                // sight, every melee place in a patrol Trogg's reach; this resolver and lead1332 skipped it as
+                // crowd-controlled and nothing ran until the aura ended (Death Grip at 177.4 s). A crowd control holds
+                // a mob while the group kills the rest: with no other fight mob free of it, the held mob is the
+                // fight's work and is resolved like any other
+                auto const ccHeld = [&](Unit* mob)
+                {
+                    if (!IsCrowdControlled(mob))
+                        return false;
+                    std::vector<Player*> everyone = seats;
+                    everyone.push_back(tank);
+                    for (Player* bot : everyone)
+                        for (Unit* other : bot->getAttackers())
+                            if (other && other != mob && other->IsAlive() && LeaderFightMob(tank, other) &&
+                                !IsCrowdControlled(other))
+                                return true;
+                    return false;
+                };
                 for (Unit* attacker : tank->getAttackers())
                 {
                     if (!attacker || !attacker->IsAlive() || attacker->GetVictim() != tank || !attacker->ToCreature() ||
-                        !LeaderFightMob(tank, attacker) || attacker->isMoving() || IsCrowdControlled(attacker))
+                        !LeaderFightMob(tank, attacker) || attacker->isMoving() || ccHeld(attacker))
                     {
                         // [lead1323] a mob on the tank out of its sight the resolver leaves (moving / held): named
                         // once per mob and reason, so the triage tells a skipped mob from no option
@@ -4129,7 +4148,7 @@ namespace Leader::Dungeon
                         if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank &&
                             !tank->IsWithinLOSInMap(attacker))
                         {
-                            int const reason = attacker->isMoving() ? 1 : IsCrowdControlled(attacker) ? 2 : 3;
+                            int const reason = attacker->isMoving() ? 1 : ccHeld(attacker) ? 2 : 3;
                             if (skipLogged.insert({attacker->GetGUID(), reason}).second)
                                 LOG_INFO("playerbots", "[lead1323] {}: no-place resolve skips {} ({:.1f} yd, out of "
                                          "its sight): {}", tank->GetName(), attacker->GetName(),
@@ -4146,6 +4165,24 @@ namespace Leader::Dungeon
                     else if (!tank->IsWithinMeleeRange(attacker) && barred(attacker, nullptr) &&
                              (!unreached || attacker->GetExactDist(tank) < unreached->GetExactDist(tank)))
                         unreached = attacker;
+                }
+                // [lead1420] the fight deadlock break's mob (below, the lead1332 block: no member acted since the last
+                // leader tick): this resolver's options run on it whatever filter left it out above - on any member,
+                // under a crowd control, in the tank's sight with no barred member
+                Unit* deadlockMob = lead.fightDeadlockMob.IsEmpty()
+                                        ? nullptr
+                                        : ObjectAccessor::GetUnit(*tank, lead.fightDeadlockMob);
+                if (deadlockMob && (!deadlockMob->IsAlive() || !LeaderFightMob(tank, deadlockMob)))
+                {
+                    deadlockMob = nullptr;
+                    lead.fightDeadlockMob.Clear();
+                }
+                if (deadlockMob && !stuck && !unreached)
+                {
+                    if (!tank->IsWithinLOSInMap(deadlockMob))
+                        stuck = deadlockMob;
+                    else if (!tank->IsWithinMeleeRange(deadlockMob))
+                        unreached = deadlockMob;
                 }
                 // a LoS step under way holds while its mob walks in
                 if (auto const step = losSteps.find(tank->GetGUID()); step != losSteps.end())
@@ -4204,7 +4241,7 @@ namespace Leader::Dungeon
                     !losStepSpent.count({tank->GetGUID(), unreachedMob->GetGUID()}))
                     if (Creature* creature = unreachedMob->ToCreature();
                         creature && creature->IsCombatMovementAllowed() && !creature->CanNotReachTarget() &&
-                        !creature->HasUnitState(UNIT_STATE_ROOT))
+                        !creature->HasUnitState(UNIT_STATE_ROOT) && !IsCrowdControlled(creature))  // [lead1420]
                     {
                         float const reach = LeaderTauntReach(tank);
                         std::vector<G3D::Vector3> const trail = MovementAction::TankTrailPoints(tank);
@@ -11268,12 +11305,170 @@ namespace Leader::Dungeon
                 }
                 Decisions().Write(run, "leader", "unhittable_mob", mobGuid, mob->GetName(), true, fields);
             }
+
+            // [lead1420] the in-fight deadlock guarantee. b262 rfc-h 5G-15 123-177 s: 52 s with no member acting
+            // (the Shaman under Repentance, the melee "stays (... reach of Ragefire Trogg)", the tank out of its
+            // sight) while lead1211 / lead1323 / lead1332 skipped the held mob and lead1340 judged the patrol pack
+            // once (the tank already out of its reach). A member acts when it walks or has a walk ordered (not at
+            // its commanded spot), damages a fight mob from where it stands (ActsOnFromHere: its Attack target or
+            // its victim; the tank any fight mob) or was given a new attack target this tick; a fight mob walking
+            // in (comes) is the fight going on too. A tick that ends with none of these leaves fightIdle; the next
+            // tick that ends the same way had no member act since the last leader decision - a state, not a clock:
+            // the leader takes the least bad option by the game's math. The blocking pack a member's refused place
+            // names is judged again (JudgePack: it joins when the fight takes it, else the fight moves out of its
+            // reach, lead76 / lead1340), and the mob nobody acts on nearest the tank goes to the no-place resolver
+            // (Death Grip, the LoS step for a mob that walks in, the tank's walk to it, its blocking pack joining
+            // with that walk, lead1211 / lead1323)
+            std::string acting;
+            std::map<ObjectGuid, ObjectGuid> idleTargets;
+            for (Player* bot : everyone)
+            {
+                if (!bot->IsAlive())
+                    continue;
+                Leader::MemberEvents events;
+                bool const has = Leader::Events::Get(bot->GetGUID(), events);
+                ObjectGuid const attackTarget =
+                    has && events.attack == Leader::AttackEvent::Attack ? events.target : ObjectGuid::Empty;
+                idleTargets[bot->GetGUID()] = attackTarget;
+                if (!acting.empty())
+                    continue;
+                if (bot->isMoving() || !Leader::Events::AtCommandedSpot(bot))
+                {
+                    acting = bot->GetName() + " walks";
+                    continue;
+                }
+                if (auto const last = lead.fightIdleTargets.find(bot->GetGUID());
+                    !attackTarget.IsEmpty() && (last == lead.fightIdleTargets.end() || last->second != attackTarget))
+                {
+                    acting = bot->GetName() + " has a new target";
+                    continue;
+                }
+                std::vector<Unit*> on;
+                if (bot == tank)
+                {
+                    for (ObjectGuid const& mobGuid : fightMobs)
+                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid))
+                            on.push_back(mob);
+                }
+                else
+                {
+                    if (!attackTarget.IsEmpty() && events.intensity != Leader::Intensity::Stop)
+                        if (Unit* target = ObjectAccessor::GetUnit(*bot, attackTarget))
+                            on.push_back(target);
+                    if (Unit* victim = bot->GetVictim())
+                        on.push_back(victim);
+                }
+                for (Unit* mob : on)
+                    if (mob->IsAlive() && fightMobs.count(mob->GetGUID()) && ActsOnFromHere(bot, mob, bot == tank))
+                    {
+                        acting = bot->GetName() + " acts on " + mob->GetName();
+                        break;
+                    }
+            }
+            for (ObjectGuid const& mobGuid : fightMobs)
+                if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid); acting.empty() && mob && comes(mob))
+                    acting = mob->GetName() + " walks in";
+            lead.fightIdleTargets = idleTargets;
+            if (!acting.empty() || fightMobs.empty())
+            {
+                lead.fightIdle = false;
+                lead.fightIdleWhy.clear();
+                lead.fightDeadlockMob.Clear();
+                lead.fightDeadlockLogged.clear();
+            }
+            else
+            {
+                // the mob nobody acts on nearest the tank, each member's live move purpose (what holds it)
+                Unit* idleMob = nullptr;
+                for (ObjectGuid const& mobGuid : fightMobs)
+                    if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
+                        mob && mob->IsAlive() && (!idleMob || tank->GetExactDist(mob) < tank->GetExactDist(idleMob)))
+                        idleMob = mob;
+                std::string held;
+                for (Player* bot : everyone)
+                    if (Leader::MemberEvents events; bot->IsAlive() && Leader::Events::Get(bot->GetGUID(), events))
+                        held += (held.empty() ? "" : "; ") + bot->GetName() + ": " +
+                                (events.moveWhy.empty() ? std::string("-") : events.moveWhy.substr(0, 80));
+                std::string const idleWhy = Acore::StringFormat(
+                    "no member acts on the fight ({} mobs, nearest {} {:.1f} yd{}): {}", fightMobs.size(),
+                    idleMob ? idleMob->GetName() : "-", idleMob ? tank->GetExactDist(idleMob) : -1.0f,
+                    idleMob && IsCrowdControlled(idleMob) ? ", crowd-controlled" : "", held);
+                if (lead.fightIdle && idleMob)
+                {
+                    // no member acted since the last leader decision: the break
+                    lead.fightDeadlockMob = idleMob->GetGUID();
+                    Creature* blocker = nullptr;
+                    Player* blocked = nullptr;
+                    for (Player* bot : everyone)
+                    {
+                        auto const checked = lead.spotChecked.find(bot->GetGUID());
+                        if (!bot->IsAlive() || checked == lead.spotChecked.end() || checked->second.reject.empty() ||
+                            checked->second.mob.IsEmpty())
+                            continue;
+                        Creature* mob = map->GetCreature(checked->second.mob);
+                        if (!mob || !mob->IsAlive() || mob->IsInCombat() || lead.joinedMobs.count(mob->GetGUID()))
+                            continue;
+                        if (!blocker || mob->GetExactDist(idleMob) < blocker->GetExactDist(idleMob))
+                        {
+                            blocker = mob;
+                            blocked = bot;
+                        }
+                    }
+                    // once per idle state, mob and blocker: the break's options stand until a member acts
+                    std::string const breakKey = idleMob->GetGUID().ToString() + "|" +
+                                                 (blocker ? blocker->GetGUID().ToString() : std::string("-"));
+                    bool const again = lead.fightDeadlockLogged != breakKey;
+                    std::string option;
+                    if (blocker && again)
+                    {
+                        std::optional<Position> const movedBefore = lead.fightMoveTo;
+                        lead.joinedPack.erase(blocker->GetGUID());  // judged again: the facts of now
+                        judgeBlockingPack(blocked, blocker);
+                        auto const verdict = lead.joinedPack.find(blocker->GetGUID());
+                        if (verdict != lead.joinedPack.end() && verdict->second == blocker->GetGUID())
+                        {
+                            option = "the blocking pack of " + blocker->GetName() + " joins (JudgePack)";
+                            lead.spotChecked.erase(blocked->GetGUID());  // its refusal's blocker is the fight's now
+                        }
+                        else if (lead.fightMoveTo &&
+                                 (!movedBefore || movedBefore->GetExactDist(*lead.fightMoveTo) > 0.1f))
+                            option = "the fight moves out of " + blocker->GetName() + "'s reach";
+                        else
+                            option = blocker->GetName() + "'s pack neither joins nor moves the fight";
+                    }
+                    option += std::string(option.empty() ? "" : "; ") + "the no-place resolver takes " +
+                              idleMob->GetName();
+                    if (again)
+                    {
+                        lead.fightDeadlockLogged = breakKey;
+                        Decisions().Write(run, "leader", "fight_deadlock_break", idleMob->GetGUID(), idleMob->GetName(),
+                                          true,
+                                          JsonObject()
+                                              .Str("mob", idleMob->GetName())
+                                              .Real("tankDistance", tank->GetExactDist(idleMob))
+                                              .Bool("tankSees", tank->IsWithinLOSInMap(idleMob))
+                                              .Bool("crowdControlled", IsCrowdControlled(idleMob))
+                                              .Str("blocker", blocker ? blocker->GetName() : "-")
+                                              .Str("blocked", blocked ? blocked->GetName() : "-")
+                                              .Str("option", option)
+                                              .Str("idle", idleWhy.substr(0, 400))
+                                              .Str("tag", "[lead1420]"));
+                    }
+                }
+                lead.fightIdle = true;
+                lead.fightIdleWhy = idleWhy;
+            }
         }
         else
         {
             lead.sightSpots.clear();
             lead.sightSpotSpent.clear();
             lead.harmlessMobs.clear();
+            lead.fightIdle = false;  // [lead1420]
+            lead.fightIdleWhy.clear();
+            lead.fightDeadlockMob.Clear();
+            lead.fightIdleTargets.clear();
+            lead.fightDeadlockLogged.clear();
         }
 
         lead.hazardActive = hazardSeen;
