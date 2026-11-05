@@ -899,8 +899,12 @@ namespace Leader::Dungeon
                             continue;
                         refusal = botAI->CheckCastNow(spell, bot, item).refusal;
                     }
+                    // [lead1463] b267 rfc-h: 30 "mana potion: SPELL_FAILED_STUNNED" (5A-1 Rtpalaa x11, 5A-9 x7, ...):
+                    // a stun is a passing state - its aura runs out and the potion is usable again (Spell::
+                    // CheckCasterAuras refuses only while the stun's UNIT_FLAG_STUNNED holds); the credit stands
                     if (refusal == SPELL_CAST_OK || refusal == SPELL_FAILED_NOT_READY ||
-                        refusal == SPELL_FAILED_ALREADY_AT_FULL_POWER || refusal == SPELL_FAILED_ALREADY_AT_FULL_HEALTH)
+                        refusal == SPELL_FAILED_ALREADY_AT_FULL_POWER ||
+                        refusal == SPELL_FAILED_ALREADY_AT_FULL_HEALTH || refusal == SPELL_FAILED_STUNNED)
                         continue;
                     credit = counted.name + ": " + PlayerbotAI::CastResultName(refusal);
                     break;

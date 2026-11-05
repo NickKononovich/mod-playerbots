@@ -372,6 +372,9 @@ namespace Leader::Dungeon
     namespace
     {
         constexpr float HEADROOM_GCD_SEC = 1.5f;  // [lead163] the game's global cooldown: one cast's threat
+        // [lead1461] a melee member's wait where it stands: its target stops in its reach (reachesAtStop)
+        constexpr char const* WAITS_AT_WALK_END = "to the tank's walk's end: waits, its target stops in its reach";
+        constexpr char const* WAITS_AT_STOP_POINT = "to the tank's stop point: waits, its target stops in its reach";
         // [lead243] a mob on its victim moves to another at 110 % of the victim's threat in its melee reach, else at
         // 130 % (ThreatManager::ReselectVictim)
         constexpr float THREAT_OVERTAKE_MELEE = 1.1f;
@@ -1567,6 +1570,32 @@ namespace Leader::Dungeon
                                   .Real("z", kept.point.GetPositionZ())
                                   .Real("short", kept.point.GetExactDist(place)));
             return kept.point;
+        };
+        // [lead1461] the walk against the wait (lead1352 weighs front against back; this, the walk to the fight's
+        // stop against standing). b267 rfc-h (16 runs): 1369 MoveTo "to the tank's walk's end" / "to the tank's stop
+        // point", 163 + 85 of them under 2 yd and 269 + 65 of 2-6 yd, ~15 s a comp walked (inactive_why). A mob on
+        // its victim stops where the core's chase (ChaseMovementGenerator) shortens its path: CONTACT_DISTANCE plus
+        // both hitboxes (GetChaseRange) short of the victim's stop, on the side it comes from. A member that reaches
+        // it there from where it stands (Unit::GetMeleeRange, and sight) hits it as soon as it stands whether it
+        // walks or not - the walk ends no sooner than the mob's own walk and costs its seconds: it waits
+        auto const reachesAtStop = [&](Player* bot, Unit* target) -> bool
+        {
+            auto const kept = lead.meleeStop.find(bot->GetGUID());
+            if (kept == lead.meleeStop.end() || kept->second.target != target->GetGUID())
+                return false;
+            Position const& stop = kept->second.meet;
+            Unit* const victim = target->GetVictim() ? target->GetVictim() : static_cast<Unit*>(tank);
+            float const dx = target->GetPositionX() - stop.GetPositionX();
+            float const dy = target->GetPositionY() - stop.GetPositionY();
+            float const length = std::hypot(dx, dy);
+            float const contact = CONTACT_DISTANCE + target->GetCombatReach() + victim->GetCombatReach();
+            Position const mobAt = length > contact ? Position(stop.GetPositionX() + dx / length * contact,
+                                                               stop.GetPositionY() + dy / length * contact,
+                                                               stop.GetPositionZ())
+                                                    : target->GetPosition();
+            return bot->GetExactDist(mobAt) <= bot->GetMeleeRange(target) &&
+                   bot->IsWithinLOS(mobAt.GetPositionX(), mobAt.GetPositionY(),
+                                    mobAt.GetPositionZ() + target->GetCollisionHeight());
         };
         if (!lead.slowestPassLogMs)
             lead.slowestPassLogMs = now;
@@ -3262,6 +3291,30 @@ namespace Leader::Dungeon
                 Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
                 if (!member || !mob)
                     continue;
+                // [lead1462] b267 rfc-h (16 runs): 66 order_impossible "cc polymorph / hex on ...: OUT_OF_RANGE"
+                // (Searing Blade Warlock 37, Ragefire Shaman / Trogg). lead1411 asks the game before it assigns a CC,
+                // but a mob already held keeps its assignment (ccHolds: held), and the held sheep / frog wanders off
+                // the caster's reach (the hold's own random movement) while the order stood. The assignment stays
+                // (the hold is that member's, the mob out of the kill order); the order goes out only while the game
+                // lets the member cast it now (PlayerbotAI::CheckCastNow, the order check's own test, lead1390)
+                SpellCastResult ccRefusal = SPELL_CAST_OK;
+                if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member))
+                    if (CrowdControlOption const* option = FindCrowdControl(memberAI, mob, false);
+                        option && option->spell)
+                        if (uint32 const spell =
+                                memberAI->GetAiObjectContext()->GetValue<uint32>("spell id", option->spell)->Get())
+                            if (!member->HasSpellCooldown(spell))
+                                ccRefusal = memberAI->CheckCastNow(spell, mob).refusal;
+                if (ccRefusal != SPELL_CAST_OK)
+                {
+                    if (Leader::Events::SetCc(memberGuid, ObjectGuid::Empty))
+                        logEvent(member, "Cc", JsonObject().Str("mob", "-").Str("held", mob->GetName())
+                                                   .Str("why", "the game refuses it now: " +
+                                                                   PlayerbotAI::CastResultName(ccRefusal))
+                                                   .Str("tag", "[lead1462]"));
+                    killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), mobGuid), killOrder.end());
+                    continue;
+                }
                 if (Leader::Events::SetCc(memberGuid, mobGuid))
                     logEvent(member, "Cc", JsonObject().Str("mob", mob->GetName()).Num("entry", mob->GetEntry())
                                                .Bool("held", IsHeldByCrowdControl(mob, 0)));
@@ -7442,8 +7495,11 @@ namespace Leader::Dungeon
                 // the walk was read from tank->isMoving() each tick, and the tank's walk pauses between its steps.
                 // The walk the member was sent to the end of is over when the fight stands - the tank and the mob
                 // both still - not when the tank's spline pauses: the walk's end holds until then
-                if (!toTankStop && melee && target->GetVictim() == tank && chaseNow.move == Leader::MoveEvent::MoveTo &&
-                    chaseNow.moveWhy == "to the tank's walk's end" && (tank->isMoving() || target->isMoving()))
+                // [lead1461] ... and the wait at it (the member stands, its target stops in its reach)
+                if (!toTankStop && melee && target->GetVictim() == tank &&
+                    ((chaseNow.move == Leader::MoveEvent::MoveTo && chaseNow.moveWhy == "to the tank's walk's end") ||
+                     (chaseNow.move == Leader::MoveEvent::StandAt && chaseNow.moveWhy == WAITS_AT_WALK_END)) &&
+                    (tank->isMoving() || target->isMoving()))
                     if (auto const kept = lead.meleeStop.find(guid);
                         kept != lead.meleeStop.end() && kept->second.target == target->GetGUID())
                     {
@@ -7457,7 +7513,15 @@ namespace Leader::Dungeon
                 if (toTankStop)
                 {
                     Position const place = meleeStopAt(bot, target);
-                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, place, 3.0f, "to the tank's walk's end"))
+                    if (reachesAtStop(bot, target))  // [lead1461] the wait costs less than the walk
+                    {
+                        if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
+                                                    WAITS_AT_WALK_END))
+                            logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
+                                     JsonObject().Str("why", WAITS_AT_WALK_END).Str("target", target->GetName())
+                                         .Real("walk", bot->GetExactDist(place)).Str("tag", "[lead1461]"));
+                    }
+                    else if (checkedMove(guid, Leader::MoveEvent::MoveTo, place, 3.0f, "to the tank's walk's end"))
                         logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                  JsonObject().Str("why", "to the tank's walk's end")
                                      .Str("target", target->GetName())
@@ -7681,8 +7745,18 @@ namespace Leader::Dungeon
                                 // meeting point of the issue (b219: 167 stays, the engaged mob's spawn point inside
                                 // its pack's reach); the pulled mobs' reach is no constraint once the tank has them
                                 Position const stopAt = meleeStopAt(bot, target);
-                                if (checkedMove(guid, Leader::MoveEvent::MoveTo, stopAt, 3.0f,
-                                                "to the tank's stop point"))
+                                if (reachesAtStop(bot, target))  // [lead1461] the wait costs less than the walk
+                                {
+                                    if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(),
+                                                                2.0f, WAITS_AT_STOP_POINT))
+                                        logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
+                                                 JsonObject().Str("why", WAITS_AT_STOP_POINT)
+                                                     .Str("target", target->GetName())
+                                                     .Real("walk", bot->GetExactDist(stopAt))
+                                                     .Str("tag", "[lead1461]"));
+                                }
+                                else if (checkedMove(guid, Leader::MoveEvent::MoveTo, stopAt, 3.0f,
+                                                     "to the tank's stop point"))
                                     logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
                                              JsonObject().Str("why", "to the tank's stop point")
                                                  .Str("target", target->GetName())
@@ -11354,8 +11428,24 @@ namespace Leader::Dungeon
                 // and, for a healer, while it reaches the tank (HealReaches: range and sight)
                 std::string own;
                 bool placeServes = false;
-                if (bot->isMoving() || !Leader::Events::AtCommandedSpot(bot))
+                // [lead1460] b267 rfc-h (16 runs): 1069 of 1357 member_no_action named a leader move ("to the
+                // tank's walk's end" 341, "combat spot" 252, "chase: behind the target" 190, "... behind the
+                // target" 171, "to the tank's stop point" 115) - 5A-1 9.3 s the enhancement shaman stood at the
+                // walk's end the leader sent it to while its Earthborer ran in; 15.6 s the mage and the hunter
+                // stood their spot for the next Earthborer running in from 45 yd, the hunter's Misdirection cast.
+                // A leader order that moves the member is its action: its walk, a Follow whose leader walks; so is
+                // a cast (casting, or its global cooldown running: a cast since the last decision), and the place
+                // the leader holds it at while its target walks in to the fight (the game's chase, `comes`) - not
+                // a place refused for it ("... stays (...)", the no-place stall the member break judges)
+                Unit* const led = has && events.move == Leader::MoveEvent::Follow
+                                      ? ObjectAccessor::GetUnit(*bot, events.followTarget)
+                                      : nullptr;
+                PlayerbotAI* const memberAI = GET_PLAYERBOT_AI(bot);
+                bool const refusedPlace = events.moveWhy.find(": stays (") != std::string::npos;
+                if (bot->isMoving() || !Leader::Events::AtCommandedSpot(bot) || (led && led->isMoving()))
                     own = bot->GetName() + " walks";
+                else if (bot->IsNonMeleeSpellCast(false) || (memberAI && memberAI->GetGlobalCooldownRemaining()))
+                    own = bot->GetName() + " casts";
                 else if (auto const last = lead.fightIdleTargets.find(bot->GetGUID());
                          !attackTarget.IsEmpty() &&
                          (last == lead.fightIdleTargets.end() || last->second != attackTarget))
@@ -11393,6 +11483,11 @@ namespace Leader::Dungeon
                     if (own.empty() && bot != tank && PlayerbotAI::IsHeal(bot) &&
                         HealReaches(tank, bot->GetPosition(), tank->GetPosition(), bot))
                         placeServes = true;
+                    // [lead1460] its target walks in to the fight while it stands where the leader holds it
+                    if (own.empty() && !placeServes && !refusedPlace && !attackTarget.IsEmpty())
+                        if (Unit* target = ObjectAccessor::GetUnit(*bot, attackTarget);
+                            target && target->IsAlive() && fightMobs.count(target->GetGUID()) && comes(target))
+                            placeServes = true;
                 }
                 if (acting.empty())
                     acting = own;
