@@ -5518,6 +5518,37 @@ namespace Leader::Dungeon
                 logEvent(healer, "TopUp", JsonObject().Str("member", healed->GetName())
                                               .Real("health", healed->GetHealthPct())
                                               .Str("why", "a readiness gap on health"));
+            // [lead1230] b244 rfc-h 5D-12 661-835 s: the TopUp on the warlock 36 yd off and out of the shaman's heal
+            // ("leader heal target: Execute returned false") healed nothing for 174 s - the healer walks into its heal
+            // reach and sight (the spot guard judges the walk), and holds that spot while the top-up runs
+            if (healed && healed != healer && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
+                !healer->IsSitState() && !tank->IsInCombat())
+            {
+                std::string const why = "heal reach: top up " + healed->GetName();
+                Leader::MemberEvents healerNow;
+                bool const holds = Leader::Events::Get(healer->GetGUID(), healerNow) &&
+                                   healerNow.move == Leader::MoveEvent::MoveTo && healerNow.moveWhy == why &&
+                                   reaches(healerNow.spot, healed->GetPosition());
+                if (holds)
+                    Leader::Events::SetMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, healerNow.spot,
+                                            healerNow.tolerance, why);
+                else if (!reaches(healer->GetPosition(), healed->GetPosition()))
+                {
+                    Position fix;
+                    bool const found = slow(
+                        [&]
+                        {
+                            SpotAcquire const acquire;
+                            return LeaderHealerRespot(healer, GET_PLAYERBOT_AI(healer), [&](Position const& spot)
+                                                      { return reaches(spot, healed->GetPosition()); }, fix);
+                        });
+                    if (!found)
+                        fix = healed->GetPosition();
+                    if (checkedMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, fix, 1.5f, why))
+                        logEvent(healer, "MoveTo", JsonObject().Str("why", why)
+                                                       .Real("distance", healer->GetExactDist(healed)));
+                }
+            }
         }
 
         // [lead400] .. [lead405] dispels, the resurrections out of a fight, the potions, the buff pass's soulstone /
@@ -5786,8 +5817,17 @@ namespace Leader::Dungeon
                                 std::max(1.0f, float(tap->StartRecoveryTime) / 1000.0f *
                                                    bot->GetFloatValue(UNIT_MOD_CAST_SPEED));
                             float const spent = taps * healthPerTap;
-                            float const above = float(bot->GetHealth()) -
-                                                RestState::HealthLine(bot) / 100.0f * float(bot->GetMaxHealth());
+                            // [lead1230] b244 rfc-h 5D-12 661-835 s: two taps took the warlock to 74 % while the
+                            // Taragaman wait holds every member to the boss health line (95 %); counted against its
+                            // own 50 % line the heal back was 0 s, and the group stood 174 s on its regeneration. The
+                            // taps' health below the line the pull waits for is the healer's to heal back
+                            float healthLine = RestState::HealthLine(bot);
+                            if (Creature* tapBoss =
+                                    lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
+                                tapBoss && tapBoss->IsAlive())
+                                healthLine = std::max(healthLine, PullReadiness::MemberBossHealthLine(tapBoss));
+                            float const above =
+                                float(bot->GetHealth()) - healthLine / 100.0f * float(bot->GetMaxHealth());
                             float const healBack = std::max(0.0f, spent - above);
                             float healSec = 0.0f;
                             float healerDrinkSec = 0.0f;

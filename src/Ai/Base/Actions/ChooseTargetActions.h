@@ -339,6 +339,8 @@ namespace PullReadiness
     // a real boss or a mini-boss by IsEncounterBoss); empty when this member is ready for `boss`
     // [lead1021] `manaLine`: the boss mana line it read (-1 for a member without mana)
     std::string MemberBossGap(Player* member, Unit* boss, float* manaLine = nullptr);
+    // [lead1230] the boss health line MemberBossGap reads (a real boss or a mini-boss); 0 without a boss
+    float MemberBossHealthLine(Unit* boss);
     // [lead179] that member's boss mana line (the same FightManaLine MemberBossGap reads)
     float MemberBossManaLine(Player* member, Unit* boss);
     // [lead520] that member's boss fight needs its in-fight mana potion (RestState::NeedsManaPotion on the same fight

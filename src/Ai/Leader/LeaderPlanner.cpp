@@ -5983,6 +5983,11 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss, float* mana
     return std::string();
 }
 
+float PullReadiness::MemberBossHealthLine(Unit* boss)
+{
+    return boss ? (IsEncounterBoss(boss) ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH) : 0.0f;
+}
+
 float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
 {
     return member && boss ? RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, nullptr, true) : 0.0f;
