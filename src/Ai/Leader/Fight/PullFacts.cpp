@@ -229,7 +229,7 @@ namespace Leader::Fight
         // the in-fight caster corner's spot). A mob on another member does not come to the fight spot: the spot back
         // is for the mobs that come to the tank, never a hold off a member's attacker
         Unit* const onWhom = target->IsInCombat() ? target->GetVictim() : nullptr;
-        bool const onMember = onWhom && onWhom != tank && onWhom->GetTypeId() == TYPEID_PLAYER &&
+        bool const onMember = onWhom && onWhom != tank && onWhom->IsPlayer() &&
                               tank->IsInSameRaidWith(onWhom->ToPlayer());
         Position back;
         if (!onMember && FightSpot::Ahead(tank, back) &&
