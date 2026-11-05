@@ -696,6 +696,7 @@ namespace TestHarness
             uint32 casts;
             uint64 damage;
             uint64 healing;
+            uint32 hits;  // [rot531]
         };
         std::vector<CastRow> rows;
         for (auto const& [spellId, counters] : now.spells)
@@ -704,7 +705,8 @@ namespace TestHarness
             SpellCounters const before = itr == start.spells.end() ? SpellCounters() : itr->second;
             CastRow const row{spellId, counters.casts - std::min(counters.casts, before.casts),
                               counters.damage - std::min(counters.damage, before.damage),
-                              counters.healing - std::min(counters.healing, before.healing)};
+                              counters.healing - std::min(counters.healing, before.healing),
+                              counters.hits - std::min(counters.hits, before.hits)};
             if (row.casts || row.damage || row.healing)
                 rows.push_back(row);
         }
@@ -719,7 +721,8 @@ namespace TestHarness
             SpellInfo const* info = sSpellMgr->GetSpellInfo(row.id);
             casts.Raw(JsonObject().Num("id", row.id)
                           .Str("name", info && info->SpellName[LOCALE_enUS] ? info->SpellName[LOCALE_enUS] : "")
-                          .Num("n", row.casts).Num("dmg", int64(row.damage)).Num("heal", int64(row.healing)).Build());
+                          .Num("n", row.casts).Num("dmg", int64(row.damage)).Num("heal", int64(row.healing))
+                          .Num("hits", row.hits).Build());  // [rot531]
         }
 
         // [harness20] power per source in the window: {"power", "src" (spell / dealt / taken), "id", "name", "amount"}

@@ -128,13 +128,39 @@ public:
         return damage;
     }
 
+    // [rot530] A periodic damage tick reaches this hook before the target's damage-taken modifiers
+    // (AuraEffect::HandlePeriodicDamageAurasTick applies Unit::SpellDamageBonusTaken after it), a direct spell's
+    // amount at ModifySpellDamageTaken after them; simpct.py turns both into dealt damage with the sim's
+    // AfterPostOutcome / (AfterAttackerMods x target mods) ratio, i.e. it expects the target's modifiers in the logged
+    // amount. b266 rfc-h 5D: the affliction warlock's Corruption, Unstable Affliction and Curse of Agony came out at
+    // 55-61 % of the sim per cast, the missing part Haunt (+23 % glyphed), Shadow Embrace (+15 %) and Ebon Plague
+    // (+13 %), all taken modifiers. The tick is logged with them, as the core deals it (Ignite and Languish take none).
+    static uint32 TickWithTargetMods(Unit* target, Unit* attacker, uint32 damage, SpellInfo const* spellInfo)
+    {
+        if (!target || !damage || spellInfo->Id == 12654 || spellInfo->Id == 71023)
+            return damage;
+
+        bool periodicDamage = false;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE)
+                periodicDamage = true;
+        if (!periodicDamage)
+            return damage;
+
+        Aura const* aura = attacker ? target->GetAura(spellInfo->Id, attacker->GetGUID()) : nullptr;
+        uint32 const stack = aura ? std::max<uint32>(1, aura->GetStackAmount()) : 1;
+        return target->SpellDamageBonusTaken(attacker, spellInfo, damage, DOT, stack);
+    }
+
     void ModifyPeriodicDamageAurasTick(Unit* target, Unit* attacker, uint32& damage,
                                        SpellInfo const* spellInfo) override
     {
         // Also called for periodic heals (before ModifyHealReceived): only harmful ticks count as damage.
         if (spellInfo && !spellInfo->IsPositive())
         {
-            uint32 const logged = DynObjTickWithCasterBonus(target, attacker, damage, spellInfo);  // [rot65]
+            uint32 const logged =
+                TickWithTargetMods(target, attacker, DynObjTickWithCasterBonus(target, attacker, damage, spellInfo),
+                                   spellInfo);  // [rot65] [rot530]
             TestHarness::StatsRegistry::Instance().OnSpellAmount(attacker, target, spellInfo, logged, false);
         }
         // [lead111] b143 rfc-h Taragaman: Serpent Sting and Chimera Shot - Serpent dealt about half the sim's while

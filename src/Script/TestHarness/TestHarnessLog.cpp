@@ -955,7 +955,10 @@ namespace TestHarness
         if (heal)
             counters.healing += amount;
         else
+        {
             counters.damage += amount;
+            ++counters.hits;  // [rot531]
+        }
     }
 
     // [b30_topped_up] user rule 2026-10-25: «если нет пути обратно, то можно перезайти в данж. Но это будет

@@ -44,6 +44,7 @@ namespace TestHarness
         uint32 casts = 0;
         uint64 damage = 0;
         uint64 healing = 0;
+        uint32 hits = 0;  // [rot531] damage events (direct hits and periodic ticks, pets' included)
     };
 
     struct MemberCounters
