@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <list>
 #include <map>
+#include <set>
 
 #include "AiFactory.h"  // [lead774] the cat's spec
 #include "ChooseTargetActions.h"  // [lead520] PullReadiness::MemberNeedsManaPotion
@@ -33,6 +34,7 @@
 #include "Playerbots.h"
 #include "RaidConsumables.h"
 #include "RaidLeaderState.h"  // CanResurrect, SetResurrectFirst
+#include "Spell.h"  // [lead1360] the portal click channel
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -92,6 +94,43 @@ bool Reaches(Player* bot, SpellInfo const* info, Unit* target)
     return info && target && bot->GetMap() == target->GetMap() &&
            (bot == target ||
             (bot->IsWithinDistInMap(target, info->GetMaxRange(true, bot)) && bot->IsWithinLOSInMap(target)));
+}
+
+// [lead1360] the summoning-ritual portal a spell opens (its SPELL_EFFECT_TRANS_DOOR object, game data: Ritual of
+// Souls 58887 -> Soul Portal 193168, three participants); null: the spell opens none
+GameObjectTemplate const* RitualPortalTemplate(SpellInfo const* info)
+{
+    if (info)
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.Effect == SPELL_EFFECT_TRANS_DOOR && effect.MiscValue > 0)
+                if (GameObjectTemplate const* go = sObjectMgr->GetGameObjectTemplate(uint32(effect.MiscValue)))
+                    if (go->type == GAMEOBJECT_TYPE_SUMMONING_RITUAL)
+                        return go;
+    return nullptr;
+}
+
+// [lead1360] a member that can click `owner`'s ritual portal (GameObject::Use, GAMEOBJECT_TYPE_SUMMONING_RITUAL):
+// alive, out of a fight, standing, on the owner's map within the portal search distance, in the owner's group when
+// the portal takes only its group, and not refused by this pass's portal. A form the click spell forbids is no
+// bar: the member drops it before it clicks (LeaderUseObjectAction)
+bool CanClickPortal(Player* bot, Player* owner, GameObjectTemplate const* info, std::set<ObjectGuid> const& failed)
+{
+    return bot && owner && info && bot != owner && bot->IsAlive() && !bot->IsInCombat() && !bot->IsSitState() &&
+           bot->GetMap() == owner->GetMap() && bot->GetDistance(owner) <= RaidConsumables::SOULWELL_SEARCH_DISTANCE &&
+           (!info->summoningRitual.castersGrouped || bot->IsInSameRaidWith(owner)) && !failed.count(bot->GetGUID());
+}
+
+// [lead1360] the spell a portal click channels (game data: the portal's anim spell, else the spell that opened it)
+uint32 PortalClickSpell(GameObject* portal)
+{
+    GameObjectTemplate const* info = portal->GetGOInfo();
+    return info->summoningRitual.animSpell ? info->summoningRitual.animSpell : portal->GetSpellId();
+}
+
+bool ChannelsSpell(Player* bot, uint32 spell)
+{
+    Spell* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    return spell && channel && channel->m_spellInfo->Id == spell;
 }
 
 // a dead group member whose body lies on the leader's map, no resurrection offered yet
@@ -1182,6 +1221,7 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
     GameObject* portal = well ? nullptr : RitualObject(tank, members, false);
     if (well)
     {
+        st.ritualPortal.Clear();  // [lead1360] the ritual was completed
         std::set<ObjectGuid> close;
         std::string users;
         for (Player* bot : lacking)
@@ -1215,29 +1255,93 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
     }
     else if (portal)
     {
-        // the two members nearest to the portal that did not make it click it (each one's click is its channel)
+        // [lead1360] b259 rfc-h 5D-4 (20261105-125556) 284-516 s: the leader ordered the bear tank and the healer to
+        // the Soul Portal; the healer's click took (its channel), the tank's never did (the click channels 58887,
+        // SPELL_ATTR0_NOT_SHAPESHIFTED: Spell::CheckCast refused it in Dire Bear Form and GameObject::Use dropped it
+        // without a word). The order stood, the warlock channelled until the portal closed, the leader ordered the
+        // ritual again: the buff pass held the group until the stall. The portal now counts who joined (the game's
+        // own check: a clicker channelling the click spell, the owner), takes each member's report that its click
+        // did not take, and orders the nearest members that can still click as many as the portal lacks; when
+        // fewer can, the ritual cannot be completed: the leader gives it up for this pass, ends the channels, and
+        // the pass does not wait on it
+        if (st.portalPass != pass || st.ritualPortal != portal->GetGUID())
+        {
+            st.portalPass = pass;
+            st.ritualPortal = portal->GetGUID();
+            st.portalFailed.clear();
+        }
+        GameObjectTemplate const* info = portal->GetGOInfo();
+        uint32 const click = PortalClickSpell(portal);
+        Player* owner = nullptr;
+        for (Player* bot : members)
+            if (bot->GetGUID() == portal->GetOwnerGUID())
+                owner = bot;
+        uint32 joined = 1;  // the owner: its own cast is its use (GameObject::Use)
+        std::vector<Player*> clicking;
         std::vector<Player*> clickers;
         for (Player* bot : members)
-            if (bot->GetGUID() != portal->GetOwnerGUID() && !bot->IsInCombat() && !bot->IsSitState())
-                clickers.push_back(bot);
-        std::sort(clickers.begin(), clickers.end(),
-                  [portal](Player* a, Player* b) { return a->GetDistance(portal) < b->GetDistance(portal); });
-        if (clickers.size() > 2)
-            clickers.resize(2);
-        std::string names;
-        for (Player* bot : clickers)
         {
-            if (Leader::Events::SetConsume(bot->GetGUID(), 0, ObjectGuid::Empty, portal->GetGUID(),
-                                           "the ritual's portal needs two clicks"))
-                logEvent(bot, "Consume",
-                         JsonObject()
-                             .Str("object", portal->GetName())
-                             .Num("entry", portal->GetEntry())
-                             .Str("why", "the ritual's portal needs two more members"));
-            names += (names.empty() ? "" : ", ") + bot->GetName();
+            if (bot == owner)
+                continue;
+            std::string failed;
+            if (Leader::Events::TakeConsumeFailed(bot->GetGUID(), portal->GetGUID().GetCounter(), failed))
+            {
+                st.portalFailed.insert(bot->GetGUID());
+                verdicts.push_back(bot->GetName() + ": " + failed);
+            }
+            if (ChannelsSpell(bot, click))
+            {
+                ++joined;
+                clicking.push_back(bot);
+            }
+            else if (CanClickPortal(bot, owner, info, st.portalFailed))
+                clickers.push_back(bot);
         }
-        if (!names.empty())
-            work += (work.empty() ? "" : "; ") + portal->GetName() + ": " + names;
+        uint32 const required = info->summoningRitual.reqParticipants;
+        uint32 const need = required > joined ? required - joined : 0;
+        if (!owner || clickers.size() < need)
+        {
+            verdicts.push_back(Acore::StringFormat("{} dropped: the portal needs {} more click(s), {} member(s) can "
+                                                   "click it",
+                                                   portal->GetName(), need, clickers.size()));
+            st.ritualPass = pass;
+            st.ritualPortal.Clear();
+            if (owner && owner->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                owner->InterruptSpell(CURRENT_CHANNELED_SPELL);
+            for (Player* bot : clicking)
+                bot->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        }
+        else
+        {
+            std::sort(clickers.begin(), clickers.end(),
+                      [portal](Player* a, Player* b) { return a->GetDistance(portal) < b->GetDistance(portal); });
+            clickers.resize(need);
+            // the members already in keep their order (their channel is their part); the others walk and click
+            clickers.insert(clickers.begin(), clicking.begin(), clicking.end());
+            std::string names;
+            for (Player* bot : clickers)
+            {
+                if (Leader::Events::SetConsume(bot->GetGUID(), 0, ObjectGuid::Empty, portal->GetGUID(),
+                                               "the ritual's portal needs two clicks"))
+                    logEvent(bot, "Consume",
+                             JsonObject()
+                                 .Str("object", portal->GetName())
+                                 .Num("entry", portal->GetEntry())
+                                 .Str("why", Acore::StringFormat("the ritual's portal needs {} more member(s)",
+                                                                 need)));
+                names += (names.empty() ? "" : ", ") + bot->GetName();
+            }
+            if (need)
+                work += (work.empty() ? "" : "; ") + portal->GetName() + ": " + names;
+        }
+    }
+    else if (!st.ritualPortal.IsEmpty() && st.portalPass == pass)
+    {
+        // [lead1360] this pass's portal closed with no Soulwell: the ritual was not completed - not ordered again
+        // in this pass
+        verdicts.push_back("ritual dropped: its portal closed before it was completed");
+        st.ritualPass = pass;
+        st.ritualPortal.Clear();
     }
     else if (!lacking.empty() && st.ritualPass != pass)
         for (Player* bot : seats)
@@ -1261,6 +1365,23 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
             }
             if (!reagents)
                 continue;
+            // [lead1360] a summoning ritual only when it can be completed: as many members as its portal takes
+            // besides the caster that can click it now (game data: the portal's participants)
+            if (GameObjectTemplate const* portalInfo = RitualPortalTemplate(info))
+            {
+                uint32 can = 1;  // the caster
+                for (Player* other : members)
+                    if (CanClickPortal(other, bot, portalInfo, std::set<ObjectGuid>()))
+                        ++can;
+                if (can < portalInfo->summoningRitual.reqParticipants)
+                {
+                    verdicts.push_back(Acore::StringFormat("Ritual of Souls not ordered: its portal takes {}, {} "
+                                                           "can click it with {}",
+                                                           portalInfo->summoningRitual.reqParticipants, can,
+                                                           bot->GetName()));
+                    continue;
+                }
+            }
             std::string failed;
             if (Leader::Events::TakeExternalFailed(bot->GetGUID(), ritual, failed))
             {

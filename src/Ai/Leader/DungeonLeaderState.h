@@ -626,6 +626,10 @@ namespace Leader
             std::set<ObjectGuid> wellClose;  // members told to use the well that stood in its reach last tick
             uint32 soulstonePass = 0;  // the buff pass (its start) the soulstone was given or given up in
             uint32 ritualPass = 0;     // the buff pass the Ritual of Souls was given up in (refused)
+            // [lead1360] the buff pass's ritual portal (its pass) and the members whose click it did not take
+            uint32 portalPass = 0;
+            ObjectGuid ritualPortal;
+            std::set<ObjectGuid> portalFailed;
             std::map<ObjectGuid, std::string> battleResLogged;  // the last battle resurrection verdict per dead
             std::string buffWork;  // what the soulwell / soulstone orders still do (the buff pass waits for it)
             std::string supportLogged;  // the last buff-pass support verdict logged

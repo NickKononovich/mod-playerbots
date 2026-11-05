@@ -602,9 +602,35 @@ bool LeaderUseObjectAction::Execute(Event /*event*/)
         return MoveNear(go, INTERACTION_DISTANCE - 2.0f);
     if (bot->isMoving())
         bot->StopMoving();
+    // [lead1360] b259 rfc-h 5D-4 (20261105-125556) 284-516 s: the bear tank's Soul Portal clicks went nowhere: the
+    // click channels the portal's spell (GameObject::Use, GAMEOBJECT_TYPE_SUMMONING_RITUAL: its anim spell, else the
+    // spell that opened it - 58887, SPELL_ATTR0_NOT_SHAPESHIFTED), which Spell::CheckCast refuses in a form it does
+    // not allow, and Use drops it without a word. The member leaves such a form first, as a player cancels it to
+    // click; after the click the game's own test that it joined is that channel - none: reported to the leader
+    uint32 clickSpell = 0;
+    if (go->GetGoType() == GAMEOBJECT_TYPE_SUMMONING_RITUAL)
+    {
+        GameObjectTemplate const* info = go->GetGOInfo();
+        clickSpell = info->summoningRitual.animSpell ? info->summoningRitual.animSpell : go->GetSpellId();
+        SpellInfo const* click = sSpellMgr->GetSpellInfo(clickSpell);
+        if (click && click->CheckShapeshift(bot->GetShapeshiftForm()) != SPELL_CAST_OK)
+            bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+    }
     WorldPacket packet(CMSG_GAMEOBJ_USE, 8);
     packet << go->GetGUID();
     bot->GetSession()->HandleGameObjectUseOpcode(packet);
+    if (clickSpell)
+    {
+        Spell* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        if (!channel || channel->m_spellInfo->Id != clickSpell)
+        {
+            LOG_INFO("playerbots", "[lead1360] [leader use object] {}: {} {} took no click (no channel of {})",
+                     bot->GetName(), go->GetName(), go->GetEntry(), clickSpell);
+            Leader::Events::NoteConsumeFailed(bot->GetGUID(), go->GetGUID().GetCounter(),
+                                              "the portal took no click (" + go->GetName() + ")");
+            return false;
+        }
+    }
     LOG_INFO("playerbots", "[lead405] [leader use object] {} uses {} {}: {}", bot->GetName(), go->GetName(),
              go->GetEntry(), why);
     AckLeader(bot, "use object", go->GetName());
