@@ -335,6 +335,27 @@ namespace Leader::Fight
     // (slabs-h 20261026-195203: the tank was told to take back the mage's Mirror Image 1187 times)
     bool LeaderFightMob(Player* tank, Unit* unit);
 
+    // [lead1480] a mob of the fight the member cannot see (an invisibility or stealth it does not detect) that an
+    // area spell still hits: the core's area-target test ignores both (WorldObject::CanDetect with ignoreStealth,
+    // Unit::_IsValidAttackTarget with an area spell). b268ac ac-h: the Phasing Soldier's Invisibility (32754, at its
+    // waypoint's end) - it fought the tank while no member could target it
+    constexpr uint32 SPELL_AREA_PROBE = 47502;  // Thunder Clap: SRC_CASTER + SRC_AREA_ENEMY, no AttributesEx6 bits
+    bool LeaderUnseenFightMob(Player* member, Unit* unit);
+    // [lead1480] the member's own area damage spells it casts on itself (centred on it, or on the ground at its
+    // feet), highest known rank, no cone, no channel, no explicit unit target: spell data only
+    std::vector<uint32> const& LeaderSelfAreaSpells(Player* member);
+    float LeaderAreaRadius(Player* member, SpellInfo const* info);
+
+    // [lead1481] Shirrak the Dead Watcher's Inhibit Magic (32264, SPELL_AURA_MOD_CASTING_SPEED_NOT_STACK -50 % a
+    // stack, the global cooldown too): its stacks by the edge-to-edge distance to him (Unit::GetDistance), the core's
+    // boss_shirrak_the_dead_watcher::getStackCount - 4 under 15 yd, 3 under 25, 2 under 35, 1 under 45, none beyond
+    constexpr uint32 NPC_SHIRRAK_THE_DEAD_WATCHER = 18371;
+    constexpr float INHIBIT_MAGIC_BANDS_YD[] = {15.0f, 25.0f, 35.0f, 45.0f};
+    // the centre-to-centre ring a caster (a healer: `reachEdge` its heal range) stands on round such a target: the
+    // middle of the fewest-stack band its reach (edge to edge) still covers; `top`: that band's outer centre gap
+    // (the reach). 0: no banded slow on the target, or a hunter (Inhibit Magic slows spells, not its shots)
+    float LeaderInhibitRing(Player* bot, Unit* target, float reachEdge, float* top = nullptr);
+
     // [lead18] the nearest walking patrol (idle, a waypoint walker or on the move, not of the committed pull)
     // around the pull spot or the tank; `gap`: its distance to the nearer of the two, `reach`: its aggro reach
     Creature* LeaderPatrolNear(Player* tank, Position const& spot, PullPlanner::Decision const& d, float& gap,

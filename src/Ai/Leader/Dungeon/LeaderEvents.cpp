@@ -1819,6 +1819,26 @@ namespace Leader::Dungeon
             lead.attackRefused.clear();
         auto const refusedTarget = [&](Unit* unit) { return unit && lead.attackRefused.count(unit->GetGUID()) > 0; };
         Unit* target = nullptr;
+        // [lead1480] the area orders on an unseen fight mob (below): member -> its ordered area spell; out of a
+        // fight none stays (an area spell cast out of a fight pulls what it hits)
+        thread_local std::map<ObjectGuid, uint32> unseenOrdered;
+        if (unseenOrdered.size() > 1024)
+            unseenOrdered.clear();
+        if (!fighting)
+        {
+            std::vector<Player*> members = seats;
+            members.push_back(tank);
+            for (Player* member : members)
+                if (auto const ordered = member ? unseenOrdered.find(member->GetGUID()) : unseenOrdered.end();
+                    ordered != unseenOrdered.end())
+                {
+                    Leader::MemberEvents told;
+                    if (Leader::Events::Get(ordered->first, told) && told.externalSpell == ordered->second &&
+                        told.externalTarget.IsEmpty())
+                        Leader::Events::SetExternal(ordered->first, 0, ObjectGuid::Empty);
+                    unseenOrdered.erase(ordered);
+                }
+        }
         if (fighting)
         {
             if (Unit* victim = tank->GetVictim();
@@ -1944,6 +1964,136 @@ namespace Leader::Dungeon
                     if (mine)
                         Leader::Events::SetExternal(tank->GetGUID(), 0, ObjectGuid::Empty);
                     minionTaunted.erase(told);
+                }
+            }
+            // [lead1480] b268ac ac-h 5B-2 / 5F-6: an invisible Phasing Soldier fought the tank 180 s, the attacker
+            // list empty, every member's attack refused ("cannot see or detect"), both runs a trash stalemate. A
+            // fight mob on a member that no member sees but an area spell hits (LeaderUnseenFightMob, the core's
+            // area-target test) is fought with area spells cast where the members stand: each member (healers
+            // heal) whose own self-centred area spell (spell data) reaches it from its place - its radius plus the
+            // mob's size, in its sight - and is castable now (the game's cast check), with no unpulled or
+            // crowd-controlled mob in that area, casts it (the External slot, on itself). A damage dealer only
+            // while its threat on the mob stays under the tank's (or it is the mob's victim already): its area
+            // does not take the mob off the tank. With no seen mob in the fight the tank walks into its own
+            // area's reach of the mob (on its floor)
+            {
+                thread_local std::map<ObjectGuid, std::string> unseenLogged;  // member -> mob|spell|verdict
+                if (unseenLogged.size() > 1024)
+                    unseenLogged.clear();
+                Unit* unseen = nullptr;
+                for (Player* bot : attacked)
+                    for (Unit* attacker : bot->getAttackers())
+                        if (attacker && attacker->IsAlive() && attacker->IsInWorld() && attacker->GetMap() == map &&
+                            !LeaderFightMob(tank, attacker) && LeaderUnseenFightMob(tank, attacker) &&
+                            (!unseen || attacker->GetExactDist(tank) < unseen->GetExactDist(tank)))
+                            unseen = attacker;
+                for (Player* member : attacked)
+                {
+                    if (!member)
+                        continue;
+                    ObjectGuid const memberGuid = member->GetGUID();
+                    PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+                    bool const isTank = member == tank;
+                    uint32 spell = 0;
+                    float reachRadius = 0.0f;
+                    std::string verdict;
+                    if (!unseen || !member->IsAlive() || !memberAI)
+                        verdict = "-";
+                    else if (!isTank && PlayerbotAI::IsHeal(member))
+                        verdict = "a healer heals";
+                    else if (!isTank && unseen->GetVictim() != member &&
+                             unseen->GetThreatMgr().GetThreat(member) >= unseen->GetThreatMgr().GetThreat(tank))
+                        verdict = "no threat headroom under the tank";
+                    else
+                    {
+                        verdict = "no area spell of its own reaches it now";
+                        for (uint32 candidate : LeaderSelfAreaSpells(member))
+                        {
+                            SpellInfo const* info = sSpellMgr->GetSpellInfo(candidate);
+                            float const radius = LeaderAreaRadius(member, info);
+                            if (!info || radius <= 0.0f || !member->IsValidAttackTarget(unseen, info))
+                                continue;
+                            reachRadius = std::max(reachRadius, radius);
+                            if (member->HasSpellCooldown(candidate) || !unseen->IsWithinDist3d(member, radius) ||
+                                (!info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) &&
+                                 !member->IsWithinLOSInMap(unseen)) ||
+                                !memberAI->CheckCastNow(candidate, member).Castable())
+                                continue;
+                            // the area takes no mob out of the fight and breaks no crowd control
+                            float const search = radius + unseen->GetCombatReach();
+                            std::list<Unit*> inArea;
+                            Acore::AnyUnitInObjectRangeCheck check(member, search);
+                            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(member, inArea, check);
+                            Cell::VisitObjects(member, searcher, search);
+                            Unit* kept = nullptr;
+                            for (Unit* other : inArea)
+                                if (other != unseen && other->ToCreature() && other->IsWithinDist3d(member, radius) &&
+                                    member->IsValidAttackTarget(other, info) &&
+                                    (!other->IsInCombat() || other->HasBreakableByDamageCrowdControlAura()))
+                                    kept = other;
+                            if (kept)
+                            {
+                                verdict = "its area would take " + kept->GetName();
+                                continue;
+                            }
+                            spell = candidate;
+                            verdict = std::string("casts ") + (info->SpellName[0] ? info->SpellName[0] : "?");
+                            break;
+                        }
+                    }
+                    Leader::MemberEvents told;
+                    bool const has = Leader::Events::Get(memberGuid, told);
+                    auto const ordered = unseenOrdered.find(memberGuid);
+                    bool const ours = ordered != unseenOrdered.end() && has && told.externalTarget.IsEmpty() &&
+                                      told.externalSpell == ordered->second;
+                    if (spell && (!has || !told.externalSpell || ours))
+                    {
+                        if (!has || told.externalSpell != spell || !told.externalTarget.IsEmpty())
+                            Leader::Events::SetExternal(memberGuid, spell, ObjectGuid::Empty);
+                        unseenOrdered[memberGuid] = spell;
+                    }
+                    else if (ordered != unseenOrdered.end())
+                    {
+                        // the mob gone or out of the area's reach: the order goes (a spell on its cooldown waits)
+                        SpellInfo const* last = sSpellMgr->GetSpellInfo(ordered->second);
+                        bool const waits = unseen && !spell && member->HasSpellCooldown(ordered->second) &&
+                                           unseen->IsWithinDist3d(member, LeaderAreaRadius(member, last));
+                        if (!waits)
+                        {
+                            if (ours)
+                                Leader::Events::SetExternal(memberGuid, 0, ObjectGuid::Empty);
+                            unseenOrdered.erase(ordered);
+                        }
+                    }
+                    // the tank of a fight with no seen mob walks into its area's reach of the unseen one
+                    bool walks = false;
+                    if (isTank && unseen && !target && !spell && reachRadius > 0.0f && member->IsAlive() &&
+                        !unseen->IsWithinDist3d(member, reachRadius) &&
+                        LeaderWalkStaysOnFloor(member, unseen->GetPosition()))
+                        walks = checkedMove(memberGuid, Leader::MoveEvent::MoveTo, unseen->GetPosition(),
+                                            reachRadius, "unseen mob: into its area's reach");
+                    if (!unseen)
+                    {
+                        unseenLogged.erase(memberGuid);
+                        continue;
+                    }
+                    std::string const key =
+                        unseen->GetGUID().ToString() + "|" + std::to_string(spell) + "|" + verdict;
+                    if (unseenLogged[memberGuid] == key && !walks)
+                        continue;
+                    unseenLogged[memberGuid] = key;
+                    Decisions().Write(run, "leader", "unseen_fight_mob", unseen->GetGUID(), unseen->GetName(), true,
+                                      JsonObject()
+                                          .Str("member", member->GetName())
+                                          .Str("mob", unseen->GetName())
+                                          .Num("mobEntry", unseen->GetEntry())
+                                          .Str("victim", unseen->GetVictim() ? unseen->GetVictim()->GetName() : "")
+                                          .Real("distance", member->GetExactDist(unseen))
+                                          .Real("hpPct", unseen->GetHealthPct())
+                                          .Num("spell", spell)
+                                          .Str("verdict", verdict)
+                                          .Bool("walks", walks)
+                                          .Str("tag", "[lead1480]"));
                 }
             }
             // [lead42] the attacker list on every change (the next stall is visible)

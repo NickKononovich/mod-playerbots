@@ -265,7 +265,10 @@ namespace Leader::Fight
         Cell::VisitObjects(target, searcher, range);
         for (Unit* unit : nearUnits)
         {
-            if (unit == target || !unit->ToCreature() || !tank->IsValidAttackTarget(unit))
+            // [lead1480] an invisible mob the members' areas still hit (the Phasing Soldier resting at its path's
+            // end) is spared as a seen one is
+            if (unit == target || !unit->ToCreature() ||
+                !(tank->IsValidAttackTarget(unit) || LeaderUnseenFightMob(tank, unit)))
                 continue;
             std::string spare;
             if (unit->HasBreakableByDamageCrowdControlAura())
@@ -1164,7 +1167,10 @@ namespace Leader::Fight
             }
             else if (PlayerbotAI::IsHeal(bot))
             {
-                if (gap < LEADER_HEALER_YD - 6.0f || gap > LEADER_HEALER_YD + 10.0f)
+                // [lead1481] round Shirrak the band reaches out to its Inhibit Magic ring's heal reach
+                float inhibitTop = 0.0f;
+                LeaderInhibitRing(bot, target, Leader::LEADER_HEAL_REACH_YD, &inhibitTop);
+                if (gap < LEADER_HEALER_YD - 6.0f || gap > std::max(LEADER_HEALER_YD + 10.0f, inhibitTop))
                     return "out of the healer's band";
             }
             else
@@ -1228,9 +1234,18 @@ namespace Leader::Fight
         static constexpr float TURNS[] = {0.0f,  0.35f, -0.35f, 0.7f,  -0.7f, 1.05f, -1.05f, 1.4f,
                                           -1.4f, 1.75f, -1.75f, 2.1f,  -2.1f, 2.45f, -2.45f, 3.14f};
         float const base = melee ? target->GetOrientation() + float(M_PI) : target->GetAngle(bot);
-        float const distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
-                               : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
-                                                          : LeaderCastReach(bot, target) - 2.0f;  // [lead660]
+        float distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
+                         : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
+                                                    : LeaderCastReach(bot, target) - 2.0f;  // [lead660]
+        // [lead1481] round Shirrak a caster's / healer's ring is its Inhibit Magic ring (fewest stacks in reach)
+        if (!melee)
+        {
+            float const reachEdge = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEAL_REACH_YD
+                                                             : LeaderCastReach(bot, target) - bot->GetCombatReach() -
+                                                                   target->GetCombatReach();
+            if (float const inhibit = LeaderInhibitRing(bot, target, reachEdge); inhibit > 0.0f)
+                distance = inhibit;
+        }
         // [lead452] b205 / b206 rfc-h Oggleflint: the ranged damage dealers stood 85-90 s at 0 damage (5F the warlock
         // and the SV hunter, 5E the warlock; "combat_spot_none ... first spot") - every point of the one ring at its
         // reach minus 2 yd round the boss on his ledge fell off it (the ground more than 4 yd below him) and the
@@ -1406,6 +1421,127 @@ namespace Leader::Fight
         Creature* creature = unit ? unit->ToCreature() : nullptr;
         return creature && tank->IsValidAttackTarget(creature) && !creature->IsCharmedOwnedByPlayerOrPlayer() &&
                !creature->GetOwnerGUID().IsPlayer() && !creature->GetCharmerOrOwnerPlayerOrPlayerItself();
+    }
+
+    // [lead1480] b268ac ac-h 5B-2 171-351 s and 5F-6 594-775 s: a Phasing Soldier (18556) fought the tank 180 s at
+    // 93 % / 68 % health and both runs ended in a trash stalemate. Its waypoint script casts Invisibility (32754,
+    // SPELL_AURA_MOD_INVISIBILITY, permanent) at its path's end (waypoint_scripts 492, 180 s rest); the tank's Thunder
+    // Clap took it into the fight there. A permanently invisible creature engages visible targets (WorldObject::
+    // CanDetectInvisibilityOf), while no member detects it: every Attack, the members' own targets and the leader's
+    // attacker list refuse it ("cannot see or detect"). Only an area spell hits it (WorldObject::CanDetect skips the
+    // invisibility and stealth tests for an area spell): the core's own check with an area spell
+    bool LeaderUnseenFightMob(Player* member, Unit* unit)
+    {
+        Creature* creature = unit ? unit->ToCreature() : nullptr;
+        SpellInfo const* area = sSpellMgr->GetSpellInfo(SPELL_AREA_PROBE);
+        return creature && area && creature->IsAlive() && !member->CanSeeOrDetect(creature) &&
+               member->CanSeeOrDetect(creature, true) && member->IsValidAttackTarget(creature, area) &&
+               !creature->IsCharmedOwnedByPlayerOrPlayer() && !creature->GetOwnerGUID().IsPlayer() &&
+               !creature->GetCharmerOrOwnerPlayerOrPlayerItself();
+    }
+
+    float LeaderAreaRadius(Player* member, SpellInfo const* info)
+    {
+        float radius = 0.0f;
+        if (info)
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.IsEffect() && effect.IsTargetingArea())
+                    radius = std::max(radius, effect.CalcRadius(member));
+        return radius;
+    }
+
+    namespace
+    {
+        // an effect that deals damage to what its area takes (direct, weapon, leech, or a ground field that ticks)
+        bool AreaDamageEffect(SpellEffectInfo const& effect)
+        {
+            if (!effect.IsTargetingArea())
+                return false;
+            switch (effect.Effect)
+            {
+                case SPELL_EFFECT_SCHOOL_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                case SPELL_EFFECT_HEALTH_LEECH:
+                    return true;
+                case SPELL_EFFECT_PERSISTENT_AREA_AURA:
+                    return effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                           effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
+                           effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH;
+                default:
+                    return false;
+            }
+        }
+
+        // cast on the member itself the area lies round it: its own spot, or the ground under it (PlayerbotAI::
+        // CastSpell sets a ground spell's destination on its target); a cone points where it faces - not taken
+        bool SelfCentredArea(SpellInfo const* info)
+        {
+            if (!info || info->IsPassive() || info->IsPositive() || info->IsChanneled() ||
+                info->NeedsExplicitUnitTarget() || !info->IsAffectingArea())
+                return false;
+            bool damage = false;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                if (!effect.IsEffect())
+                    continue;
+                if (effect.TargetA.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE ||
+                    effect.TargetB.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE ||
+                    effect.TargetA.GetReferenceType() == TARGET_REFERENCE_TYPE_TARGET)
+                    return false;
+                damage = damage || AreaDamageEffect(effect);
+            }
+            return damage;
+        }
+    }
+
+    // [lead1481] b268ac ac-h: the casters stood in 3-4 Inhibit Magic stacks on Shirrak (5A-1 the frost mage 24.5 yd
+    // from his centre for 30 s, 5F-6 the warlock 13.7 yd median: 1.4-1.9k dps there against 3.0-5.9k on Maladaar):
+    // the ranged ring at the reach minus 2 yd and the healer's 20 yd ring know no band. Each stack slows every cast
+    // and the global cooldown by half the base again (x1.5 / x2 / x2.5 / x3): the ring is the middle of the band of
+    // fewest stacks the member's reach still covers (a 30 yd spell: 25-30 yd, 2 stacks; 36 yd: 35-36, 1 stack)
+    float LeaderInhibitRing(Player* bot, Unit* target, float reachEdge, float* top)
+    {
+        if (top)
+            *top = 0.0f;
+        if (!bot || !target || target->GetEntry() != NPC_SHIRRAK_THE_DEAD_WATCHER || bot->getClass() == CLASS_HUNTER)
+            return 0.0f;
+        float floor = 0.0f;
+        for (float band : INHIBIT_MAGIC_BANDS_YD)
+            if (band <= reachEdge)
+                floor = band;
+        if (floor <= 0.0f)
+            return 0.0f;
+        float const reaches = target->GetCombatReach() + bot->GetCombatReach();
+        if (top)
+            *top = reachEdge + reaches;
+        return (floor + reachEdge) / 2.0f + reaches;
+    }
+
+    std::vector<uint32> const& LeaderSelfAreaSpells(Player* member)
+    {
+        // per member, rebuilt when its spell book changes (a talent swap, a new rank)
+        thread_local std::map<ObjectGuid, std::pair<size_t, std::vector<uint32>>> cache;
+        if (cache.size() > 1024)
+            cache.clear();
+        auto& entry = cache[member->GetGUID()];
+        size_t const book = member->GetSpellMap().size();
+        if (entry.first == book && book)
+            return entry.second;
+        entry.first = book;
+        entry.second.clear();
+        for (auto const& [id, known] : member->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active || !member->HasSpell(id))
+                continue;
+            if (uint32 const next = sSpellMgr->GetNextSpellInChain(id); next && member->HasSpell(next))
+                continue;  // its highest rank only
+            if (SelfCentredArea(sSpellMgr->GetSpellInfo(id)))
+                entry.second.push_back(id);
+        }
+        return entry.second;
     }
 
     // [lead18] the nearest walking patrol (idle, a waypoint walker or on the move, not of the committed pull)
