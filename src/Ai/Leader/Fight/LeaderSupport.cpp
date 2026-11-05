@@ -1321,7 +1321,11 @@ bool PickBattleRes(LeaderGroup& group, Player* tank, std::vector<Player*> const&
                 continue;
             // Rebirth (every rank: the ready one known), Raise Ally after it
             uint32 spell = Leader::Fight::LeaderReadySpell(bot, {20484, 20739, 20742, 20747, 20748, 26994, 48477});
-            if (!spell)
+            // [lead1302] b252 rfc-h 5D-12 572 s: Raise Ally on the dead warlock bot - the spell raises no body, it
+            // hands the dead player a ghoul to drive (its mover) that no bot drives; the ghoul kept the mover, the
+            // druid's Revive then failed on the body and Ancestral Spirit's accept never landed (the run stalled).
+            // Only a client-driven player can use the ghoul (RaidUtilityAssignment's battle-res rule)
+            if (!spell && IsRealPlayer(dead))
                 spell = Leader::Fight::LeaderReadySpell(bot, {SPELL_RAISE_ALLY});
             SpellInfo const* info = spell ? sSpellMgr->GetSpellInfo(spell) : nullptr;
             if (!info || !Affords(bot, info) || !Reaches(bot, info, dead))

@@ -1388,6 +1388,16 @@ void PlayerbotAI::HandleTeleportAck()
         if (!bot->IsInWorld())
             return;
 
+        // [lead1302] b252 rfc-h 5D-12 585-826 s: Rtlocaa accepted Ancestral Spirit with its mover not itself; the
+        // core's ack reads _player->m_mover, so every ack was dropped, the body never rose and the run stalled.
+        // A dead player moves nothing but itself
+        if (!bot->IsAlive() && bot->m_mover && bot->m_mover != bot)
+        {
+            LOG_INFO("playerbots", "[lead1302] {}: dead with mover {}, the mover is set back to itself for the ack",
+                     bot->GetName(), bot->m_mover->GetGUID().ToString());
+            bot->SetMover(bot);
+        }
+
         Player* plMover = bot->m_mover ? bot->m_mover->ToPlayer() : nullptr;
         if (!plMover)
             return;
