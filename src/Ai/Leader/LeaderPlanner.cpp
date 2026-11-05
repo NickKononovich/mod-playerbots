@@ -5036,7 +5036,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     }
 
     // [lead1262] defined with the tank's measured intake below (MeasuredTaken)
-    float BossTakenScale(Player* tank, bool spell);
+    float BossTakenScale(Player* tank, uint32 bossEntry, bool spell, bool* own = nullptr);
 
     // [lead1262] b248 + b249 rfc-h: every boss gate read a healer's line with a fight cost of 0 tank healths (the
     // gate's FightManaLine calls passed 0), so its heal term was nothing and the line was its rate measured on
@@ -5055,8 +5055,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             return 0.0f;
         float spell = 0.0f;
         float const landed = LandedMeleeDps(boss, tank, false, &spell);
-        float const meleeScale = BossTakenScale(tank, false);
-        float const spellScale = BossTakenScale(tank, true);
+        bool meleeOwn = false;
+        bool spellOwn = false;
+        float const meleeScale = BossTakenScale(tank, boss->GetEntry(), false, &meleeOwn);
+        float const spellScale = BossTakenScale(tank, boss->GetEntry(), true, &spellOwn);
         float const dps = std::max(landed - spell, 0.0f) * meleeScale + spell * spellScale;
         float const cost = dps * bossSec / float(tank->GetMaxHealth());
         thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> logged;
@@ -5064,9 +5066,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             logged.clear();
         if (logged.insert({member->GetGUID(), boss->GetGUID()}).second)
             LOG_INFO("playerbots", "[lead1262] {}: its boss line for {} heals {:.2f} tank healths = ({:.0f} melee x "
-                     "{:.2f} + {:.0f} spells x {:.2f}) /s on {} x {:.0f} s / {} health",
-                     member->GetName(), boss->GetName(), cost, std::max(landed - spell, 0.0f), meleeScale, spell,
-                     spellScale, tank->GetName(), bossSec, tank->GetMaxHealth());
+                     "{:.2f}{} + {:.0f} spells x {:.2f}{}) /s on {} x {:.0f} s / {} health [lead1361]",
+                     member->GetName(), boss->GetName(), cost, std::max(landed - spell, 0.0f), meleeScale,
+                     meleeOwn ? " (his own fights)" : " (the creature data at least)", spell, spellScale,
+                     spellOwn ? " (his own fights)" : " (the creature data at least)", tank->GetName(), bossSec,
+                     tank->GetMaxHealth());
         return cost;
     }
 
@@ -7270,14 +7274,37 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // [lead1262] the tank's measured intake against the game data's estimate on this dungeon's boss fights, else
     // its trash fights, else 1 (the data as it is): melee or spells
-    float BossTakenScale(Player* tank, bool spell)
+    // [lead1361] b258 rfc-h 5E-13 t=1128: the gate passed the holy priest into Bazzalan at 21 % on a 0 % line - his
+    // template (314 melee + 12 spells /s on the prot paladin) times the ratios of the dungeon's other bosses (melee
+    // 0.79, spells 0.26 in 5E-5: Oggleflint's fight read 0 spell against a template of 6794, Jergosh's 2163 of 8256)
+    // cost 0.39 tank healths; the tank took 43722 (18107 melee, 25615 of Deadly Poison against a template of 542),
+    // the priest healed 1.64 tank healths and ran dry. b257 and b258 boss lines read 0.13-0.24 melee ratios the
+    // same way (5B Rtpalab 0.13, 5H Rtpriad 0.20): another boss's template errs by its own spells and its own
+    // targets, so its ratio says nothing of how much below this boss's data his fight lands. A ratio measured on
+    // this boss's own fights (the entry alone) is his measurement; any other may raise his creature data's
+    // estimate, never lower it: missing, empty or another boss's low ratio, the line holds his data's damage
+    float BossTakenScale(Player* tank, uint32 bossEntry, bool spell, bool* own)
     {
+        if (own)
+            *own = false;
         std::lock_guard<std::mutex> guard(pullCheckLock);
         auto const found = measuredTaken.find(tank->GetGUID().GetRawValue());
         if (found == measuredTaken.end() || found->second.instanceId != tank->GetInstanceId())
             return 1.0f;
+        if (auto const entry = found->second.entry.find(bossEntry); entry != found->second.entry.end())
+        {
+            std::vector<MeasuredSample> const& samples = spell ? entry->second.spell : entry->second.melee;
+            float const ratio = WeightedQuantile(samples, LANDED_RATIO_QUANTILE);
+            if (ratio >= 0.0f && std::isfinite(ratio))
+            {
+                if (own)
+                    *own = true;
+                return ratio;
+            }
+        }
         LandedScale const scale = ScaleOf(found->second.boss, ScaleOf(found->second.trash, LandedScale()));
-        return spell ? scale.spell : scale.melee;
+        float const ratio = spell ? scale.spell : scale.melee;
+        return std::isfinite(ratio) ? std::max(ratio, 1.0f) : 1.0f;
     }
 
     // [lead650] User 2026-11-03: «чем больше мобов сразу, тем больше АОЕ, тем меньше время на моба» (b218 rfc-h engage
