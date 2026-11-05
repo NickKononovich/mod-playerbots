@@ -4074,6 +4074,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         float dps = 0.0f;
         float castShare = 0.0f;  // the share of the fight it spends casting: no swing meanwhile
+        float weaponDps = 0.0f;  // [lead1401] its weapon specials (physical: armor and avoidance reduce them)
     };
 
     // [lead1362] b258 rfc-h 5E-5: Bazzalan's Deadly Poison (2818, 6 a tick at its level) landed 25615 on the tank
@@ -4092,12 +4093,53 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (auto const found = cache.find(key); found != cache.end())
             return found->second;
 
+        // [lead1401] b261 rfc-h: the tank's real intake against the template - Oggleflint melee 6.75 x (Cleave, 110 %
+        // weapon damage, was in no part of it), Bazzalan melee 1.64 x (Sinister Strike) and spells 0.22 x (his Deadly
+        // Poison's script fires at 50 %, read at every timer). A physical spell is melee the core reduces by armor and
+        // avoidance (DamageTaken counts it there): a weapon special's hit - the weapon's mean hit plus its flat bonus,
+        // times its percent (SpellEffectInfo::CalcValue at the mob's level, the core's SpellEffects weapon damage) -
+        // is read on the melee side; a SmartAI cast reads its event's chance (SmartScript::ProcessAction rolls
+        // event_chance each time its timer is up)
+        float const weaponHit =
+            (creature->GetFloatValue(UNIT_FIELD_MINDAMAGE) + creature->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
         MobSpells spells;
-        auto const add = [&](uint32 spellId, float intervalMs)
+        auto const add = [&](uint32 spellId, float intervalMs, float chance)
         {
             SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-            if (!info || info->IsPositive() || (info->GetSchoolMask() & SPELL_SCHOOL_MASK_NORMAL))
+            if (!info || info->IsPositive() || chance <= 0.0f)
                 return;
+
+            if (info->GetSchoolMask() & SPELL_SCHOOL_MASK_NORMAL)  // [lead1401] a weapon special: melee
+            {
+                bool weapon = false;
+                float bonus = 0.0f;
+                float percent = 1.0f;
+                for (SpellEffectInfo const& effect : info->GetEffects())
+                {
+                    float const value = float(effect.CalcValue(creature));
+                    if (effect.Effect == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE)
+                    {
+                        weapon = true;
+                        percent *= std::max(value, 0.0f) / 100.0f;
+                    }
+                    else if (effect.Effect == SPELL_EFFECT_WEAPON_DAMAGE ||
+                             effect.Effect == SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL ||
+                             effect.Effect == SPELL_EFFECT_NORMALIZED_WEAPON_DMG)
+                    {
+                        weapon = true;
+                        bonus += std::max(value, 0.0f);
+                    }
+                    else if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                        bonus += std::max(value, 0.0f) *
+                                 Leader::HazardVerdict::InstanceDamageFactor(creature, info, false);
+                }
+                float const hit = (weapon ? weaponHit + bonus : bonus) * (weapon ? percent : 1.0f);
+                float const everyMs =
+                    std::max({intervalMs, float(info->CalcCastTime(creature)), float(info->StartRecoveryTime), 1.0f});
+                if (hit > 0.0f)
+                    spells.weaponDps += hit * float(IN_MILLISECONDS) / everyMs * chance;
+                return;
+            }
 
             float damage = 0.0f;
             for (SpellEffectInfo const& effect : info->GetEffects())
@@ -4116,8 +4158,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
             float const castMs = float(info->CalcCastTime(creature));
             float const everyMs = std::max({intervalMs, castMs, float(info->StartRecoveryTime), 1.0f});
-            spells.dps += damage * float(IN_MILLISECONDS) / everyMs;
-            spells.castShare += castMs / everyMs;
+            spells.dps += damage * float(IN_MILLISECONDS) / everyMs * chance;
+            spells.castShare += castMs / everyMs * chance;
         };
 
         if (creature->GetAIName() == "SmartAI")
@@ -4128,7 +4170,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 if (holder.GetActionType() == SMART_ACTION_CAST && holder.GetEventType() == SMART_EVENT_UPDATE_IC &&
                     holder.event.minMaxRepeat.repeatMax)
                     add(holder.action.cast.spell,
-                        float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f);
+                        float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f,
+                        holder.event.event_chance && holder.event.event_chance < 100
+                            ? float(holder.event.event_chance) / 100.0f
+                            : 1.0f);  // [lead1401]
         }
         else if (CreatureTemplate const* proto = creature->GetCreatureTemplate())
         {
@@ -4136,7 +4181,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             {
                 SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
                 if (info)
-                    add(spellId, float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)));
+                    add(spellId, float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)), 1.0f);
             }
         }
 
@@ -4184,13 +4229,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float const armoredHit = hit * (1.0f - reduction);
         std::string outcome;
         float const share = MeleeTakenShare(mob, tank, GetTankMitigation(tank), armoredHit, why ? &outcome : nullptr);
-        float const melee = armoredHit * share * float(IN_MILLISECONDS) / float(attackTime) * (1.0f - spells.castShare);
+        // [lead1401] its weapon specials land through the same armor and attack table as its swings
+        float const specials = spells.weaponDps * (1.0f - reduction) * share;
+        float const melee =
+            armoredHit * share * float(IN_MILLISECONDS) / float(attackTime) * (1.0f - spells.castShare) + specials;
         if (why)
             *why = Acore::StringFormat(
-                "swing {:.0f} / {:.1f} s, armor {:.2f}, {}, casting {:.2f}: melee {:.0f}/s + "
-                "spells {:.0f}/s",
+                "swing {:.0f} / {:.1f} s, armor {:.2f}, {}, casting {:.2f}: melee {:.0f}/s ({:.0f}/s weapon specials) "
+                "+ spells {:.0f}/s",
                 hit, float(attackTime) / float(IN_MILLISECONDS), reduction, outcome, spells.castShare, melee,
-                spells.dps);
+                specials, spells.dps);
         return melee + spells.dps;
     }
 
@@ -7021,6 +7069,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             ObjectGuid healer;
             uint64 healed = 0;  // HealingDone::Effective
             float mana = 0.0f;
+            uint64 toolMana = 0;  // [lead1400] ManaReturned::FromTools
         };
         std::vector<HealerStart> healers;  // [lead258] the healers present when the fight began
         float dropScale = 1.0f;            // [lead259] the measured drop ratio `drop` was planned with
@@ -7262,11 +7311,21 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             uint64 const healed = HealingDone::Effective(start.healer);
             if (healed < start.healed)
                 continue;
-            float const spent = start.mana - float(healer->GetPower(POWER_MANA));
+            // [lead1400] b261 rfc-h 5B-2 Taragaman: the gate passed the holy paladin at 2 % on a 0 % line - "heals
+            // 18.8 % per tank health x 1.36 cost" (26 %) less Divine Plea's 25 % "in the fight" and a 3 % potion. The
+            // 18.8 % was its mana per tank health healed net of the Pleas and potions of its measured fights, and
+            // the gate credited them again on top. The spend is noted gross of the returns the gate credits
+            // (ManaReturned::FromTools): each is counted once, by the gate
+            uint64 const tools = ManaReturned::FromTools(start.healer);
+            float const returned = tools > start.toolMana ? float(tools - start.toolMana) : 0.0f;
+            float const spent = start.mana - float(healer->GetPower(POWER_MANA)) + returned;
             RestState::NoteHealing(healer, float(healed - start.healed), spent,
                                    float(fightMs) / float(IN_MILLISECONDS));
-            LOG_DEBUG("playerbots", "[lead258] {}: healer {} healed {} with {:.0f} mana over {:.1f} s", tank->GetName(),
-                      healer->GetName(), healed - start.healed, spent, float(fightMs) / float(IN_MILLISECONDS));
+            LOG_DEBUG("playerbots",
+                      "[lead258] {}: healer {} healed {} with {:.0f} mana over {:.1f} s ([lead1400] {:.0f} of it "
+                      "its credited returns)",
+                      tank->GetName(), healer->GetName(), healed - start.healed, spent,
+                      float(fightMs) / float(IN_MILLISECONDS), returned);
         }
     }
 
@@ -7900,7 +7959,8 @@ namespace PullCheck
                                                                member->GetMap() == bot->GetMap() &&
                                                                PlayerbotAI::IsHeal(member))
                             record.healers.push_back({member->GetGUID(), HealingDone::Effective(member->GetGUID()),
-                                                      float(member->GetPower(POWER_MANA))});
+                                                      float(member->GetPower(POWER_MANA)),
+                                                      ManaReturned::FromTools(member->GetGUID())});
                 if (record.method.empty())
                 {
                     // Nothing cast first: a pet opened, or a mob came by itself.

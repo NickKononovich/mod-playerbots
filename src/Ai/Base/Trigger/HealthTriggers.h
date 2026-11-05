@@ -286,6 +286,7 @@ struct HealerFacts
     bool measured = false;  // healPerMana (and hps, if higher) from this dungeon's fights
     float manaPctPerSec = 0.0f;  // [lead264] the best rate's heal cast on and on: % of max mana per second
     std::string spell;      // the best rate's heal (logged)
+    float castPct = 0.0f;   // [lead1400] the best rate's heal: one cast's cost, % of max mana
 };
 HealerFacts HealerThroughput(Player* healer, Unit* target);
 // [lead258] the leader notes a healer's effective healing and its net mana spent over a fight in this dungeon

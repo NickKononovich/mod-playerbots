@@ -673,6 +673,7 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
                                          : 0.0f;
                 game.gapSec = std::max(gapMs, 1.0f) / float(IN_MILLISECONDS);
                 game.spell = info->SpellName[0] ? info->SpellName[0] : "?";
+                game.castPct = facts.maxMana > 0.0f && cost > 0 ? 100.0f * float(cost) / facts.maxMana : 0.0f;
             }
         }
         cached = {healer->GetSpellMap().size(), power, healer->GetMaxPower(POWER_MANA), game};
@@ -1833,6 +1834,22 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
             reserve += perTankHealth * cost * uncertainSec / fightSec;
     }
+    // [lead1400] b261 rfc-h 5B: the gate passed the holy paladin into Taragaman at 2 % (5B-2, lowest 2 %) and Jergosh
+    // at 3 % (5B-2 / 5B-10, lowest 3-4 %) on 0 % lines: the line's bottom was 0 mana, where the game refuses every
+    // heal (Spell::CheckPower: a cast needs its whole cost) until a return comes. A healer's boss line ends with the
+    // mana of one cast of its heal (HealerThroughput's best rate heal, spell data) left: its lowest mana in the fight
+    // is above zero by the line's own math, and every credit below covers it too (the potion verdict's line without
+    // the potion asks for it once the pool falls under it)
+    float healFloor = 0.0f;
+    std::string healFloorWhy;
+    if (boss && PlayerbotAI::IsHeal(bot))
+    {
+        HealerFacts const facts = HealerThroughput(bot, bot);
+        healFloor = facts.castPct;
+        if (healFloor > 0.0f)
+            healFloorWhy = Acore::StringFormat(" + {:.1f} heal floor ({}'s cost) [lead1400]", healFloor, facts.spell);
+        reserve += healFloor;
+    }
     // the mana its own ready cooldowns return in the fight ([lead423] spell data, ManaToolPct: Evocation, Divine
     // Plea, a priest's Shadowfiend)
     // [lead177] a cooldown's mana counts only when using it in the fight costs less time than drinking that mana before
@@ -1937,6 +1954,18 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
         if (!info)
             return;
+        // [lead1402] b262 rfc-h 5D-4 / 5H-8: the bear tanks' lines credited their own Innervate as ready now (the
+        // leader's invariant check: 35 / 22 credit_unguaranteed, SPELL_FAILED_NOT_SHAPESHIFT) - Bear Form refuses it
+        // (SpellInfo::CheckShapeshift) and a feral druid keeps its form through the fight (its rotation is the
+        // form's). A tool its form refuses is not counted while it keeps that form
+        if (ShapeshiftForm const form = bot->GetShapeshiftForm();
+            form != FORM_NONE && bot->getClass() == CLASS_DRUID &&
+            AiFactory::GetPlayerSpecTab(bot) == DRUID_TAB_FERAL && info->CheckShapeshift(form) != SPELL_CAST_OK)
+        {
+            pick += Acore::StringFormat("{}{} not counted [lead1402]: its form refuses it", pick.empty() ? "" : "; ",
+                                        name);
+            return;
+        }
         // [lead1380] b260 rfc-h 5E-13 Bazzalan 1147-1189 s: the gate passed the holy priest at 10-15 % on a 0 % line
         // (Shadowfiend's 50 % "in the fight" against a heal term of 44 %). The leader told Shadowfiend on Bazzalan, the
         // priest stood at his heal reach 30 yd from the tank, out of its range: "leader external (Execute returned
@@ -2346,9 +2375,10 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? source : "spell data", fightSec, reserve,
-                                   uncertainSec >= 0.0f && measured
-                                       ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
-                                       : Acore::StringFormat("one more mob, {:.1f} s", oneMobSec),
+                                   (uncertainSec >= 0.0f && measured
+                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
+                                        : Acore::StringFormat("one more mob, {:.1f} s", oneMobSec)) +
+                                       healFloorWhy,
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
     if (why)
         *why += timeline;

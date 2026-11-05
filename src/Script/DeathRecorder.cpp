@@ -9,8 +9,10 @@
 #include "EncounterValues.h"
 #include "EstimatedLifetimeValue.h"
 #include "Group.h"
+#include "HealthTriggers.h"
 #include "Log.h"
 #include "Map.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -29,6 +31,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Records, for every death inside a dungeon or raid, what led to it: the damage and healing taken in the
@@ -152,6 +155,40 @@ namespace
         std::unordered_map<ObjectGuid, uint64> byAttacker;
     };
     std::unordered_map<ObjectGuid, TakenFrom> takenFrom;
+    std::unordered_map<ObjectGuid, uint64> toolMana;  // [lead1400] ManaReturned::FromTools, by player
+
+    // [lead1400] the energize spells of the mana returns a boss gate's line credits on top of the measured use
+    // (RestState::FightManaLine: Evocation, Divine Plea, Innervate, Shadowfiend - its Mana Leech hit -, a mana potion
+    // and a mana gem): the tools by their first rank, a consumable by its item's use spell (item data, read once)
+    constexpr uint32 SPELL_MANA_LEECH = 34650;  // the Shadowfiend's hit: mana to its priest (spell_pri_mana_leech)
+
+    bool IsCreditedManaReturn(uint32 spellId)
+    {
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        if (!info)
+            return false;
+        uint32 const first = info->GetFirstRankSpell()->Id;
+        if (first == RestState::SPELL_EVOCATION || first == RestState::SPELL_DIVINE_PLEA ||
+            first == RestState::SPELL_INNERVATE || spellId == SPELL_MANA_LEECH)
+            return true;
+        static std::unordered_set<uint32> const consumables = []
+        {
+            std::unordered_set<uint32> spells;
+            for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+            {
+                if (proto.Class != ITEM_CLASS_CONSUMABLE)
+                    continue;
+                for (auto const& use : proto.Spells)
+                    if (use.SpellId > 0 && use.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                        if (SpellInfo const* spell = sSpellMgr->GetSpellInfo(uint32(use.SpellId)))
+                            for (SpellEffectInfo const& effect : spell->Effects)
+                                if (effect.Effect == SPELL_EFFECT_ENERGIZE && effect.MiscValue == POWER_MANA)
+                                    spells.insert(spell->Id);
+            }
+            return spells;
+        }();
+        return consumables.count(spellId) != 0;
+    }
 
     // [lead256] a spell's damage armor does not reduce (any school but physical)
     bool IsMagicDamage(uint32 spellId)
@@ -475,6 +512,16 @@ namespace DamageTaken
     }
 }
 
+namespace ManaReturned
+{
+    uint64 FromTools(ObjectGuid player)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = toolMana.find(player);
+        return found != toolMana.end() ? found->second : 0;
+    }
+}
+
 namespace HealingDone
 {
     uint64 Effective(ObjectGuid healer)
@@ -491,8 +538,18 @@ public:
     PlayerbotsDeathRecorderUnitScript()
         : UnitScript("PlayerbotsDeathRecorderUnitScript", true,
                      {UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
-                      UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_MODIFY_HEAL_RECEIVED})
+                      UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_MODIFY_HEAL_RECEIVED, UNITHOOK_ON_POWER_GAIN})
     {
+    }
+
+    // [lead1400] the mana a credited return gave (what the bar took): ManaReturned::FromTools
+    void OnPowerGain(Unit* unit, uint8 power, int32 gain, uint8 source, uint32 spellId) override
+    {
+        if (gain <= 0 || power != POWER_MANA || source != POWER_GAIN_SOURCE_SPELL || !IsTracked(unit) ||
+            !IsCreditedManaReturn(spellId))
+            return;
+        std::lock_guard<std::mutex> lock(takenLock);
+        toolMana[unit->GetGUID()] += uint64(gain);
     }
 
     // Amounts come from DealDamage, which sees the damage after armor, resistances, absorbs and avoidance. The

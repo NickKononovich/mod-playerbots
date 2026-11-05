@@ -26,6 +26,14 @@ namespace HealingDone
     uint64 Effective(ObjectGuid healer);
 }
 
+// [lead1400] Mana a player took inside a dungeon or raid since the server started from the returns a boss gate's mana
+// line credits on top of the measured use (FightManaLine): its own Evocation, Divine Plea, Innervate, Shadowfiend's
+// Mana Leech, and a consumable's use (a mana potion, a mana gem). Kept by the death recorder's power gain hook.
+namespace ManaReturned
+{
+    uint64 FromTools(ObjectGuid player);
+}
+
 #include <string>
 
 class Player;
