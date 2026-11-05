@@ -10764,10 +10764,46 @@ namespace Leader::Dungeon
                                           .Num("pathType", int64(chase.GetPathType())));
             }
             lead.harmlessMobs = harmless;
+            // [lead1350] b257 rfc-h 5D-4 (20261105-111926) 749-784 s, a 17 s in-fight deadlock: a wandering Searing
+            // Blade Cultist on the tank (the tank's threat 0) stayed 50-54 yd off it out of everyone's sight and
+            // reach for 35 s, moving all the while, and no unhittable_mob verdict was ever made - "moving" read as
+            // "it comes". A moving mob comes to its victim only under the game's chase (ChaseMovementGenerator: the
+            // creature's AttackStart -> MoveChase) or runs under its flee / confusion / a scripted point or jump; a
+            // mob in the fight moving under any other generator (its random wander, its waypoints) walks where its
+            // spawn's movement takes it, not to its victim: the resolver judges it as one that stands
+            auto const comes = [](Unit* mob) -> bool
+            {
+                if (!mob->isMoving())
+                    return false;
+                switch (mob->GetMotionMaster()->GetCurrentMovementGeneratorType())
+                {
+                    case CHASE_MOTION_TYPE:
+                    case FLEEING_MOTION_TYPE:
+                    case TIMED_FLEEING_MOTION_TYPE:
+                    case CONFUSED_MOTION_TYPE:
+                    case POINT_MOTION_TYPE:
+                    case EFFECT_MOTION_TYPE:
+                        return true;
+                    default:
+                        return false;
+                }
+            };
+            // [lead1350] the walk ordered to a sight spot is live while the member's current command is that MoveTo
+            // (checkedMove answers "changed": the same command on the next tick is false, and the b257 runs spent
+            // the tank's spot one tick after it was chosen - 5D-4 113.4 / 113.7 s, 136.6 / 136.9 s, 263.3 / 263.6 s:
+            // "sight spot Rtdruac" then "every spot refused" with the tank no longer a candidate)
+            auto const sightWalkLive = [&](Player* walker, Position const& spot, std::string const& why) -> bool
+            {
+                checkedMove(walker->GetGUID(), Leader::MoveEvent::MoveTo, spot, 1.5f, why);
+                Leader::MemberEvents current;
+                return Leader::Events::Get(walker->GetGUID(), current) &&
+                       current.move == Leader::MoveEvent::MoveTo && current.moveWhy == why &&
+                       current.spot.GetExactDist(spot) <= 1.5f;
+            };
             for (ObjectGuid const& mobGuid : fightMobs)
             {
                 Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
-                if (!mob || mob->isMoving() || IsCrowdControlled(mob) ||
+                if (!mob || comes(mob) || IsCrowdControlled(mob) ||
                     (mob->GetVictim() && mob->IsWithinMeleeRange(mob->GetVictim())))
                 {
                     lead.sightSpots.erase(mobGuid);
@@ -10792,7 +10828,7 @@ namespace Leader::Dungeon
                     if (walker && walker->IsAlive() &&
                         (walker->GetExactDist(kept->second.second) > Leader::LEADER_SPOT_TOLERANCE ||
                          walker->isMoving()) &&
-                        checkedMove(walker->GetGUID(), Leader::MoveEvent::MoveTo, kept->second.second, 1.5f, why))
+                        sightWalkLive(walker, kept->second.second, why))
                         continue;
                     lead.sightSpotSpent.insert({mobGuid, kept->second.first});
                     lead.sightSpots.erase(kept);
@@ -10841,13 +10877,15 @@ namespace Leader::Dungeon
                           [](Candidate const& a, Candidate const& b) { return a.walk < b.walk; });
                 Candidate const* chosen = nullptr;
                 for (Candidate const& candidate : candidates)
-                    if (checkedMove(candidate.bot->GetGUID(), Leader::MoveEvent::MoveTo, candidate.spot, 1.5f, why))
+                    if (sightWalkLive(candidate.bot, candidate.spot, why))
                     {
                         chosen = &candidate;
                         break;
                     }
                 JsonObject fields;
                 fields.Str("mob", mob->GetName())
+                    .Num("motion", int64(mob->GetMotionMaster()->GetCurrentMovementGeneratorType()))  // [lead1350]
+                    .Bool("moving", mob->isMoving())
                     .Real("tankDistance", tank->GetExactDist(mob))
                     .Real("dz", mob->GetPositionZ() - tank->GetPositionZ())
                     .Num("candidates", int64(candidates.size()));
