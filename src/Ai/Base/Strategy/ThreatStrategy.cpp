@@ -135,11 +135,23 @@ namespace
     // Flamestrike, Hurricane, Death and Decay, Pestilence, Howling Blast). The radius is the largest effect radius;
     // Starfall's stars come from a triggered spell, the 30 yd of its tooltip. Nothing known: the configured AoeRadius.
     constexpr float STARFALL_RADIUS = 30.0f;
+    // [lead1301] Seed of Corruption's detonation, first rank (core spell_warl_seed_of_corruption_dummy::Detonate)
+    constexpr uint32 SPELL_SEED_OF_CORRUPTION_DAMAGE_R1 = 27285;
+
+    // [lead1301] b252 rfc-h 5D-12 563-571 s: the seed passed the cast gate with no spared mob in the fallback
+    // AoeRadius of its target; it burst seconds later on a Searing Blade Enforcer the leader spared, which then killed
+    // the warlock. The seed is an area on its target until it bursts (its aura's duration): its radius is the
+    // detonation's, and the spared mobs that come to it count as with every lasting area
+    bool IsSeed(std::string const& spell) { return spell == "seed of corruption"; }
 
     float AreaRadius(Player* bot, SpellInfo const* info, std::string const& spell)
     {
         if (spell == "starfall")
             return STARFALL_RADIUS;
+        if (IsSeed(spell) && info)
+            if (SpellInfo const* burst = sSpellMgr->GetSpellInfo(
+                    sSpellMgr->GetSpellWithRank(SPELL_SEED_OF_CORRUPTION_DAMAGE_R1, info->GetRank())))
+                info = burst;
 
         float radius = 0.0f;
         if (info)
@@ -1155,7 +1167,7 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     // Whirlwind, Consecration and Starfall took pack mobs coming to the tank
     bool const lasting = info && info->GetDuration() > 0 &&
                          (info->HasEffect(SPELL_EFFECT_PERSISTENT_AREA_AURA) ||
-                          info->HasAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL));
+                          info->HasAura(SPELL_AURA_PERIODIC_TRIGGER_SPELL) || IsSeed(spellAction->getSpell()));
     // [lead1096] user 2026-11-04 (Q9): a ground field (a persistent area aura) is not placed where an unpulled walker
     // can walk into it before it ends (spell data duration)
     // [lead1100] b235 rfc-h: 191 holds on any-way walks at walk speed; a patrol counts only when its waypoint walk
