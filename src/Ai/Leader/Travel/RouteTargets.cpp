@@ -1728,8 +1728,15 @@ namespace Leader::Travel
                         std::any_of(route.routePlanDone.begin(), route.routePlanDone.end(),
                                     [&](Position const& done)
                                     { return start.GetExactDist(done) < farYd && done.GetExactDist(pack->spot) < farYd; });
-                    behind = anchor && back >= 0.0f && forward >= 0.0f && back < forward && pastCleared &&
-                             forward > AggroReach(anchor, leader);
+                    // [lead1341] b256 rfc-h 5H-16 600 s: "Searing Blade Enforcer did not come to its fight" planned
+                    // the Enforcer pair 100 yd off the tank, 40 yd off the walk ahead (reach 26) and 87 yd off the
+                    // cleared walk - nearer the walk ahead, so not behind - while Taragaman stood about 30 yd ahead:
+                    // the walk there and back passes the goal itself. A pack out of its aggro reach of the walk ahead
+                    // (it does not come to the group) that lies farther from the tank than the next boss, its walk
+                    // passing a cleared stop, is past the boss off the way: no stop either
+                    bool const pastBoss = toBoss && farYd > start.GetExactDist(bossSpot);
+                    behind = anchor && back >= 0.0f && forward >= 0.0f && (back < forward || pastBoss) &&
+                             pastCleared && forward > AggroReach(anchor, leader);
                     // [lead1324] the verdict's inputs for a pack not judged behind too (the triage compares them)
                     if (!behind && anchor)
                         judgedLog.Raw(JsonObject()
@@ -1740,6 +1747,8 @@ namespace Leader::Travel
                                           .Real("fromTank", farYd)
                                           .Bool("pastCleared", pastCleared)
                                           .Bool("bossWalks", bossWalks)
+                                          .Real("bossFromTank", toBoss ? start.GetExactDist(bossSpot) : -1.0f)
+                                          .Bool("pastBoss", pastBoss)  // [lead1341]
                                           .Build());
                     if (behind)
                     {
@@ -1750,10 +1759,12 @@ namespace Leader::Travel
                                           .Real("ahead", forward)
                                           .Real("reach", AggroReach(anchor, leader))
                                           .Real("fromTank", farYd)
+                                          .Bool("pastBoss", pastBoss && back >= forward)  // [lead1341]
                                           .Build());
                         LOG_INFO("playerbots", "[lead1283] {}: {} is behind the group ({:.0f} yd from the cleared "
-                                 "walk, {:.0f} yd from the walk ahead): no stop",
-                                 group.Run().runId, PlanStopName(map, *pack), back, forward);
+                                 "walk, {:.0f} yd from the walk ahead{}): no stop",
+                                 group.Run().runId, PlanStopName(map, *pack), back, forward,
+                                 pastBoss && back >= forward ? ", past the boss off the way [lead1341]" : "");
                     }
                 }
                 pack = behind ? packs.erase(pack) : std::next(pack);

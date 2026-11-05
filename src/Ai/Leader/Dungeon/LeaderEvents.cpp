@@ -983,12 +983,22 @@ namespace Leader::Dungeon
                     reached = true;
                     break;
                 }
-            if (fits && !reached)
+            // [lead1340] b256 rfc-h 5G-7 131-156 s (24 s deadlock, Trogg x3): the DK tank's pull back ended "already in
+            // combat" 22 yd off its fight spot, the Trogg on it held in melee beside an idle Trogg pair (17 yd); every
+            // melee place round it was in the pair's reach, lead1291 refused the join (out of the tank's sight) and
+            // nothing else moved: the tank alone hit the mob while three melee stood "stays (...)". The tank's
+            // target is hittable, so neither the no-place resolver (mobs off the tank's melee or sight) nor lead1332
+            // (mobs nobody acts on) takes it. A pack that blocks a member's place and cannot be joined is a pack the
+            // fight cannot take here: the fight moves out of its reach like one judged too much (lead76, lead734) -
+            // for a member's place only (the tank's own blocked walk stays the chain pull's, lead1291's case)
+            bool const joinUnreached = fits && !reached;
+            if (joinUnreached)
             {
-                lead.joinedPack[mob->GetGUID()] = ObjectGuid::Empty;
+                bool const movesAway = bot != tank;
                 LOG_INFO("playerbots", "[lead1291] {}: {}'s pack ({} mobs, {:.1f} yd) fits the fight but no opener of "
-                         "the tank reaches it from where it stands: not joined, left to the chain pull",
-                         tank->GetName(), mob->GetName(), packMobs.size(), tank->GetExactDist(mob));
+                         "the tank reaches it from where it stands: not joined, {}",
+                         tank->GetName(), mob->GetName(), packMobs.size(), tank->GetExactDist(mob),
+                         movesAway ? "the fight moves out of its reach [lead1340]" : "left to the chain pull");
                 Decisions().Write(run, "leader", "pack_join_unreached", mob->GetGUID(), mob->GetName(), true,
                                   JsonObject()
                                       .Num("packMobs", int64(packMobs.size()))
@@ -996,12 +1006,20 @@ namespace Leader::Dungeon
                                       .Str("judged", judged)
                                       .Real("tankGap", tank->GetExactDist(mob))
                                       .Str("blocked", bot->GetName())
-                                      .Str("why", "[lead1291] no opener of the tank reaches the pack from where it "
-                                                  "stands: not joined, left to the chain pull"));
-                return;
+                                      .Bool("movesAway", movesAway)
+                                      .Str("why", movesAway ? "[lead1291] no opener of the tank reaches the pack from "
+                                                              "where it stands: not joined, the fight moves out of "
+                                                              "its reach [lead1340]"
+                                                            : "[lead1291] no opener of the tank reaches the pack from "
+                                                              "where it stands: not joined, left to the chain pull"));
+                if (!movesAway)
+                {
+                    lead.joinedPack[mob->GetGUID()] = ObjectGuid::Empty;
+                    return;
+                }
             }
-            lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
-            if (fits)
+            lead.joinedPack[mob->GetGUID()] = fits && !joinUnreached ? mob->GetGUID() : ObjectGuid::Empty;
+            if (fits && !joinUnreached)
                 joinPack(mob, packMobs, true);
             else
             {
@@ -1026,8 +1044,8 @@ namespace Leader::Dungeon
                                                                     tank->GetPositionZ(), x, y, z))
                     lead.fightMoveTo = Position(x, y, z);
             }
-            Decisions().Write(run, "leader", fits ? "pack_joins" : "fight_moves_away", mob->GetGUID(), mob->GetName(),
-                              true,
+            Decisions().Write(run, "leader", fits && !joinUnreached ? "pack_joins" : "fight_moves_away",
+                              mob->GetGUID(), mob->GetName(), true,
                               JsonObject()
                                   .Num("packMobs", int64(packMobs.size()))
                                   .Real("overload", overload)
@@ -2965,6 +2983,31 @@ namespace Leader::Dungeon
                                                [&looseMobs](ObjectGuid guid) { return looseMobs.count(guid) > 0; }),
                                 killOrder.end());
             }
+        }
+
+        // [lead1343] b256 rfc-h 5E-5 844.6-851.3 s / 5F-6 749.6-753 s: a Searing Blade Warlock at its flee health
+        // (15 % / 10 %, flee_focus logged, kill in 0.9 / 0.6 s at the group's damage) ran to a Cultist + Warlock +
+        // Minion while every damage dealer's Attack stayed on the tank's Cultist - the lead1210 focus reordered the
+        // kill order after the members' Attack targets were set from the fight's target (the tank's victim), so the
+        // burst never reached them; the Attacks moved only when the tank lost its Cultist (851.3 s). The user's rule
+        // (lead1210: a fleer is stopped AND the focus bursts it) is the fight's target from here on: each fleer (no
+        // crowd control the damage breaks) first in the kill order, the first of them the fight's Attack target
+        if (target)
+        {
+            for (ObjectGuid const& fightMob : std::vector<ObjectGuid>(killOrder))
+            {
+                Unit* fleer = ObjectAccessor::GetUnit(*tank, fightMob);
+                if (!fleer || !fleer->IsAlive() || !Leader::Fight::IsFleer(fleer) ||
+                    fleer->HasBreakableByDamageCrowdControlAura())
+                    continue;
+                killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), fightMob), killOrder.end());
+                killOrder.insert(killOrder.begin(), fightMob);
+            }
+            if (!killOrder.empty())
+                if (Unit* first = ObjectAccessor::GetUnit(*tank, killOrder.front());
+                    first && first->IsAlive() && Leader::Fight::IsFleer(first) &&
+                    !first->HasBreakableByDamageCrowdControlAura())
+                    target = first;
         }
 
         // [lead252] b192 rfc-h 5D 892.9-928.9 s: a Searing Blade Warlock cast at the bear from 25-37 yd for 36 s, the
@@ -9364,8 +9407,7 @@ namespace Leader::Dungeon
                 Unit* fleer = ObjectAccessor::GetUnit(*tank, fightMob);
                 if (!Leader::Fight::IsFleer(fleer) || fleer->HasBreakableByDamageCrowdControlAura())
                     continue;
-                killOrder.erase(std::remove(killOrder.begin(), killOrder.end(), fightMob), killOrder.end());
-                killOrder.insert(killOrder.begin(), fightMob);
+                // [lead1343] first in the kill order and the fight's target already (before the Attack targets)
                 if (lead.fleeFocusLogged != fightMob)
                 {
                     lead.fleeFocusLogged = fightMob;
@@ -9387,7 +9429,8 @@ namespace Leader::Dungeon
                                           .Bool("running", FledMobs::IsRunning(fleer))
                                           .Str("help", help ? help->GetName() : "-")
                                           .Real("helpSec", helpSec)
-                                          .Real("killSec", killSec));
+                                          .Real("killSec", killSec)
+                                          .Bool("fightTarget", target == fleer));  // [lead1343]
                 }
             }
         }
