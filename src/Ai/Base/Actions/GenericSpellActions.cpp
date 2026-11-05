@@ -1242,7 +1242,8 @@ uint8 FleeStopAction::BestHold(Unit* mob)
 bool FleeStopAction::isUseful()
 {
     Unit* mob = AI_VALUE(Unit*, "fleeing mob");
-    if (!mob || PlayerbotAI::IsHeal(bot) || FledMobs::StoppedRecently(mob))
+    // [lead1230] a led member's stop is the leader's command (one stopper per runner, chained): no stop spread
+    if (!mob || PlayerbotAI::IsHeal(bot) || (!Leader::LedBot(bot) && FledMobs::StoppedRecently(mob)))
         return false;
 
     // already held: a stun or a root from somebody else stops it as well

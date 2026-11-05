@@ -8841,7 +8841,13 @@ namespace Leader::Dungeon
             for (ObjectGuid const& fightMob : std::vector<ObjectGuid>(killOrder))
             {
                 Unit* fleer = ObjectAccessor::GetUnit(*tank, fightMob);
-                if (!Leader::Fight::NeedsFleeStop(fleer))
+                // [lead1230] user: a hold only delays the runner - while a stun or a root holds a fleer the next stop
+                // of the chain is named already (cast the moment that hold ends: FleeStopAction waits while it holds),
+                // until the runner dies
+                bool const chained = !Leader::Fight::NeedsFleeStop(fleer) && Leader::Fight::IsFleer(fleer) &&
+                                     !fleer->HasBreakableByDamageCrowdControlAura() &&
+                                     FleeStopAction::HeldBy(fleer) >= FleeStopAction::HOLD_ROOT;
+                if (!chained && !Leader::Fight::NeedsFleeStop(fleer))
                 {
                     lead.fleeStoppers.erase(fightMob);
                     continue;
@@ -8849,10 +8855,10 @@ namespace Leader::Dungeon
                 Player* stopper = nullptr;
                 if (auto const kept = lead.fleeStoppers.find(fightMob); kept != lead.fleeStoppers.end())
                     if (Player* keptBot = ObjectAccessor::FindPlayer(kept->second))
-                        if (Leader::Fight::FleeStopper({keptBot}, fleer) == keptBot)
+                        if (Leader::Fight::FleeStopper({keptBot}, fleer, chained) == keptBot)
                             stopper = keptBot;
                 if (!stopper)
-                    stopper = Leader::Fight::FleeStopper(stoppers, fleer);
+                    stopper = Leader::Fight::FleeStopper(stoppers, fleer, chained);
                 if (stopper)
                 {
                     lead.fleeStoppers[fightMob] = stopper->GetGUID();
@@ -8879,12 +8885,22 @@ namespace Leader::Dungeon
                     auto const kept = lead.fleeStoppers.find(fightMob);
                     Player* stopper = kept != lead.fleeStoppers.end() ? ObjectAccessor::FindPlayer(kept->second)
                                                                       : nullptr;
+                    // [lead1230] the race the leader runs: the run to the help the core's flee finds (FleeHelp) vs
+                    // the runner's health at the group's measured trash damage (its kill seconds)
+                    float helpSec = -1.0f;
+                    Creature* help = Leader::Fight::FleeHelp(fleer, helpSec);
+                    float const groupDps = lead.trashFightSec > 0.0f ? lead.trashKilledHealth / lead.trashFightSec
+                                                                     : 0.0f;
+                    float const killSec = groupDps > 0.0f ? float(fleer->GetHealth()) / groupDps : -1.0f;
                     Decisions().Write(run, "leader", "flee_focus", fightMob, fleer->GetName(), true,
                                       JsonObject()
                                           .Real("health", fleer->GetHealthPct())
                                           .Str("stopper", stopper ? stopper->GetName() : "-")
                                           .Num("held", FleeStopAction::HeldBy(fleer))
-                                          .Bool("running", FledMobs::IsRunning(fleer)));
+                                          .Bool("running", FledMobs::IsRunning(fleer))
+                                          .Str("help", help ? help->GetName() : "-")
+                                          .Real("helpSec", helpSec)
+                                          .Real("killSec", killSec));
                 }
             }
         }

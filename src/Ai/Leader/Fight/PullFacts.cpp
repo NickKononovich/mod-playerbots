@@ -35,6 +35,10 @@
 #include "ObjectAccessor.h"       // [lead1170]
 #include "ReachTargetActions.h"   // [lead1171] TankWalkIntoIdlePack
 #include "TankAoeThreat.h"        // [lead1171] IsGapCloser
+#include "CellImpl.h"       // [lead1230] FleeHelp
+#include "GridNotifiers.h"  // [lead1230]
+#include "GridNotifiersImpl.h"
+#include "World.h"  // [lead1230] the flee assistance radius
 #include <algorithm>
 #include <cmath>  // [lead1190] std::sqrt
 #include <mutex>          // [lead925]
@@ -106,9 +110,10 @@ namespace Leader::Fight
 
     bool NeedsFleeStop(Unit* mob)
     {
+        // [lead1230] held only by what holds it now (a stun or a root aura): no stop spread of 2 s after a snare -
+        // b245 rfc-h: a Frostbolt-snared runner kept running with no stronger stop for those seconds
         if (!mob || !mob->IsAlive() || !mob->ToCreature() || mob->HasAuraType(SPELL_AURA_MOD_STUN) ||
-            mob->HasAuraType(SPELL_AURA_MOD_ROOT) || mob->HasBreakableByDamageCrowdControlAura() ||
-            FledMobs::StoppedRecently(mob))
+            mob->HasAuraType(SPELL_AURA_MOD_ROOT) || mob->HasBreakableByDamageCrowdControlAura())
             return false;
         float const fleeAt = Leader::Knowledge::FleeForAssistHealthPct(mob->GetEntry());
         return (fleeAt > 0.0f && mob->GetHealthPct() <= fleeAt) || FledMobs::IsRunning(mob);
@@ -122,11 +127,12 @@ namespace Leader::Fight
         return (fleeAt > 0.0f && mob->GetHealthPct() <= fleeAt) || FledMobs::IsRunning(mob);
     }
 
-    Player* FleeStopper(std::vector<Player*> const& members, Unit* mob)
+    Player* FleeStopper(std::vector<Player*> const& members, Unit* mob, bool afterHold)
     {
         // [lead1210] the member whose ready stop holds the runner most (a stun before a root before a snare, by spell
         // data); a runner already snared takes only a stronger hold; the members' order breaks a tie
-        uint8 const held = FleeStopAction::HeldBy(mob);
+        // [lead1230] `afterHold`: the next stop of the chain, cast the moment the hold on it now ends
+        uint8 const held = afterHold ? FleeStopAction::HOLD_NONE : FleeStopAction::HeldBy(mob);
         Player* best = nullptr;
         uint8 bestHold = 0;
         for (Player* member : members)
@@ -147,6 +153,26 @@ namespace Leader::Fight
             }
         }
         return best;
+    }
+
+    Creature* FleeHelp(Unit* mob, float& reachSec)
+    {
+        // [lead1230] the core's own search at the flee (Creature::DoFleeToGetAssistance): the nearest creature that
+        // may assist it against its victim (CanAssistTo: out of combat, in sight) within the flee assistance radius;
+        // the runner runs to it at its run speed and calls it there (AssistanceMovementGenerator::Finalize)
+        reachSec = -1.0f;
+        Creature* runner = mob ? mob->ToCreature() : nullptr;
+        Unit* victim = runner ? runner->GetVictim() : nullptr;
+        float const radius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
+        if (!runner || !runner->IsAlive() || !victim || radius <= 0.0f)
+            return nullptr;
+        Creature* helper = nullptr;
+        Acore::NearestAssistCreatureInCreatureRangeCheck check(runner, victim, radius);
+        Acore::CreatureLastSearcher<Acore::NearestAssistCreatureInCreatureRangeCheck> searcher(runner, helper, check);
+        Cell::VisitObjects(runner, searcher, radius);
+        if (helper)
+            reachSec = runner->GetExactDist(helper) / std::max(runner->GetSpeed(MOVE_RUN), 0.1f);
+        return helper;
     }
 
     bool MobComesToTank(Player* tank, Unit* mob)

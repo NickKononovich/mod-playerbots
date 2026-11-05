@@ -233,7 +233,7 @@ bool FleeingMobTrigger::IsActive()
         return false;
 
     Unit* mob = AI_VALUE(Unit*, "fleeing mob");
-    return mob && !FledMobs::StoppedRecently(mob);
+    return mob && (Leader::LedBot(bot) || !FledMobs::StoppedRecently(mob));  // [lead1230]
 }
 
 bool FledSurvivorNearTrigger::IsActive()

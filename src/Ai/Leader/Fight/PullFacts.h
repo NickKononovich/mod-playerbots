@@ -37,12 +37,16 @@ namespace Leader::Fight
     // nearer the mob than the tank stands (the reachability part of the leader's walk verdict)
     bool TankHasWalk(Player* tank, Unit* mob);
     // [lead104] a fight mob the leader has stopped from fleeing: at its SmartAI flee-for-assist health or running,
-    // not held (stunned, rooted, crowd-controlled), not stopped within the group's stop spread
+    // not held (stunned, rooted, crowd-controlled)
     bool NeedsFleeStop(Unit* mob);
     // [lead200] a fight mob at its SmartAI flee-for-assist health or running, held or not: the group kills it
     bool IsFleer(Unit* mob);
     // [lead104] the member (not a healer) with a stop ready that takes `mob` now; null: none
-    Player* FleeStopper(std::vector<Player*> const& members, Unit* mob);
+    // [lead1230] `afterHold`: the hold on it now is not judged (the chain's next stop, cast once that hold ends)
+    Player* FleeStopper(std::vector<Player*> const& members, Unit* mob, bool afterHold = false);
+    // [lead1230] the creature the core's flee would run `mob` to for help (Creature::DoFleeToGetAssistance's search)
+    // and its run's seconds there (`reachSec`, -1 with none); null: the flee calls nobody
+    Creature* FleeHelp(Unit* mob, float& reachSec);
     // [lead146] the mob runs to the tank: alive, in combat, its victim the tank, moving, not rooted and not out of
     // its reach - the fight is where the tank took it, the tank does not walk to meet it
     bool MobComesToTank(Player* tank, Unit* mob);
