@@ -1125,6 +1125,17 @@ float LosPullHoldMultiplier::GetValue(Action* action)
     {
         checkedMs = now;
         holding = LosPull::IsHolding(botAI->GetBot());
+        // [lead1322] b255 rfc-h 5D-12 140-154 s (the healer's death): the in-fight caster corner held the bear
+        // (its reach and its walk to a member's attackers off) while a Trogg and two Shamans killed the healer.
+        // The hold waits for the pack to come to the tank; a mob already on another member does not come - the
+        // tank's hold ends while one is
+        Player* const bot = botAI->GetBot();
+        if (holding && PlayerbotAI::IsTank(bot))
+            if (Group* group = bot->GetGroup())
+                for (GroupReference* ref = group->GetFirstMember(); ref && holding; ref = ref->next())
+                    if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() &&
+                                                           member->IsInMap(bot) && !member->getAttackers().empty())
+                        holding = false;
     }
 
     if (!holding)

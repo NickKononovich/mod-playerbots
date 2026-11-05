@@ -224,8 +224,15 @@ namespace Leader::Fight
         // [lead760] b220 rfc-h: 48 pulls walked back by "move fight spot back" (519 yd) after the tank met its mob
         // forward first (reach melee 190 yd, tank open incoming 108, charges 33, aggressive target 26 before the
         // walk back): an engage with a fight spot back is fought there - the tank goes there and the mob comes
+        // [lead1322] b255 rfc-h 5D-12 140-156 s (the healer's death): a Trogg and two Shamans on the resto shaman
+        // 25-35 yd off, the bear's "reach melee" refused 15 s ("the plan's fight spot back is not where the mob is",
+        // the in-fight caster corner's spot). A mob on another member does not come to the fight spot: the spot back
+        // is for the mobs that come to the tank, never a hold off a member's attacker
+        Unit* const onWhom = target->IsInCombat() ? target->GetVictim() : nullptr;
+        bool const onMember = onWhom && onWhom != tank && onWhom->GetTypeId() == TYPEID_PLAYER &&
+                              tank->IsInSameRaidWith(onWhom->ToPlayer());
         Position back;
-        if (FightSpot::Ahead(tank, back) &&
+        if (!onMember && FightSpot::Ahead(tank, back) &&
             target->GetExactDist(back) > tank->GetCombatReach() + target->GetCombatReach() + NOMINAL_MELEE_RANGE)
             return "the plan's fight spot back is not where the mob is";
         if (!target->IsInCombat())

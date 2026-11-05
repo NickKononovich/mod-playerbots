@@ -802,10 +802,30 @@ namespace Leader::Fight
             noPath = true;
             return nullptr;
         }
+        // [lead1321] b255 rfc-h 5D-12 151.4-156 s (the healer's death): the bear stood 22.7 yd from an idle Trogg
+        // (its reach 21 + the guard's margin 2), unwoken; every walk to the attacked healer began inside that margin
+        // and was refused ("in the reach of Ragefire Trogg", the spot itself 55 yd off it) while three mobs killed
+        // the healer. The walker stands in the mob's modelled reach without waking it: a point of its walk no nearer
+        // the mob than the walker stands now is no deeper into its reach than the walker itself (the lead490 rule
+        // for the fight's holder, here the walker)
+        Position const from = bot->GetPosition();
         for (G3D::Vector3 const& point : route.points)
         {
             Position const at(point.x, point.y, point.z);
-            if (Creature* mob = fightTarget ? LeaderFightAggroAt(bot, at, fightTarget) : LeaderAggroAt(bot, at))
+            if (fightTarget)
+            {
+                if (Creature* mob = LeaderFightAggroAt(bot, at, fightTarget))
+                    return mob;
+                continue;
+            }
+            if (Creature* mob = IdleAround(bot, at, [&](Creature* idle)
+                {
+                    if (!IdleMobCovers(bot, idle, at))
+                        return false;
+                    return !(IdleMobCovers(bot, idle, from) &&
+                             idle->GetExactDist2d(at.GetPositionX(), at.GetPositionY()) >=
+                                 idle->GetExactDist2d(from.GetPositionX(), from.GetPositionY()));
+                }))
                 return mob;
         }
         return nullptr;
