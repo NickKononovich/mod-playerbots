@@ -20,6 +20,7 @@
 #include "TargetValue.h"     // [rot2] IsCrowdControlled
 #include "Playerbots.h"
 #include "Spell.h"
+#include "SpellAuras.h"  // [lead1230]
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"  // [lead970]
@@ -187,6 +188,15 @@ bool LeaderExternalAction::isPossible()
     // [lead401] out of a fight a resurrection out of range or sight walks there first (its prerequisite)
     if (RaisesDead(spell) && !bot->IsInCombat() && ResurrectionNeedsWalk(bot, spell, unit))
         return true;
+    // [lead1230] the leader's Banish is the cancel of the member's own Banish: none once that one has less left
+    // than the cast (it would land a fresh one)
+    if (sSpellMgr->GetFirstSpellInChain(spell) == 710)
+    {
+        Aura const* own = unit->GetAura(spell, bot->GetGUID());
+        SpellInfo const* banish = sSpellMgr->GetSpellInfo(spell);
+        if (!own || !banish || own->GetDuration() <= int32(banish->CalcCastTime(bot)))
+            return false;
+    }
     if (botAI->CanCastSpell(spell, unit, true))
         return true;
     // [lead272] refused while nothing passing holds it (a walk, a cast, the global cooldown): reported to the

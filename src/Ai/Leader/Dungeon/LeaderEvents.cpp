@@ -3037,6 +3037,11 @@ namespace Leader::Dungeon
                         sSpellMgr->GetFirstSpellInChain(auraId) != SPELL_BANISH_FIRST_RANK ||
                         !caster->HasSpell(auraId))
                         continue;
+                    // [lead1230] a recast that lands after the Banish ran out is a fresh one (b245 5F-14: 2 x 30 s):
+                    // the cancel only while the aura outlasts the cast, else the group waits the rest out
+                    SpellInfo const* banish = sSpellMgr->GetSpellInfo(auraId);
+                    if (!banish || aura->GetDuration() <= int32(banish->CalcCastTime(caster)))
+                        break;
                     if (Leader::Events::SetExternal(caster->GetGUID(), auraId, target->GetGUID()))
                         Decisions().Write(run, "leader", "cc_last_mob_cancel", target->GetGUID(), target->GetName(),
                                           true,

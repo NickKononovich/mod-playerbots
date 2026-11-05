@@ -4147,7 +4147,12 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
     if (!itemTarget)
     {
         // Exception for Deep Freeze (44572) - allow cast for damage on immune targets (e.g., bosses)
-        if (target->IsImmunedToSpell(spellInfo))
+        // [lead1230] Banish on a target the bot banished is a cancel, not a refusal: the immune hit removes it
+        // (core spell_warl_banish, -710); b245 rfc-h 5F-14 t=433-517: the check refused it until the Banish ran out,
+        // and the cast then landed a fresh 30 s one (twice: 64 s of the whole group on StopDps)
+        bool const banishCancel =
+            sSpellMgr->GetFirstSpellInChain(spellid) == 710 && target->GetAura(spellid, bot->GetGUID());
+        if (target->IsImmunedToSpell(spellInfo) && !banishCancel)
         {
             if (spellid != 44572)  // Deep Freeze
             {
