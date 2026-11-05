@@ -837,7 +837,7 @@ namespace Leader::Dungeon
             // credit was used since), a full pool (it is for the mana spent later)
             std::string credit;
             if (here)
-                for (ManaLineCredit const& counted : ManaLineCredits(member.guid))
+                for (RestState::ManaLineCredit const& counted : RestState::ManaLineCredits(member.guid))
                 {
                     SpellCastResult refusal = SPELL_CAST_OK;
                     if (counted.spell)
@@ -845,7 +845,8 @@ namespace Leader::Dungeon
                         if (bot->HasSpellCooldown(counted.spell))
                             continue;
                         // the summon's target: an enemy in its reach (out of a fight: the next fight's)
-                        Unit* on = counted.spell == SPELL_SHADOWFIEND ? ShadowfiendReach(bot) : bot;
+                        Unit* on =
+                            counted.spell == RestState::SPELL_SHADOWFIEND ? RestState::ShadowfiendReach(bot) : bot;
                         if (!on)
                             continue;
                         refusal = botAI->CheckCastNow(counted.spell, on).refusal;
