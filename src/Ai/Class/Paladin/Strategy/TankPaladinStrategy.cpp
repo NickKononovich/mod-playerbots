@@ -122,8 +122,12 @@ std::vector<NextAction> TankPaladinStrategy::getDefaultActions()
     // wowsims-wotlk default APL "969" (C:/WoW/DEEP_AUDIT_PALADIN.md): Avenger's Shield as the opener and on cooldown,
     // Shield of Righteousness and Hammer of the Righteous (6 s) alternating, then Hammer of Wrath > Consecration >
     // Holy Shield > Judgement
+    // [rot540] no Avenger's Shield in the single-target order: the wowsims protection_paladin__default APL never casts
+    // it (a free GCD waits) and Rawr's 9-6-9-6 has none; it costs 26 % of base mana (Spell.dbc 48827, 1142 mana) -
+    // 20 % of the b267 5E tank's pool a cast. b267 rfc-h 5E: 28 a run, ~8 of them in fights on one target (one hit
+    // each), the tank 1.5-1.7 %/s net and resting. The pack triggers ("light aoe" 2+ within 8 yd, "medium aoe",
+    // "tank aoe threat" / pack / crowd), the peel, the untagged mob and the pull keep it where it hits several
     return {
-        NextAction("avenger's shield", ACTION_DEFAULT + 0.9f),
         NextAction("shield of righteousness", ACTION_DEFAULT + 0.8f),
         NextAction("hammer of the righteous", ACTION_DEFAULT + 0.75f),
         NextAction("consecration", ACTION_DEFAULT + 0.65f),
@@ -346,8 +350,7 @@ void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         { NextAction("consecration", ACTION_HIGH + 5.75f) }));
     triggers.push_back(new TriggerNode("judgement of wisdom ready",
         { NextAction("judgement of wisdom", ACTION_HIGH + 5.7f) }));
-    triggers.push_back(new TriggerNode("avenger's shield boss filler",
-        { NextAction("avenger's shield", ACTION_HIGH + 5.2f) }));
+    // [rot540] no "avenger's shield boss filler": a boss is one target, the wowsims APL waits in the free GCD
     triggers.push_back(
         new TriggerNode(
             "damage spike",
