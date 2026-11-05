@@ -615,7 +615,7 @@ bool PullAction::Execute(Event event)
             // PULL_OUT_OF_REACH_MS: it plans another mob (the linked trash first) or holds with that reason.
             constexpr uint32 PULL_GIVE_UP_LIMIT = 3;
             constexpr uint32 PULL_GIVE_UP_WINDOW_MS = 60 * IN_MILLISECONDS;
-            constexpr float PULL_GIVE_UP_SPOT = 5.0f;
+            constexpr float PULL_GIVE_UP_SPOT = CarefulPlanVerdict::PULL_OUT_OF_REACH_STAND;  // [lead1290] one stand
             constexpr uint32 PULL_OUT_OF_REACH_MS = 90 * IN_MILLISECONDS;
             bool const sameStand = _giveUpFor == target->GetGUID() && _giveUpMs &&
                                    getMSTimeDiff(_giveUpMs, now) <= PULL_GIVE_UP_WINDOW_MS &&
@@ -910,6 +910,18 @@ bool ReachPullAction::Execute(Event event)
                   bot->GetName(), target->GetName(), bot->GetExactDist(target), strategy->GetRange(),
                   PULL_REACH_MARGIN);
     reachDistance = std::max(0.0f, reachDistance - PULL_REACH_MARGIN);
+    // [lead1290] The leader's cast spot for this pull (PullCastSpot, PullBackSpot: a point of the tank's own walk to
+    // the mob, in range, in its sight and the healer's, its walk checked against every other mob's reach) is the
+    // leader's checked walk: a mob on another floor is pulled from there. b251 rfc-h 5D-4 876-881 s: the corner pull
+    // of Searing Blade Cultist 116 (dz 10.8, walk 61.4 yd up the stairs, cast spot on them) and of Voidwalker Minion
+    // 140 ended "out of sight on another floor" here before the walk, 6 orders in 5 s, the cap made 116 out of reach,
+    // the planner could not pull its pack and the group stood 23 s ("given up for range three times from here").
+    // The give-up below stays for a pull without that spot, or with one the walk check drops (cast_spot_off_floor).
+    constexpr float CAST_SPOT_ARRIVED = 2.0f;
+    Position leaderCastSpot;
+    bool const leaderCastWalk = PlayerbotAI::IsTank(bot) && PullCastSpot::Get(bot, target->GetGUID(), leaderCastSpot) &&
+                                bot->GetExactDist(leaderCastSpot) > CAST_SPOT_ARRIVED;
+    bool otherFloor = false;  // out of sight, on another floor (the walk is no slope's)
     // Out of sight within range: step in until the line of sight opens, on the same floor only. A mob below or above
     // (LBRS wave 35: a Legionnaire under Dragonspire Hall) would lead the tank up the stairs into another wing: the
     // pull ends and the planner picks another mob.
@@ -941,19 +953,22 @@ bool ReachPullAction::Execute(Event event)
             bool const logDue = !_floorLogMs || getMSTimeDiff(_floorLogMs, now) >= PULL_FLOOR_LOG_MS;
             if (logDue)
                 _floorLogMs = now ? now : 1;
-            if (!_slopeOk)
+            otherFloor = !_slopeOk;
+            if (otherFloor && leaderCastWalk)
             {
                 if (logDue)
-                    LOG_INFO("playerbots", "[w24b-pull-floor-abort] {}: {} out of sight on another floor ({:.1f} yd, "
-                             "dz {:.1f}, walk {:.1f} yd): pull ended", bot->GetName(), target->GetName(), straight,
-                             target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk);
-                NotePullAbort(bot, target,  // [b34_wc]
-                              Acore::StringFormat("out of sight on another floor (dz {:.1f}, walk {:.1f} yd)",
-                                                  target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk));
-                strategy->OnPullEnded();
-                return false;
+                    LOG_INFO("playerbots", "[lead1290] pull_floor_cast_spot: {}: {} out of sight on another floor "
+                             "({:.1f} yd, dz {:.1f}, walk {:.1f} yd): walks to the leader's cast spot ({:.1f},{:.1f},"
+                             "{:.1f}) {:.1f} yd away", bot->GetName(), target->GetName(), straight,
+                             target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk, leaderCastSpot.GetPositionX(),
+                             leaderCastSpot.GetPositionY(), leaderCastSpot.GetPositionZ(),
+                             bot->GetExactDist(leaderCastSpot));
             }
-            if (logDue)
+            else if (otherFloor && logDue)
+                LOG_INFO("playerbots", "[w24b-pull-floor-abort] {}: {} out of sight on another floor ({:.1f} yd, "
+                         "dz {:.1f}, walk {:.1f} yd): pull ended", bot->GetName(), target->GetName(), straight,
+                         target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk);
+            else if (logDue)
                 LOG_INFO("playerbots", "[w24b-pull-slope] {}: {} out of sight down a slope ({:.1f} yd, dz {:.1f}, "
                          "walk {:.1f} yd): steps in for sight", bot->GetName(), target->GetName(), straight,
                          target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk);
@@ -999,7 +1014,6 @@ bool ReachPullAction::Execute(Event event)
 
     // The careful plan's cast spot (checked for the healer's sight, PullCastSpot): the walk for range goes there.
     // At the spot (or with none) the walk below on the line to the mob.
-    constexpr float CAST_SPOT_ARRIVED = 2.0f;
     Position castSpot;
     bool hasCastSpot = PlayerbotAI::IsTank(bot) && PullCastSpot::Get(bot, target->GetGUID(), castSpot) &&
                        bot->GetExactDist(castSpot) > CAST_SPOT_ARRIVED;
@@ -1065,6 +1079,16 @@ bool ReachPullAction::Execute(Event event)
     if (hasCastSpot)
         return MoveTo(bot->GetMapId(), castSpot.GetPositionX(), castSpot.GetPositionY(), castSpot.GetPositionZ(),
                       false, false, false, false, MovementPriority::MOVEMENT_COMBAT);
+
+    // a mob on another floor with no checked walk to a cast spot (none, or dropped above): the pull ends here
+    if (otherFloor)
+    {
+        NotePullAbort(bot, target,  // [b34_wc]
+                      Acore::StringFormat("out of sight on another floor (dz {:.1f}, walk {:.1f} yd)",
+                                          target->GetPositionZ() - bot->GetPositionZ(), _slopeWalk));
+        strategy->OnPullEnded();
+        return false;
+    }
 
     // RFC 2026-10-24 18:28: the tank walked for Shoot range round a corner alone (33 -> 27 yd), out of the healer's
     // sight, and died under 7 mobs. Where the walk ends (on the line to the mob, at the reach distance) stays in the

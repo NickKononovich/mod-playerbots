@@ -171,6 +171,7 @@ namespace Leader
         std::map<std::string, uint32> staleCommands;  // [lead16] member -> stale_command ticks
         ObjectGuid armyHoldFor;                        // [lead270] the boss pull a prepull Army holds (logged)
         std::set<ObjectGuid> trailing;                 // [lead17] members the leader waits for (far behind)
+        std::set<ObjectGuid> trailUnmovedLogged;       // [lead1297] trailing members named standing on another order
         std::map<ObjectGuid, uint32> spotReassigns;    // [lead17] pull spots re-assigned per member
         // [lead930] pull spots the issue guard refused per member (no candidate again while the pull stands)
         std::map<ObjectGuid, std::vector<Position>> spotRefused;

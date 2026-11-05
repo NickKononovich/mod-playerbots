@@ -368,8 +368,11 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 // [lead423] `credits` false: without the mana its own ready cooldowns return (the leader's mana tools judge the need
 // they would cover)
 // [lead482] `potion` false: without the mana potion the game lets it drink in the fight (the potion verdict itself)
+// [lead1294] `damageCost` true: `cost` is the tank damage the fight deals in tank healths (BossFightCost: the game's
+// data scaled by the measured intake), so a healer's heal term reads its measured mana per tank health it healed
+// (HealerPctPerTankHealth), not its use per tank health of the plan's cost (a different unit)
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false,
-                    bool credits = true, bool potion = true);
+                    bool credits = true, bool potion = true, bool damageCost = false);
 // [lead520] a boss fight of `fightSec` needs the member's in-fight mana potion: its mana is under the boss line without
 // the potion (then it keeps the potions' cooldown for it and drinks no pre-pull potion)
 bool NeedsManaPotion(Player* bot, float fightSec);

@@ -119,8 +119,13 @@ namespace CarefulPlanVerdict
     bool RecentlyAborted(ObjectGuid tank, uint32 withinMs, ObjectGuid* mob = nullptr);
     // [b32_smpull] The pull of `mob` was given up again and again for range from where the tank stands (the walk for
     // range never came: a hazard hold, a refused path): the planner takes another mob, or holds, for `forMs`.
+    // [lead1290] The memo is about the stand it was noted from: once the tank stands more than
+    // PULL_OUT_OF_REACH_STAND yd off it, the mob is a pull again (b251 rfc-h 5D-4 897-918 s: "given up for range three
+    // times from here (68.5 yd)" held Searing Blade Cultist 116 28 yd from where the give-ups were, the pack it led
+    // was planned without it and the walk to an Enforcer woke it, 9 mobs in one fight).
+    constexpr float PULL_OUT_OF_REACH_STAND = 5.0f;  // yd: the pull action's "about the same spot" (PULL_GIVE_UP_SPOT)
     void NotePullOutOfReach(Player* tank, ObjectGuid mob, uint32 forMs);
-    bool PullOutOfReach(ObjectGuid tank, ObjectGuid mob);
+    bool PullOutOfReach(Player* tank, ObjectGuid mob);
     // [b37_sv] The ranged pull (pull back / los pull) of `mob` was given up again and again in its range but out of
     // its sight, because the step in for sight leaves the healer: no range problem, the mob is walked to. The planner
     // plans only the engage (walk in / charge, the fight walked back into the healer's sight) for `forMs`.

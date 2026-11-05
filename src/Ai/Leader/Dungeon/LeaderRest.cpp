@@ -266,23 +266,34 @@ namespace Leader::Dungeon
                 // what keeps it from resting is the fact that ends the wait for it at once: no drink / food in its
                 // bags, mounted, in the water, its group fighting (RestState::CanRest), its combat engine
                 bool const noWater = lowMana && !drinks;
-                bool const shouldSit = noWater || drinkLine || foodLine || (leaderRest && leaderRests);
+                // [lead1293] b251 5E-13 t=351: the tank (33 % mana) "waits for regen ... combat engine without
+                // combat" on the tick the leader gave it the boss's pull (PullAction puts its engine in combat),
+                // after the leader's boss gate had passed it at 33 % (its line 3 %): its own pre-boss drink line
+                // (RestState::WantsDrink, 95 %) called it a sitter. In a group the leader leads, its Rest is the
+                // one rest rule ([lead394]): a member sits when the leader rests it, or with no water at all
+                bool const shouldSit = leaderRest ? (noWater || leaderRests)
+                                                  : (noWater || drinkLine || foodLine);
+                // [lead1293] b251: 24 of 27 "combat engine without combat" stalls were the fight's last second -
+                // the member's combat engine still holds its dead / gone target and drops it on its own next tick
+                // ("drop target" switches to the non-combat engine; 5E-5 t=434 the hunter drank 3 s later). Only
+                // a combat engine with a living target to act on keeps the drink from running
+                Unit* engineTarget = (memberAI && memberAI->GetState() == BOT_STATE_COMBAT)
+                                         ? memberAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get()
+                                         : nullptr;
+                bool const combatEngineHeld = engineTarget && engineTarget->IsAlive();
                 std::string cannot;
                 if (!seated && shouldSit)
                 {
-                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
                     cannot = noWater ? "no drink in the bags, spirit regen only"
                              : (drinkLine && !drinks && !(foodLine && foods)) ? "no drink in the bags"
                              : (foodLine && !foods && !(drinkLine && drinks)) ? "no food in the bags"
                              : bot->IsMounted()                               ? "mounted"
                              : bot->Unit::IsInWater()                         ? "in the water"
                              : !RestState::CanRest(bot)                       ? "cannot rest: its group fights"
-                             : (botAI && botAI->GetState() == BOT_STATE_COMBAT)
-                                 ? "combat engine without combat (drink is a non-combat action)"
-                                 : "";
+                             : combatEngineHeld ? "combat engine without combat (drink is a non-combat action)"
+                                                : "";
                 }
-                if (waitedFor && cannot.empty() &&
-                    (seated || !memberAI || memberAI->GetState() != BOT_STATE_COMBAT || bot->IsInCombat()))
+                if (waitedFor && cannot.empty() && (seated || !memberAI || !combatEngineHeld || bot->IsInCombat()))
                     low.push_back(member.name);
                 if (!rest.regenSinceMs || !route.waitSinceMs)
                 {

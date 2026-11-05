@@ -5029,7 +5029,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             // [lead51] the mana THIS boss fight takes from this member (FightManaLine), not a fixed line
             // [lead1262] a healer's line heals the boss's damage on the tank over the fight (BossFightCost)
             float const manaLine =
-                boss ? RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true)
+                boss ? RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true,
+                                                true, true, true)  // [lead1294] a cost in tank damage
                      : readyMana;
             // [lead855] its line reads its rotation's nonstop rate (no boss fight of it measured): logged once per
             // member and boss with the rate's terms
@@ -5121,7 +5122,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                         {
                             std::string why;
                             float const line = RestState::FightManaLine(
-                                member, bossSec, BossFightCost(member, boss, bossSec), &why, true);  // [lead1262]
+                                member, bossSec, BossFightCost(member, boss, bossSec), &why, true, true, true,
+                                true);  // [lead1262] [lead1294]
                             LOG_INFO("playerbots", "[lead811] {}: boss gate for {} passes {} at {:.0f} % mana, its "
                                      "line {:.0f} % ({}) [lead1043] after {:.0f} s of fights", bot->GetName(),
                                      boss->GetName(), member->GetName(), member->GetPowerPct(POWER_MANA), line, why,
@@ -6013,7 +6015,8 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss, float* mana
     std::string terms;
     float const bossSec = NextPullSec(member, boss);
     float const readyMana =
-        RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), &terms, true);  // [lead1262]
+        RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), &terms, true, true, true,
+                                 true);  // [lead1262] [lead1294]
     if (manaLine && member->getPowerType() == POWER_MANA)
         *manaLine = readyMana;
     if (member->GetHealthPct() < readyHealth)
@@ -6038,7 +6041,8 @@ float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
         return 0.0f;
     float const bossSec = NextPullSec(member, boss);
     // [lead1262] a healer's line heals the boss's damage on the tank over the fight (BossFightCost)
-    return RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true);
+    return RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true, true, true,
+                                    true);  // [lead1294] a cost in tank damage
 }
 
 bool PullReadiness::MemberNeedsManaPotion(Player* member, Unit* boss)
@@ -8789,7 +8793,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
     // [b32_smpull] A pull the tank gave up for range again and again from where it stands (PullAction: the walk for
     // range never came) is no plan for a while: held with that reason, the harness takes another target.
-    if (CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), target->GetGUID()))
+    if (CarefulPlanVerdict::PullOutOfReach(bot, target->GetGUID()))
     {
         _planNotReadyWhy = Acore::StringFormat("the pull of {} was given up for range three times from here ({:.1f} "
                                                "yd): out of reach for now", target->GetName(), bot->GetExactDist(target));
@@ -8830,7 +8834,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         for (Unit* mob : chapel)
         {
             if (!mob || IsCrowdControlled(mob) || PrePullCc::IsClaimed(bot, mob->GetGUID()) ||
-                CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), mob->GetGUID()))
+                CarefulPlanVerdict::PullOutOfReach(bot, mob->GetGUID()))
                 continue;
             bool const clear = passes(mob) >= ScarletMonastery::MOGRAINE_KEEP_AWAY;
             if (!first || (clear && !firstClear) ||
@@ -8956,7 +8960,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                    ? RestState::FightManaLine(healer, NextPullSec(healer, target),
                                                               BossFightCost(healer, target,
                                                                             NextPullSec(healer, target)),
-                                                              &terms, true)  // [lead1262]
+                                                              &terms, true, true, true, true)  // [lead1262] [lead1294]
                                    : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
             if (healer->GetPowerPct(POWER_MANA) < line)
             {
@@ -10172,7 +10176,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // and 133 of the look's pack every 2 s, each aborted by the tank "out of sight on another floor" and capped
         // out of reach (b34_wc) - which only the look target was checked against. A candidate the tank gave up as out
         // of its reach from here is no pull mob either
-        if (candidate != target && CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))
+        if (candidate != target && CarefulPlanVerdict::PullOutOfReach(bot, candidate->GetGUID()))
             return false;
 
         // Several casters in the pack: round a corner first, if the pack that comes is one the group takes.
@@ -10949,7 +10953,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 (candidate->GetGUID() == _lastPullBack &&
                  getMSTimeDiff(_lastPullBackMs, now) < CAREFUL_PULL_RETRY_MS) ||
                 CarefulPlanVerdict::EngageOnly(bot->GetGUID(), candidate->GetGUID()) ||    // [b37_sv]
-                CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))  // [lead182]
+                CarefulPlanVerdict::PullOutOfReach(bot, candidate->GetGUID()))  // [lead182]
                 continue;
 
             // [b39_occ] No lone-mob pull back of a flier high over a walking tank: occ-h 20261026-054314-occ-h-5A-16
@@ -11579,7 +11583,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             // ([b35_lbrs2] but round a corner it walks to the tank: tried there only)
             if (!creature || IsBossMob(candidate) || IsCrowdControlled(candidate) ||
                 PrePullCc::IsClaimed(bot, candidate->GetGUID()) ||
-                CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))
+                CarefulPlanVerdict::PullOutOfReach(bot, candidate->GetGUID()))
                 continue;
             bool const losOnly = KeepsRange(creature);  // [b35_lbrs2]
             if (losOnly && (!losSplit || losTried >= SPLIT_LOS_CANDIDATES || LosPullBanned(bot, candidate)))
@@ -12081,7 +12085,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     Creature* const creature = candidate ? candidate->ToCreature() : nullptr;
                     if (!creature || IsBossMob(candidate) || IsCrowdControlled(candidate) ||
                         PrePullCc::IsClaimed(bot, candidate->GetGUID()) || KeepsRange(creature) ||
-                        CarefulPlanVerdict::PullOutOfReach(bot->GetGUID(), candidate->GetGUID()))
+                        CarefulPlanVerdict::PullOutOfReach(bot, candidate->GetGUID()))
                         continue;
                     ++tried;
                     Position castSpot;

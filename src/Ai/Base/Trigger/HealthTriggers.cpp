@@ -1601,7 +1601,8 @@ namespace
     }
 }
 
-float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits, bool potion)
+float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits, bool potion,
+                    bool damageCost)
 {
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
@@ -1719,7 +1720,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // costed tank health is measured in this run's fights, the term reads it (the same unit, the plan's cost)
     float perTankHealth = PlayerbotAI::IsHeal(bot) ? HealerPctPerTankHealth(bot) : 0.0f;  // [lead258]
     bool perCostMeasured = false;
-    if (PlayerbotAI::IsHeal(bot))
+    // [lead1294] b251 rfc-h 5E-5 t=1098: the gate passed the disc priest into Bazzalan at 32 % on a 6 % line - "heals
+    // 9.4 % per tank health (measured) x 1.29 cost". The 1.29 was the boss's real damage on the tank (it took 1.43,
+    // the priest healed 1.28), the 9.4 % its use per tank health of the trash plans' cost (20.4 planned against 7.9
+    // healed over the run): its measured mana per tank health it healed was 32 % (lead258, 204041 healed for 32888
+    // mana), the fight took 27 % + 8 % returned and asked 42 %. A cost in tank damage reads the mana per healed tank
+    // health
+    if (PlayerbotAI::IsHeal(bot) && !damageCost)
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
         if (auto const found = healerPctPerCost.find(bot->GetGUID().GetRawValue()); found != healerPctPerCost.end())
@@ -2215,7 +2222,10 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         *why += "; its rotation " + rotationWhy;
     if (why && perTankHealth > 0.0f)  // [lead258]
         *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
-                                    perCostMeasured ? "measured" : "throughput", cost);
+                                    damageCost        ? "per tank health healed [lead1294]"
+                                    : perCostMeasured ? "measured"
+                                                      : "throughput",
+                                    cost);
     return line;
 }
 

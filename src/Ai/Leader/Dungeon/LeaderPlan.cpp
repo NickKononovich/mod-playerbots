@@ -824,6 +824,18 @@ namespace Leader::Dungeon
             if (OpenBossBuffPass(group, boss) && !needBuffBefore)
                 Decisions().Write(run, "leader", "boss_buff_pass_opened", boss->GetGUID(), boss->GetName(), true,
                                   JsonObject().Str("pull", pull->GetName()).Str("tag", "[lead1090]"));
+            // [lead1295] b251 rfc-h 5B-2 1083-1110 s: the pass before Bazzalan held the group 15 s (the shadow priest
+            // at 2 % drank for its buff orders only once they were issued, 1089-1100 s), and only after it did the
+            // planner read the boss lines - the shaman at 55 % drank to 100 % for 10 s more (1100-1110 s). This hold
+            // is the boss's own pull or one that brings him (BossBuffPassHolds), so his fight is the next one: his
+            // wait starts with his pass - every member below its boss line rests while the others buff (lead46).
+            // lead1260's trash-first case does not arise: no other pull is held by his pass
+            if (lead.bossWaitFor != boss->GetGUID())
+            {
+                lead.bossWaitFor = boss->GetGUID();
+                Decisions().Write(run, "leader", "boss_wait_with_pass", boss->GetGUID(), boss->GetName(), true,
+                                  JsonObject().Str("pull", pull->GetName()).Str("tag", "[lead1295]"));
+            }
             return "[lead1084] the buff pass before " + boss->GetName() + " first";
         };
 

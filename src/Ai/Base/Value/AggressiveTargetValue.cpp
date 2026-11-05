@@ -249,7 +249,13 @@ namespace
     };
     std::unordered_map<uint64, AbortEntry> aborts;  // by tank, under verdictLock
     // [b32_smpull] pulls given up for good from where the tank stands (NotePullOutOfReach): tank -> mob -> until
-    std::unordered_map<uint64, std::unordered_map<uint64, uint32>> outOfReach;  // under verdictLock
+    struct OutOfReachEntry  // [lead1290] until when, and the stand it was noted from
+    {
+        uint32 until = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+    std::unordered_map<uint64, std::unordered_map<uint64, OutOfReachEntry>> outOfReach;  // under verdictLock
     // [b37_sv] ranged pulls given up out of sight for the healer's sake (NoteEngageOnly): tank -> mob -> until
     std::unordered_map<uint64, std::unordered_map<uint64, uint32>> engageOnly;  // under verdictLock
     std::mutex verdictLock;
@@ -317,18 +323,23 @@ namespace CarefulPlanVerdict
         auto& memo = outOfReach[tank->GetGUID().GetRawValue()];
         for (auto it = memo.begin(); it != memo.end();)
         {
-            if (int32(it->second - now) <= 0)  // expired (the difference survives getMSTime's wrap)
+            if (int32(it->second.until - now) <= 0)  // expired (the difference survives getMSTime's wrap)
                 it = memo.erase(it);
             else
                 ++it;
         }
-        memo[mob.GetRawValue()] = (now + forMs) ? now + forMs : 1;
+        OutOfReachEntry& entry = memo[mob.GetRawValue()];
+        entry.until = (now + forMs) ? now + forMs : 1;
+        entry.x = tank->GetPositionX();
+        entry.y = tank->GetPositionY();
     }
 
-    bool PullOutOfReach(ObjectGuid tank, ObjectGuid mob)
+    bool PullOutOfReach(Player* tank, ObjectGuid mob)
     {
+        if (!tank)
+            return false;
         std::lock_guard<std::mutex> guard(verdictLock);
-        auto const found = outOfReach.find(tank.GetRawValue());
+        auto const found = outOfReach.find(tank->GetGUID().GetRawValue());
         if (found == outOfReach.end())
             return false;
         auto const entry = found->second.find(mob.GetRawValue());
@@ -336,7 +347,9 @@ namespace CarefulPlanVerdict
             return false;
         // `until` is ahead of now while the memo runs (getMSTime wraps after 49 days: the difference decides)
         uint32 const now = getMSTime();
-        if (int32(entry->second - now) <= 0)
+        // [lead1290] a give-up from another stand is no fact about this one: the tank moved, the pull is planned again
+        if (int32(entry->second.until - now) <= 0 ||
+            tank->GetExactDist2d(entry->second.x, entry->second.y) > PULL_OUT_OF_REACH_STAND)
         {
             found->second.erase(entry);
             return false;

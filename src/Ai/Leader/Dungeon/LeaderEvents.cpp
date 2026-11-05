@@ -951,6 +951,38 @@ namespace Leader::Dungeon
             float overload = 0.0f;
             std::string judged;
             bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+            // [lead1291] b251 rfc-h 5A-1 867-889 s: Voidwalker Minion's pack (3 mobs, 37 yd) joined for the tank's
+            // blocked walk, "0 of the 3 mobs held": no opener of the tank reached any of them from where it stood, so
+            // nobody opened on it, and the joined held pack shut the chain pull (it walks the fight to an opener's
+            // reach, lead1190) for the 22 s left - the pack stayed idle and was planned from scratch after the fight
+            // (S#38 "pull back+wakes", 5 mobs, +49 s against the fast run's one 8-mob engage). A joined pack is the
+            // tank's to open on from here (lead1140): one that no opener of the tank reaches from where it stands is
+            // not joined - it stays a blocker (the members' guards keep them out of its reach) and the chain pull
+            // judges it with its walk
+            bool reached = false;
+            for (ObjectGuid const& guid : packMobs)
+                if (Creature* packMob = map->GetCreature(guid); packMob && TankOpensFromHere(tankAI, tank, packMob))
+                {
+                    reached = true;
+                    break;
+                }
+            if (fits && !reached)
+            {
+                lead.joinedPack[mob->GetGUID()] = ObjectGuid::Empty;
+                LOG_INFO("playerbots", "[lead1291] {}: {}'s pack ({} mobs, {:.1f} yd) fits the fight but no opener of "
+                         "the tank reaches it from where it stands: not joined, left to the chain pull",
+                         tank->GetName(), mob->GetName(), packMobs.size(), tank->GetExactDist(mob));
+                Decisions().Write(run, "leader", "pack_join_unreached", mob->GetGUID(), mob->GetName(), true,
+                                  JsonObject()
+                                      .Num("packMobs", int64(packMobs.size()))
+                                      .Real("overload", overload)
+                                      .Str("judged", judged)
+                                      .Real("tankGap", tank->GetExactDist(mob))
+                                      .Str("blocked", bot->GetName())
+                                      .Str("why", "[lead1291] no opener of the tank reaches the pack from where it "
+                                                  "stands: not joined, left to the chain pull"));
+                return;
+            }
             lead.joinedPack[mob->GetGUID()] = fits ? mob->GetGUID() : ObjectGuid::Empty;
             if (fits)
                 joinPack(mob, packMobs, true);
@@ -5091,6 +5123,29 @@ namespace Leader::Dungeon
                                                       .Str("state", trails ? "waits for it" : "with the group")
                                                       .Real("gap", gap));
                 }
+                // [lead1297] b252 rfc-h 5G-7 643.5 s: the group waited for a member that stood on a spot of the
+                // leader's own (the top-up's heal reach) - a wait whose member no order walks. A member the group
+                // waits for that stands where a live order other than the walk along with the tank holds it is
+                // named (once per wait): the member loop's Follow takes it unless a higher-ranked rule asserts that
+                // move again
+                if (trails && !lead.trailUnmovedLogged.count(guid))
+                {
+                    Leader::MemberEvents live;
+                    if (!bot->isMoving() && Leader::Events::Get(guid, live) && live.move != Leader::MoveEvent::None &&
+                        live.move != Leader::MoveEvent::Follow && Leader::Events::AtCommandedSpot(bot))
+                    {
+                        lead.trailUnmovedLogged.insert(guid);
+                        Decisions().Write(run, "leader", "trail_unmoved", guid, bot->GetName(), true,
+                                          JsonObject()
+                                              .Str("member", bot->GetName())
+                                              .Str("move", MoveEventName(live.move))
+                                              .Str("moveWhy", live.moveWhy)
+                                              .Real("gap", gap)
+                                              .Str("tag", "[lead1297]"));
+                    }
+                }
+                if (!trails)
+                    lead.trailUnmovedLogged.erase(guid);
             }
 
         // [lead45] the tank rests too (it is no seat): the boss pull waits for its mana, so the leader tells it to
@@ -5648,21 +5703,54 @@ namespace Leader::Dungeon
             // [lead1230] b244 rfc-h 5D-12 661-835 s: the TopUp on the warlock 36 yd off and out of the shaman's heal
             // ("leader heal target: Execute returned false") healed nothing for 174 s - the healer walks into its heal
             // reach and sight (the spot guard judges the walk), and holds that spot while the top-up runs
+            // [lead1296] b252 rfc-h 5G-7 (20261105-071328) 643.5-883 s (stalled): the fight ended, the tank walked on
+            // to its next stand 7 yd lower and the top-up's spot was searched against the walking tank (28 yd off, in
+            // sight that moment) - 4 yd from the healer by the old fight. The tank stood 34 yd off on the lower
+            // level, the healer at the spot had no sight of it ("leader heal target: Execute returned false",
+            // losTank false), yet the spot was held every tick (judged at the spot's own point, not where the healer
+            // stood) and its rank (heal reach) refused the walk along with the tank: "Rtpalad trails the group" held
+            // the pull 240 s with no order moving the healer. The top-up's spot is judged where the healed member
+            // stands (not while it walks), a spot held only while the healer standing on it reaches it, and a healer
+            // the group waits for walks to the group first (the Follow below)
+            bool const healerTrails = lead.trailing.count(healer->GetGUID()) > 0;
             if (healed && healed != healer && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
-                !healer->IsSitState() && !tank->IsInCombat())
+                !healer->IsSitState() && !tank->IsInCombat() && !healed->isMoving() && !healerTrails)
             {
                 std::string const why = "heal reach: top up " + healed->GetName();
                 Leader::MemberEvents healerNow;
-                bool const holds = Leader::Events::Get(healer->GetGUID(), healerNow) &&
-                                   healerNow.move == Leader::MoveEvent::MoveTo && healerNow.moveWhy == why &&
-                                   reaches(healerNow.spot, healed->GetPosition());
+                bool const ownsMove = Leader::Events::Get(healer->GetGUID(), healerNow) &&
+                                      healerNow.move == Leader::MoveEvent::MoveTo && healerNow.moveWhy == why;
+                bool const onSpot =
+                    ownsMove && healer->GetExactDist2d(healerNow.spot.GetPositionX(), healerNow.spot.GetPositionY()) <=
+                                    std::max(healerNow.tolerance, Leader::LEADER_SPOT_TOLERANCE);
+                bool const spotFails = onSpot && !healer->isMoving() &&
+                                       !reaches(healer->GetPosition(), healed->GetPosition());  // [lead1296]
+                bool const holds = ownsMove && !spotFails && reaches(healerNow.spot, healed->GetPosition());
+                if (spotFails)
+                {
+                    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> failLogged;
+                    if (failLogged.size() > 4096)
+                        failLogged.clear();
+                    if (failLogged.insert({healer->GetGUID(), healed->GetGUID()}).second)
+                        Decisions().Write(run, "leader", "heal_reach_spot_fails", healer->GetGUID(), healer->GetName(),
+                                          true,
+                                          JsonObject()
+                                              .Str("member", healer->GetName())
+                                              .Str("healed", healed->GetName())
+                                              .Str("why", "[lead1296] on its top-up spot it does not reach the member: "
+                                                          "walks to the member")
+                                              .Real("gap", healer->GetExactDist(healed))
+                                              .Real("dz", healed->GetPositionZ() - healer->GetPositionZ()));
+                }
                 if (holds)
                     Leader::Events::SetMove(healer->GetGUID(), Leader::MoveEvent::MoveTo, healerNow.spot,
                                             healerNow.tolerance, why);
                 else if (!reaches(healer->GetPosition(), healed->GetPosition()))
                 {
                     Position fix;
-                    bool const found = slow(
+                    // [lead1296] a spot that failed where the healer stood: its ground is not the point the search
+                    // judged - the member's own place is in reach and sight
+                    bool const found = !spotFails && slow(
                         [&]
                         {
                             SpotAcquire const acquire;
