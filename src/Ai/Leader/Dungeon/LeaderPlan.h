@@ -56,6 +56,11 @@ namespace Leader::Dungeon
     Creature* PullBoss(Map* map, Unit* mob, PullPlanner::Decision const& decision);
     // [lead24] a former forcing timer's diagnostic: `kind` waited `ms` (once per kind per 30 s)
     void WaitedLong(LeaderGroup& group, std::string const& kind, uint32 ms, std::string const& why);
+    // [lead1390] the leader's invariants, every leader tick; each violation is one invariant_violation decision line
+    // per state change (its kind, member and why): wait_without_order (the pull waits on a member that no order moves
+    // or readies), order_impossible (a member's order the game refuses now, LeaderOrderCheck), credit_unguaranteed (a
+    // mana line's tool or potion counted ready now whose use the game refuses now, PlayerbotAI::CheckCastNow)
+    void CheckLeaderInvariants(LeaderGroup& group, Player* tank);
 }
 
 #endif

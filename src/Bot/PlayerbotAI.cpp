@@ -61,6 +61,7 @@
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SmartEnum.h"  // [lead1390] EnumUtils: SpellCastResult names
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
@@ -4185,49 +4186,201 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         }
     }
 
-    Unit* oldSel = bot->GetSelectedUnit();
-    // TRIGGERED_IGNORE_POWER_AND_REAGENT_COST flag for not calling CheckPower in check
-    // which avoids buff charge to be ineffectively reduced (e.g. dk freezing fog for howling blast)
-    /// @TODO: Fix all calls to ApplySpellMod
-    Spell* spell = new Spell(bot, spellInfo, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
-
-    spell->m_targets.SetUnitTarget(target);
-    spell->m_CastItem = castItem;
     if (itemTarget == nullptr)
         itemTarget = aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get();
 
-    spell->m_targets.SetItemTarget(itemTarget);
-    SpellCastResult result = spell->CheckCast(true);
-    delete spell;
+    // TRIGGERED_IGNORE_POWER_AND_REAGENT_COST for not calling CheckPower in check
+    // which avoids buff charge to be ineffectively reduced (e.g. dk freezing fog for howling blast)
+    /// @TODO: Fix all calls to ApplySpellMod
+    // [lead1390] the rotation keeps its own resource rules (the power is its triggers', see RageForStrikeSoon)
+    TriggerCastFlags const flags = TRIGGERED_IGNORE_POWER_AND_REAGENT_COST;
+    CastRun const first = RunCheckCast(spellInfo, target, itemTarget, castItem, flags);
+    SpellCastResult result = first.cast;
+    // [lead1390] an answer its prerequisites fix (the form left: "caster form"; the walk into range: "reach spell")
+    // or a passing state passes, but Spell::CheckCast stopped at it and the checks after it never ran: b259 rfc-h
+    // 5H-8 the cat's Revive (NOT_SHAPESHIFT), b260 5E-13 the Shadowfiend out of range. The checks behind the form
+    // (TRIGGERED_IGNORE_SHAPESHIFT) and the caster's auras (Spell::CheckCasterAuras: silenced, pacified) answer too
+    auto const passes = [](SpellCastResult answer)
+    {
+        switch (answer)
+        {
+            case SPELL_FAILED_NOT_INFRONT:
+            case SPELL_FAILED_NOT_STANDING:
+            case SPELL_FAILED_UNIT_NOT_INFRONT:
+            case SPELL_FAILED_MOVING:
+            case SPELL_FAILED_TRY_AGAIN:
+            case SPELL_CAST_OK:
+            case SPELL_FAILED_NOT_SHAPESHIFT:
+            case SPELL_FAILED_OUT_OF_RANGE:
+                return true;
+            default:
+                return false;
+        }
+    };
+    if (passes(result) && result != SPELL_CAST_OK)
+    {
+        CastRun const behind = result == SPELL_FAILED_NOT_SHAPESHIFT
+                                   ? RunCheckCast(spellInfo, target, itemTarget, castItem,
+                                                  TriggerCastFlags(flags | TRIGGERED_IGNORE_SHAPESHIFT))
+                                   : first;
+        if (!passes(behind.cast))
+            result = behind.cast;
+        else if (behind.cast != SPELL_CAST_OK && behind.auras != SPELL_CAST_OK)
+            result = behind.auras;
+    }
 
-    // if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
-    // {
-    //     if (result != SPELL_FAILED_NOT_READY && result != SPELL_CAST_OK)
-    //         LOG_DEBUG("playerbots", "CanCastSpell - target name: {}, spellid: {}, bot name: {}, result: {}",
-    //             target->GetName(), spellid, bot->GetName(), result);
-    // }
+    if (passes(result))
+        return true;
+
+    if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
+        LOG_DEBUG("playerbots", "CanCastSpell Check Failed. - target name: {}, spellid: {}, bot name: {}, result: {}",
+                  target->GetName(), spellid, bot->GetName(), result);
+
+    return false;
+}
+
+PlayerbotAI::CastRun PlayerbotAI::RunCheckCast(SpellInfo const* spellInfo, Unit* target, Item* itemTarget,
+                                               Item* castItem, TriggerCastFlags flags)
+{
+    CastRun run;
+    Unit* oldSel = bot->GetSelectedUnit();
+    Spell* spell = new Spell(bot, spellInfo, flags);
+    spell->m_targets.SetUnitTarget(target);
+    spell->m_CastItem = castItem;
+    spell->m_targets.SetItemTarget(itemTarget);
+    run.cast = spell->CheckCast(true);
+    if (run.cast != SPELL_CAST_OK && !(flags & TRIGGERED_IGNORE_CASTER_AURAS))
+        run.auras = spell->CheckCasterAuras(false);
+    if (spellInfo->PowerType == POWER_RUNE && !castItem && !(flags & TRIGGERED_IGNORE_POWER_AND_REAGENT_COST))
+        run.runes = spell->CheckRuneCost(spellInfo->RuneCostID);
+    delete spell;
 
     if (oldSel)
         bot->SetSelection(oldSel->GetGUID());
 
+    return run;
+}
+
+bool PlayerbotAI::IsPassingCastAnswer(SpellCastResult result, SpellInfo const* spellInfo, Item* castItem) const
+{
     switch (result)
     {
-        case SPELL_FAILED_NOT_INFRONT:
-        case SPELL_FAILED_NOT_STANDING:
-        case SPELL_FAILED_UNIT_NOT_INFRONT:
-        case SPELL_FAILED_MOVING:
-        case SPELL_FAILED_TRY_AGAIN:
-        case SPELL_CAST_OK:
-        case SPELL_FAILED_NOT_SHAPESHIFT:
-        case SPELL_FAILED_OUT_OF_RANGE:
+        case SPELL_FAILED_MOVING:             // the walk stops (the cast waits for it)
+        case SPELL_FAILED_NOT_STANDING:       // CastSpell stands the bot up and casts on the next tick
+        case SPELL_FAILED_UNIT_NOT_INFRONT:   // CastSpell turns the bot to its target
+        case SPELL_FAILED_TRY_AGAIN:          // a lockpick roll
+        case SPELL_FAILED_SPELL_IN_PROGRESS:  // a cast or channel under way ends
+        case SPELL_FAILED_INTERRUPTED:
             return true;
+        case SPELL_FAILED_NOT_READY:
+            // the global cooldown only: no cooldown of its own, no potion of this combat holding the item
+            return spellInfo && !bot->HasSpellCooldown(spellInfo->Id) &&
+                   !(castItem && bot->GetLastPotionId() &&
+                     (castItem->IsPotion() || spellInfo->IsCooldownStartedOnEvent())) &&
+                   bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo);
         default:
-            if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
-                LOG_DEBUG("playerbots", "CanCastSpell Check Failed. - target name: {}, spellid: {}, bot name: {}, result: {}",
-                    target->GetName(), spellid, bot->GetName(), result);
-
             return false;
     }
+}
+
+std::string PlayerbotAI::CastResultName(SpellCastResult result) { return EnumUtils::ToConstant(result); }
+
+PlayerbotAI::CastCheck PlayerbotAI::CheckCastNow(uint32 spellId, Unit* target, Item* castItem, TriggerCastFlags flags)
+{
+    CastCheck check;
+    SpellInfo const* spellInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!spellInfo)
+    {
+        check.result = check.refusal = check.behindForm = SPELL_FAILED_UNKNOWN;
+        return check;
+    }
+
+    if (!target)
+        target = bot;
+
+    if (!IsValidUnit(target))
+    {
+        check.result = check.refusal = check.behindForm = SPELL_FAILED_BAD_TARGETS;
+        return check;
+    }
+
+    // the pet's own spell: its owner toggles it, the pet's cast check is its own (Spell::CheckPetCast)
+    if (Pet* pet = bot->GetPet())
+        if (pet->HasSpell(spellId))
+            return check;
+
+    bool const own = !castItem && flags == TRIGGERED_NONE;
+    // the answers in the game's order; formAt: the NOT_SHAPESHIFT the form's leave removes (-1: none)
+    std::vector<SpellCastResult> answers;
+    int32 formAt = -1;
+    if (own && !bot->HasSpell(spellId))
+        answers.push_back(SPELL_FAILED_NOT_KNOWN);
+
+    if (!(flags & TRIGGERED_IGNORE_SPELL_AND_CATEGORY_CD) && bot->HasSpellCooldown(spellId))
+        answers.push_back(SPELL_FAILED_NOT_READY);
+
+    // a channel under way: the bot's cast waits for its end (PlayerbotAI::CastSpell does not break it)
+    if (!(flags & TRIGGERED_IGNORE_CAST_IN_PROGRESS) && bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+        answers.push_back(SPELL_FAILED_SPELL_IN_PROGRESS);
+
+    Item* itemTarget = own ? aiObjectContext->GetValue<Item*>("item for spell", spellId)->Get() : nullptr;
+    CastRun run = RunCheckCast(spellInfo, target, itemTarget, castItem, flags);
+    answers.push_back(run.cast);
+    if (run.cast == SPELL_FAILED_NOT_SHAPESHIFT && !(flags & TRIGGERED_IGNORE_SHAPESHIFT))
+    {
+        formAt = int32(answers.size()) - 1;
+        run = RunCheckCast(spellInfo, target, itemTarget, castItem,
+                           TriggerCastFlags(flags | TRIGGERED_IGNORE_SHAPESHIFT));
+        answers.push_back(run.cast);
+    }
+    if (run.cast != SPELL_CAST_OK)
+        answers.push_back(run.auras);
+
+    // Spell::m_powerCost is computed in Spell::prepare: the cast check alone never refuses for power
+    if (!castItem && !(flags & TRIGGERED_IGNORE_POWER_AND_REAGENT_COST) && !bot->GetCommandStatus(CHEAT_POWER))
+    {
+        // Spell::CheckPower's order: health as power, the runes, the power amount
+        if (spellInfo->PowerType == POWER_HEALTH)
+        {
+            if (int32(bot->GetHealth()) <= spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask()))
+                answers.push_back(SPELL_FAILED_CASTER_AURASTATE);
+        }
+        else if (spellInfo->PowerType == POWER_RUNE)
+            answers.push_back(run.runes);
+        else if (spellInfo->PowerType < MAX_POWERS &&
+                 int32(bot->GetPower(Powers(spellInfo->PowerType))) <
+                     spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask()))
+            answers.push_back(SPELL_FAILED_NO_POWER);
+    }
+
+    bool refusalFound = false;
+    bool behindFound = false;
+    for (int32 i = 0; i < int32(answers.size()); ++i)
+    {
+        SpellCastResult const answer = answers[i];
+        if (answer == SPELL_CAST_OK)
+            continue;
+
+        if (check.result == SPELL_CAST_OK)
+            check.result = answer;
+
+        if (IsPassingCastAnswer(answer, spellInfo, castItem))
+            continue;
+
+        if (!refusalFound)
+        {
+            check.refusal = answer;
+            refusalFound = true;
+        }
+
+        if (!behindFound && i != formAt)
+        {
+            check.behindForm = answer;
+            behindFound = true;
+        }
+    }
+
+    return check;
 }
 
 bool PlayerbotAI::CanCastSpell(uint32 spellid, GameObject* goTarget, bool checkHasSpell, Item* castItem)

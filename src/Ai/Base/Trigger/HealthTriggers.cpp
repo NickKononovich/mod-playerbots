@@ -1371,6 +1371,17 @@ float FightSecOf(Player* bot, NextFight const& fight)
 namespace
 {
     thread_local bool nestedManaLine = false;  // [lead525] another member's line read inside one: no overlap there
+
+    // [lead1390] the credits each member's last own mana line counted ready now (ManaLineCredits)
+    std::mutex manaCreditLock;
+    std::unordered_map<uint64, std::vector<ManaLineCredit>> manaLineCredits;
+}
+
+std::vector<ManaLineCredit> ManaLineCredits(ObjectGuid member)
+{
+    std::lock_guard<std::mutex> lock(manaCreditLock);
+    auto const found = manaLineCredits.find(member.GetRawValue());
+    return found != manaLineCredits.end() ? found->second : std::vector<ManaLineCredit>();
 }
 
 namespace
@@ -1911,6 +1922,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float cooldownFloor = 0.0f;
     std::vector<BurstReturn> bursts;  // [lead850] the returns on the fight's timeline
     float burstCredit = 0.0f;         // [lead850] their part of `returned`
+    std::vector<ManaLineCredit> readyCredits;  // [lead1390] the credits counted ready now
     auto const credit = [&](uint32 spell, float pct, char const* name)
     {
         if (!credits || !bot->HasSpell(spell))
@@ -1979,6 +1991,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         if (inFight)
         {
             returned += pct;
+            if (!readyMs && pct > 0.0f)  // [lead1390]
+                readyCredits.push_back({spell, 0, name});
             // [lead850] Evocation's return is on the fight's timeline (BurstLine): at the wowsims line once ready
             if (spell == SPELL_EVOCATION && info->IsChanneled())
             {
@@ -2125,11 +2139,15 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         bool const prepot = boss && !bot->IsInCombat() && RaidConsumables::FindBuffPotion(bot, buffSpell) &&
                             bot->GetPowerPct(POWER_MANA) >= std::max(need + reserve - returned, noPotionFloor);
         uint32 const withinMs = fightSec > 0.0f ? uint32(fightSec * float(IN_MILLISECONDS)) : 0;
-        if (!prepot && RaidConsumables::FindRestorePotion(bot, true, amount, withinMs, &readyMs))
+        uint32 const potionItem =
+            prepot ? 0 : RaidConsumables::FindRestorePotion(bot, true, amount, withinMs, &readyMs);
+        if (potionItem)
         {
             float const potionPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                              std::max(need + reserve - returned, 0.0f));
             returned += potionPct;
+            if (!readyMs && potionPct > 0.0f)  // [lead1390]
+                readyCredits.push_back({0, potionItem, "mana potion"});
             // [lead850] on the fight timeline: its whole return once ready, where the pool has room for it
             if (potionPct > 0.0f)
             {
@@ -2158,11 +2176,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     if (credits && potion && boss && bot->GetMaxPower(POWER_MANA))
     {
         uint32 amount = 0;
-        if (RaidConsumables::FindManaGem(bot, amount))
+        if (uint32 const gemItem = RaidConsumables::FindManaGem(bot, amount))
         {
             float const gemPct = std::min(100.0f * float(amount) / float(bot->GetMaxPower(POWER_MANA)),
                                           std::max(need + reserve - returned, 0.0f));
             returned += gemPct;
+            if (gemPct > 0.0f)  // [lead1390]
+                readyCredits.push_back({0, gemItem, "mana gem"});
             if (gemPct > 0.0f)  // [lead850] on the fight timeline, like the potion (ready now: FindManaGem)
             {
                 BurstReturn gem;
@@ -2173,6 +2193,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             }
             pick += Acore::StringFormat("{}mana gem {:.0f} %", pick.empty() ? "" : "; ", gemPct);
         }
+    }
+    // [lead1390] the member's own line with its credits: what it counted ready now, for the leader's invariant check
+    if (credits && !nestedManaLine)
+    {
+        std::lock_guard<std::mutex> lock(manaCreditLock);
+        manaLineCredits[bot->GetGUID().GetRawValue()] = readyCredits;
     }
     // [lead251] b191 rfc-h 5E: the prot paladin tank rested 15 times "mana 6-14 % < need 15 %" with its computed
     // need 2-12 % - the config's LowMana as the floor (80 s of its drinks); b192's floor at its mean deepest drop in a

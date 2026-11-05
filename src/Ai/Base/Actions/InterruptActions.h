@@ -10,10 +10,37 @@
 #include "Action.h"
 #include "MovementActions.h"  // [lead405] LeaderUseObjectAction
 #include "UseItemAction.h"    // [lead402] LeaderConsumeAction
+#include "ObjectGuid.h"       // [lead1390]
+#include "SharedDefines.h"    // [lead1390] SpellCastResult
 
+#include <string>
+
+class GameObject;
 class PlayerbotAI;
 class SpellInfo;
 class Unit;
+
+namespace Leader
+{
+    struct MemberEvents;
+}
+
+// [lead1390] the game's refusal of a leader order now, for the member that executes it (PlayerbotAI::CheckCastNow):
+// SPELL_CAST_OK when the game takes it, when only a passing state holds it (a walk, sitting, the global cooldown, a
+// cast under way), or when the order's own execution removes the answer (the walk to a dead member, the form a
+// resurrection or a portal click leaves, a movement form, the bounced buff's refresh). The orders' isPossible and
+// the leader's invariant check (order_impossible) read the same answer
+namespace LeaderOrderCheck
+{
+    SpellCastResult ExternalRefusal(PlayerbotAI* botAI, uint32 spell, ObjectGuid target);
+    SpellCastResult DispelRefusal(PlayerbotAI* botAI, uint32 spell, ObjectGuid target);
+    SpellCastResult ConsumeRefusal(PlayerbotAI* botAI, uint32 itemId, ObjectGuid target);
+    // a game object's click (GameObject::Use casts its spell on the clicker, the game's flags)
+    SpellCastResult UseObjectRefusal(PlayerbotAI* botAI, GameObject* go);
+    // the first refused order of the member's current events ("external 48169 on Rtpriaa: SPELL_FAILED_...");
+    // empty: none
+    std::string OrderRefusal(PlayerbotAI* botAI, Leader::MemberEvents const& events);
+}
 
 // Casts the interrupt the group rotation assigned to this bot on the enemy whose cast it was assigned.
 class InterruptAssignedCastAction : public Action

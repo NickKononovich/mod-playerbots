@@ -11,6 +11,8 @@
 #include "Multiplier.h"
 #include "Trigger.h"
 #include <stdexcept>
+#include <string>  // [lead1390]
+#include <vector>  // [lead1390]
 
 class Creature;  // [b46_patrol]
 class Player;
@@ -426,6 +428,16 @@ float ManaToolRadius(Player* caster, uint32 spell);
 // 225 % of the druid's base mana (spell_dru_innervate), the Shadowfiend's hits (its life over its attack time) each
 // returning its Mana Leech (34650); 0: none known
 float ManaToolPct(Player* caster, Player* receiver, uint32 spell);
+// [lead1390] a mana tool or a mana potion / gem the member's last mana line with credits (FightManaLine, not nested
+// in another member's) counted as ready now: its spell (a tool) or its item (a potion, a gem). The leader's
+// invariant check (credit_unguaranteed) asks the game whether each one's use is possible now
+struct ManaLineCredit
+{
+    uint32 spell = 0;
+    uint32 item = 0;
+    std::string name;
+};
+std::vector<ManaLineCredit> ManaLineCredits(ObjectGuid member);
 // [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
 void NoteManaRate(ObjectGuid member, float pctPerSec);
 // [lead232] ... on boss fights, and over its fights at least as long as this run's mean fight (lead234)

@@ -536,6 +536,29 @@ public:
     bool CanCastSpell(uint32 spellid, GameObject* goTarget, bool checkHasSpell = true, Item* castItem = nullptr);
     bool CanCastSpell(uint32 spellid, float x, float y, float z, bool checkHasSpell = true,
                       Item* itemTarget = nullptr);
+    // [lead1390] What the game answers for this caster, spell and target now: Spell::CheckCast with the cast's own
+    // flags (TRIGGERED_NONE: the bot's own cast, the spell known and off its cooldown), the power the cast check
+    // cannot see before Spell::prepare (Spell::m_powerCost), and what an earlier answer hides (Spell::CheckCast stops
+    // at its first failed check): the checks after the form (TRIGGERED_IGNORE_SHAPESHIFT), the caster's auras.
+    // A passing state (a walk, sitting, the global cooldown, a cast or channel under way, facing, a lockpick roll)
+    // ends by itself and a retry is right; every other answer is a refusal the leader must know. CanCastSpell stays
+    // the rotation's check: it also passes the answers its prerequisites fix (the form left, the walk into range).
+    struct CastCheck
+    {
+        SpellCastResult result = SPELL_CAST_OK;      // the game's first failed check now (OK: castable now)
+        SpellCastResult refusal = SPELL_CAST_OK;     // the first answer no passing state explains (OK: none)
+        SpellCastResult behindForm = SPELL_CAST_OK;  // `refusal` with the form left (the answer behind NOT_SHAPESHIFT)
+        bool Castable() const { return result == SPELL_CAST_OK; }
+        bool Refused() const { return refusal != SPELL_CAST_OK; }
+    };
+    // `castItem`: an item's use (its spell need not be known); `flags`: the game's own cast flags (a game object's
+    // click casts its spell triggered, GameObject::Use)
+    CastCheck CheckCastNow(uint32 spellId, Unit* target, Item* castItem = nullptr,
+                           TriggerCastFlags flags = TRIGGERED_NONE);
+    // the answer ends by itself (a retry is right): moving, sitting, the global cooldown only, a cast under way, facing
+    bool IsPassingCastAnswer(SpellCastResult result, SpellInfo const* spellInfo, Item* castItem = nullptr) const;
+    // "SPELL_FAILED_OUT_OF_RANGE" (the core's enum name)
+    static std::string CastResultName(SpellCastResult result);
 
     Aura* GetAura(std::string const spellName, Unit* unit, bool checkIsOwner = false, bool checkDuration = false,
                   int checkStack = -1);
@@ -668,6 +691,16 @@ private:
     Item* FindItemInInventory(std::function<bool(ItemTemplate const*)> checkItem) const;
     void HandleCommands();
     void HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
+    // [lead1390] one Spell::CheckCast of the bot's cast with these flags, and the checks it stops before: the caster's
+    // auras (Spell::CheckCasterAuras) behind an earlier answer, and the rune cost (Spell::CheckRuneCost)
+    struct CastRun
+    {
+        SpellCastResult cast = SPELL_CAST_OK;
+        SpellCastResult auras = SPELL_CAST_OK;
+        SpellCastResult runes = SPELL_CAST_OK;
+    };
+    CastRun RunCheckCast(SpellInfo const* spellInfo, Unit* target, Item* itemTarget, Item* castItem,
+                         TriggerCastFlags flags);
     inline bool IsValidUnit(Unit const* unit) const
     {
         return unit && unit->IsInWorld() && !unit->IsDuringRemoveFromWorld();

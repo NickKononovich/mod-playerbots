@@ -99,6 +99,7 @@
 #include "G3D/Vector4.h"  // [b32_brs] HopelessDetourLeg discs
 #include <algorithm>
 #include <array>
+#include <cctype>  // [lead1390]
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -114,6 +115,7 @@
 #include "LeaderEvents.h"
 #include "LeaderPrepull.h"  // [lead270]
 #include "LeaderConsumables.h"  // [lead1090] BossBuffPassHolds, OpenBossBuffPass
+#include "InterruptActions.h"   // [lead1390] LeaderOrderCheck
 
 namespace Leader::Dungeon
 {
@@ -738,6 +740,138 @@ namespace Leader::Dungeon
         group.LogEvent("waited_long", JsonObject().Str("kind", kind).Num("sec", ms / IN_MILLISECONDS).Str("why", why));
     }
 
+    void CheckLeaderInvariants(LeaderGroup& group, Player* tank)
+    {
+        if (!tank || !tank->IsInWorld())
+            return;
+
+        // world thread: the state last logged per run, member and kind (empty: none)
+        static std::unordered_map<std::string, std::string> logged;
+        DecisionRun const run = group.Run();
+        auto const note = [&run](LeaderGroup::MemberInfo const& member, char const* kind,
+                                 std::string const& state, std::string const& why)
+        {
+            std::string& last = logged[Acore::StringFormat("{}|{}|{}", run.runSeq, member.guid.GetRawValue(), kind)];
+            if (state == last)
+                return;
+            last = state;
+            if (state.empty())
+                return;
+            LOG_INFO("playerbots", "[lead1390] invariant_violation {} {} {}: {}", run.runId, kind, member.name, why);
+            Decisions().Write(run, "leader", "invariant_violation", ObjectGuid::Empty, std::string(), false,
+                              JsonObject().Str("kind", kind).Str("member", member.name).Str("why", why)
+                                  .Str("tag", "[lead1390]"));
+        };
+
+        std::vector<LeaderGroup::MemberInfo> const members = group.Members();
+        std::vector<Leader::MemberEvents> events(members.size());
+        std::vector<bool> hasEvents(members.size(), false);
+        for (size_t i = 0; i < members.size(); ++i)
+            hasEvents[i] = Leader::Events::Get(members[i].guid, events[i]);
+
+        // wait_without_order: the pull waits on a member (the readiness verdict names it, out of a fight) that no
+        // order moves or readies - its own (a walk, Rest / Prepare / Ready?, a cast, a use, a heal) or another
+        // member's on it (a resurrection, a soulstone, a dispel, a heal)
+        auto const& lead = group.State();
+        std::string const& waitWhy = lead.notReadyWhy;
+        bool const waits = !waitWhy.empty() && !group.InCombat() && !tank->IsInCombat();
+        size_t waitedAt = std::string::npos;
+        size_t waited = members.size();
+        if (waits)
+            for (size_t i = 0; i < members.size(); ++i)
+            {
+                std::string const& name = members[i].name;
+                for (size_t at = waitWhy.find(name); !name.empty() && at != std::string::npos;
+                     at = waitWhy.find(name, at + 1))
+                {
+                    size_t const end = at + name.size();
+                    if (end < waitWhy.size() && std::isalnum(static_cast<unsigned char>(waitWhy[end])))
+                        continue;
+                    if (at < waitedAt)
+                    {
+                        waitedAt = at;
+                        waited = i;
+                    }
+                    break;
+                }
+            }
+        bool orderFor = false;
+        if (waited < members.size())
+        {
+            ObjectGuid const guid = members[waited].guid;
+            if (hasEvents[waited])
+            {
+                Leader::MemberEvents const& own = events[waited];
+                orderFor = own.move == Leader::MoveEvent::MoveTo || own.move == Leader::MoveEvent::StandAt ||
+                           own.move == Leader::MoveEvent::Follow || own.ready != Leader::ReadyEvent::None ||
+                           own.externalSpell || own.dispelSpell || own.consumeItem || !own.consumeObject.IsEmpty() ||
+                           !own.healTarget.IsEmpty();
+            }
+            for (size_t i = 0; i < members.size() && !orderFor; ++i)
+                orderFor = hasEvents[i] && i != waited &&
+                           (events[i].externalTarget == guid || events[i].dispelTarget == guid ||
+                            events[i].consumeTarget == guid || events[i].healTarget == guid);
+        }
+
+        for (size_t i = 0; i < members.size(); ++i)
+        {
+            LeaderGroup::MemberInfo const& member = members[i];
+            // the verdict's text without its numbers: a new state is a new reason, not a new distance
+            std::string const waitState =
+                i == waited && !orderFor ? waitWhy.substr(0, waitWhy.find_first_of("0123456789")) : std::string();
+            note(member, "wait_without_order", waitState,
+                 waitWhy + "; no order moves or readies " + member.name);
+
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+            bool const here = botAI && bot->IsInWorld() && !bot->IsBeingTeleported() && bot->IsAlive() &&
+                              bot->GetMap() == tank->GetMap();
+
+            // order_impossible: an order of the member the game refuses now (the orders' own check)
+            std::string const impossible =
+                here && hasEvents[i] ? LeaderOrderCheck::OrderRefusal(botAI, events[i]) : std::string();
+            note(member, "order_impossible", impossible, impossible);
+
+            // credit_unguaranteed: a tool or a potion the member's mana line counted ready now whose use the game
+            // refuses now. Not a refusal: its cooldown or the potion of this combat (the line's own input: the
+            // credit was used since), a full pool (it is for the mana spent later)
+            std::string credit;
+            if (here)
+                for (ManaLineCredit const& counted : ManaLineCredits(member.guid))
+                {
+                    SpellCastResult refusal = SPELL_CAST_OK;
+                    if (counted.spell)
+                    {
+                        if (bot->HasSpellCooldown(counted.spell))
+                            continue;
+                        // the summon's target: an enemy in its reach (out of a fight: the next fight's)
+                        Unit* on = counted.spell == SPELL_SHADOWFIEND ? ShadowfiendReach(bot) : bot;
+                        if (!on)
+                            continue;
+                        refusal = botAI->CheckCastNow(counted.spell, on).refusal;
+                    }
+                    else if (Item* item = counted.item ? bot->GetItemByEntry(counted.item) : nullptr)
+                    {
+                        uint32 spell = 0;
+                        if (ItemTemplate const* proto = item->GetTemplate())
+                            for (uint8 s = 0; s < MAX_ITEM_PROTO_SPELLS && !spell; ++s)
+                                if (proto->Spells[s].SpellId > 0 &&
+                                    proto->Spells[s].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                                    spell = uint32(proto->Spells[s].SpellId);
+                        if (!spell || bot->HasSpellCooldown(spell))
+                            continue;
+                        refusal = botAI->CheckCastNow(spell, bot, item).refusal;
+                    }
+                    if (refusal == SPELL_CAST_OK || refusal == SPELL_FAILED_NOT_READY ||
+                        refusal == SPELL_FAILED_ALREADY_AT_FULL_POWER || refusal == SPELL_FAILED_ALREADY_AT_FULL_HEALTH)
+                        continue;
+                    credit = counted.name + ": " + PlayerbotAI::CastResultName(refusal);
+                    break;
+                }
+            note(member, "credit_unguaranteed", credit, credit);
+        }
+    }
+
     // [lead7] C:/WoW/LEADER_REFACTOR_PLAN.md step 7, LEADER_PLANNER_IN_LEADER: the leader plans the tank's pull.
     // Called on every world update (the world thread, after the map updates: no map thread runs), it looks only when
     // the tank asked (its engine looked at "aggressive target", as it looked at the tank's own planner before). The
@@ -779,7 +913,10 @@ namespace Leader::Dungeon
         // the tank asked within LEADER_ASKING_MS (it stands out of combat without a target), so whenever the tank
         // looks a fresh decision waits.
         if (decides)
-            TickLeaderEvents(group, tank);  // [lead15] the events to every member
+        {
+            TickLeaderEvents(group, tank);       // [lead15] the events to every member
+            CheckLeaderInvariants(group, tank);  // [lead1390]
+        }
         constexpr uint32 LEADER_LOOK_PERIOD_MS = 1000;
         constexpr uint32 LEADER_ASKING_MS = 30 * IN_MILLISECONDS;
         bool const asked = PullPlanner::TakeAsk(group.LeaderGuid(), Leader::LEADER_ASK_FRESH_MS);

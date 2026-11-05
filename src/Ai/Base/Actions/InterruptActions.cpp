@@ -207,6 +207,47 @@ namespace
     }
 }
 
+// [lead1390] b259-b261: the cat's and the bear's Revive (SPELL_FAILED_NOT_SHAPESHIFT, lead1366), the Shadowfiend out of
+// its range (SPELL_FAILED_OUT_OF_RANGE, lead1380) and the single-rank buff under the group Prayer
+// (SPELL_FAILED_AURA_BOUNCED, rot501) all passed PlayerbotAI::CanCastSpell, which passes the answers the rotation's
+// prerequisites fix (it walks into range, it leaves the form) - a leader order has none of those prerequisites, and
+// its member looped on the refused cast while the leader waited. The order's check is the game's answer
+SpellCastResult LeaderOrderCheck::ExternalRefusal(PlayerbotAI* botAI, uint32 spell, ObjectGuid target)
+{
+    Player* bot = botAI->GetBot();
+    Unit* unit = ExternalUnit(botAI, spell, target);
+    // no unit: the order is void (isUseful), no cast is refused; the spell's own cooldown is the leader's
+    // cooldown verdict (the cast just went out, or the order waits for it: the action's isPossible holds it)
+    if (!unit || !spell || bot->HasSpellCooldown(spell))
+        return SPELL_CAST_OK;
+    // [lead691] leaving a movement form is always possible; Dash's Cat Form is cast first
+    if (Leader::Fight::LeaderMoveFormLeave(bot, spell, target))
+        return SPELL_CAST_OK;
+    if (uint32 const form = Leader::Fight::LeaderMoveSkillForm(bot, spell))
+        return botAI->CheckCastNow(form, bot).refusal;
+    // [lead401] out of a fight a resurrection out of range or sight walks there first (its prerequisite)
+    bool const raises = RaisesDead(spell);
+    if (raises && !bot->IsInCombat() && ResurrectionNeedsWalk(bot, spell, unit))
+        return SPELL_CAST_OK;
+    PlayerbotAI::CastCheck const check = botAI->CheckCastNow(spell, unit);
+    // [lead1366] out of a fight a resurrecter leaves its form first (Execute)
+    SpellCastResult const refusal =
+        raises && !bot->IsInCombat() && check.refusal == SPELL_FAILED_NOT_SHAPESHIFT ? check.behindForm : check.refusal;
+    // [rot501] a buff the target's bouncing group buff refreshes instead (Execute casts that one)
+    if (refusal != SPELL_CAST_OK && BouncedBuffRefresh(botAI, spell, unit))
+        return SPELL_CAST_OK;
+    return refusal;
+}
+
+SpellCastResult LeaderOrderCheck::DispelRefusal(PlayerbotAI* botAI, uint32 spell, ObjectGuid target)
+{
+    Player* bot = botAI->GetBot();
+    Unit* unit = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
+    if (!unit || !spell || bot->HasSpellCooldown(spell))
+        return SPELL_CAST_OK;
+    return botAI->CheckCastNow(spell, unit).refusal;
+}
+
 bool LeaderExternalAction::isUseful()
 {
     uint32 spell = 0;
@@ -252,6 +293,16 @@ bool LeaderExternalAction::isPossible()
         SpellInfo const* banish = sSpellMgr->GetSpellInfo(spell);
         if (!own || !banish || own->GetDuration() <= int32(banish->CalcCastTime(bot)))
             return false;
+    }
+    // [lead1390] the game refuses it for this member now (no passing state explains it): reported at once, the
+    // leader drops the order instead of waiting on the member's retries
+    if (SpellCastResult const refusal = LeaderOrderCheck::ExternalRefusal(botAI, spell, target);
+        refusal != SPELL_CAST_OK)
+    {
+        Leader::Events::NoteExternalFailed(bot->GetGUID(), spell,
+                                           "the game refuses it on " + unit->GetName() + ": " +
+                                               PlayerbotAI::CastResultName(refusal) + " [lead1390]");
+        return false;
     }
     // [rot501] a buff the target's bouncing group buff refreshes instead
     if (botAI->CanCastSpell(spell, unit, true) || BouncedBuffRefresh(botAI, spell, unit))
@@ -419,6 +470,16 @@ bool LeaderDispelAction::isPossible()
     SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
     if (!unit || !info)
         return false;
+    // [lead1390] the game refuses it for this member now: reported at once (SPELL_FAILED_NOTHING_TO_DISPEL, which
+    // CanCastSpell's triggered check never sees, the range, the sight, the power)
+    if (SpellCastResult const refusal = LeaderOrderCheck::DispelRefusal(botAI, spell, target);
+        refusal != SPELL_CAST_OK)
+    {
+        Leader::Events::NoteDispelFailed(bot->GetGUID(), spell,
+                                         "the game refuses it on " + unit->GetName() + ": " +
+                                             PlayerbotAI::CastResultName(refusal) + " [lead1390]");
+        return false;
+    }
     if (botAI->CanCastSpell(spell, unit, true))
         return true;
     // refused while nothing passing holds it (a walk, a cast, the global cooldown): reported, the leader picks again
@@ -501,6 +562,80 @@ namespace
     }
 }
 
+SpellCastResult LeaderOrderCheck::ConsumeRefusal(PlayerbotAI* botAI, uint32 itemId, ObjectGuid target)
+{
+    Player* bot = botAI->GetBot();
+    Item* item = itemId ? bot->GetItemByEntry(itemId) : nullptr;
+    uint32 const spell = OnUseSpell(item);
+    Unit* on = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
+    // no item (used up) or no unit: the order is void; its cooldown and the potion of this combat are the action's
+    // own reports (lead970, rot85) and the use that just went out
+    if (!item || !spell || !on || bot->HasSpellCooldown(spell))
+        return SPELL_CAST_OK;
+    SpellCastResult const refusal = botAI->CheckCastNow(spell, on, item).refusal;
+    return refusal == SPELL_FAILED_NOT_READY ? SPELL_CAST_OK : refusal;
+}
+
+SpellCastResult LeaderOrderCheck::UseObjectRefusal(PlayerbotAI* botAI, GameObject* go)
+{
+    if (!go || go->GetGoType() != GAMEOBJECT_TYPE_SUMMONING_RITUAL)
+        return SPELL_CAST_OK;
+    // GameObject::Use: the ritual's anim spell triggered, else the spell that opened it with the ritual's flags
+    GameObjectTemplate const* info = go->GetGOInfo();
+    uint32 const clickSpell = info->summoningRitual.animSpell ? info->summoningRitual.animSpell : go->GetSpellId();
+    if (!clickSpell)
+        return SPELL_CAST_OK;
+    TriggerCastFlags const flags =
+        info->summoningRitual.animSpell
+            ? TRIGGERED_FULL_MASK
+            : TriggerCastFlags(TRIGGERED_IGNORE_EFFECTS | TRIGGERED_IGNORE_SPELL_AND_CATEGORY_CD |
+                               TRIGGERED_IGNORE_POWER_AND_REAGENT_COST | TRIGGERED_CAST_DIRECTLY);
+    PlayerbotAI::CastCheck const check = botAI->CheckCastNow(clickSpell, botAI->GetBot(), nullptr, flags);
+    // [lead1360] the member leaves a form the click's spell refuses (Execute)
+    return check.refusal == SPELL_FAILED_NOT_SHAPESHIFT ? check.behindForm : check.refusal;
+}
+
+std::string LeaderOrderCheck::OrderRefusal(PlayerbotAI* botAI, Leader::MemberEvents const& events)
+{
+    auto const named = [botAI](ObjectGuid guid)
+    {
+        if (guid.IsEmpty())
+            return std::string("itself");
+        Unit* unit = botAI->GetUnit(guid);
+        return unit ? unit->GetName() : std::string("a unit not in the world");
+    };
+    if (events.externalSpell)
+        if (SpellCastResult const refusal = ExternalRefusal(botAI, events.externalSpell, events.externalTarget);
+            refusal != SPELL_CAST_OK)
+            return Acore::StringFormat("external {} on {}: {}", events.externalSpell, named(events.externalTarget),
+                                       PlayerbotAI::CastResultName(refusal));
+    if (events.dispelSpell)
+        if (SpellCastResult const refusal = DispelRefusal(botAI, events.dispelSpell, events.dispelTarget);
+            refusal != SPELL_CAST_OK)
+            return Acore::StringFormat("dispel {} on {}: {}", events.dispelSpell, named(events.dispelTarget),
+                                       PlayerbotAI::CastResultName(refusal));
+    if (events.consumeItem)
+        if (SpellCastResult const refusal = ConsumeRefusal(botAI, events.consumeItem, events.consumeTarget);
+            refusal != SPELL_CAST_OK)
+            return Acore::StringFormat("consume {} on {}: {}", events.consumeItem, named(events.consumeTarget),
+                                       PlayerbotAI::CastResultName(refusal));
+    if (!events.consumeItem && !events.consumeObject.IsEmpty())
+        if (GameObject* go = botAI->GetGameObject(events.consumeObject))
+            if (SpellCastResult const refusal = UseObjectRefusal(botAI, go); refusal != SPELL_CAST_OK)
+                return Acore::StringFormat("use object {} {}: {}", go->GetName(), go->GetEntry(),
+                                           PlayerbotAI::CastResultName(refusal));
+    if (!events.cc.IsEmpty())
+        if (Unit* unit = LeaderCommandUnit(botAI, events.cc))
+            if (CrowdControlOption const* option = FindCrowdControl(botAI, unit, false); option && option->spell)
+                if (uint32 const spell =
+                        botAI->GetAiObjectContext()->GetValue<uint32>("spell id", option->spell)->Get())
+                    if (SpellCastResult const refusal = botAI->CheckCastNow(spell, unit).refusal;
+                        refusal != SPELL_CAST_OK && !botAI->GetBot()->HasSpellCooldown(spell))
+                        return Acore::StringFormat("cc {} on {}: {}", option->spell, unit->GetName(),
+                                                   PlayerbotAI::CastResultName(refusal));
+    return std::string();
+}
+
 bool LeaderConsumeAction::isUseful()
 {
     uint32 itemId = 0;
@@ -529,6 +664,17 @@ bool LeaderConsumeAction::isPossible()
     if (PotionBlockedThisCombat(bot, item, spell))  // [rot85]
     {
         Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId, "one potion per combat: the last one blocks it");
+        return false;
+    }
+    // [lead1390] the game refuses the item's cast for this member now (a mana potion at full mana, a soulstone's
+    // target out of range or sight, a form): reported at once
+    if (SpellCastResult const refusal = LeaderOrderCheck::ConsumeRefusal(botAI, itemId, on == bot ? ObjectGuid::Empty
+                                                                                                   : on->GetGUID());
+        refusal != SPELL_CAST_OK)
+    {
+        Leader::Events::NoteConsumeFailed(bot->GetGUID(), itemId,
+                                          "the game refuses it: " + PlayerbotAI::CastResultName(refusal) +
+                                              " [lead1390]");
         return false;
     }
     if (bot->CanUseItem(item) == EQUIP_ERR_OK)
@@ -634,6 +780,17 @@ bool LeaderUseObjectAction::Execute(Event /*event*/)
         SpellInfo const* click = sSpellMgr->GetSpellInfo(clickSpell);
         if (click && click->CheckShapeshift(bot->GetShapeshiftForm()) != SPELL_CAST_OK)
             bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+        // [lead1390] the click's spell the game refuses for other reasons (GameObject::Use drops it without a word):
+        // reported before the click
+        if (SpellCastResult const refusal = LeaderOrderCheck::UseObjectRefusal(botAI, go); refusal != SPELL_CAST_OK)
+        {
+            LOG_INFO("playerbots", "[lead1390] [leader use object] {}: {} {} refused before the click: {}",
+                     bot->GetName(), go->GetName(), go->GetEntry(), PlayerbotAI::CastResultName(refusal));
+            Leader::Events::NoteConsumeFailed(bot->GetGUID(), go->GetGUID().GetCounter(),
+                                              "the game refuses the click (" + go->GetName() + "): " +
+                                                  PlayerbotAI::CastResultName(refusal) + " [lead1390]");
+            return false;
+        }
     }
     WorldPacket packet(CMSG_GAMEOBJ_USE, 8);
     packet << go->GetGUID();
