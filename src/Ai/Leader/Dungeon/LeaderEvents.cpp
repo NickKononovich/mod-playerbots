@@ -5244,7 +5244,6 @@ namespace Leader::Dungeon
         if (fighting)
         {
             lead.bossWaitFor.Clear();  // [lead46] the wait ends with a fight
-            lead.bossWaitEarly = false;  // [lead1250]
             lead.plannerRestFor.clear();
             lead.restEndMana.clear();  // [lead230] a fight's spend is the fight line's
             lead.restExtra.clear();
@@ -5698,13 +5697,7 @@ namespace Leader::Dungeon
                 // While the boss pull waits there is ONE readiness: the member rests exactly while it is below the
                 // boss ready lines (PullReadiness::MemberBossGap) and stands when it reaches them - the pull goes as
                 // the last one is ready
-                // [lead1250] a caster with buff orders still to pay in the pass (lead1133's need) drinks to that
-                // mana first and casts them; its boss line comes after (drinking to the line and then spending the
-                // orders' mana would sit it twice)
-                bool const buffFirst = lead.bossWaitEarly && lead.support.buffManaNeed.count(guid);
-                if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() || buffFirst
-                                             ? nullptr
-                                             : map->GetCreature(lead.bossWaitFor);
+                if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
                     waitBoss && waitBoss->IsAlive())
                 {
                     float bossLine = -1.0f;

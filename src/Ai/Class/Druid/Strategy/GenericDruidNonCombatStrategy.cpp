@@ -29,6 +29,7 @@ public:
         creators["abolish poison on party"] = &abolish_poison_on_party;
         creators["revive"] = &revive;
         creators["aquatic form"] = &aquatic_form;
+        creators["food"] = &food;  // [lead1261]
     }
 
 private:
@@ -95,6 +96,15 @@ private:
     {
         return new ActionNode("revive",
                               /*P*/ { NextAction("caster form") },
+                              /*A*/ {},
+                              /*C*/ {});
+    }
+
+    // [lead1261] the leader's Rest on a bear / cat: food is eaten in no animal form (EatAction::isPossible)
+    static ActionNode* food([[maybe_unused]] PlayerbotAI* botAI)
+    {
+        return new ActionNode("food",
+                              /*P*/ { NextAction("leave animal form") },
                               /*A*/ {},
                               /*C*/ {});
     }

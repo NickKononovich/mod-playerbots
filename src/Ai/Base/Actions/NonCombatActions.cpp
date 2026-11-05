@@ -62,6 +62,19 @@ bool IsDisallowedFoodState(Player* bot)
 
     return false;
 }
+
+// [lead1261] b249 rfc-h 5H-8 574-646 s: the led bear tank at 48 % health stood under the leader's Rest for 72 s
+// ("under the leader's Rest, does not sit down", food 60 in its bags; the same in b248 5H-8 702 s) - no led bear or
+// cat druid ate in either batch: food is not eaten in an animal form and nothing left it. The leader's Rest is the
+// command: the druid leaves its bear / cat form for it (the "food" node's "leave animal form", as Thorns does)
+bool LeavesAnimalFormToEat(Player* bot)
+{
+    if (bot->getClass() != CLASS_DRUID || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) ||
+        !RestState::LeaderRests(bot))
+        return false;
+    ShapeshiftForm const form = bot->GetShapeshiftForm();
+    return form == FORM_BEAR || form == FORM_DIREBEAR || form == FORM_CAT;
+}
 }  // namespace
 
 // Drinking needs a real drink from the bags: the free "food" cheat path is gone. Every sit-down logs its reason.
@@ -174,7 +187,9 @@ bool EatAction::isUseful()
 
 bool EatAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(bot))
+    // [lead1261] a led druid under the leader's Rest in bear / cat form: possible, its prerequisite leaves the form
+    // (Execute still eats in no animal form)
+    if (bot->IsInCombat() || bot->IsMounted() || (IsDisallowedFoodState(bot) && !LeavesAnimalFormToEat(bot)))
         return false;
 
     if (bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) || bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) ||
