@@ -840,6 +840,14 @@ namespace Leader::Dungeon
                                               ? idleWhy.substr(0, idleWhy.find_first_of("0123456789"))
                                               : std::string();
             note(member, "fight_no_action", idleState, lead.fightIdleWhy);
+            // [lead1451] member_no_action: the member ended two leader ticks of the fight in a row without an action
+            // of its own (lead.memberNoAction, the member break's own state); its state is its move purpose without
+            // the numbers
+            auto const noAction = lead.memberNoAction.find(member.guid);
+            std::string const noActionWhy =
+                noAction != lead.memberNoAction.end() && tank->IsInCombat() ? noAction->second : std::string();
+            note(member, "member_no_action", noActionWhy.substr(0, noActionWhy.find_first_of("0123456789")),
+                 "no action of its own in the fight for two leader decisions: " + noActionWhy);
 
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
             PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;

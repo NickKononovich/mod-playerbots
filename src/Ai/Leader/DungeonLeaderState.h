@@ -550,7 +550,13 @@ namespace Leader
         ObjectGuid fightDeadlockMob;
         std::map<ObjectGuid, ObjectGuid> fightIdleTargets;
         std::string fightDeadlockLogged;
-        ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
+        // [lead1451] the same guarantee per member: the members whose last leader tick in the fight ended without an
+        // action of their own (memberIdle), those that ended two ticks in a row so (memberNoAction: the why, read by
+        // the member_no_action invariant) and the member break last logged per member
+        std::set<ObjectGuid> memberIdle;
+        std::map<ObjectGuid, std::string> memberNoAction;
+        std::map<ObjectGuid, std::string> memberBreakLogged;
+        ObjectGuid patrolDangerLoggedAlong;              // [lead34] patrol_target "along" logged once
         std::vector<ObjectGuid> planMobs;
         bool patrolDangerFits = false;
         std::map<ObjectGuid, std::string> refusedPicks;  // [lead33] targets the planner refused / held: skipped

@@ -707,6 +707,15 @@ namespace Leader::Fight
             }
             return false;
         }
+
+        // [lead1450] how deep `at` lies in an idle mob's modelled reach, as a gap (smaller: deeper): a wanderer by its
+        // whole wander area (lead1331, the model IdleMobCovers judges it by), any other mob by where it stands
+        float IdleGap(Creature* mob, Position const& at)
+        {
+            if (WanderArea area; WanderAreaOf(mob, area))
+                return WanderAreaDist(area, at);
+            return mob->GetExactDist2d(at.GetPositionX(), at.GetPositionY());
+        }
     }
 
     namespace
@@ -800,7 +809,10 @@ namespace Leader::Fight
             // was the DK's walk into that Trogg while the bear was still on its way)
             float fightGap = -1.0f;
             if (held && IdleMobCovers(bot, mob, holder->GetPosition()))
-                fightGap = mob->GetExactDist2d(holder);
+                fightGap = IdleGap(mob, holder->GetPosition());  // [lead1450] the guard's own model of its reach
+            std::vector<G3D::Vector3> track;
+            float sampleSec = 0.0f;
+            bool const patrolWalk = PullPlanning::PatrolForecast(mob, track, sampleSec) && !track.empty();
             // [lead1201] b243 rfc-h 5G-15 Taragaman 595-624 s: the ret paladin, the arms warrior and the frost DK
             // stood 30 s at 4 yd out of melee ("combat spot: behind the target: stays (... in the reach of Searing
             // Blade Enforcer)", the leader's attack hold "Taragaman stands in Searing Blade Enforcer's aggro
@@ -810,9 +822,7 @@ namespace Leader::Fight
             // sample, and a spot it reaches no sooner wakes it no sooner than the fight itself does
             if (fightGap >= 0.0f)
             {
-                std::vector<G3D::Vector3> track;
-                float sampleSec = 0.0f;
-                if (PullPlanning::PatrolForecast(mob, track, sampleSec) && !track.empty())
+                if (patrolWalk)
                 {
                     float const reach = mob->GetAggroRange(bot);
                     auto const firstIn = [&](float x, float y) -> size_t
@@ -837,7 +847,22 @@ namespace Leader::Fight
                     }
                 }
             }
-            return fightGap < 0.0f || mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) < fightGap;
+            float const spotGap = IdleGap(mob, spot);
+            if (fightGap >= 0.0f && spotGap >= fightGap)
+                return false;
+            // [lead1450] b266 rfc-h 5B-10 #8 173-237 s: the shadow priest and the elemental shaman stood 64 s
+            // ("no allowed place: StandAt spot_rejected_aggro") 34 yd off an idle wandering Trogg, inside its wander
+            // area's modelled reach (lead1331) and unwoken, while the fight walked 40-100 yd off: every combat spot
+            // and every walk to one began in that reach, the tank (the holder) stood out of it, so nothing proved a
+            // spot no deeper than the fight; 5G-15 #12 206-229 s the same for three melee 22-24 yd off an idle
+            // Trogg. The member itself stands in the mob's modelled reach without waking it: a spot (or a point of
+            // its walk) no deeper into that reach than where it stands is no deeper than the member already is -
+            // the lead1321 rule for the walker, here for its fight spot and its walk there. Not for a patrol: its
+            // distance now is no fact about where it walks (lead1201 judges the holder by its forecast)
+            if (!patrolWalk && bot->IsAlive() && IdleMobCovers(bot, mob, bot->GetPosition()) &&
+                spotGap >= IdleGap(mob, bot->GetPosition()))
+                return false;
+            return true;
         });
     }
 
@@ -873,9 +898,8 @@ namespace Leader::Fight
                 {
                     if (!IdleMobCovers(bot, idle, at))
                         return false;
-                    return !(IdleMobCovers(bot, idle, from) &&
-                             idle->GetExactDist2d(at.GetPositionX(), at.GetPositionY()) >=
-                                 idle->GetExactDist2d(from.GetPositionX(), from.GetPositionY()));
+                    // [lead1450] the depth by the guard's own model of the reach (a wanderer by its area)
+                    return !(IdleMobCovers(bot, idle, from) && IdleGap(idle, at) >= IdleGap(idle, from));
                 }))
                 return mob;
         }

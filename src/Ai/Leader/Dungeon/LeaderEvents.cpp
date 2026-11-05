@@ -11324,51 +11324,158 @@ namespace Leader::Dungeon
             for (Player* bot : everyone)
             {
                 if (!bot->IsAlive())
+                {
+                    lead.memberIdle.erase(bot->GetGUID());  // [lead1451]
+                    lead.memberNoAction.erase(bot->GetGUID());
                     continue;
+                }
                 Leader::MemberEvents events;
                 bool const has = Leader::Events::Get(bot->GetGUID(), events);
                 ObjectGuid const attackTarget =
                     has && events.attack == Leader::AttackEvent::Attack ? events.target : ObjectGuid::Empty;
                 idleTargets[bot->GetGUID()] = attackTarget;
-                if (!acting.empty())
-                    continue;
+                // [lead1451] each member's own action (the fight's: the first one found). A member's own place serves
+                // the fight also while the leader holds its damage (a threat Stop on a target it reaches from here)
+                // and, for a healer, while it reaches the tank (HealReaches: range and sight)
+                std::string own;
+                bool placeServes = false;
                 if (bot->isMoving() || !Leader::Events::AtCommandedSpot(bot))
-                {
-                    acting = bot->GetName() + " walks";
-                    continue;
-                }
-                if (auto const last = lead.fightIdleTargets.find(bot->GetGUID());
-                    !attackTarget.IsEmpty() && (last == lead.fightIdleTargets.end() || last->second != attackTarget))
-                {
-                    acting = bot->GetName() + " has a new target";
-                    continue;
-                }
-                std::vector<Unit*> on;
-                if (bot == tank)
-                {
-                    for (ObjectGuid const& mobGuid : fightMobs)
-                        if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid))
-                            on.push_back(mob);
-                }
+                    own = bot->GetName() + " walks";
+                else if (auto const last = lead.fightIdleTargets.find(bot->GetGUID());
+                         !attackTarget.IsEmpty() &&
+                         (last == lead.fightIdleTargets.end() || last->second != attackTarget))
+                    own = bot->GetName() + " has a new target";
                 else
                 {
-                    if (!attackTarget.IsEmpty() && events.intensity != Leader::Intensity::Stop)
-                        if (Unit* target = ObjectAccessor::GetUnit(*bot, attackTarget))
-                            on.push_back(target);
-                    if (Unit* victim = bot->GetVictim())
-                        on.push_back(victim);
-                }
-                for (Unit* mob : on)
-                    if (mob->IsAlive() && fightMobs.count(mob->GetGUID()) && ActsOnFromHere(bot, mob, bot == tank))
+                    std::vector<Unit*> on;
+                    if (bot == tank)
                     {
-                        acting = bot->GetName() + " acts on " + mob->GetName();
-                        break;
+                        for (ObjectGuid const& mobGuid : fightMobs)
+                            if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid))
+                                on.push_back(mob);
                     }
+                    else
+                    {
+                        if (!attackTarget.IsEmpty())
+                            if (Unit* target = ObjectAccessor::GetUnit(*bot, attackTarget))
+                            {
+                                if (events.intensity != Leader::Intensity::Stop)
+                                    on.push_back(target);
+                                else if (target->IsAlive() && fightMobs.count(target->GetGUID()) &&
+                                         ActsOnFromHere(bot, target, false))
+                                    placeServes = true;
+                            }
+                        if (Unit* victim = bot->GetVictim())
+                            on.push_back(victim);
+                    }
+                    for (Unit* mob : on)
+                        if (mob->IsAlive() && fightMobs.count(mob->GetGUID()) &&
+                            ActsOnFromHere(bot, mob, bot == tank))
+                        {
+                            own = bot->GetName() + " acts on " + mob->GetName();
+                            break;
+                        }
+                    if (own.empty() && bot != tank && PlayerbotAI::IsHeal(bot) &&
+                        HealReaches(tank, bot->GetPosition(), tank->GetPosition(), bot))
+                        placeServes = true;
+                }
+                if (acting.empty())
+                    acting = own;
+                if (!own.empty() || placeServes || bot == tank)
+                {
+                    lead.memberIdle.erase(bot->GetGUID());
+                    lead.memberNoAction.erase(bot->GetGUID());
+                    lead.memberBreakLogged.erase(bot->GetGUID());
+                    continue;
+                }
+                // [lead1451] b266 rfc-h 5B-10 #8 173-237 s: the shadow priest and the elemental shaman stood 64 s
+                // ("no allowed place") while the tank, the rogue and the healer fought - lead1420's break waits for
+                // no member at all acting, so it never ran. A member that ended two leader ticks of the fight in a
+                // row without an action of its own (a state, no clock) is member_no_action and gets its own break
+                std::string const ownWhy =
+                    events.moveWhy.empty() ? std::string("-") : events.moveWhy.substr(0, 120);
+                if (!lead.memberIdle.insert(bot->GetGUID()).second)
+                    lead.memberNoAction[bot->GetGUID()] = ownWhy;
             }
             for (ObjectGuid const& mobGuid : fightMobs)
                 if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid); acting.empty() && mob && comes(mob))
                     acting = mob->GetName() + " walks in";
             lead.fightIdleTargets = idleTargets;
+            // [lead1451] the member break: a member_no_action member whose refused place names an idle blocker. The
+            // least bad place by the game's math: its own spot (the search's, its role's need), and the one risk
+            // left is the blocker's pack its walk wakes. That pack comes at the member and the tank takes it back
+            // (the aggro-loss run, lead15): it joins the fight when the fight takes it (JudgePack) and the member
+            // survives the pack's hits (AttackerDps on it) until the tank has them - its run to the tank's taunt
+            // reach at its run speed, one global cooldown and a leader tick (lead985's take-back terms) - on its
+            // health now (user rule aggro-loss-if-survives). Otherwise the fight moves out of the pack's reach
+            // (lead76 / lead1340), as before
+            for (Player* bot : everyone)
+            {
+                auto const idle = lead.memberNoAction.find(bot->GetGUID());
+                auto const checked = lead.spotChecked.find(bot->GetGUID());
+                if (idle == lead.memberNoAction.end() || !bot->IsAlive() || checked == lead.spotChecked.end() ||
+                    checked->second.reject.empty() || checked->second.mob.IsEmpty())
+                    continue;
+                Creature* blocker = map->GetCreature(checked->second.mob);
+                if (!blocker || !blocker->IsAlive() || blocker->IsInCombat() ||
+                    lead.joinedMobs.count(blocker->GetGUID()))
+                    continue;
+                std::string const key = blocker->GetGUID().ToString();
+                if (lead.memberBreakLogged[bot->GetGUID()] == key)
+                    continue;  // judged on this blocker: the next decision is the member acting or a new blocker
+                lead.memberBreakLogged[bot->GetGUID()] = key;
+                std::vector<ObjectGuid> const packMobs = packOf(blocker);
+                std::vector<ObjectGuid> combined;
+                for (Unit* attacker : tank->getAttackers())
+                    if (attacker && attacker->IsAlive())
+                        combined.push_back(attacker->GetGUID());
+                combined.insert(combined.end(), packMobs.begin(), packMobs.end());
+                float overload = 0.0f;
+                std::string judged;
+                bool const fits = PullPlanner::JudgePack(tank, combined, overload, judged);
+                float hits = 0.0f;
+                for (ObjectGuid const& guid : packMobs)
+                    if (Creature* packMob = map->GetCreature(guid); packMob && packMob->IsAlive())
+                    {
+                        float spell = 0.0f;
+                        hits += AttackerDps(packMob, bot, spell);
+                    }
+                float const runSpeed = std::max(0.1f, bot->GetSpeed(MOVE_RUN));
+                float const takeBack = std::max(0.0f, bot->GetExactDist(tank) - LeaderTauntReach(tank)) / runSpeed +
+                                       HEADROOM_GCD_SEC + LEADER_FIGHT_TICK_MS / 1000.0f;
+                bool const survives = hits * takeBack < float(bot->GetHealth());
+                std::string option;
+                if (fits && survives)
+                {
+                    joinPack(blocker, packMobs, false);
+                    lead.fightMoveTo.reset();  // the fight stays: the member walks to it
+                    lead.spotChecked.erase(bot->GetGUID());  // its refusal's blocker is the fight's now
+                    lead.combatSpotLeft.erase(bot->GetGUID());  // its left spots are open again
+                    option = "the blocking pack joins: the member walks to its place";
+                }
+                else
+                {
+                    lead.joinedPack.erase(blocker->GetGUID());  // judged again: the facts of now
+                    judgeBlockingPack(bot, blocker);
+                    option = fits ? "the member would not survive the pack until the tank has it: the fight moves"
+                                  : "the fight does not take the pack: the fight moves";
+                }
+                Decisions().Write(run, "leader", "member_deadlock_break", bot->GetGUID(), bot->GetName(), true,
+                                  JsonObject()
+                                      .Str("member", bot->GetName())
+                                      .Str("blocker", blocker->GetName())
+                                      .Num("packMobs", int64(packMobs.size()))
+                                      .Real("overload", overload)
+                                      .Str("judged", judged)
+                                      .Bool("fits", fits)
+                                      .Real("packDps", hits)
+                                      .Real("takeBackSec", takeBack)
+                                      .Real("health", float(bot->GetHealth()))
+                                      .Bool("survives", survives)
+                                      .Str("option", option)
+                                      .Str("idle", idle->second)
+                                      .Str("tag", "[lead1451]"));
+            }
             if (!acting.empty() || fightMobs.empty())
             {
                 lead.fightIdle = false;
@@ -11469,6 +11576,9 @@ namespace Leader::Dungeon
             lead.fightDeadlockMob.Clear();
             lead.fightIdleTargets.clear();
             lead.fightDeadlockLogged.clear();
+            lead.memberIdle.clear();  // [lead1451]
+            lead.memberNoAction.clear();
+            lead.memberBreakLogged.clear();
         }
 
         lead.hazardActive = hazardSeen;

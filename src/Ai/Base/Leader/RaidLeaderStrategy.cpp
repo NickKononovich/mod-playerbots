@@ -768,7 +768,13 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
 
     // [lead50] b99 rfc-h 583 s: the tank cast "blessing on party by role" while the planner waited for its mana: under
     // the leader's Rest the led tank buffs nobody (its drink first)
+    // [lead1452] b266 rfc-h 5D-12 #23 (t 492-576, 62 s of the 75 s stand) and every led bear in b266: the Rest's food
+    // node has "leave animal form" as its prerequisite (lead1261: no food in an animal form), a CastBuffSpellAction
+    // this rule vetoed - the bear never left its form, its food failed each tick ("Execute returned false"), no led
+    // druid ate in the batch and the pull waited on 0.04 %/s of standing regen. Leaving the form is the Rest's own
+    // step, no buff
     if (!bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
+        action->getName() != "leave animal form" &&
         (dynamic_cast<CastBuffSpellAction*>(action) || action->getName() == "blessing on party by role"))
     {
         Leader::MemberEvents restEvents;

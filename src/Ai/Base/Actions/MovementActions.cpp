@@ -933,6 +933,28 @@ namespace
         PathWake wake;
         uint32 losBudget = GUARD_MAX_LOS;
         float walked = 0.0f;
+        // [lead1450] b266 rfc-h 5G-15 #12 206-229 s: the frost DK's walk to a melee place no nearer the idle Trogg than
+        // where it stood was refused at its first yard ("would wake Ragefire Trogg (20.9 yd of reach 22.5, 0.0 yd
+        // along)"). A mob that passes the walker's Z gate and sees it where it stands, yet stays idle, does not reach
+        // it there (Creature::CanStartAttack): a stretch of the walk no nearer it than that is out of its reach too.
+        // Per mob, the walker's own distance where it starts inside the guard's reach (-1: no such proof)
+        std::vector<float> standsUnwoken(reaches.size(), -1.0f);
+        if (!points.empty())
+        {
+            G3D::Vector3 const& from = points[0];
+            for (size_t r = 0; r < reaches.size(); ++r)
+            {
+                Creature* const mob = reaches[r].mob;
+                float const gap = (G3D::Vector3(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ()) - from)
+                                      .length();
+                if (gap < reaches[r].reach && losBudget && MovementAction::PassesAggroZGate(mob, bot, from.z))
+                {
+                    --losBudget;
+                    if (SeesWalkerAt(mob, bot, from.x, from.y, from.z))
+                        standsUnwoken[r] = gap;
+                }
+            }
+        }
         for (size_t i = 1; i < points.size() && walked <= GUARD_SCAN_LENGTH; ++i)
         {
             G3D::Vector3 const& start = points[i - 1];
@@ -940,8 +962,9 @@ namespace
             float const lengthSq = segment.squaredLength();
             float const length = std::sqrt(lengthSq);
             float firstEntry = -1.0f;
-            for (IdleReach const& idle : reaches)
+            for (size_t r = 0; r < reaches.size(); ++r)
             {
+                IdleReach const& idle = reaches[r];
                 G3D::Vector3 const mob(idle.mob->GetPositionX(), idle.mob->GetPositionY(), idle.mob->GetPositionZ());
                 float along = 0.0f;
                 if (lengthSq > 0.0f)
@@ -949,8 +972,8 @@ namespace
 
                 G3D::Vector3 const closest = start + segment * along;
                 float const distance = (mob - closest).length();
-                if (distance >= idle.reach)
-                    continue;
+                if (distance >= idle.reach || (standsUnwoken[r] >= 0.0f && distance >= standsUnwoken[r]))
+                    continue;  // [lead1450] no nearer than where the mob already sees the walker idle
 
                 float entry = along;
                 float leave = along;
