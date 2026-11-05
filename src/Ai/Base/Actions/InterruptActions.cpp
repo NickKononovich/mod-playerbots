@@ -245,7 +245,10 @@ SpellCastResult LeaderOrderCheck::DispelRefusal(PlayerbotAI* botAI, uint32 spell
     Unit* unit = target.IsEmpty() ? bot : LeaderCommandUnit(botAI, target);
     if (!unit || !spell || bot->HasSpellCooldown(spell))
         return SPELL_CAST_OK;
-    return botAI->CheckCastNow(spell, unit).refusal;
+    PlayerbotAI::CastCheck const check = botAI->CheckCastNow(spell, unit);
+    // [lead1410] out of a fight the dispeller leaves a form the dispel refuses first (Execute), as lead1366's
+    // resurrecter does: no fight loses the form, its cost is the shift back before the pull
+    return !bot->IsInCombat() && check.refusal == SPELL_FAILED_NOT_SHAPESHIFT ? check.behindForm : check.refusal;
 }
 
 bool LeaderExternalAction::isUseful()
@@ -498,6 +501,13 @@ bool LeaderDispelAction::Execute(Event /*event*/)
     SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
     if (!unit || !info)
         return false;
+    // [lead1410] out of a fight a form the dispel refuses is left first (DispelRefusal took it as done)
+    if (!bot->IsInCombat() && info->CheckShapeshift(bot->GetShapeshiftForm()) != SPELL_CAST_OK)
+    {
+        LOG_INFO("playerbots", "[lead1410] [leader dispel] {} leaves its form for {} on {}", bot->GetName(),
+                 info->SpellName[0], unit->GetName());
+        bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+    }
     if (!botAI->CastSpell(spell, unit))
     {
         Leader::Events::NoteDispelFailed(bot->GetGUID(), spell, "the cast failed on " + unit->GetName());

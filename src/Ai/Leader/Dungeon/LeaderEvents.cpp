@@ -3161,6 +3161,34 @@ namespace Leader::Dungeon
                 uint64 const mechanics = GetCrowdControlMechanics(holdInfo);
                 if (IsHeldByCrowdControl(mob, mechanics))
                     return true;
+                // [lead1411] b262 wave 1: 68 CC orders the game refused (polymorph / hex / repentance / banish /
+                // freezing arrow SPELL_FAILED_OUT_OF_RANGE, LINE_OF_SIGHT, NO_POWER; the cat's roots NOT_SHAPESHIFT) -
+                // 5H-8 Rtmagad stood at its ranged spot 50 s with "polymorph on Ragefire Shaman" out of range: the
+                // leader's CC cast (LeaderCcAction) has no walk, CrowdControlMarkReachable checks floor and sight
+                // only. A CC is assigned to (and stays with) a member the game lets cast it now
+                // (PlayerbotAI::CheckCastNow: range, sight, power, form, cooldown); a mob no member can hold now is
+                // killed in its kill order place
+                uint32 const ccSpell =
+                    option->spell ? memberAI->GetAiObjectContext()->GetValue<uint32>("spell id", option->spell)->Get()
+                                  : 0;
+                SpellCastResult const ccRefusal =
+                    ccSpell ? memberAI->CheckCastNow(ccSpell, mob).refusal : SPELL_FAILED_SPELL_UNAVAILABLE;
+                if (ccRefusal != SPELL_CAST_OK)
+                {
+                    thread_local std::map<std::pair<uint64, uint64>, SpellCastResult> ccRefused;
+                    if (ccRefused.size() > 4096)
+                        ccRefused.clear();
+                    auto const key = std::make_pair(member->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue());
+                    if (auto const was = ccRefused.find(key); was == ccRefused.end() || was->second != ccRefusal)
+                    {
+                        ccRefused[key] = ccRefusal;
+                        LOG_INFO("playerbots", "[lead1411] {} cc {}: no {} on {} {} - the game refuses it now ({})",
+                                 run.runId, member->GetName(), option->spell ? option->spell : "a cc", mob->GetName(),
+                                 mob->GetEntry(),
+                                 PlayerbotAI::CastResultName(ccRefusal));
+                    }
+                    return false;
+                }
                 if (CrowdControlWouldBreak(memberAI, mob))
                     return false;
                 Unit* const victim = mob->GetVictim();

@@ -811,6 +811,16 @@ namespace Leader::Dungeon
                 orderFor = hasEvents[i] && i != waited &&
                            (events[i].externalTarget == guid || events[i].dispelTarget == guid ||
                             events[i].consumeTarget == guid || events[i].healTarget == guid);
+            // [lead1412] b262 wave 1 (60+ lines): "[lead940] X has Rejuvenation ticking": the wait for an
+            // out-of-fight heal over time on the tank is right (its ticks after the pull heal the damage the tank
+            // takes and forward 0.5 x that heal as the healer's threat, AuraEffect::HandlePeriodicHealAurasTick,
+            // past the leader's in-fight Heal gate) and it ends by itself: the aura's end readies the member, no
+            // order is missing
+            if (!orderFor && waitWhy.compare(0, 10, "[lead940] ") == 0)
+                if (Player* bot = ObjectAccessor::FindPlayer(guid))
+                    for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
+                        if (effect->GetBase()->GetDuration() > 0 && effect->GetBase()->GetCasterGUID() != guid)
+                            orderFor = true;
         }
 
         for (size_t i = 0; i < members.size(); ++i)

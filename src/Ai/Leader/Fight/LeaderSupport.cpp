@@ -312,6 +312,20 @@ void TickDispels(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                     if (!info || !(mask & (1u << auraInfo->Dispel)) || caster->HasSpellCooldown(rank) ||
                         !Affords(caster, info) || !Reaches(caster, info, target))
                         continue;
+                    // [lead1410] b262 rfc-h 5H-8: Remove Curse told to the cat and the bear (11 refusals
+                    // SPELL_FAILED_NOT_SHAPESHIFT, each dropped a tick later). The pick asks the game itself
+                    // (PlayerbotAI::CheckCastNow): out of a fight a form the dispel refuses is left by the order
+                    // (its cost is the shift back before the pull); in a fight the form is the member's job (the
+                    // tank's armour and threat, the cat's damage) and a member that must leave it is not picked
+                    if (PlayerbotAI* casterAI = GET_PLAYERBOT_AI(caster))
+                    {
+                        PlayerbotAI::CastCheck const check = casterAI->CheckCastNow(rank, target);
+                        SpellCastResult const refusal =
+                            !caster->IsInCombat() && check.refusal == SPELL_FAILED_NOT_SHAPESHIFT ? check.behindForm
+                                                                                                  : check.refusal;
+                        if (refusal != SPELL_CAST_OK)
+                            continue;
+                    }
                     DispelChargesList dispellable;
                     target->GetDispellableAuraList(caster, mask, dispellable, info);
                     for (auto const& [listed, charges] : dispellable)
