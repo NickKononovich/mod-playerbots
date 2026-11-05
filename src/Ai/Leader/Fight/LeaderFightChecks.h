@@ -206,6 +206,16 @@ namespace Leader::Fight
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);
+    // [lead1332] coordinator 2026-11-05 (b256 rfc-h 5E-13 277-582 s, the run's stall): every mob in combat with the
+    // group is one nobody can hit and no member has a sight spot for (lead.unhittableNoSpot), still where it stood at
+    // that verdict and hitting nobody (its victim out of its melee reach): the group is out of the fight for the
+    // leader and the route walk (the game's answer to a mob that cannot come: walking on; its chase follows or the
+    // core's unreachable-target evade takes it - Creature::SetCannotReachTarget, UnitAI::EvadeTimerExpired)
+    bool UnhittableOnly(Map* map, DungeonLeaderState const& lead, std::vector<ObjectGuid> const& members);
+    // [lead1332] `bot` damages `mob` from where it stands: the tank's or a melee member's melee, a ranged member's
+    // cast (LeaderCastsFrom); a healer never counts, a taunt alone deals none (b256 5E-13: the paladin at 1-2 %
+    // mana taunted the Trogg back every 10 s, its Avenger's Shield failed)
+    bool ActsOnFromHere(Player* bot, Unit* mob, bool tank);
     // [lead1329] the member fights in melee now: a melee damage dealer by role, or a Demonology warlock in
     // Metamorphosis (47241: its Immolation Aura reaches 8 yd, spell 50590's radius) - the leader's combat spot, its
     // hazard and cleave checks treat it as melee while the form is up, its ranged spot comes back when it drops

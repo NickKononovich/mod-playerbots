@@ -522,6 +522,15 @@ namespace Leader
         // [lead42] fight targets a member's Attack was refused on (who refused), until the fight ends
         std::map<ObjectGuid, std::set<ObjectGuid>> attackRefused;
         std::string fightStateSig;  // [lead42] the fight_attackers line last logged
+        // [lead1332] a fight mob nobody can hit from where they stand: the sight spot a member walks to (mob ->
+        // member, spot), the spots that did not give sight once reached, and the mobs no member has any spot for
+        // (where each stood at that verdict)
+        std::map<ObjectGuid, std::pair<ObjectGuid, Position>> sightSpots;
+        std::set<std::pair<ObjectGuid, ObjectGuid>> sightSpotSpent;
+        std::map<ObjectGuid, Position> unhittableNoSpot;
+        // [lead1332] fight mobs that cannot come to their victim (standing, out of its melee reach, no navmesh walk
+        // to it - PathGenerator - and no cast of their own): they deal nobody damage where they stand
+        std::set<ObjectGuid> harmlessMobs;
         ObjectGuid patrolDangerLoggedAlong;               // [lead34] patrol_target "along" logged once
         std::vector<ObjectGuid> planMobs;
         bool patrolDangerFits = false;

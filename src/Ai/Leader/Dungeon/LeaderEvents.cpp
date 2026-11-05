@@ -52,6 +52,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PartyMemberToHeal.h"  // [lead945] [lead946] HealTriage
+#include "MobRoles.h"  // [lead1332] HoldsRange
 #include "PathGenerator.h"
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
@@ -1597,6 +1598,12 @@ namespace Leader::Dungeon
         bool anyDead = false;
         bool rebuff = false;
         bool fighting = group.FightOn(tank);  // [lead84] the one definition (Steer reads the same)
+        // [lead1332] a fight of only mobs nobody can hit and no member has a sight spot for is no fight to hold the
+        // group in (UnhittableOnly: they stand where they stood at the verdict, hitting nobody); Steer reads the same
+        if (fighting && Leader::Fight::UnhittableOnly(map, lead, group.MemberGuids()))
+            fighting = false;
+        else if (!lead.unhittableNoSpot.empty() && !fighting)
+            lead.unhittableNoSpot.clear();
         for (ObjectGuid const& groupMember : group.MemberGuids())
         {
             Player* bot = ObjectAccessor::FindPlayer(groupMember);
@@ -8070,6 +8077,12 @@ namespace Leader::Dungeon
                 {
                     if (mobs.empty() || bot == tank || PlayerbotAI::IsHeal(bot) || PlayerbotAI::IsTank(bot))
                         return false;
+                    // [lead1332] b256 rfc-h 5E-13 350-582 s: the warlock, the one member that saw the stuck Trogg,
+                    // stood on its headroom Stop (the tank, at 1-2 % mana, built no threat on it) for 230 s. A mob
+                    // that cannot come to its victim (lead.harmlessMobs) deals the member nothing where it stands
+                    if (std::all_of(mobs.begin(), mobs.end(),
+                                    [&](Unit* mob) { return mob && lead.harmlessMobs.count(mob->GetGUID()); }))
+                        return true;
                     bool looseNow = false;
                     for (ObjectGuid const& other : killOrder)
                         if (Unit* fought = ObjectAccessor::GetUnit(*tank, other);
@@ -8851,7 +8864,8 @@ namespace Leader::Dungeon
                             if (Creature* listing = ref ? ref->GetOwner() : nullptr;
                                 listing && listing->IsAlive() && listing->GetMap() == map && listing->IsInCombat() &&
                                 !listing->HasUnitState(UNIT_STATE_CONTROLLED) && !Leader::Fight::IsFleer(listing) &&
-                                LeaderFightMob(tank, listing) && listing->GetThreatMgr().GetThreat(tank) <= 0.0f)
+                                LeaderFightMob(tank, listing) && listing->GetThreatMgr().GetThreat(tank) <= 0.0f &&
+                                !lead.harmlessMobs.count(listing->GetGUID()))  // [lead1332]
                             {
                                 unpulledNear = Acore::StringFormat(
                                     "a fight mob {} has it on its threat list at 0 tank threat", listing->GetName());
@@ -9125,7 +9139,8 @@ namespace Leader::Dungeon
                          tankEvents.moveWhy.rfind("aggro loss: the tank goes to", 0) == 0);
                 }
                 bool const looseVictim = loose != looseOn.end() && bot != healer && !PlayerbotAI::IsHeal(bot);
-                bool const victim = looseVictim && tankTakesBack;
+                // [lead1332] a loose mob that cannot come to its victim (lead.harmlessMobs) stops nobody
+                bool const victim = looseVictim && tankTakesBack && !lead.harmlessMobs.count(loose->second->GetGUID());
                 // [lead52] the tank's threat lead before the damage: a damage dealer whose threat on its target
                 // reaches the tank's stops until the tank leads again (the tank's lead is the game's own measure, no
                 // number of ours); the start of a pull too - nobody out-threats a tank that has not hit yet
@@ -10376,6 +10391,173 @@ namespace Leader::Dungeon
                 for (Player* other : out)
                     LogHealReach(group, other, healer, "out of the healer's reach in the fight", how);
             }
+        }
+
+        // [lead1332] coordinator 2026-11-05: b256 rfc-h 5E-13 (20261105-104014) 277-582 s, the run's stall - a
+        // Ragefire Trogg stood at (-166.4,-5.1,-52.9), 27.7 yd off the tank and 6.4 yd above it, on a spot with no
+        // navmesh over the lava (ledge_drop_refused "no navmesh under the destination", the ground 12 yd below it),
+        // hitting nobody; every Attack on it was refused ("no line of sight" from where each member stood), the
+        // no-place resolver saw it only while it was on the tank (its rings' spots at the mob's own height, not on
+        // the ground a member walks to) and after "none allowed" nothing ran: 230 s of "no walk, no pull". A fight
+        // mob that stands, that nobody acts on from where they stand (ActsOnFromHere), gets a member walked by
+        // pathfinding to a spot with the game's sight and range: for each ranged member and the tank, rings round
+        // the mob inside its cast reach (the tank: its taunt's), each point's navmesh walk (PathGenerator,
+        // PATHFIND_NORMAL) and the walk's real end judged (LeaderCastsFrom / LeaderSeesFrom from there); the
+        // shortest walk wins and is kept until reached (a reached spot that still does not act is spent). No spot for
+        // anyone: the mob is the game's (UnhittableOnly above)
+        if (fighting && tank->IsAlive())
+        {
+            std::vector<Player*> everyone = seats;
+            everyone.push_back(tank);
+            std::set<ObjectGuid> fightMobs;
+            for (Player* bot : everyone)
+                for (Unit* attacker : bot->getAttackers())
+                    if (attacker && attacker->IsAlive() && LeaderFightMob(tank, attacker))
+                        fightMobs.insert(attacker->GetGUID());
+            for (auto it = lead.sightSpots.begin(); it != lead.sightSpots.end();)
+                it = fightMobs.count(it->first) ? std::next(it) : lead.sightSpots.erase(it);
+            for (auto it = lead.unhittableNoSpot.begin(); it != lead.unhittableNoSpot.end();)
+                it = fightMobs.count(it->first) ? std::next(it) : lead.unhittableNoSpot.erase(it);
+            // the mobs that cannot come to their victim: standing out of its melee reach, no cast of their own, and
+            // no complete navmesh walk to it (the game's own chase path, PathGenerator) - the damage dealers' threat
+            // Stop has nothing to save on them (user rule aggro-loss-if-survives: survivesSet)
+            std::set<ObjectGuid> harmless;
+            for (ObjectGuid const& mobGuid : fightMobs)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
+                Unit* victim = mob ? mob->GetVictim() : nullptr;
+                Creature* creature = mob ? mob->ToCreature() : nullptr;
+                if (!creature || !victim || mob->isMoving() || mob->IsWithinMeleeRange(victim) ||
+                    mob->HasUnitState(UNIT_STATE_CASTING) || MobRoles::HoldsRange(creature))
+                    continue;
+                PathGenerator chase(mob);
+                if (chase.CalculatePath(victim->GetPositionX(), victim->GetPositionY(), victim->GetPositionZ(),
+                                        false) &&
+                    chase.GetPathType() == PATHFIND_NORMAL)
+                    continue;
+                harmless.insert(mobGuid);
+                if (!lead.harmlessMobs.count(mobGuid))
+                    Decisions().Write(run, "leader", "unhittable_mob", mobGuid, mob->GetName(), true,
+                                      JsonObject()
+                                          .Str("mob", mob->GetName())
+                                          .Str("verdict", "cannot come: no threat stop on it")
+                                          .Str("victim", victim->GetName())
+                                          .Real("victimDistance", mob->GetExactDist(victim))
+                                          .Num("pathType", int64(chase.GetPathType())));
+            }
+            lead.harmlessMobs = harmless;
+            for (ObjectGuid const& mobGuid : fightMobs)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
+                if (!mob || mob->isMoving() || IsCrowdControlled(mob) ||
+                    (mob->GetVictim() && mob->IsWithinMeleeRange(mob->GetVictim())))
+                {
+                    lead.sightSpots.erase(mobGuid);
+                    lead.unhittableNoSpot.erase(mobGuid);
+                    continue;
+                }
+                bool acted = false;
+                for (Player* bot : everyone)
+                    acted = acted || ActsOnFromHere(bot, mob, bot == tank);
+                if (acted)
+                {
+                    lead.sightSpots.erase(mobGuid);
+                    lead.unhittableNoSpot.erase(mobGuid);
+                    continue;
+                }
+                std::string const why = "[lead1332] to a spot in sight and range of " + mob->GetName() +
+                                        ": nobody hits it from where they stand";
+                // a kept spot: walked to until reached; reached and still not acting, it is spent
+                if (auto const kept = lead.sightSpots.find(mobGuid); kept != lead.sightSpots.end())
+                {
+                    Player* walker = ObjectAccessor::FindPlayer(kept->second.first);
+                    if (walker && walker->IsAlive() &&
+                        (walker->GetExactDist(kept->second.second) > Leader::LEADER_SPOT_TOLERANCE ||
+                         walker->isMoving()) &&
+                        checkedMove(walker->GetGUID(), Leader::MoveEvent::MoveTo, kept->second.second, 1.5f, why))
+                        continue;
+                    lead.sightSpotSpent.insert({mobGuid, kept->second.first});
+                    lead.sightSpots.erase(kept);
+                }
+                if (auto const noSpot = lead.unhittableNoSpot.find(mobGuid);
+                    noSpot != lead.unhittableNoSpot.end() && mob->GetExactDist(noSpot->second) <= 1.0f)
+                    continue;  // searched where it stands: no spot
+                struct Candidate
+                {
+                    Player* bot = nullptr;
+                    Position spot;
+                    float walk = 0.0f;
+                };
+                std::vector<Candidate> candidates;
+                for (Player* bot : everyone)
+                {
+                    bool const isTank = bot == tank;
+                    if (!bot->IsAlive() || (!isTank && (PlayerbotAI::IsHeal(bot) || !PlayerbotAI::IsRanged(bot))) ||
+                        lead.sightSpotSpent.count({mobGuid, bot->GetGUID()}))
+                        continue;
+                    float const reach = isTank ? LeaderTauntReach(tank) : LeaderCastReach(bot, mob);
+                    Candidate best;
+                    for (float radius : {reach - 2.0f, reach * 0.66f, reach * 0.33f})
+                        for (uint32 i = 0; i < 12 && radius > NOMINAL_MELEE_RANGE; ++i)
+                        {
+                            float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
+                            PathGenerator path(bot);
+                            if (!path.CalculatePath(mob->GetPositionX() + std::cos(angle) * radius,
+                                                    mob->GetPositionY() + std::sin(angle) * radius,
+                                                    mob->GetPositionZ(), false) ||
+                                path.GetPathType() != PATHFIND_NORMAL)
+                                continue;
+                            G3D::Vector3 const end = path.GetActualEndPosition();
+                            Position const spot(end.x, end.y, end.z);
+                            bool const acts = isTank ? spot.GetExactDist(mob->GetPosition()) <= reach &&
+                                                           LeaderSeesFrom(bot, mob, spot)
+                                                     : LeaderCastsFrom(bot, mob, spot);
+                            if (!acts || (best.bot && path.getPathLength() >= best.walk))
+                                continue;
+                            best = {bot, spot, path.getPathLength()};
+                        }
+                    if (best.bot)
+                        candidates.push_back(best);
+                }
+                std::sort(candidates.begin(), candidates.end(),
+                          [](Candidate const& a, Candidate const& b) { return a.walk < b.walk; });
+                Candidate const* chosen = nullptr;
+                for (Candidate const& candidate : candidates)
+                    if (checkedMove(candidate.bot->GetGUID(), Leader::MoveEvent::MoveTo, candidate.spot, 1.5f, why))
+                    {
+                        chosen = &candidate;
+                        break;
+                    }
+                JsonObject fields;
+                fields.Str("mob", mob->GetName())
+                    .Real("tankDistance", tank->GetExactDist(mob))
+                    .Real("dz", mob->GetPositionZ() - tank->GetPositionZ())
+                    .Num("candidates", int64(candidates.size()));
+                if (chosen)
+                {
+                    lead.sightSpots[mobGuid] = {chosen->bot->GetGUID(), chosen->spot};
+                    lead.unhittableNoSpot.erase(mobGuid);
+                    fields.Str("verdict", "sight spot")
+                        .Str("member", chosen->bot->GetName())
+                        .Real("walk", chosen->walk)
+                        .Real("x", chosen->spot.GetPositionX())
+                        .Real("y", chosen->spot.GetPositionY())
+                        .Real("z", chosen->spot.GetPositionZ());
+                }
+                else
+                {
+                    lead.unhittableNoSpot[mobGuid] = mob->GetPosition();
+                    fields.Str("verdict",
+                               candidates.empty() ? "no spot: the game's" : "every spot refused: the game's");
+                }
+                Decisions().Write(run, "leader", "unhittable_mob", mobGuid, mob->GetName(), true, fields);
+            }
+        }
+        else
+        {
+            lead.sightSpots.clear();
+            lead.sightSpotSpent.clear();
+            lead.harmlessMobs.clear();
         }
 
         lead.hazardActive = hazardSeen;

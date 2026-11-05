@@ -570,6 +570,46 @@ namespace Leader::Fight
         return 0.0f;
     }
 
+    bool ActsOnFromHere(Player* bot, Unit* mob, bool tank)
+    {
+        if (!bot || !bot->IsAlive() || !mob)
+            return false;
+        Position const at = bot->GetPosition();
+        if (tank)
+            return LeaderMeleeReachesFrom(bot, mob, at) && bot->IsWithinLOSInMap(mob);
+        if (PlayerbotAI::IsHeal(bot))
+            return false;
+        if (!PlayerbotAI::IsRanged(bot))
+            return LeaderMeleeReachesFrom(bot, mob, at) && bot->IsWithinLOSInMap(mob);
+        return LeaderCastsFrom(bot, mob, at) && bot->IsWithinLOSInMap(mob);
+    }
+
+    bool UnhittableOnly(Map* map, DungeonLeaderState const& lead, std::vector<ObjectGuid> const& members)
+    {
+        if (!map || lead.unhittableNoSpot.empty())
+            return false;
+        bool any = false;
+        for (ObjectGuid const& guid : members)
+        {
+            Player* member = ObjectAccessor::FindPlayer(guid);
+            if (!member || member->GetMap() != map || !member->IsAlive())
+                continue;
+            for (Unit* attacker : member->getAttackers())
+            {
+                if (!attacker || !attacker->IsAlive())
+                    continue;
+                auto const verdict = lead.unhittableNoSpot.find(attacker->GetGUID());
+                Unit* const victim = attacker->GetVictim();
+                if (verdict == lead.unhittableNoSpot.end() || attacker->isMoving() ||
+                    attacker->GetExactDist(verdict->second) > 1.0f ||
+                    (victim && attacker->IsWithinMeleeRange(victim)))
+                    return false;
+                any = true;
+            }
+        }
+        return any;
+    }
+
     // the member's walk-along spot behind the tank (two rows of two), on reachable ground
     Position LeaderFollowSpot(Player* tank, uint32 index)
     {

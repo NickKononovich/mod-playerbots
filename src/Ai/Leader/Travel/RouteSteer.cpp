@@ -2275,11 +2275,16 @@ namespace Leader::Travel
         // Steer runs only while the harness counts the party out of combat, so a leader flagged here with nobody on
         // it is that phantom flag: the walk goes on (the route target too, the tank's pull gets its target). A leader
         // somebody attacks still holds. Either way a held walk is logged (harness_hold).
-        bool const leaderFlagOnly = !routeState.target.IsEmpty() && leader->IsInCombat() && !group.FightOn(leader);
+        // [lead1332] ... and a fight of only mobs nobody can hit and no member has a sight spot for (UnhittableOnly)
+        bool const unhittableOnly = Leader::Fight::UnhittableOnly(leader->GetMap(), group.State(), group.MemberGuids());
+        bool const leaderFlagOnly =
+            !routeState.target.IsEmpty() && leader->IsInCombat() && (!group.FightOn(leader) || unhittableOnly);
         if (!routeState.target.IsEmpty() && leader->IsInCombat())
         {
             uint32 const holdNow = getMSTime();
-            std::string const why = leaderFlagOnly
+            std::string const why = unhittableOnly && leaderFlagOnly
+                                        ? "[lead1332] only mobs nobody can hit, no sight spot: the walk goes on"
+                                    : leaderFlagOnly
                                         ? "leader flagged in combat, nobody on it (phantom): the walk goes on"
                                         : "leader in combat with attackers: no walk, no pull";
             if (why != routeState.harnessHoldWhy || !routeState.harnessHoldLogMs ||
