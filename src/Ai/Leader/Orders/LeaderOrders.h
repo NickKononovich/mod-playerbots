@@ -591,6 +591,9 @@ namespace Leader
         ObjectGuid moveReachOf;
         float moveReachRange = 0.0f;
         ObjectGuid healTarget;  // [lead76] the leader's "top up X"
+        // [lead1263] the pull waits on that member's health (a readiness hold or the boss gap names it, or it is below
+        // its health line): only then may an out-of-fight heal over time top it up
+        bool healHolds = false;
         uint32 healTargetMs = 0;
         uint32 moveMs = 0;
         AttackEvent attack = AttackEvent::None;
@@ -737,7 +740,8 @@ namespace Leader
         // [lead69] the identical commands the arbiter refused since the last call (command_dupe_blocked)
         uint32 TakeDupesBlocked(ObjectGuid member);
         // [lead76] the leader's "top up X": the healer heals `target` now (a readiness gap on health); Empty: none
-        bool SetHealTarget(ObjectGuid member, ObjectGuid target);
+        // [lead1263] `holds`: the pull waits on the member's health (MemberEvents::healHolds)
+        bool SetHealTarget(ObjectGuid member, ObjectGuid target, bool holds = false);
         bool SetAttack(ObjectGuid member, AttackEvent attack, ObjectGuid target,
                        std::vector<ObjectGuid> const& killOrder);
         bool SetIntensity(ObjectGuid member, Intensity intensity, std::vector<std::string> const& burnAllowed = {});

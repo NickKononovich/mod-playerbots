@@ -5315,9 +5315,19 @@ namespace Leader::Dungeon
                         ++spend.fights;
                         if (spend.sec > 0.0f)
                             RestState::NoteManaRate(member->GetGUID(), std::max(0.0f, spend.spent / spend.sec));
+                        // [lead1262] b249 rfc-h 5H-8: the disc priest came to Oggleflint at 3 %, ran dry and its
+                        // boss rate read 0.00 %/s - Taragaman's gate then passed it at 0 % with a 0 % line. A
+                        // healer's heals follow the fight's damage, not a rotation: a fight it ran dry in measured
+                        // the heals it could not cast. Its boss rate and its use per tank health are noted only from
+                        // fights it had mana for to the end
+                        bool const healerDry = dry && PlayerbotAI::IsHeal(member);
+                        if (healerDry)
+                            LOG_INFO("playerbots", "[lead1262] {}: ran dry in its fight ({:.1f} % at {:.1f} s): its "
+                                     "boss rate and use per tank health are not noted from it",
+                                     member->GetName(), spend.dryPct, spend.drySec);
                         // [lead232] the boss fights' own rate, and a full fight's rate (one at least as long as the
                         // run's mean fight: its whole rotation, not a few casts on a short pull)
-                        if (spend.boss && usedSec > 0.0f)
+                        if (spend.boss && usedSec > 0.0f && !healerDry)
                         {
                             spend.bossSpent += used;
                             spend.bossSec += usedSec;
@@ -5365,7 +5375,7 @@ namespace Leader::Dungeon
                             }
                         }
                         // [lead393] a healer's net use per tank health the plan costed its fights at
-                        if (spend.fightCost > 0.0f)
+                        if (spend.fightCost > 0.0f && !healerDry)  // [lead1262]
                         {
                             spend.costSpent += used;
                             spend.costSum += spend.fightCost;
@@ -5542,6 +5552,10 @@ namespace Leader::Dungeon
         if (!fighting && healer)
         {
             ObjectGuid topUp = lead.topUpFor;
+            // [lead1263] the pull waits on the topped-up member's health: a readiness hold named it (topUpFor), the
+            // boss gap names it, or it is below its health line - only then may an out-of-fight heal over time top
+            // it up (LeaderHealTargetAction: the HoT's whole duration holds the pull, lead940)
+            bool topUpHolds = !topUp.IsEmpty();
             // [lead433] the member whose health holds the boss pull first (its gap is the healer's, above)
             if (topUp.IsEmpty())
                 if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
@@ -5553,6 +5567,7 @@ namespace Leader::Dungeon
                         if (healerTopsUp(member, waitBoss))
                         {
                             topUp = member->GetGUID();
+                            topUpHolds = true;
                             break;
                         }
                 }
@@ -5590,6 +5605,11 @@ namespace Leader::Dungeon
                     {
                         lowest = member->GetHealthPct();
                         topUp = member->GetGUID();
+                        // [lead1263] b249 rfc-h: 14 top-ups at 95-99.7 % ended in a Renew whose ticks held the pull
+                        // (93 s; 5C-11 211 s the tank at 99.7 %, 12.5 s): a member above its health line - and never
+                        // above a boss's ready line - holds no pull
+                        topUpHolds = member->GetHealthPct() <
+                                     std::min(RestState::HealthLine(member), PullReadiness::BossReadyHealth());
                     }
             }
             if (topUp.IsEmpty())
@@ -5601,6 +5621,7 @@ namespace Leader::Dungeon
                         if (PullReadiness::MemberBossGap(member, waitBoss).rfind("health", 0) == 0)
                         {
                             topUp = member->GetGUID();
+                            topUpHolds = true;
                             break;
                         }
                 }
@@ -5608,7 +5629,7 @@ namespace Leader::Dungeon
             // [lead179] not while the healer drinks: its Rest holds the top-up's mana, it heals once it stands
             if (healed && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
                 !(healer->IsSitState() && RestState::IsDrinking(healer)) &&
-                Leader::Events::SetHealTarget(healer->GetGUID(), topUp))
+                Leader::Events::SetHealTarget(healer->GetGUID(), topUp, topUpHolds))
                 logEvent(healer, "TopUp", JsonObject().Str("member", healed->GetName())
                                               .Real("health", healed->GetHealthPct())
                                               .Str("why", "a readiness gap on health"));

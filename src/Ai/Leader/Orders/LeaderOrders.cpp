@@ -769,7 +769,7 @@ namespace Leader
             return changed;
         }
 
-        bool SetHealTarget(ObjectGuid member, ObjectGuid target)
+        bool SetHealTarget(ObjectGuid member, ObjectGuid target, bool holds)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
@@ -777,8 +777,9 @@ namespace Leader
             std::string const key = GuidKey(target);
             if (!Arbitrate(slot, DOMAIN_HEAL_TARGET, key, key, 0, 0, key.empty()))
                 return false;
-            bool const changed = e.healTarget != target;
+            bool const changed = e.healTarget != target || e.healHolds != holds;  // [lead1263]
             e.healTarget = target;
+            e.healHolds = holds;
             e.healTargetMs = slot.gen;
             if (changed)
                 ++e.seq;

@@ -1180,6 +1180,22 @@ bool LeaderHealTargetAction::Execute(Event /*event*/)
     {
         if (hots && !outOfFight)
             break;  // in a fight one pass, the list's order (the leader's Heal gate judges the threat)
+        // [lead1263] user rule (careful with heals over time on the tank before the pull; heal only when needed):
+        // out of a fight a heal over time only when the pull waits on this member's health (the leader's healHolds:
+        // a readiness hold or the boss gap names it, or it is below its health line) - b249 rfc-h 14 top-ups at
+        // 95-99.7 % ended in Renew / Rejuvenation ticks the pull waited out (93 s)
+        if (hots && !events.healHolds)
+        {
+            thread_local std::map<ObjectGuid, ObjectGuid> skipLogged;  // healer -> the member its HoT was skipped on
+            if (skipLogged[bot->GetGUID()] != target->GetGUID())
+            {
+                skipLogged[bot->GetGUID()] = target->GetGUID();
+                LOG_INFO("playerbots", "[lead1263] {} casts no heal over time on {} ({:.0f} %) out of a fight: no "
+                         "direct heal can be cast and the pull does not wait on its health", bot->GetName(),
+                         target->GetName(), target->GetHealthPct());
+            }
+            break;
+        }
         for (char const* heal : TOP_UP_HEALS)
         {
             uint32 const healId = AI_VALUE2(uint32, "spell id", heal);

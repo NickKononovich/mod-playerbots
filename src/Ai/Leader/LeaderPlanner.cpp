@@ -4978,6 +4978,41 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return std::max(published, BossFightSec(bot, boss));
     }
 
+    // [lead1262] defined with the tank's measured intake below (MeasuredTaken)
+    float BossTakenScale(Player* tank, bool spell);
+
+    // [lead1262] b248 + b249 rfc-h: every boss gate read a healer's line with a fight cost of 0 tank healths (the
+    // gate's FightManaLine calls passed 0), so its heal term was nothing and the line was its rate measured on
+    // bosses alone - 0.00 %/s after a boss it fought dry: 5H-8 b249 Rtpriad passed Taragaman's gate at 0 % ("its
+    // line 0 %"), "[wipe] fight lost, healers out of mana"; priests at 1-17 % passed with 0 % lines in both batches.
+    // A healer's boss line covers the whole fight's healing: the boss's damage on the tank (his melee and spells
+    // from the game's data, LandedMeleeDps on the main tank's attack table, scaled by the tank's measured intake on
+    // this dungeon's earlier bosses, else on its trash) over the fight's seconds, in tank healths. 0 for a member
+    // that is no healer (FightManaLine reads the cost in its heal term only)
+    float BossFightCost(Player* member, Unit* boss, float bossSec)
+    {
+        if (!member || !boss || bossSec <= 0.0f || !PlayerbotAI::IsHeal(member) || !member->GetGroup())
+            return 0.0f;
+        Player* tank = ObjectAccessor::FindPlayer(PlayerbotAI::GetMainTankGuid(member->GetGroup()));
+        if (!tank || !tank->IsAlive() || !tank->GetMaxHealth() || tank->GetMapId() != boss->GetMapId())
+            return 0.0f;
+        float spell = 0.0f;
+        float const landed = LandedMeleeDps(boss, tank, false, &spell);
+        float const meleeScale = BossTakenScale(tank, false);
+        float const spellScale = BossTakenScale(tank, true);
+        float const dps = std::max(landed - spell, 0.0f) * meleeScale + spell * spellScale;
+        float const cost = dps * bossSec / float(tank->GetMaxHealth());
+        thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> logged;
+        if (logged.size() > 1024)
+            logged.clear();
+        if (logged.insert({member->GetGUID(), boss->GetGUID()}).second)
+            LOG_INFO("playerbots", "[lead1262] {}: its boss line for {} heals {:.2f} tank healths = ({:.0f} melee x "
+                     "{:.2f} + {:.0f} spells x {:.2f}) /s on {} x {:.0f} s / {} health",
+                     member->GetName(), boss->GetName(), cost, std::max(landed - spell, 0.0f), meleeScale, spell,
+                     spellScale, tank->GetName(), bossSec, tank->GetMaxHealth());
+        return cost;
+    }
+
     std::string BossReadyGap(Player* bot, bool askBuffs, bool realBoss = true, Unit* boss = nullptr)
     {
         float const readyHealth = realBoss ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH;
@@ -4992,7 +5027,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 return Acore::StringFormat("{} at {:.0f} % health", member->GetName(), member->GetHealthPct());
 
             // [lead51] the mana THIS boss fight takes from this member (FightManaLine), not a fixed line
-            float const manaLine = boss ? RestState::FightManaLine(member, bossSec, 0.0f, nullptr, true) : readyMana;
+            // [lead1262] a healer's line heals the boss's damage on the tank over the fight (BossFightCost)
+            float const manaLine =
+                boss ? RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true)
+                     : readyMana;
             // [lead855] its line reads its rotation's nonstop rate (no boss fight of it measured): logged once per
             // member and boss with the rate's terms
             if (boss && member->GetMaxPower(POWER_MANA))
@@ -5082,7 +5120,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                             IsPresent(bot, member))
                         {
                             std::string why;
-                            float const line = RestState::FightManaLine(member, bossSec, 0.0f, &why, true);
+                            float const line = RestState::FightManaLine(
+                                member, bossSec, BossFightCost(member, boss, bossSec), &why, true);  // [lead1262]
                             LOG_INFO("playerbots", "[lead811] {}: boss gate for {} passes {} at {:.0f} % mana, its "
                                      "line {:.0f} % ({}) [lead1043] after {:.0f} s of fights", bot->GetName(),
                                      boss->GetName(), member->GetName(), member->GetPowerPct(POWER_MANA), line, why,
@@ -5972,7 +6011,9 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss, float* mana
     if (!member || !member->IsAlive())
         return std::string();
     std::string terms;
-    float const readyMana = RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, &terms, true);
+    float const bossSec = NextPullSec(member, boss);
+    float const readyMana =
+        RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), &terms, true);  // [lead1262]
     if (manaLine && member->getPowerType() == POWER_MANA)
         *manaLine = readyMana;
     if (member->GetHealthPct() < readyHealth)
@@ -5989,9 +6030,15 @@ float PullReadiness::MemberBossHealthLine(Unit* boss)
     return boss ? (IsEncounterBoss(boss) ? BOSS_READY_HEALTH : MINI_BOSS_READY_HEALTH) : 0.0f;
 }
 
+float PullReadiness::BossReadyHealth() { return BOSS_READY_HEALTH; }
+
 float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
 {
-    return member && boss ? RestState::FightManaLine(member, NextPullSec(member, boss), 0.0f, nullptr, true) : 0.0f;
+    if (!member || !boss)
+        return 0.0f;
+    float const bossSec = NextPullSec(member, boss);
+    // [lead1262] a healer's line heals the boss's damage on the tank over the fight (BossFightCost)
+    return RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true);
 }
 
 bool PullReadiness::MemberNeedsManaPotion(Player* member, Unit* boss)
@@ -6930,6 +6977,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     struct MeasuredTaken
     {
         TakenRatios trash;                              // every fight without a boss
+        TakenRatios boss;                               // [lead1262] every boss fight
         std::unordered_map<uint32, TakenRatios> entry;  // fights of one mob entry alone
         uint32 instanceId = 0;
     };
@@ -7029,6 +7077,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         };
         if (!boss)
             add(entry.trash);
+        else
+            add(entry.boss);  // [lead1262]
         if (singleEntry)
             add(entry.entry[oneEntry]);
         LOG_DEBUG("playerbots",
@@ -7131,6 +7181,18 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         for (auto const& [mobEntry, ratios] : found->second.entry)
             out.byEntry[mobEntry] = ScaleOf(ratios, out.trash);
         return out;
+    }
+
+    // [lead1262] the tank's measured intake against the game data's estimate on this dungeon's boss fights, else
+    // its trash fights, else 1 (the data as it is): melee or spells
+    float BossTakenScale(Player* tank, bool spell)
+    {
+        std::lock_guard<std::mutex> guard(pullCheckLock);
+        auto const found = measuredTaken.find(tank->GetGUID().GetRawValue());
+        if (found == measuredTaken.end() || found->second.instanceId != tank->GetInstanceId())
+            return 1.0f;
+        LandedScale const scale = ScaleOf(found->second.boss, ScaleOf(found->second.trash, LandedScale()));
+        return spell ? scale.spell : scale.melee;
     }
 
     // [lead650] User 2026-11-03: «чем больше мобов сразу, тем больше АОЕ, тем меньше время на моба» (b218 rfc-h engage
@@ -8891,7 +8953,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 next.mobs = std::max<uint32>(1, uint32(_planLookPack.size()));
             float const nextSec = RestState::FightSecOf(healer, next);  // [lead264]
             float const line = bossPull
-                                   ? RestState::FightManaLine(healer, NextPullSec(healer, target), 0.0f, &terms, true)
+                                   ? RestState::FightManaLine(healer, NextPullSec(healer, target),
+                                                              BossFightCost(healer, target,
+                                                                            NextPullSec(healer, target)),
+                                                              &terms, true)  // [lead1262]
                                    : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
             if (healer->GetPowerPct(POWER_MANA) < line)
             {
