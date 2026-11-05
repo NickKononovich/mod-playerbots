@@ -1319,6 +1319,30 @@ namespace Leader::Dungeon
                                               JsonObject().Str("why", broken).Str("kind", committed.kind)
                                                   .Real("sec", getMSTimeDiff(lead.commitSinceMs, now) / 1000.0f)
                                                   .Bool("issued", lead.commitIssued));
+                // [lead1282] b250 rfc-h 5B-10 207 / 230 s: the orders on Ragefire Trogg 18 and Ragefire Shaman 16
+                // ended with their mob out of the fight (74 / 101 yd off); it stayed the kept pick and the route's
+                // target (the commit's mob), on the path by that alone, and the route walked 100 yd back for it. An
+                // order that ended without its mob fighting leaves no verdict behind: the pick, the route's target
+                // and its path verdict are judged again from scratch on the next look
+                if (broken == "the order ended" && mob && mob->IsAlive() && !mob->IsInCombat())
+                {
+                    bool const routeTarget = group.Route().target == lead.commitMob && !group.Route().targetIsStarter;
+                    if (lead.keptPick == lead.commitMob)
+                        lead.keptPick.Clear();
+                    if (lead.pickJudgedFor == lead.commitMob)
+                        lead.pickJudgedFor.Clear();
+                    group.Route().pathVerdicts.erase(lead.commitMob);  // "the route's target" by the commit
+                    if (routeTarget)
+                    {
+                        group.Route().target.Clear();
+                        group.ClearWaypoint(group.LeaderGuid());
+                        group.RetargetAt(now);
+                    }
+                    Decisions().Write(run, "leader", "order_mob_rejudged", lead.commitMob, mob->GetName(), true,
+                                      JsonObject().Real("distance", tank->GetExactDist(mob))
+                                          .Bool("routeTarget", routeTarget)
+                                          .Str("why", "[lead1282] its order ended with it out of the fight"));
+                }
                 lead.commit.reset();
                 lead.commitIssued = false;
                 lead.commitOrderSeen = false;

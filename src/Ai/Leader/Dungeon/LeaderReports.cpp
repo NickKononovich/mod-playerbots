@@ -413,18 +413,8 @@ namespace Leader::Dungeon
         if (order.state == Leader::OrderState::Fighting)
         {
             closeOrder(Leader::OrderState::Done, "no engaged mob: the fight is over", "order_done");
-            // [lead101] the order's own mob alive and in no fight (another pack came instead): it stays the leader's
-            // pick, the next pull goes for it from where the group stands now (released by the kept pick's facts)
-            // [lead108] only one the tank has a walk to
-            if (Creature* own = leader->GetMap()->GetCreature(order.target);
-                Leader::Fight::OrderMobStaysPick(leader, own))
-            {
-                group.State().keptPick = order.target;
-                group.State().keptPickWhy = "its order ended with it out of the fight";
-                Decisions().Write(run, "leader", "order_mob_kept", order.target, order.targetName, true,
-                                              JsonObject().Num("order", order.id)
-                                                  .Real("distance", leader->GetExactDist(own)));
-            }
+            // [lead1282] the order's own mob alive and in no fight (another pack came instead) is judged again from
+            // scratch (LeaderPlan, the commit's release): no kept pick
             return;
         }
 

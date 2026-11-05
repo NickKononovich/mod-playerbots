@@ -233,6 +233,10 @@ namespace Leader
         // [lead204] a stop the route refused from where the leader stood (a detour from here): planned again
         // without it, back once the leader stands elsewhere (LEADER_COMMIT_MOVED_YD)
         std::map<ObjectGuid, Position> planRefusedFrom;
+        // [lead1283] the spots of the stops cleared since the plan to this boss started, in order (the walk behind the
+        // group), and the mobs of packs new to the plan that lie behind it (no stop until they leave the path)
+        std::vector<Position> routePlanDone;
+        std::set<ObjectGuid> planBehind;
         ObjectGuid routePlanBoss;  // the boss the plan ends at (empty: none known)
         float routePlanLength = 0.0f;
         std::string routePlanWhy;  // why it was (re)planned last

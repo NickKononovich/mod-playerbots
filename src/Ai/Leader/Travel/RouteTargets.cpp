@@ -1587,7 +1587,12 @@ namespace Leader::Travel
         else if (route.routePlanBoss != bossGuid)
             why = Acore::StringFormat("the next boss is {}", nextBoss ? nextBoss->GetName() : std::string("none"));
         std::set<ObjectGuid> planned;
-        auto const reviewStops = [&](std::vector<PlannedStop>& stops)
+        // [lead1283] the stops cleared since the plan to this boss started: their spots in order (the walk behind the
+        // group); a plan that ran out of stops keeps them
+        bool const fresh = route.routePlanBoss != bossGuid;
+        for (auto behind = route.planBehind.begin(); behind != route.planBehind.end();)
+            behind = current.count(*behind) ? std::next(behind) : route.planBehind.erase(behind);
+        auto const reviewStops = [&](std::vector<PlannedStop>& stops, bool cleared)
         {
             for (auto stop = stops.begin(); stop != stops.end();)
             {
@@ -1617,6 +1622,8 @@ namespace Leader::Travel
                     why = left;
                 if (alive.empty())
                 {
+                    if (cleared && !stop->patrol)
+                        route.routePlanDone.push_back(stop->spot);
                     stop = stops.erase(stop);
                     continue;
                 }
@@ -1626,8 +1633,13 @@ namespace Leader::Travel
         };
         size_t const headBefore = route.routePlan.size();
         ObjectGuid const headAnchor = route.routePlan.empty() ? ObjectGuid::Empty : route.routePlan.front().anchor;
-        reviewStops(route.routePlan);
-        reviewStops(route.routePlanMeets);
+        reviewStops(route.routePlan, true);
+        reviewStops(route.routePlanMeets, false);
+        if (fresh)
+        {
+            route.routePlanDone.clear();
+            route.planBehind.clear();
+        }
         // a walker that should have come to a fight that is over now (its stop done) is planned again
         for (PlannedStop const& meet : route.routePlanMeets)
             if (why.empty() && !meet.meetsAt.IsEmpty() &&
@@ -1635,28 +1647,156 @@ namespace Leader::Travel
                              [&meet](PlannedStop const& stop) { return stop.anchor == meet.meetsAt; }))
                 if (Creature const* walker = map->GetCreature(meet.anchor))
                     why = Acore::StringFormat("{} did not come to its fight", walker->GetName());
+        bool joinOnly = false;
         if (why.empty())
             for (Creature* mob : mobs)
-                if (!planned.count(mob->GetGUID()) && !route.planRefusedFrom.count(mob->GetGUID()))
+                if (!planned.count(mob->GetGUID()) && !route.planRefusedFrom.count(mob->GetGUID()) &&
+                    !route.planBehind.count(mob->GetGUID()))
                 {
                     why = Acore::StringFormat("{} joined the path", mob->GetName());
+                    joinOnly = true;
                     break;
                 }
 
         if (!why.empty())
         {
+            // [lead1283] b250 rfc-h 5B-10 230 s: "Ragefire Shaman joined the path" and the tour from where the tank
+            // stood put its spot first, 101 yd back beside the corridor the group had cleared, then 130 yd forward
+            // again (plan 543 yd against 369). A pack new to the plan that lies nearer the cleared walk than the walk
+            // ahead, the walk to it passing a cleared stop, and out of its aggro reach of the walk ahead (it does not
+            // follow the group) is behind the group: no stop, until it leaves the path or a new plan starts
+            std::vector<PlannedStop> const kept = route.routePlan;
+            bool const toBoss = nextBoss && nextBoss->IsAlive();
+            Position const start = leader->GetPosition();
+            Position const bossSpot = toBoss ? PlanSpawnSpot(nextBoss) : Position();
+            auto const nearestTo = [](Position const& at, std::vector<Position> const& line)
+            {
+                if (line.size() == 1)
+                    return at.GetExactDist(line.front());
+                size_t sample = 0;
+                size_t leg = 1;
+                std::vector<G3D::Vector3> const point{
+                    G3D::Vector3(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ())};
+                return TrackNearestLeg(point, line, sample, leg);
+            };
+            std::vector<Position> ahead{start};
+            for (PlannedStop const& stop : kept)
+                if (!stop.patrol)
+                    ahead.push_back(stop.spot);
+            if (toBoss)
+                ahead.push_back(bossSpot);
+            JsonArray behindLog;
+            auto const isOld = [&planned](PlannedStop const& pack)
+            {
+                return std::any_of(pack.mobs.begin(), pack.mobs.end(),
+                                   [&planned](ObjectGuid const& guid) { return planned.count(guid) != 0; });
+            };
+            for (auto pack = packs.begin(); pack != packs.end();)
+            {
+                bool behind = std::all_of(pack->mobs.begin(), pack->mobs.end(), [&route](ObjectGuid const& guid)
+                                          { return route.planBehind.count(guid) != 0; });
+                if (!behind && !fresh && !isOld(*pack) && !route.routePlanDone.empty())
+                {
+                    Creature* anchor = map->GetCreature(pack->anchor);
+                    float const back = nearestTo(pack->spot, route.routePlanDone);
+                    float const forward = nearestTo(pack->spot, ahead);
+                    float const far = start.GetExactDist(pack->spot);
+                    bool const pastCleared =
+                        std::any_of(route.routePlanDone.begin(), route.routePlanDone.end(),
+                                    [&](Position const& done)
+                                    { return start.GetExactDist(done) < far && done.GetExactDist(pack->spot) < far; });
+                    behind = anchor && back >= 0.0f && forward >= 0.0f && back < forward && pastCleared &&
+                             forward > AggroReach(anchor, leader);
+                    if (behind)
+                    {
+                        route.planBehind.insert(pack->mobs.begin(), pack->mobs.end());
+                        behindLog.Raw(JsonObject()
+                                          .Str("stop", PlanStopName(map, *pack))
+                                          .Real("back", back)
+                                          .Real("ahead", forward)
+                                          .Real("reach", AggroReach(anchor, leader))
+                                          .Real("fromTank", far)
+                                          .Build());
+                        LOG_INFO("playerbots", "[lead1283] {}: {} is behind the group ({:.0f} yd from the cleared "
+                                 "walk, {:.0f} yd from the walk ahead): no stop",
+                                 group.Run().runId, PlanStopName(map, *pack), back, forward);
+                    }
+                }
+                pack = behind ? packs.erase(pack) : std::next(pack);
+            }
+            // a join keeps the plan's order: the new packs go where they add the least walk
+            bool const insertOnly = joinOnly && !fresh && !kept.empty();
+
             route.routePlan.clear();
             route.routePlanMeets.clear();
             route.routePlanBoss = bossGuid;
             route.routePlanWhy = why;
             route.routePlanLength = 0.0f;
             // the stops: the leader where it stands, the packs, the next boss last
-            Position const start = leader->GetPosition();
             std::vector<PlannedStop> stops;
             JsonArray unreachable;
             std::vector<float> fromLeader;
+            if (insertOnly)
+            {
+                // the plan's stops in their order, each with its pack as it is now (a mob that joined it included)
+                std::vector<bool> used(packs.size(), false);
+                for (PlannedStop const& old : kept)
+                {
+                    if (old.patrol)
+                        continue;
+                    for (size_t i = 0; i < packs.size(); ++i)
+                        if (!used[i] && std::any_of(old.mobs.begin(), old.mobs.end(), [&](ObjectGuid const& guid)
+                                                    {
+                                                        return std::find(packs[i].mobs.begin(), packs[i].mobs.end(),
+                                                                         guid) != packs[i].mobs.end();
+                                                    }))
+                        {
+                            used[i] = true;
+                            route.routePlan.push_back(packs[i]);
+                            break;
+                        }
+                }
+                auto const legWalk = [&](size_t at, PlannedStop const& stop)  // into the gap before route.routePlan[at]
+                {
+                    float const in = at == 0 ? PlanWalkLength(leader, start, stop.spot)
+                                             : PlanWalkBetween(group, leader, route.routePlan[at - 1].anchor,
+                                                               route.routePlan[at - 1].spot, stop.anchor, stop.spot);
+                    bool const last = at == route.routePlan.size();
+                    if (last && !toBoss)
+                        return in;
+                    ObjectGuid const nextGuid = last ? bossGuid : route.routePlan[at].anchor;
+                    Position const& nextSpot = last ? bossSpot : route.routePlan[at].spot;
+                    float const out = PlanWalkBetween(group, leader, stop.anchor, stop.spot, nextGuid, nextSpot);
+                    float const was =
+                        at == 0 ? PlanWalkLength(leader, start, nextSpot)
+                                : PlanWalkBetween(group, leader, route.routePlan[at - 1].anchor,
+                                                  route.routePlan[at - 1].spot, nextGuid, nextSpot);
+                    return in < 0.0f || out < 0.0f ? -1.0f : in + out - std::max(was, 0.0f);
+                };
+                for (size_t i = 0; i < packs.size(); ++i)
+                {
+                    if (used[i])
+                        continue;
+                    if (PlanWalkLength(leader, start, packs[i].spot) < 0.0f)
+                    {
+                        unreachable.Str(PlanStopName(map, packs[i]));
+                        continue;
+                    }
+                    float bestAdd = -1.0f;
+                    size_t bestAt = route.routePlan.size();
+                    for (size_t at = 0; at <= route.routePlan.size(); ++at)
+                        if (float const add = legWalk(at, packs[i]); add >= 0.0f && (bestAdd < 0.0f || add < bestAdd))
+                        {
+                            bestAdd = add;
+                            bestAt = at;
+                        }
+                    route.routePlan.insert(route.routePlan.begin() + bestAt, packs[i]);
+                }
+            }
             for (PlannedStop& pack : packs)
             {
+                if (insertOnly)
+                    break;
                 float const walk = PlanWalkLength(leader, start, pack.spot);
                 if (walk < 0.0f)
                 {
@@ -1666,11 +1806,9 @@ namespace Leader::Travel
                 fromLeader.push_back(walk);
                 stops.push_back(pack);
             }
-            bool const toBoss = nextBoss && nextBoss->IsAlive();
             size_t const count = stops.size() + 1 + (toBoss ? 1 : 0);
             float const inf = std::numeric_limits<float>::infinity();
             std::vector<std::vector<float>> cost(count, std::vector<float>(count, inf));
-            Position const bossSpot = toBoss ? PlanSpawnSpot(nextBoss) : Position();
             for (size_t i = 0; i < stops.size(); ++i)
             {
                 cost[0][i + 1] = fromLeader[i];
@@ -1688,20 +1826,43 @@ namespace Leader::Travel
                     cost[i + 1][count - 1] = cost[count - 1][i + 1] = walk < 0.0f ? inf : walk;
                 }
             }
-            if (toBoss)
+            if (toBoss && !insertOnly)
             {
                 float const walk = PlanWalkLength(leader, start, bossSpot);
                 cost[0][count - 1] = cost[count - 1][0] = walk < 0.0f ? inf : walk;
             }
             float length = 0.0f;
-            std::vector<size_t> const order = ShortestTour(cost, toBoss, length);
             std::vector<Position> spots{start};
-            for (size_t node : order)
-                if (node >= 1 && node <= stops.size())
+            if (insertOnly)
+            {
+                for (size_t i = 0; i < route.routePlan.size() && std::isfinite(length); ++i)
                 {
-                    route.routePlan.push_back(stops[node - 1]);
-                    spots.push_back(stops[node - 1].spot);
+                    float const walk = i == 0 ? PlanWalkLength(leader, start, route.routePlan[i].spot)
+                                              : PlanWalkBetween(group, leader, route.routePlan[i - 1].anchor,
+                                                                route.routePlan[i - 1].spot, route.routePlan[i].anchor,
+                                                                route.routePlan[i].spot);
+                    length = walk < 0.0f ? inf : length + walk;
+                    spots.push_back(route.routePlan[i].spot);
                 }
+                if (toBoss && std::isfinite(length))
+                {
+                    float const walk = route.routePlan.empty()
+                                           ? PlanWalkLength(leader, start, bossSpot)
+                                           : PlanWalkBetween(group, leader, route.routePlan.back().anchor,
+                                                             route.routePlan.back().spot, bossGuid, bossSpot);
+                    length = walk < 0.0f ? inf : length + walk;
+                }
+            }
+            else
+            {
+                std::vector<size_t> const order = ShortestTour(cost, toBoss, length);
+                for (size_t node : order)
+                    if (node >= 1 && node <= stops.size())
+                    {
+                        route.routePlan.push_back(stops[node - 1]);
+                        spots.push_back(stops[node - 1].spot);
+                    }
+            }
             if (toBoss)
                 spots.push_back(bossSpot);
             route.routePlanLength = std::isfinite(length) ? length : -1.0f;
@@ -1763,9 +1924,13 @@ namespace Leader::Travel
                 PlannedStop const& stop = route.routePlan[i];
                 float const leg = spots[i].GetExactDist(spots[i + 1]);
                 walked += leg;
+                JsonArray lows;  // [lead1284] the stop's mobs (the triage's route_back matches stops by them)
+                for (ObjectGuid const& guid : stop.mobs)
+                    lows.Num(int64(guid.GetCounter()));
                 planOrder.Raw(JsonObject()
                               .Str("stop", PlanStopName(map, stop))
                               .Bool("walker", stop.patrol)
+                              .Raw("mobs", lows.Build())
                               .Real("x", stop.spot.GetPositionX())
                               .Real("y", stop.spot.GetPositionY())
                               .Real("z", stop.spot.GetPositionZ())
@@ -1779,7 +1944,9 @@ namespace Leader::Travel
                                              .Num("stops", int64(route.routePlan.size()))
                                              .Raw("order", planOrder.Build())
                                              .Raw("meets", meets.Build())
-                                             .Raw("noWalk", unreachable.Build()));
+                                             .Raw("noWalk", unreachable.Build())
+                                             .Str("mode", insertOnly ? "insert" : "tour")
+                                             .Raw("behind", behindLog.Build()));
             LOG_INFO("playerbots", "[lead204] {}: route plan ({}): {} stops to {}, {:.0f} yd", group.Run().runId, why,
                      route.routePlan.size(), nextBoss ? nextBoss->GetName() : std::string("no boss"),
                      route.routePlanLength);
@@ -3866,6 +4033,21 @@ namespace Leader::Travel
                     !gateKeyHeld(creature) && !(nextBoss && CallsBossForHelp(creature, nextBoss)))
                     planMobs.push_back(creature);
             planNext = PlannedNext(group, leader, nextBoss, planMobs, planStep);
+            // [lead1283] a pack behind the group is off the path: neither the route's pick nor the leader's
+            std::set<ObjectGuid> const& behindGuids = group.Route().planBehind;
+            if (!behindGuids.empty())
+                hostiles.erase(std::remove_if(hostiles.begin(), hostiles.end(),
+                                              [&](auto const& entry)
+                                              {
+                                                  Creature* creature = entry.second;
+                                                  if (!behindGuids.count(creature->GetGUID()) || creature->IsInCombat())
+                                                      return false;
+                                                  group.Route().pathVerdicts[creature->GetGUID()] = {
+                                                      false, "behind the group (the plan's cleared walk)", -1.0f,
+                                                      0.0f};
+                                                  return true;
+                                              }),
+                               hostiles.end());
         }
         else if (!group.Route().routePlan.empty() || !group.Route().routePlanMeets.empty())
         {
