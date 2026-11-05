@@ -6333,9 +6333,22 @@ namespace Leader::Dungeon
             if (!moved && combat && lead.runHold.count(guid))
             {
                 Leader::MemberEvents held;
+                // [lead1300] b252 rfc-h 5A-9 286-340 s: the healer's run "into the mob's reach" (a Ragefire Shaman
+                // 12 yd below its ledge that could not reach it) was held 50 s after the Shaman had left it - its walk
+                // down went 160 yd round the cave, woke two packs and the group wiped. That run holds only while its
+                // reason does: the mob still on the member and still unable to reach it
+                auto const reasonHolds = [&]()
+                {
+                    if (held.moveWhy != "aggro loss: into the mob's reach")
+                        return true;
+                    auto const on = looseOn.find(guid);
+                    Creature* const mob = on != looseOn.end() ? on->second->ToCreature() : nullptr;
+                    return mob && mob->CanNotReachTarget() && mob->GetCannotReachTarget() == guid;
+                };
                 if (Leader::Events::Get(guid, held) && held.move == Leader::MoveEvent::MoveTo &&
                     (held.moveWhy == "aggro loss: to the tank" ||
                      held.moveWhy == "aggro loss: into the mob's reach") &&  // [lead430]
+                    reasonHolds() &&
                     bot->GetExactDist2d(held.spot.GetPositionX(), held.spot.GetPositionY()) > held.tolerance)
                 {
                     Leader::Events::SetMove(guid, held.move, held.spot, held.tolerance, held.moveWhy);
@@ -6384,15 +6397,51 @@ namespace Leader::Dungeon
                                      runEvents.spot.GetExactDist(spot) <= 1.5f;
                 if (running)
                     spot = runEvents.spot;
-                lead.runHold.insert(guid);
-                if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: into the mob's reach") &&
-                    !running)
-                    logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
-                             JsonObject().Str("why", "aggro loss: into the mob's reach")
-                                 .Str("mob", loose->second->GetName()).Real("gap", bot->GetExactDist(loose->second)));
-                if (bot == healer)
-                    healerAt = spot;
-                moved = true;
+                // [lead1300] the run's whole walk keeps the heal reach (the healer's to the tank, any other member's
+                // to the healer), as every other position order's spot does: a walk round the cave is no run into the
+                // mob's reach. Judged when the run is issued; refused, the member keeps to the rules below
+                bool walkKeeps = running;
+                if (!running)
+                {
+                    Leader::RouteResult const route = Leader::Route(bot, spot);
+                    walkKeeps = route.found;
+                    Position const tankAt = tankFightAt();
+                    for (G3D::Vector3 const& point : route.points)
+                    {
+                        Position const at(point.x, point.y, point.z);
+                        bool const keeps = bot == healer ? at.GetExactDist(tankAt) <= Leader::LEADER_HEALER_TANK_YD &&
+                                                               reaches(at, tankAt)
+                                                         : keepsHealer(at);
+                        if (!keeps)
+                        {
+                            walkKeeps = false;
+                            break;
+                        }
+                    }
+                    if (!walkKeeps && lead.looseRunRefused.insert({guid, looseCreature->GetGUID()}).second)
+                        Decisions().Write(run, "leader", "loose_run_refused", guid, bot->GetName(), true,
+                                          JsonObject()
+                                              .Str("member", bot->GetName())
+                                              .Str("mob", looseCreature->GetName())
+                                              .Bool("routeFound", route.found)
+                                              .Num("routePoints", int64(route.points.size()))
+                                              .Str("why", route.found ? "the walk to the mob leaves the heal reach"
+                                                                      : "no walk to the mob")
+                                              .Str("tag", "[lead1300]"));
+                }
+                if (walkKeeps)
+                {
+                    lead.runHold.insert(guid);
+                    if (checkedMove(guid, Leader::MoveEvent::MoveTo, spot, 1.5f, "aggro loss: into the mob's reach") &&
+                        !running)
+                        logEvent(bot, MoveEventName(Leader::MoveEvent::MoveTo),
+                                 JsonObject().Str("why", "aggro loss: into the mob's reach")
+                                     .Str("mob", loose->second->GetName())
+                                     .Real("gap", bot->GetExactDist(loose->second)));
+                    if (bot == healer)
+                        healerAt = spot;
+                    moved = true;
+                }
             }
             if (!moved && loose != looseOn.end() && !inPickUp && !LooseStandsOff(loose->second, bot))
             {

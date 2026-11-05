@@ -486,6 +486,7 @@ namespace Leader
         std::map<ObjectGuid, uint32> tauntLogged;  // [lead54] the pick-up spell last issued per loose mob
         std::map<ObjectGuid, uint32> threatDoneFor;  // [lead56] the pick-up cast the tank reported, per mob
         std::set<ObjectGuid> runHold;                // [lead59] an aggro-loss run holds until it arrived
+        std::set<std::pair<ObjectGuid, ObjectGuid>> looseRunRefused;  // [lead1300] (member, mob) logged
         bool healStarted = false;                    // [lead61] the leader's Heal went out in this fight
         uint32 fightStartMs = 0;                     // [lead67] the fight's start (threat_lead marks)
         std::map<std::string, uint32> dupesBlocked;  // [lead69] command_dupe_blocked per member
