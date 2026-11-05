@@ -23,6 +23,8 @@
 #include "Playerbots.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "TemporarySummon.h"
 #include "Timer.h"
 #include <algorithm>
@@ -71,6 +73,10 @@ struct HazardSpec
     // [b44_st] creatures only: a chaser nobody can hold or kill; its victim keeps KITE_VICTIM_EXTRA more away and
     // walks round it (Circle::kite)
     bool kiteVictim = false;
+    // [lead1483] creatures only: the spell that hits inside (its normal rank; the caster's difficulty picks the
+    // heroic one) and how its hits come (blastsOf: the ms they still come and between them), for the leader's verdict
+    uint32 spell = 0;
+    void (*blastsOf)(Creature* creature, int32& leftMs, uint32& periodMs) = nullptr;
 };
 
 enum DungeonHazardIds : uint32
@@ -93,6 +99,7 @@ enum DungeonHazardIds : uint32
     MAP_PIT_OF_SARON = 658,
     MAP_OCULUS = 578,
     MAP_STEAMVAULT = 545,
+    MAP_AUCHENAI_CRYPTS = 558,  // [lead1483]
     // [boss_puddles] maps whose boss ground effects were added from the BOSS_PUDDLES.md audit
     MAP_SHATTERED_HALLS = 540,
     MAP_OLD_HILLSBRAD = 560,
@@ -303,6 +310,13 @@ enum DungeonHazardIds : uint32
     // until it fades (st-n 20261025-184229-st-n-5F-11: rogue, druid healer twice and warlock died to it in melee).
     NPC_DEATHWALKER_SPIRIT = 8317,
     NPC_DEATHWALKER_SPIRIT_HEROIC = 708317,
+    // [lead1483] Auchenai Crypts, Shirrak the Dead Watcher's Focus Fire (boss_shirrak_the_dead_watcher.cpp): a flare
+    // summoned on a random player (TEMPSUMMON_TIMED_DESPAWN 7000 ms); 3, 3.5 and 4 s after it his Focus Cast (32300)
+    // hits the flare and the flare casts Fiery Blast (32302, heroic 38382 by SpellDifficulty) on itself: 12 yd
+    // (Spell.dbc radius), school damage. b269 ac-h 5G-15 382 s: the arms warrior died in it (killer 18374) - the
+    // leader saw no hazard (no aura, no cast bar, no area aura: only the boss script knows the blasts)
+    NPC_FOCUS_FIRE = 18374,
+    SPELL_FIERY_BLAST = 32302,
 };
 
 constexpr int32 NETHER_CHARGE_ARMED_MS = 9500;  // timer aura left once the charge has stopped wandering
@@ -347,6 +361,12 @@ constexpr float CHASE_TANK_MAX_DISTANCE = 60.0f;
 // on the resto druid; it stepped 3 yd out of the 8 yd circle at a time, "move to tank" (chased away from tank) led it
 // back past them twice, and it died from 77 % within a second.
 constexpr float KITE_VICTIM_EXTRA = 6.0f;
+// [lead1483] the flare's life and its blasts (boss_shirrak_the_dead_watcher.cpp: SummonCreature ... 7000, the Focus
+// Cast schedules at 3000 / 3500 / 4000 ms) and Fiery Blast's radius (Spell.dbc 32302 / 38382: 12 yd)
+constexpr uint32 FOCUS_FIRE_LIFE_MS = 7000;
+constexpr uint32 FOCUS_FIRE_LAST_BLAST_MS = 4000;
+constexpr uint32 FOCUS_FIRE_BLAST_EVERY_MS = 500;
+constexpr float FIERY_BLAST_RADIUS = 12.0f;
 
 bool NetherChargeArmed(Creature* charge, Player* /*bot*/)
 {
@@ -537,7 +557,29 @@ float BroggokCloudRadius(Creature* cloud)
     return BROGGOK_CLOUD_BASE_RADIUS * (progress * 0.9f + 0.1f) * 2.0f / 3.0f;
 }
 
-constexpr std::array<HazardSpec, 65> HAZARDS = {{  // [b33_pos] +2 Icy Blast, [b33_ok] +1 Poisonous Mushroom
+// [lead1483] the flare's ms since its summon (its despawn timer counts down from its 7 s life)
+uint32 FocusFireAgeMs(Creature* flare)
+{
+    TempSummon* summon = flare->ToTempSummon();
+    uint32 const timer = summon ? summon->GetTimer() : 0;
+    return timer < FOCUS_FIRE_LIFE_MS ? FOCUS_FIRE_LIFE_MS - timer : 0;
+}
+
+// a hazard until its last blast has landed
+bool FocusFireArmed(Creature* flare, Player* /*bot*/) { return FocusFireAgeMs(flare) <= FOCUS_FIRE_LAST_BLAST_MS; }
+
+// the blasts still to come: until the last one, every 500 ms (the first lands 3 s after the summon: the walk out
+// starts now, the hits are counted to the last)
+void FocusFireBlasts(Creature* flare, int32& leftMs, uint32& periodMs)
+{
+    leftMs = int32(FOCUS_FIRE_LAST_BLAST_MS) - int32(FocusFireAgeMs(flare));
+    periodMs = FOCUS_FIRE_BLAST_EVERY_MS;
+}
+
+// [b33_pos] +2 Icy Blast, [b33_ok] +1 Poisonous Mushroom, [lead1483] +1 Focus Fire
+constexpr std::array<HazardSpec, 66> HAZARDS = {{
+    {MAP_AUCHENAI_CRYPTS, HazardSource::Creature, NPC_FOCUS_FIRE, FIERY_BLAST_RADIUS, HazardRoles::All, &FocusFireArmed,
+     true, false, false, nullptr, nullptr, false, SPELL_FIERY_BLAST, &FocusFireBlasts},
     {MAP_MECHANAR, HazardSource::Creature, NPC_NETHER_CHARGE, 15.0f, HazardRoles::All, &NetherChargeArmed},
     // The exploding Sentinel turns into a Destroyed Sentinel on the spot: leave by the larger radius at once.
     {MAP_ARCATRAZ, HazardSource::Creature, NPC_ARCATRAZ_SENTINEL, SENTINEL_DISCHARGE_RADIUS, HazardRoles::All,
@@ -844,6 +886,16 @@ std::vector<Circle> Collect(Player* bot)
                                      (kite ? KITE_VICTIM_EXTRA : 0.0f);
                 circles.push_back({creature->GetPositionX(), creature->GetPositionY(), radius + size, hold,
                                    chasing, kite});
+                // [lead1483] the spell that hits inside (the caster's difficulty rank) and when, for the verdict
+                if (spec.spell)
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spec.spell))
+                    {
+                        SpellInfo const* rank = sSpellMgr->GetSpellForDifficultyFromSpell(info, creature);
+                        circles.back().spellId = (rank ? rank : info)->Id;
+                        circles.back().caster = creature->GetGUID();
+                        if (spec.blastsOf)
+                            spec.blastsOf(creature, circles.back().leftMs, circles.back().periodMs);
+                    }
                 AppendFlameSpherePath(creature, radius + size, hold, circles);  // [b32_pull]
                 break;
             }

@@ -10,6 +10,7 @@
 #include "DungeonTactics.h"
 #include "Multiplier.h"
 #include "NamedObjectContext.h"
+#include "ObjectGuid.h"
 #include "TbcHazard.h"
 #include "Trigger.h"
 #include "Value.h"
@@ -38,6 +39,12 @@ struct Circle
     // [b44_st] A mob chasing this bot that nobody can take over or kill (the Atal'ai Deathwalker's Spirit): the circle
     // is grown by the mob's walk, and no reposition action leads the bot past it (DungeonHazardHoldMultiplier).
     bool kite = false;
+    // [lead1483] what hits inside, for the leader's stay-or-leave verdict (LeaderHazardVerdict): the spell (the
+    // caster's difficulty rank; 0: unknown), its caster, the ms its hits still come (-1: for good) and between them
+    uint32 spellId = 0;
+    ObjectGuid caster;
+    int32 leftMs = -1;
+    uint32 periodMs = 0;
 };
 
 // Hazards of the bot's map that apply to its role, within the scan range (grid search; read the cached value).

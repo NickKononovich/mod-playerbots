@@ -1051,10 +1051,17 @@ namespace Leader::Fight
                                caster->GetGUID(), dyn->GetDuration(), periodMs});
             }
         }
+        // [lead1483] a dungeon hazard that names its spell (Shirrak's Focus Fire: Fiery Blast) is judged by it: its
+        // damage from spell data and the rescale (LeaderHazardVerdict), its hits still to come
         for (DungeonHazard::Circle const& circle : DungeonHazard::Collect(bot))
             if (!circle.chasing)
+            {
+                SpellInfo const* info = circle.spellId ? sSpellMgr->GetSpellInfo(circle.spellId) : nullptr;
                 out.push_back({Position(circle.x, circle.y, bot->GetPositionZ()), circle.radius,
-                               "dungeon hazard"});
+                               info ? std::string("dungeon hazard: ") + info->SpellName[LOCALE_enUS]
+                                    : std::string("dungeon hazard"),
+                               ObjectGuid::Empty, circle.spellId, circle.caster, circle.leftMs, circle.periodMs});
+            }
     }
 
     // the circle of `zones` that holds (x, y, z) (with `extra` around it), nullptr: none

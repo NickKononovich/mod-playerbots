@@ -2001,7 +2001,10 @@ namespace Leader::Dungeon
                         verdict = "-";
                     else if (!isTank && PlayerbotAI::IsHeal(member))
                         verdict = "a healer heals";
-                    else if (!isTank && unseen->GetVictim() != member &&
+                    // [lead1483] b269 ac-h 5B-10 665 s: the invisible Phasing Soldier killed the holy paladin (its
+                    // victim) 27 yd off the tank, the tank's threat on it 0. The headroom keeps a mob on the tank;
+                    // one on another member is taken off that member by any damage dealer's area
+                    else if (!isTank && unseen->GetVictim() == tank &&
                              unseen->GetThreatMgr().GetThreat(member) >= unseen->GetThreatMgr().GetThreat(tank))
                         verdict = "no threat headroom under the tank";
                     else
