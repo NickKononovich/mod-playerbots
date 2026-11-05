@@ -838,6 +838,38 @@ namespace Leader::Dungeon
             }
             return "[lead1084] the buff pass before " + boss->GetName() + " first";
         };
+        // [lead1370] b259 rfc-h 5H-16 301.4-539 s (stalled): boss_pull_waits and commit_wait said "a member cannot
+        // follow (trailing / its walk blocked)" and named nobody - the five stood within 3 yd of the tank. The wait
+        // names the member it holds for, what holds it (trails / the mob its walk would wake / no mob named) and
+        // its live order (what moves it: the member loop's Follow for a trailing one, the blocking mob's pull for a
+        // blocked one, lead364). `counts`: the blocks this wait reads (the commit's: those outside its pull)
+        std::string waitMember;  // [lead1370] the member the last cannotFollow named (the decision line's "member")
+        auto const cannotFollow = [&](auto const& counts) -> std::string
+        {
+            waitMember.clear();
+            auto const named = [&](ObjectGuid member, std::string const& holdsIt) -> std::string
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member);
+                waitMember = bot ? bot->GetName() : std::string("a member not in the world");
+                Leader::MemberEvents live;
+                std::string const order = Leader::Events::Get(member, live) && !live.moveWhy.empty()
+                                              ? live.moveWhy
+                                              : std::string("no move order");
+                return "a member cannot follow (trailing / its walk blocked): " + waitMember + " " + holdsIt +
+                       "; its order: " + order;
+            };
+            if (!lead.trailing.empty())
+                return named(*lead.trailing.begin(), "trails the group");
+            for (auto const& blocked : lead.groupBlockedBy)
+            {
+                if (!counts(blocked))
+                    continue;
+                Creature* mob = blocked.second.IsEmpty() || !map ? nullptr : map->GetCreature(blocked.second);
+                return named(blocked.first, mob ? "its walk would wake " + mob->GetName()
+                                                : std::string("its walk blocked (no mob named)"));
+            }
+            return std::string();
+        };
 
         // The issued decision's pull_order line: one per new order (another mob or kind), or again after
         // PULL_ORDER_LOG_MS. `pickWhy`: [lead5] what the leader's pick was.
@@ -1437,11 +1469,9 @@ namespace Leader::Dungeon
                     }
                     return false;
                 };
-                bool const blockedOutside =
-                    std::any_of(lead.groupBlockedBy.begin(), lead.groupBlockedBy.end(),
-                                [&ofThisPull](auto const& blocked) { return !ofThisPull(blocked.second); });
-                if (waitFor.empty() && (!lead.trailing.empty() || blockedOutside))
-                    waitFor = "a member cannot follow (trailing / its walk blocked)";
+                // [lead1370] the wait names its member (cannotFollow)
+                if (waitFor.empty())
+                    waitFor = cannotFollow([&ofThisPull](auto const& blocked) { return !ofThisPull(blocked.second); });
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
@@ -1469,7 +1499,8 @@ namespace Leader::Dungeon
                         lead.commitWaitKey = key;
                         Decisions().Write(run, "leader", "commit_wait", lead.commitMob,
                                           mob ? mob->GetName() : std::string(), true,
-                                          JsonObject().Str("why", waitFor).Str("kind", committed.kind)
+                                          JsonObject().Str("why", waitFor).Str("member", waitMember)
+                                              .Str("kind", committed.kind)
                                               .Real("sec", getMSTimeDiff(lead.commitSinceMs, now) / 1000.0f)
                                               .Str("tag", "[lead1270]"));
                     }
@@ -1530,12 +1561,13 @@ namespace Leader::Dungeon
             // ("Rtpalaa at 71 % mana"), the order stood without a target and the tank idled 50 s. The leader checks
             // the boss readiness (the planner's own BossReadyGap) BEFORE it issues; not ready: no order - the group
             // rests to its boss top-up line (the Rest commands) and the boss pull comes when it is ready
+            waitMember.clear();  // [lead1370] the commit's wait above named its own
             std::string notReady = boss ? PullReadiness::BossNotReady(tank, boss) : std::string();
             if (boss && notReady.empty())
                 notReady = bossPassHold(boss);  // [lead1090] his buff pass first (opened at once)
             // [lead77] b120 537.5 s: "boss pulled where it stands" with the group ~100 yd away
-            if (boss && notReady.empty() && (!lead.trailing.empty() || !lead.groupBlockedBy.empty()))
-                notReady = "a member cannot follow (trailing / its walk blocked)";
+            if (boss && notReady.empty())  // [lead1370] the wait names its member (cannotFollow)
+                notReady = cannotFollow([](auto const&) { return true; });
             if (boss && notReady.empty())  // [lead773] the rogue's pre-pull Stealth before the boss pull goes
                 notReady = Leader::Prepull::StealthHolds(group, boss);
             if (boss && !notReady.empty())
@@ -1545,7 +1577,7 @@ namespace Leader::Dungeon
                 {
                     lead.bossWaitWhy = notReady;
                     Decisions().Write(run, "leader", "boss_pull_waits", boss->GetGUID(), boss->GetName(),
-                                                  true, JsonObject().Str("why", notReady));
+                                                  true, JsonObject().Str("why", notReady).Str("member", waitMember));
                 }
             }
             else if (boss && PullPlanner::BossPullDecision(tank, boss, why, bossPull))

@@ -3560,7 +3560,26 @@ namespace Leader::Dungeon
                                blocked.move == Leader::MoveEvent::StandAt &&
                                blocked.moveWhy.rfind("along with the tank", 0) == 0 &&
                                blocked.moveWhy.find(": stays (") != std::string::npos;
-            if (holds)
+            // [lead1370] b259 rfc-h 5H-16 296.6-539 s: a block naming no mob held Rtdruaf, 3 yd from the tank, and
+            // the boss pull waited on it to the stall. A block naming no mob holds a member that has a walk to make:
+            // one standing where the walk along with the tank does not walk it (in its sight, within the Follow's own
+            // start distance) is with the group - its refused report is dropped, the next walk along with the tank
+            // is judged afresh when the tank moves (the member loop's Follow)
+            Player const* blockedBot = holds && it->second.IsEmpty() ? ObjectAccessor::FindPlayer(it->first) : nullptr;
+            bool const withGroup = blockedBot && blockedBot->GetMap() == tank->GetMap() &&
+                                   blockedBot->GetExactDist(tank) <= LEADER_FOLLOW_START_YD &&
+                                   blockedBot->IsWithinLOSInMap(tank);
+            if (withGroup)
+            {
+                Leader::Events::ClearMoveRefused(it->first);
+                Decisions().Write(run, "leader", "group_block_ended", it->first, blockedBot->GetName(), true,
+                                  JsonObject()
+                                      .Str("member", blockedBot->GetName())
+                                      .Str("why", "with the group: no mob in its way, no walk to make")
+                                      .Real("gap", blockedBot->GetExactDist(tank))
+                                      .Str("tag", "[lead1370]"));
+            }
+            if (holds && !withGroup)
                 ++it;
             else
             {
@@ -8246,7 +8265,14 @@ namespace Leader::Dungeon
                     // [lead369] b200 5G 632-862 s: Rtdekad 1.5 yd from the tank shifted over 1 yd, the report was
                     // dropped, the Follow went out again and was refused again - 56 Follows in 28 s. The report's
                     // facts stand while nobody moved off them by the leader's own "moved" measure
+                    // [lead1370] b259 rfc-h 5H-16 296.0-539 s (stalled): Rtdruaf's fight walk "chase: behind the
+                    // target" (a Follow of the Ragefire Shaman) was refused as the Shaman died; out of the fight the
+                    // report was read as its walk along with the tank refused - "stays" and group_blocked with no
+                    // mob named, standing 3 yd from the tank - and the Oggleflint pull waited "a member cannot
+                    // follow" on it until the stall. Out of a fight only a refused Follow of the tank (the walk
+                    // along with the tank) is the group's block; a fight walk's refusal ended with its fight
                     bool const holds =
+                        followRefusal.why.rfind("along with the tank", 0) == 0 &&
                         bot->GetExactDist(followRefusal.from) <= Leader::LEADER_COMMIT_MOVED_YD &&
                         tank->GetExactDist(followRefusal.targetAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
                         (followRefusal.mob.IsEmpty() ||
