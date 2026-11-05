@@ -165,6 +165,16 @@ bool LeaderExternalAction::isUseful()
 {
     uint32 spell = 0;
     ObjectGuid target;
+    // [lead1320] the leader's order ended by its own condition (a mob attacks the member): logged once per stretch
+    {
+        Leader::MemberEvents command;
+        bool const voided = LeaderCommand::CurrentCommand(bot, command) && command.externalSpell &&
+                            command.externalUnattacked && !bot->getAttackers().empty();
+        if (voided && !externalVoidLogged)
+            LOG_INFO("playerbots", "[lead1320] {}: the leader's External {} ends: {} mobs attack it", bot->GetName(),
+                     command.externalSpell, bot->getAttackers().size());
+        externalVoidLogged = voided;
+    }
     // [lead691] a movement aura of its own already up: nothing to cast (the leader withdraws the order)
     return LeaderCommand::AssignedExternal(bot, spell, target) && spell && bot->HasSpell(spell) &&
            !Leader::Fight::LeaderMoveSkillUp(bot, spell, target) && ExternalUnit(botAI, spell, target);

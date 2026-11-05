@@ -6132,8 +6132,10 @@ namespace Leader::Dungeon
                         std::string const picked = way;
                         // the taps go while its health is at or above its health line; below it the healer's top-up
                         // (lead945: a Life Tap warlock under its line) brings it back first - no tap into a pull
+                        // [lead1320] the order carries the leader's own condition (no mob attacks the warlock): one
+                        // attack between the leader's ticks ends it before the member casts it
                         if (picked == "life tap" && bot->GetHealthPct() >= RestState::HealthLine(bot) &&
-                            Leader::Events::SetExternal(guid, tapSpell, ObjectGuid::Empty))
+                            Leader::Events::SetExternal(guid, tapSpell, ObjectGuid::Empty, 0, true))
                             logEvent(bot, "External", JsonObject().Num("spell", tapSpell).Str("on", bot->GetName())
                                                           .Str("why", note));
                         if (byTool && tool.item &&

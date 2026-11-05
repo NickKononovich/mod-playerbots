@@ -961,7 +961,7 @@ namespace Leader
             return changed;
         }
 
-        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence)
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence, bool unattackedOnly)
         {
             std::lock_guard<std::mutex> lock(eventLock);
             Slot& slot = eventSlots[member];
@@ -978,6 +978,7 @@ namespace Leader
                 e.externalSpell != spell || e.externalTarget != target;
             e.externalSpell = spell;
             e.externalTarget = target;
+            e.externalUnattacked = spell && unattackedOnly;  // [lead1320]
             e.externalMs = slot.gen;
             if (changed)
                 ++e.seq;
@@ -1204,6 +1205,7 @@ namespace Leader
                 Dropped(slot, DOMAIN_EXTERNAL);
                 e.externalSpell = 0;
                 e.externalTarget.Clear();
+                e.externalUnattacked = false;  // [lead1320]
                 changed = true;
             }
             if (e.ready != ReadyEvent::None && drop(e.readyMs))

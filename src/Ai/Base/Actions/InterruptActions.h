@@ -46,6 +46,8 @@ public:
     bool isPossible() override;
     bool Execute(Event event) override;
     std::vector<NextAction> getPrerequisites() override;
+private:
+    bool externalVoidLogged = false;  // [lead1320] the leader's External ended by its own condition, logged once
 };
 
 // [lead400] The leader's Dispel: the dispel spell it names on the member it names (a debuff of a type the spell

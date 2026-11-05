@@ -105,6 +105,10 @@ namespace LeaderCommand
         Leader::MemberEvents command;
         if (!CurrentCommand(bot, command) || !command.externalSpell)
             return false;
+        // [lead1320] the leader's order holds only while no mob attacks the member (its own condition, Life Tap):
+        // a mob that attacks it between the leader's ticks ends the order there
+        if (command.externalUnattacked && !bot->getAttackers().empty())
+            return false;
         spell = command.externalSpell;
         target = command.externalTarget;
         return true;

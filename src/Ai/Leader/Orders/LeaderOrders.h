@@ -618,6 +618,10 @@ namespace Leader
         uint32 externalSpell = 0;  // an external save / buff the leader tells this member to cast, and on whom
         ObjectGuid externalTarget;
         uint32 externalMs = 0;
+        // [lead1320] the leader's own condition on this External: it holds only while no mob attacks the member (a
+        // hostile unit with it as its victim, Unit::getAttackers()) - Life Tap (user rule: no Life Tap under attack).
+        // An order issued on a free warlock ends the moment a mob attacks it, before the leader's next tick
+        bool externalUnattacked = false;
         uint32 threatSpell = 0;  // the tank: take `threatTarget` back with this (a taunt, else an AoE threat spell;
         ObjectGuid threatTarget; // 0 with a target: just attack it)
         uint32 threatMs = 0;
@@ -750,7 +754,8 @@ namespace Leader
         bool SetCc(ObjectGuid member, ObjectGuid mob);
         bool SetInterrupt(ObjectGuid member, ObjectGuid caster);
         bool SetFleeStop(ObjectGuid member, ObjectGuid mob);  // [lead104]
-        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence = 0);
+        bool SetExternal(ObjectGuid member, uint32 spell, ObjectGuid target, int32 precedence = 0,
+                         bool unattackedOnly = false);  // [lead1320]
         bool SetThreat(ObjectGuid member, uint32 spell, ObjectGuid target);
         bool SetDontAttack(ObjectGuid member, ObjectGuid mob);
         bool SetLoot(ObjectGuid member, bool loot);
