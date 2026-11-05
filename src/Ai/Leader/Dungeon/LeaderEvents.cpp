@@ -2903,12 +2903,24 @@ namespace Leader::Dungeon
         // bear in combat but its AI in the non-combat state ("tank assist" with no target, nothing attacked) and every
         // damage dealer on Stop (the bear's 19 threat on it). A tank in a fight that attacks nothing gets the fight's
         // target from the leader (a loose mob: the loose block above)
+        // [lead1280] b250 rfc-h 5D-12 160-196 s: the fight's last mob was the arcane mage's Polymorph (the leader's Cc
+        // at 145 s); with the other mobs dead it became the fight's target, its hold was released (the Cc block
+        // below: the target is never held) and the bear got this Attack - but the bear's "invalid target" dropped a
+        // polymorphed target every tick, the damage dealers stood on Stop (the tank's threat 0 on it): 34 s of group
+        // idle until the sheep ran out on the mage. The tank's hit breaks the hold (the game: damage breaks
+        // Polymorph) and takes the threat first: the Attack stands every tick while the target is held, so the tank's
+        // own check keeps it (InvalidTargetValue) until the first hit
+        bool const targetHeld = target && IsHeldByCrowdControl(target, 0);
         if (Leader::LEADER_TANK_OWNS_FIGHT && fighting && target && looseOn.empty() && tank->IsAlive() &&
-            tank->IsInCombat() && !(tank->GetVictim() && tank->GetVictim()->IsAlive()) &&
+            tank->IsInCombat() &&
+            (!(tank->GetVictim() && tank->GetVictim()->IsAlive()) || (targetHeld && tank->GetVictim() == target)) &&
             Leader::Events::SetAttack(tank->GetGUID(), Leader::AttackEvent::Attack, target->GetGUID(), {}))
-            logEvent(
-                tank, "Attack",
-                JsonObject().Str("mob", target->GetName()).Str("why", "the tank attacks nothing: the fight's target"));
+            logEvent(tank, "Attack",
+                     JsonObject()
+                         .Str("mob", target->GetName())
+                         .Str("why", targetHeld ? "[lead1280] the tank breaks the group's hold on its mob: "
+                                                  "the fight's target"
+                                                : "the tank attacks nothing: the fight's target"));
 
         // [lead16] LEADER_CC_ASSIGN: the fight's crowd control - which mob, which member. A mob a member already
         // marked for the pack (the pre-pull plan's claim) stays its; more come from the tail of the kill order (never

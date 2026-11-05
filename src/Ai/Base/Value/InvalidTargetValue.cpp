@@ -35,6 +35,20 @@ bool InvalidTargetValue::Calculate()
                    (target->ToCreature() && target->ToCreature()->IsInEvadeMode());
     }
 
+    // [lead1280] b250 rfc-h 5D-12 160-196 s: the led bear dropped the leader's Attack on the fight's last mob, a
+    // Polymorph of the group's mage the leader had released (below: IsPolymorphed), 34 s of group idle. The led tank
+    // keeps a polymorphed target its leader's Attack names: its hit breaks the hold (the game: damage breaks
+    // Polymorph); the leader asserts it only while the hold is no member's Cc any more (LeaderEvents [lead1280])
+    if (target && qualifier == "current target" && target->IsPolymorphed() && PlayerbotAI::IsTank(bot) &&
+        Leader::LedBot(bot))
+    {
+        Leader::MemberEvents events;
+        if (Leader::Events::Get(bot->GetGUID(), events) && events.attack == Leader::AttackEvent::Attack &&
+            events.target == target->GetGUID())
+            return !bot->IsValidAttackTarget(target) || target->IsImmunedToDamage(SPELL_SCHOOL_MASK_ALL) ||
+                   (target->ToCreature() && target->ToCreature()->IsInEvadeMode());
+    }
+
     Unit* enemy = AI_VALUE(Unit*, "enemy player target");
     if (target && enemy && target == enemy && target->IsAlive())
         return false;
