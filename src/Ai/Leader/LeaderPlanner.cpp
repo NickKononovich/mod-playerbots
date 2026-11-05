@@ -761,6 +761,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float strongestHps = 0.0f;
         float healMana = 0.0f;     // health their full mana heals (max mana x health per mana, summed)
         float healReserve = 0.0f;  // health of the mana each keeps back (the config's low mana line)
+        float healUpkeep = 0.0f;   // [lead1431] health per second of fight their measured upkeep's mana would heal
         float healGapSec = 0.0f;   // the shortest time between two heals of one healer landing (0: no healer)
         float tankHealth = 0.0f;   // the health the healers heal (PlanTankHealth)
         std::string healerFacts;   // per healer, logged
@@ -823,6 +824,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 support.strongestHps = std::max(support.strongestHps, facts.hps);
                 support.healMana += facts.maxMana * facts.healPerMana;
                 support.healReserve += facts.maxMana * float(sPlayerbotAIConfig.LowMana) / 100.0f * facts.healPerMana;
+                support.healUpkeep += facts.maxMana * facts.upkeepPctPerSec / 100.0f * facts.healPerMana;
                 if (facts.gapSec > 0.0f)
                     support.healGapSec =
                         support.healGapSec > 0.0f ? std::min(support.healGapSec, facts.gapSec) : facts.gapSec;
@@ -4628,8 +4630,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         if (support.healMana <= 0.0f)
             return -1.0f;
-        return std::min(100.0f * (support.healReserve + TakenCost(estimate) * support.tankHealth) / support.healMana,
-                        100.0f);
+        // [lead1431] the heals' mana per health healed leaves out the healers' upkeep (seals, Beacon of Light, Sacred
+        // Shield, totems, buffs): their measured upkeep over the pull's seconds is on top
+        float const upkeep = support.healUpkeep * std::max(estimate.fightSec, 0.0f);
+        return std::min(
+            100.0f * (support.healReserve + TakenCost(estimate) * support.tankHealth + upkeep) / support.healMana,
+            100.0f);
     }
 
     // [lead258] The pack's average damage on the tank per second: what it lands over the fight (the estimate's
@@ -7070,6 +7076,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             uint64 healed = 0;  // HealingDone::Effective
             float mana = 0.0f;
             uint64 toolMana = 0;  // [lead1400] ManaReturned::FromTools
+            uint64 upkeepMana = 0;  // [lead1431] ManaSpent::Upkeep
         };
         std::vector<HealerStart> healers;  // [lead258] the healers present when the fight began
         float dropScale = 1.0f;            // [lead259] the measured drop ratio `drop` was planned with
@@ -7319,13 +7326,20 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             uint64 const tools = ManaReturned::FromTools(start.healer);
             float const returned = tools > start.toolMana ? float(tools - start.toolMana) : 0.0f;
             float const spent = start.mana - float(healer->GetPower(POWER_MANA)) + returned;
-            RestState::NoteHealing(healer, float(healed - start.healed), spent,
-                                   float(fightMs) / float(IN_MILLISECONDS));
+            // [lead1431] b263 rfc-h 5B-10: the holy paladin's first fight "healed 1299 with 5481 mana" (Seal of
+            // Wisdom, Beacon of Light, Sacred Shield, one Holy Light on a tank that took 102) read 0.24 hp per mana
+            // against 8.26 by spell data, and lead1372 asked 100 % for packs of 0.13-0.31 tank health. A healer's
+            // mana is its upkeep (the casts that heal nothing themselves: ManaSpent::Upkeep, the cost the game took)
+            // over the fight's seconds plus its heals' mana per health healed (Rawr's healer model: the same split)
+            uint64 const upkeepNow = ManaSpent::Upkeep(start.healer);
+            float const upkeep = upkeepNow > start.upkeepMana ? float(upkeepNow - start.upkeepMana) : 0.0f;
+            RestState::NoteHealing(healer, float(healed - start.healed), spent - upkeep,
+                                   float(fightMs) / float(IN_MILLISECONDS), upkeep);
             LOG_DEBUG("playerbots",
                       "[lead258] {}: healer {} healed {} with {:.0f} mana over {:.1f} s ([lead1400] {:.0f} of it "
-                      "its credited returns)",
+                      "its credited returns; [lead1431] {:.0f} upkeep, {:.0f} on heals)",
                       tank->GetName(), healer->GetName(), healed - start.healed, spent,
-                      float(fightMs) / float(IN_MILLISECONDS), returned);
+                      float(fightMs) / float(IN_MILLISECONDS), returned, upkeep, spent - upkeep);
         }
     }
 
@@ -7960,7 +7974,8 @@ namespace PullCheck
                                                                PlayerbotAI::IsHeal(member))
                             record.healers.push_back({member->GetGUID(), HealingDone::Effective(member->GetGUID()),
                                                       float(member->GetPower(POWER_MANA)),
-                                                      ManaReturned::FromTools(member->GetGUID())});
+                                                      ManaReturned::FromTools(member->GetGUID()),
+                                                      ManaSpent::Upkeep(member->GetGUID())});
                 if (record.method.empty())
                 {
                     // Nothing cast first: a pet opened, or a mob came by itself.

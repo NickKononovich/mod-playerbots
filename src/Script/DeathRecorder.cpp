@@ -18,6 +18,7 @@
 #include "Playerbots.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
+#include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -28,8 +29,10 @@
 #include <deque>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <mutex>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -156,6 +159,45 @@ namespace
     };
     std::unordered_map<ObjectGuid, TakenFrom> takenFrom;
     std::unordered_map<ObjectGuid, uint64> toolMana;  // [lead1400] ManaReturned::FromTools, by player
+    std::unordered_map<ObjectGuid, uint64> upkeepMana;  // [lead1431] ManaSpent::Upkeep, by player
+    // [lead1431] an absorb aura's amount at its last apply: (target, caster, spell) -> absorb amount
+    std::map<std::tuple<ObjectGuid, ObjectGuid, uint32>, int32> shieldAmounts;
+
+    // [lead1431] heals the spell data casts through a dummy effect (the cast picks its heal or damage spell), by first
+    // rank: Holy Shock, Penance, Prayer of Mending
+    constexpr uint32 SPELL_HOLY_SHOCK = 20473;
+    constexpr uint32 SPELL_PENANCE = 47540;
+    constexpr uint32 SPELL_PRAYER_OF_MENDING = 33076;
+
+    // [lead1431] a cast that heals by itself: a heal, a heal over time, an absorb, or one of the dummy heals above
+    bool IsHealCast(SpellInfo const* info)
+    {
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.Effect == SPELL_EFFECT_HEAL || effect.Effect == SPELL_EFFECT_HEAL_PCT ||
+                effect.Effect == SPELL_EFFECT_HEAL_MAX_HEALTH)
+                return true;
+            bool const aura = effect.Effect == SPELL_EFFECT_APPLY_AURA ||
+                              effect.Effect == SPELL_EFFECT_APPLY_AREA_AURA_RAID ||
+                              effect.Effect == SPELL_EFFECT_APPLY_AREA_AURA_PARTY;
+            if (aura && (effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL ||
+                         effect.ApplyAuraName == SPELL_AURA_SCHOOL_ABSORB))
+                return true;
+        }
+        uint32 const first = info->GetFirstRankSpell()->Id;
+        return first == SPELL_HOLY_SHOCK || first == SPELL_PENANCE || first == SPELL_PRAYER_OF_MENDING;
+    }
+
+    // [lead1431] what an aura can still absorb (its absorb effects' amounts; an unlimited one counts nothing)
+    int32 AbsorbLeft(Aura const* aura)
+    {
+        int32 left = 0;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (AuraEffect const* effect = aura->GetEffect(i);
+                effect && effect->GetAuraType() == SPELL_AURA_SCHOOL_ABSORB && effect->GetAmount() > 0)
+                left += effect->GetAmount();
+        return left;
+    }
 
     // [lead1400] the energize spells of the mana returns a boss gate's line credits on top of the measured use
     // (RestState::FightManaLine: Evocation, Divine Plea, Innervate, Shadowfiend - its Mana Leech hit -, a mana potion
@@ -522,6 +564,16 @@ namespace ManaReturned
     }
 }
 
+namespace ManaSpent
+{
+    uint64 Upkeep(ObjectGuid player)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = upkeepMana.find(player);
+        return found != upkeepMana.end() ? found->second : 0;
+    }
+}
+
 namespace HealingDone
 {
     uint64 Effective(ObjectGuid healer)
@@ -538,8 +590,40 @@ public:
     PlayerbotsDeathRecorderUnitScript()
         : UnitScript("PlayerbotsDeathRecorderUnitScript", true,
                      {UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
-                      UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_MODIFY_HEAL_RECEIVED, UNITHOOK_ON_POWER_GAIN})
+                      UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_MODIFY_HEAL_RECEIVED, UNITHOOK_ON_POWER_GAIN,
+                      UNITHOOK_ON_AURA_APPLY, UNITHOOK_ON_AURA_REMOVE})
     {
+    }
+
+    // [lead1431] an absorb on a tracked player: its amount now (a refresh starts it again: what the refreshed shield
+    // took before is not counted, the safe side of the healer's mana per health)
+    void OnAuraApply(Unit* unit, Aura* aura) override
+    {
+        if (!aura || !aura->GetSpellInfo()->HasAura(SPELL_AURA_SCHOOL_ABSORB) || !aura->GetCasterGUID().IsPlayer() ||
+            !IsTracked(unit))
+            return;
+        int32 const left = AbsorbLeft(aura);
+        std::lock_guard<std::mutex> lock(takenLock);
+        if (shieldAmounts.size() > 4096)  // a bound on shields whose removal was never seen
+            shieldAmounts.clear();
+        shieldAmounts[{unit->GetGUID(), aura->GetCasterGUID(), aura->GetId()}] = left;
+    }
+
+    // [lead1431] the shield's end: what it took since its apply is its caster's effective healing (HealingDone)
+    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode /*mode*/) override
+    {
+        Aura const* aura = aurApp ? aurApp->GetBase() : nullptr;
+        if (!unit || !aura || !aura->GetSpellInfo()->HasAura(SPELL_AURA_SCHOOL_ABSORB) ||
+            !aura->GetCasterGUID().IsPlayer())
+            return;
+        int32 const left = AbsorbLeft(aura);
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = shieldAmounts.find({unit->GetGUID(), aura->GetCasterGUID(), aura->GetId()});
+        if (found == shieldAmounts.end())
+            return;
+        if (found->second > left)
+            healedDone[aura->GetCasterGUID()] += uint64(found->second - left);
+        shieldAmounts.erase(found);
     }
 
     // [lead1400] the mana a credited return gave (what the bar took): ManaReturned::FromTools
@@ -633,8 +717,23 @@ class PlayerbotsDeathRecorderPlayerScript : public PlayerScript
 {
 public:
     PlayerbotsDeathRecorderPlayerScript()
-        : PlayerScript("PlayerbotsDeathRecorderPlayerScript", {PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_UPDATE})
+        : PlayerScript("PlayerbotsDeathRecorderPlayerScript",
+                       {PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_UPDATE, PLAYERHOOK_ON_SPELL_CAST})
     {
+    }
+
+    // [lead1431] the mana a cast that heals nothing itself costs (ManaSpent::Upkeep): the cost the game takes
+    // (Spell::TakePower: none for an item's cast, a cast triggered by an aura, or one that ignores its cost)
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
+    {
+        SpellInfo const* info = spell ? spell->GetSpellInfo() : nullptr;
+        if (!info || info->PowerType != POWER_MANA || spell->GetPowerCost() <= 0 || spell->m_CastItem ||
+            spell->GetTriggeredByAuraSpellInfo() ||
+            spell->HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST) || !IsTracked(player) ||
+            IsHealCast(info))
+            return;
+        std::lock_guard<std::mutex> lock(takenLock);
+        upkeepMana[player->GetGUID()] += uint64(spell->GetPowerCost());
     }
 
     void OnPlayerUpdate(Player* player, uint32 diff) override

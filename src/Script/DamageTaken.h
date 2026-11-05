@@ -21,6 +21,8 @@ namespace DamageTaken
 }
 
 // [lead256] Health a player's heals restored inside a dungeon or raid since the server started, overheal cut off.
+// [lead1431] With the damage its absorbs took (Power Word: Shield, Divine Aegis, ...): the shield's amount at its
+// apply less what is left at its removal (Unit::CalcAbsorbResist lowers the amount by each absorb).
 namespace HealingDone
 {
     uint64 Effective(ObjectGuid healer);
@@ -32,6 +34,16 @@ namespace HealingDone
 namespace ManaReturned
 {
     uint64 FromTools(ObjectGuid player);
+}
+
+// [lead1431] Mana a player's own casts spent inside a dungeon or raid since the server started on spells that heal
+// nothing themselves - seals, blessings, Beacon of Light, Sacred Shield, Earth Shield's refresh, totems, buffs,
+// dispels, damage: the cost the game took (Spell::TakePower's conditions). A heal, a heal over time, an absorb and
+// the heals cast through a dummy (Holy Shock, Penance, Prayer of Mending) are not upkeep. Kept by the death recorder's
+// spell cast hook.
+namespace ManaSpent
+{
+    uint64 Upkeep(ObjectGuid player);
 }
 
 #include <string>

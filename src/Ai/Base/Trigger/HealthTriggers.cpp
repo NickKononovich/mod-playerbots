@@ -330,7 +330,8 @@ float PredictedManaNeed(Player* bot, NextFight const& fight, float& fightSec)
 {
     fightSec = FightSecOf(bot, fight);  // [lead264]
     if (PlayerbotAI::IsHeal(bot))
-        return std::max(SpellManaRate(bot) * fightSec, HealerPctPerTankHealth(bot) * fight.cost);
+        return std::max(SpellManaRate(bot) * fightSec,  // [lead1431] its heals' mana plus its upkeep
+                        HealerPctPerTankHealth(bot) * fight.cost + HealerUpkeepPctPerSec(bot) * fightSec);
     if (!PlayerbotAI::IsCaster(bot) && !PREDICT_DRINK_ALL_ROLES)
         return -1.0f;
     return SpellManaRate(bot) * fightSec;  // [lead264] the spell data's rate, not a role's measured median
@@ -567,6 +568,8 @@ struct MeasuredHealing
     float healed = 0.0f;
     float mana = 0.0f;
     float bestHps = 0.0f;  // the most a fight of this dungeon measured per second
+    float upkeep = 0.0f;     // [lead1431] mana of its casts that heal nothing themselves
+    float upkeepSec = 0.0f;  // [lead1431] ... over these fight seconds
 };
 std::unordered_map<uint64, MeasuredHealing> measuredHealing;  // [lead258] by healer, under manaRateLock
 
@@ -580,9 +583,9 @@ bool IsHealSpell(SpellInfo const* info)
 }
 }  // namespace
 
-void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec)
+void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec, float upkeep)
 {
-    if (!healer || healed <= 0.0f)
+    if (!healer)
         return;
 
     std::lock_guard<std::mutex> lock(manaRateLock);
@@ -590,6 +593,14 @@ void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec)
     if (entry.instanceId != healer->GetInstanceId())
         entry = MeasuredHealing();  // this dungeon's fights only
     entry.instanceId = healer->GetInstanceId();
+    // [lead1431] the upkeep is per second of every fight, one that healed nothing too
+    if (fightSec > 0.0f)
+    {
+        entry.upkeep += std::max(upkeep, 0.0f);
+        entry.upkeepSec += fightSec;
+    }
+    if (healed <= 0.0f)
+        return;
     if (manaSpent > 0.0f)
     {
         entry.healed += healed;
@@ -690,8 +701,15 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
             facts.measured = true;
         }
         facts.hps = std::max(facts.hps, found->second.bestHps);
+        if (found->second.upkeepSec > 0.0f && facts.maxMana > 0.0f)  // [lead1431]
+            facts.upkeepPctPerSec = 100.0f * found->second.upkeep / found->second.upkeepSec / facts.maxMana;
     }
     return facts;
+}
+
+float HealerUpkeepPctPerSec(Player* healer)
+{
+    return healer ? HealerThroughput(healer, healer).upkeepPctPerSec : 0.0f;
 }
 
 float HealerPctPerTankHealth(Player* healer)
@@ -1818,8 +1836,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
             perCostMeasured = true;
         }
     }
+    // [lead1431] a healer's mana per tank health healed is its heals' alone (lead258 notes its upkeep apart): the
+    // heal term adds its measured upkeep over the fight's seconds. The trash term measured per costed tank health
+    // (lead393) already holds it
+    float const upkeep = PlayerbotAI::IsHeal(bot) && !perCostMeasured ? HealerUpkeepPctPerSec(bot) : 0.0f;
     if (PlayerbotAI::IsHeal(bot))
-        need = std::max(need, perTankHealth * cost);
+        need = std::max(need, perTankHealth * cost + upkeep * fightSec);
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
     // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
     // those seconds. [lead264] While no fight is measured: the spend of one more mob's fight (FightSecOf one mob)
@@ -1828,7 +1850,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float const oneMobSec = FightSecOf(bot, oneMob);
     float reserve = rate * oneMobSec;
     if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
-        reserve += perTankHealth * cost * oneMobSec / fightSec;
+        reserve += perTankHealth * cost * oneMobSec / fightSec + upkeep * oneMobSec;
     float uncertainSec = -1.0f;
     if (Group* group = bot->GetGroup())
     {
@@ -1841,7 +1863,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     {
         reserve = rate * uncertainSec;
         if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
-            reserve += perTankHealth * cost * uncertainSec / fightSec;
+            reserve += perTankHealth * cost * uncertainSec / fightSec + upkeep * uncertainSec;
     }
     // [lead1400] b261 rfc-h 5B: the gate passed the holy paladin into Taragaman at 2 % (5B-2, lowest 2 %) and Jergosh
     // at 3 % (5B-2 / 5B-10, lowest 3-4 %) on 0 % lines: the line's bottom was 0 mana, where the game refuses every
@@ -2409,11 +2431,13 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     if (why && (rotation >= 0.0f || (nonstop >= 0.0f && rate == nonstop)))  // [lead855] [lead1162]
         *why += "; its rotation " + rotationWhy;
     if (why && perTankHealth > 0.0f)  // [lead258]
-        *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost", perTankHealth,
+        *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost{}", perTankHealth,
                                     damageCost        ? "per tank health healed [lead1294]"
                                     : perCostMeasured ? "measured"
                                                       : "throughput",
-                                    cost);
+                                    cost,
+                                    upkeep > 0.0f ? Acore::StringFormat(" + upkeep {:.3f} %/s [lead1431]", upkeep)
+                                                  : std::string());
     return line;
 }
 

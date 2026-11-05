@@ -287,10 +287,15 @@ struct HealerFacts
     float manaPctPerSec = 0.0f;  // [lead264] the best rate's heal cast on and on: % of max mana per second
     std::string spell;      // the best rate's heal (logged)
     float castPct = 0.0f;   // [lead1400] the best rate's heal: one cast's cost, % of max mana
+    float upkeepPctPerSec = 0.0f;  // [lead1431] its measured upkeep (casts that heal nothing): % of max mana per s
 };
 HealerFacts HealerThroughput(Player* healer, Unit* target);
 // [lead258] the leader notes a healer's effective healing and its net mana spent over a fight in this dungeon
-void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec);
+// [lead1431] `manaSpent` is its heals' mana (the fight's spend less its upkeep), `upkeep` the mana of its casts that
+// heal nothing themselves (ManaSpent::Upkeep), noted per second of fight
+void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec, float upkeep = 0.0f);
+// [lead1431] a healer's measured upkeep in this dungeon: % of its max mana per second of fight (0: none measured)
+float HealerUpkeepPctPerSec(Player* healer);
 // [lead258] a healer's mana (% of its max) per tank health it heals: the group tank's health over its health per mana
 float HealerPctPerTankHealth(Player* healer);
 // [lead264] A member's mana spend from its spell data while nothing is measured (% of max mana per second): the mana
