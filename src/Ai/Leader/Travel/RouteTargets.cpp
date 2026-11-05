@@ -1668,7 +1668,13 @@ namespace Leader::Travel
             std::vector<PlannedStop> const kept = route.routePlan;
             bool const toBoss = nextBoss && nextBoss->IsAlive();
             Position const start = leader->GetPosition();
-            Position const bossSpot = toBoss ? PlanSpawnSpot(nextBoss) : Position();
+            // [lead1324] b255 rfc-h 5H-8 599 s: Taragaman wanders; the walk ahead ended at his spawn spot, which put
+            // the Enforcer pack 99 yd off (86 yd from the cleared walk) "ahead" - the group was 4 s from his pull
+            // where he stood. The walk ahead ends where a boss that moves (no idle default movement) stands now
+            bool const bossWalks = toBoss && nextBoss->GetDefaultMovementType() != IDLE_MOTION_TYPE;
+            Position const bossSpot = !toBoss      ? Position()
+                                      : bossWalks ? nextBoss->GetPosition()
+                                                  : PlanSpawnSpot(nextBoss);
             auto const nearestTo = [](Position const& at, std::vector<Position> const& line)
             {
                 if (line.size() == 1)
@@ -1686,6 +1692,7 @@ namespace Leader::Travel
             if (toBoss)
                 ahead.push_back(bossSpot);
             JsonArray behindLog;
+            JsonArray judgedLog;  // [lead1324]
             auto const isOld = [&planned](PlannedStop const& pack)
             {
                 return std::any_of(pack.mobs.begin(), pack.mobs.end(),
@@ -1707,6 +1714,17 @@ namespace Leader::Travel
                                     { return start.GetExactDist(done) < farYd && done.GetExactDist(pack->spot) < farYd; });
                     behind = anchor && back >= 0.0f && forward >= 0.0f && back < forward && pastCleared &&
                              forward > AggroReach(anchor, leader);
+                    // [lead1324] the verdict's inputs for a pack not judged behind too (the triage compares them)
+                    if (!behind && anchor)
+                        judgedLog.Raw(JsonObject()
+                                          .Str("stop", PlanStopName(map, *pack))
+                                          .Real("back", back)
+                                          .Real("ahead", forward)
+                                          .Real("reach", AggroReach(anchor, leader))
+                                          .Real("fromTank", farYd)
+                                          .Bool("pastCleared", pastCleared)
+                                          .Bool("bossWalks", bossWalks)
+                                          .Build());
                     if (behind)
                     {
                         route.planBehind.insert(pack->mobs.begin(), pack->mobs.end());
@@ -1946,7 +1964,8 @@ namespace Leader::Travel
                                              .Raw("meets", meets.Build())
                                              .Raw("noWalk", unreachable.Build())
                                              .Str("mode", insertOnly ? "insert" : "tour")
-                                             .Raw("behind", behindLog.Build()));
+                                             .Raw("behind", behindLog.Build())
+                                             .Raw("notBehind", judgedLog.Build()));
             LOG_INFO("playerbots", "[lead204] {}: route plan ({}): {} stops to {}, {:.0f} yd", group.Run().runId, why,
                      route.routePlan.size(), nextBoss ? nextBoss->GetName() : std::string("no boss"),
                      route.routePlanLength);
