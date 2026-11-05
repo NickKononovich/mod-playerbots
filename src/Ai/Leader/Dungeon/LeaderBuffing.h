@@ -16,6 +16,7 @@
 #include "Common.h"
 #include "LeaderGroup.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,9 @@ namespace Leader::Dungeon
     // [lead1333] the seconds the buff pass still takes: each giver's missing buffs x its cast (at least its global
     // cooldown, spell data), the slowest giver - the group waits that anyway before its next pull
     float BuffPassSec(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
+    // [lead1353] the mana the coming buff pass's orders cost each giver (each order's spell cost, spell data
+    // SpellInfo::CalcPowerCost), by giver - lead1133's buffManaNeed before its orders exist
+    std::map<ObjectGuid, uint32> BuffPassMana(LeaderGroup& group, std::vector<Player*> const& players, Player* leader);
 }
 
 #endif

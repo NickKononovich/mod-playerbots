@@ -5821,13 +5821,47 @@ namespace Leader::Dungeon
             return member->getPowerType() != POWER_MANA ||
                    member->GetPowerPct(POWER_MANA) >= PullReadiness::MemberBossManaLine(member, boss);
         };
+        // [lead1353] coordinator 2026-11-05 (b257 rfc-h 5A-9 899-915 s): the paladin tank drank from 5 % to its 11 %
+        // boss line, stood, and gave the boss pass's four blessings one every 2.7-3.7 s - the four cost ~19 % of its
+        // mana, and lead1133's rest to the orders' cost reads the orders only once the pass has queued them. While
+        // the boss pull waits and the pass has queued nothing yet, the coming pass's orders (the same
+        // MissingGivableBuffs the pass will queue, each order's spell cost) are part of each giver's boss-wait line:
+        // it drinks to its boss line plus them, in the one Rest (no stand, then the pass waiting on regeneration)
+        std::map<ObjectGuid, uint32> passMana;
+        if (!fighting && !lead.bossWaitFor.IsEmpty() && (group.Route().buffStep != 1 || lead.support.buffQueue.empty()))
+        {
+            std::vector<Player*> buffed;
+            for (Player* bot : seats)
+                if (bot->IsAlive() && !bot->IsInCombat())
+                    buffed.push_back(bot);
+            if (tank->IsAlive())
+                buffed.push_back(tank);
+            passMana = BuffPassMana(group, buffed, tank);
+        }
+        auto const passGap = [&](Player* member, Creature* boss) -> std::string
+        {
+            auto const cost = passMana.find(member->GetGUID());
+            uint32 const max = member->GetMaxPower(POWER_MANA);
+            if (cost == passMana.end() || !cost->second || !boss || member->getPowerType() != POWER_MANA || !max)
+                return std::string();
+            float const linePct = PullReadiness::MemberBossManaLine(member, boss);
+            uint32 const need =
+                std::min<uint32>(max, uint32(std::max(0.0f, linePct) / 100.0f * float(max)) + cost->second);
+            if (member->GetPower(POWER_MANA) >= need)
+                return std::string();
+            return Acore::StringFormat("[lead1353] mana {} < {} = its boss line {:.0f} % + its buff pass orders {} "
+                                       "(their spell costs) for {}",
+                                       member->GetPower(POWER_MANA), need, linePct, cost->second, boss->GetName());
+        };
         if (!fighting && !tank->IsInCombat() && !Leader::Orders::IsOpen(group.LeaderGuid()))
         {
             std::string tankRestWhy;
             Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
-            std::string const tankGap = waitBoss && waitBoss->IsAlive() && !healerTopsUp(tank, waitBoss)
-                                            ? PullReadiness::MemberBossGap(tank, waitBoss)
-                                            : std::string();
+            std::string tankGap = waitBoss && waitBoss->IsAlive() && !healerTopsUp(tank, waitBoss)
+                                      ? PullReadiness::MemberBossGap(tank, waitBoss)
+                                      : std::string();
+            if (tankGap.empty() && waitBoss && waitBoss->IsAlive())
+                tankGap = passGap(tank, waitBoss);  // [lead1353]
             if (!tankGap.empty())
                 tankRestWhy = "the boss pull waits: " + tankGap;
             bool const plannerWaits = !lead.plannerRestFor.empty() && tank->GetName() == lead.plannerRestFor &&
@@ -6242,6 +6276,12 @@ namespace Leader::Dungeon
                     }
                     needsRest = !gap.empty();  // [lead433] a health gap the healer tops up: no Rest
                     restWhy = gap.empty() ? restWhy : "the boss pull waits: " + gap;
+                    if (!needsRest)
+                        if (std::string const pass = passGap(bot, waitBoss); !pass.empty())  // [lead1353]
+                        {
+                            needsRest = true;
+                            restWhy = "the boss pull waits: " + pass;
+                        }
                     lead.restingToFull.erase(guid);
                 }
                 else

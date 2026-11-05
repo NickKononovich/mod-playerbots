@@ -848,4 +848,21 @@ namespace Leader::Dungeon
             slowest = std::max(slowest, sec);
         return slowest;
     }
+
+    std::map<ObjectGuid, uint32> BuffPassMana(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
+    {
+        std::map<ObjectGuid, uint32> mana;
+        if (!leader)
+            return mana;
+        std::vector<BuffOrder> orders;
+        MissingGivableBuffs(group, players, leader, &orders);
+        for (BuffOrder const& order : orders)
+        {
+            Player* giver = ObjectAccessor::FindPlayer(order.caster);
+            SpellInfo const* info = order.spell ? sSpellMgr->GetSpellInfo(order.spell) : nullptr;
+            if (giver && info && info->PowerType == POWER_MANA)
+                mana[order.caster] += uint32(std::max(0, info->CalcPowerCost(giver, info->GetSchoolMask())));
+        }
+        return mana;
+    }
 }
