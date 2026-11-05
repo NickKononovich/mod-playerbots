@@ -824,7 +824,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 support.strongestHps = std::max(support.strongestHps, facts.hps);
                 support.healMana += facts.maxMana * facts.healPerMana;
                 support.healReserve += facts.maxMana * float(sPlayerbotAIConfig.LowMana) / 100.0f * facts.healPerMana;
-                support.healUpkeep += facts.maxMana * facts.upkeepPctPerSec / 100.0f * facts.healPerMana;
+                // [lead1435] its upkeep less its casting regen (the core's rate): heals are their casts' costs
+                support.healUpkeep +=
+                    facts.maxMana * (facts.upkeepPctPerSec - facts.regenPctPerSec) / 100.0f * facts.healPerMana;
                 if (facts.gapSec > 0.0f)
                     support.healGapSec =
                         support.healGapSec > 0.0f ? std::min(support.healGapSec, facts.gapSec) : facts.gapSec;
@@ -4633,9 +4635,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // [lead1431] the heals' mana per health healed leaves out the healers' upkeep (seals, Beacon of Light, Sacred
         // Shield, totems, buffs): their measured upkeep over the pull's seconds is on top
         float const upkeep = support.healUpkeep * std::max(estimate.fightSec, 0.0f);
-        return std::min(
-            100.0f * (support.healReserve + TakenCost(estimate) * support.tankHealth + upkeep) / support.healMana,
-            100.0f);
+        float const fight = std::max(TakenCost(estimate) * support.tankHealth + upkeep, 0.0f);  // [lead1435]
+        return std::min(100.0f * (support.healReserve + fight) / support.healMana, 100.0f);
     }
 
     // [lead258] The pack's average damage on the tank per second: what it lands over the fight (the estimate's

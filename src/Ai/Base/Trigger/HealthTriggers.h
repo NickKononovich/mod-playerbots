@@ -291,6 +291,7 @@ struct HealerFacts
     float upkeepPctPerSec = 0.0f;  // [lead1431] its measured upkeep (casts that heal nothing): % of max mana per s
     float mainHealPerMana = 0.0f;  // [lead1434] the best rate's heal: its average heal over its cost (spell data)
     float measuredHealed = 0.0f;   // [lead1434] the effective healing its measurement holds
+    float regenPctPerSec = 0.0f;   // [lead1435] its in-combat (casting) regen: % of max mana per s (CastingRegenPerSec)
 };
 HealerFacts HealerThroughput(Player* healer, Unit* target);
 // [lead258] the leader notes a healer's effective healing and its net mana spent over a fight in this dungeon
@@ -299,6 +300,14 @@ HealerFacts HealerThroughput(Player* healer, Unit* target);
 void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec, float upkeep = 0.0f);
 // [lead1431] a healer's measured upkeep in this dungeon: % of its max mana per second of fight (0: none measured)
 float HealerUpkeepPctPerSec(Player* healer);
+// [lead1435] a mana user's in-combat (casting) regen, mana per second: the core's own rate under the five-second rule
+// (Player::UpdateManaRegen's UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER: MP5 plus the spirit regen it keeps
+// while casting, times RATE_POWER_MANA as Player::Regenerate takes it), without a food or drink aura's MP5 (it breaks
+// when the bot stands up for the fight)
+float CastingRegenPerSec(Player* bot);
+// [lead1435] a healer's heal term's mana per second besides its heals: its measured upkeep less its casting regen (%
+// of max mana per second; negative when the regen pays more than the upkeep)
+float HealerNetUpkeepPctPerSec(Player* healer);
 // [lead1434] a direct heal's average on `target` from spell data: its SPELL_EFFECT_HEAL effects with the healer's
 // and the target's healing bonuses (0: no direct heal)
 float DirectHealAverage(Player* healer, SpellInfo const* info, Unit* target);

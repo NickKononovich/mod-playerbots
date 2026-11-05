@@ -330,8 +330,9 @@ float PredictedManaNeed(Player* bot, NextFight const& fight, float& fightSec)
 {
     fightSec = FightSecOf(bot, fight);  // [lead264]
     if (PlayerbotAI::IsHeal(bot))
-        return std::max(SpellManaRate(bot) * fightSec,  // [lead1431] its heals' mana plus its upkeep
-                        HealerPctPerTankHealth(bot) * fight.cost + HealerUpkeepPctPerSec(bot) * fightSec);
+        return std::max(SpellManaRate(bot) * fightSec,  // [lead1431] [lead1435] heals + upkeep - casting regen
+                        std::max(HealerPctPerTankHealth(bot) * fight.cost + HealerNetUpkeepPctPerSec(bot) * fightSec,
+                                 0.0f));
     if (!PlayerbotAI::IsCaster(bot) && !PREDICT_DRINK_ALL_ROLES)
         return -1.0f;
     return SpellManaRate(bot) * fightSec;  // [lead264] the spell data's rate, not a role's measured median
@@ -692,6 +693,9 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
     facts = cached.facts;
     if (facts.mainHealPerMana > 0.0f)  // [lead1434] the prior: the main heal's, not the most efficient one's
         facts.healPerMana = facts.mainHealPerMana;
+    // [lead1435] its casting regen, the core's own rate (a field read, no scan)
+    if (facts.maxMana > 0.0f)
+        facts.regenPctPerSec = 100.0f * CastingRegenPerSec(healer) / facts.maxMana;
 
     std::lock_guard<std::mutex> lock(manaRateLock);
     if (auto const found = measuredHealing.find(healer->GetGUID().GetRawValue());
@@ -716,6 +720,30 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
 float HealerUpkeepPctPerSec(Player* healer)
 {
     return healer ? HealerThroughput(healer, healer).upkeepPctPerSec : 0.0f;
+}
+
+float CastingRegenPerSec(Player* bot)
+{
+    if (!bot || !bot->GetMaxPower(POWER_MANA))
+        return 0.0f;
+    // [lead1020] the drink aura's SPELL_AURA_MOD_POWER_REGEN (mp5) is in this field while it sits: not the fight's
+    float drinkMp5 = 0.0f;
+    for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_MOD_POWER_REGEN))
+        if (effect->GetMiscValue() == POWER_MANA)
+            if (SpellSpecificType const specific = effect->GetSpellInfo()->GetSpellSpecific();
+                specific == SPELL_SPECIFIC_DRINK || specific == SPELL_SPECIFIC_FOOD_AND_DRINK)
+                drinkMp5 += float(effect->GetAmount());
+    return std::max(bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) - drinkMp5 / 5.0f,
+                    0.0f) *
+           sWorld->getRate(RATE_POWER_MANA);
+}
+
+float HealerNetUpkeepPctPerSec(Player* healer)
+{
+    if (!healer || !healer->GetMaxPower(POWER_MANA))
+        return 0.0f;
+    HealerFacts const facts = HealerThroughput(healer, healer);
+    return facts.upkeepPctPerSec - facts.regenPctPerSec;
 }
 
 float DirectHealAverage(Player* healer, SpellInfo const* info, Unit* target)
@@ -1354,16 +1382,7 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
     // back empty, the leader ended its Rest, it stood up (the drink gone, the line back at 95 %) and sat again - 66
     // times (and the hunter's / priest's lines, reading the mage's wait "for Rtmagad anyway", ended with it). The
     // fight's regen is the regen without the food / drink aura (it breaks when the bot stands up for the fight)
-    float drinkMp5 = 0.0f;
-    for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_MOD_POWER_REGEN))
-        if (effect->GetMiscValue() == POWER_MANA)
-            if (SpellSpecificType const specific = effect->GetSpellInfo()->GetSpellSpecific();
-                specific == SPELL_SPECIFIC_DRINK || specific == SPELL_SPECIFIC_FOOD_AND_DRINK)
-                drinkMp5 += float(effect->GetAmount());
-    float const regen =
-        std::max(bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) - drinkMp5 / 5.0f,
-                 0.0f) *
-        sWorld->getRate(RATE_POWER_MANA);
+    float const regen = CastingRegenPerSec(bot);  // [lead1435] the shared helper
     float const pct = 100.0f * std::max(gross - regen, 0.0f) / maxMana;
     if (why)
         *why = Acore::StringFormat("{:.2f} %/s = ({}){} - {:.0f} regen, mana per s of {:.0f}", pct, cached.terms,
@@ -1903,8 +1922,14 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // heal term adds its measured upkeep over the fight's seconds. The trash term measured per costed tank health
     // (lead393) already holds it
     float const upkeep = PlayerbotAI::IsHeal(bot) && !perCostMeasured ? HealerUpkeepPctPerSec(bot) : 0.0f;
+    // [lead1435] coordinator 2026-11-05: the heals' mana is their casts' costs (lead1434), so the fight's income is
+    // counted apart - its casting regen over the fight's seconds, the core's own rate (CastingRegenPerSec). The
+    // reserve keeps the upkeep without it (the safe side); lead1430's floor stays under the line
+    float const regen = PlayerbotAI::IsHeal(bot) && !perCostMeasured
+                            ? 100.0f * CastingRegenPerSec(bot) / std::max(float(bot->GetMaxPower(POWER_MANA)), 1.0f)
+                            : 0.0f;
     if (PlayerbotAI::IsHeal(bot))
-        need = std::max(need, perTankHealth * cost + upkeep * fightSec);
+        need = std::max(need, std::max(perTankHealth * cost + (upkeep - regen) * fightSec, 0.0f));
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
     // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
     // those seconds. [lead264] While no fight is measured: the spend of one more mob's fight (FightSecOf one mob)
@@ -2499,8 +2524,11 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                                     : perCostMeasured ? "measured"
                                                       : "throughput",
                                     cost,
-                                    upkeep > 0.0f ? Acore::StringFormat(" + upkeep {:.3f} %/s [lead1431]", upkeep)
-                                                  : std::string());
+                                    upkeep > 0.0f || regen > 0.0f
+                                        ? Acore::StringFormat(" + upkeep {:.3f} %/s [lead1431] - casting regen {:.3f} "
+                                                              "%/s [lead1435]",
+                                                              upkeep, regen)
+                                        : std::string());
     return line;
 }
 
