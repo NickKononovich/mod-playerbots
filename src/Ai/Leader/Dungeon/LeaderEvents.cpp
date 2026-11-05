@@ -1762,6 +1762,88 @@ namespace Leader::Dungeon
             // every attacker refused: the refused one stays the target (the fight always has one, lead38)
             if (!target)
                 target = refusedFallback;
+            // [lead1240] b246 rfc-h 5C-11 252-274 s: the blood tank's prepull Army ghouls woke a Trogg of
+            // Oggleflint's pack and fought it 22 s while the group stood ("the fight has no target for it yet": no
+            // mob on a member, the heals "not on the tank ... on Army of the Dead Ghoul, tank threat 0"). A fight mob
+            // on a member's pet or guardian with nothing on the members is the tank's to take with a ready taunt from
+            // where it stands (its spell's range, sight): the mob comes, the boss it stands by is not walked into
+            thread_local std::map<ObjectGuid, std::string> minionMobLogged;  // tank -> mob|option
+            thread_local std::map<ObjectGuid, ObjectGuid> minionTaunted;  // tank -> the mob its taunt was told on
+            if (minionMobLogged.size() > 1024)
+                minionMobLogged.clear();
+            if (minionTaunted.size() > 1024)
+                minionTaunted.clear();
+            Unit* minionMob = nullptr;
+            Unit* minionHolder = nullptr;
+            if (!target && tank->IsAlive())
+                for (Player* bot : attacked)
+                    for (Unit* minion : bot->m_Controlled)
+                    {
+                        if (!minion || !minion->IsAlive() || minion->GetMap() != map)
+                            continue;
+                        for (Unit* attacker : minion->getAttackers())
+                            if (attacker && attacker->IsAlive() && attacker->GetVictim() == minion &&
+                                LeaderFightMob(tank, attacker) && !IsCrowdControlled(attacker) &&
+                                (!minionMob || attacker->GetExactDist(tank) < minionMob->GetExactDist(tank)))
+                            {
+                                minionMob = attacker;
+                                minionHolder = minion;
+                            }
+                    }
+            if (minionMob)
+            {
+                std::string option = "none: no taunt ready in its reach and sight";
+                PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
+                Leader::MemberEvents tankEvents;
+                bool const slotFree = !Leader::Events::Get(tank->GetGUID(), tankEvents) || !tankEvents.externalSpell;
+                for (uint32 taunt : {TANK_TAUNTS[0], TANK_TAUNTS[1], TANK_TAUNTS[2], TANK_TAUNTS[3]})
+                {
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
+                    if (!info || !tankAI || !tank->HasSpell(taunt) || tank->HasSpellCooldown(taunt) ||
+                        !tank->IsWithinCombatRange(minionMob, info->GetMaxRange(false)) ||
+                        !tank->IsWithinLOSInMap(minionMob) || !tankAI->CanCastSpell(taunt, minionMob))
+                        continue;
+                    if (slotFree || tankEvents.externalSpell == taunt)
+                    {
+                        Leader::Events::SetExternal(tank->GetGUID(), taunt, minionMob->GetGUID());
+                        minionTaunted[tank->GetGUID()] = minionMob->GetGUID();
+                        option = std::string("taunt ") + (info->SpellName[0] ? info->SpellName[0] : "?");
+                    }
+                    else
+                        option = "none: the tank's external slot is busy";
+                    break;
+                }
+                std::string& logged = minionMobLogged[tank->GetGUID()];
+                if (std::string const key = minionMob->GetGUID().ToString() + "|" + option; logged != key)
+                {
+                    logged = key;
+                    Decisions().Write(run, "leader", "minion_mob_pickup", minionMob->GetGUID(), minionMob->GetName(),
+                                      true,
+                                      JsonObject()
+                                          .Str("mob", minionMob->GetName())
+                                          .Str("on", minionHolder->GetName())
+                                          .Str("option", option)
+                                          .Real("distance", minionMob->GetExactDist(tank))
+                                          .Str("tag", "[lead1240]"));
+                }
+            }
+            else
+                minionMobLogged.erase(tank->GetGUID());
+            // the pick-up is one cast: its taunt leaves the tank's external slot once cast (on its cooldown) or once
+            // the mob is off the minion
+            if (auto const told = minionTaunted.find(tank->GetGUID()); told != minionTaunted.end())
+            {
+                Leader::MemberEvents tankEvents;
+                bool const mine = Leader::Events::Get(tank->GetGUID(), tankEvents) && tankEvents.externalSpell &&
+                                  tankEvents.externalTarget == told->second;
+                if (!mine || !minionMob || told->second != minionMob->GetGUID() ||
+                    tank->HasSpellCooldown(tankEvents.externalSpell))
+                {
+                    if (mine)
+                        Leader::Events::SetExternal(tank->GetGUID(), 0, ObjectGuid::Empty);
+                    minionTaunted.erase(told);
+                }
+            }
             // [lead42] the attacker list on every change (the next stall is visible)
             if (attackersSig != lead.fightStateSig)
             {
@@ -3728,6 +3810,17 @@ namespace Leader::Dungeon
                 auto const meleeMember = [](Player* bot)
                 { return !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot); };
                 // the melee members on `mob` that hold a refused place out of its reach
+                // [lead1240] b246 rfc-h 5G-15 760-784 s / 5C-3 888-911 s: a Searing Blade Warlock cast at the tank
+                // from 23-26 yd inside an idle Cultist's reach (Jergosh's room) while every melee member on it stood
+                // on its Stop "waits: <mob> stands in <idle>'s aggro reach" (lead413's arrival test) - no "stays"
+                // place, so no option ran: 25 s of group idle / a 42 s pull. A member that waits on it for that
+                // reason is barred from it the same way
+                auto const waitsOn = [&](Player* bot, Unit* mob, Leader::MemberEvents const& events)
+                {
+                    auto const why = lead.attackWaitWhy.find(bot->GetGUID());
+                    return events.intensity == Leader::Intensity::Stop && why != lead.attackWaitWhy.end() &&
+                           why->second.rfind(mob->GetName() + " stands in ", 0) == 0;
+                };
                 auto const barred = [&](Unit* mob, std::string* who) -> uint32
                 {
                     uint32 count = 0;
@@ -3736,7 +3829,8 @@ namespace Leader::Dungeon
                         Leader::MemberEvents events;
                         if (!bot->IsAlive() || !meleeMember(bot) || !Leader::Events::Get(bot->GetGUID(), events) ||
                             events.attack != Leader::AttackEvent::Attack || events.target != mob->GetGUID() ||
-                            events.moveWhy.find(": stays (") == std::string::npos || bot->IsWithinMeleeRange(mob))
+                            (events.moveWhy.find(": stays (") == std::string::npos && !waitsOn(bot, mob, events)) ||
+                            bot->IsWithinMeleeRange(mob))
                             continue;
                         ++count;
                         if (who)

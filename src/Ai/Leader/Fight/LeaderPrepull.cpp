@@ -16,6 +16,7 @@
 
 #include "AiFactory.h"
 #include "CellImpl.h"
+#include "ChooseTargetActions.h"  // [lead1240] PullReadiness::MemberBossManaLine
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GridNotifiers.h"
@@ -380,6 +381,21 @@ int32 WellFedMs(Player* bot)
     return left;
 }
 
+// [lead1240] the first member under its boss mana line (BossReadyGap's) that has a drink to rest with; empty: none
+std::string UnderBossManaLine(std::vector<Player*> const& members, Unit* boss)
+{
+    for (Player* bot : members)
+    {
+        if (!bot->IsAlive() || !bot->GetMaxPower(POWER_MANA) || Leader::Dungeon::CountRestItems(bot, 59) == 0)
+            continue;
+        float const line = PullReadiness::MemberBossManaLine(bot, boss);
+        if (bot->GetPowerPct(POWER_MANA) < line)
+            return Acore::StringFormat("{} at {:.0f} % mana under its boss line {:.0f} %", bot->GetName(),
+                                       bot->GetPowerPct(POWER_MANA), line);
+    }
+    return std::string();
+}
+
 // The boss preparation still ahead, seconds, from the members' facts; -1: not computable yet (the group is
 // not in the preparation, the buff pass still gives buffs, a member that must rest has not sat down)
 float PrepLeftSec(LeaderGroup& group, Creature* boss, std::vector<Player*> const& members, std::string& why)
@@ -438,11 +454,18 @@ float PrepLeftSec(LeaderGroup& group, Creature* boss, std::vector<Player*> const
         }
         // the pass's ready step waits for a member below its own rest line that can rest (TickBuffing's rule)
         bool const canRest = bot->IsSitState() || RestState::CanRest(bot);
-        float const manaLine = RestState::OwnManaLine(bot);
+        float const ownLine = RestState::OwnManaLine(bot);
         uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
         float const mana = maxMana ? bot->GetPowerPct(POWER_MANA) : 100.0f;
-        if (canRest && RestState::WantsDrink(bot) && Leader::Dungeon::CountRestItems(bot, 59) > 0 && maxMana &&
-            mana < manaLine)
+        // [lead1240] b246 rfc-h 5C-11 243 s: the Army went with the moonkin at 2 % mana walking to its spot (not
+        // resting yet: no own-line wait) - the boss pull then held 49 s for its 36 % boss line, the ghouls woke a
+        // Trogg of Oggleflint's pack and fought it alone 22 s, the Army was spent before the boss. The boss pull
+        // waits for the boss mana line (BossReadyGap): a member under it drinks before the pull, walking or not
+        float const bossLine = PullReadiness::MemberBossManaLine(bot, boss);
+        float const manaLine = std::max(ownLine, bossLine);
+        bool const underBossLine = maxMana && mana < bossLine;
+        if ((canRest || underBossLine) && (RestState::WantsDrink(bot) || underBossLine) &&
+            Leader::Dungeon::CountRestItems(bot, 59) > 0 && maxMana && mana < manaLine)
         {
             float const perSec = ManaPerSec(bot);
             if (!RestState::IsDrinking(bot) || perSec <= 0.0f)
@@ -716,6 +739,25 @@ std::string ArmyHolds(LeaderGroup& group, Unit* boss, bool orderNow)
             // buff pass end and was never told, then stood idle 14 s before the pull. Its pull orders it too, once
             // the knight can channel (wowsims prepulls Army whenever it is ready; one on cooldown is not waited for)
             // [lead823] both gates order the channel where the knight stands: its landing is the boss fight's
+            // [lead1240] the buff pass's end does not order it while a member is under its boss mana line with a
+            // drink in its bags: the boss pull waits for that drink, the Army's ghouls would fight alone before he is
+            // pulled; TickArmy times it into the drink, else the pull's own gate orders it
+            if (std::string const shortOf =
+                    orderNow ? UnderBossManaLine(GroupPlayers(group, boss->GetMap()), boss) : std::string();
+                !shortOf.empty())
+            {
+                if (plan.waitLogged != shortOf)
+                {
+                    plan.waitLogged = shortOf;
+                    group.LogEvent("army_prepull_waits", JsonObject()
+                                                             .Str("dk", dk->GetName())
+                                                             .Str("boss", boss->GetName())
+                                                             .Str("gate", "the buff pass end")
+                                                             .Str("why", shortOf)
+                                                             .Str("tag", "[lead1240]"));
+                }
+                continue;
+            }
             if (std::string const blocked = ArmyBlocked(dk, boss->ToCreature(), true); !blocked.empty())
             {
                 char const* const gate = orderNow ? "the buff pass end" : "the boss pull";

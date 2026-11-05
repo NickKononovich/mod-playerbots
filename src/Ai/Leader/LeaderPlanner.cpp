@@ -24,6 +24,7 @@
 #include "HealthTriggers.h"
 #include "InstanceScript.h"
 #include "KillOrder.h"
+#include "LeaderFightChecks.h"  // [lead1240] LeaderCastsFrom
 #include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
 #include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
 #include "LootObjectStack.h"
@@ -7202,6 +7203,42 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return cycle;
     }
 
+    // [lead1240] b246 rfc-h 5B-10 pull 9 (221-246 s): two Ragefire Shamans pulled off a ledge 35-53 yd away, dz 15 -
+    // 14 s of the priest's DoTs alone while the tank backed out of sight and the rogue and the shaman walked; every
+    // step "acted" (the damage rose), the fight entered the fit at 4000/s and, the slowest tenth of the run's
+    // seconds, set the focus rate 4352 -> 2234/s for the rest of the run. A step counts for the share of the group's
+    // damage dealers (the tank in, the healers out) that reach the mob they attack from where they stand: melee in
+    // its melee reach, ranged in its cast reach and sight (LeaderCastsFrom); a step none of them reaches counts 0
+    float ActingShare(Player* tank)
+    {
+        Group* group = tank ? tank->GetGroup() : nullptr;
+        if (!group)
+            return 1.0f;
+        uint32 dealers = 0;
+        uint32 reaching = 0;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || !member->IsAlive() || member->GetMap() != tank->GetMap() || PlayerbotAI::IsHeal(member))
+                continue;
+            ++dealers;
+            PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+            Unit* target = memberAI ? memberAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get()
+                                    : member->GetVictim();
+            if (!target)
+                target = member->GetVictim();
+            if (!target || !target->IsAlive() || !member->IsValidAttackTarget(target))
+                continue;
+            bool const reaches = PlayerbotAI::IsRanged(member)
+                                     ? Leader::Fight::LeaderCastsFrom(member, target, member->GetPosition()) &&
+                                           member->IsWithinLOSInMap(target)
+                                     : member->IsWithinMeleeRange(target);
+            if (reaches)
+                ++reaching;
+        }
+        return dealers ? float(reaching) / float(dealers) : 1.0f;
+    }
+
     // The fight is over: the health of what it killed over its acting seconds (corpses still in the world), kept as
     // the tank's measured group damage. Under pullCheckLock.
     // [lead1213] b240 rfc-h 5G-15: the 72.6 s fight S9 (43 s of it nobody hit anything: a deadlock) entered the fit
@@ -7690,8 +7727,8 @@ namespace PullCheck
             if (done > record.damageDone)
             {
                 uint32 const from = record.damageMs ? record.damageMs : record.startMs;
-                float const step =
-                    float(std::min(getMSTimeDiff(from, now), ActingCycleMs(bot))) / float(IN_MILLISECONDS);
+                float const step = float(std::min(getMSTimeDiff(from, now), ActingCycleMs(bot))) /
+                                   float(IN_MILLISECONDS) * ActingShare(bot);  // [lead1240]
                 record.actingSec += step;
                 record.actingStackedSec += float(record.stackedNow) * step;
                 record.damageDone = done;
