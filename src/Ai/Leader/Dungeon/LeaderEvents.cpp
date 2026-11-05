@@ -3888,7 +3888,24 @@ namespace Leader::Dungeon
                 {
                     if (!attacker || !attacker->IsAlive() || attacker->GetVictim() != tank || !attacker->ToCreature() ||
                         !LeaderFightMob(tank, attacker) || attacker->isMoving() || IsCrowdControlled(attacker))
+                    {
+                        // [lead1323] a mob on the tank out of its sight the resolver leaves (moving / held): named
+                        // once per mob and reason, so the triage tells a skipped mob from no option
+                        thread_local std::set<std::pair<ObjectGuid, int>> skipLogged;
+                        if (skipLogged.size() > 4096)
+                            skipLogged.clear();
+                        if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank &&
+                            !tank->IsWithinLOSInMap(attacker))
+                        {
+                            int const reason = attacker->isMoving() ? 1 : IsCrowdControlled(attacker) ? 2 : 3;
+                            if (skipLogged.insert({attacker->GetGUID(), reason}).second)
+                                LOG_INFO("playerbots", "[lead1323] {}: no-place resolve skips {} ({:.1f} yd, out of "
+                                         "its sight): {}", tank->GetName(), attacker->GetName(),
+                                         tank->GetExactDist(attacker),
+                                         reason == 1 ? "it moves" : reason == 2 ? "crowd-controlled" : "no fight mob");
+                        }
                         continue;
+                    }
                     if (!tank->IsWithinLOSInMap(attacker))
                     {
                         if (!stuck || attacker->GetExactDist(tank) < stuck->GetExactDist(tank))
@@ -4028,6 +4045,51 @@ namespace Leader::Dungeon
                                                              unreachedMob->GetExactDist(spot));
                                 break;
                             }
+                        }
+                    }
+                }
+                // [lead1323] b255 rfc-h 5G-15 119-170 s (52 s deadlock): a Ragefire Shaman on the DK tank 23.4 yd off,
+                // out of its sight, beside an idle Trogg pack (3 mobs, the union judged to fit: overload 0.57); the
+                // tank's walk to it was in the pack's reach, lead1291 refused the join (no opener of the tank
+                // reaches the pack from where it stands: out of its sight too), the melee waited on "stands in
+                // Ragefire Trogg's aggro reach" - nobody had an allowed action. Option (3) for the tank's own walk:
+                // the pack its walk to the mob wakes joins the fight when the union fits (JudgePack, as lead76), and
+                // the walk goes; the pack comes with the fight (no held join: the tank's walk is the opener)
+                if (unreachedMob && option.empty() && !losSteps.count(tank->GetGUID()))
+                {
+                    bool noWalk = false;
+                    Creature* blocker = LeaderAggroOnWalk(tank, unreachedMob->GetPosition(), noWalk);
+                    if (!blocker)
+                        blocker = LeaderAggroAt(tank, unreachedMob->GetPosition());
+                    if (blocker && !lead.joinedMobs.count(blocker->GetGUID()))
+                    {
+                        std::vector<ObjectGuid> combined;
+                        for (Unit* attacker : tank->getAttackers())
+                            if (attacker && attacker->IsAlive())
+                                combined.push_back(attacker->GetGUID());
+                        std::vector<ObjectGuid> const packMobs = packOf(blocker);
+                        combined.insert(combined.end(), packMobs.begin(), packMobs.end());
+                        float overload = 0.0f;
+                        std::string judged;
+                        if (PullPlanner::JudgePack(tank, combined, overload, judged))
+                        {
+                            joinPack(blocker, packMobs, false);
+                            lead.spotChecked.erase(tank->GetGUID());  // the refusal's blocker is the fight's now
+                            std::string const why = stuck ? "the tank goes to its mob out of its sight"
+                                                          : "the tank goes to its mob its melee cannot reach";
+                            checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, unreachedMob->GetPosition(),
+                                        NOMINAL_MELEE_RANGE, why);
+                            if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == why)
+                                option = Acore::StringFormat("the tank walks to it, {}'s pack ({} mobs) joins: {}",
+                                                             blocker->GetName(), packMobs.size(), judged);
+                            Decisions().Write(run, "leader", "pack_joins", blocker->GetGUID(), blocker->GetName(),
+                                              true,
+                                              JsonObject()
+                                                  .Num("packMobs", int64(packMobs.size()))
+                                                  .Real("overload", overload)
+                                                  .Str("judged", judged)
+                                                  .Str("blocked", tank->GetName())
+                                                  .Str("why", "[lead1323] the tank's walk to its stuck mob wakes it"));
                         }
                     }
                 }
