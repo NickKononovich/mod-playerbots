@@ -1856,7 +1856,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         HealerFacts const facts = HealerThroughput(bot, bot);
         healFloor = facts.castPct;
         if (healFloor > 0.0f)
-            healFloorWhy = Acore::StringFormat(" + {:.1f} heal floor ({}'s cost) [lead1400]", healFloor, facts.spell);
+            healFloorWhy = Acore::StringFormat(
+                " + {:.1f} heal floor ({}'s cost) [lead1400], no credit covers it [lead1430]", healFloor, facts.spell);
         reserve += healFloor;
     }
     // the mana its own ready cooldowns return in the fight ([lead423] spell data, ManaToolPct: Evocation, Divine
@@ -2250,6 +2251,15 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // no floor over it; the low line guards only the role's estimate (nothing measured yet)
     float const floorPct = measured ? 0.0f : float(sPlayerbotAIConfig.LowMana);
     float lineRaw = std::max({need + reserve - returned, potionFloor, cooldownFloor});  // [lead502] [lead634]
+    // [lead1430] b263 rfc-h 5B-2 t=1104: the gate passed the holy paladin into Bazzalan at 1 % on a 0 % line ("0.00
+    // %/s x 44 s + 8 reserve (+ 7.1 heal floor) - 22 cooldowns (mana potion 22 %)": heals 10.5 % x 1.30 cost), his
+    // Taragaman lines the same (Divine Plea's 25 % against 18 + 9). The credits are sized to the shortfall with the
+    // floor in it, so they cancelled the floor lead1400 put into the reserve, and the fight began at 1 % - under one
+    // cast of Holy Light (Spell::CheckPower) until a return came. The floor is the pool's bottom by the line's math:
+    // no credit covers it. A healer's boss line is the floor plus the cost its credits do not cover, the mana spent
+    // until a credited potion or cooldown is ready on top of the floor too
+    if (healFloor > 0.0f)
+        lineRaw = std::max({lineRaw, healFloor, potionFloor + healFloor, cooldownFloor + healFloor});
     // [lead850] with a return on the fight timeline (Evocation, the mana potion, the gem): the lowest start mana its
     // timeline lasts the fight with, the other tools' mana (spread over the fight) taken off the spend rate. Not even
     // a full pool lasting: the plain sum (the clamp makes it 100 %). The timeline only raises the sum's line
