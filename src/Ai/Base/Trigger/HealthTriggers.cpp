@@ -1633,6 +1633,36 @@ namespace
     }
 }
 
+Unit* ShadowfiendReach(Player* caster, Unit* preferred)
+{
+    SpellInfo const* info = caster ? sSpellMgr->GetSpellInfo(SPELL_SHADOWFIEND) : nullptr;
+    if (!info)
+        return nullptr;
+    float const range = info->GetMaxRange(false, caster);
+    auto const reaches = [caster, range](Unit* unit)
+    {
+        return unit && unit->IsAlive() && unit->IsInWorld() && unit->GetMap() == caster->GetMap() &&
+               caster->IsValidAttackTarget(unit) && caster->IsWithinDistInMap(unit, range) &&
+               caster->IsWithinLOSInMap(unit);
+    };
+    if (reaches(preferred))
+        return preferred;
+    Unit* nearest = nullptr;
+    auto const consider = [&](Player* member)
+    {
+        for (Unit* attacker : member->getAttackers())
+            if (reaches(attacker) && (!nearest || caster->GetDistance(attacker) < caster->GetDistance(nearest)))
+                nearest = attacker;
+    };
+    consider(caster);
+    if (Group* group = caster->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource();
+                member && member != caster && member->IsInWorld() && member->GetMap() == caster->GetMap())
+                consider(member);
+    return nearest;
+}
+
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits, bool potion,
                     bool damageCost)
 {
@@ -1895,6 +1925,29 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
         if (!info)
             return;
+        // [lead1380] b260 rfc-h 5E-13 Bazzalan 1147-1189 s: the gate passed the holy priest at 10-15 % on a 0 % line
+        // (Shadowfiend's 50 % "in the fight" against a heal term of 44 %). The leader told Shadowfiend on Bazzalan, the
+        // priest stood at his heal reach 30 yd from the tank, out of its range: "leader external (Execute returned
+        // false)" all fight (CanCastSpell passes SPELL_FAILED_OUT_OF_RANGE, the cast fails). The potion verdict's line
+        // still counted Shadowfiend, so no potion came; he ended at 2 % with his heals held ("save mana x0.00").
+        // Shadowfiend's summon needs a hostile unit in its range and sight (Spell::CheckCast). In a fight it counts
+        // only while an enemy of the group is in its reach (ShadowfiendReach). A healer's boss line before the pull
+        // does not count it: the leader places a healer within its heal reach of the tank (LEADER_HEAL_REACH_YD),
+        // farther than Shadowfiend's range (spell data), so its cast in that fight is not certain
+        if (spell == SPELL_SHADOWFIEND)
+        {
+            bool const inFight = bot->IsInCombat();
+            bool const unreached = inFight ? !ShadowfiendReach(bot)
+                                           : boss && PlayerbotAI::IsHeal(bot) &&
+                                                 info->GetMaxRange(false, bot) < Leader::LEADER_HEAL_REACH_YD;
+            if (unreached)
+            {
+                pick += Acore::StringFormat("{}{} not counted [lead1380]: {}", pick.empty() ? "" : "; ", name,
+                                            inFight ? "no enemy in its range and sight"
+                                                    : "its range is short of the healer's heal reach");
+                return;
+            }
+        }
         // [lead990] b228 rfc-h 5H-8 163.9-302.1 s: the fire mage fought the trash at 1-19 % mana, its ready
         // Evocation "held for Oggleflint (his pull in 171 s, recharge 240 s)" 215 times - the leader's cooldown
         // verdict (cooldowns-boss-judged-like-pulls) - while its trash line counted Evocation's 60 % in the next fight

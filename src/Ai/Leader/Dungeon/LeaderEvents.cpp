@@ -5891,13 +5891,29 @@ namespace Leader::Dungeon
                                       !MemberFull(tank) && BelowPlannerLine(tank, lead.plannerRestLine);  // [lead50]
             if (plannerWaits)
                 tankRestWhy = PlannerWaitWhy(lead.plannerRestLine);
+            // [lead1381] b260 rfc-h 5E-5 341-447 s (106 s): the pass before Oggleflint waited on the prot paladin
+            // tank's three blessings, one every ~45 s - the tank at 0-5 % mana cast each from the game's standing
+            // regeneration. lead1133's Rest to the mana its buff orders cost was read for the seats only, and the
+            // tank's own line (its potion and Divine Plea credited) read nothing to drink for. The tank rests to it
+            // too, as every caster of the pass
+            bool passOrders = false;
+            if (auto const orders = lead.support.buffManaNeed.find(tank->GetGUID());
+                !plannerWaits && tankGap.empty() && orders != lead.support.buffManaNeed.end() &&
+                tank->GetPower(POWER_MANA) < orders->second)
+            {
+                passOrders = true;
+                tankRestWhy = Acore::StringFormat("[lead1381] the buff pass: mana {} < {} its buff orders cost",
+                                                  tank->GetPower(POWER_MANA), orders->second);
+            }
             // [lead221] b185 rfc-h 5E 770-816 s: "sits: to full" at 97 % and 62 % mana - a tank already drinking
             // (or under the leader's Rest, which WantsDrink reads as "drink to 100 %") was rested to full. The tank
             // rests while it is below its own computed lines (RestState::BelowOwnLine), as every member (lead59)
             bool const tankRests = plannerWaits ? (tank->IsSitState() || RestState::CanRest(tank))
-                                                : (waitBoss && waitBoss->IsAlive()
-                                        ? !tankGap.empty()
-                                        : RestState::BelowOwnLine(tank, &tankRestWhy) && !MemberFull(tank)) &&
+                                                : (passOrders ||
+                                                   (waitBoss && waitBoss->IsAlive()
+                                                        ? !tankGap.empty()
+                                                        : RestState::BelowOwnLine(tank, &tankRestWhy) &&
+                                                              !MemberFull(tank))) &&
                                                       (tank->IsSitState() || RestState::CanRest(tank));
             char const* const tankHurt = tankRests ? HurtOutOfFight(tank) : nullptr;
             if (tankHurt && lead.restHurtLogged.insert(tank->GetGUID()).second)
@@ -10453,6 +10469,10 @@ namespace Leader::Dungeon
                                    : ObjectAccessor::GetUnit(*caster, pending.externalTarget);
                     if (!pending.externalTarget.IsEmpty() && (!on || !on->IsAlive()))
                         continue;
+                    // [lead1380] a told Shadowfiend whose target left the caster's reach is told again on one it
+                    // reaches (the pick below), not kept on one it cannot cast at
+                    if (spell == RestState::SPELL_SHADOWFIEND && RestState::ShadowfiendReach(caster, on) != on)
+                        continue;
                     bool stillShort = false;
                     for (ManaUser const& user : manaUsers)
                         if (groupTool || (selfTool && user.who == caster) ||
@@ -10498,9 +10518,12 @@ namespace Leader::Dungeon
                     if (self)
                     {
                         // [lead423] Shadowfiend attacks the fight's target; the others are on the caster itself
-                        if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_SHADOWFIEND});
-                            spell && target)
-                            consider(caster, spell, target, {self}, true);
+                        // [lead1380] b260 5E-13 Bazzalan: told on the boss 30+ yd from the healer, never cast. Its
+                        // target is one the caster reaches from where it stands (the fight's target first, else the
+                        // nearest mob on the group); none: not told (its line then counts it no more)
+                        if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_SHADOWFIEND}))
+                            if (Unit* reached = RestState::ShadowfiendReach(caster, target))
+                                consider(caster, spell, reached, {self}, true);
                         // [lead633] b218 rfc-h 5D Oggleflint 282.7 s: the arcane mage was told Evocation at 44 %
                         // ("44 % < 50 % for the fight's 30 s left - 3 fight s gained"), an 8 s channel for 3 s. The
                         // wowsims arcane / frost APL channels it at currentManaPercent <= 25 % (the mage's own trigger

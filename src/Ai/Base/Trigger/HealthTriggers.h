@@ -386,6 +386,10 @@ bool NeedsManaPotion(Player* bot, float fightSec, float cost = 0.0f);
 // [lead423] the mana tools (Innervate, Shadowfiend, Hymn of Hope, Mana Tide Totem, Evocation, Divine Plea, Dispersion)
 constexpr uint32 SPELL_INNERVATE = 29166;
 constexpr uint32 SPELL_SHADOWFIEND = 34433;
+// [lead1380] the enemy `caster`'s Shadowfiend reaches from where it stands (its range with the caster's spell mods,
+// spell data, and its sight): `preferred` when it does, else the nearest mob attacking a member of its group;
+// nullptr: none (the summon's cast needs a hostile unit there, Spell::CheckCast)
+Unit* ShadowfiendReach(Player* caster, Unit* preferred = nullptr);
 constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
 constexpr uint32 SPELL_MANA_TIDE_TOTEM = 16190;
 constexpr uint32 SPELL_EVOCATION = 12051;
