@@ -411,7 +411,24 @@ namespace Leader::Fight
     // the chase really takes (to the first point in reach out of the front half) against the walk to the nearest
     // place in reach (none where the member stands in reach, else the place on the line to the mob once the fight
     // stands); `standAt`: that place when the front costs less
-    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why = nullptr, Position* standAt = nullptr);
+    // [lead1352] coordinator 2026-11-05 (b257: "walk: melee chase / behind the target" 35.6 s a comp, the top in-fight
+    // loss): the weighing's terms for the decision log - why none was made (`notWeighed`), else the front's loss in
+    // the member's dps seconds (parry + block over the mob's life), the tank's parry-haste cost in the same seconds,
+    // the extra walk round, and whether the mob still moved (judged at its place on its victim, facing it)
+    struct MeleeSideWeigh
+    {
+        std::string notWeighed;
+        bool moving = false;
+        float lossSec = 0.0f;
+        float hasteSec = 0.0f;
+        float extraSec = 0.0f;
+        float parry = 0.0f;
+        float block = 0.0f;
+        float lifetime = 0.0f;
+        float share = 0.0f;
+    };
+    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why = nullptr, Position* standAt = nullptr,
+                              MeleeSideWeigh* weigh = nullptr);
 
     // [lead690] user 2026-11-03 ("the mage also has Blink to move faster"): the member's forward leap (the mage's
     // Blink: SPELL_EFFECT_LEAP, its radius from spell data) and its length (0: none)

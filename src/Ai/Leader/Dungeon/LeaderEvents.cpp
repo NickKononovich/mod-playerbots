@@ -7169,6 +7169,10 @@ namespace Leader::Dungeon
                 std::string frontWhy;
                 Position frontAt = bot->GetPosition();
                 bool frontHere = false;
+                // [lead1352] the side's verdict for the decision log and the chase's own line: the weighing's terms,
+                // the side held for this target, or why none was weighed
+                MeleeSideWeigh sideWeigh;
+                std::string sideWhy = "not weighed: the target is on the member itself";
                 if (melee && target->GetVictim() != bot)
                 {
                     auto const side = lead.meleeSide.find(guid);
@@ -7190,6 +7194,7 @@ namespace Leader::Dungeon
                     {
                         frontHere = true;
                         frontAt = found->second.second;
+                        sideWhy = "held: the front decided for this target";
                         if (frontWhileWalks && lead.sideHeldLogged.insert({guid, target->GetGUID()}).second)
                             LOG_INFO("playerbots", "[lead800] {}: its front place at {} holds while it walks",
                                      bot->GetName(), target->GetName());
@@ -7204,13 +7209,42 @@ namespace Leader::Dungeon
                              !(!bot->isMoving() && bot->IsWithinMeleeRange(target) &&
                                target->HasInArc(float(M_PI), bot) && bot->IsWithinLOSInMap(target)))
                     {
+                        sideWhy = "held: the back decided for this target (re-weighed once it stands in reach in "
+                                  "front)";
                         if (lead.sideHeldLogged.insert({guid, target->GetGUID()}).second)
                             LOG_INFO("playerbots", "[lead800] {}: its side behind {} holds for this target",
                                      bot->GetName(), target->GetName());
                     }
                     else
                     {
-                        frontHere = LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt);
+                        frontHere = LeaderFrontCostsLess(bot, target, &frontWhy, &frontAt, &sideWeigh);
+                        sideWhy = !sideWeigh.notWeighed.empty() ? "not weighed: " + sideWeigh.notWeighed
+                                  : (frontHere ? "front: " : "back: ") + frontWhy;
+                        // [lead1352] every weighing on the decision log (once per member, target and verdict)
+                        {
+                            thread_local std::set<std::tuple<ObjectGuid, ObjectGuid, std::string>> sideLogged;
+                            if (sideLogged.size() > 8192)
+                                sideLogged.clear();
+                            std::string const verdict = !sideWeigh.notWeighed.empty() ? "not weighed"
+                                                        : frontHere                  ? "front"
+                                                                                     : "back";
+                            if (sideLogged.insert({guid, target->GetGUID(), verdict}).second)
+                                Decisions().Write(run, "leader", "melee_side", guid, bot->GetName(), true,
+                                                  JsonObject()
+                                                      .Str("member", bot->GetName())
+                                                      .Str("target", target->GetName())
+                                                      .Str("verdict", verdict)
+                                                      .Str("why", sideWeigh.notWeighed.empty() ? frontWhy
+                                                                                               : sideWeigh.notWeighed)
+                                                      .Real("lossSec", sideWeigh.lossSec)
+                                                      .Real("hasteSec", sideWeigh.hasteSec)
+                                                      .Real("walkSec", sideWeigh.extraSec)
+                                                      .Real("parry", sideWeigh.parry)
+                                                      .Real("block", sideWeigh.block)
+                                                      .Real("lifetime", sideWeigh.lifetime)
+                                                      .Real("share", sideWeigh.share)
+                                                      .Bool("moving", sideWeigh.moving));
+                        }
                         // [lead843] b223 rfc-h (8 runs): 72 of the 103 chase <-> "combat spot: behind the target"
                         // flips kept one target (5A 113.9 / 115.4 / 116.0 s Rtshaab on a Ragefire Shaman whose front
                         // place "holds while it walks"; 5G 621.8-625.4 s Rtwarad, Rtpalae, Rtdekad x7): the front was
@@ -7224,6 +7258,7 @@ namespace Leader::Dungeon
                             bot->IsWithinLOSInMap(target))
                         {
                             frontHere = true;
+                            sideWhy = "held: the front decided for this target, in reach where it stands";
                             frontAt = bot->GetPosition();
                             frontWhy.clear();
                             thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> keptLogged;
@@ -7294,7 +7329,8 @@ namespace Leader::Dungeon
                     if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
                                                   "chase: behind the target"))
                         logEvent(bot, "Follow",
-                                 JsonObject().Str("why", "chase: behind the target").Str("target", target->GetName()));
+                                 JsonObject().Str("why", "chase: behind the target").Str("target", target->GetName())
+                                     .Str("side", sideWhy));  // [lead1352]
                     lead.combatSpots.erase(guid);
                     found = lead.combatSpots.end();  // [lead442] the erase freed the node found pointed at (ASan)
                     moved = true;
@@ -7387,7 +7423,8 @@ namespace Leader::Dungeon
                             if (Leader::Events::SetFollow(guid, target->GetGUID(), uint8(index % 2),
                                                           "chase: behind the target"))
                                 logEvent(bot, "Follow", JsonObject().Str("why", "chase: behind the target")
-                                                            .Str("target", target->GetName()));
+                                                            .Str("target", target->GetName())
+                                                            .Str("side", sideWhy));  // [lead1352]
                             lead.combatSpots.erase(guid);
                             lead.meleeChase[guid] = target->GetGUID();
                             found = lead.combatSpots.end();
@@ -7828,6 +7865,7 @@ namespace Leader::Dungeon
                         logEvent(bot, MoveEventName(Leader::MoveEvent::StandAt),
                                  JsonObject().Str("why", melee ? "combat spot: behind the target" : "combat spot")
                                      .Str("target", target->GetName())
+                                     .Str("side", melee ? sideWhy : std::string("-"))  // [lead1352]
                                      .Real("distance", target->GetExactDist(spot))
                                      .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
                                      .Real("z", spot.GetPositionZ()));

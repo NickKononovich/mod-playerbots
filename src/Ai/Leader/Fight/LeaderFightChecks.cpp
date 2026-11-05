@@ -17,6 +17,7 @@
 #include "GridNotifiersImpl.h"
 #include "LeaderPlannerShared.h"  // [lead1100] PatrolForecast
 #include "Map.h"
+#include "MotionMaster.h"  // [lead1352]
 #include "MoveSpline.h"            // [lead1100]
 #include "MovementActions.h"
 #include "MovementTypedefs.h"  // [lead691] Movement::gravity
@@ -1850,28 +1851,53 @@ namespace Leader::Fight
         return std::string();
     }
 
-    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why, Position* standAt)
+    bool LeaderFrontCostsLess(Player* bot, Unit* target, std::string* why, Position* standAt, MeleeSideWeigh* weigh)
     {
+        MeleeSideWeigh local;
+        MeleeSideWeigh& w = weigh ? *weigh : local;
+        w = MeleeSideWeigh();
+        auto const notWeighed = [&](char const* reason)
+        {
+            w.notWeighed = reason;
+            return false;
+        };
         Creature* mob = target ? target->ToCreature() : nullptr;
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!mob || !botAI || !mob->IsAlive() || mob->IsDungeonBoss() || mob->isWorldBoss() ||
-            bot->GetMap() != mob->GetMap())
-            return false;
+        if (!mob || !botAI || !mob->IsAlive() || bot->GetMap() != mob->GetMap())
+            return notWeighed("no living creature target");
+        if (mob->IsDungeonBoss() || mob->isWorldBoss())
+            return notWeighed("a boss: its front is the tank's (cleave, parry-haste)");
         // the rotations that need the back: Shred (cat form), Backstab as the Subtlety builder (Hemorrhage talent)
         if ((bot->getClass() == CLASS_DRUID && botAI->HasSpell("shred")) ||
             (bot->getClass() == CLASS_ROGUE && botAI->HasSpell("hemorrhage")))
-            return false;
+            return notWeighed("its rotation needs the back (Shred / Backstab)");
+        Unit* const victim = mob->GetVictim();
+        // [lead1352] b257 rfc-h (triage 11.1): 979 of the 1677 s of melee chase walks were the walk in at the pull
+        // (the tank's charge / meet, the mob running to a standing tank) - the weighing gave no answer for a mob that
+        // moved, so every chase there went to the back unweighed. A mob on its victim, in its melee reach, that still
+        // steps or turns stands where it is and faces its victim (the core's chase faces its target at its end): it
+        // is weighed there, its front half the one toward its victim. A mob still running to its victim is not: the
+        // melee wait at its stop point (lead730) and weigh once it stands on it
+        bool const moving = mob->isMoving();
+        if (!victim)
+            return notWeighed("no victim");
+        if (!mob->IsWithinMeleeRange(victim))
+            return notWeighed("it is not on its victim yet (runs to it / stands off)");
+        w.moving = moving;
+        float const facing = moving ? mob->GetAbsoluteAngle(victim) : mob->GetOrientation();
+        auto const inFront = [&](Position const& at)
+        {
+            float const d = std::remainder(mob->GetAbsoluteAngle(&at) - facing, 2.0f * float(M_PI));
+            return std::fabs(d) <= float(M_PI) / 2.0f;
+        };
         // [lead680] where the member hits it from without the walk round: where it stands when it is in the game's
         // melee range and sight; out of reach the nearest place in reach on the line to the mob (the ring the chase
-        // places stand on, LeaderMeleePlace), judged only once the fight stands (the mob on its victim, in its reach)
+        // places stand on, LeaderMeleePlace)
         bool const inReach = bot->IsWithinMeleeRange(mob) && bot->IsWithinLOSInMap(mob);
         Position nearAt = bot->GetPosition();
+        float const ring = std::max(1.5f, mob->GetCombatReach() + bot->GetCombatReach() * 0.5f);
         if (!inReach)
         {
-            Unit* const victim = mob->GetVictim();
-            if (mob->isMoving() || !victim || !mob->IsWithinMeleeRange(victim))
-                return false;
-            float const ring = std::max(1.5f, mob->GetCombatReach() + bot->GetCombatReach() * 0.5f);
             float const angle = mob->GetAbsoluteAngle(bot);
             float x = mob->GetPositionX() + std::cos(angle) * ring;
             float y = mob->GetPositionY() + std::sin(angle) * ring;
@@ -1879,40 +1905,51 @@ namespace Leader::Fight
             if (!mob->GetMap()->CheckCollisionAndGetValidCoords(mob, mob->GetPositionX(), mob->GetPositionY(),
                                                                  mob->GetPositionZ(), x, y, z) ||
                 !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
-                return false;
+                return notWeighed("no ground for the near place");
             nearAt.Relocate(x, y, z);
             if (!LeaderMeleeReachesFrom(bot, mob, nearAt))
-                return false;
+                return notWeighed("the near place does not reach it");
         }
         // the near place in the mob's back half already: behind is the nearest place, no front to weigh
-        if (!mob->HasInArc(float(M_PI), &nearAt))
-            return false;
-        Position behindAt;
-        bool behind = false;
-        if (!LeaderMeleePlace(bot, mob, 1.0f, behindAt, &behind) || !behind)
-            return false;
-        // The walk the chase takes (LeaderMoveOrderAction's Follow): the straight walk to its place behind the mob,
-        // stopped as soon as the member stands in the mob's reach out of its front half (ChaseDoneHere); against it
-        // the walk to the near place (none in reach)
+        if (!inFront(nearAt))
+            return notWeighed("its near place is behind it already");
         float const nearWalk = bot->GetExactDist(nearAt);
-        float behindWalk = bot->GetExactDist(behindAt);
+        float behindWalk = 0.0f;
+        if (!moving)
         {
+            Position behindAt;
+            bool behind = false;
+            if (!LeaderMeleePlace(bot, mob, 1.0f, behindAt, &behind) || !behind)
+                return notWeighed("no place behind it");
+            // The walk the chase takes (LeaderMoveOrderAction's Follow): the straight walk to its place behind the
+            // mob, stopped as soon as the member stands in the mob's reach out of its front half (ChaseDoneHere)
+            behindWalk = bot->GetExactDist(behindAt);
             float const reach =
                 std::max(mob->GetCombatReach() + bot->GetCombatReach() + 4.0f / 3.0f, float(NOMINAL_MELEE_RANGE));
             constexpr float STEP = 0.25f;
             float const whole = behindWalk;
             for (float done = STEP; done < whole; done += STEP)
             {
-                float const share = done / whole;
-                Position const at(bot->GetPositionX() + (behindAt.GetPositionX() - bot->GetPositionX()) * share,
-                                  bot->GetPositionY() + (behindAt.GetPositionY() - bot->GetPositionY()) * share,
-                                  bot->GetPositionZ() + (behindAt.GetPositionZ() - bot->GetPositionZ()) * share);
+                float const part = done / whole;
+                Position const at(bot->GetPositionX() + (behindAt.GetPositionX() - bot->GetPositionX()) * part,
+                                  bot->GetPositionY() + (behindAt.GetPositionY() - bot->GetPositionY()) * part,
+                                  bot->GetPositionZ() + (behindAt.GetPositionZ() - bot->GetPositionZ()) * part);
                 if (!mob->HasInArc(float(M_PI), &at) && mob->GetExactDist(at) <= reach)
                 {
                     behindWalk = done;
                     break;
                 }
             }
+        }
+        else
+        {
+            // [lead1352] the mob turning on its victim: the first place out of its front half on the member's side
+            // (its flank on the ring, where the chase's walk ends - ChaseDoneHere)
+            float const off = std::remainder(mob->GetAbsoluteAngle(bot) - facing, 2.0f * float(M_PI));
+            float const flankAngle = facing + (off >= 0.0f ? 1.0f : -1.0f) * float(M_PI) / 2.0f;
+            Position const flank(mob->GetPositionX() + std::cos(flankAngle) * ring,
+                                 mob->GetPositionY() + std::sin(flankAngle) * ring, mob->GetPositionZ());
+            behindWalk = bot->GetExactDist(flank);
         }
         // The front's loss, the core's melee roll (Unit::RollMeleeOutcomeAgainst): parry and block only from the
         // front (none with SPELL_AURA_IGNORE_HIT_DIRECTION: front and back are the same there), the parry chance less
@@ -1937,14 +1974,49 @@ namespace Leader::Fight
         float const lossShare = (parry + block * blockShare) / 100.0f;
         float const lifetime = ExpectedLifetime(botAI, mob);
         float const lossSec = lifetime * lossShare;
+        // [lead1352] the parry-haste the front costs the mob's victim (Unit::AttackerStateUpdate -> the core's parry
+        // haste: a parry with more than 20 % of the parrier's swing left cuts 40 % of the swing, to 20 % at most; none
+        // for CREATURE_FLAG_EXTRA_NO_PARRY_HASTEN). Rawr.Bear (CalculationsBear parryHasteDamageMuliplier): the
+        // victim takes 1 + (1 / 0.6 - 1) x P(a parry in a window of 0.6 of the mob's swing) of the mob's damage. The
+        // member's parryable attacks: its white swings (main / off hand) and one ability per global cooldown (1.5 s,
+        // the game's GCD). The extra damage is the mob hitting that much longer - seconds of the fight, set against
+        // the member's own seconds by its share of the group's damage (GroupDamage::MemberSustainedDps / SustainedDps)
+        float hasteSec = 0.0f;
+        float share = 0.0f;
+        if (parry > 0.0f && victim != bot && victim->IsPlayer() &&
+            !mob->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_PARRY_HASTEN))
+        {
+            float const groupDps = GroupDamage::SustainedDps(bot);
+            share = groupDps > 0.0f ? GroupDamage::MemberSustainedDps(bot) / groupDps : 0.0f;
+            float rate = 1.0f / 1.5f;
+            if (uint32 const mainHand = bot->GetAttackTime(BASE_ATTACK))
+                rate += 1000.0f / float(mainHand);
+            if (bot->HasOffhandWeaponForAttack())
+                if (uint32 const offHand = bot->GetAttackTime(OFF_ATTACK))
+                    rate += 1000.0f / float(offHand);
+            float const window = 0.6f * float(mob->GetAttackTime(BASE_ATTACK)) / 1000.0f;
+            float const pWindow = 1.0f - std::pow(1.0f - parry / 100.0f, rate * window);
+            float const extraShare = (1.0f / 0.6f - 1.0f) * pWindow;
+            if (share > 0.0f)
+                hasteSec = extraShare * lifetime / share;
+        }
         float const speed = bot->GetSpeed(MOVE_RUN);
         float const extraSec = speed > 0.0f ? std::max(0.0f, behindWalk - nearWalk) / speed : 0.0f;
+        w.lossSec = lossSec;
+        w.hasteSec = hasteSec;
+        w.extraSec = extraSec;
+        w.parry = parry;
+        w.block = block;
+        w.lifetime = lifetime;
+        w.share = share;
         if (why)
             *why = Acore::StringFormat("front loss {:.2f} s ({:.1f} % parry + {:.1f} % block x {:.2f} over {:.1f} s) "
-                                       "vs the walk round {:.2f} s ({:.1f} yd behind vs {:.1f} yd {})",
-                                       lossSec, parry, block, blockShare, lifetime, extraSec, behindWalk, nearWalk,
-                                       inReach ? "where it stands" : "to the near place in reach");
-        if (lossSec >= extraSec)
+                                       "+ parry-haste {:.2f} s vs the walk round {:.2f} s ({:.1f} yd behind vs "
+                                       "{:.1f} yd {}){}",
+                                       lossSec, parry, block, blockShare, lifetime, hasteSec, extraSec, behindWalk,
+                                       nearWalk, inReach ? "where it stands" : "to the near place in reach",
+                                       moving ? "; it turns on its victim" : "");
+        if (lossSec + hasteSec >= extraSec)
             return false;
         if (standAt)
             *standAt = nearAt;
