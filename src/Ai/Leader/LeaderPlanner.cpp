@@ -12598,6 +12598,49 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         }
     }
 
+    // [lead1372] b259 rfc-h 5H-8 546.6 s: the pull back of 5 mobs (cost 0.9 tank healths) was committed as the last
+    // fight ended with the disc priest at ~2 % mana; Penance, Power Word: Shield and its heals failed "not enough
+    // power" and the mage died at 569. The healer mana the plan's computed cost needs (HealerManaNeed: the healers'
+    // reserve plus the cost at their health per mana, of their pool) was read by IsGroupReadyToPull only - which
+    // returns the leader's readiness verdict first (lead17b: that verdict leaves the levels to the planner) - and a
+    // chain pull skips that call. Every measured trash plan (a pull, a chain, a fallback) waits while the healers'
+    // mana (their pool's share now) cannot cover its cost; the wait names the healer and its line, so the leader's
+    // Rest drinks it to that line (NamedManaLine)
+    if (healerManaNeed >= 0.0f && !GroupDamage::NoDamageRelease(bot))
+    {
+        float mana = 0.0f;
+        float maxMana = 0.0f;
+        Player* lowest = nullptr;
+        auto const consider = [&](Player* member)
+        {
+            if (!member || !member->IsAlive() || !PlayerbotAI::IsHeal(member) ||
+                member->getPowerType() != POWER_MANA || !member->GetMaxPower(POWER_MANA))
+                return;
+            mana += float(member->GetPower(POWER_MANA));
+            maxMana += float(member->GetMaxPower(POWER_MANA));
+            if (!lowest || member->GetPowerPct(POWER_MANA) < lowest->GetPowerPct(POWER_MANA))
+                lowest = member;
+        };
+        consider(bot);
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot &&
+                                                       member->GetMapId() == bot->GetMapId() &&
+                                                       !ToppedUpWatch::Stranded(bot, member))
+                    consider(member);
+        float const poolPct = maxMana > 0.0f ? 100.0f * mana / maxMana : -1.0f;
+        if (lowest && poolPct >= 0.0f && poolPct < healerManaNeed)
+        {
+            _planNotReadyWhy = Acore::StringFormat(
+                "{} at {:.0f} % mana (needs {:.0f} % = the plan's cost {:.2f} tank health + the healers' reserve; "
+                "{} mobs{}) [lead1372]",
+                lowest->GetName(), lowest->GetPowerPct(POWER_MANA), healerManaNeed, TakenCost(chosen), chosen.mobs,
+                chain ? ", a chain pull" : fallback ? ", a fallback" : "");
+            LogPullGate(bot, _planNotReadyWhy);
+            return false;
+        }
+    }
+
     // [b32_engage] A chain or fallback pull skips the rest lines, never a sitter below its line nor a healer out of
     // reach: ohb-h-5H-21 20261025-221216 #18 (the hunter drinking 63 yd off), bf-h-5H-84 20261025-223902 #18.
     std::string notReady;
