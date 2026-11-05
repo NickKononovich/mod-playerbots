@@ -13181,6 +13181,22 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
 // Where the tank casts its ranged pull from: where it stands when in range, else on the way in at the spell's range.
 // False when its pull strategy has no ranged spell it can use on this mob now.
+// [lead1303] b252 rfc-h 5B-2 312-340 s / 5E-5 359-384 s: the tank's lone-mob pull of a Ragefire Shaman /
+// Trogg 21-23 yd below its ledge, its cast spot where it stood - seen by the planner's sight line (the mob's eyes to
+// the spot's eye height), not by the tank's own (ReachPullAction: Unit::IsWithinLOSInMap): the tank stepped 2 yd in
+// for sight, that end left the healer's sight, the pull was aborted - 14 orders alternating the two mobs, 28 / 25 s.
+// The cast spot is judged by the game's own cast sight (Spell::CheckCast -> WorldObject::IsWithinLOSInMap): the
+// caster's eyes at its collision height to the mob's hit sphere
+static bool CastSightFrom(Player* bot, Unit* mob, Position const& at)
+{
+    Position const eye(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + bot->GetCollisionHeight());
+    Position const hit = mob->GetHitSpherePointFor(eye);
+    return bot->GetMap()->isInLineOfSight(eye.GetPositionX(), eye.GetPositionY(), eye.GetPositionZ(),
+                                          hit.GetPositionX(), hit.GetPositionY(), hit.GetPositionZ(),
+                                          bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                          VMAP::ModelIgnoreFlags::Nothing);
+}
+
 bool AggressiveTargetAction::PullBackSpot(Unit* candidate, Position& spot, bool single, float* rangeOut)
 {
     // A ranged pull of this mob was just given up before the cast (the walk for range would leave the healer, the
@@ -13233,9 +13249,7 @@ bool AggressiveTargetAction::PullBackSpot(Unit* candidate, Position& spot, bool 
         // died under 7 mobs. A cast spot the healer does not see is no ranged pull: the cast spot moves on along the
         // approach (below) to one in range that sees the mob and the healer sees (RFC 2026-10-24 20:04: no such spot
         // at the spell's range, the tank walked in on a mob round the corner and the fight drew the pack beside it).
-        if (candidate->IsWithinLOS(spot.GetPositionX(), spot.GetPositionY(),
-                                   spot.GetPositionZ() + CAREFUL_EYE_HEIGHT) &&
-            HealerSees(bot, spot))
+        if (bot->IsWithinLOSInMap(candidate) && HealerSees(bot, spot))  // [lead1303] the tank's own sight
         {
             _castSpots[candidate->GetGUID()] = {spot, getMSTime()};
             return true;
@@ -13267,7 +13281,7 @@ bool AggressiveTargetAction::PullBackSpot(Unit* candidate, Position& spot, bool 
                 return false;  // in sight only once in melee: no ranged pull from here
 
             Position const option(point.x, point.y, point.z);
-            if (candidate->IsWithinLOS(point.x, point.y, point.z + CAREFUL_EYE_HEIGHT) && HealerSees(bot, option))
+            if (CastSightFrom(bot, candidate, option) && HealerSees(bot, option))  // [lead1303]
             {
                 spot.Relocate(point.x, point.y, point.z);
                 _castSpots[candidate->GetGUID()] = {spot, getMSTime()};
