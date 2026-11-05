@@ -6640,7 +6640,8 @@ namespace Leader::Dungeon
             if (!moved && combat && Leader::LEADER_COMBAT_SPOTS && target && target->IsAlive())
             {
                 Unit* const target = spotTarget;  // the block below judges the spot against it
-                bool const melee = !PlayerbotAI::IsRanged(bot) && !PlayerbotAI::IsHeal(bot);
+                // [lead1329] a Demonology warlock in Metamorphosis takes a melee spot (its Immolation Aura's 8 yd)
+                bool const melee = LeaderFightsMelee(bot);
                 std::vector<HazardZone> const& zones = lead.hazardZones[guid];
                 std::function<bool(Position const&)> const keepsBase =
                     bot == healer ? std::function<bool(Position const&)>(healerSpotKeeps)  // [lead490]
@@ -8455,7 +8456,7 @@ namespace Leader::Dungeon
                     // averaged 3.9 at the end - a mob near the target the tank had not hit yet (0 against 0) stopped
                     // a ranged single-target attacker too. The mobs around the target count for a member whose damage
                     // splashes onto them (a melee: cleave, procs, its totems); the AoE gate below holds every AoE
-                    bool const splashes = !PlayerbotAI::IsRanged(bot);
+                    bool const splashes = !PlayerbotAI::IsRanged(bot) || LeaderFightsMelee(bot);  // [lead1329]
                     auto const headroom = [&](Unit* mob)
                     {
                         if (!headroomOn(mob))
@@ -8995,7 +8996,7 @@ namespace Leader::Dungeon
                     // [lead127] the melee walk to the target (lead124 / lead125) is gone: in a fight the member's
                     // position has one owner, its combat spot (the follow rule's stays that started it no longer run
                     // under an Attack, LeaderOrders.cpp MoveBarred)
-                    bool const meleeMember = !PlayerbotAI::IsRanged(bot);
+                    bool const meleeMember = !PlayerbotAI::IsRanged(bot) || LeaderFightsMelee(bot);  // [lead1329]
                     float const shootReach = LeaderShootReach(bot);
                     // [lead127] b159 20261101-113309 43.0-44.2 s / 79.6-81.1 s: the "in range of its target" MoveTo
                     // and the combat spot StandAt owned the hunter's position one after the other (it walked to one

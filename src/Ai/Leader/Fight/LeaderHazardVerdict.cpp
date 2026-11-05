@@ -159,7 +159,7 @@ std::string Amount(float value)
                                                  : Acore::StringFormat("{:.0f}", value);
 }
 
-bool IsMelee(Player* member) { return !PlayerbotAI::IsRanged(member) && !PlayerbotAI::IsHeal(member); }
+bool IsMelee(Player* member) { return Leader::Fight::LeaderFightsMelee(member); }  // [lead1329]
 
 // The rotation's own loss while the member is away `awaySec`: its damage over time on `target` that keeps ticking
 // meanwhile is no loss (the measured dps has it in), only past its end; its own damage buffs that run out

@@ -551,6 +551,16 @@ namespace Leader::Fight
     }
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
+    bool LeaderFightsMelee(Player* member)
+    {
+        if (!member)
+            return false;
+        constexpr uint32 SPELL_METAMORPHOSIS_FORM = 47241;
+        if (member->getClass() == CLASS_WARLOCK && member->HasAura(SPELL_METAMORPHOSIS_FORM))
+            return true;
+        return !PlayerbotAI::IsRanged(member) && !PlayerbotAI::IsHeal(member);
+    }
+
     float LeaderTauntReach(Player* tank)
     {
         for (uint32 spell : TANK_TAUNTS)

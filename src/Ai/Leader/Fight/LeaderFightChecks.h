@@ -206,6 +206,10 @@ namespace Leader::Fight
 
     // [lead53] the tank's taunt reach: its known taunt spell's range (0: none known)
     float LeaderTauntReach(Player* tank);
+    // [lead1329] the member fights in melee now: a melee damage dealer by role, or a Demonology warlock in
+    // Metamorphosis (47241: its Immolation Aura reaches 8 yd, spell 50590's radius) - the leader's combat spot, its
+    // hazard and cleave checks treat it as melee while the form is up, its ranged spot comes back when it drops
+    bool LeaderFightsMelee(Player* member);
 
     // [lead1011] an unreachable verdict with the facts it was judged under (the tank's and the mob's positions, the
     // tank's own state and fight state, the last fight's end, the mob's fight state)
