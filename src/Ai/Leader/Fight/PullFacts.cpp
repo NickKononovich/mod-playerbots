@@ -471,6 +471,30 @@ namespace Leader::Fight
             candidates.emplace_back(healer->GetPositionX() + landing.GetPositionX() - tank->GetPositionX(),
                                     healer->GetPositionY() + landing.GetPositionY() - tank->GetPositionY(),
                                     healer->GetPositionZ());
+            // [lead1350] b257 rfc-h 5F-14 883.9 s / 5F-6 907.3 s, the same pack (Searing Blade Enforcer x2), the same
+            // tank spot (36 yd), the same fight left: the chain taken in one run, refused "no reach or sight of the
+            // landing from its spot" in the other - the two points above are one line from where the healer happened
+            // to stand, a wall's corner a few yards off decides. The healer's places round the landing (the ring
+            // search lead1332 uses: 12 bearings at the band and half of it), nearest first, judged by the same
+            // checks: the verdict is whether the healer has a place that heals the landing in time, not whether its
+            // own line happens to see it
+            {
+                std::vector<std::pair<float, Position>> ring;
+                for (float radius : {band, band * 0.5f})
+                    for (uint32 i = 0; i < 12; ++i)
+                    {
+                        float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
+                        Position const point(landing.GetPositionX() + std::cos(angle) * radius,
+                                             landing.GetPositionY() + std::sin(angle) * radius, landing.GetPositionZ());
+                        float const gap = healer->GetExactDist2d(point.GetPositionX(), point.GetPositionY());
+                        if (gap / speed <= inSec)  // a straight walk already too long is no candidate
+                            ring.emplace_back(gap, point);
+                    }
+                std::sort(ring.begin(), ring.end(),
+                          [](auto const& a, auto const& b) { return a.first < b.first; });
+                for (auto const& point : ring)
+                    candidates.push_back(point.second);
+            }
             std::string last;
             for (Position const& candidate : candidates)
             {
