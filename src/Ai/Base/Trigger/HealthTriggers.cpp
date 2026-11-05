@@ -599,13 +599,12 @@ void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec, 
         entry.upkeep += std::max(upkeep, 0.0f);
         entry.upkeepSec += fightSec;
     }
-    if (healed <= 0.0f)
+    if (healed <= 0.0f && manaSpent <= 0.0f)
         return;
-    if (manaSpent > 0.0f)
-    {
-        entry.healed += healed;
-        entry.mana += manaSpent;
-    }
+    // [lead1434] the heals' mana is their casts' costs: a fight's healing and its casts are summed apart (a heal over
+    // time or a shield cast in one fight heals in the next, an overhealed cast heals nothing)
+    entry.healed += std::max(healed, 0.0f);
+    entry.mana += std::max(manaSpent, 0.0f);
     if (fightSec > 0.0f)
         entry.bestHps = std::max(entry.bestHps, healed / fightSec);
 }
@@ -679,6 +678,7 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
             if (hps > game.hps)
             {
                 game.hps = hps;
+                game.mainHealPerMana = cost > 0 ? amount / float(cost) : 0.0f;  // [lead1434]
                 game.manaPctPerSec = facts.maxMana > 0.0f && cost > 0
                                          ? 100.0f * float(cost) * float(IN_MILLISECONDS) / everyMs / facts.maxMana
                                          : 0.0f;
@@ -690,12 +690,18 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
         cached = {healer->GetSpellMap().size(), power, healer->GetMaxPower(POWER_MANA), game};
     }
     facts = cached.facts;
+    if (facts.mainHealPerMana > 0.0f)  // [lead1434] the prior: the main heal's, not the most efficient one's
+        facts.healPerMana = facts.mainHealPerMana;
 
     std::lock_guard<std::mutex> lock(manaRateLock);
     if (auto const found = measuredHealing.find(healer->GetGUID().GetRawValue());
         found != measuredHealing.end() && found->second.instanceId == healer->GetInstanceId())
     {
-        if (found->second.mana > 0.0f)
+        // [lead1434] coordinator 2026-11-05: until the measured effective healing covers one full health of the
+        // member it heals (the tank: its max health, game data), the main heal's average over its cost stands (b263
+        // 5B-10: one overhealed Holy Light read 0.24 hp per mana and lead1372 asked 100 % for 0.22 tank health)
+        facts.measuredHealed = found->second.healed;
+        if (found->second.mana > 0.0f && found->second.healed >= float(target->GetMaxHealth()))
         {
             facts.healPerMana = found->second.healed / found->second.mana;
             facts.measured = true;
@@ -710,6 +716,63 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
 float HealerUpkeepPctPerSec(Player* healer)
 {
     return healer ? HealerThroughput(healer, healer).upkeepPctPerSec : 0.0f;
+}
+
+float DirectHealAverage(Player* healer, SpellInfo const* info, Unit* target)
+{
+    if (!healer || !info || !target)
+        return 0.0f;
+    float amount = 0.0f;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+    {
+        int32 const base = effect.CalcValue(healer);
+        if (effect.Effect == SPELL_EFFECT_HEAL && base > 0)
+            amount += float(target->SpellHealingBonusTaken(
+                healer, info, healer->SpellHealingBonusDone(target, info, uint32(base), HEAL, effect.EffectIndex),
+                HEAL));
+    }
+    return amount;
+}
+
+bool OverhealsSmallerHeal(Player* healer, Unit* target, SpellInfo const* info)
+{
+    if (!healer || !target || !info || !target->IsAlive())
+        return false;
+    // [lead1434] coordinator 2026-11-05: b263 5B-10's first fight - the leader's TopUp cast Holy Light (its list's
+    // order) on a tank that missed 102 health: 1274 mana for 1299 healed. The healer's smallest direct heal (spell
+    // data, the highest rank of each it knows, on itself: cached while its spells and spell power stay the same) is
+    // the bound: a bigger heal on a member that misses less than it heals only overheals
+    struct Cached
+    {
+        size_t spells = 0;
+        int32 power = 0;
+        float smallest = 0.0f;
+    };
+    thread_local std::unordered_map<uint64, Cached> cache;
+    Cached& cached = cache[healer->GetGUID().GetRawValue()];
+    int32 const power = healer->SpellBaseHealingBonusDone(SPELL_SCHOOL_MASK_ALL);
+    if (cached.spells != healer->GetSpellMap().size() || cached.power != power)
+    {
+        float smallest = 0.0f;
+        for (auto const& [spellId, known] : healer->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+            if (!spell || spell->IsPassive() || !spell->IsPositive() || spell->PowerType != POWER_MANA)
+                continue;
+            if (SpellInfo const* next = spell->GetNextRankSpell(); next && healer->HasSpell(next->Id))
+                continue;  // a lower rank
+            float const average = DirectHealAverage(healer, spell, healer);
+            if (average > 0.0f && (smallest <= 0.0f || average < smallest))
+                smallest = average;
+        }
+        cached = {healer->GetSpellMap().size(), power, smallest};
+    }
+    if (cached.smallest <= 0.0f)
+        return false;
+    float const missing = float(target->GetMaxHealth() - target->GetHealth());
+    return missing < cached.smallest && DirectHealAverage(healer, info, healer) > cached.smallest;
 }
 
 float HealerPctPerTankHealth(Player* healer)

@@ -160,6 +160,7 @@ namespace
     std::unordered_map<ObjectGuid, TakenFrom> takenFrom;
     std::unordered_map<ObjectGuid, uint64> toolMana;  // [lead1400] ManaReturned::FromTools, by player
     std::unordered_map<ObjectGuid, uint64> upkeepMana;  // [lead1431] ManaSpent::Upkeep, by player
+    std::unordered_map<ObjectGuid, uint64> healMana;    // [lead1434] ManaSpent::OnHeals, by player
     // [lead1431] an absorb aura's amount at its last apply: (target, caster, spell) -> absorb amount
     std::map<std::tuple<ObjectGuid, ObjectGuid, uint32>, int32> shieldAmounts;
 
@@ -572,6 +573,13 @@ namespace ManaSpent
         auto const found = upkeepMana.find(player);
         return found != upkeepMana.end() ? found->second : 0;
     }
+
+    uint64 OnHeals(ObjectGuid player)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = healMana.find(player);
+        return found != healMana.end() ? found->second : 0;
+    }
 }
 
 namespace HealingDone
@@ -722,18 +730,19 @@ public:
     {
     }
 
-    // [lead1431] the mana a cast that heals nothing itself costs (ManaSpent::Upkeep): the cost the game takes
+    // [lead1431] the mana a cast that heals nothing itself costs (ManaSpent::Upkeep), [lead1434] a heal's apart
+    // (ManaSpent::OnHeals): the cost the game takes
     // (Spell::TakePower: none for an item's cast, a cast triggered by an aura, or one that ignores its cost)
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
     {
         SpellInfo const* info = spell ? spell->GetSpellInfo() : nullptr;
         if (!info || info->PowerType != POWER_MANA || spell->GetPowerCost() <= 0 || spell->m_CastItem ||
             spell->GetTriggeredByAuraSpellInfo() ||
-            spell->HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST) || !IsTracked(player) ||
-            IsHealCast(info))
+            spell->HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST) || !IsTracked(player))
             return;
+        bool const heal = IsHealCast(info);  // [lead1434] a heal's cost: ManaSpent::OnHeals
         std::lock_guard<std::mutex> lock(takenLock);
-        upkeepMana[player->GetGUID()] += uint64(spell->GetPowerCost());
+        (heal ? healMana : upkeepMana)[player->GetGUID()] += uint64(spell->GetPowerCost());
     }
 
     void OnPlayerUpdate(Player* player, uint32 diff) override

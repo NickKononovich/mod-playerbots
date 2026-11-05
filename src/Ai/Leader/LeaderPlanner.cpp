@@ -7077,6 +7077,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             float mana = 0.0f;
             uint64 toolMana = 0;  // [lead1400] ManaReturned::FromTools
             uint64 upkeepMana = 0;  // [lead1431] ManaSpent::Upkeep
+            uint64 healMana = 0;    // [lead1434] ManaSpent::OnHeals
         };
         std::vector<HealerStart> healers;  // [lead258] the healers present when the fight began
         float dropScale = 1.0f;            // [lead259] the measured drop ratio `drop` was planned with
@@ -7333,13 +7334,18 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             // over the fight's seconds plus its heals' mana per health healed (Rawr's healer model: the same split)
             uint64 const upkeepNow = ManaSpent::Upkeep(start.healer);
             float const upkeep = upkeepNow > start.upkeepMana ? float(upkeepNow - start.upkeepMana) : 0.0f;
-            RestState::NoteHealing(healer, float(healed - start.healed), spent - upkeep,
+            // [lead1434] coordinator 2026-11-05: the heals' mana is the sum of their casts' costs (the cast hook), not
+            // the pool's change less the upkeep - b263 5B-10's fights "healed 8779 with -36 mana": the regen netted
+            // against it and the fight's healing fell out of the measurement
+            uint64 const healNow = ManaSpent::OnHeals(start.healer);
+            float const healMana = healNow > start.healMana ? float(healNow - start.healMana) : 0.0f;
+            RestState::NoteHealing(healer, float(healed - start.healed), healMana,
                                    float(fightMs) / float(IN_MILLISECONDS), upkeep);
             LOG_DEBUG("playerbots",
                       "[lead258] {}: healer {} healed {} with {:.0f} mana over {:.1f} s ([lead1400] {:.0f} of it "
-                      "its credited returns; [lead1431] {:.0f} upkeep, {:.0f} on heals)",
+                      "its credited returns; [lead1431] {:.0f} upkeep, [lead1434] {:.0f} its heals' casts)",
                       tank->GetName(), healer->GetName(), healed - start.healed, spent,
-                      float(fightMs) / float(IN_MILLISECONDS), returned, upkeep, spent - upkeep);
+                      float(fightMs) / float(IN_MILLISECONDS), returned, upkeep, healMana);
         }
     }
 
@@ -7975,7 +7981,8 @@ namespace PullCheck
                             record.healers.push_back({member->GetGUID(), HealingDone::Effective(member->GetGUID()),
                                                       float(member->GetPower(POWER_MANA)),
                                                       ManaReturned::FromTools(member->GetGUID()),
-                                                      ManaSpent::Upkeep(member->GetGUID())});
+                                                      ManaSpent::Upkeep(member->GetGUID()),
+                                                      ManaSpent::OnHeals(member->GetGUID())});
                 if (record.method.empty())
                 {
                     // Nothing cast first: a pet opened, or a mob came by itself.

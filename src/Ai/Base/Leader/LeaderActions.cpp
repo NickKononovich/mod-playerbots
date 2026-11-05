@@ -1209,6 +1209,11 @@ bool LeaderHealTargetAction::Execute(Event /*event*/)
             // member is healing already: the next heal of the list
             if (periodic && target->HasAura(healId, bot->GetGUID()))
                 continue;
+            // [lead1434] b263 5B-10 7.6 s: "tops up Rtwaraa with holy light" on a tank missing 102 health - the
+            // list's order put Holy Light before Flash of Light. A heal bigger than the healer's smallest is skipped
+            // while the member misses less than that one heals (spell data): the smaller heal of the list tops it up
+            if (RestState::OverhealsSmallerHeal(bot, target, info))
+                continue;
             if (botAI->CanCastSpell(heal, target) && botAI->CastSpell(heal, target))
             {
                 if (outOfFight && periodic)

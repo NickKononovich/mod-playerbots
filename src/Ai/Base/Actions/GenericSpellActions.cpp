@@ -14,6 +14,7 @@
 #include "GenericBuffUtils.h"
 #include "Group.h"
 #include "HealAssignmentValues.h"
+#include "HealthTriggers.h"  // [lead1434]
 #include "Item.h"  // [lead512]
 #include "ItemTemplate.h"
 #include "LeaderOrders.h"  // [lead512] the leader's burn verdict on a trinket
@@ -576,7 +577,17 @@ CastHealingSpellAction::CastHealingSpellAction(PlayerbotAI* botAI, std::string c
     range = botAI->GetRange("heal");
 }
 
-bool CastHealingSpellAction::isUseful() { return CastAuraSpellAction::isUseful(); }
+bool CastHealingSpellAction::isUseful()
+{
+    if (!CastAuraSpellAction::isUseful())
+        return false;
+    // [lead1434] no big heal on a member that misses less health than the healer's smallest heal heals: the next
+    // action of the trigger (a smaller heal) or nothing - the big one would only overheal
+    Unit* target = GetTarget();
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    return !(target && spellId &&
+             RestState::OverhealsSmallerHeal(bot, target, sSpellMgr->GetSpellInfo(spellId)));
+}
 
 // The threat strategy holds Aoe actions at 50 % (30 % careful) of the tank's threat on any mob near the bot or its
 // target, and reads 100 % for a mob the tank has not touched yet. Every heal is Aoe, so on a pack the tank was still

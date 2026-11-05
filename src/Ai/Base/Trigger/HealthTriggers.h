@@ -17,6 +17,7 @@
 class Creature;  // [b46_patrol]
 class Player;
 class PlayerbotAI;
+class SpellInfo;  // [lead1434]
 
 class ValueInRangeTrigger : public Trigger
 {
@@ -288,6 +289,8 @@ struct HealerFacts
     std::string spell;      // the best rate's heal (logged)
     float castPct = 0.0f;   // [lead1400] the best rate's heal: one cast's cost, % of max mana
     float upkeepPctPerSec = 0.0f;  // [lead1431] its measured upkeep (casts that heal nothing): % of max mana per s
+    float mainHealPerMana = 0.0f;  // [lead1434] the best rate's heal: its average heal over its cost (spell data)
+    float measuredHealed = 0.0f;   // [lead1434] the effective healing its measurement holds
 };
 HealerFacts HealerThroughput(Player* healer, Unit* target);
 // [lead258] the leader notes a healer's effective healing and its net mana spent over a fight in this dungeon
@@ -296,6 +299,12 @@ HealerFacts HealerThroughput(Player* healer, Unit* target);
 void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec, float upkeep = 0.0f);
 // [lead1431] a healer's measured upkeep in this dungeon: % of its max mana per second of fight (0: none measured)
 float HealerUpkeepPctPerSec(Player* healer);
+// [lead1434] a direct heal's average on `target` from spell data: its SPELL_EFFECT_HEAL effects with the healer's
+// and the target's healing bonuses (0: no direct heal)
+float DirectHealAverage(Player* healer, SpellInfo const* info, Unit* target);
+// [lead1434] true when `info` is a direct heal bigger than the healer's smallest direct heal (the highest rank it
+// knows of each) while `target` misses less health than that smallest heal's average: the big heal would only overheal
+bool OverhealsSmallerHeal(Player* healer, Unit* target, SpellInfo const* info);
 // [lead258] a healer's mana (% of its max) per tank health it heals: the group tank's health over its health per mana
 float HealerPctPerTankHealth(Player* healer);
 // [lead264] A member's mana spend from its spell data while nothing is measured (% of max mana per second): the mana

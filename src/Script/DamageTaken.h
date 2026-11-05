@@ -44,6 +44,9 @@ namespace ManaReturned
 namespace ManaSpent
 {
     uint64 Upkeep(ObjectGuid player);
+    // [lead1434] ... and on its heals (the same hook, the casts that heal by themselves): a healer's heal mana is the
+    // sum of its heals' costs, never its pool's change (out-of-fight and in-fight regen do not net against it)
+    uint64 OnHeals(ObjectGuid player);
 }
 
 #include <string>
