@@ -152,6 +152,52 @@ namespace
         return LeaderCommandUnit(botAI, target);
     }
 
+    // [rot501] b257 rfc-h 5E-13 603 s: the leader's Shadow Protection (48169) on all five, refused by the cast check
+    // (and Power Word: Fortitude 48161 on three at 666 s) - the members still carried the priest's Prayer of Shadow
+    // Protection (9 s left) / Prayer of Fortitude, which the single rank cannot overwrite: Spell::CheckCast
+    // SPELL_FAILED_AURA_BOUNCED, Unit::IsHighestExclusiveAuraEffect (one exclusive-highest spell group, equal
+    // amount, the longer duration wins). The game's refresh is the buff that bounces it: the bot's own highest
+    // known rank of that buff's chain (the Prayer, which renews it on the whole party), when the cast check passes
+    // it and the caster has its reagents (Sacred Candle); 0 when there is none. Only while the bouncing buff has
+    // less left than the ordered one would give (its spell data's duration): a fresher one already gives more, and
+    // the next orders of the pass are not renewed again on members the first Prayer just covered
+    uint32 BouncedBuffRefresh(PlayerbotAI* botAI, uint32 spell, Unit* unit)
+    {
+        Player* bot = botAI->GetBot();
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+        if (!info || !unit || !info->IsPositive() || bot->IsHostileTo(unit))
+            return 0;
+        int32 const orderedMs = info->GetMaxDuration();
+        for (auto const& entry : unit->GetAppliedAuras())
+        {
+            Aura const* aura = entry.second->GetBase();
+            SpellInfo const* other = aura->GetSpellInfo();
+            if (!other || aura->GetDuration() < 0 || (orderedMs >= 0 && aura->GetDuration() >= orderedMs) ||
+                other->GetFirstRankSpell() == info->GetFirstRankSpell() ||
+                sSpellMgr->CheckSpellGroupStackRules(info, other) != SPELL_GROUP_STACK_RULE_EXCLUSIVE_HIGHEST)
+                continue;
+            uint32 known = 0;
+            for (uint32 rank = other->GetFirstRankSpell()->Id; rank; rank = sSpellMgr->GetNextSpellInChain(rank))
+                if (bot->HasSpell(rank))
+                    known = rank;
+            SpellInfo const* refresh = known ? sSpellMgr->GetSpellInfo(known) : nullptr;
+            if (!refresh)
+                continue;
+            bool reagents = bot->CanNoReagentCast(refresh);
+            if (!reagents)
+            {
+                reagents = true;
+                for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+                    if (refresh->Reagent[i] > 0 &&
+                        !bot->HasItemCount(uint32(refresh->Reagent[i]), refresh->ReagentCount[i]))
+                        reagents = false;
+            }
+            if (reagents && botAI->CanCastSpell(known, unit, true))
+                return known;
+        }
+        return 0;
+    }
+
     // [lead401] a resurrection the bot must still walk to: out of its range or sight
     bool ResurrectionNeedsWalk(Player* bot, uint32 spell, Unit* dead)
     {
@@ -207,7 +253,8 @@ bool LeaderExternalAction::isPossible()
         if (!own || !banish || own->GetDuration() <= int32(banish->CalcCastTime(bot)))
             return false;
     }
-    if (botAI->CanCastSpell(spell, unit, true))
+    // [rot501] a buff the target's bouncing group buff refreshes instead
+    if (botAI->CanCastSpell(spell, unit, true) || BouncedBuffRefresh(botAI, spell, unit))
         return true;
     // [lead272] refused while nothing passing holds it (a walk, a cast, the global cooldown): reported to the
     // leader, which drops the order instead of waiting on it
@@ -286,7 +333,17 @@ bool LeaderExternalAction::Execute(Event /*event*/)
         // its leap's destination in Spell::prepare (TARGET_DEST_CASTER_FRONT_LEAP: the caster's orientation now)
         bot->SetOrientation(facing);
     }
-    if (!botAI->CastSpell(spell, unit))
+    // [rot501] the ordered buff bounced by the target's group buff: that buff's own rank renews it
+    uint32 cast = spell;
+    if (!botAI->CanCastSpell(spell, unit, true))
+        if (uint32 const refresh = BouncedBuffRefresh(botAI, spell, unit))
+        {
+            cast = refresh;
+            LOG_INFO("playerbots", "[rot501] {}: {} ({}) on {} is bounced by its group buff, cast {} instead",
+                     bot->GetName(), info->SpellName[0], spell, unit->GetName(), refresh);
+        }
+    SpellInfo const* castInfo = cast == spell ? info : sSpellMgr->GetSpellInfo(cast);
+    if (!castInfo || !botAI->CastSpell(cast, unit))
     {
         // [lead272] reported: the leader drops the order instead of waiting on it
         Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "the cast failed on " + unit->GetName());
@@ -295,9 +352,9 @@ bool LeaderExternalAction::Execute(Event /*event*/)
     if (leaps)
         AI_VALUE(LastMovement&, "last movement").clear();
 
-    LOG_INFO("playerbots", "[rot2] [leader external] {} casts {} ({}) on {}", bot->GetName(), info->SpellName[0], spell,
-             unit->GetName());
-    AckLeader(bot, "external", std::string(info->SpellName[0]) + " on " + unit->GetName());
+    LOG_INFO("playerbots", "[rot2] [leader external] {} casts {} ({}) on {}", bot->GetName(), castInfo->SpellName[0],
+             cast, unit->GetName());
+    AckLeader(bot, "external", std::string(castInfo->SpellName[0]) + " on " + unit->GetName());
     return true;
 }
 
