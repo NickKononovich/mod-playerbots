@@ -1972,7 +1972,11 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 else if (effect.ApplyAuraName == SPELL_AURA_MOD_DAMAGE_PERCENT_DONE && effect.CalcValue(bot) < 0)
                     damageCut = std::max(damageCut, -float(effect.CalcValue(bot)) / 100.0f);
             }
-            float const viperCostPerPct = damageCut / float(DamageDealers(bot)) / viperPerSec;
+            // [lead1328] b255 rfc-h 5H: the MM hunter pulled the bosses at 8-16 % ("- 175 cooldowns") and fought
+            // 40-47 % of boss time in Viper (sim 0-13 %). Viper's damage cut was priced at one damage dealer's even
+            // share; Evocation's channel at the member's measured share of the group's damage (lead850). Viper is
+            // priced like it: the cut times this member's own share (DamageShare)
+            float const viperCostPerPct = damageCut * DamageShare(bot, DamageDealers(bot)) / viperPerSec;
             // [lead726] b219 rfc-h: no hunter drank a mana potion in any of the 13 boss fights (itemUses {}), the
             // in-fight potion verdicts came at "the fight's 0-7 s left" (5H Rthunad "mana potion: 6 % < the 6 %
             // ... Aspect of the Viper in the fight: 0.9 s"), and the hunters fought their bosses in Viper at 6-15 %.
