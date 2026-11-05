@@ -16,6 +16,8 @@ namespace DamageTaken
 {
     uint64 Total(ObjectGuid player);
     uint64 Spell(ObjectGuid player);  // [lead256] the part of Total armor does not reduce (magic schools)
+    // [lead1344] the part of Total one creature dealt (DealDamage's attacker), this instance only
+    uint64 From(ObjectGuid player, ObjectGuid attacker);
 }
 
 // [lead256] Health a player's heals restored inside a dungeon or raid since the server started, overheal cut off.

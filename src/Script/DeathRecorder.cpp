@@ -144,6 +144,14 @@ namespace
     std::unordered_map<ObjectGuid, uint64> takenTotals;  // DamageTaken: from creatures, by player
     std::unordered_map<ObjectGuid, uint64> takenSpell;   // [lead256] the part of it armor does not reduce
     std::unordered_map<ObjectGuid, uint64> healedDone;   // [lead256] HealingDone: effective heals, by healer
+    // [lead1344] DamageTaken::From: a player's damage from each creature, this instance only (emptied when the
+    // player's instance changes, so it holds one dungeon's creatures at most)
+    struct TakenFrom
+    {
+        uint32 instanceId = 0;
+        std::unordered_map<ObjectGuid, uint64> byAttacker;
+    };
+    std::unordered_map<ObjectGuid, TakenFrom> takenFrom;
 
     // [lead256] a spell's damage armor does not reduce (any school but physical)
     bool IsMagicDamage(uint32 spellId)
@@ -164,6 +172,13 @@ namespace
             takenTotals[victim->GetGUID()] += uint64(amount);
             if (magic)
                 takenSpell[victim->GetGUID()] += uint64(amount);
+            TakenFrom& from = takenFrom[victim->GetGUID()];
+            if (from.instanceId != victim->GetInstanceId())
+            {
+                from.byAttacker.clear();
+                from.instanceId = victim->GetInstanceId();
+            }
+            from.byAttacker[source->GetGUID()] += uint64(amount);
         }
         // [lead256] the heal hook runs before the heal lands: what it restores, overheal cut off
         if (heal && source && source->IsPlayer() && victim->GetHealth() < victim->GetMaxHealth())
@@ -447,6 +462,16 @@ namespace DamageTaken
         std::lock_guard<std::mutex> lock(takenLock);
         auto const found = takenSpell.find(player);
         return found != takenSpell.end() ? found->second : 0;
+    }
+
+    uint64 From(ObjectGuid player, ObjectGuid attacker)
+    {
+        std::lock_guard<std::mutex> lock(takenLock);
+        auto const found = takenFrom.find(player);
+        if (found == takenFrom.end())
+            return 0;
+        auto const hit = found->second.byAttacker.find(attacker);
+        return hit != found->second.byAttacker.end() ? hit->second : 0;
     }
 }
 

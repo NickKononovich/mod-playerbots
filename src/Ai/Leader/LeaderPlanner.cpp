@@ -6980,6 +6980,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         uint32 deaths = 0;       // most members dead at once
         GuidVector came;         // every mob seen fighting the group
         std::vector<uint32> cameHealth;  // parallel to `came`: its maximum health when first seen
+        std::vector<uint64> cameTaken;   // [lead1344] parallel to `came`: the tank's DamageTaken::From it then
         uint64 takenAtStart = 0;         // the tank's DamageTaken total when the fight began
         uint64 spellAtStart = 0;         // [lead256] ... and its DamageTaken::Spell part
         struct HealerStart
@@ -7107,12 +7108,21 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool boss = false;
         uint32 oneEntry = 0;
         bool singleEntry = true;
+        uint32 hitters = 0;
         for (size_t i = 0; i < record.came.size(); ++i)
         {
             Unit* mob = botAI->GetUnit(record.came[i]);
             if (!mob || !mob->ToCreature())
                 return;  // a mob the template cannot read: no measurement
             boss = boss || IsBossMob(mob);
+            // [lead1344] b256 5C-3: Taragaman's fight counted a Searing Blade Enforcer that never hit the tank in
+            // the template, the measured ratio fell 0.49 -> 0.36 and Bazzalan's healer line read it. The template
+            // holds only the mobs whose damage on the tank the core saw in this fight (DealDamage per attacker);
+            // every mob that came still shares the fight's kill time (its health in `totalHealth`)
+            if (record.cameTaken.size() == record.came.size() &&
+                DamageTaken::From(tank->GetGUID(), record.came[i]) <= record.cameTaken[i])
+                continue;
+            ++hitters;
             if (!oneEntry)
                 oneEntry = mob->GetEntry();
             singleEntry = singleEntry && mob->GetEntry() == oneEntry;
@@ -7158,9 +7168,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             add(entry.entry[oneEntry]);
         LOG_DEBUG("playerbots",
                   "[lead256] {}: taken {:.0f} melee / {:.0f} spell against the template's {:.0f} / {:.0f} over "
-                  "{:.1f} s ({} mobs{})",
+                  "{:.1f} s ({} mobs, {} hit the tank{})",
                   tank->GetName(), realMelee, realSpell, templateMelee, templateSpell, fightSec, record.came.size(),
-                  boss ? ", a boss" : "");
+                  hitters, boss ? ", a boss" : "");
     }
 
     // [lead259] The fight is over: the tank's deepest drop in it against the drop the plan expected before the
@@ -7849,6 +7859,7 @@ namespace PullCheck
                     Unit* mob = botAI->GetUnit(guid);
                     record.came.push_back(guid);
                     record.cameHealth.push_back(mob ? mob->GetMaxHealth() : 0);
+                    record.cameTaken.push_back(DamageTaken::From(bot->GetGUID(), guid));  // [lead1344]
                 }
             }
 
