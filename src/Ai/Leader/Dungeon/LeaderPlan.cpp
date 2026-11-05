@@ -772,6 +772,21 @@ namespace Leader::Dungeon
                                   .Str("tag", "[lead1390]"));
         };
 
+        // [lead1482] b268ac ac-h: 55 of the 56 "cc ... on ...: OUT_OF_RANGE / NOT_SHAPESHIFT / LINE_OF_SIGHT"
+        // order_impossible lines named an order the leader issued on an earlier tick: this check runs on every world
+        // update, the leader's own pass (TickLeaderEvents, its lead1462 re-check) only every LEADER_FIGHT_TICK_MS -
+        // a held mob that wandered off its caster's reach in between was a violation before the leader looked
+        // again. The orders are judged as the leader's last pass left them: once per pass
+        {
+            static std::unordered_map<uint64, uint32> judgedPass;  // world thread: run -> the leader pass judged
+            uint32 pass = 0;
+            for (uint32 ticks : group.State().cadenceTicks)
+                pass += ticks;
+            uint32& judged = judgedPass[uint64(group.Run().runSeq)];
+            if (judged == pass)
+                return;
+            judged = pass;
+        }
         std::vector<LeaderGroup::MemberInfo> const members = group.Members();
         std::vector<Leader::MemberEvents> events(members.size());
         std::vector<bool> hasEvents(members.size(), false);

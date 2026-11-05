@@ -1520,6 +1520,46 @@ namespace Leader::Fight
         return (floor + reachEdge) / 2.0f + reaches;
     }
 
+    // [lead1482] the core's getStackCount on the edge-to-edge gap (Unit::GetDistance: the 3D centre gap less both
+    // combat reaches)
+    namespace
+    {
+        int32 InhibitStacks(float edge)
+        {
+            int32 stacks = 4;
+            for (float band : INHIBIT_MAGIC_BANDS_YD)
+            {
+                if (edge < band)
+                    return stacks;
+                --stacks;
+            }
+            return 0;
+        }
+
+        float InhibitReachEdge(Player* bot, Unit* target)
+        {
+            return PlayerbotAI::IsHeal(bot)
+                       ? Leader::LEADER_HEAL_REACH_YD
+                       : LeaderCastReach(bot, target) - bot->GetCombatReach() - target->GetCombatReach();
+        }
+    }
+
+    int32 LeaderInhibitStacksAt(Player* bot, Unit* target, Position const& at)
+    {
+        if (!bot || !target || target->GetEntry() != NPC_SHIRRAK_THE_DEAD_WATCHER || bot->getClass() == CLASS_HUNTER)
+            return -1;
+        return InhibitStacks(target->GetExactDist(&at) - bot->GetCombatReach() - target->GetCombatReach());
+    }
+
+    int32 LeaderInhibitBestStacks(Player* bot, Unit* target)
+    {
+        if (!bot || !target || target->GetEntry() != NPC_SHIRRAK_THE_DEAD_WATCHER || bot->getClass() == CLASS_HUNTER)
+            return -1;
+        return InhibitStacks(InhibitReachEdge(bot, target));
+    }
+
+    float LeaderInhibitRate(int32 stacks) { return 1.0f / (1.0f + 0.5f * float(std::max<int32>(stacks, 0))); }
+
     std::vector<uint32> const& LeaderSelfAreaSpells(Player* member)
     {
         // per member, rebuilt when its spell book changes (a talent swap, a new rank)

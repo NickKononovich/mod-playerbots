@@ -4271,6 +4271,10 @@ bool PlayerbotAI::IsPassingCastAnswer(SpellCastResult result, SpellInfo const* s
         case SPELL_FAILED_TRY_AGAIN:          // a lockpick roll
         case SPELL_FAILED_SPELL_IN_PROGRESS:  // a cast or channel under way ends
         case SPELL_FAILED_INTERRUPTED:
+        // [lead1482] b268ac ac-h: 27 orders / credits refused SPELL_FAILED_CONFUSED under Exarch Maladaar's Soul
+        // Scream (32421, SPELL_AURA_MOD_CONFUSE, its own duration): Spell::CheckCasterAuras refuses only while the
+        // confusion holds - it runs out, the cast is possible again
+        case SPELL_FAILED_CONFUSED:
             return true;
         case SPELL_FAILED_NOT_READY:
             // the global cooldown only: no cooldown of its own, no potion of this combat holding the item

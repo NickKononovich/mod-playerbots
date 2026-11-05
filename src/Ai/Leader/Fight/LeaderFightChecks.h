@@ -355,6 +355,12 @@ namespace Leader::Fight
     // middle of the fewest-stack band its reach (edge to edge) still covers; `top`: that band's outer centre gap
     // (the reach). 0: no banded slow on the target, or a hunter (Inhibit Magic slows spells, not its shots)
     float LeaderInhibitRing(Player* bot, Unit* target, float reachEdge, float* top = nullptr);
+    // [lead1482] the Inhibit Magic stacks the member gets at `at` (-1: no banded slow on the target, a hunter), the
+    // fewest its reach allows (its cast reach, a healer's heal reach), and the cast rate a stack count leaves
+    // (1 / (1 + 0.5 n): the aura's -50 % casting speed a stack, the global cooldown with it)
+    int32 LeaderInhibitStacksAt(Player* bot, Unit* target, Position const& at);
+    int32 LeaderInhibitBestStacks(Player* bot, Unit* target);
+    float LeaderInhibitRate(int32 stacks);
 
     // [lead18] the nearest walking patrol (idle, a waypoint walker or on the move, not of the committed pull)
     // around the pull spot or the tank; `gap`: its distance to the nearer of the two, `reach`: its aggro reach

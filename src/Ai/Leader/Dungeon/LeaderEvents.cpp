@@ -7831,6 +7831,11 @@ namespace Leader::Dungeon
                     // [lead18] anchored: kept for the whole fight while it fits; a target change alone never moves
                     // anyone; a new spot is the nearest that fits (from where the member stands), else a fresh one
                     std::string breaks;
+                    // [lead1482] the band break (Inhibit Magic) and the held spots already judged for it this fight
+                    static constexpr char const* INHIBIT_BREAK = "in more Inhibit Magic stacks than its reach needs";
+                    thread_local std::map<ObjectGuid, std::pair<uint32, Position>> inhibitJudged;
+                    if (inhibitJudged.size() > 1024)
+                        inhibitJudged.clear();
                     if (found == lead.combatSpots.end())
                         breaks = "first spot";
                     // [lead38] b86: 135 "the fight spot moved" re-spots - a new anchor re-spots a member only when its
@@ -7892,6 +7897,21 @@ namespace Leader::Dungeon
                                     breaks.clear();
                                     break;
                                 }
+                        // [lead1482] b268ac ac-h: round Shirrak a held caster / healer spot in more Inhibit Magic
+                        // stacks than its reach needs (lead1481's band) breaks; the walk to the better band is
+                        // weighed below (lead1471). A held spot judged once stays judged (no better spot, or the walk
+                        // does not pay) until the spot or the fight changes
+                        if (breaks.empty() && !melee && bot != tank)
+                            if (int32 const held = LeaderInhibitStacksAt(bot, target, found->second.second);
+                                held >= 0 && held > LeaderInhibitBestStacks(bot, target))
+                            {
+                                auto const judged = inhibitJudged.find(guid);
+                                bool const same = judged != inhibitJudged.end() &&
+                                                  judged->second.first == lead.fightStartMs &&
+                                                  judged->second.second.GetExactDist(found->second.second) <= 0.1f;
+                                if (!same)
+                                    breaks = INHIBIT_BREAK;
+                            }
                         lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         // [lead190] b180 rfc-h 5G 103.2-105.0 s: the ret paladin's spot "behind" a Ragefire Shaman
                         // that walked off broke "out of melee reach" every tick, each new StandAt stopped its walk to
@@ -8067,7 +8087,10 @@ namespace Leader::Dungeon
                                     if (std::find(cover.mobs.begin(), cover.mobs.end(), pulled) == cover.mobs.end())
                                         cover.mobs.push_back(pulled);
                         }
-                        bool const fitsHere = standsFit(true);
+                        // [lead1482] where it stands is no spot when its band there is worse than its reach needs
+                        int32 const bestStacks = melee ? -1 : LeaderInhibitBestStacks(bot, target);
+                        int32 const hereStacks = melee ? -1 : LeaderInhibitStacksAt(bot, target, bot->GetPosition());
+                        bool const fitsHere = standsFit(true) && (bestStacks < 0 || hereStacks <= bestStacks);
                         bool here = fitsHere && (!wantsCover || breaks != "first spot" ||
                                                  LeaderCoversFight(bot, bot->GetPosition(), cover));
                         if (here)
@@ -8109,8 +8132,44 @@ namespace Leader::Dungeon
                                                   breaks == "it cannot cast on its target from its spot");
                         float const respotWalkSec =
                             got && !here ? Leader::WalkYd(bot, spot) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) : 0.0f;
-                        if (got && !here && reachRespot && lead.fightSecLeft > 0.0f &&
-                            respotWalkSec >= lead.fightSecLeft)
+                        // [lead1482] the band walk by the same game math: the cast rate at the new spot's stacks
+                        // against the held spot's (1 / (1 + 0.5 n)) over the fight's seconds left after the walk,
+                        // against the held rate lost while it walks; a new spot in no better band is no walk
+                        bool bandStays = false;
+                        if (breaks == INHIBIT_BREAK)
+                        {
+                            int32 const heldStacks =
+                                found != lead.combatSpots.end()
+                                    ? LeaderInhibitStacksAt(bot, target, found->second.second)
+                                    : hereStacks;
+                            int32 const newStacks = got ? LeaderInhibitStacksAt(bot, target, spot) : heldStacks;
+                            float const heldRate = LeaderInhibitRate(heldStacks);
+                            float const newRate = LeaderInhibitRate(newStacks);
+                            float const left = lead.fightSecLeft;
+                            float const gain = (newRate - heldRate) * std::max(0.0f, left - respotWalkSec);
+                            float const loss = heldRate * respotWalkSec;
+                            bandStays = !got || (!here && (newStacks >= heldStacks || (left > 0.0f && gain <= loss)));
+                            if (found != lead.combatSpots.end() && bandStays)
+                                inhibitJudged[guid] = {lead.fightStartMs, found->second.second};
+                            Decisions().Write(
+                                run, "leader", "respot_weighed", guid, bot->GetName(), true,
+                                JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                    .Str("target", target->GetName())
+                                    .Num("heldStacks", heldStacks).Num("newStacks", newStacks)
+                                    .Real("walkSec", respotWalkSec).Real("fightSecLeft", left)
+                                    .Real("gain", gain).Real("loss", loss)
+                                    .Str("verdict", !bandStays ? (here ? "takes where it stands: its band"
+                                                                       : "walks: the better band pays")
+                                                    : !got                    ? "stays: no spot in its band"
+                                                    : newStacks >= heldStacks ? "stays: no spot in a better band"
+                                                                              : "stays: the fight ends before the "
+                                                                                "walk pays")
+                                    .Str("tag", "[lead1482]"));
+                        }
+                        if (bandStays)
+                            lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;  // its held spot stays
+                        else if (got && !here && reachRespot && lead.fightSecLeft > 0.0f &&
+                                 respotWalkSec >= lead.fightSecLeft)
                         {
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;  // its held spot stays
                             thread_local std::set<std::pair<uint64, uint32>> weighLogged;
@@ -8377,7 +8436,9 @@ namespace Leader::Dungeon
                     found->second.first == target->GetGUID() &&
                     bot->GetExactDist2d(found->second.second.GetPositionX(), found->second.second.GetPositionY()) >
                         2.0f &&
-                    standsFit(false) && standsFit(true))  // [lead505]
+                    standsFit(false) && standsFit(true) &&  // [lead505]
+                    (LeaderInhibitBestStacks(bot, target) < 0 ||   // [lead1482] not short of its band
+                     LeaderInhibitStacksAt(bot, target, bot->GetPosition()) <= LeaderInhibitBestStacks(bot, target)))
                 {
                     Decisions().Write(run, "leader", "combat_spot_here", guid, bot->GetName(), true,
                                       JsonObject().Str("member", bot->GetName())
@@ -9314,6 +9375,12 @@ namespace Leader::Dungeon
                     {
                         if (!closedOn.empty())
                             break;
+                        // [lead1482] b268ac ac-h 5G-7 745-776 s / 5D-4: Maladaar's Stolen Soul attacks the member
+                        // whose soul it took (AttackStart on it) - on the holy paladin the heals waited 24 s "Stolen
+                        // Soul is not on the tank ... (on Rtpalad)". A mob already on the healer itself takes
+                        // nothing new from its heals (the healer is its victim already): it holds no heal
+                        if (mob->GetVictim() == bot)
+                            continue;
                         Player* const holder = mob->GetVictim() ? mob->GetVictim()->ToPlayer() : nullptr;
                         if (holder && holder != tank && holder != bot && holder->IsInSameGroupWith(bot) &&
                             mob->GetThreatMgr().GetThreat(holder) > 0.0f)
@@ -11736,12 +11803,23 @@ namespace Leader::Dungeon
                 std::sort(candidates.begin(), candidates.end(),
                           [](Candidate const& a, Candidate const& b) { return a.walk < b.walk; });
                 Candidate const* chosen = nullptr;
+                // [lead1482] b268ac ac-h: 23 of the Soulpriests' "every spot refused" walks were refused by the
+                // walker's own passing state (IsMovingAllowed: its cast, a root, a stun - spot_rejected_aggro), and
+                // the refusal was stored as "no spot where it stands": the caster mob holding its range was never
+                // searched again while it stood (70 "every spot refused", 20 "no spot" a batch). A walker held by a
+                // passing state refuses this tick only (lead1463): the mob is searched again on the next
+                Player* passingRefusal = nullptr;
                 for (Candidate const& candidate : candidates)
+                {
                     if (sightWalkLive(candidate.bot, candidate.spot, why))
                     {
                         chosen = &candidate;
                         break;
                     }
+                    if (!passingRefusal && (candidate.bot->IsNonMeleeSpellCast(false) ||
+                                            candidate.bot->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_LOST_CONTROL)))
+                        passingRefusal = candidate.bot;
+                }
                 JsonObject fields;
                 fields.Str("mob", mob->GetName())
                     .Num("motion", int64(mob->GetMotionMaster()->GetCurrentMovementGeneratorType()))  // [lead1350]
@@ -11760,6 +11838,10 @@ namespace Leader::Dungeon
                         .Real("y", chosen->spot.GetPositionY())
                         .Real("z", chosen->spot.GetPositionZ());
                 }
+                else if (passingRefusal)
+                    fields.Str("verdict", "refused this tick: the walker's own cast / root / control")
+                        .Str("member", passingRefusal->GetName())
+                        .Str("tag", "[lead1482]");
                 else
                 {
                     lead.unhittableNoSpot[mobGuid] = mob->GetPosition();
