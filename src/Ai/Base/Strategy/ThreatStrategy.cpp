@@ -257,6 +257,27 @@ namespace
         return false;
     }
 
+    // [lead1365] a channelled spell that deals damage: a damage effect, a persistent area aura of periodic damage
+    // (Blizzard, Rain of Fire, Hurricane: SPELL_EFFECT_PERSISTENT_AREA_AURA with SPELL_AURA_PERIODIC_DAMAGE) or an
+    // effect whose triggered spell deals it (Volley's periodic trigger), spell data
+    bool ChannelDealsDamage(SpellInfo const* info)
+    {
+        if (!info)
+            return false;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (!effect.IsEffect())
+                continue;
+            if (IsDamageEffect(effect))
+                return true;
+            if (effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA &&
+                (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                 effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH))
+                return true;
+        }
+        return TriggersDamage(info, 2);
+    }
+
     bool IsFriendlySpell(Player* bot, SpellInfo const* info, Unit* target)
     {
         if (target && target != bot && bot->IsFriendlyTo(target))
@@ -962,6 +983,51 @@ void LeaderCommandMultiplier::Refresh()
             bot->RemoveAurasDueToSpell(id);
             LOG_INFO("playerbots", "[lead601] {} cancels its {} ({}): {}", bot->GetName(), spell, id, why);
             break;
+        }
+        // [lead1365] b259 rfc-h 5H-8 564.5-569 s: the leader's Stop ("its splash threat on Searing Blade Enforcer
+        // overtakes the tank") held the mage's next casts while its Blizzard channel went on ticking on four
+        // Enforcers - lead901 even counted the channel's ticks left (11390 vs the tank's 8626); at 565.4 two
+        // Enforcers and a Cultist were on it (victimCasts Blizzard), it died at 569. A channelled area that deals
+        // damage (Blizzard, Rain of Fire, Hurricane, Volley, Mind Sear) is the member's own running area as lead601's
+        // auras are: the Stop, the AoE rule forbidding it, a spared mob or the DontAttack mob in its reach (the
+        // radius plus the mob's size round the channel's centre, in its sight: the game's area test) interrupts it -
+        // its next tick adds the threat the Stop holds. Interrupting a channel removes its dynamic object
+        // (Spell::cancel -> Unit::RemoveDynObject)
+        if (Spell* channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+        {
+            SpellInfo const* info = channel->GetSpellInfo();
+            if (info && HitsSeveral(info) && ChannelDealsDamage(info))
+            {
+                Position center = bot->GetPosition();
+                if (channel->m_targets.HasDst() && channel->m_targets.GetDstPos())
+                    center = *channel->m_targets.GetDstPos();
+                else if (Unit* on = channel->m_targets.GetUnitTarget())
+                    center = on->GetPosition();
+                std::string spell = info->SpellName[0] ? info->SpellName[0] : "";
+                std::transform(spell.begin(), spell.end(), spell.begin(), ::tolower);
+                float const radius = AreaRadius(bot, info, spell);
+                auto const reaches = [&](Unit* mob)
+                {
+                    return mob && mob->IsAlive() && mob->GetExactDist(&center) <= radius + mob->GetCombatReach() &&
+                           AreaSees(info, mob, center);
+                };
+                std::string why;
+                if (stop)
+                    why = "the leader's Stop";
+                else if (_command.aoe == Leader::AoeRule::Forbidden)
+                    why = "the leader forbids AoE";
+                else if (Unit* spared = SparedInArea(reaches))
+                    why = "its next tick hits the leader's spared " + spared->GetName();
+                else if (Unit* loose = _command.dontAttack.IsEmpty() ? nullptr : botAI->GetUnit(_command.dontAttack);
+                         loose && reaches(loose))
+                    why = "its next tick hits the leader's DontAttack " + loose->GetName();
+                if (!why.empty())
+                {
+                    bot->InterruptSpell(CURRENT_CHANNELED_SPELL);
+                    LOG_INFO("playerbots", "[lead1365] {} interrupts its channelled {} ({}): {}", bot->GetName(),
+                             spell, info->Id, why);
+                }
+            }
         }
     }
 
