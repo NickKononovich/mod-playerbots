@@ -1996,11 +1996,21 @@ namespace Leader::Dungeon
             lead.bossPullSec = -1.0f;
             lead.bossPullPartsSec = -1.0f;
             lead.bossPullParts.clear();
+            lead.bossRouteStops.clear();  // [lead1472]
             if (nextBoss)
             {
                 float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
                 float trashHealth = 0.0f;
                 float walkYd = 0.0f;
+                // [lead1472] the plan's stops in order: the walk to each (yd, the path's length factor in it), its
+                // mobs' health, its name - the same parts the estimate sums
+                struct StopPart
+                {
+                    std::string name;
+                    float walkYd;
+                    float health;
+                };
+                std::vector<StopPart> stopParts;
                 // [lead632] b218 rfc-h 5G 714 s: the route's plan to Jergosh had no stop left ("stops":0, 52.5 yd)
                 // and read as no plan: the stretch floor (lead513) made his pull "110 s" at 722.7 s and "76 s" at
                 // 756.8 s - he was pulled at 758 s; the blood DK tank's Dancing Rune Weapon (90 s) went on that trash
@@ -2049,6 +2059,25 @@ namespace Leader::Dungeon
                             if (Creature* mob = map->GetCreature(mobGuid); mob && mob->IsAlive() && !mob->IsInCombat())
                                 trashHealth += float(mob->GetHealth());
                         trashHealth += table.healthFrom.size() > 1 ? table.healthFrom[1] : 0.0f;
+                        for (size_t i = 0; i < route.routePlan.size() && i + 1 < table.healthFrom.size(); ++i)
+                        {
+                            GroupRouteState::PlannedStop const& stop = route.routePlan[i];
+                            float health = 0.0f;
+                            if (i)
+                                health = table.healthFrom[i] - table.healthFrom[i + 1];
+                            else
+                                for (ObjectGuid const& mobGuid : stop.mobs)
+                                    if (Creature* mob = map->GetCreature(mobGuid);
+                                        mob && mob->IsAlive() && !mob->IsInCombat())
+                                        health += float(mob->GetHealth());
+                            float const legYd = i ? table.walkFrom[i - 1] - table.walkFrom[i]
+                                                  : tank->GetExactDist(stop.spot);
+                            Creature const* anchor = map->GetCreature(stop.anchor);
+                            stopParts.push_back({Acore::StringFormat("{} ({} mobs)",
+                                                                     anchor ? anchor->GetName() : std::string("stop"),
+                                                                     stop.mobs.size()),
+                                                 legYd * table.pathFactor, health});
+                        }
                     }
                 }
                 else
@@ -2083,6 +2112,17 @@ namespace Leader::Dungeon
                 lead.bossWalkSec = walkYd / speed;
                 lead.bossPullSec = fightLeft + trashSec + restSec + lead.bossWalkSec;
                 lead.bossPullPartsSec = lead.bossPullSec;  // [lead771]
+                // [lead1472] each stop's pull as the estimate times it: this fight, then per stop its walk and its
+                // fight (its health over the trash rate); the rest is the estimate's own part before the boss
+                float stopAt = fightLeft;
+                for (StopPart const& part : stopParts)
+                {
+                    stopAt += part.walkYd / speed;
+                    float const stopFight = part.health / std::max(trashRate, 1.0f);
+                    if (part.health > 0.0f)
+                        lead.bossRouteStops.push_back({part.name, stopAt, stopFight, part.health});
+                    stopAt += stopFight;
+                }
                 // [lead513] b210 rfc-h 5C 875.9 s: Starfall / Force of Nature held on Jergosh for Bazzalan "his pull
                 // in >= 78 s" - he was pulled 217 s later. The route plans the way to the next boss only once the boss
                 // fight under way ends (5C route_plan "first plan" to Bazzalan at 922 s, 7 stops 307 yd): until then
@@ -4535,13 +4575,92 @@ namespace Leader::Dungeon
             }
             return toHim;
         };
+        // [lead1472] user 2026-11-05 (cooldown-route-plan): a long damage cooldown is planned over the route to the
+        // next boss so that it hits the most mob health - this fight, each stop of the route's plan as the estimate
+        // times it (lead.bossRouteStops: its walk, its mobs' health over the trash rate) and the boss (a pack of his
+        // health).
+        // A pull's value is the health the effect covers (its health x the share of its fight the effect lasts; an
+        // instant: its health). Greedy, the highest value first: a pull is taken when every pull taken before is a
+        // recharge away from it (the recharge from spell data, lead541). The cooldown is cast here when this fight is
+        // in the schedule. A hard boss reserves it (user 2026-11-05): the group needs it to beat him safely - his
+        // pull judged like any pull (JudgePack's overload of tank health / healer mana over his fight, the line
+        // lead274's critical pull uses) at 1 or more - he is taken first, whatever the health of the trash before
+        auto const routeCooldownPlan = [&](float backSec, float effectSec, float pullSec, std::string& why) -> bool
+        {
+            struct Pull
+            {
+                std::string name;
+                float at;
+                float fightSec;
+                float health;
+            };
+            std::vector<Pull> pulls;
+            float const hereSec = std::max(lead.fightSecLeft, 0.0f);
+            pulls.push_back({"here", 0.0f, hereSec, hereSec * std::max(lead.groupDps, 1.0f)});
+            for (DungeonLeaderState::RouteStopEta const& stop : lead.bossRouteStops)
+                if (stop.startSec > 0.0f && stop.startSec < pullSec)
+                    pulls.push_back({stop.name, stop.startSec, stop.fightSec, stop.health});
+            auto const need = lead.bossNeeds.find(lead.nextBossGuid);
+            Creature* const boss = lead.nextBossGuid.IsEmpty() ? nullptr : map->GetCreature(lead.nextBossGuid);
+            float const bossFight = need != lead.bossNeeds.end() ? need->second.fightSec : 0.0f;
+            pulls.push_back({lead.nextBossName, pullSec, bossFight,
+                             boss ? float(boss->GetHealth()) : bossFight * std::max(lead.groupDps, 1.0f)});
+            size_t const bossAt = pulls.size() - 1;
+            bool const hard = need != lead.bossNeeds.end() && need->second.overload >= 1.0f;
+            auto const valueOf = [&](Pull const& pull)
+            {
+                return effectSec > 0.0f && pull.fightSec > effectSec ? pull.health * effectSec / pull.fightSec
+                                                                     : pull.health;
+            };
+            std::vector<size_t> order(pulls.size());
+            for (size_t i = 0; i < order.size(); ++i)
+                order[i] = i;
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b)
+                             { return valueOf(pulls[a]) > valueOf(pulls[b]); });
+            if (hard)
+                std::stable_partition(order.begin(), order.end(), [&](size_t i) { return i == bossAt; });
+            std::vector<size_t> taken;
+            size_t blocker = pulls.size();  // the first pull taken that keeps this fight out
+            for (size_t i : order)
+            {
+                auto const within = std::find_if(taken.begin(), taken.end(), [&](size_t j)
+                                                 { return std::fabs(pulls[i].at - pulls[j].at) < backSec; });
+                if (within == taken.end())
+                    taken.push_back(i);
+                else if (!i && blocker == pulls.size())
+                    blocker = *within;
+            }
+            std::sort(taken.begin(), taken.end(), [&](size_t a, size_t b) { return pulls[a].at < pulls[b].at; });
+            std::string plan;
+            for (size_t i : taken)
+                plan += Acore::StringFormat("{}{} {:.0f}k hp at {:.0f} s", plan.empty() ? "" : ", ", pulls[i].name,
+                                            valueOf(pulls[i]) / 1000.0f, pulls[i].at);
+            bool const here = std::find(taken.begin(), taken.end(), size_t(0)) != taken.end();
+            if (here)
+                why = Acore::StringFormat("[lead1472] route plan: here (recharge {:.0f} s, effect {:.0f} s, {} pull in "
+                                          "{:.0f} s; schedule: {})",
+                                          backSec, effectSec, lead.nextBossName, pullSec, plan);
+            else if (hard && blocker == bossAt)
+                why = Acore::StringFormat("[lead1472] reserved for {}: the group needs it to beat him safely "
+                                          "(overload {:.2f}: {}; his pull in {:.0f} s, recharge {:.0f} s)",
+                                          lead.nextBossName, need->second.overload, need->second.judged, pullSec,
+                                          backSec);
+            else
+                why = Acore::StringFormat("[lead1472] route plan: held for {} (recharge {:.0f} s, effect {:.0f} s, "
+                                          "here {:.0f}k hp; schedule: {})",
+                                          blocker < pulls.size() ? pulls[blocker].name : lead.nextBossName, backSec,
+                                          effectSec, valueOf(pulls[0]) / 1000.0f, plan);
+            return here;
+        };
         // [lead274] one cooldown's verdict by its recharge: true allowed, `why` the reason either way
         // [lead581] `effectSec`: how long its effect lasts once cast (the spell's duration)
         // [lead854] `spentEffect`: its recharge starts only once its effect is spent (Combustion: its 3 crits),
         // `effectSec` the fight seconds that takes; `valuePerSec`: the damage a second of its effect adds (0: the
         // group's dps)
+        // [lead1472] `damage`: a long damage cooldown (a burn, an offensive trinket, Heroism / Bloodlust) - on trash it
+        // is scheduled over the route (routeCooldownPlan); a save / mana tool / battle resurrection keeps "back before"
         auto const cooldownVerdict = [&](float rechargeSec, float effectSec, std::string& why, bool spentEffect = false,
-                                         float valuePerSec = 0.0f) -> bool
+                                         float valuePerSec = 0.0f, bool damage = false) -> bool
         {
             if (!critical.empty())
             {
@@ -4577,6 +4696,8 @@ namespace Leader::Dungeon
                     return false;
                 }
                 float const backSec = rechargeSec + (spentEffect ? effectSec : 0.0f);
+                if (damage)
+                    return routeCooldownPlan(backSec, effectSec, pullSec, why);
                 bool const back = pullSec >= backSec;
                 why = Acore::StringFormat("{} {} (his pull in {:.0f} s, recharge {:.0f} s)",
                                           back ? "trash: back before the pull of" : "held for", lead.nextBossName,
@@ -4878,7 +4999,8 @@ namespace Leader::Dungeon
                                  who->GetName(), name, effectSec, valuePerSec * effectSec);
                 }
                 std::string why;
-                bool const allowed = cooldownVerdict(rechargeSec, effectSec, why, spentEffect, valuePerSec);
+                bool const allowed =
+                    cooldownVerdict(rechargeSec, effectSec, why, spentEffect, valuePerSec, true);  // [lead1472]
                 judged(name, why, allowed);
             }
             // [lead512] b210 rfc-h 5C Rtdruab / 5G Rtpalae: their on-use trinkets (Tome of Arcane Phenomena, 2 min)
@@ -4898,7 +5020,8 @@ namespace Leader::Dungeon
                 std::string why;
                 SpellInfo const* use = sSpellMgr->GetSpellInfo(spell);
                 bool const allowed =
-                    cooldownVerdict(rechargeSec, use ? std::max(use->GetMaxDuration(), 0) / 1000.0f : 0.0f, why);
+                    cooldownVerdict(rechargeSec, use ? std::max(use->GetMaxDuration(), 0) / 1000.0f : 0.0f, why,
+                                    false, 0.0f, true);  // [lead1472]
                 judged(name, why, allowed);
             }
         };
@@ -7774,7 +7897,29 @@ namespace Leader::Dungeon
                         // band of LeaderCombatSpotValid (b200: 107 healer and 41 caster first spots walked 1-2 yd
                         // from a place that fit)
                         SpotRejects rejects;  // [lead455] each rejected candidate's reason, for combat_spot_none
-                        bool const here = standsFit(true);
+                        // [lead1470] b267 rfc-h: ranged walks "respot" 23 s and "first combat spot" 18 s a comp and
+                        // run (inactive_why); of 1748 yd "out of its reach / sight of its Attack target" and 1577 yd
+                        // "inside a fight mob's melee reach" re-spots nearly all came within 5 s of the member's first
+                        // spot, for the same target - the first spot was judged against the mob where it stood or
+                        // ran to, not against the fight the tank holds. A ranged damage dealer's first spot covers the
+                        // pull's fight for its whole length (LeaderCoversFight: the fight spot the tank stands on,
+                        // every mob of the fight and of the planned pull anywhere in its melee range of the tank);
+                        // where it stands is its spot when it covers it too; no such spot: the searches as before
+                        FightCover cover;
+                        bool const wantsCover = !melee && bot != healer && !PlayerbotAI::IsHeal(bot) && tank->IsAlive();
+                        if (wantsCover)
+                        {
+                            cover.fight = landing;
+                            cover.tank = tank;
+                            cover.mobs = killOrder;
+                            if (lead.commit && !lead.commitMob.IsEmpty())
+                                for (ObjectGuid const& pulled : LeaderPullMobs(lead.commit, lead.commitMob))
+                                    if (std::find(cover.mobs.begin(), cover.mobs.end(), pulled) == cover.mobs.end())
+                                        cover.mobs.push_back(pulled);
+                        }
+                        bool const fitsHere = standsFit(true);
+                        bool here = fitsHere && (!wantsCover || breaks != "first spot" ||
+                                                 LeaderCoversFight(bot, bot->GetPosition(), cover));
                         if (here)
                         {
                             spot = bot->GetPosition();
@@ -7782,16 +7927,55 @@ namespace Leader::Dungeon
                                               JsonObject().Str("member", bot->GetName()).Str("why", breaks)
                                                   .Str("target", target->GetName()));
                         }
-                        bool const got =
-                            here || slow([&]
-                                         {
-                                             SpotAcquire const acquire;  // [lead36]
-                                             return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(),
-                                                                            melee, zones, keeps, spot, &killOrder) ||
-                                                    LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot,
-                                                                     &killOrder);  // [lead214]
-                                         });
-                        if (got)
+                        bool covered = false;
+                        bool got = here || slow([&]
+                                                {
+                                                    SpotAcquire const acquire;  // [lead36]
+                                                    return LeaderSearchCombatSpot(
+                                                        bot, botAI, target, melee, zones, keeps, spot,
+                                                        &killOrder,  // [lead214]
+                                                        wantsCover ? &cover : nullptr, covered);
+                                                });
+                        // [lead1470] no spot covers the fight: where it stands, when it fits there, is no worse
+                        if (!here && fitsHere && (!got || !covered))
+                        {
+                            here = true;
+                            got = true;
+                            spot = bot->GetPosition();
+                            Decisions().Write(run, "leader", "combat_spot_here", guid, bot->GetName(), true,
+                                              JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                                  .Str("target", target->GetName())
+                                                  .Str("tag", "[lead1470] no spot covers the fight"));
+                        }
+                        // [lead1471] a re-spot for its reach / sight is weighed by the game math: the walk's seconds
+                        // (its real walk at its run speed) are lost damage, the fight's seconds left after it are the
+                        // damage gained (none where it stands: it cannot cast on its target from there). It walks
+                        // only when the fight outlasts the walk; safety re-spots (a mob's melee reach, a hazard, a
+                        // cleave) are not weighed
+                        bool const reachRespot = !melee && bot != healer && !PlayerbotAI::IsHeal(bot) &&
+                                                 found != lead.combatSpots.end() && breaks != "first spot" &&
+                                                 (breaks == "out of spell range of the target" ||
+                                                  breaks == "no line of sight to the target" ||
+                                                  breaks == "it cannot cast on its target from its spot");
+                        float const respotWalkSec =
+                            got && !here ? Leader::WalkYd(bot, spot) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) : 0.0f;
+                        if (got && !here && reachRespot && lead.fightSecLeft > 0.0f &&
+                            respotWalkSec >= lead.fightSecLeft)
+                        {
+                            lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;  // its held spot stays
+                            thread_local std::set<std::pair<uint64, uint32>> weighLogged;
+                            if (weighLogged.size() > 4096)
+                                weighLogged.clear();
+                            if (weighLogged.insert({guid.GetRawValue(), lead.fightStartMs}).second)
+                                Decisions().Write(run, "leader", "respot_weighed", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName()).Str("why", breaks)
+                                                      .Str("target", target->GetName())
+                                                      .Real("walkSec", respotWalkSec)
+                                                      .Real("fightSecLeft", lead.fightSecLeft)
+                                                      .Str("verdict", "stays: the fight ends before the walk pays")
+                                                      .Str("tag", "[lead1471]"));
+                        }
+                        else if (got)
                         {
                             // [lead137] [lead375] left for the target it was judged against (the held spot may
                             // still name the one before: b197b 5H the mage went back to the spot it had left)
@@ -7805,7 +7989,10 @@ namespace Leader::Dungeon
                                     JsonObject().Str("member", bot->GetName()).Str("why", breaks)
                                         .Str("target", target->GetName())
                                         .Str("hereFails", hereFails)
-                                        .Real("walk", bot->GetExactDist(spot)));
+                                        .Real("walk", bot->GetExactDist(spot))
+                                        .Bool("coversFight", covered)  // [lead1470]
+                                        .Real("walkSec", respotWalkSec)
+                                        .Real("fightSecLeft", lead.fightSecLeft));  // [lead1471]
                             // [lead250] b191: the ranged "combat spot" walks were 2439 s of the 8 runs' in-fight
                             // moving; a first spot away from where the member stands logs what its own place fails
                             else if (!here && !melee)
@@ -7819,7 +8006,8 @@ namespace Leader::Dungeon
                                         .Real("targetGap", bot->GetExactDist(target))
                                         // [lead1030] the plan's meeting point against where the target stands
                                         .Real("meetGap", bot->GetExactDist(lead.meetPoint))
-                                        .Real("targetMeetGap", target->GetExactDist(lead.meetPoint)));
+                                        .Real("targetMeetGap", target->GetExactDist(lead.meetPoint))
+                                        .Bool("coversFight", covered));  // [lead1470]
                             lead.combatSpots[guid] = {target->GetGUID(), spot};
                             lead.combatSpotAnchor[guid] = lead.fightAnchorSerial;
                         }
@@ -9678,16 +9866,48 @@ namespace Leader::Dungeon
                                                      }));
                             };
                             Position spot;
+                            // [lead1470] the new spot covers the fight the tank holds for its whole length (the
+                            // fight spot, every fight mob anywhere in its melee range of the tank) when one does
+                            FightCover cover;
+                            bool const wantsCover = bot != healer && tank->IsAlive();
+                            if (wantsCover)
+                            {
+                                cover.fight = lead.fightAnchorSerial ? lead.fightAnchor : tank->GetPosition();
+                                cover.tank = tank;
+                                cover.mobs = killOrder;
+                            }
+                            bool covered = false;
                             bool const got = slow(
                                 [&]
                                 {
                                     SpotAcquire const acquire;
-                                    return LeaderNearestCombatSpot(bot, botAI, judgedOn, bot->GetPosition(), false,
-                                                                   zones, keeps, spot, &killOrder) ||
-                                           LeaderCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot,
-                                                            &killOrder);  // [lead214]
+                                    return LeaderSearchCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot,
+                                                                  &killOrder,  // [lead214]
+                                                                  wantsCover ? &cover : nullptr, covered);
                                 });
-                            if (got && shootsFrom(spot))
+                            // [lead1471] the walk weighed by the game math: it pays only when the fight outlasts
+                            // it (no damage on its target where it stands; the walk's seconds none either); a flee
+                            // stop's walk is not weighed
+                            float const respotWalkSec =
+                                got ? Leader::WalkYd(bot, spot) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) : 0.0f;
+                            bool const walkPays =
+                                needsStopSpot || lead.fightSecLeft <= 0.0f || respotWalkSec < lead.fightSecLeft;
+                            if (got && !walkPays)
+                            {
+                                thread_local std::set<std::pair<uint64, uint32>> weighLogged;
+                                if (weighLogged.size() > 4096)
+                                    weighLogged.clear();
+                                if (weighLogged.insert({guid.GetRawValue(), lead.fightStartMs}).second)
+                                    Decisions().Write(run, "leader", "respot_weighed", guid, bot->GetName(), true,
+                                                      JsonObject().Str("member", bot->GetName())
+                                                          .Str("why", "out of its reach / sight of its Attack target")
+                                                          .Str("target", attackOn->GetName())
+                                                          .Real("walkSec", respotWalkSec)
+                                                          .Real("fightSecLeft", lead.fightSecLeft)
+                                                          .Str("verdict", "stays: the fight ends before the walk pays")
+                                                          .Str("tag", "[lead1471]"));
+                            }
+                            else if (got && shootsFrom(spot))
                             {
                                 if (kept != lead.combatSpots.end())  // [lead137] [lead375] for this target
                                     LeaveCombatSpot(lead.combatSpotLeft[guid],
@@ -9704,7 +9924,10 @@ namespace Leader::Dungeon
                                                                                 "Attack target")
                                                       .Str("target", attackOn->GetName())
                                                       .Str("hereFails", MemberCastsFails(bot, attackOn, killOrder))
-                                                      .Real("walk", bot->GetExactDist(spot)));
+                                                      .Real("walk", bot->GetExactDist(spot))
+                                                      .Bool("coversFight", covered)  // [lead1470]
+                                                      .Real("walkSec", respotWalkSec)
+                                                      .Real("fightSecLeft", lead.fightSecLeft));
                             }
                             else if (needsStopSpot)  // [lead1345] no spot fits both reaches and every spot check
                                 if (Unit* fleer = ObjectAccessor::GetUnit(*tank, lead.fleeReady[guid].mob))
@@ -10789,7 +11012,8 @@ namespace Leader::Dungeon
                                 sSpellMgr->GetSpellInfo(spell == SPELL_HEROISM ? SPELL_EXHAUSTION : SPELL_SATED))
                             rechargeSec = std::max(rechargeSec, debuff->GetMaxDuration() / 1000.0f);
                         bool const allowed =
-                            cooldownVerdict(rechargeSec, std::max(info->GetMaxDuration(), 0) / 1000.0f, why);
+                            cooldownVerdict(rechargeSec, std::max(info->GetMaxDuration(), 0) / 1000.0f, why,
+                                            false, 0.0f, true);  // [lead1472]
                         std::string const note = "heroism / bloodlust: " + why;
                         LogBurnDecision(run, lead, bot, "heroism", allowed ? note : std::string(),
                                         allowed ? std::string() : note, fightBoss != nullptr);

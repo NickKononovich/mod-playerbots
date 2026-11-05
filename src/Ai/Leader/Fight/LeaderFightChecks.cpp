@@ -100,6 +100,8 @@ namespace Leader::Fight
     }
 
     float g_spotAcquireMargin = 0.0f;
+    // [lead1470] the fight the spot searches on this thread must cover (LeaderSearchCombatSpot), none: no such test
+    thread_local FightCover const* g_spotCover = nullptr;
 
     float LeaderShootReach(Player* bot)
     {
@@ -1286,6 +1288,11 @@ namespace Leader::Fight
                     NoteSpotReject("ring", "inside a fight mob's melee reach");
                     continue;
                 }
+                if (g_spotCover && !melee && !LeaderCoversFight(bot, spot, *g_spotCover))  // [lead1470]
+                {
+                    NoteSpotReject("ring", "does not cover the fight spot");
+                    continue;
+                }
                 // [lead490] [lead492] a fight spot is judged by how deep it lies in an idle mob's reach against the
                 // fight there (LeaderFightAggroAt)
                 if (int const candidate = LeaderCandidate(bot, spot, fallback, target);
@@ -1365,6 +1372,11 @@ namespace Leader::Fight
                     if (fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
                     {
                         NoteSpotReject("walk", "inside a fight mob's melee reach");
+                        continue;
+                    }
+                    if (g_spotCover && !LeaderCoversFight(bot, spot, *g_spotCover))  // [lead1470]
+                    {
+                        NoteSpotReject("walk", "does not cover the fight spot");
                         continue;
                     }
                     if (int const candidate = LeaderCandidate(bot, spot, fallback, target);  // [lead492]
@@ -2846,6 +2858,11 @@ namespace Leader::Fight
                     NoteSpotReject("near", why);
                     continue;
                 }
+                if (g_spotCover && !melee && !LeaderCoversFight(bot, spot, *g_spotCover))  // [lead1470]
+                {
+                    NoteSpotReject("near", "does not cover the fight spot");
+                    continue;
+                }
                 if (int const candidate = LeaderCandidate(bot, spot, fallback, target);
                     candidate != 2)  // [lead490] [lead492]
                 {
@@ -2881,6 +2898,59 @@ namespace Leader::Fight
             return true;
         }
         return false;
+    }
+
+    bool LeaderCoversFight(Player* bot, Position const& spot, FightCover const& cover)
+    {
+        if (!cover.tank)
+            return true;
+        float const gap = spot.GetExactDist(cover.fight);
+        for (ObjectGuid const& guid : cover.mobs)
+        {
+            Unit* mob = ObjectAccessor::GetUnit(*bot, guid);
+            if (!mob || !mob->IsAlive())
+                continue;
+            float const spread = mob->GetMeleeRange(cover.tank);  // where it may stand while it hits the tank
+            if (gap + spread > LeaderCastReach(bot, mob) - g_spotAcquireMargin ||
+                gap - spread < LeaderRangedMinGap(bot, mob))
+                return false;
+        }
+        // the fight spot in sight: the member's eye to the tank's chest standing there
+        float const eye = spot.GetPositionZ() + bot->GetCollisionHeight();
+        return bot->GetMap()->isInLineOfSight(spot.GetPositionX(), spot.GetPositionY(), eye,
+                                              cover.fight.GetPositionX(), cover.fight.GetPositionY(),
+                                              cover.fight.GetPositionZ() + cover.tank->GetCollisionHeight(),
+                                              bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                              VMAP::ModelIgnoreFlags::Nothing);
+    }
+
+    bool LeaderSearchCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
+                                std::vector<HazardZone> const& zones,
+                                std::function<bool(Position const&)> const& keeps, Position& out,
+                                std::vector<ObjectGuid> const* fightMobs, FightCover const* cover, bool& covered)
+    {
+        covered = false;
+        auto const search = [&]
+        {
+            return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(), melee, zones, keeps, out,
+                                           fightMobs) ||
+                   LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, out, fightMobs);
+        };
+        if (cover && cover->tank && !melee && !PlayerbotAI::IsHeal(bot))
+        {
+            struct CoverOn
+            {
+                explicit CoverOn(FightCover const* on) { g_spotCover = on; }
+                ~CoverOn() { g_spotCover = nullptr; }
+            };
+            CoverOn const on(cover);
+            if (search())
+            {
+                covered = true;
+                return true;
+            }
+        }
+        return search();
     }
 
     // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack

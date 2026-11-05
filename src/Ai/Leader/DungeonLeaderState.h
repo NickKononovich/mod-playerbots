@@ -382,6 +382,16 @@ namespace Leader
             std::vector<float> healthFrom;
         };
         BossPullTable bossPullTable;
+        // [lead1472] the route plan's stops to the next boss as the estimate times them (its own parts: each stop's
+        // walk, its mobs' health over the trash rate): the long damage cooldowns are scheduled over them
+        struct RouteStopEta
+        {
+            std::string name;
+            float startSec = 0.0f;  // seconds from now to its pull
+            float fightSec = 0.0f;
+            float health = 0.0f;
+        };
+        std::vector<RouteStopEta> bossRouteStops;
         std::string bossPullParts;  // [lead724] bossPullSec's parts, logged with each burn_decision
         // [lead771] bossPullSec from its parts alone (no stretch floor): what a trash verdict's "back before" reads
         float bossPullPartsSec = -1.0f;

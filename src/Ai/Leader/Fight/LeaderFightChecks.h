@@ -508,6 +508,26 @@ namespace Leader::Fight
                                  std::function<bool(Position const&)> const& keeps, Position& out,
                                  std::vector<ObjectGuid> const* fightMobs = nullptr);
 
+    // [lead1470] the planned pull's fight as a ranged member's spot must cover it for the whole fight: where the tank
+    // stands to hold it (`fight`), the tank, the pull's mobs. Each mob held there stands within its melee range of
+    // the tank (Unit::GetMeleeRange): a spot covers the fight when, for every mob anywhere in that range, it is in
+    // the member's cast reach (LeaderCastReach), out of the mob's melee reach (LeaderRangedMinGap) and the fight
+    // spot is in its sight
+    struct FightCover
+    {
+        Position fight;
+        Unit* tank = nullptr;
+        std::vector<ObjectGuid> mobs;
+    };
+    bool LeaderCoversFight(Player* bot, Position const& spot, FightCover const& cover);
+    // [lead1470] a new combat spot by the two searches (LeaderNearestCombatSpot round the member, then
+    // LeaderCombatSpot): for a ranged damage dealer with `cover`, first a spot that covers the fight; none: any spot
+    // the searches find (a ranged spot always exists). `covered`: the spot found covers the fight
+    bool LeaderSearchCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
+                                std::vector<HazardZone> const& zones,
+                                std::function<bool(Position const&)> const& keeps, Position& out,
+                                std::vector<ObjectGuid> const* fightMobs, FightCover const* cover, bool& covered);
+
     // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack
     // reaching it, a walk to it.
     bool LeaderSpotOk(Player* tank, Position const& fight, Position& spot, std::vector<ObjectGuid> const& pack);
