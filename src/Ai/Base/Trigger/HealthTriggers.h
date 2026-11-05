@@ -382,9 +382,17 @@ constexpr uint32 SPELL_SHADOWFIEND = 34433;
 constexpr uint32 SPELL_HYMN_OF_HOPE = 64901;
 constexpr uint32 SPELL_MANA_TIDE_TOTEM = 16190;
 constexpr uint32 SPELL_EVOCATION = 12051;
-// [lead633] [lead850] the wowsims arcane / fire / frost APL channels Evocation at currentManaPercent <= 25 % (the
-// leader's in-fight Evocation verdict and the boss line's timeline read the same line)
+// [lead633] [lead850] the wowsims arcane APL channels Evocation at currentManaPercent <= 25 % (the leader's in-fight
+// Evocation verdict and the boss line's timeline read the same line)
 constexpr float WOWSIMS_EVOCATION_MANA_PCT = 25.0f;
+// [lead1327] the wowsims fire APL has no Evocation row: Evocation is its automatic major cooldown (wowsims
+// mage/evocation.go): at mana below 10 %, more than 12 s of the fight left, no Innervate on the mage. Rawr.Mage
+// (Sequence.cs / CalculationsMage.cs) places it by its LP solver at the end of the pool, no fixed line
+constexpr float WOWSIMS_EVOCATION_AUTO_MANA_PCT = 10.0f;
+constexpr float WOWSIMS_EVOCATION_AUTO_MIN_LEFT_SEC = 12.0f;
+// [lead1327] the mana line a mage's Evocation is channelled at, by spec (fire: the automatic cooldown's line; arcane
+// and frost: the APL's 25 %)
+float EvocationUseAtPct(Player* bot);
 // [lead920] Omen of Clarity procs Clearcasting on 6 % of the spell casts (Rawr 2.3.23 Rawr.Moonkin
 // SpellRotation.cs:197, 356); its spell_proc row reads Chance 100 - the core's spell_dru_omen_of_clarity CheckProc
 // rolls the 6 % itself

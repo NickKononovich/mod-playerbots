@@ -9878,7 +9878,15 @@ namespace Leader::Dungeon
                         Leader::MemberEvents pending;
                         bool const evocationTold = Leader::Events::Get(caster->GetGUID(), pending) &&
                                                    pending.externalSpell == RestState::SPELL_EVOCATION;
-                        if (caster->GetPowerPct(POWER_MANA) <= WOWSIMS_EVOCATION_MANA_PCT || evocationTold)
+                        // [lead1327] the line by spec (fire: wowsims' automatic cooldown, below 10 % with more than
+                        // 12 s of the fight left and no Innervate on the mage; arcane / frost: the APL's 25 %)
+                        float const evocationLine = RestState::EvocationUseAtPct(caster);
+                        bool const evocationAuto = evocationLine < WOWSIMS_EVOCATION_MANA_PCT;
+                        bool const evocationNow =
+                            caster->GetPowerPct(POWER_MANA) <= evocationLine &&
+                            (!evocationAuto || (lead.fightSecLeft > RestState::WOWSIMS_EVOCATION_AUTO_MIN_LEFT_SEC &&
+                                                !caster->HasAura(SPELL_INNERVATE)));
+                        if (evocationNow || evocationTold)
                             if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_EVOCATION}))
                                 consider(caster, spell, nullptr, {self}, true);
                         if (uint32 const spell = LeaderReadySpell(caster, {RestState::SPELL_DISPERSION}))

@@ -5,6 +5,7 @@
  */
 
 #include "HealthTriggers.h"
+#include "AiFactory.h"  // [lead1327] GetPlayerSpecTab
 #include "AggressiveTargetValue.h"
 
 #include <algorithm>
@@ -165,6 +166,13 @@ bool AoeInGroupTrigger::IsActive()
 
 namespace RestState
 {
+    float EvocationUseAtPct(Player* bot)
+    {
+        return bot && bot->getClass() == CLASS_MAGE && AiFactory::GetPlayerSpecTab(bot) == MAGE_TAB_FIRE
+                   ? WOWSIMS_EVOCATION_AUTO_MANA_PCT
+                   : WOWSIMS_EVOCATION_MANA_PCT;
+    }
+
 namespace
 {
 // A food / drink aura by its spell specific: a passive MOD_POWER_REGEN (Blessing of Wisdom, talents) is not drinking.
@@ -1883,7 +1891,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 evocation.pct = pct;
                 evocation.channelSec = castSec;
                 evocation.extendSec = fightCost;
-                evocation.useAtPct = WOWSIMS_EVOCATION_MANA_PCT;
+                evocation.useAtPct = EvocationUseAtPct(bot);  // [lead1327]
                 bursts.push_back(evocation);
                 burstCredit += pct;
             }
