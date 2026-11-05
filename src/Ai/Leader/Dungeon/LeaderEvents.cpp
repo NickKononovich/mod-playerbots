@@ -8545,6 +8545,21 @@ namespace Leader::Dungeon
                     p.share = mob->GetVictim() != tank       ? 1.0f
                               : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
                                                              : THREAT_OVERTAKE_RANGED;
+                    // [lead1454] b266 rfc-h 5C-3 / 5C-11 Oggleflint: the leader allowed Starfall ("the most gain over
+                    // the bosses left: here") and the leader command multiplier held it every cast ("the area reaches
+                    // the leader's spared Ragefire Trogg"): the boss's Trogg fought the blood DK tank's Army of the
+                    // Dead ghoul, the tank's own threat on it 0, so no member had headroom on it. The mob turns from
+                    // its victim only when a player passes the game's overtake share of that victim's threat
+                    // (ThreatManager: 110 % in melee, 130 % at range): a mob the tank's own guardian holds is held by
+                    // the guardian's threat
+                    if (Unit* holder = mob->GetVictim();
+                        holder && holder != tank && holder->GetCharmerOrOwnerGUID() == tank->GetGUID())
+                        if (float const minion = mob->GetThreatMgr().GetThreat(holder); minion > p.tankNext)
+                        {
+                            p.tank = std::max(p.tank, minion);
+                            p.tankNext = minion + p.redirected;
+                            p.share = mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE : THREAT_OVERTAKE_RANGED;
+                        }
                     if (horizon > HEADROOM_GCD_SEC && p.mineNext >= p.share * p.tankNext)
                     {
                         thread_local std::set<std::pair<uint64, uint64>> periodicLogged;

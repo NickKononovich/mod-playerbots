@@ -275,7 +275,11 @@ namespace Leader::Fight
             // [lead90] b131 rfc-h 941.9-943.7 s: "allowed-on-pack" while a Searing Blade Warlock of the pulled
             // pack ran round the corner with no tank threat (not attacking anyone yet, so outside the kill
             // order's headroom check) - the mage's AoE took it (84 threat against the tank's 0)
-            else if (unit->GetThreatMgr().GetThreat(tank) <= 0.0f)
+            // [lead1454] a mob the tank's own guardian (an Army of the Dead ghoul) holds is pulled by the tank's side:
+            // its holder's threat stands for the tank's (the members' headroom judges it against that threat)
+            else if (unit->GetThreatMgr().GetThreat(tank) <= 0.0f &&
+                     !(unit->GetVictim() && unit->GetVictim()->GetCharmerOrOwnerGUID() == tank->GetGUID() &&
+                       unit->GetThreatMgr().GetThreat(unit->GetVictim()) > 0.0f))
                 spare = Acore::StringFormat("{} has no tank threat yet, {:.0f} yd from the target", unit->GetName(),
                                             target->GetExactDist(unit));
             if (spare.empty())

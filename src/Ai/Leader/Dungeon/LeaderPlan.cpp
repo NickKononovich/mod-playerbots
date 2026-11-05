@@ -187,6 +187,15 @@ namespace Leader::Dungeon
                 // rest line (the Rest's rule, RestState::BelowOwnLine) rests as soon as its combat drops: not ready
                 if (bot->IsInCombat() && !MemberFull(bot) && RestState::BelowOwnLine(bot))
                     return member.name + " rests below its line [lead1131]";
+                // [lead1453] b266 rfc-h 5D-12 868.4-868.9 s: the leader's Rest put the arcane mage (1.7 % mana, its
+                // line 34 % for the next 5 mobs) down, and 0.5 s later - before it sat - the planner committed the
+                // engage; its Rest ended at 1.8 % and it wanded the fight (b266: shadow priest 71 s, fire mage 59 s,
+                // arcane 46 s of wand a run). The leader's Rest is its own decision by the game's math (the line:
+                // the next fight's mana at the member's rate against its drink): a member under it, out of combat
+                // and still below its line, rests - not ready until it stands at its line
+                if (!bot->IsInCombat() && RestState::LeaderRests(bot) && !MemberFull(bot) &&
+                    RestState::BelowOwnLine(bot))
+                    return member.name + " rests below its line [lead1453]";
                 // [lead1131] b238 5D-4 414.6 s / 5D-12 374.5 s / 5E-13 411.6 s: the warlock's pet died in the fight,
                 // the engage went, the warlock stood casting its summon (691 / 688, its "no pet" trigger) and the
                 // tank walked 60-85 yd away from it. A warlock without a pet that can summon one (Summon Imp needs
