@@ -897,7 +897,7 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 float const line =
                     RestState::FightManaLine(bot, lead.fightSecLeft, healCost, &lineWhy, bossFight, true, false,
                                              healCost > 0.0f);  // [lead1362]
-                // [lead1420] b262 rfc-h 5E-5 Jergosh / Bazzalan (the holy priest's lowest 8 % / 22 % against the
+                // [lead1421] b262 rfc-h 5E-5 Jergosh / Bazzalan (the holy priest's lowest 8 % / 22 % against the
                 // gate's 11 % / 27 % potion credit), 5A-9 / 5G-15 Jergosh: the boss gate let the healer in on the
                 // potion's mana and this verdict never gave it - the line of the fight's seconds left (without the
                 // potion) stayed under the pool while the pool fell under the credit. The gate's credit is mana the
@@ -913,7 +913,7 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                     std::string const rule = cooldownRule(backSec);
                     item = rule.empty() ? 0 : potion;
                     if (underCredit && bot->GetPowerPct(POWER_MANA) >= line)
-                        lineWhy += Acore::StringFormat("; under the {:.0f} % the boss gate credited it [lead1420]",
+                        lineWhy += Acore::StringFormat("; under the {:.0f} % the boss gate credited it [lead1421]",
                                                        credited);
                     verdict = Acore::StringFormat(
                         "mana potion {}: {:.0f} % < the {:.0f} % the fight's {:.0f} s left "

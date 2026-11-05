@@ -1376,7 +1376,7 @@ namespace
     // [lead1390] the credits each member's last own mana line counted ready now (ManaLineCredits)
     std::mutex manaCreditLock;
     std::unordered_map<uint64, std::vector<ManaLineCredit>> manaLineCredits;
-    // [lead1420] the mana potion each member's last boss line out of combat (the boss gate's) credited, % of max mana
+    // [lead1421] the mana potion each member's last boss line out of combat (the boss gate's) credited, % of max mana
     std::unordered_map<uint64, float> bossPotionCredits;
 }
 
@@ -2163,7 +2163,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // combat's end and was over 18 s into the next 33 s fight. A potion whose cooldown ends within the fight counts:
     // the line then holds at least the mana it spends until the potion is ready
     float potionFloor = 0.0f;
-    float potionCredit = 0.0f;  // [lead1420]
+    float potionCredit = 0.0f;  // [lead1421]
     if (credits && potion && bot->GetMaxPower(POWER_MANA))
     {
         uint32 amount = 0;
@@ -2239,7 +2239,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     {
         std::lock_guard<std::mutex> lock(manaCreditLock);
         manaLineCredits[bot->GetGUID().GetRawValue()] = readyCredits;
-        // [lead1420] the boss gate's line (a boss line out of combat with the potion): the potion it counted on
+        // [lead1421] the boss gate's line (a boss line out of combat with the potion): the potion it counted on
         if (boss && potion && !bot->IsInCombat())
             bossPotionCredits[bot->GetGUID().GetRawValue()] = potionCredit;
     }

@@ -439,7 +439,7 @@ struct ManaLineCredit
     std::string name;
 };
 std::vector<ManaLineCredit> ManaLineCredits(ObjectGuid member);
-// [lead1420] the mana potion (% of max mana, at most the line's shortfall) the member's last boss line out of combat
+// [lead1421] the mana potion (% of max mana, at most the line's shortfall) the member's last boss line out of combat
 // counted on - the boss gate's credit for the fight it lets the member into; 0: none
 float BossPotionCredit(ObjectGuid member);
 // [lead51] the leader notes a member's measured mana spend in fights (% of max mana per second of fight)
