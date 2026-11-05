@@ -6019,7 +6019,25 @@ namespace Leader::Dungeon
                                 tapSpell = rank;
                         float tapSec = NONE;
                         std::string tapWhy = "no Life Tap";
-                        if (SpellInfo const* tap = tapSpell ? sSpellMgr->GetSpellInfo(tapSpell) : nullptr)
+                        // [lead1310] user rule 2026-11-05 (rfc-h 5D-12: Rtlocaa tapped at 58 % with four mobs on it
+                        // and died within 4 s): no Life Tap while any mob attacks the warlock (the core's attacker
+                        // list) - the leader counts it as no way
+                        size_t const tapAttackers = tapSpell ? bot->getAttackers().size() : 0;
+                        if (tapAttackers)
+                        {
+                            tapWhy = Acore::StringFormat("life_tap_refused: {} mobs attacking", tapAttackers);
+                            if (lead.lifeTapRefusedLogged.insert(guid).second)
+                            {
+                                Decisions().Write(run, "leader", "life_tap_refused", guid, bot->GetName(), true,
+                                                  JsonObject().Str("member", bot->GetName())
+                                                      .Num("attackers", int64(tapAttackers)).Str("why", tapWhy));
+                                LOG_INFO("playerbots", "[lead1310] {}: {}", bot->GetName(), tapWhy);
+                            }
+                        }
+                        else
+                            lead.lifeTapRefusedLogged.erase(guid);
+                        if (SpellInfo const* tap =
+                                tapSpell && !tapAttackers ? sSpellMgr->GetSpellInfo(tapSpell) : nullptr)
                         {
                             float const healthPerTap = float(std::max(tap->Effects[EFFECT_0].CalcValue(bot), 1));
                             float manaPerTap =

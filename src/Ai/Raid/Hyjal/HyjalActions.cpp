@@ -8,6 +8,7 @@
 #include "EncounterHelpers.h"
 #include "HyjalHelpers.h"
 #include "Playerbots.h"
+#include "WarlockActions.h"  // [lead1310] LifeTapRefusedByAttackers
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -414,7 +415,8 @@ bool KazrogalCancelImmunityAction::Execute(Event /*event*/)
 // Life Tap first, then cast Shadow Ward if there isn't enough health to do so
 bool KazrogalWarlockManageManaAction::Execute(Event /*event*/)
 {
-    if (bot->GetPower(POWER_MANA) <= MARK_LIFE_TAP_MANA &&
+    // [lead1310] no Life Tap while a mob attacks the warlock (user rule)
+    if (bot->GetPower(POWER_MANA) <= MARK_LIFE_TAP_MANA && !LifeTapRefusedByAttackers(bot, lifeTapRefusedLogged) &&
         botAI->CanCastSpell("life tap", bot) && botAI->CastSpell("life tap", bot))
     {
         return true;

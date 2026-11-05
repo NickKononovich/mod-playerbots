@@ -12,6 +12,7 @@
 #include "InventoryAction.h"
 #include "UseItemAction.h"
 
+class Player;
 class PlayerbotAI;
 class Unit;
 
@@ -236,6 +237,11 @@ public:
     ActionThreatType getThreatType() override { return ActionThreatType::None; }
 };
 
+// [lead1310] user rule 2026-11-05: a warlock never casts Life Tap while any mob attacks it (a hostile unit has it as
+// its victim: the core's attacker list, Unit::getAttackers()). True while refused; `refusedLogged` is the caller's
+// last logged state, so the refusal is logged once per state change
+bool LifeTapRefusedByAttackers(Player* bot, bool& refusedLogged);
+
 class CastLifeTapAction : public CastSpellAction
 {
 public:
@@ -243,6 +249,9 @@ public:
 
     std::string const GetTargetName() override { return "self target"; }
     bool isUseful() override;
+
+private:
+    bool refusedLogged = false;  // [lead1310]
 };
 
 class DemonChargeAction : public CastSpellAction

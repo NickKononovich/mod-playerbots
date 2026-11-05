@@ -9,6 +9,7 @@
 #include "Event.h"
 #include "Item.h"
 #include "KillOrder.h"  // [b44_hos]
+#include "Log.h"  // [lead1310]
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -148,8 +149,24 @@ bool CastDrainSoulAction::isUseful()
     return AI_VALUE2(uint32, "item count", "soul shard") < 26;
 }
 
-// Checks if the bot's health is above a certain threshold, and if so, allows casting Life Tap
-bool CastLifeTapAction::isUseful() { return AI_VALUE2(uint8, "health", "self target") > sPlayerbotAIConfig.LowHealth; }
+bool LifeTapRefusedByAttackers(Player* bot, bool& refusedLogged)
+{
+    size_t const attackers = bot ? bot->getAttackers().size() : 0;
+    bool const refused = attackers > 0;
+    if (refused && !refusedLogged)
+        LOG_INFO("playerbots", "[lead1310] {}: life_tap_refused: {} mobs attacking", bot->GetName(), attackers);
+    refusedLogged = refused;
+    return refused;
+}
+
+// Checks if the bot's health is above a certain threshold and no mob attacks it ([lead1310]), and if so, allows
+// casting Life Tap
+bool CastLifeTapAction::isUseful()
+{
+    if (AI_VALUE2(uint8, "health", "self target") <= sPlayerbotAIConfig.LowHealth)
+        return false;
+    return !LifeTapRefusedByAttackers(bot, refusedLogged);
+}
 
 Value<Unit*>* CastBanishOnCcAction::GetTargetValue() { return context->GetValue<Unit*>("rti cc target"); }
 Value<Unit*>* CastFearOnCcAction::GetTargetValue() { return context->GetValue<Unit*>("rti cc target"); }

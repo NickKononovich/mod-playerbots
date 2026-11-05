@@ -211,6 +211,9 @@ public:
     KazrogalWarlockManageManaAction(PlayerbotAI* botAI)
         : Action(botAI, "kaz'rogal warlock manage mana") {}
     bool Execute(Event event) override;
+
+private:
+    bool lifeTapRefusedLogged = false;  // [lead1310]
 };
 
 // Azgalor

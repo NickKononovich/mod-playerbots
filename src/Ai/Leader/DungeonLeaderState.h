@@ -335,6 +335,7 @@ namespace Leader
         std::map<ObjectGuid, float> restBossLine;
         std::set<ObjectGuid> restBossHoldLogged;  // [lead1021] its hold over an empty gap logged (once per stretch)
         std::map<ObjectGuid, std::string> manaWayLogged;  // [lead955] the warlock mana way last logged
+        std::set<ObjectGuid> lifeTapRefusedLogged;  // [lead1310] no Life Tap while mobs attack it: once per stretch
         std::map<ObjectGuid, ObjectGuid> joinedPack;   // [lead76] an idle pack decided into the fight (mob)
         std::set<ObjectGuid> joinedMobs;               // [lead76] its mobs (exempt from the spot guard)
         std::set<ObjectGuid> joinedTankOpens;          // [lead1140] joined for a member's blocked spot / walk
