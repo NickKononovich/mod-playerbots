@@ -191,6 +191,8 @@ void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // [rot19] wowsims fury: Heroic Strike from 12 rage (was 40), keeping the rage of the next Bloodthirst / Whirlwind
     triggers.push_back(
         new TriggerNode("fury heroic strike rage", {NextAction("heroic strike", ACTION_DEFAULT + 0.1f)}));
+    // [rot520] wowsims fury: Cleave, not Heroic Strike, at the same 12 rage while another attacker stands by the target
+    triggers.push_back(new TriggerNode("fury cleave rage", {NextAction("cleave", ACTION_DEFAULT + 0.1f)}));
     // [rot440] wowsims fury Rend weave: above "berserker stance" (HIGH + 9) so the swap back waits for the Rend; the
     // trigger's own conditions keep it under Bloodthirst, Whirlwind, Slam! and the execute phase as the APL does
     triggers.push_back(new TriggerNode("fury rend weave",

@@ -435,7 +435,39 @@ bool WarriorStanceAoeTrigger::IsActive()
 // [rot19]
 bool FuryHeroicStrikeRageTrigger::IsActive()
 {
-    return RageAvailable::IsActive() && WarriorLeavesRageForStrike(botAI, bot, "heroic strike");
+    if (!RageAvailable::IsActive())
+        return false;
+
+    if (oneTarget && CleaveTargets())
+        return false;
+
+    return WarriorLeavesRageForStrike(botAI, bot, "heroic strike");
+}
+
+// [rot520]
+bool FuryHeroicStrikeRageTrigger::CleaveTargets()
+{
+    if (!AI_VALUE2(uint32, "spell id", "cleave"))
+        return false;
+
+    Trigger* lightAoe = context->GetTrigger("light aoe");
+    return lightAoe && lightAoe->IsActive();
+}
+
+// [rot520]
+bool FuryCleaveRageTrigger::IsActive()
+{
+    if (!RageAvailable::IsActive() || !CleaveTargets() || !WarriorLeavesRageForStrike(botAI, bot, "cleave"))
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (target && target->GetGUID() != _loggedTarget)
+    {
+        _loggedTarget = target->GetGUID();
+        LOG_DEBUG("playerbots", "[rot520] {} Cleave for Heroic Strike on {}: another attacker by it, {} rage",
+                  bot->GetName(), target->GetName(), bot->GetPower(POWER_RAGE) / 10);
+    }
+    return true;
 }
 
 // [rot63]

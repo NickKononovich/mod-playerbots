@@ -88,6 +88,7 @@ public:
         creators["arms heroic strike rage"] = &WarriorTriggerFactoryInternal::arms_heroic_strike_rage;
         creators["arms slam rage"] = &WarriorTriggerFactoryInternal::arms_slam_rage;  // [rot290]
         creators["fury heroic strike rage"] = &WarriorTriggerFactoryInternal::fury_heroic_strike_rage;  // [rot19]
+        creators["fury cleave rage"] = &WarriorTriggerFactoryInternal::fury_cleave_rage;  // [rot520]
         creators["shattering throw boss"] = &WarriorTriggerFactoryInternal::shattering_throw_boss;
         creators["victory rush and medium health"] = &WarriorTriggerFactoryInternal::victory_rush_and_medium_health;
         creators["demoralizing shout"] = &WarriorTriggerFactoryInternal::demoralizing_shout;
@@ -246,7 +247,13 @@ private:
     // 45). [rot63] and only at the swing (ArmsHeroicStrikeTrigger)
     static Trigger* arms_heroic_strike_rage(PlayerbotAI* botAI) { return new ArmsHeroicStrikeTrigger(botAI); }
     static Trigger* arms_slam_rage(PlayerbotAI* botAI) { return new ArmsSlamRageTrigger(botAI); }  // [rot290]
-    static Trigger* fury_heroic_strike_rage(PlayerbotAI* botAI) { return new FuryHeroicStrikeRageTrigger(botAI); }
+    // [rot520] Heroic Strike on one target only: Cleave takes the same rage gate on more (wowsims warrior__fury)
+    static Trigger* fury_heroic_strike_rage(PlayerbotAI* botAI)
+    {
+        return new FuryHeroicStrikeRageTrigger(botAI, "fury heroic strike rage",
+                                               FuryHeroicStrikeRageTrigger::FURY_HEROIC_STRIKE_RAGE, true);
+    }
+    static Trigger* fury_cleave_rage(PlayerbotAI* botAI) { return new FuryCleaveRageTrigger(botAI); }
     static Trigger* shattering_throw_boss(PlayerbotAI* botAI) { return new ShatteringThrowBossTrigger(botAI); }
     static Trigger* victory_rush_and_medium_health(PlayerbotAI* botAI)
     {

@@ -173,12 +173,37 @@ public:
     static constexpr int32 FURY_HEROIC_STRIKE_RAGE = 12;
 
     FuryHeroicStrikeRageTrigger(PlayerbotAI* botAI, std::string const name = "fury heroic strike rage",
-                                int32 rage = FURY_HEROIC_STRIKE_RAGE)
-        : WarriorRageAvailableTrigger(botAI, name, rage)
+                                int32 rage = FURY_HEROIC_STRIKE_RAGE, bool oneTarget = false)
+        : WarriorRageAvailableTrigger(botAI, name, rage), oneTarget(oneTarget)
     {
     }
 
     bool IsActive() override;
+
+protected:
+    // [rot520] true when Cleave is known and the target has another attacker by it ("light aoe")
+    bool CleaveTargets();
+
+private:
+    bool const oneTarget;  // [rot520] Heroic Strike only on one target (wowsims fury: Cleave on more)
+};
+
+// [rot520] wowsims warrior__fury.apl.json: Cleave (47520) at >= 12 rage when numberTargets > 1, Heroic Strike
+// (47450) at >= 12 rage when numberTargets == 1 - one rage gate, the target count picks the strike. The bot's Cleave
+// waited for 40 rage ("light aoe and medium rage"), so from 12 to 39 rage a pack got Heroic Strike: b266 rfc-h 5C
+// Rtwarab on trash packs 97 Heroic Strikes against 8 Cleaves (2.5k a Heroic Strike, 3.4-4.4k a Cleave).
+class FuryCleaveRageTrigger : public FuryHeroicStrikeRageTrigger
+{
+public:
+    FuryCleaveRageTrigger(PlayerbotAI* botAI)
+        : FuryHeroicStrikeRageTrigger(botAI, "fury cleave rage", FURY_HEROIC_STRIKE_RAGE)
+    {
+    }
+
+    bool IsActive() override;
+
+private:
+    ObjectGuid _loggedTarget;  // [rot520] the log line once per target (no decision rides on it)
 };
 
 // [rot290] wowsims warrior__arms: Slam at >= 15 rage (its cost), not the generic 20 of "light rage available"
