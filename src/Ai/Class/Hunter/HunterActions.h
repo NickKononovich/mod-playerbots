@@ -348,34 +348,30 @@ public:
     bool isUseful() override;
 };
 
-// Refresh window: shorter than the GCD would let the sting fall off, longer clips a tick
-constexpr uint32 SERPENT_STING_REFRESH_MS = 2000;
 // [guide_b31_dead] Marksmanship talent; its shot refreshes the hunter's own Serpent Sting
 constexpr uint32 SPELL_CHIMERA_SHOT = 53209;
-// Serpent Sting ticks every 3 s for 15 s: on trash dying sooner the GCD is worth more as a shot
-constexpr float SERPENT_STING_MIN_TARGET_LIFETIME = 6.0f;
+
+// [rot550] Serpent Sting by wowsims' hunter APLs (bm / mm / sv: "not dotIsActive(49001)"): re-applied only once our own
+// DoT is over, since a recast restarts its tick timer (core/dot.go Apply: Cancel, TickCount 0) and the tick in progress
+// is lost (b275 rfc-h 5F-6 Rthunac: recast ~0.3 s before the end on Oggleflint / Taragaman, 67 % of the sim's damage per
+// cast). True when our sting is absent or every tick of it has landed.
+class Aura;
+bool SerpentStingDue(Aura* own);
+// [rot550] The ticks that land before the target dies (ExpectedFightLifetime) beat Steady Shot, the filler every
+// wowsims hunter APL ends with, in the sting's own time (SpellPayoff::DotPays); no fixed lifetime (b275 5F-6: a third
+// sting on Taragaman at 8.5 % health landed 1-2 ticks). Pays when either spell is unknown.
+// `loggedMs`: the caller's log clock; a held sting is logged at most every SERPENT_STING_PAYOFF_LOG_MS (none: no log)
+constexpr uint32 SERPENT_STING_PAYOFF_LOG_MS = 5000;
+bool SerpentStingPays(PlayerbotAI* botAI, Player* bot, Unit* target, uint32* loggedMs = nullptr);
 
 class CastSerpentStingAction : public CastDebuffSpellAction
 {
 public:
-    CastSerpentStingAction(PlayerbotAI* botAI) :
-        CastDebuffSpellAction(botAI, "serpent sting", true, SERPENT_STING_MIN_TARGET_LIFETIME)
-    {
-        beforeDuration = SERPENT_STING_REFRESH_MS;
-    }
+    CastSerpentStingAction(PlayerbotAI* botAI) : CastDebuffSpellAction(botAI, "serpent sting", true, 0.0f) {}
 
     // [guide_b31_dead] Chimera Shot refreshes our Serpent Sting, so with it the sting is only re-applied when missing
-    bool isUseful() override
-    {
-        if (bot->HasSpell(SPELL_CHIMERA_SHOT))
-        {
-            Unit* target = GetTarget();
-            if (target && botAI->GetAura("serpent sting", target, true))
-                return false;
-        }
-
-        return CastDebuffSpellAction::isUseful();
-    }
+    // [rot550] without it once its last tick has landed, and only where its ticks pay
+    bool isUseful() override;
 };
 
 class CastScorpidStingAction : public CastDebuffSpellAction
@@ -394,7 +390,8 @@ class CastSerpentStingOnAttackerAction : public CastDebuffSpellOnAttackerAction
 {
 public:
     CastSerpentStingOnAttackerAction(PlayerbotAI* botAI)
-        : CastDebuffSpellOnAttackerAction(botAI, "serpent sting", true, SERPENT_STING_MIN_TARGET_LIFETIME) {}
+        : CastDebuffSpellOnAttackerAction(botAI, "serpent sting", true, 0.0f) {}
+    bool isUseful() override;  // [rot550] SerpentStingPays on the attacker
 };
 
 class CastImmolationTrapAction : public CastSpellAction

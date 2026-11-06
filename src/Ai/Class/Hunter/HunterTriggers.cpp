@@ -131,11 +131,13 @@ bool HunterNoStingsActiveTrigger::IsActive()
     if (botAI->HasAura("scorpid sting", target, false, true) || botAI->HasAura("viper sting", target, false, true))
         return false;
 
-    // Stings from different hunters stack, so only our own Serpent Sting counts, refreshed before it expires
+    // Stings from different hunters stack, so only our own Serpent Sting counts
     Aura* serpentSting = botAI->GetAura("serpent sting", target, true);
     // [guide_b31_dead] Chimera Shot (53209) refreshes our Serpent Sting: with it, only re-apply a missing sting
-    uint32 const refreshMs = bot->HasSpell(SPELL_CHIMERA_SHOT) ? 0 : SERPENT_STING_REFRESH_MS;
-    return ai::buff::BuffBelowRefreshTarget(botAI, serpentSting, refreshMs);
+    if (serpentSting && bot->HasSpell(SPELL_CHIMERA_SHOT))
+        return false;
+    // [rot550] wowsims: only once our sting is over (its last tick landed), and only where its ticks pay
+    return SerpentStingDue(serpentSting) && SerpentStingPays(botAI, bot, target, &_payoffLoggedMs);
 }
 
 bool HuntersPetDeadTrigger::IsActive()

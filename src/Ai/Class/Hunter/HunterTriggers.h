@@ -196,15 +196,23 @@ public:
 class HunterNoStingsActiveTrigger : public DebuffTrigger
 {
 public:
-    HunterNoStingsActiveTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "no stings") {}
+    // [rot550] no fixed lifetime: SerpentStingPays weighs the ticks that land
+    HunterNoStingsActiveTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "no stings", 1, false, 0.0f) {}
     bool IsActive() override;
+
+private:
+    uint32 _payoffLoggedMs = 0;  // [rot550] SerpentStingPays' log clock
 };
 
 class SerpentStingOnAttackerTrigger : public DebuffOnAttackerTrigger
 {
 public:
-    SerpentStingOnAttackerTrigger(PlayerbotAI* botAI) : DebuffOnAttackerTrigger(botAI, "serpent sting", true) {}
+    SerpentStingOnAttackerTrigger(PlayerbotAI* botAI) : DebuffOnAttackerTrigger(botAI, "serpent sting", true, 0.0f) {}
     bool IsActive() override;
+
+protected:
+    // [rot550] the ticks that land before the attacker dies against Steady Shot (DebuffTrigger::DotPaysOff)
+    std::string const DotFiller() override { return "steady shot"; }
 };
 
 // Damage/Combat Triggers

@@ -5,6 +5,7 @@
  */
 
 #include "HunterActions.h"
+#include "EstimatedLifetimeValue.h"  // [rot550] ExpectedFightLifetime
 #include "Event.h"
 #include "GenericSpellActions.h"
 #include "HunterTriggers.h"         // [b31_deep] SPELL_LOCK_AND_LOAD_PROC
@@ -15,7 +16,9 @@
 #include "Playerbots.h"
 #include "RaidUtilityAssignment.h"  // [b31_deep] ai::raidutil::IsBossUnit
 #include "RtiValue.h"               // [b33_aoe_class] IsCrowdControlledMobNear
+#include "SpellAuraEffects.h"       // [rot550] AuraEffect ticks
 #include "SpellMgr.h"               // [b31_deep]
+#include "SpellPayoff.h"            // [rot550] DotPays
 
 constexpr uint32 ARCANE_SHOT_MAX_ARMOR_PEN_RATING = 435;
 // [b33_aoe_class] Volley's 8 yd radius / Multi-Shot's jumps, with margin (the mage AoE check uses 12 yd too)
@@ -39,6 +42,64 @@ bool CastVolleyAction::isUseful()
 constexpr uint32 SPELL_EXPLOSIVE_SHOT_RANK_1 = 53301;
 // [b31_deep] Black Arrow's DoT runs 15 s and feeds Lock and Load; a target dying sooner may take the fire trap
 constexpr float BLACK_ARROW_MIN_TARGET_LIFETIME = 10.0f;
+
+bool SerpentStingDue(Aura* own)
+{
+    if (!own)
+        return true;
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        AuraEffect const* effect = own->GetEffect(i);
+        if (effect && effect->GetAuraType() == SPELL_AURA_PERIODIC_DAMAGE)
+            return effect->GetTotalTicks() > 0 && int32(effect->GetTickNumber()) >= effect->GetTotalTicks();
+    }
+    return false;
+}
+
+bool SerpentStingPays(PlayerbotAI* botAI, Player* bot, Unit* target, uint32* loggedMs)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    uint32 const stingId = context->GetValue<uint32>("spell id", "serpent sting")->Get();
+    uint32 const fillerId = context->GetValue<uint32>("spell id", "steady shot")->Get();
+    if (!stingId || !fillerId)
+        return true;
+
+    float const lifetime = ExpectedFightLifetime(botAI, target);
+    SpellPayoff::DotVerdict const verdict = SpellPayoff::DotPays(bot, target, stingId, fillerId, lifetime);
+    if (verdict.pays || !loggedMs)
+        return verdict.pays;
+
+    // [rot550] logged at most once per 5 s by the caller's clock, for the triage
+    uint32 const now = getMSTime();
+    if (!*loggedMs || getMSTimeDiff(*loggedMs, now) >= SERPENT_STING_PAYOFF_LOG_MS)
+    {
+        *loggedMs = now ? now : 1;
+        LOG_INFO("playerbots", "[rot550] {} holds serpent sting on {}: lives {:.1f} s, {} tick(s) land for {:.0f} vs "
+                 "steady shot {:.0f} in its time", bot->GetName(), target->GetName(), lifetime, verdict.ticks,
+                 verdict.dot, verdict.filler);
+    }
+    return false;
+}
+
+bool CastSerpentStingAction::isUseful()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive() || !target->IsInWorld() || !CastSpellAction::isUseful())
+        return false;
+
+    Aura* own = botAI->GetAura("serpent sting", target, true);
+    if (own && (bot->HasSpell(SPELL_CHIMERA_SHOT) || !SerpentStingDue(own)))
+        return false;
+
+    return SerpentStingPays(botAI, bot, target);
+}
+
+bool CastSerpentStingOnAttackerAction::isUseful()
+{
+    Unit* target = GetTarget();
+    return CastDebuffSpellOnAttackerAction::isUseful() && target && SerpentStingPays(botAI, bot, target);
+}
 
 bool CastViperStingAction::isUseful()
 {
