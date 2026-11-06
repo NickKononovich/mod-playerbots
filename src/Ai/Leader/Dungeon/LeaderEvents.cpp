@@ -1300,6 +1300,29 @@ namespace Leader::Dungeon
                                                               .Str("walk", why));
                         lead.groupBlockedBy[member] = mob ? mob->GetGUID() : ObjectGuid::Empty;
                     }
+                    // [lead1535] b275 (16 runs): 27 of 154 "combat spot: behind the target: stays (... IsMovingAllowed)"
+                    // came while the member charged / intercepted (UNIT_STATE_CHARGING), was confused or rooted - a
+                    // state of its own that ends by itself (PlayerbotAI::CanMove). The stay pinned it to the point it
+                    // held mid-charge: it landed by its target and was told back there (5C-11 Rtwarab 191 / 571 /
+                    // 703 / 768 s). A refusal by the member's passing state replaces nothing: its live command and
+                    // its charge stand, the move is judged again once it can move (lead1492)
+                    if (reject.find("IsMovingAllowed") != std::string::npos && member != tank->GetGUID())
+                    {
+                        thread_local std::map<ObjectGuid, std::string> passingLogged;
+                        if (passingLogged.size() > 1024)
+                            passingLogged.clear();
+                        if (std::string& logged = passingLogged[member]; logged != why)
+                        {
+                            logged = why;
+                            Decisions().Write(run, "leader", "move_waits_passing_state", member, bot->GetName(), true,
+                                              JsonObject()
+                                                  .Str("member", bot->GetName())
+                                                  .Str("why", why)
+                                                  .Str("then", "its live command stands, judged again once it moves")
+                                                  .Str("tag", "[lead1535]"));
+                        }
+                        return false;
+                    }
                     // [lead71] the arbiter's next candidate: the member stays where it is (never a move it refuses)
                     // [lead730] logged as its command (it was the member's live command with no leader_event)
                     if (move != Leader::MoveEvent::StandAt || spot.GetExactDist(bot->GetPosition()) > 1.0f)
