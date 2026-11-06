@@ -874,7 +874,8 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
             std::string const& name = action->getName();
             static constexpr std::string_view ownMoves[] = {
                 "dungeon avoid frontal cleave", "move to ranged position", "follow", "move to los pull spot",
-                "combat formation move", "rear flank", "set behind", "move out of enemy contact", "flee"};
+                "combat formation move", "rear flank", "set behind", "move out of enemy contact", "flee",
+                "shirrak flee focus fire"};  // [lead1510] the leader's hazard order owns the Focus Fire escape
             bool const leaderMove = events.move == Leader::MoveEvent::MoveTo ||
                                     events.move == Leader::MoveEvent::StandAt ||
                                     events.move == Leader::MoveEvent::Follow;

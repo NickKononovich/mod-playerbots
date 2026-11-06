@@ -6524,8 +6524,13 @@ namespace Leader::Dungeon
             // stands (not while it walks), a spot held only while the healer standing on it reaches it, and a healer
             // the group waits for walks to the group first (the Follow below)
             bool const healerTrails = lead.trailing.count(healer->GetGUID()) > 0;
+            // [lead1512] a healer that resurrects walks to the body (its External's walk), not to the top-up spot
+            bool const healerRaises =
+                std::any_of(lead.support.resurrecters.begin(), lead.support.resurrecters.end(),
+                            [healer](auto const& pick) { return pick.second == healer->GetGUID(); });
             if (healed && healed != healer && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
-                !healer->IsSitState() && !tank->IsInCombat() && !healed->isMoving() && !healerTrails)
+                !healer->IsSitState() && !tank->IsInCombat() && !healed->isMoving() && !healerTrails &&
+                !healerRaises)
             {
                 std::string const why = "heal reach: top up " + healed->GetName();
                 Leader::MemberEvents healerNow;
@@ -7178,6 +7183,24 @@ namespace Leader::Dungeon
                     Leader::Events::SetMove(guid, Leader::MoveEvent::Hold, bot->GetPosition(), 0.0f, "rests");
                 moved = true;
             }
+            // [lead1512] b272 ac-h 5F-14 615.8-623.3 s: the fight ended with the druid 19 yd from the rogue's body (in
+            // Revive's range); the leader gave it the resurrection External and, in the same tick, "Follow: along
+            // with the tank" - the Follow (94) outran the External's walk (91), took the druid 50 yd off, and once it
+            // stopped the External reported "no walk into range and sight": dropped, no resurrecter left, the rogue
+            // released (261 s corpse run). Out of a fight a resurrecter's walk is its External's prerequisite
+            // (lead401): no move command of the leader replaces it while the body waits
+            if (!moved && !combat)
+                for (auto const& [deadGuid, caster] : lead.support.resurrecters)
+                    if (caster == guid)
+                    {
+                        Leader::MemberEvents held;
+                        if (Leader::Events::Get(guid, held) && held.move != Leader::MoveEvent::None)
+                            Leader::Events::SetMove(guid, Leader::MoveEvent::None, bot->GetPosition(), 0.0f,
+                                                    "resurrects: its walk to the body is the resurrection's");
+                        lead.following.erase(guid);
+                        moved = true;
+                        break;
+                    }
             if (Leader::LEADER_OWNS_DODGE && combat &&
                 DungeonTactics::InFrontalCleave(bot, botAI, 1.0f, 20.0f * float(M_PI) / 180.0f))
             {

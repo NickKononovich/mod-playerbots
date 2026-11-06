@@ -216,6 +216,27 @@ namespace Leader::Dungeon
         }
         if (group.NeedBuff())
             return "the group buffs";
+        // [lead1511] b272 ac-h 5F-14 442.6-448 s: Shirrak died, the rogue stood at 7 % health with his Carnivorous
+        // Bite bleeding on it; the leader's TopUp named it (healHolds: the pull waits on its health, lead1263) and
+        // no Rest sat it down (a free healer heals it, a damage over time holds its Rest: lead1491), so nothing held
+        // the pull - 1 s later the engage went, the rogue walked to the tank's stop point, the healer followed the
+        // tank and the rogue bled out. A member the healer's TopUp holds for, below its own health line
+        // (RestState::HealthLine), is not ready until the heal brings it there
+        if (!leader->IsInCombat())
+            for (LeaderGroup::MemberInfo const& member : group.Members())
+            {
+                Player* healer = ObjectAccessor::FindPlayer(member.guid);
+                Leader::MemberEvents events;
+                if (!healer || !healer->IsAlive() || !PlayerbotAI::IsHeal(healer) ||
+                    !Leader::Events::Get(member.guid, events) || events.healTarget.IsEmpty() || !events.healHolds)
+                    continue;
+                Player* hurt = ObjectAccessor::FindPlayer(events.healTarget);
+                if (hurt && hurt->IsAlive() && !hurt->IsInCombat() &&
+                    hurt->GetHealthPct() < RestState::HealthLine(hurt))
+                    return Acore::StringFormat("{} at {:.0f} % health < its line {:.0f} %: {} tops it up [lead1511]",
+                                               hurt->GetName(), hurt->GetHealthPct(), RestState::HealthLine(hurt),
+                                               member.name);
+            }
         // [lead1084] [lead1090] the boss pull's wait for his buff pass is no group readiness: it holds only the pull
         // of that boss or a pull that brings him (TickLeaderPlanner's bossPassHold, BossBuffPassHolds)
         // [lead940] a heal over time another member cast out of the last fight (a top-up with no direct heal to cast)

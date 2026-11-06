@@ -26,6 +26,14 @@ float ShirrakFleeFocusFireMultiplier::GetValue(Action* action)
     if (dynamic_cast<AttackAction*>(action))
         return 1.0f;
 
+    // [lead1510] b272 ac-h 5G-15 382.5-389.5 / 398.4-402 s and 5F-14 438.2-442 s: the leader's Focus Fire escape
+    // (its hazard MoveTo, lead1483: judged by Fiery Blast's spell data) was zeroed here for every member 12-14 yd
+    // from the flare - the flee below does nothing from 12 yd on - so the melee stood in the blasts until the flare
+    // despawned (the warrior and the rogue died, the paladin and the DK dropped to 35-45 %). The leader's move
+    // order is final: no member multiplier vetoes it
+    if (action->getName() == "leader move order")
+        return 1.0f;
+
     bool const isMovementSpell = dynamic_cast<CastReachTargetSpellAction*>(action) ||
         dynamic_cast<CastBlinkBackAction*>(action) || dynamic_cast<CastDisengageAction*>(action);
 
