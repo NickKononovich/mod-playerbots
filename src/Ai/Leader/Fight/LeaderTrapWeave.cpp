@@ -203,6 +203,25 @@ Unit* SparedInRadius(Player* hunter, Position const& spot, float radius)
     return nullptr;
 }
 
+// [lead1538] rot550 b275 ac-h 5A-9 697.9 s / 5E-13 537-549 s: the weave was ordered at 6 % mana and the External
+// failed SPELL_FAILED_NO_POWER. The trap's cost is its spell's (SpellInfo::CalcPowerCost: the base mana share with the
+// hunter's cost modifiers, Resourcefulness among them - wowsims explosive_trap.go's 19 % x (1 - 0.2 x
+// Resourcefulness)): no weave the hunter cannot pay. [lead1551] b276 rfc-h 5E-5 528.2-530.3 s / ac-h 5E-13 692 s: the
+// weave paid at its order and the shots on its walk spent the mana below the cost before the drop (NO_POWER again):
+// the cost is judged on every step of the plan, the drop included
+bool Pays(Player* hunter, uint32 trapSpell, std::string& why)
+{
+    SpellInfo const* trapInfo = sSpellMgr->GetSpellInfo(trapSpell);
+    if (!trapInfo)
+        return true;
+    int32 const cost = trapInfo->CalcPowerCost(hunter, trapInfo->GetSchoolMask());
+    if (cost <= 0 || int32(hunter->GetPower(POWER_MANA)) >= cost)
+        return true;
+    why = Acore::StringFormat("its mana {} < the trap's cost {} [lead1538] [lead1551]", hunter->GetPower(POWER_MANA),
+                              cost);
+    return false;
+}
+
 // The computed choice: the spot and its verdict for this hunter and target; false: no trap now (why)
 bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> const& seats, uint32 trapSpell,
             Position& spot, JsonObject& facts, std::string& why)
@@ -213,18 +232,8 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
         why = "no trap data";
         return false;
     }
-    // [lead1538] rot550 b275 ac-h 5A-9 697.9 s / 5E-13 537-549 s: the weave was ordered at 6 % mana and the
-    // External failed SPELL_FAILED_NO_POWER. The trap's cost is its spell's (SpellInfo::CalcPowerCost: the base mana
-    // share with the hunter's cost modifiers, Resourcefulness among them - wowsims explosive_trap.go's 19 % x (1 -
-    // 0.2 x Resourcefulness)): no weave the hunter cannot pay
-    if (SpellInfo const* trapInfo = sSpellMgr->GetSpellInfo(trapSpell))
-        if (int32 const cost = trapInfo->CalcPowerCost(hunter, trapInfo->GetSchoolMask());
-            cost > 0 && int32(hunter->GetPower(POWER_MANA)) < cost)
-        {
-            why = Acore::StringFormat("its mana {} < the trap's cost {} [lead1538]", hunter->GetPower(POWER_MANA),
-                                      cost);
-            return false;
-        }
+    if (!Pays(hunter, trapSpell, why))
+        return false;
     spot = TrapSpot(hunter, target, data.triggerRadius);
     float const walkSec = hunter->GetExactDist(spot) / std::max(hunter->GetSpeed(MOVE_RUN), 0.1f);
     float const hunterDps = GroupDamage::MemberSustainedDps(hunter);
@@ -363,6 +372,11 @@ bool TickMove(LeaderGroup& group, Player* hunter, Player* tank, Unit* target, st
             End(group, hunter, "the trap is down");
             return false;
         }
+        if (std::string unpaid; !Pays(hunter, plan.spell, unpaid))
+        {
+            End(group, hunter, unpaid.c_str());
+            return false;
+        }
         if (!planned || !planned->IsAlive() || planned->GetVictim() != tank)
         {
             End(group, hunter, !planned || !planned->IsAlive() ? "the target died" : "the target left the tank");
@@ -467,6 +481,12 @@ void TickDrop(LeaderGroup& group, std::vector<Player*> const& seats, bool fighti
         }
         if (found->second.step != 1)
             continue;
+        // [lead1551] the drop is paid now too (the walk's shots may have spent the mana)
+        if (std::string unpaid; !Pays(hunter, found->second.spell, unpaid))
+        {
+            End(group, hunter, unpaid.c_str());
+            continue;
+        }
         if (Leader::Events::SetExternal(hunter->GetGUID(), found->second.spell, ObjectGuid::Empty))
             logEvent(hunter, "External",
                      JsonObject().Num("spell", found->second.spell).Str("on", "its feet").Str("why", "trap weave"));
