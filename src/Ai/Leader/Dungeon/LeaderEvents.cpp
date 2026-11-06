@@ -4739,13 +4739,19 @@ namespace Leader::Dungeon
                 if (auto const step = losSteps.find(tank->GetGUID()); step != losSteps.end())
                 {
                     Unit* stepMob = ObjectAccessor::GetUnit(*tank, step->second.first);
+                    // [lead1554] b276 rfc-h 5B-2 911.6-911.9 s: the step was ordered for a Searing Blade Warlock the
+                    // tank saw (the step's own case) and dropped the next tick because the tank still saw it on its
+                    // way out of that sight - "none allowed" for 34 s after it. The step holds while the tank walks
+                    // it; once there, while the mob, out of its sight, walks in; a mob still in its sight there, or
+                    // one that does not come, spends it
                     bool const live = stepMob && stepMob->IsAlive() && stepMob->GetVictim() == tank &&
-                                      !tank->IsWithinMeleeRange(stepMob) && !tank->IsWithinLOSInMap(stepMob);
+                                      !tank->IsWithinMeleeRange(stepMob);
                     bool const arrived =
                         tank->GetExactDist(step->second.second) <= Leader::LEADER_SPOT_TOLERANCE && !tank->isMoving();
-                    if (live && arrived && !stepMob->isMoving())
+                    bool const failed = live && arrived && (tank->IsWithinLOSInMap(stepMob) || !stepMob->isMoving());
+                    if (failed)
                         losStepSpent.insert({tank->GetGUID(), stepMob->GetGUID()});  // it did not come: next option
-                    if (!live || (arrived && !stepMob->isMoving()))
+                    if (!live || failed)
                         losSteps.erase(step);
                     else
                     {
