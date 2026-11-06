@@ -28,6 +28,7 @@
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StringFormat.h"
 #include "TargetValue.h"  // IsCrowdControlled
 #include "Timer.h"
 
@@ -190,6 +191,18 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
         why = "no trap data";
         return false;
     }
+    // [lead1538] rot550 b275 ac-h 5A-9 697.9 s / 5E-13 537-549 s: the weave was ordered at 6 % mana and the
+    // External failed SPELL_FAILED_NO_POWER. The trap's cost is its spell's (SpellInfo::CalcPowerCost: the base mana
+    // share with the hunter's cost modifiers, Resourcefulness among them - wowsims explosive_trap.go's 19 % x (1 -
+    // 0.2 x Resourcefulness)): no weave the hunter cannot pay
+    if (SpellInfo const* trapInfo = sSpellMgr->GetSpellInfo(trapSpell))
+        if (int32 const cost = trapInfo->CalcPowerCost(hunter, trapInfo->GetSchoolMask());
+            cost > 0 && int32(hunter->GetPower(POWER_MANA)) < cost)
+        {
+            why = Acore::StringFormat("its mana {} < the trap's cost {} [lead1538]", hunter->GetPower(POWER_MANA),
+                                      cost);
+            return false;
+        }
     spot = TrapSpot(hunter, target, data.triggerRadius);
     float const walkSec = hunter->GetExactDist(spot) / std::max(hunter->GetSpeed(MOVE_RUN), 0.1f);
     float const hunterDps = GroupDamage::MemberSustainedDps(hunter);

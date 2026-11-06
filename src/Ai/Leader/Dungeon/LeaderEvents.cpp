@@ -10760,9 +10760,10 @@ namespace Leader::Dungeon
                 // leaves it at the 30 % line alone, so no fact the switch itself changes flips it back
                 if (inViper)
                 {
-                    wantViper = pct < RestState::VIPER_STOP_MANA_PCT;
-                    why = Acore::StringFormat("{}: mana {:.0f} % {} wowsims' line {:.0f} %",
-                                              wantViper ? "Viper" : "its attack aspect", pct, wantViper ? "<" : ">=",
+                    // [lead1537] rot550: wowsims' hunter APL leaves Viper on "mana > 30 %" (OpGt), not at 30 % itself
+                    wantViper = pct <= RestState::VIPER_STOP_MANA_PCT;
+                    why = Acore::StringFormat("{}: mana {:.0f} % {} wowsims' line {:.0f} % [lead1537]",
+                                              wantViper ? "Viper" : "its attack aspect", pct, wantViper ? "<=" : ">",
                                               RestState::VIPER_STOP_MANA_PCT);
                 }
                 else
