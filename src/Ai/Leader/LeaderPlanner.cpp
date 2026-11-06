@@ -12503,6 +12503,29 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // [lead208] b182 rfc-h 5G 500-717 s: the Searing Blade room's pack was refused (overload 1.16, no split), every
     // pull on the path woke it, the run stalled. A pack the leader must clear with every option over the budget is
     // pulled the cheapest way left - the pull as it comes, the group topped up - not held for good
+    // [lead1560] ... but not a walk-in that wakes another pack on its way (cheapest.woken: those mobs come on the
+    // members the walk passes, not on the tank) when the tank and the healers do not carry the whole of it
+    // (TankCarries: the tank's drop within its most, the healers' mana for its cost - the test every other fallback
+    // is held to; _planGuaranteed below skipped it). b277 strat-n 20261106-105814-5G-15 169.4 s: the 32-mob "pull as
+    // it comes with what the way in wakes (Plague Ghoul)" (cost 25.62 tank hp, overload 99) was committed, the 160-yd
+    // walk woke the street pack on the healer ("the tank never had it"), wipe at 215 s; 356 s the same kind, 2 deaths.
+    // Without a woken pack the cheapest stays the last resort (105714-5E-13 685 s: 25 mobs, no death)
+    PackEstimate cheapestEstimate;
+    std::string cheapestCarries;
+    if (!found && !cheapest.pack.empty() && !cheapest.woken.empty())
+    {
+        cheapestEstimate = EstimatePack(cheapest.pack, bot, groupDps, estimateMode);
+        if (!TankCarries(cheapestEstimate, support, &cheapestCarries))
+        {
+            LOG_INFO("playerbots", "[lead1560] {}: {} ({} mobs): the cheapest option wakes {} on the way in and is "
+                     "more than the tank carries ({}): not pulled ({})", bot->GetName(), target->GetName(),
+                     cheapest.pack.size(), cheapest.woken, cheapestCarries, cheapest.judged);
+            _planVerdictWhy = Acore::StringFormat("[lead1560] the cheapest option wakes {} on the way in, more than "
+                                                  "the tank carries ({}): {}", cheapest.woken, cheapestCarries,
+                                                  cheapest.judged);
+            cheapest.pack.clear();
+        }
+    }
     if (!found && !cheapest.pack.empty())
     {
         chosenPack = cheapest.pack;
