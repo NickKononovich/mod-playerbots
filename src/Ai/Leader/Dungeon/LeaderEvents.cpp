@@ -2154,6 +2154,69 @@ namespace Leader::Dungeon
                             verdict = std::string("casts ") + (info->SpellName[0] ? info->SpellName[0] : "?");
                             break;
                         }
+                        // [lead1543] the shaman's Magma Totem: its totem (the summon's creature, Creature
+                        // template spells[0]) pulses an area round itself where it is dropped - at the shaman's feet;
+                        // an area hits the unseen mob (as above). Dropped when the mob stands in that pulse's radius
+                        // from the shaman and no Magma Totem of its own burns there already
+                        if (!spell && member->getClass() == CLASS_SHAMAN)
+                            if (uint32 const totem = memberAI->GetAiObjectContext()->GetValue<uint32>(
+                                    "spell id", "magma totem")->Get())
+                                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(totem))
+                                {
+                                    float radius = 0.0f;
+                                    for (SpellEffectInfo const& effect : info->GetEffects())
+                                        if (effect.Effect == SPELL_EFFECT_SUMMON)
+                                            if (CreatureTemplate const* made =
+                                                    sObjectMgr->GetCreatureTemplate(uint32(effect.MiscValue)))
+                                                radius = std::max(radius, SpellPayoff::AreaRadius(member, made->spells[0]));
+                                    Creature* burning = member->m_SummonSlot[SUMMON_SLOT_TOTEM_FIRE].IsEmpty()
+                                                            ? nullptr
+                                                            : map->GetCreature(member->m_SummonSlot[SUMMON_SLOT_TOTEM_FIRE]);
+                                    bool const burns = burning && burning->IsAlive() && burning->GetEntry() &&
+                                                       burning->GetUInt32Value(UNIT_CREATED_BY_SPELL) == totem &&
+                                                       unseen->IsWithinDist3d(burning, radius);
+                                    if (radius > 0.0f)
+                                        reachRadius = std::max(reachRadius, radius);
+                                    if (burns)
+                                        verdict = "its Magma Totem burns it [lead1543]";
+                                    else if (radius > 0.0f && !member->HasSpellCooldown(totem) &&
+                                             unseen->IsWithinDist3d(member, radius) &&
+                                             memberAI->CheckCastNow(totem, member).Castable())
+                                    {
+                                        spell = totem;
+                                        verdict = "drops Magma Totem [lead1543]";
+                                    }
+                                }
+                        // [lead1543] the shadow priest's Mind Sear: a channel on a unit whose triggered spell (49821)
+                        // hits the enemies round that unit, the channel's own target spared (spell_pri_mind_sear).
+                        // Channelled on the group member the unseen mob attacks when the game takes that member as
+                        // its target (the core's cast check: none of ours) and the mob stands in its radius there
+                        if (!spell && member->getClass() == CLASS_PRIEST)
+                            if (Unit* const victim = unseen->GetVictim();
+                                victim && victim->IsPlayer() && victim != member && victim->IsAlive() &&
+                                victim->ToPlayer()->IsInSameGroupWith(member) && member->CanSeeOrDetect(victim))
+                                if (uint32 const sear = memberAI->GetAiObjectContext()->GetValue<uint32>(
+                                        "spell id", "mind sear")->Get())
+                                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(sear))
+                                    {
+                                        float const radius = SpellPayoff::AreaRadius(member, sear);
+                                        float const range = info->GetMaxRange(false, member);
+                                        if (radius > 0.0f && unseen->IsWithinDist3d(victim, radius) &&
+                                            !member->HasSpellCooldown(sear) && member->IsWithinDist3d(victim, range) &&
+                                            member->IsWithinLOSInMap(victim))
+                                        {
+                                            PlayerbotAI::CastCheck const check = memberAI->CheckCastNow(sear, victim);
+                                            if (check.Castable())
+                                            {
+                                                spell = sear;
+                                                anchorGuid = victim->GetGUID();
+                                                verdict = "channels Mind Sear on " + victim->GetName() + " [lead1543]";
+                                            }
+                                            else
+                                                verdict = "Mind Sear on " + victim->GetName() + ": " +
+                                                          PlayerbotAI::CastResultName(check.result) + " [lead1543]";
+                                        }
+                                    }
                         // [lead1532] b275 ac-h 5B-10 556-594 s / 5F-14 460-524 s (17-18 s idle): only the rogue's Fan
                         // of Knives and the warrior's Thunder Clap hit the invisible Phasing Soldier - the hunter,
                         // the warlock, the shadow priest had no self-centred area, the shaman's Thunderstorm sat on
