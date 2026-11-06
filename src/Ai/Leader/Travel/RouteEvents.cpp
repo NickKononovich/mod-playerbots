@@ -2335,7 +2335,13 @@ namespace Leader::Travel
             {
                 // Toward the leader from the door's centre (its own side whatever the model's facing), at
                 // KEY_DOOR_CAST_RANGE: the use point a player stands on.
-                float const toLeader = go->GetAngle(leader);
+                // [lead1563] ... along the door's own facing (its plane's normal) on the leader's side, as the
+                // KeyDoorPassDef use points are built (175368's 3 yd use point keys): a step toward the leader
+                // from off the normal lands in the door model's frame. b277 strat-n 20261106-105814-5G-15
+                // 1497-2007 s: Gauntlet Gate 175357, the leader 8.3 yd off (6.8 on the normal), the step 3 yd toward
+                // it ran "through" the closed gate ("route walk: stays (closed door Gauntlet Gate 175357 at 5.9
+                // yd)"), door_hold held it where it stood, 102 failed keys (los false) to the stop
+                float const toLeader = side >= 0.0f ? facing : facing + float(M_PI);
                 G3D::Vector3 dest(go->GetPositionX() + std::cos(toLeader) * KEY_DOOR_CAST_RANGE,
                                   go->GetPositionY() + std::sin(toLeader) * KEY_DOOR_CAST_RANGE,
                                   leader->GetPositionZ());
