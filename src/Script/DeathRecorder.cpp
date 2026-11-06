@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "SpellPayoff.h"  // [lead1542]
 #include "Creature.h"
 #include "DamageTaken.h"
 #include "EncounterValues.h"
@@ -721,6 +722,9 @@ public:
             Player* owner = attacker->GetCharmerOrOwnerPlayerOrPlayerItself();
             if (owner && owner->GetGroup())
                 GroupDamage::NoteDealt(owner, std::min(damage, victim->GetHealth()));
+            // [lead1542] the player's own spell: its measured damage per hit (SpellPayoff::Read)
+            if (spellId && attacker->IsPlayer())
+                SpellPayoff::NoteLanded(attacker->GetGUID(), spellId, damageType == DOT, damage);
         }
 
         return damage;

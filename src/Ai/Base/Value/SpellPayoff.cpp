@@ -13,6 +13,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <mutex>
+#include <tuple>
 
 namespace
 {
@@ -68,8 +71,15 @@ namespace
         return damage + chance / 100.0f * std::max(0.0f, crit - damage);
     }
 
+    // [lead1542] the measured hits: (caster, spell, periodic) -> (damage sum, hits)
+    std::mutex landedLock;
+    std::map<std::tuple<uint64, uint32, bool>, std::pair<double, uint64>> landed;
+
     float DirectDamage(Player* bot, Unit* target, SpellInfo const* info)
     {
+        // [lead1542] the measured mean of its direct hits once it has landed
+        if (float mean = 0.0f; SpellPayoff::MeasuredHit(bot->GetGUID(), info->Id, false, mean))
+            return mean;
         float damage = 0.0f;
         for (SpellEffectInfo const& effect : info->GetEffects())
         {
@@ -107,10 +117,14 @@ namespace SpellPayoff
             if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE || effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH)
             {
                 int32 const base = std::max(effect.CalcValue(bot), 0);
-                tick = WithCrit(bot, target, info,
-                                static_cast<float>(bot->SpellDamageBonusDone(target, info, static_cast<uint32>(base),
-                                                                             DOT, effect.EffectIndex)),
-                                true);
+                // [lead1542] the measured mean of its ticks once one has landed
+                if (float mean = 0.0f; MeasuredHit(bot->GetGUID(), info->Id, true, mean))
+                    tick = mean;
+                else
+                    tick = WithCrit(bot, target, info,
+                                    static_cast<float>(bot->SpellDamageBonusDone(
+                                        target, info, static_cast<uint32>(base), DOT, effect.EffectIndex)),
+                                    true);
             }
             // Blizzard, Rain of Fire, Mind Sear: the channel triggers a damage spell every amplitude
             else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && effect.TriggerSpell)
@@ -125,10 +139,14 @@ namespace SpellPayoff
                 if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
                 {
                     int32 const base = std::max(effect.CalcValue(bot), 0);
-                    tick = WithCrit(bot, target, triggered,
-                                    static_cast<float>(bot->SpellDamageBonusDone(
-                                        target, triggered, static_cast<uint32>(base), SPELL_DIRECT_DAMAGE, EFFECT_0)),
-                                    false);
+                    if (float mean = 0.0f; MeasuredHit(bot->GetGUID(), triggered->Id, false, mean))  // [lead1542]
+                        tick = mean;
+                    else
+                        tick = WithCrit(bot, target, triggered,
+                                        static_cast<float>(bot->SpellDamageBonusDone(
+                                            target, triggered, static_cast<uint32>(base), SPELL_DIRECT_DAMAGE,
+                                            EFFECT_0)),
+                                        false);
                 }
             }
             if (tick <= 0.0f)
@@ -223,6 +241,28 @@ namespace SpellPayoff
             damage += cast.tick * std::min(static_cast<float>(cast.ticks),
                                            std::floor(liveMs / static_cast<float>(cast.amplitudeMs)));
         return std::min(damage, health);
+    }
+
+    void NoteLanded(ObjectGuid caster, uint32 spellId, bool periodic, uint32 damage)
+    {
+        if (!spellId || !damage)
+            return;
+        std::lock_guard<std::mutex> lock(landedLock);
+        if (landed.size() > 65536)  // a bound on the casters seen (one entry per player x spell)
+            landed.clear();
+        auto& entry = landed[{caster.GetRawValue(), spellId, periodic}];
+        entry.first += damage;
+        ++entry.second;
+    }
+
+    bool MeasuredHit(ObjectGuid caster, uint32 spellId, bool periodic, float& mean)
+    {
+        std::lock_guard<std::mutex> lock(landedLock);
+        auto const found = landed.find({caster.GetRawValue(), spellId, periodic});
+        if (found == landed.end() || !found->second.second)
+            return false;
+        mean = static_cast<float>(found->second.first / static_cast<double>(found->second.second));
+        return true;
     }
 
     float AreaRadius(Player* bot, uint32 aoeSpellId)

@@ -8,6 +8,7 @@
 #define PLAYERBOTS_SPELLPAYOFF_H
 
 #include "Define.h"
+#include "ObjectGuid.h"
 
 class Player;
 class Unit;
@@ -73,6 +74,13 @@ namespace SpellPayoff
     // the cast lands, the ticks before the death (a channel's only within `channelWindowMs` from its start, the rest
     // of the channel is not cast), at most the target's health. The DotPays landing rule for every target of an area.
     float LandedOn(Cast const& cast, float lifetimeMs, float channelWindowMs, float health);
+
+    // [lead1542] user-approved 2026-11-06 (rot550 D): a player's measured damage per hit of each damaging spell on a
+    // dungeon creature, as the core deals it (Unit::DealDamage: after armor, resistances, absorbs; a crit as it
+    // rolled), direct hits and periodic ticks apart; Read uses the measured mean per hit in place of the spell-data
+    // estimate once the spell has landed (the estimate before)
+    void NoteLanded(ObjectGuid caster, uint32 spellId, bool periodic, uint32 damage);
+    bool MeasuredHit(ObjectGuid caster, uint32 spellId, bool periodic, float& mean);
 }
 
 #endif
