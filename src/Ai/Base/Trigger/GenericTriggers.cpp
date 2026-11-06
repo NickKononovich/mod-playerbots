@@ -32,6 +32,7 @@
 #include "SpellAuras.h"
 #include "Strategy.h"  // [rot490] TargetValueExclusionType
 #include "SpellMgr.h"
+#include "StringFormat.h"
 #include "World.h"  // [rot70] RATE_POWER_ENERGY
 #include "TankAoeThreat.h"  // [b32_peel]
 #include "TargetValue.h"
@@ -41,6 +42,7 @@
 #include "Timer.h"
 #include <algorithm>
 #include <limits>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -519,7 +521,40 @@ bool AoePaysTrigger::LandsOverFiller(Unit* target, uint32 aoeId, uint32 fillerId
         landed += SpellPayoff::LandedOn(area, lifetimeMs, window, health);
         shortest = std::min(shortest, lifetimeMs);
     }
-    float const filler = fillerDps * spentMs / static_cast<float>(IN_MILLISECONDS);
+    float filler = fillerDps * spentMs / static_cast<float>(IN_MILLISECONDS);
+    // [rot550] [lead1539] b275: the frost mage's Blizzard (74 % base mana) on bosses with one add where Frostbolt (11 %)
+    // dealt more. When the mana the filler spends over the fight left (the target's expected life) is short of the
+    // pool plus its in-combat regeneration, the area's mana above the filler's for the same time is filler damage
+    // the mage will not cast later: it is charged at the filler's damage per mana (spell data: CalcPowerCost)
+    std::string manaNote;
+    SpellInfo const* aoeInfo = sSpellMgr->GetSpellInfo(aoeId);
+    SpellInfo const* fillerInfo = sSpellMgr->GetSpellInfo(fillerId);
+    SpellPayoff::Cast fillerCast;
+    if (aoeInfo && fillerInfo && aoeInfo->PowerType == POWER_MANA && fillerInfo->PowerType == POWER_MANA &&
+        bot->GetMaxPower(POWER_MANA) && SpellPayoff::Read(bot, target, fillerId, fillerCast) &&
+        fillerCast.executeMs > 0.0f)
+    {
+        float const aoeCost = static_cast<float>(std::max(aoeInfo->CalcPowerCost(bot, aoeInfo->GetSchoolMask()), 0));
+        float const fillerCost =
+            static_cast<float>(std::max(fillerInfo->CalcPowerCost(bot, fillerInfo->GetSchoolMask()), 0));
+        float const fillerManaPerSec = fillerCost * static_cast<float>(IN_MILLISECONDS) / fillerCast.executeMs;
+        float const fightSec = ExpectedFightLifetime(botAI, target);
+        float const regen = std::max(0.0f, bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER +
+                                                              POWER_MANA));
+        // a life with no end in sight (no damage on it yet) is short of any pool the filler drains
+        bool const short_ = fillerManaPerSec > regen && fightSec > 0.0f &&
+                            (!std::isfinite(fightSec) ||
+                             (fillerManaPerSec - regen) * fightSec > static_cast<float>(bot->GetPower(POWER_MANA)));
+        float const extraMana = aoeCost - fillerManaPerSec * spentMs / static_cast<float>(IN_MILLISECONDS);
+        if (short_ && extraMana > 0.0f && fillerCost > 0.0f)
+        {
+            float const perMana = fillerDps * fillerCast.executeMs / static_cast<float>(IN_MILLISECONDS) / fillerCost;
+            filler += extraMana * perMana;
+            manaNote = Acore::StringFormat(" + its {:.0f} mana over the filler's at {:.2f} per mana (the fight's "
+                                           "{:.0f} s short of mana) [lead1539]",
+                                           extraMana, perMana, fightSec);
+        }
+    }
     if (landed >= filler)
         return true;
 
@@ -528,9 +563,9 @@ bool AoePaysTrigger::LandsOverFiller(Unit* target, uint32 aoeId, uint32 fillerId
     {
         _landedLoggedMs = now ? now : 1;
         LOG_INFO("playerbots", "[rot490] {} holds {} on {}: it lands {:.0f} on {} mobs before they die (shortest "
-                 "{:.1f} s) vs {} {:.0f} in its {:.1f} s", bot->GetName(), aoeSpell, target->GetName(), landed,
+                 "{:.1f} s) vs {} {:.0f} in its {:.1f} s{}", bot->GetName(), aoeSpell, target->GetName(), landed,
                  mobs.size(), shortest / static_cast<float>(IN_MILLISECONDS), Filler(), filler,
-                 spentMs / static_cast<float>(IN_MILLISECONDS));
+                 spentMs / static_cast<float>(IN_MILLISECONDS), manaNote);
     }
     return false;
 }

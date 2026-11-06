@@ -368,10 +368,13 @@ protected:
     static const std::unordered_set<uint32> FLAMESTRIKE_SPELL_IDS;
 };
 
+// [rot550] [lead1539] b275 rfc-h: Blizzard on Oggleflint with one add came from this pair ("medium aoe": a count only,
+// 24.00 over the payoff's 22.00) - the Blizzard next to a Flamestrike field goes out only where it beats the filler
+// too ("blizzard pays", AoePaysTrigger)
 class FlamestrikeBlizzardTrigger : public TwoTriggers
 {
 public:
-    FlamestrikeBlizzardTrigger(PlayerbotAI* botAI) : TwoTriggers(botAI, "flamestrike nearby", "medium aoe") {}
+    FlamestrikeBlizzardTrigger(PlayerbotAI* botAI) : TwoTriggers(botAI, "flamestrike nearby", "blizzard pays") {}
 };
 
 // [rot401] A mage's area spell where it beats the spec's filler (AoePaysTrigger): Arcane Blast for Arcane, Fireball for
