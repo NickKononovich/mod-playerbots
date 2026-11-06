@@ -1176,7 +1176,7 @@ namespace Leader::Fight
             {
                 // [lead1481] round Shirrak the band reaches out to its Inhibit Magic ring's heal reach
                 float inhibitTop = 0.0f;
-                LeaderInhibitRing(bot, target, Leader::LEADER_HEAL_REACH_YD, &inhibitTop);
+                LeaderInhibitRing(bot, target, LeaderHealerBandEdge(bot, target), &inhibitTop);  // [lead1490]
                 if (gap < LEADER_HEALER_YD - 6.0f || gap > std::max(LEADER_HEALER_YD + 10.0f, inhibitTop))
                     return "out of the healer's band";
             }
@@ -1247,7 +1247,7 @@ namespace Leader::Fight
         // [lead1481] round Shirrak a caster's / healer's ring is its Inhibit Magic ring (fewest stacks in reach)
         if (!melee)
         {
-            float const reachEdge = PlayerbotAI::IsHeal(bot) ? Leader::LEADER_HEAL_REACH_YD
+            float const reachEdge = PlayerbotAI::IsHeal(bot) ? LeaderHealerBandEdge(bot, target)  // [lead1490]
                                                              : LeaderCastReach(bot, target) - bot->GetCombatReach() -
                                                                    target->GetCombatReach();
             if (float const inhibit = LeaderInhibitRing(bot, target, reachEdge); inhibit > 0.0f)
@@ -1527,6 +1527,17 @@ namespace Leader::Fight
         return (floor + reachEdge) / 2.0f + reaches;
     }
 
+    // [lead1490] b270 ac-h 5B-10: lead1481 gave the healer the band its heal range covers from Shirrak's edge
+    // (35-40 yd, 1 stack); a melee member on his far side stood 43.9 yd off it, out of the heals, and died. The heal
+    // reach outranks the band: the healer's edge gap is the game's heal reach (HealReaches: the range plus both
+    // players' combat reaches, centre to centre) less a melee player's place on the target's far side (Unit::
+    // GetMeleeRange, the healer's own combat reach standing for that player's, as in HealReaches) and both reaches
+    float LeaderHealerBandEdge(Player* healer, Unit* target)
+    {
+        float const healCentre = Leader::LEADER_HEAL_REACH_YD + 2.0f * healer->GetCombatReach();
+        return healCentre - target->GetMeleeRange(healer) - healer->GetCombatReach() - target->GetCombatReach();
+    }
+
     // [lead1482] the core's getStackCount on the edge-to-edge gap (Unit::GetDistance: the 3D centre gap less both
     // combat reaches)
     namespace
@@ -1546,7 +1557,7 @@ namespace Leader::Fight
         float InhibitReachEdge(Player* bot, Unit* target)
         {
             return PlayerbotAI::IsHeal(bot)
-                       ? Leader::LEADER_HEAL_REACH_YD
+                       ? LeaderHealerBandEdge(bot, target)  // [lead1490]
                        : LeaderCastReach(bot, target) - bot->GetCombatReach() - target->GetCombatReach();
         }
     }

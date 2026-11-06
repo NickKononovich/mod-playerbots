@@ -1148,6 +1148,14 @@ namespace Leader::Dungeon
                     again = bot->GetExactDist(checked.from) > 1.0f ||
                             (!checked.mob.IsEmpty() &&
                              (!blocker || !blocker->IsAlive() || blocker->GetExactDist(checked.mobAt) > 1.0f));
+                    // [lead1492] b270 ac-h 5B-10 484.3-488 s: the rogue's escape from the Focus Fire flare on the
+                    // tank was refused by its own move guard while Killing Spree ran (IsMovingAllowed, i.e.
+                    // PlayerbotAI::CanMove) and kept as "stays" while it stood: it took the three Fiery Blasts
+                    // (55 % -> 15 %) and died. A refusal by the member's own state is a fact of that state: once
+                    // the member can move again, the move is judged again
+                    if (!again && checked.reject.find("IsMovingAllowed") != std::string::npos)
+                        if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(bot); memberAI && memberAI->CanMove())
+                            again = true;
                 }
                 std::string reject;
                 // [lead151] the tank's own spot in a fight is no idle mob's reach: the tank stands there unwoken
@@ -2877,10 +2885,34 @@ namespace Leader::Dungeon
                 spot.GetExactDist(tankAt) > Leader::LEADER_HEALER_TANK_YD - g_spotAcquireMargin)
                 return false;
             for (Player* other : seats)
-                if (other != healer && lead.combatSpots.count(other->GetGUID()) &&
-                    !reaches(spot, plannedAt(other)) &&
-                    !(g_spotAcquireMargin == 0.0f && reaches(spot, other->GetPosition())))
+            {
+                if (other == healer || !other->IsAlive())
+                    continue;
+                if (lead.combatSpots.count(other->GetGUID()))
+                {
+                    if (!reaches(spot, plannedAt(other)) &&
+                        !(g_spotAcquireMargin == 0.0f && reaches(spot, other->GetPosition())))
+                        return false;
+                    continue;
+                }
+                // [lead1490] b270 ac-h 5B-10 487 s: the rogue chasing Shirrak (no combat spot of its own) stood 43.9 yd
+                // off the healer's spot, out of its heals (heal_reach). A melee member without a spot fights
+                // anywhere in its target's melee range (Unit::GetMeleeRange): the spot reaches it on the target's
+                // far side
+                Unit* const fought = other->GetVictim();
+                if (!fought || !fought->IsAlive() || !LeaderFightsMelee(other))
+                    continue;
+                float const gap = fought->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY());
+                if (gap <= 0.0f)
+                    continue;
+                float const reach = fought->GetMeleeRange(other) / gap;
+                Position const farSide(
+                    fought->GetPositionX() + (fought->GetPositionX() - spot.GetPositionX()) * reach,
+                    fought->GetPositionY() + (fought->GetPositionY() - spot.GetPositionY()) * reach,
+                    fought->GetPositionZ());
+                if (!reaches(spot, farSide))
                     return false;
+            }
             return true;
         };
         // [lead463] b207 rfc-h: "heal reach" took 4-57 ring candidates of a combat spot search (the 39
@@ -6238,6 +6270,45 @@ namespace Leader::Dungeon
             return member->getPowerType() != POWER_MANA ||
                    member->GetPowerPct(POWER_MANA) >= PullReadiness::MemberBossManaLine(member, boss);
         };
+        // [lead1491] b270 ac-h 5C-11 516-529 s: Shirrak died with his Carnivorous Bite (39382: a 20 s physical
+        // periodic damage aura, 3 s ticks, on all within 12 yd) on the Fury warrior; the warrior's own Rest was held
+        // ("a damage over time is on it"), while the disc priest got the leader's Rest (mana 13 % < 16 %) and drank,
+        // and the top-up waited on the healer's drink - the warrior bled 47 % -> 0 % 6 yd from it. A member under
+        // 100 % health that an active damage source still hurts (HurtOutOfFight: a damage over time on it, lava /
+        // slime under it) is the group's first fact: nobody rests while it lasts and the healer tops it up
+        // the source is the game's: lava / slime under it, or a timed damage-over-time aura a creature cast on it (no
+        // permanent aura, none of a player's own)
+        auto const activeDamage = [](Player* member) -> bool
+        {
+            if (InHarmfulLiquid(member, member->GetPositionX(), member->GetPositionY(), member->GetPositionZ()))
+                return true;
+            for (AuraType type : {SPELL_AURA_PERIODIC_DAMAGE, SPELL_AURA_PERIODIC_DAMAGE_PERCENT})
+                for (AuraEffect const* periodic : member->GetAuraEffectsByType(type))
+                    if (periodic && periodic->GetCasterGUID().IsCreature() && periodic->GetBase()->GetDuration() > 0)
+                        return true;
+            return false;
+        };
+        auto const hurtMember = [&]() -> Player*
+        {
+            Player* worst = nullptr;
+            std::vector<Player*> all = seats;
+            all.push_back(tank);
+            for (Player* member : all)
+                if (member && member->IsAlive() && member->GetHealthPct() < 100.0f && activeDamage(member) &&
+                    (!worst || member->GetHealthPct() < worst->GetHealthPct()))
+                    worst = member;
+            return worst;
+        };
+        Player* const hurtNow = fighting ? nullptr : hurtMember();
+        auto const restHurtWhy = [&](Player* member) -> std::string
+        {
+            if (char const* own = HurtOutOfFight(member))
+                return own;
+            if (hurtNow && hurtNow != member)
+                return Acore::StringFormat("[lead1491] {} at {:.0f} % health: {}", hurtNow->GetName(),
+                                           hurtNow->GetHealthPct(), HurtOutOfFight(hurtNow));
+            return std::string();
+        };
         // [lead1353] coordinator 2026-11-05 (b257 rfc-h 5A-9 899-915 s): the paladin tank drank from 5 % to its 11 %
         // boss line, stood, and gave the boss pass's four blessings one every 2.7-3.7 s - the four cost ~19 % of its
         // mana, and lead1133's rest to the orders' cost reads the orders only once the pass has queued them. While
@@ -6309,19 +6380,21 @@ namespace Leader::Dungeon
                                                         : RestState::BelowOwnLine(tank, &tankRestWhy) &&
                                                               !MemberFull(tank))) &&
                                                       (tank->IsSitState() || RestState::CanRest(tank));
-            char const* const tankHurt = tankRests ? HurtOutOfFight(tank) : nullptr;
-            if (tankHurt && lead.restHurtLogged.insert(tank->GetGUID()).second)
+            // [lead1491] its own hurt or a member's that an active damage source still hurts
+            std::string const tankHurt = tankRests ? restHurtWhy(tank) : std::string();
+            if (!tankHurt.empty() && lead.restHurtLogged.insert(tank->GetGUID()).second)
                 Decisions().Write(run, "leader", "rest_held", tank->GetGUID(), tank->GetName(), true,
                                   JsonObject().Str("member", tank->GetName()).Str("why", tankHurt));
-            if (!tankHurt)
+            if (tankHurt.empty())
                 lead.restHurtLogged.erase(tank->GetGUID());
-            if (tankRests && !tankHurt && Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
+            if (tankRests && tankHurt.empty() &&
+                Leader::Events::SetReady(tank->GetGUID(), Leader::ReadyEvent::Rest))
                 logEvent(tank, "Rest", JsonObject().Str("who", "tank")
                                            .Str("why", tankRestWhy.empty() ? "sits: to full" : tankRestWhy));
             // [lead433] b202 rfc-h 5A 578.0-582.7 s: "held for now: Rtpalaa sits" - the tank reached the planner's
             // 50 % line and drank on: its Rest, once out, was never replaced (a member's is, by Prepare), so the
             // drinking tank decided itself when to stand. The Rest ends where its line is reached
-            if (!tankRests)
+            if (!tankRests || !tankHurt.empty())  // [lead1491] a held Rest ends too
                 if (Leader::MemberEvents tankEvents; Leader::Events::Get(tank->GetGUID(), tankEvents) &&
                                                      tankEvents.ready == Leader::ReadyEvent::Rest &&
                                                      Leader::Events::SetReady(tank->GetGUID(),
@@ -6337,6 +6410,13 @@ namespace Leader::Dungeon
             // boss gap names it, or it is below its health line - only then may an out-of-fight heal over time top
             // it up (LeaderHealTargetAction: the HoT's whole duration holds the pull, lead940)
             bool topUpHolds = !topUp.IsEmpty();
+            // [lead1491] a member an active damage source still hurts is topped up first, the healer's own drink
+            // need notwithstanding (its Rest is held meanwhile)
+            if (topUp.IsEmpty() && hurtNow && !HealTriage::IsHealImmune(healer, hurtNow))
+            {
+                topUp = hurtNow->GetGUID();
+                topUpHolds = true;
+            }
             // [lead433] the member whose health holds the boss pull first (its gap is the healer's, above)
             if (topUp.IsEmpty())
                 if (Creature* waitBoss = lead.bossWaitFor.IsEmpty() ? nullptr : map->GetCreature(lead.bossWaitFor);
@@ -6409,7 +6489,7 @@ namespace Leader::Dungeon
             Player* healed = topUp.IsEmpty() ? nullptr : ObjectAccessor::FindPlayer(topUp);
             // [lead179] not while the healer drinks: its Rest holds the top-up's mana, it heals once it stands
             if (healed && healed->IsAlive() && healed->GetHealthPct() < 100.0f &&
-                !(healer->IsSitState() && RestState::IsDrinking(healer)) &&
+                (!(healer->IsSitState() && RestState::IsDrinking(healer)) || healed == hurtNow) &&  // [lead1491]
                 Leader::Events::SetHealTarget(healer->GetGUID(), topUp, topUpHolds))
                 logEvent(healer, "TopUp", JsonObject().Str("member", healed->GetName())
                                               .Real("health", healed->GetHealthPct())
@@ -7034,17 +7114,24 @@ namespace Leader::Dungeon
                         logged = state;
                     }
                 }
-                char const* const hurt = needsRest ? HurtOutOfFight(bot) : nullptr;
-                if (hurt && lead.restHurtLogged.insert(guid).second)
+                // [lead1491] its own hurt or a member's that an active damage source still hurts
+                std::string const hurt = needsRest ? restHurtWhy(bot) : std::string();
+                if (!hurt.empty() && lead.restHurtLogged.insert(guid).second)
                     Decisions().Write(run, "leader", "rest_held", guid, bot->GetName(), true,
                                       JsonObject().Str("member", bot->GetName()).Str("why", hurt));
-                if (!hurt)
+                if (hurt.empty())
                     lead.restHurtLogged.erase(guid);
-                if (needsRest && !hurt && (bot->IsSitState() || RestState::CanRest(bot)))
+                if (needsRest && hurt.empty() && (bot->IsSitState() || RestState::CanRest(bot)))
                 {
                     restCommanded = true;
                     if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Rest))
                         logEvent(bot, "Rest", JsonObject().Str("why", restWhy.empty() ? "sits: to full" : restWhy));
+                }
+                else if (!hurt.empty())
+                {
+                    // [lead1491] a Rest it holds ends: it stands (the healer heals the hurt member)
+                    if (Leader::Events::SetReady(guid, Leader::ReadyEvent::Prepare))
+                        logEvent(bot, "Prepare", JsonObject().Str("why", "a member is hurt: " + hurt));
                 }
                 else if (lead.spotsWaiting)
                 {
@@ -7860,7 +7947,12 @@ namespace Leader::Dungeon
                                                                           found->second.second.GetPositionY()) <= 2.0f;
                         breaks = LeaderCombatSpotBreaks(bot, botAI, target, found->second.second, melee, zones,
                                                         keeps, sight, &killOrder, onHeld);  // [lead210]
-                        if (breaks == "heal reach")
+                        // [lead1490] b270 ac-h 5B-10 477.6 s: the holy paladin's held spot from the pull's start
+                        // (Shirrak came to it) stood 63 yd off him; the heal-reach MoveTo had owned the healer since,
+                        // the Fiery Blast escape ended it and the combat spot walked the healer back out to 43.9 yd
+                        // off the rogue, which then died. The heal reach is the healer's own spot's first fact (it
+                        // outranks the Inhibit Magic band): a healer's held spot that no longer keeps it breaks
+                        if (breaks == "heal reach" && bot != healer && !PlayerbotAI::IsHeal(bot))
                             breaks.clear();
                         if (breaks.empty() && blindOnSpot)  // [lead218]
                             breaks = "it cannot cast on its target from its spot";

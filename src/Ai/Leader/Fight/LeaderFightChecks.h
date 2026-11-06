@@ -359,6 +359,9 @@ namespace Leader::Fight
     // fewest its reach allows (its cast reach, a healer's heal reach), and the cast rate a stack count leaves
     // (1 / (1 + 0.5 n): the aura's -50 % casting speed a stack, the global cooldown with it)
     int32 LeaderInhibitStacksAt(Player* bot, Unit* target, Position const& at);
+    // [lead1490] the healer's reach edge for its band round a target: its heal reach to a melee member on the
+    // target's far side (the heal reach outranks the Inhibit Magic band)
+    float LeaderHealerBandEdge(Player* healer, Unit* target);
     int32 LeaderInhibitBestStacks(Player* bot, Unit* target);
     float LeaderInhibitRate(int32 stacks);
 
