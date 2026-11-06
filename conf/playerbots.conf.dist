@@ -1862,7 +1862,8 @@ Playerbots.RandomBotReviveTeleport = 1
 # RandomBotRefresh: Refresh() resurrects, repairs, heals, fills mana, adds money and refreshes factory items.
 Playerbots.RandomBotRefresh = 1
 # RandomBotRandomize: first-login / scheduled randomize (level, factory gear, professions, gold, bags,
-# consumables, talents). 0: the bot keeps its level and its class starting kit.
+# consumables, talents). 0: the bot keeps its level and its class starting kit, and the level-up / trainer-spell
+# routines give it no professions, profession ranks or recipes (it learns them at a trainer).
 Playerbots.RandomBotRandomize = 1
 # RandomBotLevelupSupplies: free ammo, reagents, food, consumables and potions on level up.
 Playerbots.RandomBotLevelupSupplies = 1

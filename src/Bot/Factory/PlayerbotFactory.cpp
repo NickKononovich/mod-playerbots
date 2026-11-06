@@ -3311,6 +3311,10 @@ bool PlayerbotFactory::CanEquipUnseenItem(uint8 slot, uint16& dest, uint32 item)
 
 void PlayerbotFactory::InitTradeSkills()
 {
+    // [guild1] no factory professions for random bots that play like players: they learn them at a trainer
+    if (!sPlayerbotAIConfig.RandomBotRandomize && sRandomPlayerbotMgr.IsRandomBot(bot))
+        return;
+
     if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return;
 
@@ -3848,6 +3852,11 @@ void PlayerbotFactory::InitAvailableSpells()
     for (uint32 trainerId : trainerIdCache[bot->getClass()])
     {
         Trainer::Trainer* trainer = sObjectMgr->GetTrainer(trainerId);
+
+        // [guild1] no free profession ranks / recipes for random bots that play like players
+        if (trainer->GetTrainerType() == Trainer::Type::Tradeskill && !sPlayerbotAIConfig.RandomBotRandomize &&
+            sRandomPlayerbotMgr.IsRandomBot(bot))
+            continue;
 
         for (auto& spell : trainer->GetSpells())
         {
