@@ -2283,23 +2283,6 @@ namespace Leader::Travel
                         else if (known)
                             routeState.keyPassSafeDoor.Clear();
                     }
-                    // [lead1592] a held opening that woke nobody (keyPassHeldQuiet): the next one is the plain pass
-                    // for the WHOLE group - gathered at the opener (the lead1570 spots back dropped), the tank first
-                    // and every member behind it in the same opening. b282 strat-n 5F-6 t=48-54 / 5G-7 t=32-35: the
-                    // spots back 19 yd off stayed (lead1584 skips them in the gather), only the tank was sent, the
-                    // gate shut behind it, the tank died alone on the far side (102 s / 59 s)
-                    if (farPack && routeState.keyPassHeldQuiet == go->GetGUID())
-                    {
-                        farPack = false;
-                        if (routeState.keyPassBackDoor == go->GetGUID() && !routeState.keyPassBack.empty())
-                            group.LogEvent("key_pass_regather",
-                                           JsonObject().Str("note", pass->note).Str("door", go->GetName())
-                                               .Num("doorEntry", go->GetEntry())
-                                               .Num("members", uint32(routeState.keyPassBack.size()))
-                                               .Str("why", "the held opening woke nobody: the whole group gathers "
-                                                           "at the opener for the plain pass")
-                                               .Str("tag", "[lead1592]"));
-                    }
                     routeState.keyPassFarPack = farPack;  // [lead1569] TickKeyDoorPass holds the pass for it
                     if (!farPack && routeState.keyPassBackDoor == go->GetGUID())
                         routeState.keyPassBack.clear();  // [lead1570] nothing wakes: the plain gather
