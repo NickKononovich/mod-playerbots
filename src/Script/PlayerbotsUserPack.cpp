@@ -74,6 +74,7 @@ namespace
         uint32 statusIntervalSecs = 600;
         std::string statusLog;
         uint32 autoTrainEvery = 2;
+        bool solo = false;  // [guild1] every character plays alone, no pack group, no hand-over to the user
     };
 
     PackConfig cfg;
@@ -223,6 +224,7 @@ namespace
         if (!next.statusLog.empty() && next.statusLog.find(':') == std::string::npos && next.statusLog[0] != '/')
             next.statusLog = sLog->GetLogsDir() + next.statusLog;
         next.autoTrainEvery = sConfigMgr->GetOption<uint32>("Playerbots.UserPack.AutoTrainEveryLevels", 2, false);
+        next.solo = sConfigMgr->GetOption<bool>("Playerbots.UserPack.Solo", false, false);
         if (next.guids.empty())
             next.enabled = false;
         cfg = next;
@@ -462,7 +464,11 @@ namespace
             if (startDelayOver)
             {
                 // Paused: the user is at the character screen; the bots still online play on, none is logged in.
-                if (_mode == Mode::Autonomous || _mode == Mode::Paused)
+                // [guild1] solo: the characters the user does not play live on alone whatever he does; the one he
+                // logs into is his (the secure login takes it from the bot holder), the others are not handed over.
+                if (cfg.solo)
+                    TickAutonomous(now, true);
+                else if (_mode == Mode::Autonomous || _mode == Mode::Paused)
                     TickAutonomous(now, _mode == Mode::Autonomous);
                 else if (_mode == Mode::Human)
                     TickHuman(human, now);
@@ -578,13 +584,30 @@ namespace
 
                 // Left over from the user's session (his bot): his manager logs it out with him; until then wait.
                 PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-                if (botAI && botAI->GetMaster() && IsRealPlayer(botAI->GetMaster()))
+                if (!cfg.solo && botAI && botAI->GetMaster() && IsRealPlayer(botAI->GetMaster()))
                     return;
             }
 
             std::vector<Player*> bots = OnlineBots();
             if (bots.empty())
                 return;
+
+            if (cfg.solo)
+            {
+                // Each bot leads itself; one taken by the user as his bot (his master) is left to him.
+                _leader = bots.front()->GetGUID();
+                for (Player* bot : bots)
+                {
+                    if (_order.type != OrderType::None && _order.executors.count(bot->GetGUID()))
+                        continue;
+                    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                    if (botAI && botAI->GetMaster() && IsRealPlayer(botAI->GetMaster()))
+                        continue;
+                    EnsureAutonomousStrategies(bot, true);
+                }
+                MaybeAutoTrain(bots);
+                return;
+            }
 
             Player* leader = PickLeader(bots);
             _leader = leader->GetGUID();
@@ -1366,13 +1389,15 @@ namespace
 
         void MaybeAutoTrain(std::vector<Player*> const& bots)
         {
-            if (!cfg.autoTrainEvery || _order.type != OrderType::None || bots.size() < cfg.guids.size())
+            if (!cfg.autoTrainEvery || _order.type != OrderType::None ||
+                (!cfg.solo && bots.size() < cfg.guids.size()))
                 return;
             uint8 minLevel = 255;
             for (Player* bot : bots)
             {
                 MapEntry const* map = sMapStore.LookupEntry(bot->GetMapId());
-                if (!bot->IsAlive() || bot->IsInCombat() || bot->IsInFlight() || (map && map->IsDungeon()))
+                // solo: the pack does not wait for all of them; a bot busy now walks after its fight
+                if (!cfg.solo && (!bot->IsAlive() || bot->IsInCombat() || bot->IsInFlight() || (map && map->IsDungeon())))
                     return;
                 minLevel = std::min(minLevel, bot->GetLevel());
             }

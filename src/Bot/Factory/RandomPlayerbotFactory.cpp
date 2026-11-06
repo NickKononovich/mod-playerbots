@@ -714,6 +714,12 @@ void RandomPlayerbotFactory::CreateRandomBots()
     }
 
     LOG_INFO("playerbots", "Creating random bot characters...");
+    bool planAccountsUsed = false;
+    if (!sPlayerbotAIConfig.RandomBotClassPlan.empty())
+        if (QueryResult used = CharacterDatabase.Query(
+                "SELECT COUNT(*) FROM characters WHERE account IN (SELECT id FROM {}.account WHERE username LIKE '{}%%')",
+                LoginDatabase.GetConnectionInfo()->database, sPlayerbotAIConfig.RandomBotAccountPrefix))
+            planAccountsUsed = used->Fetch()[0].Get<uint64>() > 0;
     uint32 totalRandomBotChars = 0;
     std::vector<std::pair<Player*, uint32>> playerBots;
     std::vector<WorldSession*> sessionBots;
@@ -779,9 +785,13 @@ void RandomPlayerbotFactory::CreateRandomBots()
                                                 time_t(0), LOCALE_enUS, 0, false, false, 0);
         sessionBots.push_back(session);
 
-        // [guild1] class plan: account N gets plan entries [N*10, N*10+10), only the missing ones
+        // [guild1] class plan: account N gets plan entries [N*10, N*10+10), only the missing ones. The plan is a
+        // one-time creation: once any plan account has characters, nothing is created again (characters moved off
+        // the accounts are not replaced).
         if (!sPlayerbotAIConfig.RandomBotClassPlan.empty())
         {
+            if (planAccountsUsed)
+                continue;
             std::vector<uint8> plan;
             std::stringstream ss(sPlayerbotAIConfig.RandomBotClassPlan);
             for (std::string tok; std::getline(ss, tok, ',');)

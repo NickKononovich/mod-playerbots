@@ -3043,3 +3043,8 @@ Playerbots.UserPack.StatusIntervalSecs = 600
 
 # While nobody plays: visit the class trainers (paying) every N levels of the lowest member (0 = never)
 Playerbots.UserPack.AutoTrainEveryLevels = 2
+
+# Solo: every listed character plays alone (own leader: grind + rpg), no pack group. The one the user logs into
+# is his; the others go on alone and are not handed over to him. Auto-train walks each bot to its class trainer.
+# Default: 0 (one pack under one leader)
+Playerbots.UserPack.Solo = 0
