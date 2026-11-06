@@ -14,6 +14,7 @@
 #include "DynamicObject.h"
 #include "EstimatedLifetimeValue.h"  // [lead454] ExpectedLifetime
 #include "GridNotifiers.h"
+#include "Group.h"  // [lead1531]
 #include "GridNotifiersImpl.h"
 #include "LeaderPlannerShared.h"  // [lead1100] PatrolForecast
 #include "Map.h"
@@ -1455,7 +1456,22 @@ namespace Leader::Fight
     bool LeaderFightMob(Player* tank, Unit* unit)
     {
         Creature* creature = unit ? unit->ToCreature() : nullptr;
-        return creature && tank->IsValidAttackTarget(creature) && !creature->IsCharmedOwnedByPlayerOrPlayer() &&
+        // [lead1531] b275 ac-h 5D-12 41-77 s: a Phantasmal Possessor's Possess (33401) charmed the druid tank - the
+        // charm gives it the charmer's faction (Unit::SetCharmedBy), every mob turned "no valid target" for it and
+        // the fight's mobs were judged by a tank fighting for them. A charmed tank is no judge: the group's first
+        // member in its own mind judges the mob
+        Player* judge = tank;
+        if (tank && tank->IsCharmed())
+            if (Group* group = tank->GetGroup())
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                    if (Player* member = ref->GetSource();
+                        member && member != tank && member->IsAlive() && !member->IsCharmed() &&
+                        member->IsInWorld() && member->GetMap() == tank->GetMap())
+                    {
+                        judge = member;
+                        break;
+                    }
+        return creature && judge && judge->IsValidAttackTarget(creature) && !creature->IsCharmedOwnedByPlayerOrPlayer() &&
                !creature->GetOwnerGUID().IsPlayer() && !creature->GetCharmerOrOwnerPlayerOrPlayerItself();
     }
 
@@ -1626,6 +1642,55 @@ namespace Leader::Fight
             if (uint32 const next = sSpellMgr->GetNextSpellInChain(id); next && member->HasSpell(next))
                 continue;  // its highest rank only
             if (SelfCentredArea(sSpellMgr->GetSpellInfo(id)))
+                entry.second.push_back(id);
+        }
+        return entry.second;
+    }
+
+    // [lead1532] the member's ground area damage spells (an explicit destination: Rain of Fire, Volley, Blizzard,
+    // Hurricane, Flamestrike, Death and Decay), channels included: the radius of their damaging area or field
+    // (a persistent area aura that damages or triggers on what stands in it), 0: none. Spell data only
+    float LeaderGroundAreaRadius(Player* member, SpellInfo const* info)
+    {
+        if (!info || info->IsPassive() || info->IsPositive() || !(info->GetExplicitTargetMask() & TARGET_FLAG_DEST_LOCATION))
+            return 0.0f;
+        float radius = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (!effect.IsEffect())
+                continue;
+            if (effect.TargetA.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE ||
+                effect.TargetB.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE)
+                return 0.0f;
+            bool const field = effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA &&
+                               (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                                effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
+                                effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH ||
+                                effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL);
+            if (field || AreaDamageEffect(effect))
+                radius = std::max(radius, effect.CalcRadius(member));
+        }
+        return radius;
+    }
+
+    std::vector<uint32> const& LeaderGroundAreaSpells(Player* member)
+    {
+        thread_local std::map<ObjectGuid, std::pair<size_t, std::vector<uint32>>> cache;
+        if (cache.size() > 1024)
+            cache.clear();
+        auto& entry = cache[member->GetGUID()];
+        size_t const book = member->GetSpellMap().size();
+        if (entry.first == book && book)
+            return entry.second;
+        entry.first = book;
+        entry.second.clear();
+        for (auto const& [id, known] : member->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active || !member->HasSpell(id))
+                continue;
+            if (uint32 const next = sSpellMgr->GetNextSpellInChain(id); next && member->HasSpell(next))
+                continue;  // its highest rank only
+            if (LeaderGroundAreaRadius(member, sSpellMgr->GetSpellInfo(id)) > 0.0f)
                 entry.second.push_back(id);
         }
         return entry.second;

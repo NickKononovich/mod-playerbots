@@ -352,6 +352,9 @@ namespace Leader::Fight
     // [lead1480] the member's own area damage spells it casts on itself (centred on it, or on the ground at its
     // feet), highest known rank, no cone, no channel, no explicit unit target: spell data only
     std::vector<uint32> const& LeaderSelfAreaSpells(Player* member);
+    // [lead1532] the member's ground area damage spells (explicit destination, channels included) and their radius
+    std::vector<uint32> const& LeaderGroundAreaSpells(Player* member);
+    float LeaderGroundAreaRadius(Player* member, SpellInfo const* info);
     float LeaderAreaRadius(Player* member, SpellInfo const* info);
 
     // [lead1481] Shirrak the Dead Watcher's Inhibit Magic (32264, SPELL_AURA_MOD_CASTING_SPEED_NOT_STACK -50 % a

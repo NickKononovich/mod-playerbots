@@ -958,14 +958,34 @@ namespace Leader::Dungeon
                 Leader::PullPack::Set(group->GetGUID(), all);
             }
         };
+        // [lead1530] b275 ac-h 5D-12 #1 t=22.4 (186 s, 14 mobs, 2 deaths): three packs joined in one tick, each
+        // judged on the tank's 2 attackers alone ("5 mobs 0.71", "4 mobs 0.57", "3 mobs 0.43") while the committed
+        // pull (4), its two walkers taken along and the packs just joined were all the fight's - the plan's own budget
+        // stood at 0.86 with 6 mobs, the joins made it 12. A pack is judged with the whole fight: the tank's and every
+        // member's attackers, the committed pull's mobs, the walkers taken along and the packs already joined
+        // (JudgePack drops the dead and the doubles)
+        auto const fightUnion = [&]()
+        {
+            // the committed pull and the packs joined so far, this tick's joins included (pullMobs is the tick's
+            // start)
+            std::vector<ObjectGuid> combined = LeaderPullMobs(lead.commit, lead.commitMob);
+            combined.insert(combined.end(), lead.joinedMobs.begin(), lead.joinedMobs.end());
+            combined.insert(combined.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
+            for (Unit* attacker : tank->getAttackers())
+                if (attacker && attacker->IsAlive())
+                    combined.push_back(attacker->GetGUID());
+            for (ObjectGuid const& groupMember : group.MemberGuids())
+                if (Player* member = ObjectAccessor::FindPlayer(groupMember); member && member != tank)
+                    for (Unit* attacker : member->getAttackers())
+                        if (attacker && attacker->IsAlive())
+                            combined.push_back(attacker->GetGUID());
+            return combined;
+        };
         auto const judgeBlockingPack = [&](Player* bot, Creature* mob)
         {
             if (!mob || !group.FightOn(tank) || lead.joinedPack.count(mob->GetGUID()))
                 return;
-            std::vector<ObjectGuid> combined;
-            for (Unit* attacker : tank->getAttackers())
-                if (attacker && attacker->IsAlive())
-                    combined.push_back(attacker->GetGUID());
+            std::vector<ObjectGuid> combined = fightUnion();
             std::vector<ObjectGuid> const packMobs = packOf(mob);
             float const packReach = mob->GetAggroRange(tank);
             combined.insert(combined.end(), packMobs.begin(), packMobs.end());
@@ -1054,7 +1074,8 @@ namespace Leader::Dungeon
                                   .Num("packMobs", int64(packMobs.size()))
                                   .Real("overload", overload)
                                   .Str("judged", judged)
-                                  .Str("blocked", bot->GetName()));
+                                  .Str("blocked", bot->GetName())
+                                  .Str("tag", "[lead1530]"));
         };
         // [lead374] b197b rfc-h (8 runs): 50 "chase: behind the target" and 8 "along with the tank" Follows refused by
         // the members' own idle-path guard - the leader issued Follows it never judged. Every Follow is judged before
@@ -1831,8 +1852,12 @@ namespace Leader::Dungeon
         // [lead1480] the area orders on an unseen fight mob (below): member -> its ordered area spell; out of a
         // fight none stays (an area spell cast out of a fight pulls what it hits)
         thread_local std::map<ObjectGuid, uint32> unseenOrdered;
+        // [lead1532] member -> the group member whose ground its ordered ground area spell lands on (empty: itself)
+        thread_local std::map<ObjectGuid, ObjectGuid> unseenAnchor;
         if (unseenOrdered.size() > 1024)
             unseenOrdered.clear();
+        if (unseenAnchor.size() > 1024)
+            unseenAnchor.clear();
         if (!fighting)
         {
             std::vector<Player*> members = seats;
@@ -1843,19 +1868,56 @@ namespace Leader::Dungeon
                 {
                     Leader::MemberEvents told;
                     if (Leader::Events::Get(ordered->first, told) && told.externalSpell == ordered->second &&
-                        told.externalTarget.IsEmpty())
+                        told.externalTarget == unseenAnchor[ordered->first])
                         Leader::Events::SetExternal(ordered->first, 0, ObjectGuid::Empty);
+                    unseenAnchor.erase(ordered->first);
                     unseenOrdered.erase(ordered);
                 }
         }
         if (fighting)
         {
-            if (Unit* victim = tank->GetVictim();
-                victim && victim->IsAlive() && victim->IsInCombat() && victim->GetMap() == map)
+            // [lead1531] b275 ac-h 5D-12 48-75 s: the possessed tank's victim was the warlock Rtlocaa and the leader
+            // ordered Attack Rtlocaa to the whole group (18 orders) - a charmed member's victim is no fight target
+            // (LeaderFightMob: a hostile creature only)
+            if (Unit* victim = tank->GetVictim(); victim && victim->IsAlive() && victim->IsInCombat() &&
+                                                  victim->GetMap() == map && LeaderFightMob(tank, victim))
                 target = victim;
+            // [lead1531] a member charmed by a creature's channel (Phantasmal Possessor's Possess, 33401: the charm
+            // lasts while the charmer channels it, Spell::finish / Unit::RemoveCharmedBy) is freed by the charmer's
+            // death or broken channel: the charmer is the fight's target before any other mob
+            Unit* charmerTarget = nullptr;
+            Player* charmedMember = nullptr;
+            for (ObjectGuid const& groupMember : group.MemberGuids())
+                if (Player* member = ObjectAccessor::FindPlayer(groupMember);
+                    member && member->IsAlive() && member->IsCharmed() && member->GetMap() == map)
+                    if (Unit* charmer = member->GetCharmer();
+                        charmer && charmer->IsAlive() && charmer->GetMap() == map && LeaderFightMob(tank, charmer) &&
+                        (!charmerTarget || tank->GetExactDist(charmer) < tank->GetExactDist(charmerTarget)))
+                    {
+                        charmerTarget = charmer;
+                        charmedMember = member;
+                    }
+            if (charmerTarget)
+            {
+                target = charmerTarget;
+                thread_local std::map<ObjectGuid, ObjectGuid> charmerLogged;  // tank -> charmer
+                if (charmerLogged.size() > 1024)
+                    charmerLogged.clear();
+                if (charmerLogged[tank->GetGUID()] != charmerTarget->GetGUID())
+                {
+                    charmerLogged[tank->GetGUID()] = charmerTarget->GetGUID();
+                    Decisions().Write(run, "leader", "charmer_first", charmerTarget->GetGUID(),
+                                      charmerTarget->GetName(), true,
+                                      JsonObject()
+                                          .Str("charmed", charmedMember->GetName())
+                                          .Real("tankDistance", tank->GetExactDist(charmerTarget))
+                                          .Str("why", "its charm on a member ends with its death or channel")
+                                          .Str("tag", "[lead1531]"));
+                }
+            }
             std::vector<Player*> attacked = seats;
             attacked.push_back(tank);
-            if (refusedTarget(target))
+            if (refusedTarget(target) && target != charmerTarget)
                 target = nullptr;
             Unit* refusedFallback = nullptr;
             std::string attackersSig;
@@ -2019,6 +2081,9 @@ namespace Leader::Dungeon
                     bool const isTank = member == tank;
                     uint32 spell = 0;
                     float reachRadius = 0.0f;
+                    ObjectGuid anchorGuid;     // [lead1532] the ground spell's anchor (empty: on itself)
+                    Unit* groundAnchor = nullptr;
+                    float groundRange = 0.0f;  // [lead1532] the farthest ground spell's range
                     std::string verdict;
                     if (!unseen || !member->IsAlive() || !memberAI)
                         verdict = "-";
@@ -2066,28 +2131,88 @@ namespace Leader::Dungeon
                             verdict = std::string("casts ") + (info->SpellName[0] ? info->SpellName[0] : "?");
                             break;
                         }
+                        // [lead1532] b275 ac-h 5B-10 556-594 s / 5F-14 460-524 s (17-18 s idle): only the rogue's Fan
+                        // of Knives and the warrior's Thunder Clap hit the invisible Phasing Soldier - the hunter,
+                        // the warlock, the shadow priest had no self-centred area, the shaman's Thunderstorm sat on
+                        // its cooldown. A ground area spell (an explicit destination: Volley, Rain of Fire, Blizzard,
+                        // Hurricane, Death and Decay) lands where it is cast, the core's area test hits the unseen
+                        // mob (WorldObject::CanDetect skips invisibility for an area spell): cast on the ground of
+                        // the group member the mob attacks (seen, in the spell's range and sight; PlayerbotAI::
+                        // CastSpell sets the destination on its target) when the mob stands in its area there,
+                        // under the same no-unpulled-mob rule
+                        Unit* const victim = unseen->GetVictim();
+                        Player* const anchor = victim ? victim->ToPlayer() : nullptr;
+                        if (!spell && anchor && anchor->IsAlive() && anchor->GetMap() == map &&
+                            anchor->IsInSameGroupWith(member) && member->CanSeeOrDetect(anchor))
+                        {
+                            groundAnchor = anchor;
+                            Position const ground = anchor->GetPosition();
+                            for (uint32 candidate : LeaderGroundAreaSpells(member))
+                            {
+                                SpellInfo const* info = sSpellMgr->GetSpellInfo(candidate);
+                                float const radius = LeaderGroundAreaRadius(member, info);
+                                if (!info || radius <= 0.0f || !member->IsValidAttackTarget(unseen, info) ||
+                                    !unseen->IsWithinDist3d(&ground, radius))
+                                    continue;
+                                float const range = info->GetMaxRange(false, member);
+                                groundRange = std::max(groundRange, range);
+                                if (member->HasSpellCooldown(candidate) || !member->IsWithinDist3d(anchor, range) ||
+                                    (!info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) &&
+                                     !member->IsWithinLOSInMap(anchor)) ||
+                                    !memberAI->CheckCastNow(candidate, anchor).Castable())
+                                    continue;
+                                float const search = radius + unseen->GetCombatReach();
+                                std::list<Unit*> inArea;
+                                Acore::AnyUnitInObjectRangeCheck check(anchor, search);
+                                Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(anchor, inArea,
+                                                                                                   check);
+                                Cell::VisitObjects(anchor, searcher, search);
+                                Unit* kept = nullptr;
+                                for (Unit* other : inArea)
+                                    if (other != unseen && other->ToCreature() &&
+                                        other->IsWithinDist3d(&ground, radius) &&
+                                        member->IsValidAttackTarget(other, info) &&
+                                        (!other->IsInCombat() || other->HasBreakableByDamageCrowdControlAura()))
+                                        kept = other;
+                                if (kept)
+                                {
+                                    verdict = "its ground area on " + anchor->GetName() + " would take " +
+                                              kept->GetName();
+                                    continue;
+                                }
+                                spell = candidate;
+                                anchorGuid = anchor->GetGUID();
+                                verdict = std::string("casts ") + (info->SpellName[0] ? info->SpellName[0] : "?") +
+                                          " on " + anchor->GetName() + "'s ground [lead1532]";
+                                break;
+                            }
+                        }
                     }
                     Leader::MemberEvents told;
                     bool const has = Leader::Events::Get(memberGuid, told);
                     auto const ordered = unseenOrdered.find(memberGuid);
-                    bool const ours = ordered != unseenOrdered.end() && has && told.externalTarget.IsEmpty() &&
+                    bool const ours = ordered != unseenOrdered.end() && has &&
+                                      told.externalTarget == unseenAnchor[memberGuid] &&
                                       told.externalSpell == ordered->second;
                     if (spell && (!has || !told.externalSpell || ours))
                     {
-                        if (!has || told.externalSpell != spell || !told.externalTarget.IsEmpty())
-                            Leader::Events::SetExternal(memberGuid, spell, ObjectGuid::Empty);
+                        if (!has || told.externalSpell != spell || told.externalTarget != anchorGuid)
+                            Leader::Events::SetExternal(memberGuid, spell, anchorGuid);
                         unseenOrdered[memberGuid] = spell;
+                        unseenAnchor[memberGuid] = anchorGuid;
                     }
                     else if (ordered != unseenOrdered.end())
                     {
                         // the mob gone or out of the area's reach: the order goes (a spell on its cooldown waits)
                         SpellInfo const* last = sSpellMgr->GetSpellInfo(ordered->second);
                         bool const waits = unseen && !spell && member->HasSpellCooldown(ordered->second) &&
+                                           unseenAnchor[memberGuid].IsEmpty() &&
                                            unseen->IsWithinDist3d(member, LeaderAreaRadius(member, last));
                         if (!waits)
                         {
                             if (ours)
                                 Leader::Events::SetExternal(memberGuid, 0, ObjectGuid::Empty);
+                            unseenAnchor.erase(memberGuid);
                             unseenOrdered.erase(ordered);
                         }
                     }
@@ -2103,6 +2228,13 @@ namespace Leader::Dungeon
                         LeaderWalkStaysOnFloor(member, unseen->GetPosition()))
                         walks = checkedMove(memberGuid, Leader::MoveEvent::MoveTo, unseen->GetPosition(),
                                             reachRadius, "unseen mob: into its area's reach");
+                    // [lead1532] a member with only ground areas walks into their range of the anchor's ground
+                    else if (unseen && !target && !spell && reachRadius <= 0.0f && groundAnchor &&
+                             groundRange > 0.0f && member->IsAlive() &&
+                             !member->IsWithinDist3d(groundAnchor, groundRange) &&
+                             LeaderWalkStaysOnFloor(member, groundAnchor->GetPosition()))
+                        walks = checkedMove(memberGuid, Leader::MoveEvent::MoveTo, groundAnchor->GetPosition(),
+                                            groundRange, "unseen mob: into its ground area's range");
                     if (!unseen)
                     {
                         unseenLogged.erase(memberGuid);
@@ -4650,10 +4782,7 @@ namespace Leader::Dungeon
                         blocker = LeaderAggroAt(tank, unreachedMob->GetPosition());
                     if (blocker && !lead.joinedMobs.count(blocker->GetGUID()))
                     {
-                        std::vector<ObjectGuid> combined;
-                        for (Unit* attacker : tank->getAttackers())
-                            if (attacker && attacker->IsAlive())
-                                combined.push_back(attacker->GetGUID());
+                        std::vector<ObjectGuid> combined = fightUnion();  // [lead1530] the whole fight
                         std::vector<ObjectGuid> const packMobs = packOf(blocker);
                         combined.insert(combined.end(), packMobs.begin(), packMobs.end());
                         float overload = 0.0f;
@@ -4676,7 +4805,8 @@ namespace Leader::Dungeon
                                                   .Real("overload", overload)
                                                   .Str("judged", judged)
                                                   .Str("blocked", tank->GetName())
-                                                  .Str("why", "[lead1323] the tank's walk to its stuck mob wakes it"));
+                                                  .Str("why", "[lead1323] the tank's walk to its stuck mob wakes it")
+                                                  .Str("tag", "[lead1530]"));
                         }
                     }
                 }
@@ -9414,6 +9544,12 @@ namespace Leader::Dungeon
                         // threat catch-up to the game's overtake share of the member's threat at its rate there
                         // (ThreatManager::ReselectVictim). A member that dies first (or a mob the tank cannot take
                         // back) is healed now, whatever the heals' threat takes
+                        // [lead1531] b275 ac-h 5D-12 41-77 s (2 deaths): a Phantasmal Possessor's channelled Possess
+                        // (33401) held the druid tank 35 s - the heals waited "not on the tank" / "off Gzaanum" on
+                        // the tank's ready Growl in reach, a taunt a charmed / controlled tank cannot cast and a threat
+                        // it cannot raise. A tank that has lost control (charmed, possessed, stunned, feared,
+                        // polymorphed: UNIT_STATE_LOST_CONTROL) takes nothing back: no hold outlives the member
+                        bool const tankLost = tank->IsCharmed() || tank->HasUnitState(UNIT_STATE_LOST_CONTROL);
                         float takeBack = 0.0f;
                         std::string takeBackMob;
                         if (member != tank && tank->IsAlive())
@@ -9423,6 +9559,12 @@ namespace Leader::Dungeon
                                     IsCrowdControlled(attacker))
                                     continue;
                                 float back = -1.0f;
+                                if (tankLost)
+                                {
+                                    takeBack = std::numeric_limits<float>::infinity();
+                                    takeBackMob = attacker->GetName() + std::string(" (the tank lost control) [lead1531]");
+                                    break;
+                                }
                                 for (uint32 taunt : TANK_TAUNTS)
                                     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
                                         info && tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt) &&
@@ -9493,8 +9635,11 @@ namespace Leader::Dungeon
                     auto const addReach = [&](Unit* mob)
                     {
                         // a crowd-controlled mob takes no assist threat (the game skips it): no fact for the heals
+                        // [lead1531] a charmed group member (Possess) on a threat list is no mob the heals turn:
+                        // the charm ends with its channel and the member is the group's again
                         if (mob && mob->IsAlive() && mob->GetMap() == map &&
-                            !mob->HasUnitState(UNIT_STATE_CONTROLLED) && reachSeen.insert(mob->GetGUID()).second)
+                            !mob->HasUnitState(UNIT_STATE_CONTROLLED) && !mob->IsPlayer() &&
+                            reachSeen.insert(mob->GetGUID()).second)
                             healReach.push_back(mob);
                     };
                     for (Player* member : watched)
