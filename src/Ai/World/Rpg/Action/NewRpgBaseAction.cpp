@@ -14,6 +14,8 @@
 #include "GameObject.h"
 #include "GameObjectData.h"
 #include "GameObjectModel.h"
+#include "DatabaseEnv.h"
+#include "Formulas.h"
 #include "Group.h"
 #include "GatherNodeMgr.h"
 #include "GossipDef.h"
@@ -1611,19 +1613,105 @@ static std::vector<float> GenerateRandomWeights(int n)
     return weights;
 }
 
+namespace
+{
+    // [guild10] Where quests end and where their objectives stand, straight from the world DB: every spawn of
+    // each quest ender, of each objective creature / object, and the explore area triggers. Built once, shared
+    // by all bots; used where a quest has no POI to go by (talk, delivery, explore, objectives without POI).
+    struct QuestSpot
+    {
+        uint32 mapId;
+        float x, y, z;
+    };
+
+    struct QuestSpawnIndex
+    {
+        std::unordered_map<uint32, std::vector<QuestSpot>> enders;    // quest id -> ender spawns
+        std::unordered_map<uint32, std::vector<QuestSpot>> creatures;  // creature entry -> spawns
+        std::unordered_map<uint32, std::vector<QuestSpot>> objects;    // object entry -> spawns
+        std::unordered_map<uint32, std::vector<QuestSpot>> triggers;   // quest id -> explore area triggers
+    };
+
+    QuestSpawnIndex const& GetQuestSpawnIndex()
+    {
+        static QuestSpawnIndex index;
+        static std::once_flag built;
+        std::call_once(built, []()
+        {
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+                index.creatures[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ});
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+                index.objects[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ});
+
+            for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
+            {
+                auto spawns = index.creatures.find(entry);
+                if (spawns != index.creatures.end())
+                    index.enders[questId].insert(index.enders[questId].end(), spawns->second.begin(),
+                                                 spawns->second.end());
+            }
+            for (auto const& [entry, questId] : *sObjectMgr->GetGOQuestInvolvedRelationMap())
+            {
+                auto spawns = index.objects.find(entry);
+                if (spawns != index.objects.end())
+                    index.enders[questId].insert(index.enders[questId].end(), spawns->second.begin(),
+                                                 spawns->second.end());
+            }
+
+            if (QueryResult result = WorldDatabase.Query("SELECT id, quest FROM areatrigger_involvedrelation"))
+            {
+                do
+                {
+                    Field* fields = result->Fetch();
+                    if (AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(fields[0].Get<uint32>()))
+                        index.triggers[fields[1].Get<uint32>()].push_back(
+                            {trigger->map, trigger->x, trigger->y, trigger->z});
+                } while (result->NextRow());
+            }
+        });
+        return index;
+    }
+
+    // The spot of `spots` on the bot's map nearest to it, as a POI; false if none is on this map.
+    bool NearestSpotOnMap(Player* bot, std::vector<QuestSpot> const& spots, int32 objectiveIdx,
+                          std::vector<POIInfo>& poiInfo)
+    {
+        QuestSpot const* best = nullptr;
+        float bestDist = std::numeric_limits<float>::max();
+        for (QuestSpot const& spot : spots)
+        {
+            if (spot.mapId != bot->GetMapId())
+                continue;
+            float const d = bot->GetDistance2d(spot.x, spot.y);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = &spot;
+            }
+        }
+        if (!best)
+            return false;
+        poiInfo.push_back({{best->x, best->y}, objectiveIdx});
+        return true;
+    }
+}
+
 bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector<POIInfo>& poiInfo, bool toComplete)
 {
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
     if (!quest)
         return false;
 
+    static QuestPOIVector const noPoi;
     QuestPOIVector const* poiVector = sObjectMgr->GetQuestPOIVector(questId);
     if (!poiVector)
-    {
-        return false;
-    }
+        poiVector = &noPoi;
 
-    QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
+    auto const statusItr = bot->getQuestStatusMap().find(questId);
+    if (statusItr == bot->getQuestStatusMap().end())
+        return false;
+    QuestStatusData const& q_status = statusItr->second;
+    QuestSpawnIndex const& spawnIndex = GetQuestSpawnIndex();
 
     if (toComplete && q_status.Status == QUEST_STATUS_COMPLETE)
     {
@@ -1662,10 +1750,15 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
             poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
         }
 
+        // [guild10] no hand-in POI: straight to the quest ender's spawn (creature / gameobject_questender)
         if (poiInfo.empty())
-            return false;
+        {
+            auto const enders = spawnIndex.enders.find(questId);
+            if (enders != spawnIndex.enders.end())
+                NearestSpotOnMap(bot, enders->second, -1, poiInfo);
+        }
 
-        return true;
+        return !poiInfo.empty();
     }
 
     if (q_status.Status != QUEST_STATUS_INCOMPLETE)
@@ -1734,13 +1827,28 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
         poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
     }
 
-    if (poiInfo.size() == 0)
+    // [guild10] no objective POI: the spawns of the objective creatures / objects, else the explore trigger
+    if (poiInfo.empty())
     {
-        // LOG_DEBUG("playerbots", "[New rpg] {}: No available poi can be found for quest {}", bot->GetName(), questId);
-        return false;
+        for (uint32 objective : incompleteObjectiveIdx)
+        {
+            if (objective >= QUEST_OBJECTIVES_COUNT)
+                continue;
+            int32 const npcOrGo = quest->RequiredNpcOrGo[objective];
+            auto const& source = npcOrGo > 0 ? spawnIndex.creatures : spawnIndex.objects;
+            auto const spawns = source.find(npcOrGo > 0 ? uint32(npcOrGo) : uint32(-npcOrGo));
+            if (spawns != source.end())
+                NearestSpotOnMap(bot, spawns->second, int32(objective), poiInfo);
+        }
+    }
+    if (poiInfo.empty() && quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
+    {
+        auto const triggers = spawnIndex.triggers.find(questId);
+        if (triggers != spawnIndex.triggers.end())
+            NearestSpotOnMap(bot, triggers->second, QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT, poiInfo);
     }
 
-    return true;
+    return !poiInfo.empty();
 }
 
 WorldPosition NewRpgBaseAction::SelectRandomGrindPos(Player* bot)
@@ -2011,6 +2119,8 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     uint8 const level = bot->GetLevel();
     float bestRate = 0.0f;
     uint32 bestQuest = 0;
+    float bestCompleteRate = 0.0f;  // [guild10] hand-ins first, then active objectives, then starters
+    uint32 bestCompleteQuest = 0;
     giverPos = WorldPosition();
     bool const rested = bot->GetRestBonus() > 0.0f;
 
@@ -2044,15 +2154,26 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
 
         float const rate = QUEST_IN_LOG_BONUS * GetQuestWeight(quest, rested) * quest->XPValue(level) /
                            std::max(time, 1.0f);
-        if (rate > bestRate)
+        if (complete)
+        {
+            if (rate > bestCompleteRate)
+            {
+                bestCompleteRate = rate;
+                bestCompleteQuest = questId;
+            }
+        }
+        else if (rate > bestRate)
         {
             bestRate = rate;
             bestQuest = questId;
         }
     }
 
-    // Random bots only plan over their own log: there can be thousands of them.
-    if (sRandomPlayerbotMgr.IsRandomBot(bot))
+    if (bestCompleteQuest)
+        return bestCompleteQuest;
+
+    // [guild10] a new quest only once nothing in the log is left to do; every bot levels by quests
+    if (bestQuest)
         return bestQuest;
 
     // From 68 the planner also looks at Northrend, priced by the boats and zeppelins that get there.
@@ -2066,10 +2187,8 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
         float travelSeconds = 0.0f;
         if (start.mapId == bot->GetMapId())
         {
+            // [guild10] the whole continent: a zone out of quests sends the bot on to the next one
             float const giverDistance = bot->GetDistance2d(start.x, start.y);
-            if (giverDistance > QUEST_MAX_GIVER_DISTANCE)
-                continue;
-
             travelSeconds = giverDistance / QUEST_TRAVEL_SPEED;
         }
         else if (start.mapId == NORTHREND_MAP_ID && !northrendArrivals.empty())
@@ -2094,7 +2213,8 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             continue;
 
         int32 const questLevel = quest->GetQuestLevel() > 0 ? quest->GetQuestLevel() : level;
-        if (questLevel > level + 2 || questLevel + 5 < level)
+        // [guild10] down to the last level that still gives experience (green), not only the current band
+        if (questLevel > level + 2 || questLevel <= Acore::XP::GetGrayLevel(level))
             continue;
 
         if (bot->GetQuestStatus(start.questId) != QUEST_STATUS_NONE || botAI->lowPriorityQuest.count(start.questId))

@@ -424,13 +424,43 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 info.lastQuestLevel = bot->GetLevel();
             }
 
-            // Player-owned bots mostly go straight on to the next quest instead of rolling for something else.
-            if (!sRandomPlayerbotMgr.IsRandomBot(bot) && urand(1, 100) <= QUEST_FIRST_CHANCE &&
-                CheckRpgStatusAvailable(RPG_DO_QUEST) && RandomChangeStatus({RPG_DO_QUEST}))
-                return true;
-
-            return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
-                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER});
+            // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
+            // starter of its level - ChooseBestQuest keeps that order), else mobs of its level, else stay put.
+            {
+                WorldPosition giverPos;
+                uint32 const questId = ChooseBestQuest(giverPos);
+                if (Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr)
+                {
+                    QuestStatus const questStatus = bot->GetQuestStatus(questId);
+                    std::string const reason =
+                        questStatus == QUEST_STATUS_COMPLETE     ? "hand in"
+                        : questStatus == QUEST_STATUS_INCOMPLETE ? "objective"
+                                                                 : "pick up, giver " +
+                                                                       std::to_string(uint32(bot->GetExactDist(giverPos))) +
+                                                                       " yd";
+                    LOG_INFO("playerbots", "[rpg] {} L{} QUEST q{} reason: {}", bot->GetName(), bot->GetLevel(),
+                             questId, reason);
+                    info.ChangeToDoQuest(questId, quest, giverPos);
+                    return true;
+                }
+            }
+            {
+                std::vector<NewRpgStatus> work;
+                for (NewRpgStatus candidate : {RPG_GO_GRIND, RPG_DO_GATHER, RPG_OUTDOOR_PVP})
+                    if (sPlayerbotAIConfig.RpgStatusProbWeight[candidate] && CheckRpgStatusAvailable(candidate))
+                        work.push_back(candidate);
+                if (!work.empty() && RandomChangeStatus(work))
+                {
+                    LOG_INFO("playerbots", "[rpg] {} L{} GRIND reason: no quest of its level left anywhere on reach",
+                             bot->GetName(), bot->GetLevel());
+                    return true;
+                }
+            }
+            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: no quest to hand in, do or pick up, no grind spot",
+                     bot->GetName(), bot->GetLevel());
+            info.ChangeToRest();
+            bot->SetStandState(UNIT_STAND_STATE_SIT);
+            return true;
         }
 
         case RPG_GO_GRIND:
@@ -438,9 +468,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             auto& data = std::get<NewRpgInfo::GoGrind>(info.data);
             WorldPosition& originalPos = data.pos;
             assert(data.pos != WorldPosition());
-            // GO_GRIND -> WANDER_RANDOM
+            // GO_GRIND -> WANDER_RANDOM: at the grind spot the bot fights the mobs there, no random walk
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
+                LOG_INFO("playerbots", "[rpg] {} L{} WANDER reason: grind spot reached", bot->GetName(),
+                         bot->GetLevel());
                 info.ChangeToWanderRandom();
                 return true;
             }
@@ -451,9 +483,16 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             auto& data = std::get<NewRpgInfo::GoCamp>(info.data);
             WorldPosition& originalPos = data.pos;
             assert(data.pos != WorldPosition());
-            // GO_CAMP -> WANDER_NPC
+            // GO_CAMP -> WANDER_NPC only to visit the vendor this walk came for; else the next purposeful target
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
+                if (!info.vendorRunEntry)
+                {
+                    info.ChangeToIdle();
+                    return true;
+                }
+                LOG_INFO("playerbots", "[rpg] {} L{} WANDER reason: vendor visit ({})", bot->GetName(),
+                         bot->GetLevel(), info.vendorRunReason);
                 info.ChangeToWanderNpc();
                 return true;
             }
@@ -580,7 +619,15 @@ bool NewRpgWanderRandomAction::Execute(Event /*event*/)
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
 
-    return MoveRandomNear();
+    // [guild10] no random steps: the grind strategy takes the bot to the next mob of its level; none left here
+    // -> IDLE picks the next purposeful target
+    if (AI_VALUE(Unit*, "grind target"))
+        return false;
+
+    LOG_INFO("playerbots", "[rpg] {} L{} grind spot cleared: no mob of its level in reach", bot->GetName(),
+             bot->GetLevel());
+    botAI->rpgInfo.ChangeToIdle();
+    return true;
 }
 
 bool NewRpgWanderNpcAction::Execute(Event /*event*/)
@@ -610,19 +657,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     }
     if (!data.npcOrGo)
     {
-        // Prefer a giver with something to accept or reward, else any nearby npc; none -> IDLE
+        // [guild10] only a giver with something to accept or reward, never a random npc; none -> IDLE
         ObjectGuid npcOrGo = NewRpgHelpers::FindQuestGiver(botAI);
-        if (npcOrGo.IsEmpty())
-        {
-            GuidVector possibleTargets = AI_VALUE(GuidVector, "possible new rpg targets");
-            if (!possibleTargets.empty())
-            {
-                uint32 idx = urand(0, possibleTargets.size() - 1);
-                WorldObject* object = ObjectAccessor::GetWorldObject(*bot, possibleTargets[idx]);
-                if (object && object->IsInWorld())
-                    npcOrGo = object->GetGUID();
-            }
-        }
         if (npcOrGo.IsEmpty())
         {
             info.ChangeToIdle();
@@ -679,16 +715,11 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
                     botAI->DoSpecificAction("repair", Event("repair"), true);
             }
-
-            return true;
         }
 
-        if (data.lastReach && GetMSTimeDiffToNow(data.lastReach) < npcStayTime)
-            return false;
-
-        // has reached the npc for more than `npcStayTime`, select the next target
-        data.npcOrGo = ObjectGuid();
-        data.lastReach = 0;
+        // [guild10] the job at this npc is done: on to the next purposeful target, no next random npc
+        info.ChangeToIdle();
+        return true;
     }
     else
     {
