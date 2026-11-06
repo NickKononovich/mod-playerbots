@@ -347,7 +347,13 @@ Unit* PartyMemberToHeal::Calculate()
     if (beaconTank)
     {
         Unit* chosen = static_cast<Unit*>(calc.param);
-        bool const otherHurt = chosen && chosen->GetHealthPct() < BEACON_OTHER_HURT_PCT;
+        // [lead1501] b271 rfc-h 5G-7 898-933 s: the beaconed blood tank fell 89 % -> 74 % under a Searing Blade
+        // Warlock's Curse of Agony while the holy paladin cast nothing for 35 s: the paladin itself at 85.8 % and the
+        // ret paladin at 89.7 % were "hurt" by the yield's 90 % and took the tank's rank, yet no heal trigger fires
+        // above the bots' almost-full line (AlmostFullHealth, the lowest heal band of every healer's rotation). The
+        // tank yields only to a member a heal of the rotation goes to
+        bool const otherHurt = chosen && chosen->GetHealthPct() < BEACON_OTHER_HURT_PCT &&
+                               chosen->GetHealthPct() < sPlayerbotAIConfig.AlmostFullHealth;
         if (!otherHurt && (!chosen || beaconTankProbe < calc.minValue))
             return beaconTank;
     }

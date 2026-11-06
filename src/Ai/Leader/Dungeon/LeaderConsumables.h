@@ -30,7 +30,8 @@ namespace Leader::Dungeon
     // (once per boss; not for a rift boss or a scripted wave that just became attackable)
     void BossBuffPass(LeaderGroup& group);
     // [lead1090] the idle dungeon boss within BOSS_BUFF_DISTANCE of the leader with no buff pass yet that `pull` is
-    // or brings (BossBroughtBy): the pull waits for his pass. nullptr: no boss's pass holds this pull
+    // or brings (BossBroughtBy): the pull waits for his pass. [lead1502] A boss buffed for already holds it while a
+    // pass is under way or a buff the group gives went since his last pass. nullptr: no boss's pass holds this pull
     Creature* BossBuffPassHolds(LeaderGroup& group, Player* leader, Unit* pull);
     // [lead1090] the leader opens the pass before `boss` itself, whatever the harness phase; false: it may not open
     // now (the leader fights, a fight is on or a pull order is open). true: opened, or a pass is under way

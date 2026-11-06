@@ -111,6 +111,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>  // [lead1500] numeric_limits
 #include <list>
 #include <map>
 #include <memory>
@@ -1988,13 +1989,24 @@ namespace Leader::Dungeon
                 thread_local std::map<ObjectGuid, std::string> unseenLogged;  // member -> mob|spell|verdict
                 if (unseenLogged.size() > 1024)
                     unseenLogged.clear();
+                // [lead1503] b271 ac-h 5G-15 348-371 s: the prepull Army ghouls fought an invisible Phasing Cleric
+                // 23 s, no member's attacker: no area order, the group stood "the fight has no target for it yet"
+                // until it turned on the tank. A mob on a member's pet / guardian / totem is a fight mob too
                 Unit* unseen = nullptr;
                 for (Player* bot : attacked)
-                    for (Unit* attacker : bot->getAttackers())
-                        if (attacker && attacker->IsAlive() && attacker->IsInWorld() && attacker->GetMap() == map &&
-                            !LeaderFightMob(tank, attacker) && LeaderUnseenFightMob(tank, attacker) &&
-                            (!unseen || attacker->GetExactDist(tank) < unseen->GetExactDist(tank)))
-                            unseen = attacker;
+                {
+                    std::vector<Unit*> holders{bot};
+                    for (Unit* minion : bot->m_Controlled)
+                        if (minion && minion->IsAlive() && minion->GetMap() == map)
+                            holders.push_back(minion);
+                    for (Unit* holder : holders)
+                        for (Unit* attacker : holder->getAttackers())
+                            if (attacker && attacker->IsAlive() && attacker->IsInWorld() &&
+                                attacker->GetMap() == map && !LeaderFightMob(tank, attacker) &&
+                                LeaderUnseenFightMob(tank, attacker) &&
+                                (!unseen || attacker->GetExactDist(tank) < unseen->GetExactDist(tank)))
+                                unseen = attacker;
+                }
                 for (Player* member : attacked)
                 {
                     if (!member)
@@ -2077,8 +2089,13 @@ namespace Leader::Dungeon
                         }
                     }
                     // the tank of a fight with no seen mob walks into its area's reach of the unseen one
+                    // [lead1503] b271 ac-h 5B-10 165-182 s / 5F-14 590-615 s / 5G-15 348-371 s: the invisible Phasing
+                    // mob was the fight's last, only the tank's Thunder Clap (6 s cooldown) and a rogue's Fan of
+                    // Knives hit it, the others stood idle ("no target") 17-25 s. With no seen mob in the fight any
+                    // damage dealer whose own area reaches the mob (its threat headroom judged above: a reach is
+                    // weighed only then) walks into that reach, as the tank does; a healer heals
                     bool walks = false;
-                    if (isTank && unseen && !target && !spell && reachRadius > 0.0f && member->IsAlive() &&
+                    if (unseen && !target && !spell && reachRadius > 0.0f && member->IsAlive() &&
                         !unseen->IsWithinDist3d(member, reachRadius) &&
                         LeaderWalkStaysOnFloor(member, unseen->GetPosition()))
                         walks = checkedMove(memberGuid, Leader::MoveEvent::MoveTo, unseen->GetPosition(),
@@ -9345,6 +9362,59 @@ namespace Leader::Dungeon
                         float const walk = std::max(0.0f, bot->GetExactDist(member) - Leader::LEADER_HEAL_REACH_YD) /
                                            std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
                         float const response = castSec + GCD_SEC + walk + castSec;
+                        // [lead1500] user rule (aggro-loss-if-survives) for the heals: a hold may stand only while
+                        // the member a fight mob hits outlives the tank's take-back of that mob - its ready taunt in
+                        // its range and sight (its global cooldown + the leader's tick, survivesSet's model), else its
+                        // threat catch-up to the game's overtake share of the member's threat at its rate there
+                        // (ThreatManager::ReselectVictim). A member that dies first (or a mob the tank cannot take
+                        // back) is healed now, whatever the heals' threat takes
+                        float takeBack = 0.0f;
+                        std::string takeBackMob;
+                        if (member != tank && tank->IsAlive())
+                            for (Unit* attacker : member->getAttackers())
+                            {
+                                if (!attacker || !attacker->IsAlive() || attacker->GetVictim() != member ||
+                                    IsCrowdControlled(attacker))
+                                    continue;
+                                float back = -1.0f;
+                                for (uint32 taunt : TANK_TAUNTS)
+                                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taunt);
+                                        info && tank->HasSpell(taunt) && !tank->HasSpellCooldown(taunt) &&
+                                        tank->IsWithinCombatRange(attacker, info->GetMaxRange(false)) &&
+                                        tank->IsWithinLOSInMap(attacker))
+                                    {
+                                        back = HEADROOM_GCD_SEC + LEADER_FIGHT_TICK_MS / 1000.0f;
+                                        break;
+                                    }
+                                if (back < 0.0f)
+                                {
+                                    float const rate =
+                                        rateOf(seenOn(attacker, tank), tankOpensOn(attacker) ? tankOpen : 0.0f);
+                                    float const need = THREAT_OVERTAKE_MELEE *
+                                                           attacker->GetThreatMgr().GetThreat(member) -
+                                                       attacker->GetThreatMgr().GetThreat(tank);
+                                    if (rate > 0.0f)
+                                        back = std::max(HEADROOM_GCD_SEC, need / rate);
+                                }
+                                if (back < 0.0f)
+                                    back = std::numeric_limits<float>::infinity();
+                                if (back > takeBack)
+                                {
+                                    takeBack = back;
+                                    takeBackMob = attacker->GetName();
+                                }
+                            }
+                        if (toDeath > response && toDeath < takeBack)
+                        {
+                            emergency = true;
+                            emergencyWhy = Acore::StringFormat(
+                                "{} dies in {:.1f} s ({:.0f} hp + {:.0f} absorb / {:.0f} dps) before the tank takes {} "
+                                "back ({}) [lead1500]",
+                                member->GetName(), toDeath, float(member->GetHealth()), absorbs, incoming, takeBackMob,
+                                std::isinf(takeBack) ? std::string("no taunt, no threat catch-up")
+                                                     : Acore::StringFormat("{:.1f} s", takeBack));
+                            break;
+                        }
                         if (toDeath <= response)
                         {
                             emergency = true;
@@ -9448,7 +9518,7 @@ namespace Leader::Dungeon
                     // victim's threat by the game's share (ThreatManager: 110 % in melee reach, 130 % beyond): while
                     // the healer's threat after its next heal (the projection above, its periodic heals included)
                     // stays under that share of the threat of the member the mob is on, its heals take nothing
-                    auto const healHeadroomUnder = [&](Unit* mob, Player* holder)
+                    auto const healNextOn = [&](Unit* mob)
                     {
                         auto const& mine = seenOn(mob, bot);
                         float const fresh = mine.threat > 0.0f && getMSTimeDiff(mine.firstMs, mine.riseMs) / 1000.0f >=
@@ -9459,9 +9529,38 @@ namespace Leader::Dungeon
                         if (PeriodicLeft const periodic = PeriodicThreatLeft(bot, mob); periodic.threat > 0.0f)
                             mineNext = mine.threat + std::max(mineNext - mine.threat, periodic.within) +
                                        (periodic.threat - periodic.within);
+                        return mineNext;
+                    };
+                    auto const healHeadroomUnder = [&](Unit* mob, Unit* holder)
+                    {
                         float const share =
                             mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE : THREAT_OVERTAKE_RANGED;
-                        return mineNext < share * mob->GetThreatMgr().GetThreat(holder);
+                        return healNextOn(mob) < share * mob->GetThreatMgr().GetThreat(holder);
+                    };
+                    // [lead1500] b271 rfc-h 5G-7 279-308 s (Oggleflint) / ac-h 5C-11 446-458 s (Shirrak, the mage at
+                    // 48 %): the boss fought the blood tank's Army of the Dead ghoul and the heals waited "not on the
+                    // tank ... (on Army of the Dead Ghoul, tank threat 277863)" - 29 s and 12 s, the group hurt. A mob
+                    // on a group member's pet / guardian / totem turns from it as from a member (lead1134: past the
+                    // game's overtake share of its threat), never while it taunts the mob (ThreatManager::
+                    // CompareReferencesLT: the taunt state outranks threat); once the minion is gone the mob takes
+                    // its highest threat (ReselectVictim with no old victim): the healer's next threat stays under
+                    // another member's threat on it too
+                    auto const healHeadroomMinion = [&](Unit* mob, Unit* minion)
+                    {
+                        float other = 0.0f;
+                        bool taunting = false;
+                        for (ThreatReference const* ref : mob->GetThreatMgr().GetUnsortedThreatList())
+                        {
+                            Unit* const victim = ref ? ref->GetVictim() : nullptr;
+                            if (!victim)
+                                continue;
+                            if (victim == minion)
+                                taunting = ref->IsTaunting();
+                            else if (victim != bot && victim->IsPlayer() && victim->ToPlayer()->IsInSameGroupWith(bot))
+                                other = std::max(other, ref->GetThreat());
+                        }
+                        float const next = healNextOn(mob);
+                        return next < other && (taunting || healHeadroomUnder(mob, minion));
                     };
                     for (Unit* attacker : tank->getAttackers())
                         addReach(attacker);
@@ -9477,12 +9576,21 @@ namespace Leader::Dungeon
                         if (mob->GetVictim() == bot)
                             continue;
                         Player* const holder = mob->GetVictim() ? mob->GetVictim()->ToPlayer() : nullptr;
+                        Unit* const minion = mob->GetVictim() && !holder ? mob->GetVictim() : nullptr;
+                        Player* const owner = minion ? minion->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
                         if (holder && holder != tank && holder != bot && holder->IsInSameGroupWith(bot) &&
                             mob->GetThreatMgr().GetThreat(holder) > 0.0f)
                         {
                             if (!healHeadroomUnder(mob, holder))
                                 closedOn = Acore::StringFormat("its heal threat would take {} off {} [lead1134]",
                                                                mob->GetName(), holder->GetName());
+                        }
+                        else if (owner && (owner == bot || owner->IsInSameGroupWith(bot)) &&
+                                 mob->GetThreatMgr().GetThreat(minion) > 0.0f)
+                        {
+                            if (!healHeadroomMinion(mob, minion))
+                                closedOn = Acore::StringFormat("its heal threat would take {} off {} ({}'s) [lead1500]",
+                                                               mob->GetName(), minion->GetName(), owner->GetName());
                         }
                         else if (mob->GetVictim() != tank || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
                         {

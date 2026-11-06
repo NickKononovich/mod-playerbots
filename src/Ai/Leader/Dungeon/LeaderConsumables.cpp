@@ -169,6 +169,31 @@ namespace Leader::Dungeon
             route.buffReason =
                 std::string("before ") + boss->GetName() + (gone.empty() ? "" : " (gone: " + gone + ")");
         }
+
+        // [lead775] the buffs the group gives that went since the last pass (expired, dispelled, a death) and that
+        // the last pass did not end without (route.buffEndMissing), over the living members out of combat
+        std::string GoneSinceLastPass(LeaderGroup& group, Player* leader)
+        {
+            GroupRouteState const& route = group.Route();
+            Map* map = leader->GetMap();
+            std::vector<Player*> players;
+            for (LeaderGroup::MemberInfo const& member : group.Members())
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                    bot && bot->IsAlive() && bot->GetMap() == map && !bot->IsInCombat())
+                    players.push_back(bot);
+            std::string const missing = GivableBuffsMissing(group, players, leader);
+            std::string gone;
+            size_t start = 0;
+            while (start < missing.size())
+            {
+                size_t const end = std::min(missing.find(", ", start), missing.size());
+                std::string const one = missing.substr(start, end - start);
+                if (route.buffEndMissing.find(one) == std::string::npos)
+                    gone += (gone.empty() ? "" : ", ") + one;
+                start = end + 2;
+            }
+            return gone;
+        }
     }
 
     Creature* BossBuffPassHolds(LeaderGroup& group, Player* leader, Unit* pull)
@@ -184,14 +209,25 @@ namespace Leader::Dungeon
         {
             Creature* boss = map->GetCreature(bossGuid);
             if (!boss || !boss->IsAlive() || boss->IsInCombat() || !boss->IsDungeonBoss() ||
-                leader->GetExactDist(boss) >= Travel::BOSS_BUFF_DISTANCE || route.bossBuffed.count(bossGuid) ||
+                leader->GetExactDist(boss) >= Travel::BOSS_BUFF_DISTANCE ||
                 Travel::EventWaveFresh(group.InstanceId(), bossGuid))
                 continue;
             // [lead1090] b234 rfc-h 5F-14 840-1096 s: lead1084 held every pull for Bazzalan's pass (an idle boss
             // within BOSS_BUFF_DISTANCE), the pull of Jergosh (the route's target) too - and BossBuffPass's pick was
             // Jergosh (his pass done at 839 s): Bazzalan's never opened, the group stood 4 minutes. Only the pull of
             // this boss or a pull that brings him (his formation, script or aggro reach: BossBroughtBy) waits
-            if (boss == pulled || Travel::BossBroughtBy(leader, boss, pulled))
+            if (boss != pulled && !Travel::BossBroughtBy(leader, boss, pulled))
+                continue;
+            if (!route.bossBuffed.count(bossGuid))
+                return boss;
+            // [lead1502] b271 rfc-h 5E-5 856.8-908 s: the planner committed the pull that brings Jergosh ("the group
+            // ready") while the tank paladin's Blessing of Kings / Might had run out on the priest and the rogue; his
+            // pass had run at the room's door, so this hold skipped him. BossBuffPass opened the "gone" pass 0.2 s
+            // later, the commit waited 1 s on the rogue's Stealth only and the tank pulled at 857.8 s: Jergosh was
+            // fought without the two blessings, the pass ended after his fight (51 s "held" in buff_hold). A boss
+            // buffed for already holds his pull again while a pass is under way, or a buff the group gives went
+            // since his last pass (the gone pass BossBuffPass opens)
+            if (route.needBuff || !GoneSinceLastPass(group, leader).empty())
                 return boss;
         }
         return nullptr;
@@ -204,7 +240,10 @@ namespace Leader::Dungeon
             return false;
         if (group.Route().needBuff)
             return true;  // a pass is under way: the pull waits for it
-        OpenPass(group, boss, std::string());
+        // [lead1502] a boss buffed for already: the pass names what went since
+        std::string const gone =
+            group.Route().bossBuffed.count(boss->GetGUID()) ? GoneSinceLastPass(group, leader) : std::string();
+        OpenPass(group, boss, gone);
         return true;
     }
 
@@ -248,21 +287,7 @@ namespace Leader::Dungeon
         {
             if (route.needBuff || leader->IsInCombat())
                 return;
-            std::vector<Player*> players;
-            for (LeaderGroup::MemberInfo const& member : group.Members())
-                if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                    bot && bot->IsAlive() && bot->GetMap() == map && !bot->IsInCombat())
-                    players.push_back(bot);
-            std::string const missing = GivableBuffsMissing(group, players, leader);
-            size_t start = 0;
-            while (start < missing.size())
-            {
-                size_t const end = std::min(missing.find(", ", start), missing.size());
-                std::string const one = missing.substr(start, end - start);
-                if (route.buffEndMissing.find(one) == std::string::npos)
-                    gone += (gone.empty() ? "" : ", ") + one;
-                start = end + 2;
-            }
+            gone = GoneSinceLastPass(group, leader);
             if (gone.empty())
                 return;
         }
