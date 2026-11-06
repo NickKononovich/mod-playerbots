@@ -7,6 +7,7 @@
 #include "PriestTriggers.h"
 
 #include <algorithm>  // [rot230] std::max
+#include <cmath>      // [rot564] std::floor
 #include "EstimatedLifetimeValue.h"  // [rot210] ExpectedLifetime
 #include "Group.h"
 #include "HealerSupport.h"
@@ -20,6 +21,7 @@
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "SpellPayoff.h"  // [rot564] Read, FillerDps
 #include "TargetValue.h"
 #include "ThreatValues.h"  // [b31_deep]
 
@@ -562,4 +564,46 @@ Unit* PeelingTankValue::Calculate()
     }
 
     return best;
+}
+
+// [rot564] Mind Flay refreshes our Shadow Word: Pain at the Pain and Suffering talent's proc chance (spell_proc /
+// Spell.dbc ProcChance; spell_pri_pain_and_suffering_proc RefreshTimersWithMods). An area channel in its place lets
+// a Shadow Word: Pain that runs out before the area's channel ends (before the next Mind Flay) fall off: the ticks a
+// refresh would have added (to its full duration, at most the target's life) are lost. They count on the filler's
+// side for that channel; nothing while it has more left than the channel, or without the talent / our Shadow Word:
+// Pain. b276 rfc-h 5B Rtpriaa: "mind sear lands 16011 on 2 mobs vs mind flay 16407" by Mind Flay's ticks alone.
+float MindSearPaysTrigger::FillerScale()
+{
+    constexpr uint32 SPELL_PAIN_AND_SUFFERING_RANK_1 = 47580;
+    Aura const* talent = bot->GetAuraOfRankedSpell(SPELL_PAIN_AND_SUFFERING_RANK_1);
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!talent || !target)
+        return 1.0f;
+    SpellProcEntry const* entry = sSpellMgr->GetSpellProcEntry(talent->GetId());
+    float const chance =
+        (entry && entry->Chance > 0.0f ? entry->Chance : static_cast<float>(talent->GetSpellInfo()->ProcChance)) /
+        100.0f;
+    Aura const* pain = botAI->GetAura("shadow word: pain", target, true);
+    uint32 const painId = AI_VALUE2(uint32, "spell id", "shadow word: pain");
+    uint32 const searId = AI_VALUE2(uint32, "spell id", aoeSpell);
+    uint32 const flayId = AI_VALUE2(uint32, "spell id", Filler());
+    SpellPayoff::Cast painCast;
+    SpellPayoff::Cast sear;
+    if (chance <= 0.0f || !pain || !painId || !searId || !flayId ||
+        !SpellPayoff::Read(bot, target, painId, painCast) || !painCast.amplitudeMs ||
+        !SpellPayoff::Read(bot, target, searId, sear) || sear.executeMs <= 0.0f)
+        return 1.0f;
+
+    float const remainingMs = static_cast<float>(pain->GetDuration());
+    if (remainingMs >= sear.executeMs)
+        return 1.0f;  // the Mind Flay after the channel still refreshes it
+
+    float const lifeMs = ExpectedFightLifetime(botAI, target) * static_cast<float>(IN_MILLISECONDS);
+    float const lostMs = std::min(static_cast<float>(pain->GetMaxDuration()), lifeMs) - remainingMs;
+    float const fillerDps = SpellPayoff::FillerDps(bot, target, flayId);
+    if (lostMs <= 0.0f || fillerDps <= 0.0f)
+        return 1.0f;
+
+    float const lost = chance * painCast.tick * std::floor(lostMs / static_cast<float>(painCast.amplitudeMs));
+    return 1.0f + lost / (fillerDps * sear.executeMs / static_cast<float>(IN_MILLISECONDS));
 }

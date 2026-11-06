@@ -166,6 +166,10 @@ class MindSearPaysTrigger : public AoePaysTrigger
 {
 public:
     MindSearPaysTrigger(PlayerbotAI* botAI) : AoePaysTrigger(botAI, "mind sear", ai::priest::DOT_FILLER, false, true) {}
+
+protected:
+    // [rot564] Mind Flay's value beyond its hits: its Pain and Suffering refresh of our Shadow Word: Pain
+    float FillerScale() override;
 };
 
 class ShadowProtectionTrigger : public BuffTrigger
