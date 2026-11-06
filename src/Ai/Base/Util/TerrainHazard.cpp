@@ -39,6 +39,7 @@
 #include <cmath>
 #include <map>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 
 namespace
@@ -337,6 +338,10 @@ namespace
         return list.doors;
     }
 
+    // [lead1570] the doors held shut while open (HoldDoorShut), by instance and GUID
+    std::mutex heldShutLock;
+    std::set<InstanceGuid> heldShut;
+
     // The closed doors whose bounds come within `radius` (2d) of the segment.
     void CollectClosedDoors(Unit* mover, float fromX, float fromY, float toX, float toY, float radius,
                             std::vector<GameObject*>& closed)
@@ -348,8 +353,9 @@ namespace
         for (ObjectGuid const& guid : MapDoors(map))
         {
             GameObject* go = map->GetGameObject(guid);
-            if (!go || !go->IsInWorld() || !go->isSpawned() || go->GetGoState() != GO_STATE_READY || !go->m_model ||
-                !go->m_model->isEnabled() || !mover->InSamePhase(go))
+            if (!go || !go->IsInWorld() || !go->isSpawned() || !go->m_model || !mover->InSamePhase(go))
+                continue;
+            if ((go->GetGoState() != GO_STATE_READY || !go->m_model->isEnabled()) && !DoorHeldShut(go))
                 continue;
 
             // The segment against the door's bounds grown by the radius (2d slabs).
@@ -432,6 +438,29 @@ uint32 InInstanceExit(uint32 mapId, float x, float y, float z, float margin)
             return trigger->entry;
     }
     return 0;
+}
+
+void HoldDoorShut(GameObject const* door, bool hold)
+{
+    if (!door)
+        return;
+    std::lock_guard<std::mutex> guard(heldShutLock);
+    if (!hold)
+    {
+        heldShut.erase(InstanceKey(door));
+        return;
+    }
+    if (heldShut.size() > 64)  // instances long gone: a run holds one door at a time
+        heldShut.clear();
+    heldShut.insert(InstanceKey(door));
+}
+
+bool DoorHeldShut(GameObject const* door)
+{
+    if (!door)
+        return false;
+    std::lock_guard<std::mutex> guard(heldShutLock);
+    return !heldShut.empty() && heldShut.count(InstanceKey(door));
 }
 
 bool ClosedDoorNear(Unit* mover, float fromX, float fromY, float toX, float toY, float radius)
@@ -532,7 +561,15 @@ ClosedDoorHit PathThroughClosedDoor(Unit* mover, std::vector<G3D::Vector3> const
                 continue;
 
             float distance = nearest;
-            if (!door->m_model->intersectRay(ray, distance, true, phaseMask, VMAP::ModelIgnoreFlags::Nothing))
+            // [lead1570] a door held shut while open: its model takes no ray (disabled), the walk meets its bounds
+            if (door->GetGoState() != GO_STATE_READY || !door->m_model->isEnabled())
+            {
+                float const time = ray.intersectionTime(bounds);
+                if (time == G3D::inf() || time > distance)
+                    continue;
+                distance = time;
+            }
+            else if (!door->m_model->intersectRay(ray, distance, true, phaseMask, VMAP::ModelIgnoreFlags::Nothing))
                 continue;
 
             if (walked + distance < HAZARD_DOOR_INSIDE)

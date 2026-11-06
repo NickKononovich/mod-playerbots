@@ -327,6 +327,12 @@ namespace Leader
         // [lead1569] this key's opening wakes a pack on the far side (the pricing's farPack): it is the far side's
         // pull, fought on the use side - nobody is sent through before it
         bool keyPassFarPack = false;
+        // [lead1570] the members' spots back out of the woken mobs' reach of the opening (the tank keys alone in it),
+        // for that door
+        ObjectGuid keyPassBackDoor;
+        std::map<ObjectGuid, Position> keyPassBack;
+        // [lead1570] the door whose held opening woke nobody (TickKeyDoorPass): its next opening is the plain pass
+        ObjectGuid keyPassHeldQuiet;
         // [b32_strat_gate] a member cut off behind a closed door (its walk to the leader runs through it;
         // TickDoorCut, every 2 s): the group holds - no wait_timeout, no route, no new pull - while the door is keyed
         // again (the member's own key, or the leader's from its side).

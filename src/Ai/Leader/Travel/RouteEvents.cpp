@@ -2092,6 +2092,19 @@ namespace Leader::Travel
                         waitFor += (waitFor.empty() ? "" : ",") + member.name + " (far side)";
                         continue;
                     }
+                    // [lead1570] a member sent back out of the opening's reach waits at its spot
+                    if (routeState.keyPassBackDoor == go->GetGUID())
+                        if (auto const back = routeState.keyPassBack.find(member.guid);
+                            back != routeState.keyPassBack.end())
+                        {
+                            if (bot->GetExactDist2d(back->second) > KEY_PASS_GATHER_RANGE)
+                            {
+                                group.SetMemberWaypoint(member.guid, bot, back->second.GetPositionX(),
+                                                        back->second.GetPositionY(), back->second.GetPositionZ());
+                                waitFor += (waitFor.empty() ? "" : ",") + member.name + " (to its spot back)";
+                            }
+                            continue;
+                        }
                     if (bot->GetExactDist2d(pass->useX, pass->useY) <= KEY_PASS_GATHER_RANGE)
                         continue;
                     float const angle = away + (float(slot++ % 5) - 2.0f) * 0.7f;
@@ -2174,6 +2187,8 @@ namespace Leader::Travel
                     uint64 const farKey = (uint64(group.InstanceId()) << 32) | go->GetEntry();
                     bool const farPack = first && (woken.size() >= KEY_PASS_FAR_PACK_MIN || !refusedWhy.empty());
                     routeState.keyPassFarPack = farPack;  // [lead1569] TickKeyDoorPass holds the pass for it
+                    if (!farPack && routeState.keyPassBackDoor == go->GetGUID())
+                        routeState.keyPassBack.clear();  // [lead1570] nothing wakes: the plain gather
                     // [lead10] LEADER_DOOR_INPUTS: the opening is the leader's pull of the far side, priced with it
                     // (no KEY_PASS_FAR_PACK_MAX_MS give-up): within the planner's whole-pack cap (WholePackCap) and
                     // not refused over its cap, the key is used now and the fight is held on the use side
@@ -2184,7 +2199,27 @@ namespace Leader::Travel
                     {
                         farPackSince.erase(farKey);
                         uint32 const cap = PullPlanner::WholePackCap(leader);
-                        bool const fits = refusedWhy.empty() && cap && woken.size() <= cap;
+                        // [lead1572] the opening is the only pull here (the gate is the route's way on, nothing on
+                        // this side measures the tank): a planner refusal does not hold it when the opening's own
+                        // pack - the woken mobs and the refused verdict's pack - is carried by the survival terms
+                        // alone (the tank kit's hold count is the prior lead1566 lets facts replace) and the tank and
+                        // the healers carry it (TankCarries). b278 strat-n 5A-1 / 5B-2 / 5C-3 / 5F-6 / 5G-7: "far
+                        // side: 7 mobs ... refused by the planner" 58-86 times, the gate never keyed; b277: these
+                        // 10-mob packs, over by hold 1.43-2.50 alone, were won 6 of 7 times without a death
+                        std::string carriedWhy;
+                        bool carried = false;
+                        if (!refusedWhy.empty() && cap)
+                        {
+                            std::vector<ObjectGuid> opening(woken.begin(), woken.end());
+                            for (ObjectGuid const& guid : group.State().verdictPack)
+                                if (std::find(opening.begin(), opening.end(), guid) == opening.end())
+                                    opening.push_back(guid);
+                            float openingOverload = 0.0f;
+                            PullPlanner::JudgePack(leader, opening, openingOverload, carriedWhy, nullptr, nullptr,
+                                                   &carried);
+                            carried = carried && opening.size() <= cap;
+                        }
+                        bool const fits = (refusedWhy.empty() || carried) && cap && woken.size() <= cap;
                         bool mover = false;
                         for (ObjectGuid const& guid : woken)
                             if (Creature* mob = leader->GetMap()->GetCreature(guid);
@@ -2195,11 +2230,84 @@ namespace Leader::Travel
                         if (fits)
                         {
                             if (pricedLogged.insert({group.Run().runSeq, go->GetEntry()}).second)
+                            {
                                 group.LogEvent("door_far_side_priced",
                                          JsonObject().Str("note", pass->note).Str("door", go->GetName())
                                              .Num("doorEntry", go->GetEntry()).Num("farPackMobs", uint32(woken.size()))
                                              .Num("cap", cap).Str("first", first->GetName())
-                                             .Str("action", "keyed: the far side fits"));
+                                             .Str("action", refusedWhy.empty()
+                                                                ? "keyed: the far side fits"
+                                                                : "keyed: the opening's pull is carried [lead1572]")
+                                             .Str("refused", refusedWhy).Str("carried", carriedWhy));
+                                if (!refusedWhy.empty())
+                                    LOG_INFO("playerbots",
+                                             "[lead1572] {}: {} {} keyed over the planner's refusal ({}): the "
+                                             "opening's pull is carried: {}", leader->GetName(), go->GetName(),
+                                             go->GetEntry(), refusedWhy, carriedWhy);
+                            }
+                            // [lead1570] the opening is the tank's pull: the tank keys it from the use point, the
+                            // only member in the woken mobs' reach; every other member waits behind it, out of that
+                            // reach, in sight of the use point (the pack comes to the tank through the gate and meets
+                            // nobody else on its way). b278 strat-n 5D-4 t=39 / 5E-5 t=50 / 5H-8 t=31: the group
+                            // gathered within 2 yd round the use point, the opening woke the pack on the warlock /
+                            // the warlock / the healer ("unplanned"), the tank went through to it, the gate shut
+                            Map* map = leader->GetMap();
+                            auto const inReach = [&](Player* who, G3D::Vector3 const& point, float extra)
+                            {
+                                for (ObjectGuid const& guid : woken)
+                                    if (Creature* mob = map->GetCreature(guid);
+                                        mob && mob->IsAlive() && !mob->IsInCombat() &&
+                                        AggroesAtPoint(mob, who, point, AggroReach(mob, who) + KEY_PASS_SPREAD + extra,
+                                                       false))
+                                        return true;
+                                return false;
+                            };
+                            if (routeState.keyPassBackDoor != go->GetGUID())
+                            {
+                                routeState.keyPassBack.clear();
+                                routeState.keyPassBackDoor = go->GetGUID();
+                            }
+                            float const leaderEye = useZ + leader->GetCollisionHeight();
+                            uint32 backSlot = 0;
+                            for (LeaderGroup::MemberInfo const& member : group.Members())
+                            {
+                                Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                                if (!bot || bot == leader || !bot->IsAlive() || bot->GetMap() != map ||
+                                    bot->IsInCombat() ||
+                                    (gateSide(bot->GetPositionX(), bot->GetPositionY()) >= 0.0f) != useSign)
+                                    continue;
+                                float const lateral = (float(backSlot++ % 5) - 2.0f) * KEY_PASS_SPREAD;
+                                if (!inReach(bot, G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(),
+                                                               bot->GetPositionZ()), 0.0f))
+                                    continue;  // out of the opening's reach where it stands
+                                auto const known = routeState.keyPassBack.find(member.guid);
+                                bool placed = known != routeState.keyPassBack.end() &&
+                                              bot->GetExactDist2d(known->second) > KEY_PASS_RUNNER_REACH;
+                                // the first spot back on the use point's side (out of the reach by the runner's stop
+                                // margin as well: a walk ends within it), in sight of the use point
+                                for (float back = KEY_PASS_SPREAD; !placed && back <= KEY_PASS_FAR_PACK_SCAN;
+                                     back += KEY_PASS_SPREAD)
+                                {
+                                    float const x = pass->useX + std::cos(away) * back - std::sin(away) * lateral;
+                                    float const y = pass->useY + std::sin(away) * back + std::cos(away) * lateral;
+                                    float const z = map->GetHeight(bot->GetPhaseMask(), x, y, useZ + 3.0f, true, 10.0f);
+                                    if (z <= INVALID_HEIGHT ||
+                                        inReach(bot, G3D::Vector3(x, y, z), KEY_PASS_RUNNER_REACH) ||
+                                        !map->isInLineOfSight(x, y, z + bot->GetCollisionHeight(), useX, useY,
+                                                              leaderEye, bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                              VMAP::ModelIgnoreFlags::Nothing))
+                                        continue;
+                                    routeState.keyPassBack[member.guid] = Position(x, y, z);
+                                    placed = true;
+                                }
+                                auto const spot = routeState.keyPassBack.find(member.guid);
+                                if (spot == routeState.keyPassBack.end())
+                                    continue;  // no spot out of its reach in sight: it stays where it is
+                                group.SetMemberWaypoint(member.guid, bot, spot->second.GetPositionX(),
+                                                        spot->second.GetPositionY(), spot->second.GetPositionZ());
+                                waitFor += (waitFor.empty() ? "" : ",") + member.name +
+                                           " (back out of the opening's reach) [lead1570]";
+                            }
                         }
                         else
                         {

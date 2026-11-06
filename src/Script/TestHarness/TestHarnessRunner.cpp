@@ -1857,6 +1857,14 @@ namespace TestHarness
         if (!leader || !leader->IsAlive() || getMSTimeDiff(fight.sinceMs, now) > KEY_OPENING_FIGHT_MAX_MS ||
             (fight.calmMs && getMSTimeDiff(fight.calmMs, now) >= KEY_OPENING_FIGHT_CALM_MS))
         {
+            // [lead1570] the opening's fight is over: its door is let go
+            if (Map* map = leader ? leader->GetMap() : nullptr)
+                if (GameObject* door = map->GetGameObject(fight.door))
+                {
+                    HoldDoorShut(door, false);
+                    LOG_INFO("playerbots", "[lead1570] {} {}: the opening's fight is over, the door is let go",
+                             door->GetName(), door->GetEntry());
+                }
             openingFights.erase(found);
             return;
         }
@@ -1999,7 +2007,19 @@ namespace TestHarness
         // is sent through, the pack comes through the open gate to the whole group on the use side (b38_strat's
         // OpeningFight below). b277 strat-n 20261106-105714-5E-13 (40-101 s) / strat-h 114347-5B-18 (34-78 s): the
         // tank sent first, the far side woke on it alone, the gate shut on the healer, the tank died behind it
-        bool const holdForFarPack = party.keyPassFarPack && !back && !reopenAt->second;
+        // [lead1570] ... and an opening held that way woke nobody (the gate shut with the group calm on the use side):
+        // the next one is the plain pass, the tank first (no loop of held openings)
+        bool const holdForFarPack =
+            party.keyPassFarPack && !back && !reopenAt->second && party.keyPassHeldQuiet != door->GetGUID();
+        // [lead1570] the open gate of a held opening is no way through for any member walk: the tank holds the use
+        // side between the gate and the group, the pack comes to it (b278 strat-n 5D-4 t=41 "reach melee", 5E-5 t=51
+        // "reach melee ... a doorway", 5H-8 t=31 the leader's own route walk: the tank went through the open gate to
+        // the pack, the gate shut behind it on the group)
+        auto const releaseHold = [&]()
+        {
+            if (DoorHeldShut(door) && openingFights.find(party.instanceId) == openingFights.end())
+                HoldDoorShut(door, false);
+        };
         // [b38_strat] whether the group was out of combat when this pass started (the gathered first use), and so
         // whether a fight that starts during the opening is one the opening woke on the far side (below)
         static std::unordered_map<uint64, bool> passCalm;  // the harness's world thread only
@@ -2016,11 +2036,14 @@ namespace TestHarness
             party.keyPassSent = true;
             JsonArray sent;
             if (holdForFarPack)
+            {
+                HoldDoorShut(door, true);  // [lead1570]
                 LogEvent(party, "key_pass_held",
                          JsonObject().Str("note", pass->note).Str("door", door->GetName())
                              .Num("doorEntry", door->GetEntry())
-                             .Str("why", "[lead1569] the opening wakes the far side: its pull on the use side, "
-                                         "nobody goes through before it"));
+                             .Str("why", "[lead1569] [lead1570] the opening wakes the far side: its pull on the use "
+                                         "side, the gate held shut for every member walk, nobody goes through"));
+            }
             for (Member& member : party.members)
             {
                 Player* bot = ObjectAccessor::FindPlayer(member.guid);
@@ -2097,7 +2120,10 @@ namespace TestHarness
                     float ax = door->GetPositionX() + dx * KEY_OPENING_FIGHT_BACK;
                     float ay = door->GetPositionY() + dy * KEY_OPENING_FIGHT_BACK;
                     float az = map->GetHeight(leader->GetPhaseMask(), ax, ay, door->GetPositionZ() + 3.0f, true, 10.0f);
-                    if (az <= INVALID_HEIGHT)
+                    // [lead1570] a held opening: the tank keyed it at the use point, the group waits behind it out
+                    // of the pack's reach (RouteEvents keyPassBack) and the gate is held shut for every walk - the
+                    // fight stands at the use point, between the gate and the group (not back among the casters)
+                    if (holdForFarPack || az <= INVALID_HEIGHT)
                     {
                         ax = backX;  // no floor there: the use point (the hold still ends short of the gate)
                         ay = backY;
@@ -2143,6 +2169,25 @@ namespace TestHarness
             return;
         if (door->GetGoState() == GO_STATE_READY && party.keyPassSent)
         {
+            // [lead1570] a held opening that shut with nobody fighting woke nobody
+            if (holdForFarPack)
+            {
+                bool fought = false;
+                for (Member const& member : party.members)
+                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                        bot && bot->IsAlive() && bot->IsInCombat())
+                        fought = true;
+                if (!fought && openingFights.find(party.instanceId) == openingFights.end())
+                {
+                    party.keyPassHeldQuiet = door->GetGUID();
+                    LogEvent(party, "key_pass_held_quiet",
+                             JsonObject().Str("note", pass->note).Str("door", door->GetName())
+                                 .Num("doorEntry", door->GetEntry())
+                                 .Str("why", "[lead1570] the held opening woke nobody: the next one is the plain "
+                                             "pass"));
+                }
+            }
+            releaseHold();
             JsonArray left;
             for (Member const& member : party.members)
                 if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
@@ -2157,6 +2202,7 @@ namespace TestHarness
         }
         if (getMSTimeDiff(party.keyPassSinceMs, now) > KEY_PASS_MAX_MS)
         {
+            releaseHold();  // [lead1570]
             if (!party.keyPassSent)
                 LogEvent(party, "strat_key_no_open", JsonObject().Str("note", pass->note)
                                                          .Real("leaderDistance", leader->GetExactDist(door))

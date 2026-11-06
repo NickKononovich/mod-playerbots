@@ -114,6 +114,13 @@ bool DoorNear(Unit* who, float x, float y, float z, float radius);
 // mover already stands in it: it walks out).
 ClosedDoorHit PathThroughClosedDoor(Unit* mover, std::vector<G3D::Vector3> const& path);
 
+// [lead1570] A door the leader holds shut while it stands open: the opening of an auto-closing key gate that wakes the
+// pack behind it is that pack's pull on the use side - no member walk goes through it (the pack comes through: a
+// creature's path ignores the gate) until the leader lets it go. Such a door counts closed for ClosedDoorNear and
+// PathThroughClosedDoor (the walk against its model's bounds: an open door's model takes no ray). Any thread.
+void HoldDoorShut(GameObject const* door, bool hold);
+bool DoorHeldShut(GameObject const* door);
+
 // [b41_gnomer] A closed "plug" door that seals a side tunnel beside a corridor (Gnomeregan's Cave Ins 146085 /
 // 146086): a walk whose start and end both lie in front of it (the corridor side, the door's own facing) only clips
 // the rubble's edge, it does not go through it. True: ignore this hit. Every other door: false.
