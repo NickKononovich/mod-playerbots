@@ -28,6 +28,7 @@
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "SpellPayoff.h"  // [lead1541]
 #include "StringFormat.h"
 #include "TargetValue.h"  // IsCrowdControlled
 #include "Timer.h"
@@ -131,6 +132,27 @@ std::vector<Unit*> FightMobs(Player* tank, std::vector<Player*> const& seats)
     for (Player* bot : seats)
         add(bot);
     return mobs;
+}
+
+// [lead1541] Lock and Load (talent 56342-56344, spell_hun_lock_and_load): a fire trap's periodic damage rolls a proc
+// (Rawr ShotPriority.cs:235: 0.02 x the talent rank a tick - Rawr's value over wowsims'), none while its marker
+// (67544, the 22 s internal cooldown) is up; the proc (56453) gives two Explosive Shots at no cost with the shared
+// cooldown reset (wowsims applyLockAndLoad: 2 stacks)
+constexpr uint32 LOCK_AND_LOAD_RANKS[] = {56342, 56343, 56344};
+constexpr uint32 SPELL_LOCK_AND_LOAD_MARKER = 67544;
+constexpr float RAWR_LOCK_AND_LOAD_PER_RANK = 0.02f;  // Rawr ShotPriority.cs:235
+constexpr uint32 LOCK_AND_LOAD_SHOTS = 2;             // wowsims applyLockAndLoad SetStacks(2)
+// [lead1541] wowsims explosive_trap.go TrapWeaveSpell: the ranged auto waits until the weave is done + 500 ms
+constexpr float WOWSIMS_WEAVE_AUTO_DELAY_SEC = 0.5f;
+
+float LockAndLoadChance(Player* hunter)
+{
+    if (hunter->HasAura(SPELL_LOCK_AND_LOAD_MARKER))
+        return 0.0f;
+    for (uint8 rank = 3; rank >= 1; --rank)
+        if (hunter->HasSpell(LOCK_AND_LOAD_RANKS[rank - 1]))
+            return RAWR_LOCK_AND_LOAD_PER_RANK * rank;
+    return 0.0f;
 }
 
 uint32 TrapSpell(Player* hunter)
@@ -256,16 +278,47 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
     float const offAfter = walkSec + data.armSec;
     float health = 0.0f;
     float gain = 0.0f;
+    uint32 tickRolls = 0;  // [lead1541] the trap's periodic hits on the covered mobs
     for (Unit* mob : covered)
     {
         health += mob->GetHealth();
-        gain += DamageOn(hunter, mob, data, health / groupDps - offAfter);
+        float const lifeSec = health / groupDps - offAfter;
+        gain += DamageOn(hunter, mob, data, lifeSec);
+        if (lifeSec > 0.0f && data.periodicEffect >= 0 && data.tickSec > 0.0f)
+            tickRolls += std::min(data.ticks, uint32(lifeSec / data.tickSec));
     }
-    float const lostSec = 2.0f * walkSec + data.gcdSec;
-    float const cost = lostSec * hunterDps;
+    // [lead1541] the Lock and Load procs the ticks roll (at most one: the 22 s marker outlasts the trap), worth two
+    // free Explosive Shots over the shots their global cooldowns would have been (the hunter's measured dps)
+    float lockAndLoad = 0.0f;
+    if (float const chance = LockAndLoadChance(hunter); chance > 0.0f && tickRolls)
+        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(hunter))
+            if (uint32 const shot = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "explosive shot")->Get())
+            {
+                SpellPayoff::Cast es;
+                SpellInfo const* esInfo = sSpellMgr->GetSpellInfo(shot);
+                if (esInfo && SpellPayoff::Read(hunter, target, shot, es))
+                {
+                    float const procs = 1.0f - std::pow(1.0f - chance, float(tickRolls));
+                    float const gcdSec = esInfo->StartRecoveryTime / 1000.0f;
+                    lockAndLoad = procs * LOCK_AND_LOAD_SHOTS * std::max(0.0f, es.Total() - hunterDps * gcdSec);
+                    gain += lockAndLoad;
+                }
+            }
+    // [lead1541] wowsims' weave (TrapWeaveSpell): half the weave out, the trap laid there inside its global cooldown,
+    // half back; no shot until it is done (the GCD set to its end) and the ranged auto 500 ms after - the shots lost
+    // are the longer of the walk there and back and the trap's GCD, the auto shot's extra wait on top
+    float autoDps = 0.0f;
+    if (uint32 const attackMs = hunter->GetAttackTime(RANGED_ATTACK))
+        autoDps = (hunter->GetFloatValue(UNIT_FIELD_MINRANGEDDAMAGE) + hunter->GetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE)) /
+                  2.0f / (attackMs / 1000.0f);
+    float const lostSec = std::max(2.0f * walkSec, data.gcdSec);
+    float const cost = lostSec * hunterDps + WOWSIMS_WEAVE_AUTO_DELAY_SEC * autoDps;
     facts.Num("spell", trapSpell)
         .Num("mobs", int64(covered.size()))
         .Real("gain", gain)
+        .Real("lockAndLoad", lockAndLoad)
+        .Num("tickRolls", int64(tickRolls))
+        .Str("tag", "[lead1541]")
         .Real("cost", cost)
         .Real("walkSec", walkSec)
         .Real("lostSec", lostSec)
