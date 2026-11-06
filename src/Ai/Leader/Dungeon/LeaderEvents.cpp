@@ -6643,6 +6643,29 @@ namespace Leader::Dungeon
                         return true;
             return false;
         };
+        // [lead1555] b276 rfc-h 5E-5 #40 t=1093 (25 s standing): «rest_held: [lead1491] Rtrogab at 99 % health: a damage
+        // over time is on it» held every member's Rest. A source the member outlives (the remaining ticks of its
+        // creatures' damage over time, their amounts as the auras hold them, under its health) is the member's own
+        // wait (HurtOutOfFight), not the group's: the group's fact - nobody rests, the drinking healer stands - is a
+        // source it may not outlive (lava / slime: no end)
+        auto const outlives = [](Player* member) -> bool
+        {
+            if (InHarmfulLiquid(member, member->GetPositionX(), member->GetPositionY(), member->GetPositionZ()))
+                return false;
+            float left = 0.0f;
+            for (AuraType type : {SPELL_AURA_PERIODIC_DAMAGE, SPELL_AURA_PERIODIC_DAMAGE_PERCENT})
+                for (AuraEffect const* periodic : member->GetAuraEffectsByType(type))
+                {
+                    if (!periodic || !periodic->GetCasterGUID().IsCreature() || periodic->GetBase()->GetDuration() <= 0)
+                        continue;
+                    int32 const ticks = std::max(periodic->GetTotalTicks() - int32(periodic->GetTickNumber()), 0);
+                    float const perTick = type == SPELL_AURA_PERIODIC_DAMAGE_PERCENT
+                                              ? float(member->GetMaxHealth()) * periodic->GetAmount() / 100.0f
+                                              : float(periodic->GetAmount());
+                    left += perTick * float(ticks);
+                }
+            return left < float(member->GetHealth());
+        };
         auto const hurtMember = [&]() -> Player*
         {
             Player* worst = nullptr;
@@ -6650,6 +6673,7 @@ namespace Leader::Dungeon
             all.push_back(tank);
             for (Player* member : all)
                 if (member && member->IsAlive() && member->GetHealthPct() < 100.0f && activeDamage(member) &&
+                    !outlives(member) &&
                     (!worst || member->GetHealthPct() < worst->GetHealthPct()))
                     worst = member;
             return worst;
