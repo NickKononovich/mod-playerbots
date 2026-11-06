@@ -389,10 +389,17 @@ protected:
     std::string const Filler() override;
     // [rot420] Arcane: the wowsims APL repeats Arcane Blast at full stacks (36032 up 82 % of the sim's boss time); at
     // 0 stacks every area paid on 2 mobs (b230 rfc-h 5D: a quarter of the boss time in them, rotation 81.5 %)
+    // [rot564] Fire: Fireball's Ignite and Hot Streak Pyroblasts over the area's own Ignite; Arcane: + Arcane Blast's
+    // Missile Barrage share (each from the talents and the spells, MageTriggers.cpp)
     float FillerScale() override;
     // [rot490] "blizzard channel check" (MageAoeStrategy, BlizzardChannelCheckTrigger's 2 mobs) cancels Blizzard once
     // fewer than 2 mobs stay inside it
     bool ChannelStopsBelowMinimum() override { return aoeSpell == "blizzard"; }
+
+private:
+    float ArcaneStackScale();
+    float MissileBarrageShare(Unit* target, float stackScale);
+    float FireScale(Unit* target);
 };
 
 class BlizzardChannelCheckTrigger : public Trigger

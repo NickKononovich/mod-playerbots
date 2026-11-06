@@ -24,6 +24,7 @@
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellMgr.h"  // [rot250]
+#include "SpellPayoff.h"  // [rot564] Read
 #include "TargetValue.h"
 #include "Value.h"
 
@@ -463,11 +464,53 @@ bool ScorchFightEndTrigger::IsActive()
     return FireFightEndTarget(bot, target) && FightRemainingSec(botAI, target) <= FIRE_FIGHT_END_SCORCH_SEC;
 }
 
-float MageAoePaysTrigger::FillerScale()
+namespace
 {
-    if (AiFactory::GetPlayerSpecTab(bot) != MAGE_TAB_ARCANE)
-        return 1.0f;
+// [rot564] talent first ranks (Spell.dbc) and the core's Ignite rule (spell_mage_ignite: 8 % per rank of the crit)
+constexpr uint32 SPELL_MAGE_IGNITE_RANK_1 = 11119;
+constexpr uint32 SPELL_MAGE_HOT_STREAK_RANK_1 = 44445;
+constexpr uint32 SPELL_MAGE_MISSILE_BARRAGE_RANK_1 = 44404;
+constexpr int32 IGNITE_PCT_PER_RANK = 8;
+constexpr uint32 CRIT_BONUS_PROBE = 10000;  // the core's crit bonus is a function of the damage: read as a ratio
 
+// a talent's proc chance in percent: its spell_proc entry where it sets one, else Spell.dbc ProcChance; 0 untaken
+float TalentProcChance(Player* bot, uint32 firstRank)
+{
+    Aura const* talent = bot->GetAuraOfRankedSpell(firstRank);
+    if (!talent)
+        return 0.0f;
+    SpellProcEntry const* entry = sSpellMgr->GetSpellProcEntry(talent->GetId());
+    return entry && entry->Chance > 0.0f ? entry->Chance : static_cast<float>(talent->GetSpellInfo()->ProcChance);
+}
+
+float CritRate(Player* bot, Unit* target, SpellInfo const* info)
+{
+    return std::clamp(bot->SpellDoneCritChance(target, info, info->GetSchoolMask(), BASE_ATTACK, false), 0.0f,
+                      100.0f) /
+           100.0f;
+}
+
+// [rot564] Ignite's damage over a fire hit's expected value (Rawr Mage Spell.cs: the crit damage x the Ignite factor
+// x the crit rate): the expected hit d = b (1 + c (m - 1)) carries an Ignite of p b m c, so p m c / (1 + c (m - 1));
+// p = 8 % per Ignite rank (spell_mage_ignite). 0 for a spell of no fire school or without the talent.
+float IgniteShare(Player* bot, Unit* target, SpellInfo const* info)
+{
+    if (!info || !(info->GetSchoolMask() & SPELL_SCHOOL_MASK_FIRE) || info->HasAttribute(SPELL_ATTR2_CANT_CRIT))
+        return 0.0f;
+    Aura const* ignite = bot->GetAuraOfRankedSpell(SPELL_MAGE_IGNITE_RANK_1);
+    if (!ignite)
+        return 0.0f;
+    float const p = static_cast<float>(IGNITE_PCT_PER_RANK * ignite->GetSpellInfo()->GetRank()) / 100.0f;
+    float const c = CritRate(bot, target, info);
+    float const m = static_cast<float>(Unit::SpellCriticalDamageBonus(bot, info, CRIT_BONUS_PROBE, target)) /
+                    static_cast<float>(CRIT_BONUS_PROBE);
+    return p * m * c / (1.0f + c * std::max(0.0f, m - 1.0f));
+}
+}
+
+// [rot420] the Arcane Blast stacks: its damage at full stacks over its damage now
+float MageAoePaysTrigger::ArcaneStackScale()
+{
     // Spell.dbc 36032: arcane damage done +15 % per stack (SPELL_AURA_MOD_DAMAGE_PERCENT_DONE, school arcane; the core
     // multiplies the amount by the stacks, and SpellDamageBonusDone applies the aura as its own factor)
     constexpr uint32 SPELL_ARCANE_BLAST_STACK = 36032;
@@ -490,6 +533,96 @@ float MageAoePaysTrigger::FillerScale()
     float const full = 100.0f + static_cast<float>(perStack) * static_cast<float>(info->StackAmount);
     float const now = 100.0f + static_cast<float>(perStack) * static_cast<float>(current);
     return std::max(1.0f, full / now);
+}
+
+// [rot564] Arcane: the Missile Barrage share of an Arcane Blast, over its direct hit. spell_mage_missile_barrage procs
+// on Arcane Blast at the talent's full chance (Rawr Mage CycleDataArcane: 0.08 x rank); the proc's Arcane Missiles
+// land their whole damage in the channel the proc shortens (its SPELLMOD_DURATION), worth that damage over the
+// filler at its steady stacks in the same time.
+float MageAoePaysTrigger::MissileBarrageShare(Unit* target, float stackScale)
+{
+    float const chance = TalentProcChance(bot, SPELL_MAGE_MISSILE_BARRAGE_RANK_1) / 100.0f;
+    Aura const* talent = bot->GetAuraOfRankedSpell(SPELL_MAGE_MISSILE_BARRAGE_RANK_1);
+    uint32 const blastId = AI_VALUE2(uint32, "spell id", "arcane blast");
+    uint32 const missilesId = AI_VALUE2(uint32, "spell id", "arcane missiles");
+    SpellInfo const* missilesInfo = missilesId ? sSpellMgr->GetSpellInfo(missilesId) : nullptr;
+    SpellPayoff::Cast blast;
+    SpellPayoff::Cast missiles;
+    if (chance <= 0.0f || !talent || !blastId || !missilesInfo || missilesInfo->GetDuration() <= 0 ||
+        !SpellPayoff::Read(bot, target, blastId, blast) || blast.direct <= 0.0f ||
+        !SpellPayoff::Read(bot, target, missilesId, missiles) || missiles.channelMs <= 0.0f)
+        return 0.0f;
+
+    // the proc the talent triggers and its channel cut, hasted as the channel is
+    float channelMs = missiles.channelMs;
+    for (SpellEffectInfo const& effect : talent->GetSpellInfo()->GetEffects())
+    {
+        SpellInfo const* proc = effect.TriggerSpell ? sSpellMgr->GetSpellInfo(effect.TriggerSpell) : nullptr;
+        if (!proc)
+            continue;
+        for (SpellEffectInfo const& mod : proc->GetEffects())
+            if (mod.ApplyAuraName == SPELL_AURA_ADD_FLAT_MODIFIER && mod.MiscValue == SPELLMOD_DURATION)
+                channelMs += static_cast<float>(mod.CalcValue(bot)) * missiles.channelMs /
+                             static_cast<float>(missilesInfo->GetDuration());
+    }
+    channelMs = std::max(channelMs, missiles.gcdMs);
+
+    float const fillerDps = blast.direct * stackScale * static_cast<float>(IN_MILLISECONDS) / blast.executeMs;
+    float const gain = missiles.Total() - fillerDps * channelMs / static_cast<float>(IN_MILLISECONDS);
+    return gain > 0.0f ? chance * gain / blast.direct : 0.0f;
+}
+
+// [rot564] Fire: Fireball's value over its direct hit (its Ignite + the Hot Streak Pyroblasts) over the area spell's
+// value over its own damage (its Ignite on its direct part: Flamestrike / Dragon's Breath / Blast Wave, none on Arcane
+// Explosion). Rawr Mage CycleDataFire FBPyro: Pyroblasts per Fireball K = c^2 / (1 + c) x the Hot Streak chance (the
+// talent aura's amount, spell_mage_hot_streak); an instant Pyroblast is worth its damage and Ignite over the filler
+// in its GCD. b276 rfc-h 5H Rtmagad: "flamestrike lands 7926 on 2 mobs vs fireball 7957" with Fireball's hit alone.
+float MageAoePaysTrigger::FireScale(Unit* target)
+{
+    uint32 const fireballId = AI_VALUE2(uint32, "spell id", "fireball");
+    uint32 const areaId = AI_VALUE2(uint32, "spell id", aoeSpell);
+    SpellInfo const* fireball = fireballId ? sSpellMgr->GetSpellInfo(fireballId) : nullptr;
+    SpellInfo const* areaInfo = areaId ? sSpellMgr->GetSpellInfo(areaId) : nullptr;
+    SpellPayoff::Cast filler;
+    SpellPayoff::Cast area;
+    if (!fireball || !areaInfo || !SpellPayoff::Read(bot, target, fireballId, filler) || filler.direct <= 0.0f ||
+        !SpellPayoff::Read(bot, target, areaId, area) || area.Total() <= 0.0f)
+        return 1.0f;
+
+    float fillerFactor = 1.0f + IgniteShare(bot, target, fireball);
+
+    uint32 const pyroId = AI_VALUE2(uint32, "spell id", "pyroblast");
+    SpellInfo const* pyroInfo = pyroId ? sSpellMgr->GetSpellInfo(pyroId) : nullptr;
+    Aura const* hotStreak = bot->GetAuraOfRankedSpell(SPELL_MAGE_HOT_STREAK_RANK_1);
+    AuraEffect const* hotStreakChance = hotStreak ? hotStreak->GetEffect(EFFECT_0) : nullptr;
+    SpellPayoff::Cast pyro;
+    if (pyroInfo && hotStreakChance && SpellPayoff::Read(bot, target, pyroId, pyro))
+    {
+        float const c = CritRate(bot, target, fireball);
+        float const k = c * c / (1.0f + c) * static_cast<float>(hotStreakChance->GetAmount()) / 100.0f;
+        float const fillerDps = filler.direct * static_cast<float>(IN_MILLISECONDS) / filler.executeMs;
+        float const gain = pyro.Total() + IgniteShare(bot, target, pyroInfo) * pyro.direct -
+                           fillerDps * pyro.gcdMs / static_cast<float>(IN_MILLISECONDS);
+        if (gain > 0.0f)
+            fillerFactor += k * gain / filler.direct;
+    }
+
+    float const areaFactor = 1.0f + IgniteShare(bot, target, areaInfo) * area.direct / area.Total();
+    return fillerFactor / areaFactor;
+}
+
+float MageAoePaysTrigger::FillerScale()
+{
+    int const tab = AiFactory::GetPlayerSpecTab(bot);
+    if (tab != MAGE_TAB_FIRE && tab != MAGE_TAB_ARCANE)
+        return 1.0f;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target)
+        return 1.0f;
+    if (tab == MAGE_TAB_FIRE)
+        return FireScale(target);
+    float const stackScale = ArcaneStackScale();
+    return stackScale + MissileBarrageShare(target, stackScale);
 }
 
 std::string const MageAoePaysTrigger::Filler()
