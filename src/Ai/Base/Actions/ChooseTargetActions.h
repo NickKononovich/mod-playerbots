@@ -264,6 +264,8 @@ namespace PullPlanner
 // An idle mob whose aggro range reaches the spot (and sees it), a wanderer whose wander radius brings it there, or a
 // patrol that walks into it: the careful pull's test, for anyone who stands somewhere before a pull (a rogue's Sap).
 bool IdleMobReachesSpot(Player* bot, Unit* mob, Position const& spot);
+// [lead1565] the opening of a closed door sends it off (its SmartAI and the door's): no pack in front brings it
+bool CreatureLeavesWhenDoorOpens(Creature* creature);
 
 // The group's healers see `spot` from where they stand now, within their heal range (true without a healer here).
 bool HealerSeesSpot(Player* bot, Position const& spot);

@@ -384,7 +384,8 @@ namespace Leader::Travel
     bool BossBroughtBy(Player* leader, Creature* boss, Creature* mob)
     {
         if (!ROUTE_BOSS_BROUGHT_BY_PACK || !leader || !boss || !mob || boss == mob || !boss->IsAlive() ||
-            !mob->IsAlive() || boss->IsInCombat() || boss->IsImmuneToPC() || !boss->IsHostileTo(leader))
+            !mob->IsAlive() || boss->IsInCombat() || boss->IsImmuneToPC() || !boss->IsHostileTo(leader) ||
+            CreatureLeavesWhenDoorOpens(boss))  // [lead1565]
             return false;
         if (BossEncounterMob(leader, boss, mob))
             return true;

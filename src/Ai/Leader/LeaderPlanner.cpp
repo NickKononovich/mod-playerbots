@@ -1445,12 +1445,88 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // ImmuneToAll while his Cabal Ritualists live (boss_ambassador_hellmaw.cpp InitializeAI, TYPE_RITUALISTS); the
     // planner counted him in every ritualist pack ("refused for now: the pack of Cabal Ritualist brings a boss, pulled
     // as his fight") and the ritualists - the only way to free him - were never pulled: stalled 796 s.
+    // [lead1565] A creature the opening of a closed door sends away (the core's SmartAI, read as data): the door's
+    // gossip hello (its spawn's script, else its entry's) sets a data on it, and its own script answers that data with
+    // an escort path. While that door stays shut and the creature stands on its spawn it is no member of the chains
+    // in front of it: the opening - the only way that fight starts - sends it off before the pack comes. Stratholme:
+    // Service Entrance Gate 175368 (spawn 6851: SET_DATA 0 1 on Magistrate Barthilas 10435, guid 54237), his DATA_SET
+    // 0 1 -> ESCORT_START path 104350 to his post. b277 strat-n 5F-14 / 5H-16: every pack behind the gate refused as
+    // "brings a boss" (him, 40 yd past the gate), lead208's whole-pack answer never ran (wokenBoss), stalled at 277 s;
+    // in the six opened runs he ran off and never fought there ("alive, not engaged" at every run end).
+    bool LeavesWhenDoorOpens(Creature* creature)
+    {
+        if (!creature || creature->IsInCombat() || creature->GetAIName() != "SmartAI" || !creature->GetMap())
+            return false;
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        creature->GetRespawnPosition(x, y, z);
+        if (creature->GetExactDist(x, y, z) > CONTACT_DISTANCE)
+            return false;  // on its way already, or fighting / walking elsewhere: its own facts
+        auto const scriptOf = [](int32 spawnKey, int32 entry, SmartScriptType type)
+        {
+            SmartAIEventList events = sSmartScriptMgr->GetScript(spawnKey, type);
+            return events.empty() ? sSmartScriptMgr->GetScript(entry, type) : events;
+        };
+        struct Sent
+        {
+            bool computed = false;
+            std::vector<ObjectGuid> doors;  // the closed doors whose opening sends it off
+        };
+        thread_local std::unordered_map<uint64, Sent> sentAway;  // (instance, creature) on the map thread
+        if (sentAway.size() > 4096)
+            sentAway.clear();
+        Map* map = creature->GetMap();
+        uint64 const key = (uint64(map->GetInstanceId()) << 32) | creature->GetGUID().GetCounter();
+        Sent& sent = sentAway[key];
+        if (!sent.computed)
+        {
+            sent.computed = true;
+            std::vector<std::pair<uint32, uint32>> answers;  // data id, value its escort path answers
+            for (SmartScriptHolder const& e : scriptOf(-int32(creature->GetSpawnId()), int32(creature->GetEntry()),
+                                                       SMART_SCRIPT_TYPE_CREATURE))
+                if (e.GetEventType() == SMART_EVENT_DATA_SET && e.GetActionType() == SMART_ACTION_ESCORT_START)
+                    answers.emplace_back(e.event.dataSet.id, e.event.dataSet.value);
+            if (!answers.empty())
+                for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                {
+                    if (!go || go->GetGoType() != GAMEOBJECT_TYPE_DOOR || go->GetAIName() != "SmartGameObjectAI")
+                        continue;
+                    for (SmartScriptHolder const& e : scriptOf(-int32(spawnId), int32(go->GetEntry()),
+                                                               SMART_SCRIPT_TYPE_GAMEOBJECT))
+                    {
+                        if (e.GetEventType() != SMART_EVENT_GOSSIP_HELLO ||
+                            e.GetActionType() != SMART_ACTION_SET_DATA ||
+                            std::find(answers.begin(), answers.end(),
+                                      std::make_pair(e.action.setData.field, e.action.setData.data)) == answers.end())
+                            continue;
+                        bool const named =
+                            (e.target.type == SMART_TARGET_CREATURE_GUID &&
+                             (e.target.raw.param1 == creature->GetSpawnId() ||
+                              (!e.target.raw.param1 && e.target.raw.param2 == creature->GetEntry()))) ||
+                            (e.target.type == SMART_TARGET_CLOSEST_CREATURE &&
+                             (!e.target.raw.param1 || e.target.raw.param1 == creature->GetEntry()) &&
+                             (!e.target.raw.param2 || go->GetExactDist(creature) <= float(e.target.raw.param2)));
+                        if (named)
+                        {
+                            sent.doors.push_back(go->GetGUID());
+                            break;
+                        }
+                    }
+                }
+        }
+        for (ObjectGuid const& guid : sent.doors)
+            if (GameObject* door = map->GetGameObject(guid); door && door->GetGoState() == GO_STATE_READY)
+                return true;
+        return false;
+    }
+
     bool IsSealedFromFight(Unit* unit)
     {
         Creature* creature = unit ? unit->ToCreature() : nullptr;
         return creature && !creature->IsInCombat() &&
                (creature->IsImmuneToPC() || creature->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) ||
-                creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE));
+                creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) || LeavesWhenDoorOpens(creature));  // [lead1565]
     }
 
     // [rest_topup_real_boss] A boss mob that is an encounter of its map's DungeonEncounter.dbc list (its kill credit,
@@ -6135,6 +6211,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     std::mutex fightSpotLock;
     std::unordered_map<uint64, FightSpotEntry> fightSpots;
 }
+
+// [lead1565]
+bool CreatureLeavesWhenDoorOpens(Creature* creature) { return PullPlanning::LeavesWhenDoorOpens(creature); }
 
 bool IdleMobReachesSpot(Player* bot, Unit* mob, Position const& spot)
 {
@@ -11634,6 +11713,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     {
                         Creature* helper = botAI->GetCreature(guid);
                         if (!helper || !helper->IsAlive() || helper->IsInCombat() ||
+                            IsSealedFromFight(helper) ||  // [lead1565] a sealed / sent-away mob answers no call
                             std::find(guaranteed.begin(), guaranteed.end(), helper) != guaranteed.end() ||
                             !helper->IsWithinDistInMap(caller, assistRadius) || !helper->CanAssistTo(caller, bot) ||
                             !helper->IsWithinLOSInMap(caller))
