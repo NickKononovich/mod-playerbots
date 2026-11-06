@@ -765,9 +765,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float healGapSec = 0.0f;   // the shortest time between two heals of one healer landing (0: no healer)
         float tankHealth = 0.0f;   // the health the healers heal (PlanTankHealth)
         std::string healerFacts;   // per healer, logged
+        // [lead1566] this dungeon has measured the pull's facts: every healer's healing per mana / rate
+        // (HealerFacts::measured), the tank's landed melee (LandedCalibration) and the group's damage
+        // (MeasuredGroupDamage) - the survival terms then judge a pack, not the tank kit's mob count
+        bool factsMeasured = false;
     };
 
     float PlanTankHealth(Player* tank);
+    bool PullFactsMeasured(Player* tank);  // [lead1566]
 
     // [lead259] The group's damage the game gives without a measured fight or a gear model: every member's weapon
     // (its min-max damage over its attack time, the better of melee and ranged) - the floor of the fight's length.
@@ -805,6 +810,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         GroupSupport support;
         support.tankHealth = PlanTankHealth(bot);
+        bool healersMeasured = true;  // [lead1566]
         if (Group* group = bot->GetGroup())
         {
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
@@ -820,6 +826,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
                 ++support.healers;
                 RestState::HealerFacts const facts = RestState::HealerThroughput(member, bot);
+                healersMeasured = healersMeasured && facts.measured;
                 support.healHps += facts.hps;
                 support.strongestHps = std::max(support.strongestHps, facts.hps);
                 support.healMana += facts.maxMana * facts.healPerMana;
@@ -836,6 +843,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     facts.healPerMana, facts.measured ? "measured" : "spell data", facts.maxMana);
             }
         }
+        support.factsMeasured = support.healers > 0 && healersMeasured && PullFactsMeasured(bot);  // [lead1566]
 
         return support;
     }
@@ -4789,6 +4797,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 std::clamp(std::round(kit.holdMobs * strength.PullScale()), CAREFUL_MIN_HOLD, CAREFUL_MAX_HOLD) +
                 CAREFUL_LOOSE_MOBS;
             terms.hold = float(estimate.mobs) / terms.holdMobs;
+            // [lead1566] user rule: every constant a fact. The kit's mob count (TANK_KIT_* x the pull scale,
+            // CAREFUL_MIN / MAX_HOLD, CAREFUL_LOOSE_MOBS) is the prior while nothing is measured; once this dungeon
+            // measured the tank's landed melee, the healers' rate and mana per health and the group's damage
+            // (support.factsMeasured), the pack is judged by whether the tank lives through it: its drop against its
+            // most (drain), the healers' rate against its damage per second (peak) and their mana for its cost
+            // (size), over the fight's estimated length - the mob count is no limit of its own then. b277 strat-n:
+            // the 10-mob packs refused by this term alone (hold 1.43-2.50, every other term 0.13-0.72) were won 6
+            // of 7 times without a death
+            if (measured && support.factsMeasured)
+                terms.hold = 0.0f;
 
             float const maxHealth = PlanTankHealth(bot);  // [b32_smpull]
             // [lead259] the drop against the most the tank may drop (EstimatePack::maxDrop); the comfort (measured):
@@ -7667,6 +7685,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (found == measuredDps.end() || found->second.instanceId != tank->GetInstanceId())
             return MeasuredDamage();
         return MeasuredGroupDamageLocked(found->second);
+    }
+
+    // [lead1566] the tank's landed melee and the group's damage measured in this dungeon (one fight each at least)
+    bool PullFactsMeasured(Player* tank)
+    {
+        return tank && LandedCalibration(tank).meleeFights > 0 && MeasuredGroupDamage(tank).fights > 0;
     }
 
     // The tank's measured group damage in this instance: [lead650] the focus target's part (MeasuredGroupDamage:
