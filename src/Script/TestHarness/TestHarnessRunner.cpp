@@ -1993,6 +1993,13 @@ namespace TestHarness
         // the far point; the tank, on the near side and hit through the bars, died alone at 155 s.
         bool const leaderNear = leader->IsAlive() && leader->GetMap() == map && nearSide(leader);
         auto const waitsForLeader = [&](Player const* bot) { return bot != leader && leaderNear; };
+        // [lead1569] user-approved (safety over speed): through a key door that shuts behind (data2 auto-close) no
+        // fight starts on the far side before every living member is through. An opening that wakes a pack there
+        // (keyPassFarPack: the leader's pricing found it in reach of the use / far point) is that pack's pull: nobody
+        // is sent through, the pack comes through the open gate to the whole group on the use side (b38_strat's
+        // OpeningFight below). b277 strat-n 20261106-105714-5E-13 (40-101 s) / strat-h 114347-5B-18 (34-78 s): the
+        // tank sent first, the far side woke on it alone, the gate shut on the healer, the tank died behind it
+        bool const holdForFarPack = party.keyPassFarPack && !back && !reopenAt->second;
         // [b38_strat] whether the group was out of combat when this pass started (the gathered first use), and so
         // whether a fight that starts during the opening is one the opening woke on the far side (below)
         static std::unordered_map<uint64, bool> passCalm;  // the harness's world thread only
@@ -2008,10 +2015,17 @@ namespace TestHarness
             passCalm[passKey] = calm;
             party.keyPassSent = true;
             JsonArray sent;
+            if (holdForFarPack)
+                LogEvent(party, "key_pass_held",
+                         JsonObject().Str("note", pass->note).Str("door", door->GetName())
+                             .Num("doorEntry", door->GetEntry())
+                             .Str("why", "[lead1569] the opening wakes the far side: its pull on the use side, "
+                                         "nobody goes through before it"));
             for (Member& member : party.members)
             {
                 Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                if (!bot || !bot->IsAlive() || bot->GetMap() != map || !nearSide(bot) || waitsForLeader(bot))
+                if (holdForFarPack || !bot || !bot->IsAlive() || bot->GetMap() != map || !nearSide(bot) ||
+                    waitsForLeader(bot))
                     continue;
                 sendThrough(member, bot);
                 sent.Str(member.name);
@@ -2100,6 +2114,10 @@ namespace TestHarness
                     return;
                 }
             }
+            // [lead1569] held for the far side's pull: nobody walks through this opening (the fight above, or the
+            // gate shuts with the group on the use side and the next key is priced again)
+            if (holdForFarPack)
+                return;
             // [b35_ss] the caster too once its cast is over (the leader who keyed it lost its pass walk to the far
             // wait and was never sent again: 5E-2 at 86-93 s); the others once the leader is through (waitsForLeader).
             for (Member& member : party.members)

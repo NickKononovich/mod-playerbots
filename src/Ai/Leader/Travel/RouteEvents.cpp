@@ -2173,6 +2173,7 @@ namespace Leader::Travel
                     static std::unordered_map<uint64, uint32> farPackSince;  // the harness's world thread only
                     uint64 const farKey = (uint64(group.InstanceId()) << 32) | go->GetEntry();
                     bool const farPack = first && (woken.size() >= KEY_PASS_FAR_PACK_MIN || !refusedWhy.empty());
+                    routeState.keyPassFarPack = farPack;  // [lead1569] TickKeyDoorPass holds the pass for it
                     // [lead10] LEADER_DOOR_INPUTS: the opening is the leader's pull of the far side, priced with it
                     // (no KEY_PASS_FAR_PACK_MAX_MS give-up): within the planner's whole-pack cap (WholePackCap) and
                     // not refused over its cap, the key is used now and the fight is held on the use side
