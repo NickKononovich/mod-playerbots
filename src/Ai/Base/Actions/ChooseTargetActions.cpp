@@ -545,7 +545,8 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
                 if (uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
                     TankPeel::IsGapCloser(spell ? sSpellMgr->GetSpellInfo(spell) : nullptr) &&
                     (!Leader::Fight::TankWalkMovesFight(bot, mob, true).empty() ||
-                     !Leader::Fight::TankGapCloserAllowed(bot, mob, name)))
+                     !Leader::Fight::TankGapCloserAllowed(bot, mob, name) ||
+                     GapCloserLeavesGround(bot, mob, name)))  // [lead1591] its ground and door guard
                     continue;
                 if (opener)
                     *opener = name;

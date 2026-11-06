@@ -625,7 +625,9 @@ bool ReachMeleeAction::isUseful()
         std::string meetSpell;
         meet = Leader::Fight::TankMeetFor(bot, target, &meetSpell);
         if ((meet == Leader::Fight::TankMeet::Closer || meet == Leader::Fight::TankMeet::Grip) &&
-            !meetSpell.empty() && botAI->CanCastSpell(meetSpell, target))
+            !meetSpell.empty() && botAI->CanCastSpell(meetSpell, target) &&
+            // [lead1591] the gap closer's own ground and door guard (a charge through a shut gate)
+            (meet != Leader::Fight::TankMeet::Closer || !GapCloserLeavesGround(bot, target, meetSpell.c_str())))
         {
             _meetSpell = meetSpell;
             return true;

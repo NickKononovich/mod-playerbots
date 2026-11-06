@@ -1255,6 +1255,31 @@ bool GapCloserLeavesGround(Unit* caster, Unit* target, char const* what)
         }
     }
 
+    // [lead1591] through a CLOSED door: the charge's path is the navmesh's (Spell::EffectCharge -> PathGenerator),
+    // which has no door in it - the charge lands on the far side of a shut gate. b282 strat-n 5H-8 t=33-35: the bear
+    // tank "meets Mangled Cadaver (21.7 yd) with feral charge - bear" (lead1171) through the shut Service Entrance
+    // Gate 175368 in the held opening (lead1570), the healer cut off behind it (door_cut 36-69 s), the tank dead at
+    // 68 s; 5B-2 / 5F-6 the warrior's "opens on incoming ... with charge" (lead96) the same way.
+    if (ClosedDoorNear(caster, caster->GetPositionX(), caster->GetPositionY(), target->GetPositionX(),
+                       target->GetPositionY(), CLOSED_DOOR_SEARCH))
+    {
+        PathGenerator path(caster);
+        path.CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
+        std::vector<G3D::Vector3> points;
+        if (!(path.GetPathType() & PATHFIND_NOPATH))
+            points.assign(path.GetPath().begin(), path.GetPath().end());
+        if (points.size() < 2)
+            points = {G3D::Vector3(caster->GetPositionX(), caster->GetPositionY(), caster->GetPositionZ()),
+                      G3D::Vector3(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ())};
+        if (ClosedDoorHit const hit = PathThroughClosedDoor(caster, points); hit.Found())
+        {
+            LOG_INFO("playerbots", "[lead1591] {}: no {} onto {}: its path runs through the closed {} {} at {:.1f} yd",
+                     caster->GetName(), what ? what : "gap closer", target->GetName(), hit.door->GetName(),
+                     hit.door->GetEntry(), hit.walked);
+            return true;
+        }
+    }
+
     return false;
 }
 
