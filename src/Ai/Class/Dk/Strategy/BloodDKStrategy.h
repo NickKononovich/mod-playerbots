@@ -59,6 +59,9 @@ public:
 protected:
     // [rot370] the wowsims blood_aggro APL never casts Blood Boil; Heart Strike already hits a second target
     bool CastsBloodBoil() const override { return false; }
+    // [rot563] blood_aggro: Icy Touch / Plague Strike once a disease is gone, no Pestilence refresh. b276 rfc-h 5G
+    // Rtdekac: Pestilence 3.2 a minute on the bosses vs the sim's 0, Icy Touch 2.3 / Plague Strike 1.8 vs 4.2 / 4.3
+    bool RefreshesDiseasesWithPestilence() const override { return false; }
 };
 
 #endif

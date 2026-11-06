@@ -23,11 +23,14 @@ class PlayerbotAI;
 // on the rune triggers and the default fillers spent a lone Frost or Unholy rune on a fresh disease instead of
 // keeping it for the Scourge Strike pair (wowsims uh_2h_ss: Icy Touch / Plague Strike only as the disease runs out).
 // Without Scourge Strike (below the talent) the two stay Unholy's rune spenders.
+// [rot563] onlyWhenMissing (the Blood tank): Icy Touch / Plague Strike only once our disease is gone, wowsims
+// tank_deathknight__blood_aggro ("not dotIsActive" 55095 / 55078) - no early refresh and no Pestilence one.
 class DKDiseaseRefreshMultiplier : public Multiplier
 {
 public:
-    DKDiseaseRefreshMultiplier(PlayerbotAI* botAI, bool requireScourgeStrike = false)
-        : Multiplier(botAI, "dk disease refresh"), requireScourgeStrike(requireScourgeStrike)
+    DKDiseaseRefreshMultiplier(PlayerbotAI* botAI, bool requireScourgeStrike = false, bool onlyWhenMissing = false)
+        : Multiplier(botAI, "dk disease refresh"), requireScourgeStrike(requireScourgeStrike),
+          onlyWhenMissing(onlyWhenMissing)
     {
     }
 
@@ -35,6 +38,7 @@ public:
 
 private:
     bool requireScourgeStrike;
+    bool onlyWhenMissing;
 };
 
 class GenericDKStrategy : public MeleeCombatStrategy
@@ -48,6 +52,8 @@ public:
 protected:
     // [rot370] false for the Blood tank: wowsims tank_deathknight__blood_aggro never casts Blood Boil
     virtual bool CastsBloodBoil() const { return true; }
+    // [rot563] false for the Blood tank: blood_aggro refreshes no disease with Pestilence (Glyph of Disease)
+    virtual bool RefreshesDiseasesWithPestilence() const { return true; }
 };
 
 #endif

@@ -112,7 +112,7 @@ void BloodDKStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     GenericDKStrategy::InitMultipliers(multipliers);
     multipliers.push_back(new RezzedTankHoldMultiplier(botAI));
-    multipliers.push_back(new DKDiseaseRefreshMultiplier(botAI));  // [b31_dk]
+    multipliers.push_back(new DKDiseaseRefreshMultiplier(botAI, false, true));  // [b31_dk] [rot563] once gone
     multipliers.push_back(new BloodDeathCoilMultiplier(botAI));    // [b31_deep]
     multipliers.push_back(new BloodDnDRuneReserveMultiplier(botAI));  // [b36_tankaoe]
 }

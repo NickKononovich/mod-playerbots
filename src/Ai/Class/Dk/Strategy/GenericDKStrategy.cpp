@@ -73,8 +73,9 @@ void GenericDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         mediumAoe.push_back(NextAction("blood boil", ACTION_NORMAL + 3));
 
     triggers.push_back(new TriggerNode("medium aoe", mediumAoe));
-    triggers.push_back(
-        new TriggerNode("pestilence glyph", { NextAction("pestilence", ACTION_HIGH + 9) }));
+    if (RefreshesDiseasesWithPestilence())
+        triggers.push_back(
+            new TriggerNode("pestilence glyph", { NextAction("pestilence", ACTION_HIGH + 9) }));
     // [b35_uh] Empower Rune Weapon per spec: "no rune" (any fight) for Blood (BloodDKStrategy), "no rune boss" for
     // Frost, "empower rune weapon under gargoyle" for Unholy. Here it burnt the 5 min cooldown on trash for Frost and
     // Unholy (DEEP_AUDIT_DK_UNHOLY_NIGHT.md B3).
@@ -113,6 +114,8 @@ float DKDiseaseRefreshMultiplier::GetValue(Action* action)
     Aura* aura = botAI->GetAura(disease, target, true, true);
     if (!aura)
         return 1.0f;  // ours is missing: apply it
+    if (onlyWhenMissing)
+        return 0.0f;  // [rot563] the Blood tank: once it is gone (blood_aggro)
 
     int32 const remaining = aura->GetDuration();
     if (remaining > DK_DISEASE_REFRESH_MS)
