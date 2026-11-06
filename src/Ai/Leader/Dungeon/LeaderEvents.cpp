@@ -2242,11 +2242,32 @@ namespace Leader::Dungeon
                                     continue;
                                 float const range = info->GetMaxRange(false, member);
                                 groundRange = std::max(groundRange, range);
-                                if (member->HasSpellCooldown(candidate) || !member->IsWithinDist3d(anchor, range) ||
-                                    (!info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) &&
-                                     !member->IsWithinLOSInMap(anchor)) ||
-                                    !memberAI->CheckCastNow(candidate, anchor).Castable())
+                                // [lead1550] each refusal of a ground spell is its verdict (b276: one verdict text
+                                // hid why no ground spell went out)
+                                std::string const named = std::string(info->SpellName[0] ? info->SpellName[0] : "?") +
+                                                          " on " + anchor->GetName() + "'s ground: ";
+                                if (member->HasSpellCooldown(candidate))
+                                {
+                                    verdict = named + "on its cooldown [lead1550]";
                                     continue;
+                                }
+                                if (!member->IsWithinDist3d(anchor, range))
+                                {
+                                    verdict = named + "out of its range [lead1550]";
+                                    continue;
+                                }
+                                if (!info->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) &&
+                                    !member->IsWithinLOSInMap(anchor))
+                                {
+                                    verdict = named + "out of its sight [lead1550]";
+                                    continue;
+                                }
+                                if (PlayerbotAI::CastCheck const cast = memberAI->CheckCastNow(candidate, anchor);
+                                    !cast.Castable())
+                                {
+                                    verdict = named + PlayerbotAI::CastResultName(cast.result) + " [lead1550]";
+                                    continue;
+                                }
                                 float const search = radius + unseen->GetCombatReach();
                                 std::list<Unit*> inArea;
                                 Acore::AnyUnitInObjectRangeCheck check(anchor, search);

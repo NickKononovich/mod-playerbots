@@ -1669,6 +1669,20 @@ namespace Leader::Fight
                                 effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL);
             if (field || AreaDamageEffect(effect))
                 radius = std::max(radius, effect.CalcRadius(member));
+            // [lead1550] b276 ac-h 5F-14 144-258 s / 619-661 s: the hunter's Volley and the warlock's Rain of Fire
+            // never took the invisible Phasing Soldier (lead1532 found no ground spell for them). Their channels
+            // (Volley 58434, Rain of Fire 47820, Blizzard 42940, Hurricane 48467 in Spell.dbc) mark the ground with a
+            // dummy persistent area aura and deal their damage by a periodic trigger aura on the caster: its
+            // triggered spell (58433, 47818, 42938, 48466) hits the area round the channel's destination
+            // (TARGET_DEST_CHANNEL_TARGET + TARGET_UNIT_DEST_AREA_ENEMY) - that area is the spell's
+            if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL &&
+                effect.TriggerSpell && effect.TriggerSpell != info->Id)
+                if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                    for (SpellEffectInfo const& hit : triggered->GetEffects())
+                        if (hit.IsEffect() && hit.TargetA.GetSelectionCategory() != TARGET_SELECT_CATEGORY_CONE &&
+                            hit.TargetB.GetSelectionCategory() != TARGET_SELECT_CATEGORY_CONE &&
+                            AreaDamageEffect(hit))
+                            radius = std::max(radius, hit.CalcRadius(member));
         }
         return radius;
     }
