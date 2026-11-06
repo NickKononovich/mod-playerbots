@@ -149,6 +149,7 @@ public:
                  killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
                  area ? area->area_name[0] : "?");
+        SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
     }
 
     bool OnPlayerCanMarkAccountOffline(ObjectGuid guid, uint32 /*accountId*/) override

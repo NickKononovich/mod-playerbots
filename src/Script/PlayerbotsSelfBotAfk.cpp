@@ -6,7 +6,16 @@
 
 #include "SelfBotControl.h"
 
+#include "Bag.h"
+#include "CharacterCache.h"
 #include "CharacterPackets.h"
+#include "Config.h"
+#include "Creature.h"
+#include "DBCStores.h"
+#include "GameTime.h"
+#include "ObjectMgr.h"
+#include "PlayerbotsDatabase.h"
+#include "QuestDef.h"
 #include "Chat.h"
 #include "Group.h"
 #include "Log.h"
@@ -33,6 +42,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -507,6 +517,255 @@ public:
     }
 };
 
+// [live1] Guild project board for the BotControl addon: the plan (guild_project_plan + Playerbots.UserPack.Guids) is
+// read once at startup; deaths are counted in memory by the creature-kill hook; every row is built on request from
+// the players in memory (world thread: chat packets are handled while the map threads are idle). No per-tick work, no
+// DB query after startup.
+namespace
+{
+    struct GuildPlanRow
+    {
+        uint32 low{0};
+        std::string name;
+        std::string grp;
+        std::string role;
+    };
+
+    struct GuildDeaths
+    {
+        std::deque<uint32> times;  // game time seconds, last hour
+        uint32 total{0};
+        std::string killer;
+    };
+
+    struct GuildStill
+    {
+        uint32 mapId{0};
+        float x{0}, y{0}, z{0};
+        uint32 since{0};
+    };
+
+    std::vector<GuildPlanRow> guildPlan;  // written once at startup, read-only afterwards
+    std::unordered_set<uint32> guildPlanLows;
+    std::mutex guildDeathLock;
+    std::unordered_map<uint32, GuildDeaths> guildDeaths;  // under guildDeathLock (map threads)
+    std::unordered_map<uint32, GuildStill> guildStill;     // world thread only
+
+    std::string BoardField(std::string text, size_t max)
+    {
+        std::replace(text.begin(), text.end(), ';', ',');
+        std::replace(text.begin(), text.end(), '\t', ' ');
+        return text.size() > max ? text.substr(0, max) : text;
+    }
+
+    // "STATUS|detail": the addon translates the status and shows the detail (quest title, vendor, distance).
+    std::string GuildActivity(Player* bot, PlayerbotAI* botAI)
+    {
+        if (!botAI)
+            return "PLAYER|";
+        if (!bot->IsAlive())
+            return bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "GHOST|" : "DEAD|";
+        if (bot->IsInCombat())
+        {
+            Unit* victim = bot->GetVictim();
+            return std::string("COMBAT|") + (victim ? victim->GetName() + " L" + std::to_string(victim->GetLevel()) : "");
+        }
+        if (bot->IsInFlight())
+            return "TRAVEL_FLIGHT|";
+        static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
+                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER"};
+        NewRpgInfo& info = botAI->rpgInfo;
+        NewRpgStatus const status = info.GetStatus();
+        std::string text = status < RPG_STATUS_END ? names[status] : "?";
+        if (info.vendorRunEntry)
+        {
+            CreatureTemplate const* vendor = sObjectMgr->GetCreatureTemplate(info.vendorRunEntry);
+            return "VENDOR|" + (vendor ? vendor->Name : std::to_string(info.vendorRunEntry)) + ": " +
+                   info.vendorRunReason;
+        }
+        text += "|";
+        if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
+            text += (quest->quest ? quest->quest->GetTitle() : std::string("?")) + " (q" +
+                    std::to_string(quest->questId) + ")";
+        else if (auto const* grind = std::get_if<NewRpgInfo::GoGrind>(&info.data))
+            text += std::to_string(uint32(bot->GetExactDist(grind->pos))) + " yd";
+        else if (auto const* camp = std::get_if<NewRpgInfo::GoCamp>(&info.data))
+            text += std::to_string(uint32(bot->GetExactDist(camp->pos))) + " yd";
+        return text;
+    }
+}
+
+namespace SelfBotControl
+{
+    void LoadGuildPlan()
+    {
+        guildPlan.clear();
+        guildPlanLows.clear();
+        if (QueryResult result = PlayerbotsDatabase.Query("SELECT guid, name, grp, role FROM guild_project_plan ORDER BY guid"))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                GuildPlanRow row;
+                row.low = fields[0].Get<uint32>();
+                row.name = fields[1].Get<std::string>();
+                row.grp = fields[2].Get<std::string>();
+                row.role = fields[3].Get<std::string>();
+                if (guildPlanLows.insert(row.low).second)
+                    guildPlan.push_back(row);
+            } while (result->NextRow());
+        }
+        // The user's pack (his own selfbot character among them) is on the board too, as group "P" when not planned.
+        std::stringstream in(sConfigMgr->GetOption<std::string>("Playerbots.UserPack.Guids", "", false));
+        std::string token;
+        while (std::getline(in, token, ','))
+        {
+            uint32 const low = uint32(std::strtoul(token.c_str(), nullptr, 10));
+            if (low && guildPlanLows.insert(low).second)
+                guildPlan.push_back({low, "", "P", "pack"});
+        }
+        LOG_INFO("playerbots", "[live1] guild board: {} characters", guildPlan.size());
+    }
+
+    void RecordGuildDeath(Player* killed, Creature* killer)
+    {
+        if (!killed || !killer || !guildPlanLows.count(killed->GetGUID().GetCounter()))
+            return;
+        uint32 const now = uint32(GameTime::GetGameTime().count());
+        std::lock_guard<std::mutex> guard(guildDeathLock);
+        GuildDeaths& d = guildDeaths[killed->GetGUID().GetCounter()];
+        d.times.push_back(now);
+        while (!d.times.empty() && now - d.times.front() > HOUR)
+            d.times.pop_front();
+        ++d.total;
+        d.killer = killer->GetName() + " L" + std::to_string(killer->GetLevel());
+    }
+
+    void SendGuildBoard(Player* player)
+    {
+        if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
+            return;
+
+        uint32 const now = uint32(GameTime::GetGameTime().count());
+        SendAddonLine(player, "GS;n=" + std::to_string(guildPlan.size()));
+        for (GuildPlanRow const& row : guildPlan)
+        {
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(row.low);
+            CharacterCacheEntry const* cache = sCharacterCache->GetCharacterCacheByGuid(guid);
+            Player* bot = ObjectAccessor::FindPlayer(guid);
+
+            uint32 d1h = 0, dAll = 0;
+            std::string killer = "-";
+            {
+                std::lock_guard<std::mutex> guard(guildDeathLock);
+                auto itr = guildDeaths.find(row.low);
+                if (itr != guildDeaths.end())
+                {
+                    for (uint32 t : itr->second.times)
+                        d1h += now - t <= HOUR ? 1 : 0;
+                    dAll = itr->second.total;
+                    killer = itr->second.killer;
+                }
+            }
+
+            // G;name;class;level;grp;role;online(1 bot/p person/0);state;zoneId;zone;STATUS|detail;actMin;stillMin;
+            //   deaths1h;deathsAll;lastKiller;gold;bagsUsed;bagsTotal
+            std::ostringstream out;
+            out << "G;" << BoardField(cache ? cache->Name : row.name, 12) << ";"
+                << uint32(bot ? bot->getClass() : (cache ? cache->Class : 0)) << ";"
+                << uint32(bot ? bot->GetLevel() : (cache ? cache->Level : 0)) << ";" << BoardField(row.grp, 2) << ";"
+                << BoardField(row.role, 8) << ";";
+            if (!bot || !bot->IsInWorld())
+            {
+                out << "0;-;0;-;OFFLINE|;0;0;" << d1h << ";" << dAll << ";" << BoardField(killer, 24) << ";-;-;-";
+                SendAddonLine(player, out.str());
+                continue;
+            }
+
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            char const state = !bot->IsAlive() ? (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? 'g' : 'd')
+                                               : (bot->IsInCombat() ? 'c' : 'a');
+            AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot->GetZoneId());
+
+            uint32 actMin = 0;
+            if (botAI && botAI->rpgInfo.startT)
+                actMin = GetMSTimeDiffToNow(botAI->rpgInfo.startT) / (MINUTE * IN_MILLISECONDS);
+
+            // minutes without moving more than 3 yd (sampled on the requests while the window is open)
+            GuildStill& still = guildStill[row.low];
+            if (!still.since || still.mapId != bot->GetMapId() || bot->GetExactDist(still.x, still.y, still.z) > 3.0f)
+            {
+                still.mapId = bot->GetMapId();
+                still.x = bot->GetPositionX();
+                still.y = bot->GetPositionY();
+                still.z = bot->GetPositionZ();
+                still.since = now;
+            }
+
+            uint32 total = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START, used = 0;
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                used += bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) ? 1 : 0;
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+                if (Bag* bag = bot->GetBagByPos(bagSlot))
+                {
+                    total += bag->GetBagSize();
+                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        used += bag->GetItemByPos(uint8(j)) ? 1 : 0;
+                }
+
+            out << (botAI ? "1" : "p") << ";" << state << ";" << bot->GetZoneId() << ";"
+                << BoardField(zone ? zone->area_name[0] : "?", 24) << ";" << BoardField(GuildActivity(bot, botAI), 64) << ";"
+                << actMin << ";" << (now - still.since) / MINUTE << ";" << d1h << ";" << dAll << ";"
+                << BoardField(killer, 24) << ";" << bot->GetMoney() / GOLD << ";" << used << ";" << total;
+            SendAddonLine(player, out.str());
+        }
+        SendAddonLine(player, "GE;n=" + std::to_string(guildPlan.size()));
+    }
+
+    // "Q;bot;questId;title;have/need;state" per quest in the bot's log (state c = complete, f = failed, - = open),
+    // then "QE;bot". Asked by the addon for the row under the mouse.
+    void SendGuildQuests(Player* player, std::string const& name)
+    {
+        if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
+            return;
+        std::string const botName = BoardField(name, 12);
+        Player* bot = ObjectAccessor::FindPlayerByName(name, false);
+        if (bot && !guildPlanLows.count(bot->GetGUID().GetCounter()))
+            bot = nullptr;
+        if (bot && bot->IsInWorld())
+        {
+            for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            {
+                uint32 const questId = bot->GetQuestSlotQuestId(slot);
+                Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+                if (!quest)
+                    continue;
+                uint32 have = 0, need = 0;
+                for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                    if (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i])
+                    {
+                        need += quest->RequiredNpcOrGoCount[i];
+                        have += std::min<uint32>(bot->GetQuestSlotCounter(slot, i), quest->RequiredNpcOrGoCount[i]);
+                    }
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
+                    {
+                        need += quest->RequiredItemCount[i];
+                        have += std::min<uint32>(bot->GetItemCount(quest->RequiredItemId[i], true),
+                                                 quest->RequiredItemCount[i]);
+                    }
+                QuestStatus const status = bot->GetQuestStatus(questId);
+                std::ostringstream out;
+                out << "Q;" << botName << ";" << questId << ";" << BoardField(quest->GetTitle(), 60) << ";" << have << "/"
+                    << need << ";"
+                    << (status == QUEST_STATUS_COMPLETE ? "c" : (status == QUEST_STATUS_FAILED ? "f" : "-"));
+                SendAddonLine(player, out.str());
+            }
+        }
+        SendAddonLine(player, "QE;" + botName);
+    }
+}
+
 // The BotControl addon asks for its status with an addon whisper to the player himself: "BOTCTL\tstatus".
 class PlayerbotsSelfBotControlPlayerScript : public PlayerScript
 {
@@ -528,6 +787,10 @@ public:
         std::string const command = msg.substr(request.size());
         if (command == "status")
             SelfBotControl::SendAddonStatus(player);
+        else if (command == "guild")
+            SelfBotControl::SendGuildBoard(player);  // [live1]
+        else if (command.compare(0, 7, "quests ") == 0)
+            SelfBotControl::SendGuildQuests(player, command.substr(7));  // [live1]
         else if (command == "self on" || command == "self off" || command == "self")
             Tell(player, SelfBotControl::HandleCommand(player, command.size() > 5 ? command.substr(5) : ""));
 
@@ -539,9 +802,10 @@ class PlayerbotsSelfBotControlWorldScript : public WorldScript
 {
 public:
     PlayerbotsSelfBotControlWorldScript()
-        : WorldScript("PlayerbotsSelfBotControlWorldScript", { WORLDHOOK_ON_UPDATE }) {}
+        : WorldScript("PlayerbotsSelfBotControlWorldScript", { WORLDHOOK_ON_UPDATE, WORLDHOOK_ON_STARTUP }) {}
 
     void OnUpdate(uint32 diff) override { SelfBotControl::UpdateWorld(diff); }
+    void OnStartup() override { SelfBotControl::LoadGuildPlan(); }  // [live1]
 };
 
 void AddPlayerbotsSelfBotAfkScripts()

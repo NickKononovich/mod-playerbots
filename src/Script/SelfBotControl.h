@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+class Creature;
 class Player;
 class WorldPacket;
 class WorldSession;
@@ -54,6 +55,13 @@ namespace SelfBotControl
     // Machine-readable status for the BotControl addon: whispered to the player himself with LANG_ADDON,
     // prefix "BOTCTL" (client event CHAT_MSG_ADDON). Lines: "S;key=value;..." then "B;..." per bot, "E;n=<bots>".
     void SendAddonStatus(Player* player);
+
+    // [live1] Guild project board for the BotControl addon ("BOTCTL\tguild"): one "G;..." row per character of
+    // acore_playerbots.guild_project_plan (read once at startup), built from the in-memory players on request.
+    void LoadGuildPlan();                                     // world thread, startup
+    void RecordGuildDeath(Player* killed, Creature* killer);  // any map thread
+    void SendGuildBoard(Player* player);                      // world thread (addon whisper handler)
+    void SendGuildQuests(Player* player, std::string const& botName);  // world thread, "BOTCTL\tquests <name>"
 }
 
 #endif
