@@ -17,6 +17,7 @@
 #include "DatabaseEnv.h"
 #include "Formulas.h"
 #include "Group.h"
+#include "LFGMgr.h"
 #include "GatherNodeMgr.h"
 #include "GossipDef.h"
 #include "GridTerrainData.h"
@@ -2264,6 +2265,85 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     }
 
     return bestQuest;
+}
+
+uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos)
+{
+    uint8 const level = bot->GetLevel();
+    uint32 bestMinLevel = std::numeric_limits<uint32>::max();
+    float bestDistance = std::numeric_limits<float>::max();
+    uint32 bestQuest = 0;
+    giverPos = WorldPosition();
+    grindPos = WorldPosition();
+
+    FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+    for (QuestStartPoint const& start : GetQuestStartPoints())
+    {
+        if (start.mapId != bot->GetMapId())
+            continue;
+
+        Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);
+        if (!quest || quest->GetMinLevel() <= level || quest->GetMinLevel() > bestMinLevel)
+            continue;
+
+        if (bot->GetQuestStatus(start.questId) != QUEST_STATUS_NONE || botAI->lowPriorityQuest.count(start.questId))
+            continue;
+
+        if (start.creatureFaction && botFaction)
+        {
+            FactionTemplateEntry const* giverFaction = sFactionTemplateStore.LookupEntry(start.creatureFaction);
+            if (giverFaction && giverFaction->IsHostileTo(*botFaction))
+                continue;
+        }
+
+        if (!bot->SatisfyQuestClass(quest, false) || !bot->SatisfyQuestRace(quest, false) ||
+            !bot->SatisfyQuestPreviousQuest(quest, false) || !bot->SatisfyQuestSkill(quest, false))
+            continue;
+
+        float const distance = bot->GetDistance2d(start.x, start.y);
+        if (quest->GetMinLevel() == bestMinLevel && distance >= bestDistance)
+            continue;
+
+        bestMinLevel = quest->GetMinLevel();
+        bestDistance = distance;
+        bestQuest = start.questId;
+        giverPos = WorldPosition(start.mapId, start.x, start.y, start.z);
+    }
+
+    if (!bestQuest)
+        return 0;
+
+    // the grind spot of its level nearest the giver, other than the one the bot already stands on
+    float bestGrind = std::numeric_limits<float>::max();
+    for (WorldLocation const& loc : sTravelMgr.GetLocsPerLevelCache(level))
+    {
+        if (loc.GetMapId() != bot->GetMapId() || bot->GetExactDist(loc) < 10.0f)
+            continue;
+
+        float const d = giverPos.GetExactDist(loc);
+        if (d < bestGrind)
+        {
+            bestGrind = d;
+            grindPos = WorldPosition(loc);
+        }
+    }
+    return bestQuest;
+}
+
+void NewRpgBaseAction::LogDungeonCandidates()
+{
+    uint8 const level = bot->GetLevel();
+    uint8 const expansion = bot->GetSession()->Expansion();
+    for (uint32 i = 0; i < sLFGDungeonStore.GetNumRows(); ++i)
+    {
+        LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(i);
+        if (!dungeon || dungeon->TypeID != lfg::LFG_TYPE_DUNGEON || dungeon->Difficulty != DUNGEON_DIFFICULTY_NORMAL ||
+            dungeon->ExpansionLevel > expansion || level < dungeon->MinLevel || level > dungeon->MaxLevel)
+            continue;
+
+        LOG_INFO("playerbots", "[rpg] {} L{} dungeon candidate: {} (map {}, levels {}-{})", bot->GetName(), level,
+                 dungeon->Name[0], dungeon->MapID, dungeon->MinLevel, dungeon->MaxLevel);
+    }
 }
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)

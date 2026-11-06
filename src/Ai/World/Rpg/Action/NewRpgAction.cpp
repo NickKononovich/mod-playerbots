@@ -422,6 +422,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 botAI->lowPriorityQuest.clear();
                 info.lastQuestLevel = bot->GetLevel();
+                LogDungeonCandidates();  // [guild11] hook for the dungeon step, once per level
             }
 
             // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
@@ -444,20 +445,34 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     return true;
                 }
             }
+            // [guild11] no pvp, no aimless grind: gathering is the gatherer group's (random bots) work; else grind
+            // near the giver of the quest it is closest to being allowed, until it has the level
+            if (sRandomPlayerbotMgr.IsRandomBot(bot) && sPlayerbotAIConfig.RpgStatusProbWeight[RPG_DO_GATHER] &&
+                CheckRpgStatusAvailable(RPG_DO_GATHER))
             {
-                std::vector<NewRpgStatus> work;
-                for (NewRpgStatus candidate : {RPG_GO_GRIND, RPG_DO_GATHER, RPG_OUTDOOR_PVP})
-                    if (sPlayerbotAIConfig.RpgStatusProbWeight[candidate] && CheckRpgStatusAvailable(candidate))
-                        work.push_back(candidate);
-                if (!work.empty() && RandomChangeStatus(work))
+                LOG_INFO("playerbots", "[rpg] {} L{} GATHER reason: no quest it can take now", bot->GetName(),
+                         bot->GetLevel());
+                info.ChangeToDoGather();
+                return true;
+            }
+            {
+                WorldPosition giverPos;
+                WorldPosition grindPos;
+                uint32 const questId = ChooseNextLevelQuest(giverPos, grindPos);
+                Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+                if (quest)
                 {
-                    LOG_INFO("playerbots", "[rpg] {} L{} GRIND reason: no quest of its level left anywhere on reach",
-                             bot->GetName(), bot->GetLevel());
+                    WorldPosition const target = grindPos != WorldPosition() ? grindPos : giverPos;
+                    LOG_INFO("playerbots",
+                             "[rpg] {} L{} GRIND reason: q{} {} needs L{}, giver {} yd, grind spot {} yd from it",
+                             bot->GetName(), bot->GetLevel(), questId, quest->GetTitle(), quest->GetMinLevel(),
+                             uint32(bot->GetExactDist(giverPos)), uint32(giverPos.GetExactDist(target)));
+                    info.ChangeToGoGrind(target);
                     return true;
                 }
             }
-            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: no quest to hand in, do or pick up, no grind spot",
-                     bot->GetName(), bot->GetLevel());
+            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: no quest of any level on this map", bot->GetName(),
+                     bot->GetLevel());
             info.ChangeToRest();
             bot->SetStandState(UNIT_STAND_STATE_SIT);
             return true;

@@ -95,6 +95,11 @@ protected:
     bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path);
     bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus);
     uint32 ChooseBestQuest(WorldPosition& giverPos);
+    // [guild11] the quest the bot is closest to being allowed: lowest min level above its own, nearest giver;
+    // grindPos = the grind spot of its level nearest that giver
+    uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos);
+    // [guild11] hook for the dungeon step: logs the normal dungeons of its level
+    void LogDungeonCandidates();
     float GetQuestWeight(Quest const* quest, bool rested);
     uint32 GetQuestProgress(uint32 questId);
     bool CheckRpgStatusAvailable(NewRpgStatus status);
