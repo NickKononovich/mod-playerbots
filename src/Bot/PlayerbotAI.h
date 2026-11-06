@@ -668,6 +668,7 @@ public:
     std::unordered_set<uint32> lowPriorityQuest;
     time_t bgReleaseAttemptTime = 0;
     ForceRebuffState forceRebuff;
+    bool mimicStandLogged = false;  // [lead1552] one log line per sit under the leader's Rest
 
     // Schedules a callback to run once after <delayMs> milliseconds.
     void AddTimedEvent(std::function<void()> callback, uint32 delayMs);

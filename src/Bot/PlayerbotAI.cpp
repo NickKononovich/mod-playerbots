@@ -2204,6 +2204,24 @@ void PlayerbotAI::DoNextAction(bool min)
     else if (bot->isAFK() && !IsSelfBot(bot))
         bot->ToggleAFK();
 
+    // [lead1552] b276 lead1544: 39 of 194 drinks ended below full mana with no stand-up of the rest code ("[rest] ...
+    // stands up") - this master mimic stands a sitter on any tick its actions set no long delay. A led bot's rest is
+    // the leader's Rest (its StandUpAction / RestDone end it: the line, a fight, an open pull order): no stand-up here
+    // while it eats or drinks under it
+    auto const mimicStands = [&]() -> bool
+    {
+        if (!bot->IsSitState() || !RestState::LeaderRests(bot) ||
+            !(RestState::IsDrinking(bot) || RestState::IsEating(bot)))
+            return true;
+        if (!mimicStandLogged)
+            LOG_INFO("playerbots", "[lead1552] {}: no master-mimic stand-up under the leader's Rest (mana {:.1f} %, "
+                     "health {:.1f} %)", bot->GetName(),
+                     bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f, bot->GetHealthPct());
+        mimicStandLogged = true;
+        return false;
+    };
+    if (bot->IsStandState())
+        mimicStandLogged = false;
     if (master && master->IsInWorld())
     {
         float distance = ServerFacade::instance().GetDistance2d(bot, master);
@@ -2218,12 +2236,12 @@ void PlayerbotAI::DoNextAction(bool min)
             if (!bot->isMoving() && distance < 10.0f)
                 bot->SetStandState(UNIT_STAND_STATE_SIT);
         }
-        else if (nextAICheckDelay < 1000)
+        else if (nextAICheckDelay < 1000 && mimicStands())
             bot->SetStandState(UNIT_STAND_STATE_STAND);
     }
     else if (bot->m_movementInfo.HasMovementFlag(MOVEMENTFLAG_WALKING))
         bot->m_movementInfo.RemoveMovementFlag(MOVEMENTFLAG_WALKING);
-    else if ((nextAICheckDelay < 1000) && bot->IsSitState())
+    else if ((nextAICheckDelay < 1000) && bot->IsSitState() && mimicStands())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
 
     bool hasMountAura = bot->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED) ||
