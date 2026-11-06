@@ -5448,6 +5448,69 @@ namespace Leader::Dungeon
                         LOG_INFO("playerbots", "[lead854] {}: {} judged by its crit chain: {:.1f} s, {:.0f} damage",
                                  who->GetName(), name, effectSec, valuePerSec * effectSec);
                 }
+                // [lead1545] b275 rfc-h 5E-5 Rtpalac (prot paladin): Avenging Wrath at every boss pull (aura 329-348,
+                // 667-686, 896-914, 1118-1136 s) while Hammer of Wrath comes only in the execute window ~45 s in -
+                // wowsims holds it for that window (its HoW 100 % under AW, the bot's 0 %). A damage-done cooldown of
+                // a member with an execute spell (castable only under 20 % health: the core's
+                // AURA_STATE_HEALTHLESS_20_PERCENT, with a cooldown of its own) goes where its effect covers the most
+                // of that spell: the window opens at the boss's health above 20 % over the group's dps and lasts
+                // his 20 % over it. Held while a cast now would still be down then and its effect would cover less of
+                // the window than a cast at its start (no later than Forbearance allows: 25771 refuses it); the rest
+                // of its effect amplifies the same damage either way
+                if (fightBoss && critical.empty() && effectSec > 0.0f && lead.groupDps > 0.0f &&
+                    std::any_of(info->GetEffects().begin(), info->GetEffects().end(),
+                                [](SpellEffectInfo const& effect)
+                                { return effect.ApplyAuraName == SPELL_AURA_MOD_DAMAGE_PERCENT_DONE &&
+                                         effect.CalcValue() > 0; }))
+                {
+                    float executeDps = 0.0f;
+                    std::string executeName;
+                    for (char const* execute : {"hammer of wrath", "kill shot"})
+                    {
+                        uint32 const id = whoAI->GetAiObjectContext()->GetValue<uint32>("spell id", execute)->Get();
+                        SpellInfo const* ei = id && who->HasSpell(id) ? sSpellMgr->GetSpellInfo(id) : nullptr;
+                        float const execRecharge = ei ? RechargeAfterCastSec(who, id) : 0.0f;
+                        SpellPayoff::Cast cast;
+                        if (!ei || ei->TargetAuraState != AURA_STATE_HEALTHLESS_20_PERCENT || execRecharge <= 0.0f ||
+                            !SpellPayoff::Read(who, fightBoss, id, cast))
+                            continue;
+                        executeDps = cast.Total() / std::max(execRecharge, cast.executeMs / 1000.0f);
+                        executeName = execute;
+                        break;
+                    }
+                    float const fifth = fightBoss->CountPctFromMaxHealth(20);
+                    float const above = float(fightBoss->GetHealth()) - fifth;
+                    if (executeDps > 0.0f && above > 0.0f)
+                    {
+                        float const opensSec = above / lead.groupDps;
+                        float const windowSec = fifth / lead.groupDps;
+                        float forbearanceSec = 0.0f;
+                        if (Aura const* forbearance = who->GetAura(25771))
+                            forbearanceSec = std::max(forbearance->GetDuration(), 0) / 1000.0f;
+                        float const castAt = std::max(opensSec, forbearanceSec);
+                        auto const overlap = [&](float start)
+                        {
+                            return std::max(0.0f, std::min(start + effectSec, opensSec + windowSec) -
+                                                      std::max(start, opensSec));
+                        };
+                        bool const backInTime = rechargeSec <= castAt;
+                        float const nowCovers = overlap(0.0f);
+                        float const laterCovers = overlap(castAt);
+                        if (!backInTime && laterCovers > nowCovers)
+                        {
+                            std::string const held = Acore::StringFormat(
+                                "[lead1545] held for {}'s execute window: {} under it ({:.0f} dps) opens in {:.0f} s "
+                                "for {:.0f} s; cast then it covers {:.0f} s of it, now {:.0f} s (recharge {:.0f} s, "
+                                "effect {:.0f} s{})",
+                                fightBoss->GetName(), executeName, executeDps, opensSec, windowSec, laterCovers,
+                                nowCovers, rechargeSec, effectSec,
+                                forbearanceSec > 0.0f ? Acore::StringFormat(", Forbearance {:.0f} s", forbearanceSec)
+                                                      : std::string());
+                            judged(name, held, false);
+                            continue;
+                        }
+                    }
+                }
                 std::string why;
                 bool const allowed =
                     cooldownVerdict(rechargeSec, effectSec, why, spentEffect, valuePerSec, true);  // [lead1472]
