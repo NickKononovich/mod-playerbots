@@ -4241,10 +4241,16 @@ namespace Leader::Travel
                     // A door the group's key opens again (a used-up UseItem starter on it, the key in the leader's
                     // bags, re-arms left) while the leader stands near it: what lies behind stays a target, its walk
                     // holds at the door (door_hold) and that re-arms the key (strat-h build 14).
+                    // [lead1561] ... a used-up / re-armed one only (the rearm is for a door it opened once): a key
+                    // starter never used is the door's own opening, which nearer trash behind the door held off -
+                    // b277 strat-n 20261106-105644-5D-12 642-887 s / 105514-5A-9 1545-1790 s: a Skeletal Guardian
+                    // 3 yd past the unused King's Square Gate 175353 stayed the target, the leader held at the gate
+                    // (door_hold every 5 s), the starter never came, Timmy and the Live side never engaged: stalled
                     bool keyDoor = false;
                     if (leader->GetExactDist(door) <= KEY_DOOR_REACH)
                         for (StarterTrack const& keyStarter : group.Route().starters)
                             keyDoor |= keyStarter.def->kind == StarterKind::UseItem &&
+                                       (keyStarter.uses >= keyStarter.def->maxUses || keyStarter.doorRearms > 0) &&
                                        keyStarter.doorRearms < DOOR_REARM_MAX &&
                                        leader->HasItemCount(keyStarter.def->itemId, 1) &&
                                        std::find(keyStarter.def->entries.begin(), keyStarter.def->entries.end(),

@@ -1314,6 +1314,25 @@ namespace Leader::Travel
     // - a body pull only for a blocker on the only way to a boss / event / required target (IsRouteBlocker, or
     //   RouteBlockerBehindRequired - [boss_area_clear] trash included).
     // The sight pull ([pull_option] (1), FindPullSightSpot) runs before any of these and is not gated here.
+    // [lead1562] The starter is a closed door (a key door, a lever's gate) and the idle mob stands on its far side:
+    // the line from the mob to the walk's stop runs through the door's own model (RouteThroughClosedDoor, the
+    // route's door test). The walk ends on this side; what the opening wakes on the far side is the opening's own
+    // pull (the key pass prices it: door_far_side_priced), no blocker of the walk. b277 strat-n
+    // 20261106-105644-5D-12 642-887 s: the Skeletal Guardian 3 yd past the closed King's Square Gate 175353 became
+    // the route target ("[b47_plan] stands on the walk to the event starter"), the leader held at the gate with
+    // the key unused to the stall (105514-5A-9 1545-1790 s the same).
+    bool BehindStartersDoor(WorldObject const* starter, Creature const* mob, G3D::Vector3 const& stop)
+    {
+        GameObject* door = starter ? const_cast<GameObject*>(starter->ToGameObject()) : nullptr;
+        if (!door || !mob || door->GetGoType() != GAMEOBJECT_TYPE_DOOR || door->GetGoState() != GO_STATE_READY ||
+            !door->m_model)
+            return false;
+        Movement::PointsArray const line = {G3D::Vector3(mob->GetPositionX(), mob->GetPositionY(),
+                                                         mob->GetPositionZ()),
+                                            stop};
+        return RouteThroughClosedDoor(line, {door}, mob->GetPhaseMask()) != nullptr;
+    }
+
     std::string BlockerPullGate(LeaderGroup& group, Player* leader, Creature* blocker,
                                 WorldObject const* behind, bool bodyPull, bool& hold)
     {
@@ -3398,7 +3417,7 @@ namespace Leader::Travel
             if (!(leg.type & PATHFIND_NOPATH) &&
                 ApproachStop(leader, object, leg.points, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP, stop, blocker,
                              unseen, nullptr, &group) &&
-                blocker && !blocker->IsInCombat())
+                blocker && !blocker->IsInCombat() && !BehindStartersDoor(object, blocker, stop))
             {
                 static std::set<std::pair<uint32, ObjectGuid>> starterBlockerLogged;  // world thread
                 if (starterBlockerLogged.insert({group.Run().runSeq, blocker->GetGUID()}).second)
