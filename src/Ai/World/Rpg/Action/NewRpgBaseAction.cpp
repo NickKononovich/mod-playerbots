@@ -883,7 +883,7 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
 
         // Player-owned bots play like players: no teleport shortcut. Give the goal up so the planner picks
         // another one (the quest drops to low priority, see the callers' fallbacks).
-        if (!sRandomPlayerbotMgr.IsRandomBot(bot))
+        if (!sRandomPlayerbotMgr.IsRandomBot(bot) || !sPlayerbotAIConfig.RandomBotTeleport)  // [guild1]
         {
             LOG_DEBUG("playerbots", "[New RPG] {} gives up an unreachable destination ({},{},{},{})", bot->GetName(),
                       dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId());

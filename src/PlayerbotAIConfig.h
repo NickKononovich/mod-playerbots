@@ -405,6 +405,14 @@ public:
     bool RandomBotConcentrateInPlayerZone;
     bool AutoLearnQuestSpells;
     bool AutoTeleportForLevel;
+    // [guild1] random bot handout / teleport switches (all default on = upstream behaviour)
+    bool RandomBotTeleport;
+    bool RandomBotPeriodicTeleport;
+    bool RandomBotReviveTeleport;
+    bool RandomBotRefresh;
+    bool RandomBotRandomize;
+    bool RandomBotLevelupSupplies;
+    std::string RandomBotClassPlan;
     bool RandomBotGroupNearby;
     int32 EnableRandomBotTrading;
     uint32 TweakValue;  // Debugging config

@@ -776,6 +776,13 @@ bool PlayerbotAIConfig::Initialize()
     AutoLearnTrainerSpells = sConfigMgr->GetOption<bool>("Playerbots.AutoLearnTrainerSpells", true);
     AutoLearnQuestSpells = sConfigMgr->GetOption<bool>("Playerbots.AutoLearnQuestSpells", true);
     AutoTeleportForLevel = sConfigMgr->GetOption<bool>("Playerbots.AutoTeleportForLevel", false);
+    RandomBotTeleport = sConfigMgr->GetOption<bool>("Playerbots.RandomBotTeleport", true);
+    RandomBotPeriodicTeleport = sConfigMgr->GetOption<bool>("Playerbots.RandomBotPeriodicTeleport", true);
+    RandomBotReviveTeleport = sConfigMgr->GetOption<bool>("Playerbots.RandomBotReviveTeleport", true);
+    RandomBotRefresh = sConfigMgr->GetOption<bool>("Playerbots.RandomBotRefresh", true);
+    RandomBotRandomize = sConfigMgr->GetOption<bool>("Playerbots.RandomBotRandomize", true);
+    RandomBotLevelupSupplies = sConfigMgr->GetOption<bool>("Playerbots.RandomBotLevelupSupplies", true);
+    RandomBotClassPlan = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotClassPlan", "");
     AutoDoQuests = sConfigMgr->GetOption<bool>("Playerbots.AutoDoQuests", true);
     EnableNewRpgStrategy = sConfigMgr->GetOption<bool>("Playerbots.EnableNewRpgStrategy", true);
     RpgTargetSearchDistance = sConfigMgr->GetOption<float>("Playerbots.RpgTargetSearchDistance", 150.0f);

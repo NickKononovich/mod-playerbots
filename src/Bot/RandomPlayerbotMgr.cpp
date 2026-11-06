@@ -1670,6 +1670,10 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     // if death revive
     if (bot->isDead())
     {
+        // [guild1] no revive teleport: the bot runs back as a ghost or uses the spirit healer (dead strategy)
+        if (!sPlayerbotAIConfig.RandomBotReviveTeleport)
+            return false;
+
         if (!GetEventValue(botId, "dead"))
         {
             uint32 randomTime =
@@ -1757,7 +1761,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
         // }
 
         uint32 teleport = GetEventValue(botId, "teleport");
-        if (!teleport)
+        if (!teleport && sPlayerbotAIConfig.RandomBotPeriodicTeleport)  // [guild1] switch: no periodic teleport+refresh
         {
             LOG_DEBUG("playerbots", "Bot #{} <{}>: teleport for level and refresh", botId, bot->GetName());
             Refresh(bot);
@@ -1786,6 +1790,10 @@ void RandomPlayerbotMgr::Revive(Player* player)
 
 void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>& locs, bool hearth)
 {
+    // [guild1] every random bot teleport (for level, grind, rpg, after randomize) goes through here
+    if (!sPlayerbotAIConfig.RandomBotTeleport)
+        return;
+
     // ignore when alrdy teleported or not in the world yet.
     if (bot->IsBeingTeleported() || !bot->IsInWorld())
         return;
@@ -2191,6 +2199,10 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot)
 
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
+    // [guild1] no factory gear / professions / gold / bags / level change: the bot keeps its class starting kit
+    if (!sPlayerbotAIConfig.RandomBotRandomize)
+        return;
+
     if (bot->InBattleground())
         return;
 
@@ -2236,6 +2248,9 @@ void RandomPlayerbotMgr::IncreaseLevel(Player* bot)
 
 void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
 {
+    if (!sPlayerbotAIConfig.RandomBotRandomize)
+        return;
+
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return;
@@ -2320,6 +2335,9 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
 
 void RandomPlayerbotMgr::RandomizeMin(Player* bot)
 {
+    if (!sPlayerbotAIConfig.RandomBotRandomize)
+        return;
+
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return;
@@ -2386,6 +2404,10 @@ uint32 RandomPlayerbotMgr::GetZoneLevel(uint16 mapId, float teleX, float teleY, 
 
 void RandomPlayerbotMgr::Refresh(Player* bot)
 {
+    // [guild1] no free resurrect, repair, heal, mana, money or factory refresh
+    if (!sPlayerbotAIConfig.RandomBotRefresh)
+        return;
+
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return;

@@ -5,6 +5,9 @@
  */
 
 #include "RandomPlayerbotFactory.h"
+
+#include <algorithm>
+#include <sstream>
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "ArenaTeamMgr.h"
@@ -112,7 +115,10 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
 {
     LOG_DEBUG("playerbots", "Creating a new random bot for class: {}", cls);
 
-    const bool alliance = static_cast<bool>(urand(0, 1));
+    // [guild1] a faction with ratio 0 is never created
+    const bool alliance = !sPlayerbotAIConfig.RandomBotHordeRatio     ? true
+                          : !sPlayerbotAIConfig.RandomBotAllianceRatio ? false
+                                                                       : static_cast<bool>(urand(0, 1));
 
     std::vector<uint8> raceOptions;
     for (uint8 race = RACE_HUMAN; race < sRaceMgr->GetMaxRaces(); ++race)
@@ -484,6 +490,10 @@ uint32 RandomPlayerbotFactory::CalculateAvailableCharsPerAccount()
 
     uint32 availableChars = noDK ? 9 : 10;
 
+    // [guild1] a class plan fills every account with 10 characters of the planned classes
+    if (!sPlayerbotAIConfig.RandomBotClassPlan.empty())
+        return 10;
+
     uint32 hordeRatio = sPlayerbotAIConfig.RandomBotHordeRatio;
     uint32 allianceRatio = sPlayerbotAIConfig.RandomBotAllianceRatio;
 
@@ -653,6 +663,13 @@ void RandomPlayerbotFactory::CreateRandomBots()
 
     // Calculates the total number of required accounts.
     uint32 totalAccountCount = CalculateTotalAccountCount();
+    // [guild1] a class plan needs exactly one account per 10 planned characters
+    if (!sPlayerbotAIConfig.RandomBotClassPlan.empty())
+    {
+        uint32 planned = 1 + uint32(std::count(sPlayerbotAIConfig.RandomBotClassPlan.begin(),
+                                               sPlayerbotAIConfig.RandomBotClassPlan.end(), ','));
+        totalAccountCount = (planned + 9) / 10;
+    }
     uint32 timer = getMSTime();
 
     for (uint32 accountNumber = 0; accountNumber < totalAccountCount; ++accountNumber)
@@ -761,6 +778,33 @@ void RandomPlayerbotFactory::CreateRandomBots()
         WorldSession* session = new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING,
                                                 time_t(0), LOCALE_enUS, 0, false, false, 0);
         sessionBots.push_back(session);
+
+        // [guild1] class plan: account N gets plan entries [N*10, N*10+10), only the missing ones
+        if (!sPlayerbotAIConfig.RandomBotClassPlan.empty())
+        {
+            std::vector<uint8> plan;
+            std::stringstream ss(sPlayerbotAIConfig.RandomBotClassPlan);
+            for (std::string tok; std::getline(ss, tok, ',');)
+                if (!tok.empty())
+                    plan.push_back(uint8(std::stoi(tok)));
+            for (uint32 i = accountNumber * 10 + count; i < accountNumber * 10 + 10 && i < plan.size(); ++i)
+            {
+                Player* playerBot = factory.CreateRandomBot(session, plan[i], nameCache);
+                if (!playerBot)
+                {
+                    LOG_ERROR("playerbots", "Fail to create planned class {} for account {}", plan[i], accountId);
+                    continue;
+                }
+                playerBot->SaveToDB(true, false);
+                sCharacterCache->AddCharacterCacheEntry(playerBot->GetGUID(), accountId, playerBot->GetName(),
+                                                        playerBot->getGender(), playerBot->getRace(),
+                                                        playerBot->getClass(), playerBot->GetLevel());
+                playerBot->CleanupsBeforeDelete();
+                delete playerBot;
+                bot_creation++;
+            }
+            continue;
+        }
 
         for (uint8 cls = CLASS_WARRIOR; cls < MAX_CLASSES - count; ++cls)
         {

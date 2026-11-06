@@ -165,6 +165,10 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
     if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return;
 
+    // [guild1] no free ammo / reagents / food / consumables / potions on level up
+    if (!sPlayerbotAIConfig.RandomBotLevelupSupplies)
+        return;
+
     PlayerbotFactory factory(bot, bot->GetLevel());
 
     factory.CleanupConsumables();

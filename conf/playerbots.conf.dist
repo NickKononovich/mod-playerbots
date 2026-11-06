@@ -1849,6 +1849,28 @@ Playerbots.RandomBotTeleHigherLevel = 3
 # Default: 1 (enabled)
 Playerbots.AutoTeleportForLevel = 1
 
+# Random bot teleports and handouts. Set all to 0 for bots that play like players (no free teleports, gear,
+# gold, repairs or supplies). All default to 1 (upstream behaviour).
+#
+# RandomBotTeleport: any random bot teleport (for level, grind, rpg, after randomize, the new rpg "stuck" teleport).
+Playerbots.RandomBotTeleport = 1
+# RandomBotPeriodicTeleport: the periodic "teleport for level and refresh" event (Min/MaxRandomBotTeleportInterval).
+Playerbots.RandomBotPeriodicTeleport = 1
+# RandomBotReviveTeleport: dead random bots are revived and teleported after Min/MaxRandomBotReviveTime.
+# 0: they release, run back as a ghost or use the spirit healer like a player.
+Playerbots.RandomBotReviveTeleport = 1
+# RandomBotRefresh: Refresh() resurrects, repairs, heals, fills mana, adds money and refreshes factory items.
+Playerbots.RandomBotRefresh = 1
+# RandomBotRandomize: first-login / scheduled randomize (level, factory gear, professions, gold, bags,
+# consumables, talents). 0: the bot keeps its level and its class starting kit.
+Playerbots.RandomBotRandomize = 1
+# RandomBotLevelupSupplies: free ammo, reagents, food, consumables and potions on level up.
+Playerbots.RandomBotLevelupSupplies = 1
+# RandomBotClassPlan: comma-separated class ids (1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 6 DK,
+# 7 shaman, 8 mage, 9 warlock, 11 druid). When set, random bot accounts are created with exactly these
+# characters, 10 per account in order (account N gets entries N*10..N*10+9). Empty: upstream (one per class).
+Playerbots.RandomBotClassPlan = ""
+
 #
 #
 ####################################################################################################
