@@ -6643,8 +6643,8 @@ namespace Leader::Dungeon
                         return true;
             return false;
         };
-        // [lead1555] b276 rfc-h 5E-5 #40 t=1093 (25 s standing): «rest_held: [lead1491] Rtrogab at 99 % health: a damage
-        // over time is on it» held every member's Rest. A source the member outlives (the remaining ticks of its
+        // [lead1555] b276 rfc-h 5E-5 #40 t=1093 (25 s standing): «rest_held: [lead1491] Rtrogab at 99 % health: a
+        // damage over time is on it» held every member's Rest. A source the member outlives (the remaining ticks of its
         // creatures' damage over time, their amounts as the auras hold them, under its health) is the member's own
         // wait (HurtOutOfFight), not the group's: the group's fact - nobody rests, the drinking healer stands - is a
         // source it may not outlive (lava / slime: no end)
