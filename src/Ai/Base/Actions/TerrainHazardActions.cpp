@@ -9,6 +9,7 @@
 
 #include "ChooseTargetActions.h"
 #include "Group.h"
+#include "LeaderFightChecks.h"  // [lead1520] MobReachesAt
 #include "Map.h"
 #include "PathGenerator.h"
 #include "Playerbots.h"
@@ -162,6 +163,16 @@ namespace
         uint32 blind = 0;
         uint32 aggro = 0;
         uint32 noPath = 0;
+        uint32 unreached = 0;
+        // [lead1520] b273 rfc-h 5G-23 797-978 s: the blood DK dragged a Searing Blade Cultist 6 yd off a drop-off to
+        // (-333.8, 241.2, -14.5), a spot its own walk fitted but the Cultist had no sight of from where its chase
+        // ended (2.6 yd off): the chase failed (Creature::SetCannotReachTarget), the core evaded every hit and taunt
+        // on it and regenerated it for 180 s (the run's stalemate). A drag spot is one every mob on the tank comes to
+        // by the core's chase (Leader::Fight::MobReachesAt): a drag the mobs do not follow is no drag
+        std::vector<Unit*> held;
+        for (Unit* attacker : tank->getAttackers())
+            if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank && attacker->ToCreature())
+                held.push_back(attacker);
         // Straight along every base direction first, then turned off it.
         for (float const offset : FIGHT_HAZARD_OFFSETS)
         {
@@ -209,6 +220,15 @@ namespace
                         continue;
                     }
 
+                    bool comes = true;
+                    for (Unit* mob : held)
+                        comes = comes && Leader::Fight::MobReachesAt(mob, tank, spot);
+                    if (!comes)
+                    {
+                        ++unreached;
+                        continue;
+                    }
+
                     out = spot;
                     via = base.name;
                     return true;
@@ -218,7 +238,8 @@ namespace
 
         rejected = "no floor " + std::to_string(noFloor) + ", hazard " + std::to_string(hazard) + ", healer blind " +
                    std::to_string(blind) + ", idle aggro " + std::to_string(aggro) + ", no path " +
-                   std::to_string(noPath);
+                   std::to_string(noPath) +
+                   ", its mobs do not come " + std::to_string(unreached);
         return false;
     }
 }

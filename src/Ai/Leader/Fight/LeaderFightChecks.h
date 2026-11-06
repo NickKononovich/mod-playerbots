@@ -156,6 +156,14 @@ namespace Leader::Fight
     // [lead580] the member standing at `at` hits `target` in melee: in the game's melee range of it from there
     // (Unit::GetMeleeRange, centre to centre in 3D) and in the game's line of sight of it (LeaderSeesFrom)
     bool LeaderMeleeReachesFrom(Player* bot, Unit* target, Position const& at);
+    // [lead1520] b273 rfc-h 5G-23 797-978 s (the run's stalemate): the DK tank's hazard drag stood it 2.6 yd off a
+    // Searing Blade Cultist on a spot the Cultist had no sight of; its chase failed (Creature::SetCannotReachTarget),
+    // so the core evaded every hit and taunt on it (Creature::IsEvadingAttacks), regenerated it to 100 % and every
+    // 10 s dropped the tank's threat (UnitAI::EvadeTimerExpired). `mob` comes to `victim` standing at `at` by the
+    // core's own chase: ChaseMovementGenerator::PositionOkay (in the mob's melee range of it, Unit::GetMeleeRange,
+    // and in its sight) from where it stands, or from where its chase path ends (DispatchSplineToPosition: a path of
+    // any kind but PATHFIND_NOPATH)
+    bool MobReachesAt(Unit* mob, Unit* victim, Position const& at);
     // [lead580] a melee place round `target`: on the ground the core lets the member stand on next to it
     // (CheckCollisionAndGetValidCoords from the target), one LeaderMeleeReachesFrom passes. Behind the target first
     // (out of its front half), `side` (+1 / -1) the side tried first; in front of it only when no place behind fits.

@@ -1868,8 +1868,10 @@ namespace Leader::Dungeon
                     {
                         Creature const* creature = attacker->ToCreature();
                         bool const evades = creature && creature->IsInEvadeMode();
+                        // [lead1520] its chase failed: the core evades every hit and taunt on it (IsEvadingAttacks)
+                        bool const cannotReach = creature && creature->CanNotReachTarget();
                         attackersSig += std::to_string(attacker->GetGUID().GetCounter()) + (evades ? "e" : "") +
-                                        (refusedTarget(attacker) ? "r" : "") + ",";
+                                        (cannotReach ? "u" : "") + (refusedTarget(attacker) ? "r" : "") + ",";
                         attackerList.Raw(JsonObject().Str("name", attacker->GetName())
                                              .Num("entry", attacker->GetEntry())
                                              .Num("low", attacker->GetGUID().GetCounter())
@@ -1877,6 +1879,7 @@ namespace Leader::Dungeon
                                              .Real("tankDistance", tank->GetExactDist(attacker))
                                              .Real("dz", attacker->GetPositionZ() - tank->GetPositionZ())
                                              .Bool("evades", evades).Bool("tankSees", tank->IsWithinLOSInMap(attacker))
+                                             .Bool("cannotReach", cannotReach)
                                              .Num("refusedBy", RefusedCount(lead.attackRefused, attacker))
                                              .Build());
                         if (target)
@@ -4472,6 +4475,20 @@ namespace Leader::Dungeon
                     deadlockMob = nullptr;
                     lead.fightDeadlockMob.Clear();
                 }
+                // [lead1520] a mob whose chase cannot reach the tank is lead1332's walk (below) while it has a spot;
+                // with none (unhittableNoSpot), the deadlock break's mob comes here
+                if (deadlockMob)
+                    if (Creature const* creature = deadlockMob->ToCreature();
+                        creature && creature->CanNotReachTarget() &&
+                        creature->GetCannotReachTarget() == tank->GetGUID() &&
+                        !lead.unhittableNoSpot.count(deadlockMob->GetGUID()))
+                        deadlockMob = nullptr;
+                for (Unit** taken : {&stuck, &unreached})
+                    if (Creature const* creature = *taken ? (*taken)->ToCreature() : nullptr;
+                        creature && creature->CanNotReachTarget() &&
+                        creature->GetCannotReachTarget() == tank->GetGUID() &&
+                        !lead.unhittableNoSpot.count(creature->GetGUID()))
+                        *taken = nullptr;
                 if (deadlockMob && !stuck && !unreached)
                 {
                     if (!tank->IsWithinLOSInMap(deadlockMob))
@@ -4503,7 +4520,11 @@ namespace Leader::Dungeon
                 std::string option;
                 Player* gripper = nullptr;
                 Leader::MemberEvents tankMove;
-                if (unreachedMob)
+                // [lead1520] the core evades every spell on a mob that cannot reach its victim (SPELL_MISS_EVADE:
+                // Death Grip too); only a walk into its chase's reach ends it, so that mob's walk ends on its ground
+                Creature const* const unreachedCreature = unreachedMob ? unreachedMob->ToCreature() : nullptr;
+                bool const unreachedEvades = unreachedCreature && unreachedCreature->IsEvadingAttacks();
+                if (unreachedMob && !unreachedEvades)
                 {
                     // (2) a ready Death Grip on it
                     std::vector<Player*> grippers{tank};
@@ -4568,7 +4589,9 @@ namespace Leader::Dungeon
                     std::string const why = stuck ? "the tank goes to its mob out of its sight"
                                                   : "the tank goes to its mob its melee cannot reach";
                     checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, unreachedMob->GetPosition(),
-                                NOMINAL_MELEE_RANGE, why);
+                                unreachedEvades ? std::max(CONTACT_DISTANCE, unreachedMob->GetCombatReach())
+                                                : NOMINAL_MELEE_RANGE,
+                                why);  // [lead1520] on its ground
                     if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == why)
                         option = "the tank walks to it";
                     else if (float const arrive = LeaderTauntReach(tank); stuck && arrive > 0.0f)
@@ -11956,8 +11979,20 @@ namespace Leader::Dungeon
             for (ObjectGuid const& mobGuid : fightMobs)
             {
                 Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
-                if (!mob || comes(mob) || IsCrowdControlled(mob) ||
-                    (mob->GetVictim() && mob->IsWithinMeleeRange(mob->GetVictim())))
+                // [lead1520] b273 rfc-h 5G-23 797-978 s (the run's stalemate, 180 s): a Searing Blade Cultist stood
+                // 2.6 yd off the DK tank, in its melee range but out of its sight, after the tank's hazard drag; its
+                // chase failed (Creature::CanNotReachTarget), so the core evaded every hit and taunt on it, healed it
+                // to 100 % and every 10 s dropped the tank's threat for the next member (UnitAI::EvadeTimerExpired)
+                // - and this search skipped it as "on its victim in melee", the melee members' hits read as acting.
+                // A mob whose chase cannot reach the tank is the tank's walk: to a place the mob's own chase comes
+                // to (MobReachesAt), its melee places and the ground it stands on first. One that cannot reach
+                // another member is that member's run into its reach (lead430), not a search here
+                Creature* const mobCreature = mob ? mob->ToCreature() : nullptr;
+                bool const cannotReach = mobCreature && mobCreature->CanNotReachTarget();
+                bool const cannotReachTank = cannotReach && mobCreature->GetCannotReachTarget() == tank->GetGUID();
+                if (!mob || IsCrowdControlled(mob) || (cannotReach && !cannotReachTank) ||
+                    (!cannotReachTank &&
+                     (comes(mob) || (mob->GetVictim() && mob->IsWithinMeleeRange(mob->GetVictim())))))
                 {
                     lead.sightSpots.erase(mobGuid);
                     lead.unhittableNoSpot.erase(mobGuid);
@@ -12000,29 +12035,56 @@ namespace Leader::Dungeon
                 {
                     bool const isTank = bot == tank;
                     if (!bot->IsAlive() || (!isTank && (PlayerbotAI::IsHeal(bot) || !PlayerbotAI::IsRanged(bot))) ||
-                        lead.sightSpotSpent.count({mobGuid, bot->GetGUID()}))
+                        (cannotReachTank && !isTank) || lead.sightSpotSpent.count({mobGuid, bot->GetGUID()}))
                         continue;
                     float const reach = isTank ? LeaderTauntReach(tank) : LeaderCastReach(bot, mob);
-                    Candidate best;
+                    // [lead1520] the points walked to: the rings round the mob inside the member's reach, each on
+                    // the ground under it (Map::GetHeight from the member's eyes at the mob's height: the floor a
+                    // ledge drops to); for the tank also its melee places round the mob and the ground the mob
+                    // stands on (its own navmesh: its chase comes there)
+                    std::vector<Position> points;
                     for (float radius : {reach - 2.0f, reach * 0.66f, reach * 0.33f})
                         for (uint32 i = 0; i < 12 && radius > NOMINAL_MELEE_RANGE; ++i)
                         {
                             float const angle = 2.0f * float(M_PI) * float(i) / 12.0f;
-                            PathGenerator path(bot);
-                            if (!path.CalculatePath(mob->GetPositionX() + std::cos(angle) * radius,
-                                                    mob->GetPositionY() + std::sin(angle) * radius,
-                                                    mob->GetPositionZ(), false) ||
-                                path.GetPathType() != PATHFIND_NORMAL)
-                                continue;
-                            G3D::Vector3 const end = path.GetActualEndPosition();
-                            Position const spot(end.x, end.y, end.z);
-                            bool const acts = isTank ? spot.GetExactDist(mob->GetPosition()) <= reach &&
-                                                           LeaderSeesFrom(bot, mob, spot)
-                                                     : LeaderCastsFrom(bot, mob, spot);
-                            if (!acts || (best.bot && path.getPathLength() >= best.walk))
-                                continue;
-                            best = {bot, spot, path.getPathLength()};
+                            float const x = mob->GetPositionX() + std::cos(angle) * radius;
+                            float const y = mob->GetPositionY() + std::sin(angle) * radius;
+                            float z = mob->GetPositionZ();
+                            float const ground =
+                                map->GetHeight(bot->GetPhaseMask(), x, y, z + bot->GetCollisionHeight(), true);
+                            if (ground > INVALID_HEIGHT)
+                                z = ground;
+                            points.emplace_back(x, y, z);
                         }
+                    if (isTank)
+                    {
+                        for (float side : {1.0f, -1.0f})
+                            if (Position place; LeaderMeleePlace(tank, mob, side, place))
+                                points.push_back(place);
+                        points.push_back(mob->GetPosition());
+                    }
+                    Candidate best;
+                    for (Position const& point : points)
+                    {
+                        // [lead1520] any walk the navmesh has (complete, or its part up to where the mesh ends): its
+                        // real end is the spot judged, by the game's sight and range from there
+                        PathGenerator path(bot);
+                        if (!path.CalculatePath(point.GetPositionX(), point.GetPositionY(), point.GetPositionZ(),
+                                                false) ||
+                            (path.GetPathType() & PATHFIND_NOPATH) ||
+                            !(path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)))
+                            continue;
+                        G3D::Vector3 const end = path.GetActualEndPosition();
+                        Position const spot(end.x, end.y, end.z);
+                        bool acts = isTank ? spot.GetExactDist(mob->GetPosition()) <= reach &&
+                                                 LeaderSeesFrom(bot, mob, spot)
+                                           : LeaderCastsFrom(bot, mob, spot);
+                        if (acts && cannotReachTank)
+                            acts = MobReachesAt(mob, tank, spot);
+                        if (!acts || (best.bot && path.getPathLength() >= best.walk))
+                            continue;
+                        best = {bot, spot, path.getPathLength()};
+                    }
                     if (best.bot)
                         candidates.push_back(best);
                 }
@@ -12052,6 +12114,7 @@ namespace Leader::Dungeon
                     .Bool("moving", mob->isMoving())
                     .Real("tankDistance", tank->GetExactDist(mob))
                     .Real("dz", mob->GetPositionZ() - tank->GetPositionZ())
+                    .Bool("cannotReachTank", cannotReachTank)  // [lead1520]
                     .Num("candidates", int64(candidates.size()));
                 if (chosen)
                 {
@@ -12092,6 +12155,17 @@ namespace Leader::Dungeon
             // with that walk, lead1211 / lead1323)
             std::string acting;
             std::map<ObjectGuid, ObjectGuid> idleTargets;
+            // [lead1520] b273 rfc-h 5G-23 797-978 s: every member cast and swung on a Searing Blade Cultist the core
+            // evaded every hit on (its chase could not reach the tank: Creature::IsEvadingAttacks) - "casts" and "a
+            // new target" read as the fight going on for 180 s. With every fight mob evading, a cast or a new Attack
+            // deals nothing: only a walk is an action (the walk is what ends the evade)
+            bool allEvade = !fightMobs.empty();
+            for (ObjectGuid const& mobGuid : fightMobs)
+            {
+                Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid);
+                Creature const* creature = mob ? mob->ToCreature() : nullptr;
+                allEvade = allEvade && creature && creature->IsEvadingAttacks();
+            }
             for (Player* bot : everyone)
             {
                 if (!bot->IsAlive())
@@ -12126,10 +12200,11 @@ namespace Leader::Dungeon
                 bool const refusedPlace = events.moveWhy.find(": stays (") != std::string::npos;
                 if (bot->isMoving() || !Leader::Events::AtCommandedSpot(bot) || (led && led->isMoving()))
                     own = bot->GetName() + " walks";
-                else if (bot->IsNonMeleeSpellCast(false) || (memberAI && memberAI->GetGlobalCooldownRemaining()))
+                else if (!allEvade &&
+                         (bot->IsNonMeleeSpellCast(false) || (memberAI && memberAI->GetGlobalCooldownRemaining())))
                     own = bot->GetName() + " casts";
                 else if (auto const last = lead.fightIdleTargets.find(bot->GetGUID());
-                         !attackTarget.IsEmpty() &&
+                         !allEvade && !attackTarget.IsEmpty() &&
                          (last == lead.fightIdleTargets.end() || last->second != attackTarget))
                     own = bot->GetName() + " has a new target";
                 else

@@ -21,6 +21,7 @@
 #include "MoveSpline.h"            // [lead1100]
 #include "MovementActions.h"
 #include "MovementTypedefs.h"  // [lead691] Movement::gravity
+#include "PathGenerator.h"     // [lead1520] MobReachesAt
 #include "SpellAuraEffects.h"  // [lead691] AuraEffect
 #include "HealthTriggers.h"   // [lead691] RestState mana lines
 #include "PlayerbotAI.h"
@@ -139,6 +140,29 @@ namespace Leader::Fight
         float const reach =
             std::max(target->GetCombatReach() + bot->GetCombatReach() + 4.0f / 3.0f, float(NOMINAL_MELEE_RANGE));
         return target->GetExactDist(at) <= reach && LeaderSeesFrom(bot, target, at);
+    }
+
+    bool MobReachesAt(Unit* mob, Unit* victim, Position const& at)
+    {
+        if (!mob || !victim || !mob->IsInWorld() || mob->GetMap() != victim->GetMap())
+            return false;
+        Map* map = mob->GetMap();
+        float const reach = mob->GetMeleeRange(victim);
+        auto const okay = [&](float x, float y, float z)
+        {
+            return at.GetExactDist(x, y, z) <= reach &&
+                   map->isInLineOfSight(x, y, z + mob->GetCollisionHeight(), at.GetPositionX(), at.GetPositionY(),
+                                        at.GetPositionZ() + victim->GetCollisionHeight(), mob->GetPhaseMask(),
+                                        LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+        };
+        if (okay(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ()))
+            return true;
+        PathGenerator chase(mob);
+        if (!chase.CalculatePath(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ(), false) ||
+            (chase.GetPathType() & PATHFIND_NOPATH))
+            return false;
+        G3D::Vector3 const end = chase.GetActualEndPosition();
+        return okay(end.x, end.y, end.z);
     }
 
     bool LeaderMeleePlace(Player* bot, Unit* target, float side, Position& out, bool* behind)
@@ -583,6 +607,11 @@ namespace Leader::Fight
     bool ActsOnFromHere(Player* bot, Unit* mob, bool tank)
     {
         if (!bot || !bot->IsAlive() || !mob)
+            return false;
+        // [lead1520] a mob the core evades every hit and spell on (Creature::IsEvadingAttacks: its chase failed,
+        // CanNotReachTarget, or it runs home) takes damage from nobody, wherever they stand (Unit::DealDamage,
+        // WorldObject::SpellHitResult: SPELL_MISS_EVADE)
+        if (Creature const* creature = mob->ToCreature(); creature && creature->IsEvadingAttacks())
             return false;
         Position const at = bot->GetPosition();
         if (tank)
