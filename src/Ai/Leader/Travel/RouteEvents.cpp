@@ -1377,6 +1377,11 @@ namespace Leader::Travel
                 continue;
             if (member.guid == routeState.doorCutMember && routeState.doorCutDoor == door->GetGUID())
                 continue;  // stranded behind this door: it is opened for it
+            // [lead1584] a held opening (lead1570) keeps the group back out of its reach: a member with its spot back
+            // at this door is gathered there, not within reach of the opener (b281 strat-n: this wait for 4 yd and
+            // the spot back held each other, 81 gathers, no key used)
+            if (routeState.keyPassBackDoor == door->GetGUID() && routeState.keyPassBack.count(member.guid))
+                continue;
             bool const close = bot->GetExactDist2d(opener) <= DOOR_GATHER_RANGE &&
                                std::fabs(bot->GetPositionZ() - opener->GetPositionZ()) <= DOOR_GATHER_DZ;
             if (close && !bot->IsInCombat())
