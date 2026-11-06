@@ -11,6 +11,7 @@
 #include "Event.h"
 #include "FleeManager.h"
 #include "GameGraveyard.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "Log.h"
 #include "Map.h"
@@ -132,6 +133,12 @@ bool ReviveFromCorpseAction::Execute(Event event)
         SpotMargin(botAI, bot, AI_VALUE(GuidVector, "nearest hostile npcs"), bot->GetPositionX(),
                    bot->GetPositionY(), bot->GetPositionZ()) < 0.0f)
         return false;
+
+    // [guild9] the reclaim delay still runs: HandleReclaimCorpseOpcode refuses it (MiscHandler), so nothing is sent
+    // and nothing is logged; the log showed ~100 "revives at body" per hunter death while it waited.
+    if (time_t(corpse->GetGhostTime() + bot->GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP)) >
+        time_t(GameTime::GetGameTime().count()))
+        return true;
 
     LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at body", bot->GetGUID().ToString().c_str(),
               bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName().c_str());
