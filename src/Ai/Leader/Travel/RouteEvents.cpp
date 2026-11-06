@@ -2377,7 +2377,13 @@ namespace Leader::Travel
                                 float const lateral = (float(backSlot++ % 5) - 2.0f) * KEY_PASS_SPREAD;
                                 if (!inReach(bot, G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(),
                                                                bot->GetPositionZ()), 0.0f))
-                                    continue;  // out of the opening's reach where it stands
+                                {
+                                    // out of the opening's reach where it stands: that is its spot back
+                                    // [lead1583] b280 strat-n: a spot kept from an earlier tick held the gather for
+                                    // members already 20 yd back that never walked to it (73 gathers, no key used)
+                                    routeState.keyPassBack[member.guid] = bot->GetPosition();
+                                    continue;
+                                }
                                 auto const known = routeState.keyPassBack.find(member.guid);
                                 bool placed = known != routeState.keyPassBack.end() &&
                                               bot->GetExactDist2d(known->second) > KEY_PASS_RUNNER_REACH;
