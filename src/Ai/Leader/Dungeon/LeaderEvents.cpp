@@ -4262,12 +4262,46 @@ namespace Leader::Dungeon
                     lead.routePathComplete = leg.found && leg.complete;
                     lead.routePathIndex = 0;  // the arrived points are skipped below
                     lead.routePathTarget = group.RouteTarget();
+                    // [lead1590] b282 strat-n 5D-4 157-649 s (5B-2, 5F-6, 5H-8 the same): the leg path to a mob
+                    // behind the shut Service Entrance Gate 175368 - "route walk: stays (closed door at 4.6 yd)",
+                    // while the key pass's waypoint (its use point, 3.1 yd away) was never walked: no re-key to
+                    // the stop. A leg through a closed door walks the harness's door-aware waypoint (the hold
+                    // before the door, the key pass's use point) until that door opens.
+                    lead.routePathDoor.Clear();
+                    if (lead.routePath.size() >= 2)
+                        if (ClosedDoorHit const hit = PathThroughClosedDoor(tank, lead.routePath); hit.Found())
+                        {
+                            lead.routePathDoor = hit.door->GetGUID();
+                            Decisions().Write(run, "leader", "route_walk_door", group.RouteTarget(),
+                                              tank->GetName(), true,
+                                              JsonObject().Str("door", hit.door->GetName())
+                                                  .Num("doorEntry", hit.door->GetEntry())
+                                                  .Real("walked", hit.walked).Real("toX", waypoint.x)
+                                                  .Real("toY", waypoint.y).Real("toZ", waypoint.z)
+                                                  .Str("tag", "[lead1590]"));
+                        }
                 }
-                while (!lead.routePath.empty() && lead.routePathIndex + 1 < lead.routePath.size() &&
+                // [lead1590] the door opened (or is gone): the leg path is taken again
+                if (!lead.routePathDoor.IsEmpty())
+                {
+                    GameObject const* door = map->GetGameObject(lead.routePathDoor);
+                    if (!door || door->GetGoState() != GO_STATE_READY)
+                    {
+                        lead.routePathDoor.Clear();
+                        lead.routePath.clear();
+                    }
+                }
+                // [lead1590] ... and a starter step the leader walks (the key pass's walk to its use point, the
+                // starter's step-out: routeState.waypointHoldUntilMs, set by that step) is walked as the harness gave
+                // it, not the leg path past it
+                uint32 const stepHoldUntil = group.Route().waypointHoldUntilMs;
+                bool const asGiven =
+                    !lead.routePathDoor.IsEmpty() || (stepHoldUntil && int32(getMSTime() - stepHoldUntil) < 0);
+                while (!asGiven && !lead.routePath.empty() && lead.routePathIndex + 1 < lead.routePath.size() &&
                        tank->GetExactDist2d(lead.routePath[lead.routePathIndex].x,
                                             lead.routePath[lead.routePathIndex].y) <= ROUTE_ARRIVED_YD)
                     ++lead.routePathIndex;
-                if (!lead.routePath.empty() && lead.routePathIndex < lead.routePath.size())
+                if (!asGiven && !lead.routePath.empty() && lead.routePathIndex < lead.routePath.size())
                 {
                     G3D::Vector3 const& next = lead.routePath[lead.routePathIndex];
                     point.Relocate(next.x, next.y, next.z);
