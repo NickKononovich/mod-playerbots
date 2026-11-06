@@ -268,8 +268,8 @@ namespace Leader
         ObjectGuid routePathTarget;
         std::string routePathSource;      // [lead99] the leg path's source, logged in travel_leg
         bool routePathComplete = false;
-        // [lead1590] the closed door the leg path runs through (empty: none): the harness waypoint (its door hold, the key
-        // pass's use point) is walked as given until that door opens
+        // [lead1590] the closed door the leg path runs through (empty: none): the harness waypoint (its door hold,
+        // the key pass's use point) is walked as given until that door opens
         ObjectGuid routePathDoor;
         // [lead94] the travel of the current route leg (travel_leg)
         ObjectGuid travelTarget;
