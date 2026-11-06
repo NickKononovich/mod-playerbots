@@ -5,6 +5,10 @@
  */
 
 #include "WarlockTriggers.h"
+
+#include <algorithm>  // [rot566]
+#include <cmath>      // [rot566] std::floor
+
 #include "AiFactory.h"  // [rot400] GetPlayerSpecTab
 #include "Creature.h"   // [rot470] EncounterCreditDead
 #include "DynamicObject.h"
@@ -25,6 +29,7 @@
 #include "SpellAuraEffects.h"  // [rot350]
 #include "SpellAuras.h"        // [rot350]
 #include "SpellMgr.h"          // [rot350]
+#include "SpellPayoff.h"       // [rot566] Read
 #include "TargetValue.h"
 #include "WarlockActions.h"  // [rot481] ImmolationAuraReaches
 
@@ -747,4 +752,122 @@ bool RainOfFireChannelCheckTrigger::IsActive()
 
     // Not channeling Rain of Fire
     return false;
+}
+
+namespace
+{
+// [rot566] talent first ranks (Spell.dbc; spell_proc -47201 / -17793 / -63156)
+constexpr uint32 SPELL_EVERLASTING_AFFLICTION_RANK_1 = 47201;
+constexpr uint32 SPELL_IMPROVED_SHADOW_BOLT_RANK_1 = 17793;
+constexpr uint32 SPELL_DECIMATION_RANK_1 = 63156;
+constexpr uint32 CRIT_BONUS_PROBE = 10000;  // the core's crit bonus is a function of the damage: read as a ratio
+
+// a talent's proc chance (0..1): its spell_proc entry where it sets one, else Spell.dbc ProcChance; 0 untaken
+float TalentChance(Aura const* talent)
+{
+    if (!talent)
+        return 0.0f;
+    SpellProcEntry const* entry = sSpellMgr->GetSpellProcEntry(talent->GetId());
+    return (entry && entry->Chance > 0.0f ? entry->Chance : static_cast<float>(talent->GetSpellInfo()->ProcChance)) /
+           100.0f;
+}
+
+// the spell a talent's proc casts (its effects' trigger spell)
+SpellInfo const* TalentProc(Aura const* talent)
+{
+    if (!talent)
+        return nullptr;
+    for (SpellEffectInfo const& effect : talent->GetSpellInfo()->GetEffects())
+        if (effect.TriggerSpell)
+            if (SpellInfo const* proc = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                return proc;
+    return nullptr;
+}
+}
+
+// [rot566] Shadow Bolt's value beyond its hit, for Affliction / Demonology (wowsims warlock APLs: Shadow Bolt the
+// filler), each where the talent is taken, from the talents and the spells:
+// - Everlasting Affliction refreshes our Corruption (spell_warl_everlasting_affliction): a Corruption that runs out
+//   before the area's cast ends loses the ticks a refresh would add (to its full duration, at most the target's life);
+// - Improved Shadow Bolt applies its crit debuff (Shadow Mastery): one that is missing or runs out before the area
+//   ends is down till the next Shadow Bolt, the debuff's crit x the crit bonus on this warlock's filler damage then
+//   (its own spells; the other casters' share is not counted);
+// - Decimation, the target at or below 35 % (spell_warl_decimation): the faster Soul Fire it gives (the proc's
+//   SPELLMOD_CASTING_TIME) over the filler in its cast, per Shadow Bolt.
+float WarlockAoePaysTrigger::FillerScale()
+{
+    std::string const filler = Filler();
+    Unit* target = AI_VALUE(Unit*, "current target");
+    uint32 const boltId = AI_VALUE2(uint32, "spell id", filler);
+    uint32 const areaId = AI_VALUE2(uint32, "spell id", aoeSpell);
+    SpellInfo const* boltInfo = boltId ? sSpellMgr->GetSpellInfo(boltId) : nullptr;
+    SpellPayoff::Cast bolt;
+    SpellPayoff::Cast area;
+    if (filler != "shadow bolt" || !target || !boltInfo || !areaId || !SpellPayoff::Read(bot, target, boltId, bolt) ||
+        bolt.direct <= 0.0f || !SpellPayoff::Read(bot, target, areaId, area) || area.executeMs <= 0.0f)
+        return 1.0f;
+
+    float const fillerDps = bolt.direct * static_cast<float>(IN_MILLISECONDS) / bolt.executeMs;
+    float const windowMs = area.executeMs;
+    float const lifeMs = ExpectedFightLifetime(botAI, target) * static_cast<float>(IN_MILLISECONDS);
+    float perWindow = 0.0f;  // damage lost over the area's cast
+    float perCast = 0.0f;    // damage each Shadow Bolt brings
+
+    // Everlasting Affliction: the Corruption refresh
+    Aura const* everlasting = bot->GetAuraOfRankedSpell(SPELL_EVERLASTING_AFFLICTION_RANK_1);
+    Aura const* corruption = botAI->GetAura("corruption", target, true);
+    uint32 const corruptionId = AI_VALUE2(uint32, "spell id", "corruption");
+    SpellPayoff::Cast corruptionCast;
+    if (everlasting && corruption && corruptionId && corruption->GetDuration() < windowMs &&
+        SpellPayoff::Read(bot, target, corruptionId, corruptionCast) && corruptionCast.amplitudeMs)
+    {
+        float const lostMs = std::min(static_cast<float>(corruption->GetMaxDuration()), lifeMs) -
+                             static_cast<float>(corruption->GetDuration());
+        if (lostMs > 0.0f)
+            perWindow += TalentChance(everlasting) * corruptionCast.tick *
+                         std::floor(lostMs / static_cast<float>(corruptionCast.amplitudeMs));
+    }
+
+    // Improved Shadow Bolt: its crit debuff's upkeep
+    Aura const* improved = bot->GetAuraOfRankedSpell(SPELL_IMPROVED_SHADOW_BOLT_RANK_1);
+    if (SpellInfo const* debuff = TalentProc(improved))
+    {
+        int32 critPct = 0;
+        for (SpellEffectInfo const& effect : debuff->GetEffects())
+            if (effect.ApplyAuraName == SPELL_AURA_MOD_ATTACKER_SPELL_CRIT_CHANCE ||
+                effect.ApplyAuraName == SPELL_AURA_MOD_ATTACKER_SPELL_AND_WEAPON_CRIT_CHANCE)
+                critPct += effect.CalcValue(bot);
+        Aura const* up = target->GetAura(debuff->Id);
+        float const remainingMs = up ? static_cast<float>(up->GetDuration()) : 0.0f;
+        float const downMs = std::min(windowMs, lifeMs) - remainingMs;
+        float const bonus =
+            static_cast<float>(Unit::SpellCriticalDamageBonus(bot, boltInfo, CRIT_BONUS_PROBE, target)) /
+                static_cast<float>(CRIT_BONUS_PROBE) -
+            1.0f;
+        if (critPct > 0 && downMs > 0.0f && bonus > 0.0f)
+            perWindow += TalentChance(improved) * static_cast<float>(critPct) / 100.0f * bonus * fillerDps * downMs /
+                         static_cast<float>(IN_MILLISECONDS);
+    }
+
+    // Decimation: the faster Soul Fire, the target at or below 35 %
+    Aura const* decimation = bot->GetAuraOfRankedSpell(SPELL_DECIMATION_RANK_1);
+    SpellInfo const* decimated = TalentProc(decimation);
+    uint32 const soulFireId = AI_VALUE2(uint32, "spell id", "soul fire");
+    SpellPayoff::Cast soulFire;
+    if (decimated && soulFireId && !bot->HasAura(decimated->Id) &&
+        target->HasAuraState(AURA_STATE_HEALTHLESS_35_PERCENT, boltInfo, bot) &&
+        SpellPayoff::Read(bot, target, soulFireId, soulFire))
+    {
+        int32 castPct = 0;
+        for (SpellEffectInfo const& effect : decimated->GetEffects())
+            if (effect.ApplyAuraName == SPELL_AURA_ADD_PCT_MODIFIER && effect.MiscValue == SPELLMOD_CASTING_TIME)
+                castPct += effect.CalcValue(bot);
+        float const castMs =
+            std::max(soulFire.gcdMs, soulFire.castMs * static_cast<float>(100 + castPct) / 100.0f);
+        float const gain = soulFire.Total() - fillerDps * castMs / static_cast<float>(IN_MILLISECONDS);
+        if (gain > 0.0f)
+            perCast += TalentChance(decimation) * gain;
+    }
+
+    return 1.0f + perCast / bolt.direct + perWindow / (fillerDps * windowMs / static_cast<float>(IN_MILLISECONDS));
 }

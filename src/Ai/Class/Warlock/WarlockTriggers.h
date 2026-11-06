@@ -370,6 +370,8 @@ public:
 
 protected:
     std::string const Filler() override { return ai::warlock::DotFiller(bot); }
+    // [rot566] Shadow Bolt's value beyond its hit (Everlasting Affliction, Improved Shadow Bolt, Decimation)
+    float FillerScale() override;
 };
 
 class ChaosBoltTrigger : public SpellNoCooldownTrigger
