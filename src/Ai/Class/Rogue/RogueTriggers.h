@@ -173,7 +173,7 @@ class RuptureTrigger : public DebuffTrigger
 {
 public:
     RuptureTrigger(PlayerbotAI* botAI)
-        : DebuffTrigger(botAI, "rupture", 1, true, RUPTURE_MIN_TARGET_LIFETIME, RUPTURE_REFRESH_MS) {}
+        : DebuffTrigger(botAI, "rupture", 1, true, 0.0f, RUPTURE_REFRESH_MS) {}  // [rot561] RupturePays
     bool IsActive() override;
 };
 

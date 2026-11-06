@@ -424,7 +424,10 @@ bool SliceAndDiceTrigger::IsActive()
 
 bool RuptureTrigger::IsActive()
 {
-    return AI_VALUE2(uint8, "combo", "current target") >= RUPTURE_MIN_COMBO_POINTS && DebuffTrigger::IsActive();
+    if (AI_VALUE2(uint8, "combo", "current target") < RUPTURE_MIN_COMBO_POINTS || !DebuffTrigger::IsActive())
+        return false;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    return target && RupturePays(botAI, bot, target);  // [rot561]
 }
 
 bool TricksOfTheTradeOnMainTankTrigger::IsActive()

@@ -11,6 +11,7 @@
 
 #include "AiFactory.h"
 #include "DBCStores.h"
+#include "EstimatedLifetimeValue.h"  // [rot561] ExpectedFightLifetime
 #include "Event.h"
 #include "Group.h"
 #include "ObjectGuid.h"
@@ -20,6 +21,7 @@
 #include "RoguePoisons.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "SpellPayoff.h"  // [rot561] DotPays, Read, MeasuredHit
 #include "StringFormat.h"
 
 namespace
@@ -27,6 +29,91 @@ namespace
 constexpr uint32 BG_WS_SPELL_WARSONG_FLAG = 23333;
 constexpr uint32 BG_WS_SPELL_SILVERWING_FLAG = 23335;
 constexpr uint32 BG_EY_NETHERSTORM_FLAG_SPELL = 34976;
+constexpr uint32 SPELL_HUNGER_FOR_BLOOD = 51662;  // [rot561] the Assassination talent Rupture enables
+// [rot561] the attack power the core adds outside the spell data: spell_rog_rupture (per tick, by points 0-5) and
+// Spell::EffectSchoolDMG Eviscerate (x points)
+constexpr float RUPTURE_AP_PER_TICK[6] = {0.0f, 0.015f, 0.024f, 0.03f, 0.03428571f, 0.0375f};
+constexpr float EVISCERATE_AP_PER_POINT = 0.07f;
+constexpr uint8 MAX_COMBO_POINTS = 5;
+}
+
+bool RupturePays(PlayerbotAI* botAI, Player* bot, Unit* target, uint32* loggedMs)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    uint32 const ruptureId = context->GetValue<uint32>("spell id", "rupture")->Get();
+    uint32 const eviscerateId = context->GetValue<uint32>("spell id", "eviscerate")->Get();
+    SpellInfo const* rupture = ruptureId ? sSpellMgr->GetSpellInfo(ruptureId) : nullptr;
+    SpellInfo const* eviscerate = eviscerateId ? sSpellMgr->GetSpellInfo(eviscerateId) : nullptr;
+    uint8 const points = std::min(bot->GetComboPoints(target), MAX_COMBO_POINTS);
+    if (!rupture || !eviscerate || !points)
+        return true;
+
+    // its length at these points, as the core sets it (Aura: CalcSpellDuration, then SPELLMOD_DURATION)
+    int32 durationMs = bot->CalcSpellDuration(rupture);
+    bot->ApplySpellMod(ruptureId, SPELLMOD_DURATION, durationMs);
+    float const lifetime = ExpectedFightLifetime(botAI, target);
+    float const window = std::min(lifetime, static_cast<float>(std::max(durationMs, 0)) / IN_MILLISECONDS);
+
+    // each spell's measured mean once it has landed (lead1542, read by SpellPayoff); before that the spell's estimate
+    // plus the attack power part the core adds outside the spell data, Eviscerate after armor
+    float measured = 0.0f;
+    bool const ruptureMeasured = SpellPayoff::MeasuredHit(bot->GetGUID(), ruptureId, true, measured);
+    bool const eviscerateMeasured = SpellPayoff::MeasuredHit(bot->GetGUID(), eviscerateId, false, measured);
+    float ruptureDamage = 0.0f;
+    float eviscerateDamage = 0.0f;
+    uint32 ticks = 0;
+    if (ruptureMeasured && eviscerateMeasured)
+    {
+        SpellPayoff::DotVerdict const verdict = SpellPayoff::DotPays(bot, target, ruptureId, eviscerateId, window);
+        ruptureDamage = verdict.dot;
+        eviscerateDamage = verdict.filler;
+        ticks = verdict.ticks;
+    }
+    else
+    {
+        SpellPayoff::Cast ruptureCast;
+        SpellPayoff::Cast eviscerateCast;
+        if (!SpellPayoff::Read(bot, target, ruptureId, ruptureCast) || !ruptureCast.amplitudeMs ||
+            !SpellPayoff::Read(bot, target, eviscerateId, eviscerateCast))
+            return true;
+        float const ap = bot->GetTotalAttackPowerValue(BASE_ATTACK);
+        float const tick = ruptureCast.tick + (ruptureMeasured ? 0.0f : ap * RUPTURE_AP_PER_TICK[points]);
+        ticks = std::min(ruptureCast.ticks,
+                         static_cast<uint32>(window * IN_MILLISECONDS / static_cast<float>(ruptureCast.amplitudeMs)));
+        ruptureDamage = tick * static_cast<float>(ticks);
+        eviscerateDamage =
+            eviscerateMeasured
+                ? eviscerateCast.direct
+                : static_cast<float>(Unit::CalcArmorReducedDamage(
+                      bot, target, static_cast<uint32>(eviscerateCast.direct + ap * EVISCERATE_AP_PER_POINT * points),
+                      eviscerate));
+    }
+    if (ruptureDamage >= eviscerateDamage)
+        return true;
+
+    uint32 const now = getMSTime();
+    if (loggedMs && (!*loggedMs || getMSTimeDiff(*loggedMs, now) >= RUPTURE_PAYOFF_LOG_MS))
+    {
+        *loggedMs = now ? now : 1;
+        LOG_INFO("playerbots",
+                 "[rot561] {} holds rupture on {}: lives {:.1f} s, {} tick(s) at {} points land for {:.0f} vs "
+                 "eviscerate {:.0f}",
+                 bot->GetName(), target->GetName(), lifetime, ticks, points, ruptureDamage, eviscerateDamage);
+    }
+    return false;
+}
+
+bool CastRuptureAction::isUseful()
+{
+    Unit* target = GetTarget();
+    if (!target || !CastDebuffSpellAction::isUseful())
+        return false;
+
+    // the Hunger for Blood enabler: its bleed, by the target's lifetime as before
+    if (bot->HasSpell(SPELL_HUNGER_FOR_BLOOD))
+        return target->GetHealth() / AI_VALUE(float, "estimated group dps") >= RUPTURE_MIN_TARGET_LIFETIME;
+
+    return RupturePays(botAI, bot, target, &_loggedMs);
 }
 
 bool CastStealthAction::isUseful()
