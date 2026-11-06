@@ -641,9 +641,25 @@ public:
     }
 
     // [lead1431] the shield's end: what it took since its apply is its caster's effective healing (HealingDone)
-    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode /*mode*/) override
+    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
     {
         Aura const* aura = aurApp ? aurApp->GetBase() : nullptr;
+        // [lead1544] b275 ac-h 5C-11 838 s / 5D-12 541 s: a drink under the leader's Rest ended at 97-99 % mana and
+        // the next began 4.4-4.8 s later; the log could not tell its end. A player's food / drink aura that ends below
+        // full is logged with the game's remove mode (expired: its duration; cancel / interrupt: stood up, a cast, a
+        // hit) and the time it had left
+        if (aura && unit && unit->IsPlayer())
+            if (SpellSpecificType const kind = aura->GetSpellInfo()->GetSpellSpecific();
+                (kind == SPELL_SPECIFIC_DRINK || kind == SPELL_SPECIFIC_FOOD_AND_DRINK) && unit->GetMaxPower(POWER_MANA) &&
+                unit->GetPower(POWER_MANA) < unit->GetMaxPower(POWER_MANA))
+                LOG_INFO("playerbots", "[lead1544] {}: drink {} ({}) ends at {:.1f} % mana: {} with {} ms of {} ms left{}",
+                         unit->GetName(), aura->GetSpellInfo()->SpellName[0], aura->GetId(), unit->GetPowerPct(POWER_MANA),
+                         mode == AURA_REMOVE_BY_EXPIRE    ? "expired"
+                         : mode == AURA_REMOVE_BY_CANCEL  ? "cancelled"
+                         : mode == AURA_REMOVE_BY_DEFAULT ? "removed (interrupt / stand up / replaced)"
+                                                          : "removed (other)",
+                         aura->GetDuration(), aura->GetMaxDuration(),
+                         unit->IsStandState() ? ", standing" : ", seated");
         if (!unit || !aura || !aura->GetSpellInfo()->HasAura(SPELL_AURA_SCHOOL_ABSORB) ||
             !aura->GetCasterGUID().IsPlayer())
             return;
