@@ -12621,19 +12621,25 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // it comes with what the way in wakes (Plague Ghoul)" (cost 25.62 tank hp, overload 99) was committed, the 160-yd
     // walk woke the street pack on the healer ("the tank never had it"), wipe at 215 s; 356 s the same kind, 2 deaths.
     // Without a woken pack the cheapest stays the last resort (105714-5E-13 685 s: 25 mobs, no death)
+    // [lead1582] ... and no cheapest option at all that the tank and the healers do not carry, woken pack or not: b278
+    // strat-n 20261106-115630-5H-8 141 s: the 31-mob "pull as it comes" (cost 36.47 tank hp, fight 124 s, overload
+    // 99) was committed as the last resort with no woken pack (so unchecked), the tank walked 187 yd to it, the healer
+    // stayed 45.6 yd back (pull_without_healer, 7 attackers). The 105714-5E-13 685 s 25-mob pull it kept is carried
+    // or not by the same test now - a last resort the survival terms refuse is no option (LeaderNoOption holds)
     PackEstimate cheapestEstimate;
     std::string cheapestCarries;
-    if (!found && !cheapest.pack.empty() && !cheapest.woken.empty())
+    if (!found && !cheapest.pack.empty())
     {
         cheapestEstimate = EstimatePack(cheapest.pack, bot, groupDps, estimateMode);
         if (!TankCarries(cheapestEstimate, support, &cheapestCarries))
         {
-            LOG_INFO("playerbots", "[lead1560] {}: {} ({} mobs): the cheapest option wakes {} on the way in and is "
-                     "more than the tank carries ({}): not pulled ({})", bot->GetName(), target->GetName(),
-                     cheapest.pack.size(), cheapest.woken, cheapestCarries, cheapest.judged);
-            _planVerdictWhy = Acore::StringFormat("[lead1560] the cheapest option wakes {} on the way in, more than "
-                                                  "the tank carries ({}): {}", cheapest.woken, cheapestCarries,
-                                                  cheapest.judged);
+            std::string const way = cheapest.woken.empty() ? std::string("as it comes")
+                                                           : "waking " + cheapest.woken + " on the way in";
+            LOG_INFO("playerbots", "[lead1560] [lead1582] {}: {} ({} mobs): the cheapest option ({}) is more than the "
+                     "tank carries ({}): not pulled ({})", bot->GetName(), target->GetName(), cheapest.pack.size(),
+                     way, cheapestCarries, cheapest.judged);
+            _planVerdictWhy = Acore::StringFormat("[lead1560] [lead1582] the cheapest option ({}) is more than the "
+                                                  "tank carries ({}): {}", way, cheapestCarries, cheapest.judged);
             cheapest.pack.clear();
         }
     }
