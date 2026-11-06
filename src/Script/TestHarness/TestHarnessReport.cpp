@@ -27,6 +27,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "PullStrategy.h"
+#include "RouteEvents.h"  // [lead1564] STARTER_ITEM_MAX_FAILS
 #include "RouteSearch.h"  // [lead144] NoteHeightGap
 #include "ScriptMgr.h"  // [harness20] PowerGainSource
 #include "Spell.h"
@@ -1870,7 +1871,18 @@ namespace TestHarness
             }
         }
 
-        if (party.eventGatherArrived && party.eventGatherArrivedMs &&
+        // [lead1564] (test tool) ... not while a key door's use there keeps failing (the route target, its
+        // STARTER_ITEM_MAX_FAILS reached, still closed): the gather waits for nothing that comes. b277 strat-n
+        // 20261106-105814-5G-15 1497-2007 s: 102 failed keys on the Gauntlet Gate 175357, no stall, stopped by hand
+        bool keyFailing = false;
+        if (Map* map = leader->GetMap())
+            for (Leader::StarterTrack const& starter : party.starters)
+                for (auto const& [guid, fails] : starter.failedUses)
+                    if (fails >= Leader::Travel::STARTER_ITEM_MAX_FAILS && guid == party.target)
+                        if (GameObject* go = map->GetGameObject(guid);
+                            go && go->GetGoType() == GAMEOBJECT_TYPE_DOOR && go->GetGoState() == GO_STATE_READY)
+                            keyFailing = true;
+        if (party.eventGatherArrived && party.eventGatherArrivedMs && !keyFailing &&
             getMSTimeDiff(party.eventGatherArrivedMs, now) < EVENT_GATHER_WAIT_MS && EventGatherApplies(party))
         {
             party.lastProgressMs = now;
