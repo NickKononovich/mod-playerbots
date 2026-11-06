@@ -2203,13 +2203,13 @@ namespace Leader::Travel
                     {
                         Map* map = leader->GetMap();
                         // every idle mob whose reach (the core's MAX_AGGRO_RADIUS at most) may cover a spot searched
-                        std::list<Creature*> near;
+                        std::list<Creature*> nearMobs;
                         IdleAggroCheck nearCheck{leader};
-                        Acore::CreatureListSearcher<IdleAggroCheck> nearSearcher(go, near, nearCheck);
+                        Acore::CreatureListSearcher<IdleAggroCheck> nearSearcher(go, nearMobs, nearCheck);
                         Cell::VisitObjects(go, nearSearcher, KEY_PASS_FAR_PACK_SCAN + MAX_AGGRO_RADIUS);
                         auto const outOfAll = [&](G3D::Vector3 const& point, float extra)
                         {
-                            for (Creature* mob : near)
+                            for (Creature* mob : nearMobs)
                                 if (mob->IsAlive() && !mob->IsInCombat() &&
                                     (gateSide(mob->GetPositionX(), mob->GetPositionY()) >= 0.0f) != useSign &&
                                     AggroesAtPoint(mob, leader, point,
