@@ -4993,8 +4993,15 @@ namespace Leader::Dungeon
             std::vector<size_t> order(pulls.size());
             for (size_t i = 0; i < order.size(); ++i)
                 order[i] = i;
+            // [lead1536] b275 ac-h 5C-11 288.5 s: Recklessness went on a trash pack ("schedule: here 88k hp at 0 s")
+            // 127 s before Shirrak (recharge 234 s) and was down for him, as Avenging Wrath / Vanish on 5E-13 - the
+            // fastest kill (5G-15, 47 s) had Bladestorm, Empower Rune Weapon, Shattering Throw on him. The order read
+            // the health the effect covers: for any fight longer than the effect that is the group's dps x the
+            // effect (health x effect / fight), equal for the trash and the boss, the tie went to "here". The user's
+            // rule (cooldown-route-plan) orders the pulls by their health, the boss a pack of his health: the
+            // biggest first; the covered share stays what the schedule shows
             std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b)
-                             { return valueOf(pulls[a]) > valueOf(pulls[b]); });
+                             { return pulls[a].health > pulls[b].health; });
             if (hard)
                 std::stable_partition(order.begin(), order.end(), [&](size_t i) { return i == bossAt; });
             std::vector<size_t> taken;
@@ -5011,8 +5018,10 @@ namespace Leader::Dungeon
             std::sort(taken.begin(), taken.end(), [&](size_t a, size_t b) { return pulls[a].at < pulls[b].at; });
             std::string plan;
             for (size_t i : taken)
-                plan += Acore::StringFormat("{}{} {:.0f}k hp at {:.0f} s", plan.empty() ? "" : ", ", pulls[i].name,
-                                            valueOf(pulls[i]) / 1000.0f, pulls[i].at);
+                plan += Acore::StringFormat("{}{} {:.0f}k hp ({:.0f}k covered) at {:.0f} s", plan.empty() ? "" : ", ",
+                                            pulls[i].name, pulls[i].health / 1000.0f, valueOf(pulls[i]) / 1000.0f,
+                                            pulls[i].at);
+            plan += " [lead1536]";
             bool const here = std::find(taken.begin(), taken.end(), size_t(0)) != taken.end();
             if (here)
                 why = Acore::StringFormat("[lead1472] route plan: here (recharge {:.0f} s, effect {:.0f} s, {} pull in "
