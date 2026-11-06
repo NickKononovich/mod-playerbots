@@ -326,24 +326,38 @@ using namespace Leader::Fight;
         ShadowMobCheck check{leader};
         Acore::CreatureListSearcher<ShadowMobCheck> searcher(leader, idle, check);
         Cell::VisitObjects(leader, searcher, PATROL_WAIT_SCAN);
+        WaypointPath const* path = PatrolWalkPath(patrol);
+        // [lead1600] a wanderer (no walk path) walks alone, its formation stays: the formation's static members are
+        // packs to keep clear of (CreatureGroup::MemberEngagingTarget brings them when it engages), and every
+        // wanderer is judged by its whole wander area (lead1331), not where it stands this tick
+        WanderArea patrolArea;
+        bool const patrolWanders = !path && WanderAreaOf(patrol, patrolArea);
         std::vector<Creature*> packs;
         for (Creature* mob : idle)
-            if (mob->HasReactState(REACT_AGGRESSIVE) && StaticPackMob(mob, patrol))
+            if (mob->HasReactState(REACT_AGGRESSIVE) &&
+                (StaticPackMob(mob, patrol) || (patrolWanders && mob != patrol && !PatrolWalkPath(mob))))
                 packs.push_back(mob);
+        auto const reachDist = [](Creature* mob, G3D::Vector3 const& point)
+        {
+            WanderArea area;
+            return WanderAreaOf(mob, area) ? WanderAreaDist(area, Position(point.x, point.y, point.z))
+                                           : mob->GetExactDist(point.x, point.y, point.z);
+        };
         auto const packReaches = [&](G3D::Vector3 const& point, float extra)
         {
             return std::any_of(packs.begin(), packs.end(),
                                [&](Creature* mob)
                                {
-                                   return mob->GetExactDist(point.x, point.y, point.z) <=
+                                   return reachDist(mob, point) <=
                                           AggroReach(mob, leader) + PATROL_WAIT_ASSIST + extra;
                                });
         };
-        WaypointPath const* path = PatrolWalkPath(patrol);
         auto const walkReaches = [&](G3D::Vector3 const& point)
         {
             if (patrol->GetExactDist(point.x, point.y, point.z) <= reach)
                 return true;
+            if (patrolWanders && WanderAreaDist(patrolArea, Position(point.x, point.y, point.z)) <= reach)
+                return true;  // [lead1600]
             if (!path || path->Nodes.empty())
                 return false;
             std::vector<WaypointNode> const& nodes = path->Nodes;
@@ -479,6 +493,7 @@ using namespace Leader::Fight;
             hold.sinceMs = 0;
             hold.patrol.Clear();
             hold.lane = false;
+            hold.wander = false;
             return std::string();
         };
         // [b48_scholo] the leader's harness walk: this tick's waypoint (Steer gives the next one after the hold)
@@ -499,10 +514,47 @@ using namespace Leader::Fight;
             routeState.target.IsEmpty() ? nullptr : leader->GetMap()->GetCreature(routeState.target);
         bool const routeBoss = routeTarget && routeTarget->IsAlive() &&
                                (routeState.bossCreatures.count(routeTarget->GetGUID()) || routeTarget->IsDungeonBoss());
+        bool wanderHold = false;  // [lead1600]
         for (Creature* mob : idle)
         {
-            if (routeState.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss() || !PatrolWalkPath(mob))
+            if (routeState.bossCreatures.count(mob->GetGUID()) || mob->IsDungeonBoss())
                 continue;
+            // [lead1600] b284 strat-n 5B-2 133.7 s / 5F-6: every street pack refused, the group stood at the tank's
+            // spot (3653.3,-3577.3) with no pull, the wandering Ravaged Cadaver (wander 5 yd, its 10-mob formation
+            // refused) walked into the tank's reach and brought the chain: wipe. A good group watches every
+            // wanderer, not only the waypoint patrols: one whose wander area (lead1331, its spawn point and wander
+            // distance) puts a member in its aggro reach (the core's proximity aggro, WanderAreaAggroes) holds the
+            // group like a patrol that comes to it - the leader pulls it alone when its pull is carried (the
+            // intercept below), else steps the group out of the area (LeaderPatrolTick). Only the leader's own
+            // decision, never while an order of it runs
+            if (!PatrolWalkPath(mob))
+            {
+                WanderArea area;
+                if (!leaderOwns || Leader::Orders::IsOpen(group.LeaderGuid()) || !WanderAreaOf(mob, area))
+                    continue;
+                for (LeaderGroup::MemberInfo const& member : group.Members())
+                {
+                    Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                    if (!bot || !bot->IsAlive() || bot->GetMap() != leader->GetMap())
+                        continue;
+                    float const reach = AggroReach(mob, bot) + PATROL_HOLD_MARGIN;
+                    if (WanderAreaAggroes(mob, bot, area, bot->GetPosition(), reach, true))
+                    {
+                        why = Acore::StringFormat("wanderer {} {:.1f} yd from {}: its wander area ({:.0f} yd round "
+                                                  "({:.1f},{:.1f})) is in its reach {:.1f} of {} [lead1600]",
+                                                  mob->GetName(), bot->GetExactDist(mob), member.name, area.radius,
+                                                  area.center.GetPositionX(), area.center.GetPositionY(), reach,
+                                                  member.name);
+                        comesMob = mob;
+                        holdMob = mob;
+                        wanderHold = true;
+                        break;
+                    }
+                }
+                if (!why.empty())
+                    break;
+                continue;
+            }
             // [lead213] b184 rfc-h 5D 703-776 s: the planner refused the patrol Searing Blade Enforcer as "brings a
             // boss, pulled as his fight", the walk to Taragaman held for its lane - 70 s, nobody pulled. With that
             // boss as the route target the patrol is his fight's (the boss plan takes it along or waits its window,
@@ -595,7 +647,7 @@ using namespace Leader::Fight;
         // [b48_scholo] PATROL_HOLD_LINGER_MS: the patrol walked out of the hold's reach (its turn): the hold lasts
         bool lingering = false;
         // [lead133] the linger lasts while the patrol is still near (the checks below), not PATROL_HOLD_LINGER_MS 6 s
-        if (why.empty() && !cooling && hold.sinceMs && !hold.lane && !hold.patrol.IsEmpty())
+        if (why.empty() && !cooling && hold.sinceMs && !hold.lane && !hold.wander && !hold.patrol.IsEmpty())
         {
             Creature* last = leader->GetMap()->GetCreature(hold.patrol);
             if (last && last->IsAlive() && !last->IsInCombat() &&
@@ -631,6 +683,7 @@ using namespace Leader::Fight;
             hold.comes = comesMob != nullptr;
             hold.lingerLogged = false;
             hold.lane = laneHold;
+            hold.wander = wanderHold;  // [lead1600]
             if (laneHold)
             {
                 if (!hold.laneTo.fuzzyEq(laneTo) || hold.laneTarget != routeState.target)
@@ -775,6 +828,12 @@ using namespace Leader::Fight;
                 end = "patrol dead";
             else if (patrol->IsInCombat() || leader->IsInCombat() || group.InCombat())
                 end = "fight";
+            // [lead1600] the leader's step back from a refused wanderer ends where it stands out of the area's reach,
+            // or with the leader's next pull (its order runs the group from here)
+            else if (state.wander && Leader::Orders::IsOpen(group.LeaderGuid()))
+                end = "the leader's pull [lead1600]";
+            else if (state.wander && state.arrived)
+                end = "out of the wanderer's area [lead1600]";
             else if (state.arrived && gap > state.reach + PATROL_STEP_BACK_GONE)
                 end = "walked on";
             else if (!LeaderOwnsPatrols(group) && ChargePatrolWait(group.InstanceId(), state.patrol, now, false))
@@ -921,6 +980,7 @@ using namespace Leader::Fight;
         state.how = how;
         state.hops = hops;  // [b48_patrol]
         state.hop = 0;
+        state.wander = false;  // [lead1600] the harness's step back
         LOG_INFO("playerbots", "[b46_patrol] patrol_step_back {}: patrol {} {} {:.1f} yd from {} walks in ({}): the "
                  "group steps back {:.1f} yd along its way in to ({:.1f},{:.1f},{:.1f}), {} (reach {:.1f})",
                  leader->GetName(), patrol->GetName(), patrol->GetEntry(), nearGap, nearName, why,
@@ -975,7 +1035,13 @@ using namespace Leader::Fight;
             PatrolStepBackState& step = patrolStepBacks[group.InstanceId()];
             step.patrol.Clear();
             step.arrived = false;
+            step.wander = false;
         };
+        // [lead1600] the leader's step back out of a refused wanderer's area runs hop by hop to its end (out of the
+        // area's reach, a fight, the leader's next pull: PatrolStepBack)
+        if (PatrolStepBackState const& step = patrolStepBacks[group.InstanceId()];
+            step.wander && !step.patrol.IsEmpty() && PatrolStepBack(group, leader))
+            return true;
         if (!map || !leader->IsAlive() || leader->IsInCombat() || group.InCombat() || !routeState.escort.IsEmpty())
         {
             endWait("fight or escort");
@@ -1059,6 +1125,75 @@ using namespace Leader::Fight;
                 banned = true;
             else
                 lead.interceptBanned.erase(ban);
+        }
+        // [lead1600] a wanderer whose area reaches a member and whose pull the leader refused (its pick refused,
+        // its verdict a refusal, or its intercept banned): no wait in its reach - the group steps back along its way
+        // in to the first point out of its area's reach and out of every other idle mob's reach (by their wander
+        // areas too: PatrolStepBackSpot), as a good group backs off a wanderer it cannot take
+        if (hold.wander && !plannerPulls)
+        {
+            bool verdictAccepted = false;
+            uint32 verdictMobs = 0;
+            bool const judged = PartyVerdict(group, patrol->GetGUID(), verdictAccepted, verdictMobs);
+            bool const refused =
+                banned || lead.refusedPicks.count(patrol->GetGUID()) || (judged && !verdictAccepted);
+            if (refused)
+            {
+                if (lead.patrolTarget == patrol->GetGUID())
+                    lead.patrolTarget.Clear();
+                if (lead.intercept == patrol->GetGUID())
+                {
+                    lead.intercept.Clear();
+                    lead.interceptMs = 0;
+                    lead.interceptSinceMs = 0;
+                }
+                float const stepReach = AggroReach(patrol, leader) + PATROL_STEP_BACK_SPREAD;
+                G3D::Vector3 spot;
+                std::string how;
+                std::vector<G3D::Vector3> hops;
+                if (PatrolStepBackSpot(leader, patrol, stepReach, spot, how, hops) && !hops.empty())
+                {
+                    LOG_INFO("playerbots", "[lead1600] wander_step_back {}: {}: refused, the group steps back {:.1f} "
+                             "yd along its way in to ({:.1f},{:.1f},{:.1f}), {}", leader->GetName(), why,
+                             leader->GetExactDist(spot.x, spot.y, spot.z), spot.x, spot.y, spot.z, how);
+                    group.LogEvent("patrol_step_back",
+                                   JsonObject().Str("state", "start").Str("tag", "lead1600").Str("kind", "wanderer")
+                                       .Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
+                                       .Str("why", why).Str("how", how).Real("reach", stepReach)
+                                       .Real("x", spot.x).Real("y", spot.y).Real("z", spot.z)
+                                       .Real("fromX", leader->GetPositionX()).Real("fromY", leader->GetPositionY())
+                                       .Real("fromZ", leader->GetPositionZ()).Num("hops", uint32(hops.size())));
+                    endWait("the group steps out of the wanderer's area");  // clears the step state first
+                    PatrolStepBackState& step = patrolStepBacks[group.InstanceId()];
+                    step.patrol = patrol->GetGUID();
+                    step.spot = spot;
+                    step.reach = stepReach;
+                    step.sinceMs = now;
+                    step.noSpotMs = 0;
+                    step.arrived = false;
+                    step.how = how;
+                    step.hops = hops;
+                    step.hop = 0;
+                    step.wander = true;
+                    group.SetLeaderWaypoint(leader, hops.front().x, hops.front().y, hops.front().z);
+                    return true;
+                }
+                // no spot to step back to: the group stays (the leader's other picks go on; no intercept of a
+                // wanderer it refused), logged once per wanderer
+                thread_local std::unordered_map<uint32, ObjectGuid> noSpotLogged;  // per instance
+                if (noSpotLogged[group.InstanceId()] != patrol->GetGUID())
+                {
+                    noSpotLogged[group.InstanceId()] = patrol->GetGUID();
+                    LOG_INFO("playerbots", "[lead1600] wander_step_back {}: {}: refused, no clear spot on the way in "
+                             "({}): the group stays", leader->GetName(), why, how);
+                    group.LogEvent("patrol_step_back",
+                                   JsonObject().Str("state", "no clear spot").Str("tag", "lead1600")
+                                       .Str("kind", "wanderer").Str("patrol", patrol->GetName())
+                                       .Str("why", why).Str("how", how));
+                }
+                endWait("a refused wanderer with no spot out of its area");
+                return false;
+            }
         }
         // [lead14] a banned patrol (its pull failed or never came) holds nothing but the timed lane crossing: the
         // group walks on, and meets it as a fight if it comes (the old path after its wait budget and handover)

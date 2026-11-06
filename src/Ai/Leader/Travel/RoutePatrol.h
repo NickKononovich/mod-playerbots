@@ -184,6 +184,7 @@ namespace Leader::Travel
         bool comes = false;
         bool lane = false;
         bool lingerLogged = false;
+        bool wander = false;  // [lead1600] a wanderer's area reaches a member (no linger: a fact of where it stands)
         G3D::Vector3 laneTo;
         ObjectGuid laneTarget;
     };
@@ -242,6 +243,7 @@ namespace Leader::Travel
         std::string how;
         std::vector<G3D::Vector3> hops;  // [b48_patrol] the trail walked back, hop by hop, the spot last
         size_t hop = 0;
+        bool wander = false;  // [lead1600] the step back out of a refused wanderer's area (the leader's own)
     };
 
     extern std::unordered_map<uint32, PatrolStepBackState> patrolStepBacks;  // per instance (world thread)
