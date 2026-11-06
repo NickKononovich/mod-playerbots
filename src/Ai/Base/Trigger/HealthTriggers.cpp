@@ -2302,13 +2302,24 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
                 std::min(viperPerSec * fightSec, std::max(need + reserve - returned - coveredFirst, 0.0f));
             // [lead525] the whole shortfall Viper would cover: its damage lost vs the wait its drink adds
             float const viperCost = viperCostPerPct * viperPct;
-            float const drinkSec = drinkCost(viperPct);
-            bool const inFight = damageCut > 0.0f && viperPct > 0.0f && (drinkSec < 0.0f || viperCost < drinkSec);
+            // [lead1540] b275 rfc-h 5F-6 Bazzalan: "Viper in the fight: 6.4 s vs 12.7 s drinking" priced a drink of
+            // the whole 107 % shortfall at 22 % mana - at most 78 % can be drunk (the pool's top). The drink takes what
+            // the pool holds, Viper the rest in the fight: the two ways are all-Viper and that mix, the fastest goes
+            float const drinkable =
+                std::clamp(100.0f - (bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f), 0.0f,
+                           viperPct);
+            float const drinkSec = drinkCost(drinkable);
+            float const restViper = viperPct - drinkable;
+            float const mixSec = drinkSec < 0.0f ? -1.0f : drinkSec + viperCostPerPct * restViper;
+            bool const inFight = damageCut > 0.0f && viperPct > 0.0f && (mixSec < 0.0f || viperCost < mixSec);
             if (inFight)
                 returned += viperPct;
-            pick += Acore::StringFormat("{}Aspect of the Viper {}: {:.1f} s in the fight vs {:.1f} s drinking",
+            else if (damageCut > 0.0f && restViper > 0.0f)
+                returned += restViper;  // the part no drink holds: Viper in the fight
+            pick += Acore::StringFormat("{}Aspect of the Viper {}: {:.1f} s in the fight vs {:.1f} s drinking {:.0f} % "
+                                        "+ {:.1f} s Viper for {:.0f} % [lead1540]",
                                         pick.empty() ? "" : "; ", inFight ? "in the fight" : "drunk before",
-                                        viperCost, drinkSec);
+                                        viperCost, drinkSec, drinkable, viperCostPerPct * restViper, restViper);
         }
     // [lead482] b209 rfc-h 5E: the prot paladin tank stood 257 s and drank 129 s ("53-56 % mana (needs 68 % = 4.07 %/s
     // (measured) x 10 s + 2") - lead480 took its in-fight potions out of the measured rate (b208 0.6 %/s had them
