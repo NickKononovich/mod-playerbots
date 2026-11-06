@@ -37,8 +37,151 @@
 #include "WaypointMovementGenerator.h"
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
+#include <cfloat>
 #include <cmath>
 #include <cstdlib>
+#include <mutex>
+
+namespace
+{
+    // [guild3] Vendor spawns of the world, read once from the creature spawn table.
+    struct VendorSpawn
+    {
+        uint32 entry;
+        uint16 mapId;
+        float x, y, z;
+    };
+
+    std::vector<VendorSpawn> const& VendorSpawns()
+    {
+        static std::vector<VendorSpawn> spawns;
+        static std::once_flag once;
+        std::call_once(once, []()
+        {
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+            {
+                CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(data.id);
+                if (!info || !(info->npcflag & UNIT_NPC_FLAG_VENDOR) || !sObjectMgr->GetNpcVendorItemList(data.id))
+                    continue;
+                spawns.push_back({data.id, data.mapid, data.posX, data.posY, data.posZ});
+            }
+        });
+        return spawns;
+    }
+
+    // The ammo the bot's ranged weapon fires: ITEM_SUBCLASS_ARROW / ITEM_SUBCLASS_BULLET, 0 for none.
+    uint32 RequiredAmmoSubClass(Player* bot)
+    {
+        Item* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+        ItemTemplate const* proto = ranged ? ranged->GetTemplate() : nullptr;
+        if (!proto || proto->Class != ITEM_CLASS_WEAPON)
+            return 0;
+        switch (proto->SubClass)
+        {
+            case ITEM_SUBCLASS_WEAPON_GUN:
+                return ITEM_SUBCLASS_BULLET;
+            case ITEM_SUBCLASS_WEAPON_BOW:
+            case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+                return ITEM_SUBCLASS_ARROW;
+            default:
+                return 0;
+        }
+    }
+
+    // The cheapest stack of usable ammo of that subclass the vendor sells, 0 when none.
+    uint32 AmmoPrice(Player* bot, uint32 entry, uint32 subClass)
+    {
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry);
+        if (!items)
+            return 0;
+        uint32 best = 0;
+        for (VendorItem const* item : items->m_items)
+        {
+            ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+            if (!proto || proto->Class != ITEM_CLASS_PROJECTILE || proto->SubClass != subClass ||
+                proto->RequiredLevel > bot->GetLevel() || item->ExtendedCost)
+                continue;
+            uint32 const price = std::max<uint32>(1, proto->BuyPrice);
+            if (!best || price < best)
+                best = price;
+        }
+        return best;
+    }
+
+    // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
+    VendorSpawn const* NearestVendor(Player* bot, uint32 ammoSubClass, float& dist)
+    {
+        FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+        VendorSpawn const* best = nullptr;
+        dist = FLT_MAX;
+        for (VendorSpawn const& spawn : VendorSpawns())
+        {
+            if (spawn.mapId != bot->GetMapId())
+                continue;
+            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+            if (d >= dist)
+                continue;
+            CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
+            FactionTemplateEntry const* faction = info ? sFactionTemplateStore.LookupEntry(info->faction) : nullptr;
+            if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
+                continue;
+            if (ammoSubClass && !AmmoPrice(bot, spawn.entry, ammoSubClass))
+                continue;
+            best = &spawn;
+            dist = d;
+        }
+        return best;
+    }
+
+    // Low ammo by the hunters' "low ammo" line (100 rounds).
+    constexpr uint32 VENDOR_LOW_AMMO = 100;
+}
+
+bool NewRpgBaseAction::StartVendorRun()
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (info.vendorRunEntry || bot->IsInCombat() || !bot->IsAlive())
+        return false;
+
+    uint8 const bagUsed = AI_VALUE(uint8, "bag space");
+    bool const sell = AI_VALUE(bool, "should sell") && AI_VALUE(bool, "can sell") &&
+                      (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed);
+
+    uint32 ammoSubClass = 0;
+    if (bot->getClass() == CLASS_HUNTER)
+    {
+        uint32 const subClass = RequiredAmmoSubClass(bot);
+        if (subClass && AI_VALUE2(uint32, "item count", "ammo") < VENDOR_LOW_AMMO && bot->GetMoney() > 0 &&
+            (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney))
+            ammoSubClass = subClass;
+    }
+    if (!sell && !ammoSubClass)
+        return false;
+
+    float dist = 0.0f;
+    VendorSpawn const* vendor = NearestVendor(bot, ammoSubClass, dist);
+    if (ammoSubClass && (!vendor || bot->GetMoney() < AmmoPrice(bot, vendor->entry, ammoSubClass)))
+    {
+        ammoSubClass = 0;
+        if (!sell)
+            return false;
+        vendor = NearestVendor(bot, 0, dist);
+    }
+    if (!vendor)
+        return false;
+
+    std::string reason = sell ? "sell junk" : "";
+    if (ammoSubClass)
+        reason += std::string(sell ? " + " : "") + (ammoSubClass == ITEM_SUBCLASS_ARROW ? "buy arrows" : "buy bullets");
+    info.ChangeToGoCamp(WorldPosition(vendor->mapId, vendor->x, vendor->y, vendor->z));
+    info.vendorRunEntry = vendor->entry;
+    info.vendorRunReason = reason;
+    CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(vendor->entry);
+    LOG_INFO("playerbots", "[New RPG] {} goes to vendor {} ({:.0f} yd): {} (bags {}% full, {} ammo, {}c)",
+             bot->GetName(), tmpl ? tmpl->Name : "?", dist, reason, bagUsed,
+             AI_VALUE2(uint32, "item count", "ammo"), bot->GetMoney());
+    return true;
+}
 
 void TellRpgStatusAction::WhisperStatusChange(Player* owner, std::string const& statusName)
 {
@@ -244,6 +387,32 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgStatus status = info.GetStatus();
+
+    // [guild7] one line per status change for the guild stats (tools/guild_stats.py "activity")
+    if (info.loggedStatus != uint8(status))
+    {
+        static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
+                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER"};
+        info.loggedStatus = uint8(status);
+        std::string detail;
+        if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
+            detail = " q" + std::to_string(quest->questId) + (quest->quest ? " " + quest->quest->GetTitle() : "");
+        else if (auto const* grind = std::get_if<NewRpgInfo::GoGrind>(&info.data))
+            detail = " " + std::to_string(uint32(bot->GetExactDist(grind->pos))) + " yd";
+        else if (auto const* camp = std::get_if<NewRpgInfo::GoCamp>(&info.data))
+            detail = " " + std::to_string(uint32(bot->GetExactDist(camp->pos))) + " yd";
+        if (info.vendorRunEntry)
+            detail += " vendor: " + info.vendorRunReason;
+        LOG_INFO("playerbots", "[rpg] {} L{} {}{}", bot->GetName(), bot->GetLevel(),
+                 status < RPG_STATUS_END ? names[status] : "?", detail);
+    }
+
+    // [guild3] full bags or low ammo: to a vendor first, as a player does (not out of a flight, rest or pvp)
+    if ((status == RPG_IDLE || status == RPG_GO_GRIND || status == RPG_WANDER_RANDOM || status == RPG_DO_QUEST ||
+         status == RPG_DO_GATHER || ((status == RPG_GO_CAMP || status == RPG_WANDER_NPC) && !info.vendorRunEntry)) &&
+        StartVendorRun())
+        return true;
+
     switch (status)
     {
         case RPG_IDLE:
@@ -424,6 +593,21 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     if (!dataPtr)
         return false;
     auto& data = *dataPtr;
+    if (!data.npcOrGo && info.vendorRunEntry)
+    {
+        // [guild3] the vendor this walk came for; gone (dead, despawned): the visit counts as done
+        if (Creature* vendor = bot->FindNearestCreature(info.vendorRunEntry, 60.0f))
+        {
+            data.npcOrGo = vendor->GetGUID();
+            data.lastReach = 0;
+            return true;
+        }
+        LOG_INFO("playerbots", "[New RPG] {} finds no vendor {} at its spawn", bot->GetName(), info.vendorRunEntry);
+        info.vendorRunEntry = 0;
+        info.vendorVisited = true;
+        info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+        info.vendorVisitMoney = bot->GetMoney();
+    }
     if (!data.npcOrGo)
     {
         // Prefer a giver with something to accept or reward, else any nearby npc; none -> IDLE
@@ -462,14 +646,34 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
 
-                if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
+                bool const vendorRun = info.vendorRunEntry && creature->GetEntry() == info.vendorRunEntry;
+                if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && (AI_VALUE(bool, "can sell") || vendorRun))
                 {
-                    botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+                    uint32 const moneyBefore = bot->GetMoney();
+                    uint32 const ammoBefore = AI_VALUE2(uint32, "item count", "ammo");
+                    uint8 const bagBefore = AI_VALUE(uint8, "bag space");
+                    if (AI_VALUE(bool, "can sell"))
+                        botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
 
                     // Buying sorts the vendor list through the weight calculator; skip it for
-                    // bots without money for cheap consumables.
-                    if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
+                    // bots without money for cheap consumables, unless they came here for ammo.
+                    if (bot->GetMoney() >= MIN_VENDOR_BALANCE || vendorRun)
                         botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
+
+                    if (vendorRun)
+                    {
+                        botAI->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Reset();
+                        botAI->GetAiObjectContext()->GetValue<uint8>("bag space")->Reset();
+                        LOG_INFO("playerbots",
+                                 "[New RPG] {} at vendor {} ({}): money {}c -> {}c, ammo {} -> {}, bags {}% -> {}%",
+                                 bot->GetName(), creature->GetName(), info.vendorRunReason, moneyBefore,
+                                 bot->GetMoney(), ammoBefore, AI_VALUE2(uint32, "item count", "ammo"), bagBefore,
+                                 AI_VALUE(uint8, "bag space"));
+                        info.vendorRunEntry = 0;
+                        info.vendorVisited = true;
+                        info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+                        info.vendorVisitMoney = bot->GetMoney();
+                    }
                 }
 
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))

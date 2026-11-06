@@ -561,7 +561,9 @@ namespace
             for (ObjectGuid const& guid : cfg.guids)
             {
                 Player* bot = ObjectAccessor::FindConnectedPlayer(guid);
-                if (bot && bot->IsInWorld() && !IsHuman(bot) && GET_PLAYERBOT_AI(bot) && !bot->IsBeingTeleported())
+                // [guild6] the user's own character under ".playerbots bot self" plays like the rest of the pack
+                if (bot && bot->IsInWorld() && (!IsHuman(bot) || IsSelfBot(bot)) && GET_PLAYERBOT_AI(bot) &&
+                    !bot->IsBeingTeleported())
                     bots.push_back(bot);
             }
             return bots;
@@ -601,7 +603,7 @@ namespace
                     if (_order.type != OrderType::None && _order.executors.count(bot->GetGUID()))
                         continue;
                     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-                    if (botAI && botAI->GetMaster() && IsRealPlayer(botAI->GetMaster()))
+                    if (botAI && botAI->GetMaster() && IsRealPlayer(botAI->GetMaster()) && !IsSelfBot(bot))
                         continue;
                     EnsureAutonomousStrategies(bot, true);
                 }

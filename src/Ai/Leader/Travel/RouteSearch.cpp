@@ -10,6 +10,7 @@
 #include "DetourCommon.h"
 #include "DetourNavMesh.h"
 #include "LeaderOrders.h"
+#include "Config.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapDefines.h"
@@ -323,12 +324,23 @@ namespace Leader::Travel
         return points.back();
     }
 
+    bool HeightGapLogEnabled()
+    {
+        static bool const enabled = sConfigMgr->GetOption<bool>("AiPlayerbot.HeightGapLog", false, false);
+        return enabled;
+    }
+
     void NoteHeightGap(Unit* walker, G3D::Vector3 const& point, float beforeSnap, char const* what)
     {
         constexpr int HEIGHT_GAP_NODES = 64;              // findNearestPoly needs no search nodes; init wants some
         constexpr float HEIGHT_GAP_COLUMN = 50.0f;        // the navmesh layers searched above / below the point
         constexpr size_t HEIGHT_GAP_MEMO_MAX = 65536;     // logged cells kept per thread
         constexpr float HEIGHT_GAP_VMAP_UP = 2.0f;        // the floor search starts this far above (Map::GetHeight)
+        // [guild4] a diagnostic only (the walk never uses it), off unless AiPlayerbot.HeightGapLog = 1: it ran a navmesh
+        // poly search, two vmap floor searches and a liquid query per route sample of every walking bot and flooded
+        // the console (the playerbots logger runs at debug level here).
+        if (!HeightGapLogEnabled())
+            return;
         Map* map = walker ? walker->GetMap() : nullptr;
         dtNavMesh const* navMesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
         if (!navMesh)
@@ -375,7 +387,7 @@ namespace Leader::Travel
                                                         HEIGHT_GAP_COLUMN);
         LiquidData const liquid = map->GetLiquidData(walker->GetPhaseMask(), point.x, point.y,
                                                      std::max(point.z, meshZ), walker->GetCollisionHeight(), {});
-        LOG_INFO("playerbots",
+        LOG_DEBUG("playerbots",
                  "[height_gap] {} {}: map {} ({:.1f},{:.1f}) sample z {:.1f} (before the ground snap {:.1f}), navmesh "
                  "z {:.1f} (poly flags {:#x}, climb {:.1f}), grid z {:.1f}, vmap z {:.1f} from the sample / {:.1f} "
                  "from the navmesh, liquid entry {} flags {:#x} level {:.1f}",
@@ -442,14 +454,18 @@ namespace Leader
             result.length += (corners[i] - corners[i - 1]).length();
         // [lead147] the samples stand on the navmesh's detail height (LongRoute); the ground snap is only the
         // [height_gap] cross-check now
+        bool const heightGapLog = Travel::HeightGapLogEnabled();
         for (G3D::Vector3 const& point : surface)
         {
             // [lead161] no repeated point (a zero-length segment has no direction for the walk's shortening)
             if (!result.points.empty() && (result.points.back() - point).squaredLength() <= 1e-4f)
                 continue;
-            G3D::Vector3 ground = point;
-            walker->UpdateAllowedPositionZ(ground.x, ground.y, ground.z);
-            Travel::NoteHeightGap(walker, ground, point.z, "route sample ground");  // [lead144]
+            if (heightGapLog)  // [guild4] the ground snap feeds only the diagnostic
+            {
+                G3D::Vector3 ground = point;
+                walker->UpdateAllowedPositionZ(ground.x, ground.y, ground.z);
+                Travel::NoteHeightGap(walker, ground, point.z, "route sample ground");  // [lead144]
+            }
             result.points.push_back(point);
         }
         return result;

@@ -502,6 +502,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot->Unit::IsFalling())
         bot->SetFallInformation(0, bot->GetPositionZ());
 
+    // [guild8] stages before the engine, so a freeze trace names the step (b288 18:29: 60 s hang, stage empty)
+    MapWorkerTrace::SetStage("pre: fall", nullptr);
     UpdateFall();
     GuardAirborneSpline();
 
@@ -541,9 +543,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     }
 
     bool doMinimalReaction = minimal || !AllowActivity(REACT_ACTIVITY);
+    MapWorkerTrace::SetStage("pre: reaction", nullptr);
     if (UpdateAIReaction(elapsed, doMinimalReaction, !bot->IsInFlight()))
         return;
 
+    MapWorkerTrace::SetStage("pre: spell", nullptr);
     if (!CanUpdateAI())
         return;
 
@@ -767,6 +771,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         spellInterruptRequested = false;
     }
 
+    MapWorkerTrace::SetStage("pre: transport", nullptr);
     // Handle transport check delay
     if (nextTransportCheck > elapsed)
         nextTransportCheck -= elapsed;
@@ -799,12 +804,15 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     }
 
     // Update the bot's group status (moved to helper function)
+    MapWorkerTrace::SetStage("pre: group master", nullptr);
     UpdateAIGroupMaster();
+    MapWorkerTrace::SetStage("pre: internal", nullptr);
 
     // Update internal AI
     idleDiag.tickCast = false;
     idleDiag.tickAction.clear();
     UpdateAIInternal(elapsed, minimal);
+    MapWorkerTrace::SetStage("after ai", nullptr);
     UpdateIdleDiag(false);
     UpdateHealDiag();
 

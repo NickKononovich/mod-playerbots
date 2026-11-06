@@ -10,6 +10,8 @@
 #include "Channel.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
+#include "Creature.h"
+#include "DBCStores.h"
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
@@ -122,6 +124,37 @@ public:
             revision = "Unknown Playerbots Database Revision";
 
         revisions["Playerbots"] = revision;
+    }
+};
+
+// [guild5] One line per death by a creature (killer, levels, place) for the guild stats; and on a logout only that
+// character is marked offline: the core marked every character of the account offline (CHAR_UPD_ACCOUNT_ONLINE), so
+// the user's logout or a pack character handed to him flagged the account's other pack bots offline while they played
+// on (Player::SaveToDB set them back at their next save).
+class PlayerbotsDeathAndOnlineScript : public PlayerScript
+{
+public:
+    PlayerbotsDeathAndOnlineScript()
+        : PlayerScript("PlayerbotsDeathAndOnlineScript",
+                       {PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_CAN_MARK_ACCOUNT_OFFLINE})
+    {
+    }
+
+    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
+    {
+        if (!killer || !killed)
+            return;
+        AreaTableEntry const* area = sAreaTableStore.LookupEntry(killed->GetAreaId());
+        LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {}",
+                 killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
+                 uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
+                 area ? area->area_name[0] : "?");
+    }
+
+    bool OnPlayerCanMarkAccountOffline(ObjectGuid guid, uint32 /*accountId*/) override
+    {
+        CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", guid.GetCounter());
+        return false;
     }
 };
 
@@ -647,6 +680,7 @@ void AddPlayerbotsScripts()
     new PlayerbotsBattlefieldScript();
     new PlayerbotsDatabaseScript();
     new PlayerbotsPlayerScript();
+    new PlayerbotsDeathAndOnlineScript();  // [guild5]
     new PlayerbotsMiscScript();
     new PlayerbotsServerScript();
     new PlayerbotsSessionScript();

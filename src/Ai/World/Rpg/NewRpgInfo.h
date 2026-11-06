@@ -151,6 +151,16 @@ struct NewRpgInfo
     GuidSet ignoredQuestGivers;  // skipped until the next IDLE
     // END QUEST GIVER
 
+    // [guild3] A walk to a vendor to sell junk (bags nearly full) or buy arrows/bullets, like a player: GO_CAMP to the
+    // vendor's spawn, then WANDER_NPC on it (sell + buy). The bag fill and money at the last visit keep a visit that
+    // could not help (nothing sellable left, ammo not affordable) from repeating until either changes.
+    uint32 vendorRunEntry{0};
+    std::string vendorRunReason;
+    uint8 vendorVisitBagUsed{0};
+    uint32 vendorVisitMoney{0};
+    bool vendorVisited{false};
+    uint8 loggedStatus{255};  // [guild7] the status last written to the log ([rpg] line)
+
     using RpgData = std::variant<
         Idle,
         GoGrind,

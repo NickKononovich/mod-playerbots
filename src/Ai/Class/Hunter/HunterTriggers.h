@@ -72,6 +72,18 @@ public:
     HunterNoAmmoTrigger(PlayerbotAI* botAI) : AmmoCountTrigger(botAI, "ammo", 1, 10) {}
 };
 
+// [guild2] A hunter swings in melee when it cannot shoot: no arrows or bullets in its bags, or its target meleeing it
+// inside Auto Shot's minimum range. Raptor Strike is "on next swing" (SPELL_ATTR0_ON_NEXT_SWING) and goes off only with
+// melee auto-attack on; the hunter attacked at range never started it, so a level 1-2 hunter without a pet stood in
+// melee doing no damage (guild run 2026-11-06: 3-4 deaths per hunter, all still level 1-2, every other class 0).
+class HunterNeedsMeleeTrigger : public Trigger
+{
+public:
+    HunterNeedsMeleeTrigger(PlayerbotAI* botAI) : Trigger(botAI, "hunter needs melee") {}
+
+    bool IsActive() override;
+};
+
 class HunterHasAmmoTrigger : public AmmoCountTrigger
 {
 public:

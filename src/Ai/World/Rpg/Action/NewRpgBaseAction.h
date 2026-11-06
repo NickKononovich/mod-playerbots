@@ -38,6 +38,9 @@ public:
     NewRpgBaseAction(PlayerbotAI* botAI, std::string name) : MovementAction(botAI, name) {}
 
 protected:
+    // [guild3] full bags or low ammo: GO_CAMP to the nearest friendly vendor; true when the walk starts
+    bool StartVendorRun();
+
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);
     bool MoveWorldObjectTo(ObjectGuid guid, float distance = INTERACTION_DISTANCE);

@@ -238,6 +238,21 @@ bool HunterLowAmmoTrigger::IsActive()
     return bot->GetGroup() && ammoCount > 0 && ammoCount < 100;
 }
 
+bool HunterNeedsMeleeTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive())
+        return false;
+
+    bool const swinging = bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) && bot->GetVictim() == target;
+    bool const inMelee = bot->IsWithinMeleeRange(target);
+    if (!AI_VALUE2(uint32, "item count", "ammo"))
+        return !inMelee || !swinging;
+
+    // in a group the hunter walks to its tank ("chased away from tank") instead
+    return !bot->GetGroup() && inMelee && target->GetVictim() == bot && !swinging;
+}
+
 bool HunterHasAmmoTrigger::IsActive()
 {
     return !AmmoCountTrigger::IsActive();

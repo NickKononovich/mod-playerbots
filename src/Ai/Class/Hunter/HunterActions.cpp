@@ -286,6 +286,10 @@ bool CastAutoShotAction::isUseful()
     if (botAI->IsInVehicle() && !botAI->IsInVehicle(false, false, true))
         return false;
 
+    // [guild2] no arrows or bullets: the cast fails every tick; the hunter melees ("hunter needs melee")
+    if (!AI_VALUE2(uint32, "item count", "ammo"))
+        return false;
+
     if (AI_VALUE(Unit*, "current target") && bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) &&
         bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL)->m_targets.GetUnitTargetGUID() ==
             AI_VALUE(Unit*, "current target")->GetGUID())
