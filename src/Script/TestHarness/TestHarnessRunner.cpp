@@ -2541,6 +2541,25 @@ namespace TestHarness
                 if (bot)
                     break;
             }
+            // [lead1567] ... and with nobody free at the gate, the nearest member with the key whom nothing hits
+            // keys it even while it casts (a healer healing through the bars is never free): its step in or the
+            // key's use ends that cast. b277 strat-n 20261106-105714-5E-13 47-101 s: the priest 7.9 yd from the
+            // shut Service Entrance Gate healed the prot paladin fighting alone past it, door_cut "holding" 53 s
+            // without one member_key / member_key_step (every member casting or out of reach), the tank died
+            if (!bot)
+                for (Member const& each : party.members)
+                {
+                    Player* other = ObjectAccessor::FindPlayer(each.guid);
+                    if (!other || other->GetMap() != map || !other->IsAlive() || !other->getAttackers().empty() ||
+                        (bot && bot->GetExactDist(door) <= other->GetExactDist(door)))
+                        continue;
+                    for (StarterTrack const& track : party.starters)
+                        if (track.def->kind == StarterKind::UseItem && track.def->itemId &&
+                            other->HasItemCount(track.def->itemId, 1) &&
+                            std::find(track.def->entries.begin(), track.def->entries.end(), door->GetEntry()) !=
+                                track.def->entries.end())
+                            bot = other;
+                }
             if (!bot)
                 return;
         }
@@ -2628,6 +2647,8 @@ namespace TestHarness
             bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
         TestRunner::ClearWaypoint(bot->GetGUID());
         bot->StopMoving();
+        if (bot->IsNonMeleeSpellCast(false))  // [lead1567] the key is the cut's answer: its cast ends this one
+            bot->InterruptNonMeleeSpells(false);
         bot->SetFacingToObject(door);
         // As the client sends it (UseStarterItem): the door as the target when the spell takes one.
         WorldPacket packet(CMSG_USE_ITEM);
