@@ -904,7 +904,12 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                 // fight was judged to spend from the potion: in that boss fight, once the pool is under it (the
                 // potion's whole return fits the pool, above), the potion is drunk
                 float const credited = bossFight ? RestState::BossPotionCredit(bot->GetGUID()) : 0.0f;
-                bool const underCredit = credited > 0.0f && bot->GetPowerPct(POWER_MANA) < credited;
+                // [lead1534] b275 rfc-h 5H-8 Jergosh: the gate credited the disc priest's 6 % potion, the priest ran
+                // 22 -> 8 % and the verdict never came (the pool never under 6 %, the measured boss rate 0 put the
+                // line at its reserve) - "under the credit" compared the pool with the potion's own size. The credit
+                // is the potion the fight was judged to drink: in that boss fight it is drunk once its whole return
+                // fits the pool (above) - one potion a fight, nothing of it lost
+                bool const underCredit = credited > 0.0f;
                 if (bot->GetPowerPct(POWER_MANA) < line || underCredit)
                 {
                     // [lead904] user 2026-11-03 (32 / 18): the mana potion on trash is kept for the next boss like the
@@ -913,7 +918,8 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
                     std::string const rule = cooldownRule(backSec);
                     item = rule.empty() ? 0 : potion;
                     if (underCredit && bot->GetPowerPct(POWER_MANA) >= line)
-                        lineWhy += Acore::StringFormat("; under the {:.0f} % the boss gate credited it [lead1421]",
+                        lineWhy += Acore::StringFormat("; the boss gate credited its {:.0f} %: its return fits the "
+                                                       "pool [lead1421] [lead1534]",
                                                        credited);
                     verdict = Acore::StringFormat(
                         "mana potion {}: {:.0f} % < the {:.0f} % the fight's {:.0f} s left "

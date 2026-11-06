@@ -9548,8 +9548,8 @@ namespace Leader::Dungeon
                         // (33401) held the druid tank 35 s - the heals waited "not on the tank" / "off Gzaanum" on
                         // the tank's ready Growl in reach, a taunt a charmed / controlled tank cannot cast and a threat
                         // it cannot raise. A tank that has lost control (charmed, possessed, stunned, feared,
-                        // polymorphed: UNIT_STATE_LOST_CONTROL) takes nothing back: no hold outlives the member
-                        bool const tankLost = tank->IsCharmed() || tank->HasUnitState(UNIT_STATE_LOST_CONTROL);
+                        // polymorphed: UNIT_STATE_CONTROLLED) takes nothing back: no hold outlives the member
+                        bool const tankLost = tank->IsCharmed() || tank->HasUnitState(UNIT_STATE_CONTROLLED);
                         float takeBack = 0.0f;
                         std::string takeBackMob;
                         if (member != tank && tank->IsAlive())
