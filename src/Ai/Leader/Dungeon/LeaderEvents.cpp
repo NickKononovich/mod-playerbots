@@ -9710,6 +9710,40 @@ namespace Leader::Dungeon
                             byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f} (in reach)", nearMob->GetName(),
                                                                               dps));
                         }
+                        // [lead1553] b276 ac-h 5F-14 449-452 s: the heals waited «no headroom on Raging Soul» while
+                        // the hunter fell 92 -> 67 % in 4 s (~1.1k per second) - its attacker's model read 340 per
+                        // second (Rthunac "dies in 35.1 s"). The member's measured loss counts as well: its health
+                        // drop since its health last rose (a heal landed, the riseRate rule of lead574) over those
+                        // seconds, read once they span a global cooldown
+                        {
+                            struct LossSeen
+                            {
+                                uint32 anchorMs = 0;
+                                uint32 anchorHealth = 0;
+                                uint32 lastHealth = 0;
+                            };
+                            thread_local std::map<ObjectGuid, LossSeen> lossSeen;
+                            if (lossSeen.size() > 1024)
+                                lossSeen.clear();
+                            LossSeen& seen = lossSeen[member->GetGUID()];
+                            uint32 const nowMs = getMSTime();
+                            uint32 const health = member->GetHealth();
+                            if (!seen.anchorMs || health > seen.lastHealth || !member->IsInCombat())
+                            {
+                                seen.anchorMs = nowMs;
+                                seen.anchorHealth = health;
+                            }
+                            seen.lastHealth = health;
+                            float const sec = getMSTimeDiff(seen.anchorMs, nowMs) / 1000.0f;
+                            if (sec >= HEADROOM_GCD_SEC && seen.anchorHealth > health)
+                                if (float const measured = float(seen.anchorHealth - health) / sec; measured > incoming)
+                                {
+                                    byAttacker.emplace_back(measured - incoming,
+                                                            Acore::StringFormat("measured loss {:.0f}/s [lead1553]",
+                                                                                measured));
+                                    incoming = measured;
+                                }
+                        }
                         if (incoming <= 0.0f)
                             continue;
                         float const absorbs = float(member->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
