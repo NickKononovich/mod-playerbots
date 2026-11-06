@@ -14167,6 +14167,25 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     return fits;
 }
 
+// [lead1580] a key door's opening: the tank at the use point `at`, every woken mob comes and fights there; the core's
+// chain counted from them as a measured careful pull counts it (the assistance chain: engage calls where each one
+// engages, the periodic call from the fight, formations, scripted CallForHelp round the fight)
+void AggressiveTargetAction::OpeningPack(std::vector<Unit*> const& woken, Position const& at, std::vector<Unit*>& out)
+{
+    out.clear();
+    GuidVector const possible = PlanPossible(true);  // the closed gate cuts the sight, not the core's chain
+    for (Unit* mob : woken)
+    {
+        if (std::find(out.begin(), out.end(), mob) != out.end())
+            continue;
+        std::vector<Unit*> pack;
+        CollectPack(botAI, bot, mob, at, possible, pack, FightHere(at), true);
+        for (Unit* unit : pack)
+            if (std::find(out.begin(), out.end(), unit) == out.end())
+                out.push_back(unit);
+    }
+}
+
 bool AggressiveTargetAction::LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out)
 {
     _snap = &snap;
@@ -14553,6 +14572,39 @@ namespace PullPlanner
                 unit && unit->IsAlive() && std::find(units.begin(), units.end(), unit) == units.end())
                 units.push_back(unit);
         return planner->JudgeMobs(units, overload, why, drop, fightSec, carried);  // [lead1572]
+    }
+
+    bool JudgeOpening(Player* tank, std::vector<ObjectGuid> const& woken, Position const& at,
+                      std::vector<ObjectGuid>& pack, float& overload, std::string& why, bool& carried)
+    {
+        pack.clear();
+        carried = false;
+        PlayerbotAI* ai = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        if (!ai)
+            return false;
+        AggressiveTargetAction* planner = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(plannerLock);
+            PlannerEntry& entry = planners[tank->GetGUID()];
+            if (!entry.planner || entry.ai != ai || entry.tank != tank)
+            {
+                entry.planner = std::make_unique<AggressiveTargetAction>(ai);
+                entry.ai = ai;
+                entry.tank = tank;
+                entry.shadow = false;
+            }
+            planner = entry.planner.get();
+        }
+        std::vector<Unit*> units;
+        for (ObjectGuid const& guid : woken)
+            if (Unit* unit = ObjectAccessor::GetUnit(*tank, guid);
+                unit && unit->IsAlive() && std::find(units.begin(), units.end(), unit) == units.end())
+                units.push_back(unit);
+        std::vector<Unit*> chain;
+        planner->OpeningPack(units, at, chain);  // [lead1580]
+        for (Unit* unit : chain)
+            pack.push_back(unit->GetGUID());
+        return planner->JudgeMobs(chain, overload, why, nullptr, nullptr, &carried);
     }
 
     bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out)

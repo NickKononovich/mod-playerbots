@@ -2086,9 +2086,14 @@ namespace Leader::Travel
                     }
                     if ((gateSide(bot->GetPositionX(), bot->GetPositionY()) >= 0.0f) != useSign)
                     {
-                        if (bot->GetExactDist2d(pass->farX, pass->farY) <= KEY_PASS_FAR_WAIT_RANGE)
+                        // [lead1581] the far side's wait is the safe spot of the key-door rule when there is one
+                        bool const safe = routeState.keyPassSafeDoor == go->GetGUID();
+                        Position const farWait = safe ? routeState.keyPassSafe
+                                                      : Position(pass->farX, pass->farY, pass->farZ);
+                        if (bot->GetExactDist2d(farWait) <= (safe ? KEY_PASS_GATHER_RANGE : KEY_PASS_FAR_WAIT_RANGE))
                             continue;
-                        group.SetMemberWaypoint(member.guid, bot, pass->farX, pass->farY, pass->farZ);
+                        group.SetMemberWaypoint(member.guid, bot, farWait.GetPositionX(), farWait.GetPositionY(),
+                                                farWait.GetPositionZ());
                         waitFor += (waitFor.empty() ? "" : ",") + member.name + " (far side)";
                         continue;
                     }
@@ -2185,7 +2190,94 @@ namespace Leader::Travel
                     }
                     static std::unordered_map<uint64, uint32> farPackSince;  // the harness's world thread only
                     uint64 const farKey = (uint64(group.InstanceId()) << 32) | go->GetEntry();
-                    bool const farPack = first && (woken.size() >= KEY_PASS_FAR_PACK_MIN || !refusedWhy.empty());
+                    bool farPack = first && (woken.size() >= KEY_PASS_FAR_PACK_MIN || !refusedWhy.empty());
+                    // [lead1581] the user's key-door rule, the leader's computation: a spot behind the door out of
+                    // every far-side mob's aggro reach (the careful pull's test, AggroesAtPoint, by the reach + the
+                    // pricing's spread + the runner's stop), whose walk from the use point through the gate stays out
+                    // of it too, with the opening at the use point waking nobody - the whole group passes to it
+                    // together (the plain pass, its far point that spot) and pulls from there. None: the opening is
+                    // held and the group waits for the pack on this side (lead1570).
+                    if (routeState.keyPassSafeDoor == go->GetGUID() && (!farPack || !group.LeaderDecides()))
+                        routeState.keyPassSafeDoor.Clear();
+                    if (farPack && Leader::Leads(Leader::LEADER_DOOR_INPUTS) && group.LeaderDecides())
+                    {
+                        Map* map = leader->GetMap();
+                        // every idle mob whose reach (the core's MAX_AGGRO_RADIUS at most) may cover a spot searched
+                        std::list<Creature*> near;
+                        IdleAggroCheck nearCheck{leader};
+                        Acore::CreatureListSearcher<IdleAggroCheck> nearSearcher(go, near, nearCheck);
+                        Cell::VisitObjects(go, nearSearcher, KEY_PASS_FAR_PACK_SCAN + MAX_AGGRO_RADIUS);
+                        auto const outOfAll = [&](G3D::Vector3 const& point, float extra)
+                        {
+                            for (Creature* mob : near)
+                                if (mob->IsAlive() && !mob->IsInCombat() &&
+                                    (gateSide(mob->GetPositionX(), mob->GetPositionY()) >= 0.0f) != useSign &&
+                                    AggroesAtPoint(mob, leader, point,
+                                                   AggroReach(mob, leader) + KEY_PASS_SPREAD + extra, false))
+                                    return false;
+                            return true;
+                        };
+                        G3D::Vector3 const gatePoint(go->GetPositionX(), go->GetPositionY(), useZ);
+                        auto const walkOut = [&](G3D::Vector3 const& from, G3D::Vector3 const& to)
+                        {
+                            float const len = (to - from).length();
+                            for (float d = 0.0f; d <= len; d += KEY_PASS_SPREAD)
+                                if (!outOfAll(from + (to - from) * (len > 0.0f ? d / len : 0.0f), 0.0f))
+                                    return false;
+                            return outOfAll(to, 0.0f);
+                        };
+                        bool safeFound = false;
+                        G3D::Vector3 safe;
+                        if (outOfAll(usePoint, 0.0f) && walkOut(usePoint, gatePoint))
+                        {
+                            float const ahead =
+                                std::atan2(pass->farY - go->GetPositionY(), pass->farX - go->GetPositionX());
+                            for (float out = KEY_PASS_SPREAD; !safeFound && out <= KEY_PASS_FAR_PACK_SCAN;
+                                 out += KEY_PASS_SPREAD)
+                                for (int slot = 0; !safeFound && slot < 5; ++slot)
+                                {
+                                    float const lateral =
+                                        float(slot % 2 ? slot / 2 + 1 : -(slot / 2)) * KEY_PASS_SPREAD;
+                                    float const x =
+                                        go->GetPositionX() + std::cos(ahead) * out - std::sin(ahead) * lateral;
+                                    float const y =
+                                        go->GetPositionY() + std::sin(ahead) * out + std::cos(ahead) * lateral;
+                                    if ((gateSide(x, y) >= 0.0f) == useSign)
+                                        continue;
+                                    float const z =
+                                        map->GetHeight(leader->GetPhaseMask(), x, y, useZ + 3.0f, true, 10.0f);
+                                    G3D::Vector3 const spot(x, y, z);
+                                    if (z <= INVALID_HEIGHT || !outOfAll(spot, KEY_PASS_RUNNER_REACH) ||
+                                        !walkOut(gatePoint, spot) ||
+                                        !map->isInLineOfSight(gatePoint.x, gatePoint.y,
+                                                              gatePoint.z + leader->GetCollisionHeight(), x, y,
+                                                              z + leader->GetCollisionHeight(), leader->GetPhaseMask(),
+                                                              LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+                                        continue;
+                                    safe = spot;
+                                    safeFound = true;
+                                }
+                        }
+                        bool const known = routeState.keyPassSafeDoor == go->GetGUID();
+                        static std::set<std::pair<uint32, uint32>> ruleLogged;  // party seq, door entry
+                        if (ruleLogged.insert({group.Run().runSeq, go->GetEntry()}).second ||
+                            known != safeFound)
+                            group.LogEvent("key_door_rule",
+                                     JsonObject().Str("note", pass->note).Str("door", go->GetName())
+                                         .Num("doorEntry", go->GetEntry()).Num("farPackMobs", uint32(woken.size()))
+                                         .Str("case", safeFound ? "safe spot behind: the group passes together"
+                                                                : "no safe spot: held, the pack comes to the use side")
+                                         .Real("x", safe.x).Real("y", safe.y).Real("z", safe.z)
+                                         .Str("tag", "[lead1581]"));
+                        if (safeFound)
+                        {
+                            routeState.keyPassSafeDoor = go->GetGUID();
+                            routeState.keyPassSafe = Position(safe.x, safe.y, safe.z);
+                            farPack = false;  // the plain pass, to the safe spot
+                        }
+                        else if (known)
+                            routeState.keyPassSafeDoor.Clear();
+                    }
                     routeState.keyPassFarPack = farPack;  // [lead1569] TickKeyDoorPass holds the pass for it
                     if (!farPack && routeState.keyPassBackDoor == go->GetGUID())
                         routeState.keyPassBack.clear();  // [lead1570] nothing wakes: the plain gather
@@ -2208,18 +2300,23 @@ namespace Leader::Travel
                         // 10-mob packs, over by hold 1.43-2.50 alone, were won 6 of 7 times without a death
                         std::string carriedWhy;
                         bool carried = false;
-                        if (!refusedWhy.empty() && cap)
+                        // [lead1580] the opening's pack is what the opening wakes: the woken mobs and the core's chain
+                        // from them fighting at the use point (PullPlanner::JudgeOpening), not the refused verdict's
+                        // pack - b279 strat-n all 8 runs: that verdict was "Ravaged Cadaver as it comes: 27 mobs", a
+                        // wanderer 69-81 yd past the gate chained round its own spawn (the nearest pick's look), its
+                        // 27 merged in put the 7-mob opening over the cap 18, strat_key_gather 14-46 times, 0 pulls
+                        std::vector<ObjectGuid> opening;
+                        bool openingFits = false;
+                        if (cap)
                         {
-                            std::vector<ObjectGuid> opening(woken.begin(), woken.end());
-                            for (ObjectGuid const& guid : group.State().verdictPack)
-                                if (std::find(opening.begin(), opening.end(), guid) == opening.end())
-                                    opening.push_back(guid);
                             float openingOverload = 0.0f;
-                            PullPlanner::JudgePack(leader, opening, openingOverload, carriedWhy, nullptr, nullptr,
-                                                   &carried);
+                            openingFits = PullPlanner::JudgeOpening(
+                                leader, std::vector<ObjectGuid>(woken.begin(), woken.end()),
+                                Position(usePoint.x, usePoint.y, usePoint.z), opening, openingOverload, carriedWhy,
+                                carried);
                             carried = carried && opening.size() <= cap;
                         }
-                        bool const fits = (refusedWhy.empty() || carried) && cap && woken.size() <= cap;
+                        bool const fits = cap && !opening.empty() && opening.size() <= cap && (openingFits || carried);
                         bool mover = false;
                         for (ObjectGuid const& guid : woken)
                             if (Creature* mob = leader->GetMap()->GetCreature(guid);
@@ -2235,9 +2332,10 @@ namespace Leader::Travel
                                          JsonObject().Str("note", pass->note).Str("door", go->GetName())
                                              .Num("doorEntry", go->GetEntry()).Num("farPackMobs", uint32(woken.size()))
                                              .Num("cap", cap).Str("first", first->GetName())
+                                             .Num("openingMobs", uint32(opening.size()))
                                              .Str("action", refusedWhy.empty()
-                                                                ? "keyed: the far side fits"
-                                                                : "keyed: the opening's pull is carried [lead1572]")
+                                                                ? "keyed: the opening's pull fits [lead1580]"
+                                                                : "keyed: the opening's pull is carried [lead1580]")
                                              .Str("refused", refusedWhy).Str("carried", carriedWhy));
                                 if (!refusedWhy.empty())
                                     LOG_INFO("playerbots",
@@ -2311,17 +2409,17 @@ namespace Leader::Travel
                         }
                         else
                         {
+                            // [lead1580] the opening's own pull (woken + chain at the use point) is not carried
                             waitFor = Acore::StringFormat(
-                                "far side: {} mobs in reach of the opening, over the whole-pack cap {} ({} {:.1f} yd "
-                                "past the use point){}", woken.size(), cap, first->GetName(),
-                                first->GetExactDist(usePoint.x, usePoint.y, usePoint.z),
-                                refusedWhy.empty() ? "" : ", refused by the planner: " + refusedWhy);
+                                "far side: {} mobs in reach of the opening, its pull {} mobs with the chain at the use "
+                                "point, cap {} ({} {:.1f} yd past the use point): not carried: {} [lead1580]{}",
+                                woken.size(), opening.size(), cap, first->GetName(),
+                                first->GetExactDist(usePoint.x, usePoint.y, usePoint.z), carriedWhy,
+                                refusedWhy.empty() ? "" : "; the planner's own verdict: " + refusedWhy);
                             if (!mover)
-                                Leader::Dungeon::LeaderNoOption(group, leader, first,
-                                               std::vector<ObjectGuid>(woken.begin(), woken.end()),
-                                               "the key pass opens into " + std::to_string(woken.size()) +
-                                                   " static mobs over the whole-pack cap " + std::to_string(cap) +
-                                                   (refusedWhy.empty() ? std::string() : " (" + refusedWhy + ")"),
+                                Leader::Dungeon::LeaderNoOption(group, leader, first, opening,
+                                               "the key pass opens into a " + std::to_string(opening.size()) +
+                                                   "-mob pull, not carried (" + carriedWhy + ") [lead1580]",
                                                true, JsonObject().Str("kind", "door").Str("door", go->GetName()));
                         }
                     }

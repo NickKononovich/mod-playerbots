@@ -217,6 +217,12 @@ namespace PullPlanner
     // drop term, DropP90); `fightSec`: the fight's seconds (their health over the group's damage); null: not wanted
     bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why,
                    float* drop = nullptr, float* fightSec = nullptr, bool* carried = nullptr);
+    // [lead1580] what a key door's opening really wakes: the mobs in aggro reach of the tank at the use point
+    // (`woken`) with the core's chain from them fighting there (CollectPack, FightHere(at), the assistance chain:
+    // their engage calls, formations, CallForHelp) - not another mob's own pull (a refused verdict "as it comes" of a
+    // wanderer 69 yd off, chained round its spawn). `pack`: the chain's mobs; the rest as JudgePack.
+    bool JudgeOpening(Player* tank, std::vector<ObjectGuid> const& woken, Position const& at,
+                      std::vector<ObjectGuid>& pack, float& overload, std::string& why, bool& carried);
     // [lead33] the leader's synchronous question for its own chosen target: a plan, or a refusal / hold with its
     // reason (Decision::verdict / why)
     bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out);
@@ -434,6 +440,8 @@ public:
     // healers carry it (TankCarries) - the test of a key door's opening, the only pull where nothing else measures
     bool JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why, float* drop = nullptr,
                    float* fightSec = nullptr, bool* carried = nullptr);  // [lead1170]
+    // [lead1580] the opening's chain (PullPlanner::JudgeOpening): every woken mob with what it brings fighting at `at`
+    void OpeningPack(std::vector<Unit*> const& woken, Position const& at, std::vector<Unit*>& out);
 
 private:
     // [lead7] The look itself (the tank's own isUseful before step 7): the readiness gates, the plan, the verdicts.

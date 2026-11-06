@@ -333,6 +333,10 @@ namespace Leader
         std::map<ObjectGuid, Position> keyPassBack;
         // [lead1570] the door whose held opening woke nobody (TickKeyDoorPass): its next opening is the plain pass
         ObjectGuid keyPassHeldQuiet;
+        // [lead1581] the user's key-door rule: the spot behind that door out of every mob's aggro reach (the walk to
+        // it from the use point through the gate too) - the whole group passes to it, then pulls from there
+        ObjectGuid keyPassSafeDoor;
+        Position keyPassSafe;
         // [b32_strat_gate] a member cut off behind a closed door (its walk to the leader runs through it;
         // TickDoorCut, every 2 s): the group holds - no wait_timeout, no route, no new pull - while the door is keyed
         // again (the member's own key, or the leader's from its side).

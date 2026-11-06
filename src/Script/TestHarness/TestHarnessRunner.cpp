@@ -1954,9 +1954,12 @@ namespace TestHarness
         if (reopenAt->second)
             back = reopenAt->second == 1;  // the use side stays: the far side walks back to the use point
         auto nearSide = [&](Player const* bot) { return useSide(bot) != back; };
-        float const destX = back ? pass->useX : pass->farX;
-        float const destY = back ? pass->useY : pass->farY;
-        float const destZ = back ? pass->useZ : pass->farZ;
+        // [lead1581] the user's key-door rule: the leader found a spot behind the door out of every mob's reach (its
+        // walk from the use point too) - the whole group passes to it and pulls from there
+        bool const toSafe = !back && party.keyPassSafeDoor == door->GetGUID();
+        float const destX = back ? pass->useX : toSafe ? party.keyPassSafe.GetPositionX() : pass->farX;
+        float const destY = back ? pass->useY : toSafe ? party.keyPassSafe.GetPositionY() : pass->farY;
+        float const destZ = back ? pass->useZ : toSafe ? party.keyPassSafe.GetPositionZ() : pass->farZ;
 
         // [queue-key-gate-autoclose] the near-side members start for the far point while the key's 5 s Opening is
         // still being cast: the closed-door guard holds them at the gate, they walk through the moment it opens (it
@@ -2055,6 +2058,7 @@ namespace TestHarness
             }
             party.lastProgressMs = now;
             LogEvent(party, "strat_key_pass", JsonObject().Str("note", pass->note).Raw("sent", sent.Build())
+                                                  .Str("to", toSafe ? "the safe spot [lead1581]" : "the far point")
                                                   .Num("afterMs", getMSTimeDiff(party.keyPassSinceMs, now)));
             // [b30_overpull] the skips this gate made - "leader held at a closed door (<gate>)" and every "behind
             // skipped ..." chain rooted in it - are lifted now: the gate shuts again 3 s later, so the per-retarget
