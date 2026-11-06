@@ -175,11 +175,11 @@ void MageAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         triggers.push_back(new TriggerNode("dragon's breath pays", { NextAction("dragon's breath", 39.0f) }));
         triggers.push_back(new TriggerNode("blast wave pays", { NextAction("blast wave", 38.0f) }));
         triggers.push_back(new TriggerNode("flamestrike pays", { NextAction("flamestrike", 23.0f) }));
-        // [rot560] no Blizzard for Fire: wowsims mage__fire / fire_aoe / frostfire never cast it (fire_aoe: Flamestrike,
+        // [rot560] no Fire Blizzard: wowsims mage__fire / fire_aoe / frostfire never cast it (fire_aoe: Flamestrike,
         // Living Bomb multidot, Dragon's Breath, Blast Wave, Hot Streak Pyroblast, Arcane Explosion filler). Its payoff
-        // weighs Fireball's own hits only, without the Ignite and Hot Streak Pyroblasts each Fireball brings (sim 15 % +
+        // weighs Fireball's own hits, not the Ignite and Hot Streak Pyroblasts each Fireball brings (sim 15 % +
         // 12 % of fire damage). b276 rfc-h 5H Rtmagad: two Blizzards on Bazzalan with one add (16 s, 16k) where
-        // Fireballs deal ~29k + Ignite, one on Oggleflint with 0 damage; 72 / 71 % of the one-target sim on those bosses
+        // Fireballs deal ~29k + Ignite, one on Oggleflint for 0 damage; 72 / 71 % of the one-target sim on those bosses
         triggers.push_back(new TriggerNode("arcane explosion pays", { NextAction("arcane explosion", 21.5f) }));
 
         triggers.push_back(new TriggerNode("firestarter", { NextAction("flamestrike", 40.0f) }));
