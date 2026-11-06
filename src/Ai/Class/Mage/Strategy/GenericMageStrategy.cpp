@@ -165,10 +165,9 @@ void MageAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // mage__arcane_aoe / fire_aoe also use Arcane Explosion, where the mobs already stand around the mage
     if (tab == MAGE_TAB_ARCANE)
     {
-        triggers.push_back(new TriggerNode("flamestrike active and medium aoe", { NextAction("blizzard", 24.0f) }));
+        // [rot562] Arcane Explosion only: wowsims mage__arcane_aoe casts nothing else and mage__arcane no area spell
+        // (no Blizzard / Flamestrike in any arcane APL)
         triggers.push_back(new TriggerNode("arcane explosion pays", { NextAction("arcane explosion", 23.5f) }));
-        triggers.push_back(new TriggerNode("flamestrike pays", { NextAction("flamestrike", 23.0f) }));
-        triggers.push_back(new TriggerNode("blizzard pays", { NextAction("blizzard", 22.0f) }));
     }
     else if (tab == MAGE_TAB_FIRE)
     {
