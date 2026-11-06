@@ -216,7 +216,7 @@ namespace PullPlanner
     // [lead1170] `drop`: the tank's deepest modelled health drop over that fight (share of its health, the overload's
     // drop term, DropP90); `fightSec`: the fight's seconds (their health over the group's damage); null: not wanted
     bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why,
-                   float* drop = nullptr, float* fightSec = nullptr);
+                   float* drop = nullptr, float* fightSec = nullptr, bool* carried = nullptr);
     // [lead33] the leader's synchronous question for its own chosen target: a plan, or a refusal / hold with its
     // reason (Decision::verdict / why)
     bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out);
@@ -430,8 +430,10 @@ public:
     // state as after the tank executed a Go decision (MirrorExecute). `shadow`: no side effect, no log line.
     bool LibraryLook(PullPlanner::Snapshot& snap, bool shadow, PullPlanner::Decision& out);
     // [lead33] the danger judge of a set of mobs (PullPlanner::JudgePack)
+    // [lead1572] `carried`: the pack is no boss's, every term but the tank kit's hold prior fits and the tank and the
+    // healers carry it (TankCarries) - the test of a key door's opening, the only pull where nothing else measures
     bool JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why, float* drop = nullptr,
-                   float* fightSec = nullptr);  // [lead1170]
+                   float* fightSec = nullptr, bool* carried = nullptr);  // [lead1170]
 
 private:
     // [lead7] The look itself (the tank's own isUseful before step 7): the readiness gates, the plan, the verdicts.

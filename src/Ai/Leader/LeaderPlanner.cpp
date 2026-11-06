@@ -14095,7 +14095,7 @@ float AggressiveTargetAction::PlanGroupDps()
 // [lead33] the planner's danger model on a set of mobs: the same estimate (EstimatePack, the measured mode) and
 // overload terms (CarefulOverload) as a plan, against the plan's limit (1.0)
 bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& overload, std::string& why, float* drop,
-                                       float* fightSec)
+                                       float* fightSec, bool* carried)
 {
     PartyStrength const strength = PlanStrength();
     GroupSupport const support = CountSupport(bot);
@@ -14145,11 +14145,20 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     overload = terms.Max();
     if (drop)  // [lead1170]
         *drop = terms.drop;
+    // [lead1572] the survival terms alone (lead1566's judge once measured) and the test every fallback is held to
+    std::string carries;
+    bool const carriedNow = !estimate.boss && std::max({terms.size, terms.peak, terms.drain}) <= 1.0f &&
+                            TankCarries(estimate, support, &carries);
+    if (carried)
+        *carried = carriedNow;
     if (fightSec)
         *fightSec = estimate.fightSec;
     bool const fits = !estimate.boss && overload <= 1.0f;
     why = Acore::StringFormat("{} mobs, cost {:.2f} tank hp, fight {:.0f} s, overload {:.2f} of 1.00{}", estimate.mobs,
                               estimate.cost, estimate.fightSec, overload, estimate.boss ? ", a boss" : "");
+    if (carried)  // [lead1572]
+        why += Acore::StringFormat(" (size {:.2f}, hold {:.2f}, peak {:.2f}, drain {:.2f}; {})", terms.size, terms.hold,
+                                   terms.peak, terms.drain, carries);
     if (estimate.boss)
         why += Acore::StringFormat(
             " (healer mana {:.2f}, healing {:.2f}, group dps {:.0f}, landed {:.0f}/s; "
@@ -14520,7 +14529,7 @@ namespace PullPlanner
     }
 
     bool JudgePack(Player* tank, std::vector<ObjectGuid> const& mobs, float& overload, std::string& why, float* drop,
-                   float* fightSec)
+                   float* fightSec, bool* carried)
     {
         PlayerbotAI* ai = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
         if (!ai)
@@ -14543,7 +14552,7 @@ namespace PullPlanner
             if (Unit* unit = ObjectAccessor::GetUnit(*tank, guid);
                 unit && unit->IsAlive() && std::find(units.begin(), units.end(), unit) == units.end())
                 units.push_back(unit);
-        return planner->JudgeMobs(units, overload, why, drop, fightSec);
+        return planner->JudgeMobs(units, overload, why, drop, fightSec, carried);  // [lead1572]
     }
 
     bool Plan(Player* tank, Unit* target, Snapshot& snap, Decision& out)
