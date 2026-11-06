@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgAction.h"
+#include "BotPath.h"  // [guild12]
 #include "AreaDefines.h"
 #include "Group.h"
 #include "NewRpgTriggers.h"
@@ -841,23 +842,34 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
-        size_t nearestIdx = 0;
-        for (size_t i = 1; i < poiInfo.size(); ++i)
-            if (bot->GetDistance2d(poiInfo[i].pos.x, poiInfo[i].pos.y) <
-                bot->GetDistance2d(poiInfo[nearestIdx].pos.x, poiInfo[nearestIdx].pos.y))
-                nearestIdx = i;
-
-        G3D::Vector2 nearestPoi = poiInfo[nearestIdx].pos;
-        int32 objectiveIdx = poiInfo[nearestIdx].objectiveIdx;
-
-        float dx = nearestPoi.x, dy = nearestPoi.y;
-
-        // z = MAX_HEIGHT as we do not know accurate z
-        float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-        // double check for GetQuestPOIPosAndObjectiveIdx
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-            return false;
+        // [guild12] the nearest objective spot the bot can walk to (the leader's route search finds a walk)
+        std::sort(poiInfo.begin(), poiInfo.end(), [this](POIInfo const& a, POIInfo const& b)
+                  { return bot->GetDistance2d(a.pos.x, a.pos.y) < bot->GetDistance2d(b.pos.x, b.pos.y); });
+        float dx = 0.0f, dy = 0.0f, dz = INVALID_HEIGHT;
+        int32 objectiveIdx = 0;
+        bool reachable = false;
+        for (POIInfo const& poi : poiInfo)
+        {
+            dx = poi.pos.x;
+            dy = poi.pos.y;
+            // z = MAX_HEIGHT as we do not know accurate z
+            dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
+            if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
+                continue;
+            if (FindBotPath(bot, dx, dy, dz).type & PATHFIND_NOPATH)
+                continue;
+            objectiveIdx = poi.objectiveIdx;
+            reachable = true;
+            break;
+        }
+        if (!reachable)
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: no walk to any of its {} objective spots",
+                     bot->GetName(), bot->GetLevel(), questId, poiInfo.size());
+            botAI->lowPriorityQuest.insert(questId);
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        }
 
         WorldPosition pos(bot->GetMapId(), dx, dy, dz);
         data.lastReachPOI = 0;
@@ -867,6 +879,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
 
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
     {
+        // [guild12] a needed quest object passed on the way is looted on the way
+        if (UseQuestGameObject(questId))
+            return true;
         if (MoveFarTo(data.pos))
             return true;
         // Long-range sampler couldn't land a candidate — nudge the

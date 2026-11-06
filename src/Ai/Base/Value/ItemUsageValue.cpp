@@ -307,10 +307,13 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     if (itemScore)
         shouldEquip = true;
 
+    bool canWear = true;  // [guild12] the class may wear it at all (the tie-breaks below need it)
     if (itemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(itemProto, bot->getClass()))
-        shouldEquip = false;
+        canWear = false;
     if (itemProto->Class == ITEM_CLASS_ARMOR &&
         !sRandomItemMgr.CanEquipArmor(itemProto, bot->getClass(), bot->GetLevel()))
+        canWear = false;
+    if (!canWear)
         shouldEquip = false;
 
     uint8 possibleSlots = 1;
@@ -406,6 +409,21 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         bool isBetter = false;
         if (itemScore > oldScore)
             isBetter = true;
+        // [guild12] equal weight (low-level gear without stats scores the same, often 0): as a player picks - more
+        // armor, then the higher item level, then the better quality (Eraelor kept Ragged Leather Belt 18 armor on
+        // with Blackened Leather Belt 19 armor in the bags)
+        else if (itemScore == oldScore && canWear && itemProto->Class == oldItemProto->Class &&
+                 (itemProto->Class != ITEM_CLASS_ARMOR || itemProto->SubClass >= oldItemProto->SubClass))
+        {
+            if (itemProto->Armor != oldItemProto->Armor)
+                isBetter = itemProto->Armor > oldItemProto->Armor;
+            else if (itemProto->ItemLevel != oldItemProto->ItemLevel)
+                isBetter = itemProto->ItemLevel > oldItemProto->ItemLevel;
+            else
+                isBetter = itemProto->Quality > oldItemProto->Quality;
+            if (isBetter)
+                shouldEquipInSlot = true;
+        }
         // else if (newItemPower == oldScore && itemProto->Quality > oldItemProto->Quality)
         //     isBetter = true;
         // else if (newItemPower == oldScore && itemProto->Quality == oldItemProto->Quality && itemProto->ItemId >

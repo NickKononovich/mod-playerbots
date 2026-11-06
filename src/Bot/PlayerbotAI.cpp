@@ -145,7 +145,10 @@ void PacketHandlingHelper::AddHandler(uint16 opcode, std::string const handler) 
 
 void PacketHandlingHelper::Handle(ExternalEventHelper& helper)
 {
-    while (!queue.empty())
+    // [guild12] only the packets queued before this pass: a handler whose reply is handled again (the core sends
+    // the next packet while the bot handles one) waits for the next tick instead of spinning here forever (b293
+    // map-0 freezes 60 s, stage "pre: internal": random gatherers 1799 Gnetlibozz, 1793 Ganna)
+    for (std::size_t pending = queue.size(); pending && !queue.empty(); --pending)
     {
         WorldPacket packet = queue.top();
         queue.pop(); // remove first so handling can't modify the queue while we're using it

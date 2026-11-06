@@ -526,6 +526,7 @@ namespace
     struct GuildPlanRow
     {
         uint32 low{0};
+        uint32 num{0};  // [guild12] permanent number #1-#51 (guild_project_plan.num)
         std::string name;
         std::string grp;
         std::string role;
@@ -601,7 +602,7 @@ namespace SelfBotControl
     {
         guildPlan.clear();
         guildPlanLows.clear();
-        if (QueryResult result = PlayerbotsDatabase.Query("SELECT guid, name, grp, role FROM guild_project_plan ORDER BY guid"))
+        if (QueryResult result = PlayerbotsDatabase.Query("SELECT guid, name, grp, role, num FROM guild_project_plan ORDER BY guid"))
         {
             do
             {
@@ -611,6 +612,7 @@ namespace SelfBotControl
                 row.name = fields[1].Get<std::string>();
                 row.grp = fields[2].Get<std::string>();
                 row.role = fields[3].Get<std::string>();
+                row.num = fields[4].Get<uint8>();
                 if (guildPlanLows.insert(row.low).second)
                     guildPlan.push_back(row);
             } while (result->NextRow());
@@ -622,7 +624,7 @@ namespace SelfBotControl
         {
             uint32 const low = uint32(std::strtoul(token.c_str(), nullptr, 10));
             if (low && guildPlanLows.insert(low).second)
-                guildPlan.push_back({low, "", "P", "pack"});
+                guildPlan.push_back({low, 0, "", "P", "pack"});
         }
         LOG_INFO("playerbots", "[live1] guild board: {} characters", guildPlan.size());
     }
@@ -668,10 +670,10 @@ namespace SelfBotControl
                 }
             }
 
-            // G;name;class;level;grp;role;online(1 bot/p person/0);state;zoneId;zone;STATUS|detail;actMin;stillMin;
-            //   deaths1h;deathsAll;lastKiller;gold;bagsUsed;bagsTotal
+            // G;num;name;class;level;grp;role;online(1 bot/p person/0);state;zoneId;zone;STATUS|detail;actMin;
+            //   stillMin;deaths1h;deathsAll;lastKiller;gold;bagsUsed;bagsTotal
             std::ostringstream out;
-            out << "G;" << BoardField(cache ? cache->Name : row.name, 12) << ";"
+            out << "G;" << row.num << ";" << BoardField(cache ? cache->Name : row.name, 12) << ";"
                 << uint32(bot ? bot->getClass() : (cache ? cache->Class : 0)) << ";"
                 << uint32(bot ? bot->GetLevel() : (cache ? cache->Level : 0)) << ";" << BoardField(row.grp, 2) << ";"
                 << BoardField(row.role, 8) << ";";

@@ -21,6 +21,7 @@
 #include "Playerbots.h"
 #include "RaidUtilityAssignment.h"  // [b31_deep]
 #include "SharedDefines.h"
+#include "SpellMgr.h"
 #include "TargetValue.h"
 
 // [b31_deep] wowsims hunter APLs: Viper below 10 % mana, back to Dragonhawk above 30 % ([lead440] one pair of lines
@@ -249,8 +250,15 @@ bool HunterNeedsMeleeTrigger::IsActive()
     if (!AI_VALUE2(uint32, "item count", "ammo"))
         return !inMelee || !swinging;
 
-    // in a group the hunter walks to its tank ("chased away from tank") instead
-    return !bot->GetGroup() && inMelee && target->GetVictim() == bot && !swinging;
+    // [guild12] inside Auto Shot's minimum range no shot goes off: the hunter melees its current target, grouped or
+    // not, whoever the target hits (Eraelor L4 in the user's pack stood at a Webwood Spider holding its bow: the old
+    // rule wanted no group and the spider on the hunter)
+    float minRange = 0.0f;
+    constexpr uint32 SPELL_AUTO_SHOT = 75;
+    if (SpellInfo const* autoShot = sSpellMgr->GetSpellInfo(SPELL_AUTO_SHOT))
+        minRange = autoShot->GetMinRange(false);
+    bool const deadZone = inMelee || bot->GetDistance(target) < minRange;
+    return deadZone && !swinging;
 }
 
 bool HunterHasAmmoTrigger::IsActive()

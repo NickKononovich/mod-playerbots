@@ -20,6 +20,7 @@
 
 class Creature;
 class GameObject;
+struct CreatureTemplate;
 class MotionTransport;
 class WorldPacket;
 
@@ -36,6 +37,23 @@ class NewRpgBaseAction : public MovementAction
 {
 public:
     NewRpgBaseAction(PlayerbotAI* botAI, std::string name) : MovementAction(botAI, name) {}
+
+    // [guild12] the nearest spawned object (within QUEST_OBJECT_RANGE, in sight, lootable by the loot pipeline)
+    // that drops an item a quest in the bot's log still needs (gameobject_loot_template / gameobject_questitem);
+    // nullptr none. The grind target prefers it over mobs the quest does not need.
+    static GameObject* FindNeededQuestObject(Player* bot);
+    // [guild12] a hostile creature spawn of orange or red con for the bot (core Acore::XP::GetColorCode) whose aggro
+    // radius (core Creature::GetAggroRange: detection_range plus the level gap) covers the straight walk from -> to
+    // on the bot's map; nullptr none
+    static CreatureTemplate const* DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY);
+    // [guild12] a quest the bot failed (timed, escort) is not taken again
+    static bool HasFailedQuest(Player* bot, uint32 questId);
+    // [guild12] builds the shared quest spawn / starter indexes (world DB reads) once at server startup, never on a
+    // map thread in a bot's tick
+    static void BuildQuestIndexes();
+    // [guild12] a bot killed by a creature remembers the spot (killer's and its own) as dangerous until it outlevels
+    // the killer: DangerOnWay reports it, so objectives and walks there are skipped
+    static void RecordDeath(Player* bot, Creature* killer);
 
 protected:
     // [guild3] full bags or low ammo: GO_CAMP to the nearest friendly vendor; true when the walk starts
@@ -75,6 +93,10 @@ protected:
     uint32 BestRewardIndex(Quest const* quest);
     bool IsQuestWorthDoing(Quest const* quest);
     bool IsQuestCapableDoing(Quest const* quest);
+    // [guild12] a failed quest (timed / escort) leaves the log for good: logged, never retaken
+    bool AbandonFailedQuest(uint32 questId);
+    // [guild12] a timed quest: the walk to its nearest ender at the bot's run speed fits its time
+    bool TimedQuestFits(Quest const* quest);
     bool HasCapableGroup();
     bool UseQuestGameObject(uint32 questId);
     bool GetDalaranQuestTarget(uint32 questId, WorldPosition& pos);

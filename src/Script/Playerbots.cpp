@@ -19,6 +19,7 @@
 #include <mysqld_error.h>
 #include "AllMapScript.h"
 #include "GatherNodeMgr.h"
+#include "NewRpgBaseAction.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
 #include "PlayerScript.h"
@@ -150,6 +151,7 @@ public:
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
                  area ? area->area_name[0] : "?");
         SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
+        NewRpgBaseAction::RecordDeath(killed, killer);       // [guild12]
     }
 
     bool OnPlayerCanMarkAccountOffline(ObjectGuid guid, uint32 /*accountId*/) override
@@ -551,6 +553,7 @@ class PlayerbotsWorldScript : public WorldScript
 public:
     PlayerbotsWorldScript() : WorldScript("PlayerbotsWorldScript", {
         WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED,
+        WORLDHOOK_ON_STARTUP,
         WORLDHOOK_ON_UPDATE,
         WORLDHOOK_ON_SHUTDOWN
     }) {}
@@ -589,6 +592,14 @@ public:
         GatherNodeMgr::instance().Load();
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
+    }
+
+    // [guild12] the New RPG quest indexes (world DB reads) once all world data is loaded, not in a bot's tick
+    void OnStartup() override
+    {
+        uint32 const started = getMSTime();
+        NewRpgBaseAction::BuildQuestIndexes();
+        LOG_INFO("server.loading", ">> New RPG quest indexes built in {} ms", GetMSTimeDiffToNow(started));
     }
 
     void OnUpdate(uint32 diff) override

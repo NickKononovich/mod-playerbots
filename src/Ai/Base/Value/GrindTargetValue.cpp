@@ -5,6 +5,8 @@
  */
 
 #include "GrindTargetValue.h"
+#include "NewRpgBaseAction.h"  // [guild12]
+#include "Formulas.h"  // [guild12]
 #include "NewRpgInfo.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
@@ -54,6 +56,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     float distance = 0;
     Unit* result = nullptr;
     std::unordered_map<uint32, bool> needForQuestMap;
+    // [guild12] a needed quest object in reach comes before mobs the quest does not need (the loot of objects)
+    bool const questObjectNear =
+        botAI->rpgInfo.GetStatus() == RPG_DO_QUEST && NewRpgBaseAction::FindNeededQuestObject(bot);
 
     for (ObjectGuid const guid : targets)
     {
@@ -84,6 +89,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         if (!bot->isHonorOrXPTarget(unit) && !neededForQuest())
             continue;
 
+        if (questObjectNear && !neededForQuest())
+            continue;
+
         if (abs(bot->GetPositionZ() - unit->GetPositionZ()) > INTERACTION_DISTANCE)
             continue;
 
@@ -102,8 +110,10 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
             continue;
         }
 
-        if (!bot->InBattleground() && (int)unit->GetLevel() - (int)bot->GetLevel() > 4 && !unit->GetGUID().IsPlayer() &&
-            !neededForQuest())
+        // [guild12] never a mob of orange or red con (the core's level rule), not even one a quest needs: the quest is
+        // postponed instead (Selalleas L3 died 4 times to Webwood Silkspinner L8-9)
+        if (!bot->InBattleground() && !unit->GetGUID().IsPlayer() &&
+            Acore::XP::GetColorCode(bot->GetLevel(), unit->GetLevel()) <= XP_ORANGE)
             continue;
 
         if (Creature* creature = unit->ToCreature())
