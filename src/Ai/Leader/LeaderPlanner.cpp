@@ -2393,6 +2393,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (!mob || !IsIdleEnemy(bot, mob) || !mob->HasReactState(REACT_AGGRESSIVE) || IsPatrolling(mob) ||
                 IsCrowdControlled(mob) || std::find(pack.begin(), pack.end(), mob) != pack.end())
                 continue;
+            // [lead1571] a sealed mob (banished / immune, or one the opening of its closed door sends away: lead1565)
+            // is woken by no walk - it was left out of the pack chains, the assistance call and BossBroughtBy, not of
+            // this walk test. b278 strat-n 5A-1 / 5B-2 / 5C-3 / 5F-6 / 5G-7: every pack behind Service Entrance Gate
+            // 175368 refused as "the way in to Skeletal Berserker wakes Magistrate Barthilas and brings Magistrate
+            // Barthilas; with it 21 mobs, a boss", the gate never keyed (strat_key_gather x58-86, 0 pulls in 8 min)
+            if (IsSealedFromFight(mob))
+                continue;
 
             float const reach = MovementAction::IdleAggroReach(mob, bot, margin);  // the core's (CanStartAttack)
             // [lead1331] user 2026-11-05 (Q69): a wanderer by its wander area (b255 rfc-h 5B-2 pull 1: "the walk in
