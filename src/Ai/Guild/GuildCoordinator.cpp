@@ -69,7 +69,8 @@ namespace
     char const* OrderName(GuildOrderType type)
     {
         static char const* const names[] = {"QUEST", "PROFESSION", "BANK_DEPOSIT", "BANK_WITHDRAW", "CRAFT_FOR",
-                                             "GATHER", "BUY", "DUNGEON", "DISENCHANT", "QUEST_REWARD"};
+                                             "GATHER", "BUY", "DUNGEON", "DISENCHANT", "QUEST_REWARD",
+                                             "FOUND_GUILD", "SIGN_CHARTER", "JOIN", "BANK_TAB"};  // [guild80]
         return uint8(type) < std::size(names) ? names[uint8(type)] : "?";
     }
 
@@ -322,6 +323,7 @@ void GuildCoordinator::Load()
     GuildBankRun::LoadVaults();
     LoadDungeons();  // [guild60] the fives' dungeons and the completion table
     LoadRuns();
+    LoadGuildMasters();  // [guild80] where the bots found their guild
     loaded_ = true;
 }
 
@@ -644,6 +646,8 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
                 return "крафт " + NewRpgCraft::RecipeName(prof->spellId);
     if (std::string const five = FiveWait(state); !five.empty())  // [guild60]
         return five;
+    if (std::string const found = FoundWait(bot->GetGUID().GetCounter(), state); !found.empty())  // [guild80]
+        return found;
     if (!botAI || IsRealPlayer(bot))
         return "human player";
     if (SelfBotControl::IsSuspended(bot))
@@ -709,6 +713,7 @@ void GuildCoordinator::Update(uint32 diff)
         updateTimer_ = 0;
         UpdateLeaders();
         UpdateGear();  // [guild50]
+        UpdateFounding();  // [guild80] the bots' own guild: plan + charter / signatures / invites / bank tab
         UpdateOrders();
         UpdateHealth();
         UpdateFives();  // [guild60]
@@ -1251,6 +1256,7 @@ void GuildCoordinator::UpdateOrders()
 
         std::vector<GuildOrder> orders;
         FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
+        FoundingOrders(st, row.low, p, orders);  // [guild80] found / sign / join the guild, buy the bank tab
         if (!st.disenchant.empty())
         {
             GuildOrder o;
@@ -2378,6 +2384,12 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 if (FiveStep(bot, st, step))
                     return step;
                 continue;
+            case GuildOrderType::FOUND_GUILD:  // [guild80] to the Guild Master / the guild vault
+            case GuildOrderType::SIGN_CHARTER:
+            case GuildOrderType::BANK_TAB:
+                if (FoundStep(bot, st, order, step))
+                    return step;
+                continue;
             case GuildOrderType::GATHER:
                 step.kind = GuildRunStep::GATHER;
                 step.reason = "GATHER " + order.details;
@@ -2443,6 +2455,9 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
     BotState& st = itr->second;
     if (st.runType == GuildOrderType::DUNGEON)  // [guild60] at the five's entrance
         return FiveCampReached(bot, st);
+    if (st.runType == GuildOrderType::FOUND_GUILD || st.runType == GuildOrderType::SIGN_CHARTER ||
+        st.runType == GuildOrderType::BANK_TAB)  // [guild80] at the Guild Master / the vault
+        return FoundCampReached(bot, st);
     if (!GuildBankRun::AtVault(bot, st.runPos))
     {
         if (!st.runApproached)
@@ -2909,7 +2924,10 @@ void GuildCoordinator::SendOrders(Player* player)
     std::lock_guard<std::mutex> guard(lock_);
     SendLine(player, "OS;n=" + std::to_string(plan_.size()));
     SendLine(player, "OR;" + OrdersText(RaidLeaderText('A'), 40) + ";" + OrdersText(RaidLeaderText('B'), 40) + ";" +
-                         OrdersText(guildState_.empty() ? "гильдии нет: банк спит" : guildState_, 80));
+                         OrdersText(!found_.state.empty() ? found_.state  // [guild80] founding / bank tab state
+                                    : guildState_.empty() ? "гильдии нет: банк спит"
+                                                          : guildState_,
+                                    80));
     for (auto const& [at, text] : decisions_)
         SendLine(player, "OD;" + std::to_string(now - at) + ";" + OrdersText(text, 200));
     size_t shown = 0;

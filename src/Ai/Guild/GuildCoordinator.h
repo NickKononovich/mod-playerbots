@@ -48,7 +48,12 @@ enum class GuildOrderType : uint8
     BUY,
     DUNGEON,
     DISENCHANT,
-    QUEST_REWARD  // [guild50] which choice reward to take at the turn-in (applied by the turn-in itself)
+    QUEST_REWARD,  // [guild50] which choice reward to take at the turn-in (applied by the turn-in itself)
+    // [guild80] the bots found their guild themselves (GuildFounding.cpp)
+    FOUND_GUILD,   // the founder: buys the charter at a Guild Master, waits there for the signatures, turns it in
+    SIGN_CHARTER,  // a signer: walks to the founder at the Guild Master and signs
+    JOIN,          // the guild exists: an online member with the invite right invites it (no walk), it accepts
+    BANK_TAB       // the guild master buys the first bank tab with its own gold at a guild vault
 };
 
 struct GuildOrder
@@ -304,6 +309,10 @@ private:
         uint32 raidLeaderLow{0};
         uint32 fiveId{0};
         std::string fiveRefused;  // [guild60] map thread: no safe walk to the five's entrance (the five is called off)
+        // [guild80] map thread: no safe walk to the Guild Master / vault at this level (planning skips it until the
+        // next level)
+        std::string foundRefused;
+        uint8 foundRefusedLevel{0};
         // health
         uint32 mapId{0};
         float ax{0}, ay{0}, az{0};
@@ -399,6 +408,28 @@ private:
     uint8 FiveCampReached(Player* bot, BotState& st);
     std::string FiveWait(BotState const& st) const;
     void SendFives(Player* player) const;
+
+    // [guild80] the guild founded by the bots (GuildFounding.cpp). World thread: LoadGuildMasters (startup),
+    // UpdateFounding (the plan, then the game actions: charter purchase, offer + sign, turn-in, invites, bank tab -
+    // the core's own opcode handlers, on the world thread where the core runs them). lock_ held: FoundingOrders (one
+    // member's orders), FoundStep / FoundCampReached / FoundWait (map thread: the walk to the Guild Master / vault).
+    struct GuildMasterSpot
+    {
+        uint32 entry{0};
+        std::string name;
+        WorldPosition pos{};
+        uint32 zoneId{0};
+        uint32 faction{0};  // creature_template faction (hostility per member)
+    };
+    void LoadGuildMasters();
+    void UpdateFounding();
+    void FoundingOrders(BotState const& st, uint32 low, Player* p, std::vector<GuildOrder>& orders) const;
+    bool FoundStep(Player* bot, BotState& st, GuildOrder& order, GuildRunStep& step);
+    uint8 FoundCampReached(Player* bot, BotState& st);
+    std::string FoundWait(uint32 low, BotState const& st) const;
+    bool FoundingEligible(uint32 low, Player* p) const;                 // lock_ held
+    float FoundingCost(Player* p, GuildMasterSpot const& spot) const;  // FLT_MAX: other map / hostile
+    static uint32 FoundingFreeMoney(Player* p);
     void FiveLoot(Player* player, Item* item, uint32 count);
 
     void UpdateLeaders();
@@ -475,6 +506,26 @@ private:
     uint32 deathCall_{0};
     std::string healthRow_;
     std::string guildState_;
+    // [guild80] the founding of the project guild (lock_)
+    std::vector<GuildMasterSpot> guildMasters_;  // read-only after Load
+    struct Founding
+    {
+        uint32 guildId{0};       // the project guild, 0 = not founded yet
+        uint32 founderLow{0};
+        int32 spot{-1};          // guildMasters_ index: the meeting at the Guild Master
+        uint64 charterGuid{0};   // the charter item (0 = not bought yet)
+        std::string charterName;
+        uint32 signs{0};
+        uint32 needSigns{0};     // core MinPetitionSigns
+        float planCost{0.0f};
+        std::vector<uint32> signers;              // the members called to sign, cheapest first
+        std::map<uint32, std::string> signerWhy;  // member -> why it was called
+        std::map<uint32, std::string> joinState;  // member -> why it is not in the guild yet
+        uint32 tabGmLow{0};      // BANK_TAB: the guild master walks to this vault
+        WorldPosition vault{};
+        std::string state;       // the «Приказы» header line
+        std::string lastLog;     // the last state logged (a [guild80] state line only on change)
+    } found_;
     // [guild50]
     struct CraftJob
     {

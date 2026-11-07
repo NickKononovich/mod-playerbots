@@ -7,6 +7,7 @@
 #include "PetitionSignAction.h"
 #include "ArenaTeam.h"
 #include "Event.h"
+#include "PetitionMgr.h"
 #include "Playerbots.h"
 
 bool PetitionSignAction::Execute(Event event)
@@ -18,6 +19,12 @@ bool PetitionSignAction::Execute(Event event)
     uint8 unk = 0;
     bool isArena = false;
     p >> petitionGuid >> inviter;
+
+    // [guild80] already signed (the guild coordinator has its bots sign on the world thread): nothing to do. The
+    // module's same-account hook would let a second signature of the same character through.
+    if (Signatures const* signatures = sPetitionMgr->GetSignature(petitionGuid))
+        if (signatures->signatureMap.count(bot->GetGUID()))
+            return false;
 
     QueryResult result =
         CharacterDatabase.Query("SELECT `type` FROM `petition` WHERE `petitionguid` = {}", petitionGuid.GetCounter());

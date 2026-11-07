@@ -27,6 +27,9 @@ bool GuildAcceptAction::Execute(Event event)
 
     bool accept = true;
     uint32 guildId = inviter->GetGuildId();
+    // [guild80] already joined this guild (the guild coordinator accepts on the world thread): nothing to answer
+    if (guildId && bot->GetGuildId() == guildId)
+        return true;
     if (!guildId)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
