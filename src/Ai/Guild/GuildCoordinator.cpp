@@ -1670,6 +1670,110 @@ void GuildCoordinator::SendOrders(Player* player)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// the BotControl «Ресурсы» tab: the virtual guild bank (all planned characters' bags + bank slots + the guild bank),
+// built on request from the players in memory
+// ---------------------------------------------------------------------------------------------------------------------
+void GuildCoordinator::SendResources(Player* player)
+{
+    if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
+        return;
+
+    std::unordered_map<uint32, uint32> wantedNeed;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        for (WantedItem const& w : wanted_)
+            if (w.need)
+                wantedNeed[w.itemId] = w.need;
+    }
+    auto const useful = [&](ItemTemplate const* proto)
+    {
+        if (!proto || proto->Quality == ITEM_QUALITY_POOR || proto->Class == ITEM_CLASS_QUEST ||
+            proto->Bonding == BIND_QUEST_ITEM)
+            return false;
+        if (wantedNeed.count(proto->ItemId))
+            return true;
+        return proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_REAGENT ||
+               proto->Class == ITEM_CLASS_RECIPE || proto->Class == ITEM_CLASS_GEM;
+    };
+
+    struct Stock
+    {
+        uint32 total{0};
+        std::vector<std::pair<uint32, uint32>> holders;  // (num, count), num 0 = the guild bank
+    };
+    std::map<uint32, Stock> stock;
+    auto const add = [&](Item* item, std::map<uint32, uint32>& mine)
+    {
+        if (item && useful(item->GetTemplate()))
+            mine[item->GetEntry()] += item->GetCount();
+    };
+    Guild* guild = nullptr;
+    for (PlanRow const& row : plan_)
+    {
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || !p->IsInWorld())
+            continue;
+        if (!guild)
+            guild = GuildBankRun::BotGuild(p);
+        std::map<uint32, uint32> mine;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            add(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), mine);
+        for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+            add(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), mine);
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    add(bag->GetItemByPos(uint8(j)), mine);
+        for (uint8 b = BANK_SLOT_BAG_START; b < BANK_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    add(bag->GetItemByPos(uint8(j)), mine);
+        for (auto const& [entry, count] : mine)
+        {
+            Stock& s = stock[entry];
+            s.total += count;
+            s.holders.emplace_back(row.num, count);
+        }
+    }
+    std::map<uint32, uint32> bank;
+    GuildBankRun::CountBank(guild, bank);
+    for (auto const& [entry, count] : bank)
+        if (useful(sObjectMgr->GetItemTemplate(entry)))
+        {
+            Stock& s = stock[entry];
+            s.total += count;
+            s.holders.emplace_back(0, count);
+        }
+
+    SendLine(player, "RS;n=" + std::to_string(stock.size()) + ";bank=" + (guild ? "1" : "0"));
+    for (auto& [entry, s] : stock)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+        std::sort(s.holders.begin(), s.holders.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+        std::string holders;
+        for (auto const& [num, count] : s.holders)
+        {
+            std::string const part =
+                (num ? "#" + std::to_string(num) : std::string("банк")) + " ×" + std::to_string(count);
+            if (holders.size() + part.size() > 90)
+            {
+                holders += ", …";
+                break;
+            }
+            holders += (holders.empty() ? "" : ", ") + part;
+        }
+        auto const need = wantedNeed.find(entry);
+        // R;itemId;quality;name;total;need (0 = not on the wanted list);holders
+        SendLine(player, "R;" + std::to_string(entry) + ";" + std::to_string(proto ? proto->Quality : 1) + ";" +
+                             OrdersText(proto ? proto->Name1 : std::to_string(entry), 40) + ";" +
+                             std::to_string(s.total) + ";" +
+                             std::to_string(need != wantedNeed.end() ? need->second : 0) + ";" +
+                             OrdersText(holders, 100));
+    }
+    SendLine(player, "RE;n=" + std::to_string(stock.size()));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // scripts
 // ---------------------------------------------------------------------------------------------------------------------
 class GuildCoordinatorPlayerScript : public PlayerScript

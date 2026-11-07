@@ -98,6 +98,7 @@ public:
     void Load();
     void Update(uint32 diff);
     void SendOrders(Player* player);  // addon "BOTCTL\torders"
+    void SendResources(Player* player);  // addon "BOTCTL\tresources": the virtual guild bank
     bool IsPlanned(uint32 low) const { return planIndex_.count(low) != 0; }
 
     // five-leaders (stage 5 forms them; data + API now)
