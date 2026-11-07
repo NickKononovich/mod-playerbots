@@ -259,7 +259,8 @@ private:
     time_t _nextScheduledCountUpdate = 0;
     uint32 _rolledCountMode = 0;
     NewRpgStatistic rpgStasticTotal;
-    CachedEvent* FindEvent(uint32 bot, std::string const& event);
+    // [guild40] copies the event out under eventCacheLock (map threads read and write the cache)
+    bool FindEvent(uint32 bot, std::string const& event, CachedEvent& out);
     uint32 GetEventValue(uint32 bot, std::string const& event);
     std::string GetEventData(uint32 bot, std::string const& event);
     uint32 SetEventValue(uint32 bot, std::string const& event, uint32 value, uint32 validIn,
@@ -290,6 +291,8 @@ private:
     std::map<uint32, std::map<uint32, std::vector<WorldLocation>>> rpgLocsCacheLevel;
     std::map<TeamId, std::map<BattlegroundTypeId, std::vector<uint32>>> BattleMastersCache;
     std::unordered_map<uint32, ObjectGuid::LowType> BattleMasterSpawnIds;
+    // [guild40] bot ticks on every map thread call GetValue / SetValue: inserts, erases and lookups under this lock
+    std::mutex eventCacheLock;
     std::unordered_map<uint32, BotEventCache> eventCache;
     std::unordered_set<uint32> currentBots;
     uint32 playersLevel;

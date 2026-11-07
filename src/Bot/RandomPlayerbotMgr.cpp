@@ -2570,14 +2570,19 @@ std::vector<uint32> RandomPlayerbotMgr::GetBgBots(uint32 bracket)
     return BgBots;
 }
 
-CachedEvent* RandomPlayerbotMgr::FindEvent(uint32 bot, std::string const& event)
+bool RandomPlayerbotMgr::FindEvent(uint32 bot, std::string const& event, CachedEvent& out)
 {
-    BotEventCache& cache = eventCache[bot];
-
-    // Load once
-    if (!cache.loaded)
+    bool loaded = false;
     {
-        cache.events.clear();
+        std::lock_guard<std::mutex> guard(eventCacheLock);
+        auto const itr = eventCache.find(bot);
+        loaded = itr != eventCache.end() && itr->second.loaded;
+    }
+
+    // Load once (the query runs outside the lock; a concurrent SetEventValue that marked the cache loaded wins)
+    if (!loaded)
+    {
+        std::unordered_map<std::string, CachedEvent> events;
 
         PlayerbotsDatabasePreparedStatement* stmt =
             PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_RANDOM_BOTS_BY_OWNER_AND_BOT);
@@ -2596,16 +2601,24 @@ CachedEvent* RandomPlayerbotMgr::FindEvent(uint32 bot, std::string const& event)
                 e.validIn = fields[3].Get<uint32>();
                 e.data = fields[4].Get<std::string>();
 
-                cache.events.emplace(fields[0].Get<std::string>(), std::move(e));
+                events.emplace(fields[0].Get<std::string>(), std::move(e));
             } while (result->NextRow());
         }
 
-        cache.loaded = true;
+        std::lock_guard<std::mutex> guard(eventCacheLock);
+        BotEventCache& cache = eventCache[bot];
+        if (!cache.loaded)
+        {
+            cache.events = std::move(events);
+            cache.loaded = true;
+        }
     }
 
+    std::lock_guard<std::mutex> guard(eventCacheLock);
+    BotEventCache& cache = eventCache[bot];
     auto it = cache.events.find(event);
     if (it == cache.events.end())
-        return nullptr;
+        return false;
 
     CachedEvent& e = it->second;
 
@@ -2613,10 +2626,11 @@ CachedEvent* RandomPlayerbotMgr::FindEvent(uint32 bot, std::string const& event)
     if (e.validIn && (NowSeconds() - e.lastChangeTime) >= e.validIn && event != "specNo" && event != "specLink")
     {
         cache.events.erase(it);
-        return nullptr;
+        return false;
     }
 
-    return &e;
+    out = e;
+    return true;
 }
 
 bool RandomPlayerbotMgr::IsSpecPvp(uint32 bot, uint8 cls)
@@ -2631,16 +2645,18 @@ bool RandomPlayerbotMgr::IsSpecPvp(uint32 bot, uint8 cls)
 
 uint32 RandomPlayerbotMgr::GetEventValue(uint32 bot, std::string const& event)
 {
-    if (CachedEvent* e = FindEvent(bot, event))
-        return e->value;
+    CachedEvent e;
+    if (FindEvent(bot, event, e))
+        return e.value;
 
     return 0;
 }
 
 std::string RandomPlayerbotMgr::GetEventData(uint32 bot, std::string const& event)
 {
-    if (CachedEvent* e = FindEvent(bot, event))
-        return e->data;
+    CachedEvent e;
+    if (FindEvent(bot, event, e))
+        return e.data;
 
     return "";
 }
@@ -2678,6 +2694,7 @@ uint32 RandomPlayerbotMgr::SetEventValue(uint32 bot, std::string const& event, u
     PlayerbotsDatabase.CommitTransaction(trans);
 
     // Update in-memory cache
+    std::lock_guard<std::mutex> guard(eventCacheLock);
     BotEventCache& cache = eventCache[bot];
     cache.loaded = true;
 
@@ -2734,7 +2751,10 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
     if (cmd == "reset")
     {
         PlayerbotsDatabase.Execute(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_RANDOM_BOTS));
-        sRandomPlayerbotMgr.eventCache.clear();
+        {
+            std::lock_guard<std::mutex> guard(sRandomPlayerbotMgr.eventCacheLock);
+            sRandomPlayerbotMgr.eventCache.clear();
+        }
         LOG_INFO("playerbots", "Random bots were reset for all players. Please restart the Server.");
         return true;
     }
@@ -3677,7 +3697,10 @@ void RandomPlayerbotMgr::Remove(Player* bot)
     PlayerbotsDatabase.Execute(stmt);
 
     uint32 botId = owner.GetCounter();
-    eventCache.erase(botId);
+    {
+        std::lock_guard<std::mutex> guard(eventCacheLock);
+        eventCache.erase(botId);
+    }
 
     LogoutPlayerBot(owner);
 }

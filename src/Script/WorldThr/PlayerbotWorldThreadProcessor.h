@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <thread>
 
 /**
  * @brief Processes thread-unsafe bot operations in the world thread
@@ -104,7 +105,22 @@ public:
 
     bool IsEnabled() const { return m_enabled; }
 
+    // [guild40] the world thread (main loop) records itself each update; map threads never equal it. Before the
+    // first update (startup, single-threaded) every caller counts as the world thread.
+    static void MarkWorldThread() { WorldThreadId() = std::this_thread::get_id(); }
+    static bool IsWorldThread()
+    {
+        std::thread::id const id = WorldThreadId();
+        return id == std::thread::id() || id == std::this_thread::get_id();
+    }
+
 private:
+    static std::thread::id& WorldThreadId()
+    {
+        static std::thread::id id;
+        return id;
+    }
+
     PlayerbotWorldThreadProcessor()
     : m_enabled(true),
     m_maxQueueSize(10000),

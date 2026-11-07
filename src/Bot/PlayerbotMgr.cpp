@@ -392,8 +392,65 @@ void PlayerbotMgr::CancelLogout()
     }
 }
 
+namespace
+{
+// [guild40] a logout started on a map thread (the bot's own tick: logout command, logout timer) runs on the world
+// thread: it erases the bot from the holder and the registry maps other map threads read, leaves channels and
+// deletes the Player inside its own map's update.
+class DeferredBotLogoutOperation : public PlayerbotOperation
+{
+public:
+    DeferredBotLogoutOperation(ObjectGuid botGuid, ObjectGuid masterGuid) : m_botGuid(botGuid), m_masterGuid(masterGuid)
+    {
+    }
+
+    bool Execute() override
+    {
+        if (m_masterGuid.IsEmpty())
+        {
+            sRandomPlayerbotMgr.LogoutPlayerBot(m_botGuid);
+            return true;
+        }
+
+        Player* master = ObjectAccessor::FindConnectedPlayer(m_masterGuid);
+        PlayerbotMgr* mgr = master ? GET_PLAYERBOT_MGR(master) : nullptr;
+        if (!mgr)
+            return false;
+
+        mgr->LogoutPlayerBot(m_botGuid);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "DeferredBotLogout"; }
+
+private:
+    ObjectGuid m_botGuid;
+    ObjectGuid m_masterGuid;
+};
+}  // namespace
+
 void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
+    if (!PlayerbotWorldThreadProcessor::IsWorldThread())
+    {
+        if (!GetPlayerBot(guid))
+            return;
+
+        ObjectGuid masterGuid;
+        if (static_cast<PlayerbotHolder*>(&sRandomPlayerbotMgr) != this)
+        {
+            PlayerbotMgr* mgr = dynamic_cast<PlayerbotMgr*>(this);
+            if (!mgr || !mgr->GetMaster())
+                return;
+            masterGuid = mgr->GetMaster()->GetGUID();
+        }
+
+        PlayerbotWorldThreadProcessor::instance().QueueOperation(
+            std::make_unique<DeferredBotLogoutOperation>(guid, masterGuid));
+        return;
+    }
+
     if (Player* bot = GetPlayerBot(guid))
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -1802,48 +1859,35 @@ void PlayerbotsMgr::AddPlayerbotData(Player* player, bool isBotAI)
     }
     // If the guid already exists in the map, remove it
 
+    // [guild40] the object is built outside the registry lock (its constructor may look the registry up) and
+    // OnPlayerLogin runs after the lock is released
     if (!isBotAI)
     {
-        std::unordered_map<ObjectGuid, PlayerbotAIBase*>::iterator itr = _playerbotsMgrMap.find(player->GetGUID());
-        if (itr != _playerbotsMgrMap.end())
-        {
-            _playerbotsMgrMap.erase(itr);
-        }
         PlayerbotMgr* playerbotMgr = new PlayerbotMgr(player);
-        ASSERT(_playerbotsMgrMap.emplace(player->GetGUID(), playerbotMgr).second);
+        {
+            std::unique_lock<std::shared_mutex> lock(_registryLock);
+            _playerbotsMgrMap.erase(player->GetGUID());
+            ASSERT(_playerbotsMgrMap.emplace(player->GetGUID(), playerbotMgr).second);
+        }
 
         playerbotMgr->OnPlayerLogin(player);
     }
     else
     {
-        std::unordered_map<ObjectGuid, PlayerbotAIBase*>::iterator itr = _playerbotsAIMap.find(player->GetGUID());
-        if (itr != _playerbotsAIMap.end())
-        {
-            _playerbotsAIMap.erase(itr);
-        }
         PlayerbotAI* botAI = new PlayerbotAI(player);
+        std::unique_lock<std::shared_mutex> lock(_registryLock);
+        _playerbotsAIMap.erase(player->GetGUID());
         ASSERT(_playerbotsAIMap.emplace(player->GetGUID(), botAI).second);
     }
 }
 
 void PlayerbotsMgr::RemovePlayerBotData(ObjectGuid const& guid, bool is_AI)
 {
+    std::unique_lock<std::shared_mutex> lock(_registryLock);
     if (is_AI)
-    {
-        std::unordered_map<ObjectGuid, PlayerbotAIBase*>::iterator itr = _playerbotsAIMap.find(guid);
-        if (itr != _playerbotsAIMap.end())
-        {
-            _playerbotsAIMap.erase(itr);
-        }
-    }
+        _playerbotsAIMap.erase(guid);
     else
-    {
-        std::unordered_map<ObjectGuid, PlayerbotAIBase*>::iterator itr = _playerbotsMgrMap.find(guid);
-        if (itr != _playerbotsMgrMap.end())
-        {
-            _playerbotsMgrMap.erase(itr);
-        }
-    }
+        _playerbotsMgrMap.erase(guid);
 }
 
 PlayerbotAI* PlayerbotsMgr::GetPlayerbotAI(Player* player)
@@ -1856,12 +1900,16 @@ PlayerbotAI* PlayerbotsMgr::GetPlayerbotAI(Player* player)
     // {
     //     return nullptr;
     // }
-    auto itr = _playerbotsAIMap.find(player->GetGUID());
-    if (itr != _playerbotsAIMap.end())
+    PlayerbotAIBase* base = nullptr;
     {
-        if (itr->second->IsBotAI())
-            return dynamic_cast<PlayerbotAI*>(itr->second);
+        std::shared_lock<std::shared_mutex> lock(_registryLock);
+        auto itr = _playerbotsAIMap.find(player->GetGUID());
+        if (itr != _playerbotsAIMap.end())
+            base = itr->second;
     }
+
+    if (base && base->IsBotAI())
+        return static_cast<PlayerbotAI*>(base);
 
     return nullptr;
 }
@@ -1872,12 +1920,16 @@ PlayerbotMgr* PlayerbotsMgr::GetPlayerbotMgr(Player* player)
     {
         return nullptr;
     }
-    auto itr = _playerbotsMgrMap.find(player->GetGUID());
-    if (itr != _playerbotsMgrMap.end())
+    PlayerbotAIBase* base = nullptr;
     {
-        if (!itr->second->IsBotAI())
-            return dynamic_cast<PlayerbotMgr*>(itr->second);
+        std::shared_lock<std::shared_mutex> lock(_registryLock);
+        auto itr = _playerbotsMgrMap.find(player->GetGUID());
+        if (itr != _playerbotsMgrMap.end())
+            base = itr->second;
     }
+
+    if (base && !base->IsBotAI())
+        return static_cast<PlayerbotMgr*>(base);
 
     return nullptr;
 }

@@ -11,6 +11,8 @@
 #include "Player.h"
 #include "PlayerbotAIBase.h"
 
+#include <shared_mutex>
+
 class ChatHandler;
 class PlayerbotAI;
 class PlayerbotLoginQueryHolder;
@@ -132,6 +134,9 @@ private:
     PlayerbotsMgr(PlayerbotsMgr&&) = delete;
     PlayerbotsMgr& operator=(PlayerbotsMgr&&) = delete;
 
+    // [guild40] read from every map thread (packet hooks, GET_PLAYERBOT_AI), written on bot / master login and
+    // logout: shared lock for lookups, exclusive for inserts / erases
+    mutable std::shared_mutex _registryLock;
     std::unordered_map<ObjectGuid, PlayerbotAIBase*> _playerbotsAIMap;
     std::unordered_map<ObjectGuid, PlayerbotAIBase*> _playerbotsMgrMap;
 };

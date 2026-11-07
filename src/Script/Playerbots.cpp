@@ -603,6 +603,9 @@ public:
     // [guild12] the New RPG quest indexes (world DB reads) once all world data is loaded, not in a bot's tick
     void OnStartup() override
     {
+        // [guild40] main() runs OnStartup and then the world update loop on this same thread
+        PlayerbotWorldThreadProcessor::MarkWorldThread();
+
         uint32 const started = getMSTime();
         NewRpgBaseAction::BuildQuestIndexes();
         LOG_INFO("server.loading", ">> New RPG quest indexes built in {} ms", GetMSTimeDiffToNow(started));
@@ -610,6 +613,7 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        PlayerbotAI::RefreshChannelDirectory();  // [guild40] channel copy for bot chat on map threads
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         PlayerbotWorldThreadProcessor::instance().Update(diff);

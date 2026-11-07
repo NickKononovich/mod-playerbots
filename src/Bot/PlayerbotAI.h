@@ -492,6 +492,8 @@ public:
     bool SayToGuild(std::string const& msg);
     bool SayToWorld(std::string const& msg);
     bool SayToChannel(std::string const& msg, ChatChannelId const& chanId);
+    // [guild40] world thread: refreshes the channel copy map threads look up (SayToWorld / SayToChannel)
+    static void RefreshChannelDirectory();
     bool SayToParty(std::string const& msg);
     bool SayToRaid(std::string const& msg);
     bool Yell(std::string const& msg);

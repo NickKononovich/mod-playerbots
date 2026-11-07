@@ -8,7 +8,11 @@
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "MapUpdater.h"
+#include "Channel.h"
 #include "ChannelMgr.h"
+#include "ObjectAccessor.h"
+#include "PlayerbotOperation.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
@@ -77,6 +81,7 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -3593,6 +3598,128 @@ std::vector<Player*> PlayerbotAI::GetAllPlayersInGroup()
     return members;
 }
 
+namespace
+{
+// [guild40] Channel and guild chat reach players on every map: run on a map thread, the broadcast walked
+// Channel::playersStore while another map thread joined that channel (Player::UpdateLocalChannels on a zone
+// change) and delivered packets into bots that another thread was updating (60 s freeze 2026-11-06 20:33,
+// Channel::Say -> SendToAll looping). The core handles this chat on the world thread (CMSG_MESSAGECHAT,
+// CMSG_JOIN_CHANNEL are PROCESS_THREADUNSAFE); bots do the same through the world thread processor.
+
+// Channel lookups for map threads: a copy of both ChannelMgr maps refreshed on the world thread. Channels are
+// never deleted before shutdown, so the pointers stay valid; the name and channel id never change.
+struct BotChannelEntry
+{
+    ChannelMgr const* mgr;
+    Channel* channel;
+    uint32 channelId;
+    std::string name;
+};
+
+std::shared_mutex botChannelDirLock;
+std::vector<BotChannelEntry> botChannelDir;
+std::size_t botChannelDirSize[2] = {SIZE_MAX, SIZE_MAX};
+
+class BotChannelSayOperation : public PlayerbotOperation
+{
+public:
+    BotChannelSayOperation(ObjectGuid botGuid, Channel* channel, std::string msg)
+        : m_botGuid(botGuid), m_channel(channel), m_msg(std::move(msg))
+    {
+    }
+
+    bool Execute() override
+    {
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        if (!bot || !bot->IsInWorld() || !m_channel)
+            return false;
+
+        m_channel->Say(m_botGuid, m_msg, LANG_UNIVERSAL);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "BotChannelSay"; }
+
+private:
+    ObjectGuid m_botGuid;
+    Channel* m_channel;
+    std::string m_msg;
+};
+
+class BotGuildSayOperation : public PlayerbotOperation
+{
+public:
+    BotGuildSayOperation(ObjectGuid botGuid, std::string msg) : m_botGuid(botGuid), m_msg(std::move(msg)) {}
+
+    bool Execute() override
+    {
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        if (!bot || !bot->IsInWorld() || !bot->GetGuildId())
+            return false;
+
+        Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+        if (!guild || !guild->HasRankRight(bot, GR_RIGHT_GCHATSPEAK))
+            return false;
+
+        guild->BroadcastToGuild(bot->GetSession(), false, m_msg, LANG_UNIVERSAL);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "BotGuildSay"; }
+
+private:
+    ObjectGuid m_botGuid;
+    std::string m_msg;
+};
+
+void SayInChannel(Player* bot, Channel* channel, std::string const& msg)
+{
+    if (PlayerbotWorldThreadProcessor::IsWorldThread())
+    {
+        channel->Say(bot->GetGUID(), msg, LANG_UNIVERSAL);
+        return;
+    }
+
+    PlayerbotWorldThreadProcessor::instance().QueueOperation(
+        std::make_unique<BotChannelSayOperation>(bot->GetGUID(), channel, msg));
+}
+}  // namespace
+
+void PlayerbotAI::RefreshChannelDirectory()
+{
+    ChannelMgr* const mgrs[2] = {ChannelMgr::forTeam(TEAM_ALLIANCE), ChannelMgr::forTeam(TEAM_HORDE)};
+    bool changed = false;
+    for (uint8 i = 0; i < 2; ++i)
+        if (mgrs[i] && mgrs[i]->GetChannels().size() != botChannelDirSize[i])
+            changed = true;
+
+    if (!changed)
+        return;
+
+    std::vector<BotChannelEntry> dir;
+    std::size_t sizes[2] = {0, 0};
+    for (uint8 i = 0; i < 2; ++i)
+    {
+        if (!mgrs[i])
+            continue;
+
+        sizes[i] = mgrs[i]->GetChannels().size();
+        if (i == 1 && mgrs[1] == mgrs[0])  // cross-faction channels: one manager for both teams
+            continue;
+
+        for (auto const& [key, channel] : mgrs[i]->GetChannels())
+            if (channel)
+                dir.push_back({mgrs[i], channel, channel->GetChannelId(), channel->GetName()});
+    }
+
+    std::unique_lock<std::shared_mutex> lock(botChannelDirLock);
+    botChannelDir = std::move(dir);
+    botChannelDirSize[0] = sizes[0];
+    botChannelDirSize[1] = sizes[1];
+}
+
 bool PlayerbotAI::SayToGuild(std::string const& msg)
 {
     if (msg.empty())
@@ -3608,7 +3735,12 @@ bool PlayerbotAI::SayToGuild(std::string const& msg)
             {
                 return false;
             }
-            guild->BroadcastToGuild(bot->GetSession(), false, msg.c_str(), LANG_UNIVERSAL);
+            // [guild40] the broadcast reaches members on every map: world thread only
+            if (PlayerbotWorldThreadProcessor::IsWorldThread())
+                guild->BroadcastToGuild(bot->GetSession(), false, msg.c_str(), LANG_UNIVERSAL);
+            else
+                PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                    std::make_unique<BotGuildSayOperation>(bot->GetGUID(), msg));
             return true;
         }
     }
@@ -3628,13 +3760,22 @@ bool PlayerbotAI::SayToWorld(std::string const& msg)
         return false;
 
     // no zone
-    if (Channel* worldChannel = cMgr->GetChannel("World", bot))
+    Channel* worldChannel = nullptr;
     {
-        worldChannel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
-        return true;
+        std::shared_lock<std::shared_mutex> lock(botChannelDirLock);
+        for (BotChannelEntry const& entry : botChannelDir)
+            if (entry.mgr == cMgr && StringEqualI(entry.name, "World"))
+            {
+                worldChannel = entry.channel;
+                break;
+            }
     }
 
-    return false;
+    if (!worldChannel)
+        return false;
+
+    SayInChannel(bot, worldChannel, msg);
+    return true;
 }
 
 bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chanId)
@@ -3653,43 +3794,35 @@ bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chan
 
     const auto current_str_zone = GetLocalizedAreaName(current_zone);
 
-    std::mutex socialMutex;
-    std::lock_guard<std::mutex> lock(socialMutex);  // Blocking for thread safety when accessing SocialMgr
-
-    for (auto const& [key, channel] : cMgr->GetChannels())
+    Channel* target = nullptr;
     {
-        // Checks if the channel pointer is valid
-        if (!channel)
-            continue;
-
-        // Checks if the channel matches the specified ChatChannelId
-        if (channel->GetChannelId() == chanId)
+        std::shared_lock<std::shared_mutex> lock(botChannelDirLock);
+        for (BotChannelEntry const& entry : botChannelDir)
         {
+            // Checks if the channel matches the specified ChatChannelId
+            if (entry.mgr != cMgr || entry.channelId != uint32(chanId))
+                continue;
+
             // If the channel name is empty, skip it to avoid access problems
-            if (channel->GetName().empty())
+            if (entry.name.empty())
                 continue;
 
             // Checks if the channel name contains the current zone
-            const auto does_contains = channel->GetName().find(current_str_zone) != std::string::npos;
-            if (chanId != ChatChannelId::LOOKING_FOR_GROUP && chanId != ChatChannelId::WORLD_DEFENSE && !does_contains)
-            {
+            bool const zoneless =
+                chanId == ChatChannelId::LOOKING_FOR_GROUP || chanId == ChatChannelId::WORLD_DEFENSE;
+            if (!zoneless && entry.name.find(current_str_zone) == std::string::npos)
                 continue;
-            }
-            else if (chanId == ChatChannelId::LOOKING_FOR_GROUP || chanId == ChatChannelId::WORLD_DEFENSE)
-            {
-                // Here you can add the capital check if necessary
-            }
 
-            // Final check to ensure the channel is correct before trying to say something
-            if (channel)
-            {
-                channel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
-                return true;
-            }
+            target = entry.channel;
+            break;
         }
     }
 
-    return false;
+    if (!target)
+        return false;
+
+    SayInChannel(bot, target, msg);
+    return true;
 }
 
 bool PlayerbotAI::SayToParty(std::string const& msg)
