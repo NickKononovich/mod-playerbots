@@ -425,9 +425,12 @@ namespace GuildGear
         }
     }
 
-    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out)
+    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out, bool ahead)
     {
-        if (!proto || member->CanUseItem(proto) != EQUIP_ERR_OK)
+        if (!proto)
+            return false;
+        InventoryResult const use = member->CanUseItem(proto);
+        if (use != EQUIP_ERR_OK && !(ahead && use == EQUIP_ERR_CANT_EQUIP_LEVEL_I))
             return false;
         if (proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, member->getClass()))
             return false;

@@ -88,8 +88,10 @@ namespace GuildGear
     // Whether the item is an upgrade for the member in its weakest slot of the group: the core's CanUseItem, the
     // module's class armor / weapon rules, the StatsWeightCalculator score against the worn item scaled by
     // EquipUpgradeThreshold (as ItemUsageValue), equal scores broken as [guild12] (armor, item level, quality).
-    // `calc` belongs to the member.
-    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out);
+    // `calc` belongs to the member. ahead: the item's level is still ahead of the member (a plan): only that check
+    // of CanUseItem is waived.
+    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out,
+                  bool ahead = false);
 
     // The count of each source kind and of indexed items, for the startup log and the checks.
     std::string Stats();
