@@ -22,6 +22,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgProfession.h"  // [guild20]
+#include "NewRpgDoGather.h"    // [guild14] NoSafeNodes
 #include "NewRpgStrategy.h"
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -490,7 +491,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 if (step.kind == GuildRunStep::GATHER)
                 {
                     if (sPlayerbotAIConfig.RpgStatusProbWeight[RPG_DO_GATHER] &&
-                        CheckRpgStatusAvailable(RPG_DO_GATHER))
+                        CheckRpgStatusAvailable(RPG_DO_GATHER) && !NewRpgDoGatherAction::NoSafeNodes(bot))
                     {
                         LOG_INFO("playerbots", "[rpg] {} L{} GATHER reason: {}", bot->GetName(),
                                  bot->GetLevel(), step.reason);
@@ -528,7 +529,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // [guild11] no pvp, no aimless grind: gathering is the gatherer group's (random bots) work; else grind
             // near the giver of the quest it is closest to being allowed, until it has the level
             if (sRandomPlayerbotMgr.IsRandomBot(bot) && sPlayerbotAIConfig.RpgStatusProbWeight[RPG_DO_GATHER] &&
-                CheckRpgStatusAvailable(RPG_DO_GATHER))
+                CheckRpgStatusAvailable(RPG_DO_GATHER) && !NewRpgDoGatherAction::NoSafeNodes(bot))
             {
                 LOG_INFO("playerbots", "[rpg] {} L{} GATHER reason: no quest it can take now", bot->GetName(),
                          bot->GetLevel());

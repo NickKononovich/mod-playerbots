@@ -14,6 +14,9 @@ class NewRpgDoGatherAction : public NewRpgBaseAction
 public:
     NewRpgDoGatherAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg do gather") {}
     bool Execute(Event event) override;
+    // [guild14] its last gather run in this zone at this level found no node it may walk to (all refused or done):
+    // no new gather run here until it levels or changes zone
+    static bool NoSafeNodes(Player* bot);
 
 protected:
     // Release the loot pipeline's target if it points at the given spawn.

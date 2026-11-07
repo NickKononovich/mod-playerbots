@@ -852,12 +852,10 @@ namespace SoloSafety
         float const runCost = incoming * leashSec;
         if (runCost >= health)
             return false;
-        // ... and only from mobs that cannot keep up (slower than the bot, rooted or stunned): b305 - 18 of 21 deaths
-        // were bots running from mobs of the usual run speed (above a player's), chased 100-400 yd without a leash,
-        // hit in the back all the way
+        // ... and only from mobs that cannot follow (rooted or stunned): b305 - 18 of 21 deaths were bots running from
+        // mobs chasing them 100-400 yd without a leash, hit in the back all the way; b306 (slower mobs too) - 31 of 38
         for (Foe const& foe : foes)
-            if (foe.unit->GetSpeed(MOVE_RUN) >= bot->GetSpeed(MOVE_RUN) &&
-                !foe.unit->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
+            if (!foe.unit->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
                 return false;
         state.fleeing = true;
         LOG_INFO("playerbots",

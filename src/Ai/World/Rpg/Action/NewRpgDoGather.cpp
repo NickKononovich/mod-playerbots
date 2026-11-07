@@ -32,6 +32,8 @@ namespace
     // new DO_GATHER starts with an empty visited set and would pick the same node again and again
     std::mutex unreachableLock;
     std::unordered_map<ObjectGuid::LowType, std::unordered_set<ObjectGuid::LowType>> unreachableNodes;
+    // [guild14] bot -> (zone, level) where its gather run found no node left to walk to
+    std::unordered_map<ObjectGuid::LowType, std::pair<uint32, uint8>> exhausted;
 }
 
 // Base-rank gather spells, the same ids OpenLootAction::DoLoot casts.
@@ -40,6 +42,15 @@ enum GatherSpells
     HERB_GATHERING = 2366,
     MINING = 2575,
 };
+
+// [guild14]
+bool NewRpgDoGatherAction::NoSafeNodes(Player* bot)
+{
+    std::lock_guard<std::mutex> guard(unreachableLock);
+    auto const found = exhausted.find(bot->GetGUID().GetCounter());
+    return found != exhausted.end() && found->second.first == bot->GetZoneId() &&
+           found->second.second == bot->GetLevel();
+}
 
 void NewRpgDoGatherAction::ClearLootTargetForNode(ObjectGuid::LowType spawnId)
 {
@@ -167,6 +178,10 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         if (!node)
         {
             // nothing (left) to gather in this zone
+            {
+                std::lock_guard<std::mutex> guard(unreachableLock);
+                exhausted[bot->GetGUID().GetCounter()] = {bot->GetZoneId(), bot->GetLevel()};  // [guild14]
+            }
             info.ChangeToIdle();
             return true;
         }
