@@ -93,7 +93,8 @@ namespace SoloSafety
 
     // [guild14] the open solo fight is projected lost (the attackers' damage still to come against its health, heals
     // over the time its damage needs to kill them) and running until they leash leaves it alive: it disengages (logged,
-    // rests to full after); true from then on until the fight ends
+    // rests to full after) - only from mobs slower than the bot, rooted or stunned; true from then on until the fight
+    // ends
     bool ShouldDisengage(Player* bot);
     // [guild14] it disengages now (cheap: the flag only)
     bool Disengaging(Player* bot);

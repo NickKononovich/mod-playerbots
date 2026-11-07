@@ -542,7 +542,29 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
                 if (quest)
                 {
-                    WorldPosition const target = grindPos != WorldPosition() ? grindPos : giverPos;
+                    WorldPosition target = grindPos != WorldPosition() ? grindPos : giverPos;
+                    // [guild14] every quest postponed or dangerous round it (b303 Thokhen L3 between Root Threshers
+                    // L8: IDLE / DANGER / RECOVER / POSTPONE in a loop): a grind spot whose walk is refused is
+                    // replaced by its hub (the nearest ender of a quest in its log or an inn on a safe way), the mobs
+                    // of its level there; a level-up gives the postponed quests another try
+                    if (target.GetMapId() == bot->GetMapId() &&
+                        TripRefused(bot, target.GetPositionX(), target.GetPositionY(), target.GetPositionZ(),
+                                    "grind spot"))
+                    {
+                        WorldPosition const hub = NearestHub(bot);
+                        if (hub == WorldPosition() ||
+                            TripRefused(bot, hub.GetPositionX(), hub.GetPositionY(), hub.GetPositionZ(), "hub"))
+                        {
+                            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: no safe grind spot or hub", bot->GetName(),
+                                     bot->GetLevel());
+                            info.ChangeToWanderRandom();
+                            return true;
+                        }
+                        LOG_INFO("playerbots", "[rpg] {} L{} GRIND reason: quests postponed or dangerous round it, its "
+                                 "hub {} yd", bot->GetName(), bot->GetLevel(), uint32(bot->GetExactDist(hub)));
+                        info.ChangeToGoGrind(hub);
+                        return true;
+                    }
                     LOG_INFO("playerbots",
                              "[rpg] {} L{} GRIND reason: q{} {} needs L{}, giver {} yd, grind spot {} yd from it",
                              bot->GetName(), bot->GetLevel(), questId, quest->GetTitle(), quest->GetMinLevel(),

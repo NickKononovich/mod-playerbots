@@ -803,10 +803,12 @@ namespace SoloSafety
                 continue;
             float dps = MobDps(attacker, bot);
             auto const track = state.attackers.find(attacker->GetGUID().GetRawValue());
-            if (track != state.attackers.end() && track->second.damage)
-                dps = std::max(dps, float(track->second.damage) /
-                                        (float(getMSTimeDiff(track->second.firstMs, now)) / IN_MILLISECONDS +
-                                         track->second.swingSec));
+            // its measurement this fight once it has swung twice (a single hit, a crit, is no rate), else the model
+            if (track != state.attackers.end() && track->second.damage &&
+                getMSTimeDiff(track->second.firstMs, track->second.lastMs) >=
+                    uint32(track->second.swingSec * IN_MILLISECONDS))
+                dps = float(track->second.damage) /
+                      (float(getMSTimeDiff(track->second.firstMs, now)) / IN_MILLISECONDS + track->second.swingSec);
             foes.push_back({attacker, float(attacker->GetHealth()), dps});
             incoming += dps;
             gap = std::max(gap, int32(attacker->GetLevel()) - int32(bot->GetLevel()));
@@ -816,12 +818,12 @@ namespace SoloSafety
         if (foes.empty() || incoming <= 0.0f)
             return false;
 
-        // its damage: this fight's once it has swung (a swing of its weapon in, the first measurement), else its
-        // measurement at this level gap
+        // its damage: the higher of its measurement at this level gap and this fight's once it has swung (b304 run 1:
+        // this fight's first seconds alone - a caster's first bolt still in flight - sent 9 bots running in 10 min)
         float const elapsed = float(getMSTimeDiff(state.firstMs, now)) / IN_MILLISECONDS;
         float botDps = BotDpsAt(bot, state, gap);
         if (state.dealt && elapsed >= SwingSec(bot))
-            botDps = float(state.dealt) / (elapsed + SwingSec(bot));
+            botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
         botDps = std::max(botDps, 1.0f);
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
         Unit* const victim = bot->GetVictim();
@@ -850,6 +852,13 @@ namespace SoloSafety
         float const runCost = incoming * leashSec;
         if (runCost >= health)
             return false;
+        // ... and only from mobs that cannot keep up (slower than the bot, rooted or stunned): b305 - 18 of 21 deaths
+        // were bots running from mobs of the usual run speed (above a player's), chased 100-400 yd without a leash,
+        // hit in the back all the way
+        for (Foe const& foe : foes)
+            if (foe.unit->GetSpeed(MOVE_RUN) >= bot->GetSpeed(MOVE_RUN) &&
+                !foe.unit->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
+                return false;
         state.fleeing = true;
         LOG_INFO("playerbots",
                  "[solo] {} L{} DISENGAGE: {} attackers deal {:.1f} dps, they need {:.0f} s at its {:.1f} dps: {:.0f} "

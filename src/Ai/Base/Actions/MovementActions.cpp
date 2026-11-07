@@ -23,8 +23,8 @@
 #include "LastMovementValue.h"
 #include "LeaderFightChecks.h"  // [lead1050] LeaderAggroAt
 #include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
-#include "NewRpgBaseAction.h"  // [guild14] NearestHub
 #include "SoloSafety.h"        // [guild14]
+#include "World.h"             // [guild14] CONFIG_CREATURE_LEASH_RADIUS
 #include "DungeonTactics.h"   // [lead231] IsKnownCleaver
 #include "LeaderKnowledge.h"  // [lead231] HasFrontalAttack
 #include "LootObjectStack.h"
@@ -5021,22 +5021,46 @@ bool SoloDisengageAction::Execute(Event /*event*/)
     bot->SetTarget(ObjectGuid::Empty);
     if (bot->GetPet())
         botAI->PetFollow();
-    if (bot->isMoving())
-        return true;
-    WorldPosition const hub = NewRpgBaseAction::NearestHub(bot);
-    if (hub != WorldPosition() && hub.GetMapId() == bot->GetMapId() &&
-        MoveTo(hub.GetMapId(), hub.GetPositionX(), hub.GetPositionY(), hub.GetPositionZ(), false, false, false, true))
-        return true;
+    // the attacker it runs from: the nearest one still on it
     Unit* attacker = nullptr;
     for (Unit* unit : bot->getAttackers())
-        if (unit && unit->IsAlive())
-        {
+        if (unit && unit->IsAlive() && (!attacker || bot->GetExactDist(unit) < bot->GetExactDist(attacker)))
             attacker = unit;
-            break;
-        }
-    if (attacker && Flee(attacker))
+    if (!attacker)
         return true;
-    // nowhere to go this tick: still no fight (the next tick tries again)
+    // a run already on its way (a point move of its own, not a chase)
+    if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        return true;
+    // away from where the mob leashes to (its home: Creature::CanCreatureAttack measures CONFIG_CREATURE_LEASH_RADIUS
+    // from it), out past that radius; straight away first, else to either side, on a navmesh path
+    Position home = attacker->GetPosition();
+    if (Creature* creature = attacker->ToCreature())
+        home = creature->GetHomePosition();
+    float const leash = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
+    float const run = std::max(leash, bot->GetCombatReach()) + attacker->GetCombatReach();
+    float away = home.GetAbsoluteAngle(bot);
+    if (home.GetExactDist2d(bot) < bot->GetCombatReach())
+        away = Position::NormalizeOrientation(attacker->GetOrientation() + float(M_PI));
+    for (float turn : {0.0f, float(M_PI) / 2.0f, -float(M_PI) / 2.0f})
+    {
+        float const angle = Position::NormalizeOrientation(away + turn);
+        float x = bot->GetPositionX() + std::cos(angle) * run;
+        float y = bot->GetPositionY() + std::sin(angle) * run;
+        float z = bot->GetPositionZ();
+        bot->UpdateAllowedPositionZ(x, y, z);
+        PathGenerator path(bot);
+        path.CalculatePath(x, y, z, false);
+        if (path.GetPathType() != PATHFIND_NORMAL)
+            continue;
+        bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+        LOG_INFO("playerbots", "[solo] {} L{} runs from {} L{}: ({:.0f},{:.0f}) -> ({:.0f},{:.0f}), {:.0f} yd from its "
+                 "home after",
+                 bot->GetName(), bot->GetLevel(), attacker->GetName(), attacker->GetLevel(), bot->GetPositionX(),
+                 bot->GetPositionY(), x, y, home.GetExactDist2d(x, y));
+        return true;
+    }
+    // no open way: the flee manager's spot
+    Flee(attacker);
     return true;
 }
 
