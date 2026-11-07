@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <sstream>
 
 #include "AiObjectContext.h"
@@ -38,7 +39,7 @@
 #include "SelfBotControl.h"
 #include "StatsWeightCalculator.h"
 #include "TestHarnessData.h"
-#include "TestHarnessMgr.h"
+#include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
 #include "World.h"
 #include "WorldConfig.h"
 #include "WorldPacket.h"
@@ -52,6 +53,11 @@ namespace
     constexpr float ENTRANCE_REACH = 10.0f;
     constexpr size_t ADDON_LINE_MAX = 240;  // the client drops longer addon messages
     constexpr size_t FIVE_DROPS_KEPT = 40;
+    // [guild70] markers in the five-leader's report reason (FiveRunReport -> GuildFiveReport)
+    constexpr char const* FIVE_LFG_REFUSED = "lfg refused: ";
+    constexpr char const* FIVE_ITEM_NEED = "нужен предмет: ";
+    // [guild70] the last "no Dungeon Finder" reason logged per five (world thread)
+    std::map<uint32, std::string> fiveLfgWhy;
 
     uint32 Now() { return uint32(GameTime::GetGameTime().count()); }
 
@@ -361,14 +367,20 @@ void GuildCoordinator::LoadRuns()
     }
     LOG_INFO("playerbots", "[guild60] completion table: {} runs", runs_.size());
 
-    // the dungeon leader's end of a five's run comes back here
-    TestHarness::TestHarnessMgr::Instance().SetGuildRunEndHook(
-        [](uint32 fiveId, TestHarness::TestHarnessMgr::GuildRunResult const& r)
+    // [guild70] the five-leader's end of its run (Ai/Leader/Dungeon/LeaderDungeonRun.h) comes back here
+    Leader::Dungeon::DungeonRuns::Instance().SetEndHook(
+        [](uint32 fiveId, Leader::Dungeon::FiveRunReport const& r)
         {
             GuildFiveReport report;
             report.runId = r.runId;
             report.result = r.result;
             report.reason = r.reason;
+            // the Dungeon Finder did not take the five: it walks to the entrance instead (OnFiveRunEnd)
+            if (r.lfgRefused)
+                report.reason = FIVE_LFG_REFUSED + r.reason;
+            // the key / event items nobody carried: the five-leader's needs for the global leader
+            for (std::string const& need : r.needs)
+                report.reason += std::string(report.reason.empty() ? "" : "; ") + FIVE_ITEM_NEED + need;
             report.bossesKilled = r.bossesKilled;
             report.bossesTotal = r.bossesTotal;
             report.wipes = r.wipes;
@@ -646,11 +658,13 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
         running = itr->second.stage == GuildFive::Stage::Run;
     }
     // a run: the dungeon leader stops it, its end hook (OnFiveRunEnd) hands authority back
-    if (running && !TestHarness::TestHarnessMgr::Instance().GuildRunPhase(fiveId).empty())
+    Leader::Dungeon::DungeonRuns& runs = Leader::Dungeon::DungeonRuns::Instance();
+    if (running && !runs.Phase(fiveId).empty())
     {
-        TestHarness::TestHarnessMgr::Instance().StopGuildRun(fiveId, reason.empty() ? "five disbanded" : reason);
+        runs.Stop(fiveId, reason.empty() ? "five disbanded" : reason);  // [guild70] the five-leader's run
         return;
     }
+    runs.ForgetFive(fiveId);
     std::lock_guard<std::mutex> guard(lock_);
     auto const itr = fives_.find(fiveId);
     if (itr == fives_.end())
@@ -681,7 +695,38 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
 void GuildCoordinator::UpdateFives()
 {
     std::vector<std::pair<uint32, std::string>> cancel;
-    std::vector<uint32> ready;
+    // [guild70] fives the five-leader takes in now: (id, by the Dungeon Finder)
+    std::vector<std::pair<uint32, bool>> ready;
+    Leader::Dungeon::DungeonRuns& runs = Leader::Dungeon::DungeonRuns::Instance();
+    // the five-leader's run request for a five (lock_ held)
+    auto const request = [this](GuildFive const& five, bool viaLfg)
+    {
+        Leader::Dungeon::FiveRunRequest r;
+        r.fiveId = five.id;
+        r.contentKey = five.contentKey;
+        r.name = five.dungeon;
+        DungeonOption const* d = FindDungeon(five.contentKey);
+        r.mapId = d ? d->mapId : 0;
+        TestHarness::ContentDef const* content = TestHarness::FindContent(five.contentKey);
+        r.difficulty = content ? content->difficulty : 0;
+        r.lfgId = five.lfgId;
+        r.entrance = five.entrance;
+        r.entranceReach = five.entranceReach;
+        r.leader = ObjectGuid::Create<HighGuid::Player>(five.leaderLow);
+        r.viaLfg = viaLfg;
+        auto const add = [&](uint32 low)
+        {
+            auto const role = five.roles.find(low);
+            r.members.push_back({ObjectGuid::Create<HighGuid::Player>(low),
+                                 role != five.roles.end() ? role->second : "dps", five.humans.count(low) != 0});
+        };
+        add(five.leaderLow);
+        for (uint32 low : five.members)
+            if (low != five.leaderLow)
+                add(low);
+        return r;
+    };
+    std::map<uint32, Leader::Dungeon::FiveRunRequest> requests;
     {
         std::lock_guard<std::mutex> guard(lock_);
         for (auto& [id, five] : fives_)
@@ -717,17 +762,34 @@ void GuildCoordinator::UpdateFives()
                 continue;
             }
             if (five.arrived.size() == five.members.size())
-                ready.push_back(id);
+            {
+                ready.emplace_back(id, false);
+                requests[id] = request(five, false);
+                continue;
+            }
+            // [guild70] the five-leader's way in: the Dungeon Finder when it takes the five (an honest game
+            // mechanic: the core ports the group in), else the walk to the entrance goes on
+            Leader::Dungeon::FiveRunRequest lfg = request(five, true);
+            std::string lfgWhy;
+            if (runs.CanQueue(lfg, lfgWhy))
+            {
+                ready.emplace_back(id, true);
+                requests[id] = lfg;
+            }
+            else if (std::string& logged = fiveLfgWhy[id]; logged != lfgWhy)
+            {
+                logged = lfgWhy;
+                LOG_INFO("playerbots", "[guild70] five {} ({}): no Dungeon Finder ({}), the five walks to the entrance",
+                         id, five.contentKey, lfgWhy);
+            }
         }
     }
     for (auto const& [id, why] : cancel)
         DisbandFive(id, why);
 
-    for (uint32 id : ready)
+    for (auto const& [id, viaLfg] : ready)
     {
-        std::vector<std::pair<ObjectGuid, std::string>> members;
-        ObjectGuid leader;
-        std::string contentKey;
+        std::vector<ObjectGuid> members;
         {
             std::lock_guard<std::mutex> guard(lock_);
             auto const itr = fives_.find(id);
@@ -735,23 +797,24 @@ void GuildCoordinator::UpdateFives()
                 continue;
             GuildFive& five = itr->second;
             five.stage = GuildFive::Stage::Run;
-            leader = ObjectGuid::Create<HighGuid::Player>(five.leaderLow);
-            contentKey = five.contentKey;
-            members.emplace_back(leader, five.roles[five.leaderLow]);
             for (uint32 low : five.members)
-                if (low != five.leaderLow)
-                    members.emplace_back(ObjectGuid::Create<HighGuid::Player>(low), five.roles[low]);
-            for (uint32 low : five.members)
-                bots_[low].run = false;
+            {
+                members.push_back(ObjectGuid::Create<HighGuid::Player>(low));
+                BotState& st = bots_[low];
+                st.run = false;
+                // its walk to the entrance ends: the five-leader takes it in now
+                if (Player* p = ObjectAccessor::FindPlayer(members.back()))
+                    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p); ai && ai->rpgInfo.GetStatus() == RPG_GO_CAMP)
+                        ai->rpgInfo.ChangeToIdle();
+            }
         }
         // a fresh instance as a player gets one: each bot resets its own instances ("Reset all instances", solo
         // and outside); a human resets his own
-        for (auto const& [guid, role] : members)
+        for (ObjectGuid const& guid : members)
             if (Player* p = ObjectAccessor::FindConnectedPlayer(guid); p && !IsHuman(p) && !p->GetGroup())
                 Player::ResetInstances(guid, INSTANCE_RESET_ALL, false);
         std::string error;
-        std::string const runId =
-            TestHarness::TestHarnessMgr::Instance().StartGuildRun(contentKey, members, leader, id, error);
+        std::string const runId = runs.Start(requests[id], error);
         if (runId.empty())
         {
             {
@@ -768,8 +831,9 @@ void GuildCoordinator::UpdateFives()
         if (itr == fives_.end())
             continue;
         itr->second.runId = runId;
-        Decision("пятёрка " + std::to_string(id) + " у входа в " + itr->second.dungeon +
-                 ": группа собрана, ведёт лидер пятёрки " + Who(itr->second.leaderLow) + " (его команды окончательны)");
+        Decision("пятёрка " + std::to_string(id) + (viaLfg ? " встаёт в поиск подземелий: " : " у входа в ") +
+                 itr->second.dungeon + ": группа собрана, ведёт лидер пятёрки " + Who(itr->second.leaderLow) +
+                 " (его команды окончательны)");
     }
 
     // the global leader forms new fives every sixth look (30 s)
@@ -955,6 +1019,16 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
     if (itr == fives_.end())
         return;
     GuildFive& five = itr->second;
+    // [guild70] the Dungeon Finder did not take the five: nothing was run, the five walks to the entrance instead
+    if (report.result == "not_started" && report.reason.rfind(FIVE_LFG_REFUSED, 0) == 0)
+    {
+        five.stage = GuildFive::Stage::Gather;
+        five.arrived.clear();
+        five.runId.clear();
+        Decision("пятёрка " + std::to_string(fiveId) + " (" + five.dungeon + "): " +
+                 report.reason.substr(std::strlen(FIVE_LFG_REFUSED)) + " — идёт ко входу пешком");
+        return;
+    }
     for (auto const& [name, count] : report.deaths)
         for (uint32 low : five.members)
             if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
@@ -970,9 +1044,18 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         drops += (drops.empty() ? "" : ", ") + drop;
     // what is still needed: the bosses not killed (a clear is required), the members whose clear is still open
     std::string needs;
-    size_t const cut = report.reason.find("not killed: ");
+    // [guild70] the key / event items nobody carried (the five-leader's report) end the reason
+    size_t const items = report.reason.find(FIVE_ITEM_NEED);
+    std::string const reason = items != std::string::npos ? report.reason.substr(0, items) : report.reason;
+    size_t const cut = reason.find("not killed: ");
     if (report.result != "done")
-        needs = "повторить " + five.dungeon + (cut != std::string::npos ? " (" + report.reason.substr(cut) + ")" : "");
+        needs = "повторить " + five.dungeon + (cut != std::string::npos ? " (" + reason.substr(cut) + ")" : "");
+    for (size_t at = items; at != std::string::npos; at = report.reason.find(FIVE_ITEM_NEED, at + 1))
+    {
+        size_t const end = report.reason.find("; " + std::string(FIVE_ITEM_NEED), at + 1);
+        needs += (needs.empty() ? "" : "; ") +
+                 report.reason.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    }
     std::string open;
     for (uint32 low : five.members)
         if (PlanRow const* row = Row(low); row && row->grp == 'A' && !Cleared(five.contentKey, low))
@@ -1082,7 +1165,7 @@ void GuildCoordinator::FiveOrder(BotState const& st, uint32 low, Player* p, std:
     }
     else
     {
-        std::string const phase = TestHarness::TestHarnessMgr::Instance().GuildRunPhase(five.id);
+        std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(five.id);
         o.status = phase.empty() ? "сдаёт отчёт" : "в подземелье: " + phase;
     }
     orders.push_back(o);
@@ -1157,7 +1240,7 @@ void GuildCoordinator::SendFives(Player* player) const
             status = "сбор у входа " + std::to_string(five.arrived.size()) + "/" + std::to_string(five.members.size());
         else
         {
-            std::string const phase = TestHarness::TestHarnessMgr::Instance().GuildRunPhase(id);
+            std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(id);
             status = phase.empty() ? "отчёт" : phase;
         }
         SendLine(player, "OF;" + std::to_string(id) + ";" + FiveCell(five.dungeon, 30) + ";" + FiveCell(status, 30) + ";" +

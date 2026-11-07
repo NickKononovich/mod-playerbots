@@ -218,6 +218,10 @@ namespace Leader
         virtual void BuffPassSetup(std::vector<Player*> const& players) = 0;
         virtual bool MemberConsumables(Player* bot, uint32& flask, uint32& food) const = 0;
         virtual std::string MemberBuffJson(Player* bot) = 0;
+        // [guild70] the group's owner may move members by teleport (a test run's re-entry: WotLK's LFG port out / in
+        // emulated). Only the test harness answers true, for its own test runs; a real group re-enters by walking out
+        // through the exit and back in at the entrance (RouteReenter.h), and takes no shortcut re-entry.
+        virtual bool TestTeleports() const { return false; }
     };
 }
 

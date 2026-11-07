@@ -136,6 +136,35 @@ namespace Leader::Travel
                                 .Real("walk", -1.0f).Real("entranceWalk", back.length)
                                 .Num("entrance", int64(route.entranceIdx)).Real("toX", entrance.GetPositionX())
                                 .Real("toY", entrance.GetPositionY()).Real("toZ", entrance.GetPositionZ()));
+        // [guild70] a real group (no test teleports): the member walks out through the exit and back in at the
+        // entrance itself (its own "instance portal" with an exact goal); ReturnInside ends the goal back inside
+        if (!group.TestTeleports())
+        {
+            SelfTravel::PortalGoal goal;
+            goal.mapId = map->GetId();
+            goal.x = entrance.GetPositionX();
+            goal.y = entrance.GetPositionY();
+            goal.z = entrance.GetPositionZ();
+            goal.exact = true;
+            SelfTravel::SetPortalGoal(memberGuid, goal);
+            group.SetMemberHasPortalGoal(memberGuid, true);
+            reenter.walking = true;
+            reenter.seenOutside = false;
+            ++reenter.reentries;
+            reset();
+            LOG_INFO("playerbots",
+                     "[guild70] {}: {} had no walk back to {} for {} s: walks out through the exit and back in at "
+                     "entrance {} (counted as a death, {} of {})",
+                     group.Run().runId, bot->GetName(), reference->GetName(), noWalkMs / IN_MILLISECONDS,
+                     route.entranceIdx, reenter.reentries, STRANDED_REENTER_MAX);
+            group.LogEvent("stranded_reenter",
+                           JsonObject().Str("name", bot->GetName()).Str("state", "walks out and in")
+                               .Str("to", reference->GetName()).Num("noWalkSec", noWalkMs / IN_MILLISECONDS)
+                               .Real("distance", distance).Real("x", from.x).Real("y", from.y).Real("z", from.z)
+                               .Num("entrance", int64(route.entranceIdx)).Num("count", reenter.reentries)
+                               .Bool("countedAsDeath", true).Bool("walked", true));
+            return true;
+        }
         bot->GetMotionMaster()->Clear();
         bot->StopMoving();
         if (!bot->TeleportTo(map->GetId(), entrance.GetPositionX(), entrance.GetPositionY(), entrance.GetPositionZ(),
@@ -208,6 +237,9 @@ namespace Leader::Travel
     bool TickShortcutReenter(LeaderGroup& group, std::vector<Player*> const& players, Player* leader)
     {
         GroupRouteState& route = group.Route();
+        // [guild70] a shortcut re-entry is a teleport out and in (the test's LFG port emulated): a real group walks
+        if (!group.TestTeleports())
+            return false;
         uint32 now = getMSTime();
         now = now ? now : 1;
         Map* map = leader ? leader->GetMap() : nullptr;
@@ -336,6 +368,29 @@ namespace Leader::Travel
         bool const inside = bot->GetMapId() == group.MapId();
         bool const ghost = !bot->IsAlive() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
         bool const hasGoal = group.MemberHasPortalGoal(guid);
+        // [guild70] a walked re-entry (StrandedReenter in a real group): its goal holds while it walks out, and ends
+        // once it is back inside after being outside
+        if (auto walk = route.reenter.find(guid); walk != route.reenter.end() && walk->second.walking)
+        {
+            if (bot->IsBeingTeleported())
+                return;
+            if (!inside)
+            {
+                walk->second.seenOutside = true;
+                return;
+            }
+            if (!walk->second.seenOutside && bot->IsAlive())
+                return;  // still walking out through the exit
+            walk->second.walking = false;
+            walk->second.seenOutside = false;
+            SelfTravel::ClearPortalGoal(guid);
+            group.SetMemberHasPortalGoal(guid, false);
+            uint32 const now = getMSTime();
+            group.NoteReentered(guid, false, now ? now : 1);
+            group.LogEvent("stranded_reenter",
+                           JsonObject().Str("name", bot->GetName()).Str("state", "walked back in"));
+            return;
+        }
         if (inside || bot->IsBeingTeleported() || bot->IsInCombat() || (!ghost && !bot->IsAlive()))
         {
             if (inside && hasGoal && !route.wingWalk && !bot->IsBeingTeleported())

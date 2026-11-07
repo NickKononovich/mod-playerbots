@@ -116,6 +116,10 @@ namespace Leader
         uint32 watchdogSec = 0;
         uint32 reentries = 0;
         Position pos;
+        // [guild70] an honest re-entry (no test teleport): the member walks out through the exit and back in at the
+        // entrance (an exact portal goal); seenOutside: it left the instance on that walk (the goal ends back inside)
+        bool walking = false;
+        bool seenOutside = false;
     };
 
     // [lead342] a member during a walked wing change: near one spot since (TickWingWalk)

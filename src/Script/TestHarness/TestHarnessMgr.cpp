@@ -32,6 +32,7 @@
 #include "LeaderRest.h"       // [lead107] the leader's rest / far wait
 #include "RouteHolds.h"       // [lead107] the leader's route holds after the rest
 #include "RouteReenter.h"     // [lead341] the leader's re-entries
+#include "LeaderDungeonRun.h"  // [guild70] the five-leader's run: this harness is its clearing engine
 #include "RouteMeet.h"         // [lead345] the leader's walk to a member under attack
 #include "Log.h"
 #include "Map.h"
@@ -1329,7 +1330,8 @@ namespace TestHarness
 
     std::string TestHarnessMgr::StartGuildRun(std::string const& contentKey,
                                               std::vector<std::pair<ObjectGuid, std::string>> const& members,
-                                              ObjectGuid leader, uint32 fiveId, std::string& error)
+                                              ObjectGuid leader, uint32 fiveId, std::string const& runId,
+                                              std::string& error)
     {
         ContentDef const* content = FindContent(contentKey);
         if (!content || content->raid || content->size != members.size())
@@ -1429,14 +1431,22 @@ namespace TestHarness
         party->level = level;
         party->targetIlvl = 0;
         party->seq = _nextSeq++;
-        party->id = Acore::StringFormat("{}-{}-guild{}-{}", Stamp(), content->key, fiveId, party->seq);
-        // the bots are logged in already: straight to the grouping (real group, the five-leader leads)
-        for (Member const& member : party->members)
-            if (Player* bot = ObjectAccessor::FindConnectedPlayer(member.guid))
-                if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-                    botAI->ChangeStrategy(NonCombatCleanup(), BOT_STATE_NON_COMBAT);
-        SetPhase(*party, Phase::Grouping);
-        LOG_INFO("playerbots", "[guild60] five {} starts {} as run {} (leader {})", fiveId, content->key, party->id,
+        // [guild70] the five-leader's run id (its decision log and the party's events share it)
+        party->id = runId.empty() ? Acore::StringFormat("{}-{}-guild{}-{}", Stamp(), content->key, fiveId, party->seq)
+                                  : runId;
+        // [guild70] the five-leader grouped the five and took it in (LeaderDungeonRun): the clearing starts at the
+        // entering check (every member inside, one instance), no grouping, no teleport
+        Player* leaderPlayer = ObjectAccessor::FindConnectedPlayer(leader);
+        Group* group = leaderPlayer ? leaderPlayer->GetGroup() : nullptr;
+        if (!group || group->GetLeaderGUID() != leader)
+        {
+            error = "the five-leader leads no group";
+            return "";
+        }
+        party->groupGuid = group->GetGUID();
+        ApplyStrategies(*party);
+        SetPhase(*party, Phase::Entering);
+        LOG_INFO("playerbots", "[guild70] five {} clears {} as party {} (leader {})", fiveId, content->key, party->id,
                  leader.ToString());
         _parties.push_back(std::move(party));
         return _parties.back()->id;
@@ -1455,6 +1465,45 @@ namespace TestHarness
             if (!IsTerminal(party->phase) && party->guild && party->guildFiveId == fiveId)
                 return PhaseName(party->phase);
         return "";
+    }
+
+    // [guild70] the five-leader's run (Ai/Leader/Dungeon/LeaderDungeonRun.h) has its instance cleared by this harness's
+    // party state machine in honest mode (Party::guild: no preparation, test setup, handouts or teleports) until the
+    // clearing itself lives in Ai/Leader. Registered once at startup.
+    namespace
+    {
+        class HarnessClearEngine : public Leader::Dungeon::ClearEngine
+        {
+        public:
+            bool Begin(Leader::Dungeon::FiveRunRequest const& request, std::string const& runId,
+                       std::string& error) override
+            {
+                std::vector<std::pair<ObjectGuid, std::string>> members;
+                members.emplace_back(request.leader, "tank");
+                for (Leader::Dungeon::FiveRunMember const& member : request.members)
+                {
+                    if (member.guid == request.leader)
+                        members.front().second = member.role;
+                    else
+                        members.emplace_back(member.guid, member.role);
+                }
+                return !TestHarnessMgr::Instance()
+                            .StartGuildRun(request.contentKey, members, request.leader, request.fiveId, runId, error)
+                            .empty();
+            }
+            std::string Phase(uint32 fiveId) const override
+            {
+                return TestHarnessMgr::Instance().GuildRunPhase(fiveId);
+            }
+            void Stop(uint32 fiveId, std::string const& reason) override
+            {
+                TestHarnessMgr::Instance().StopGuildRun(fiveId, reason);
+            }
+        };
+
+        HarnessClearEngine harnessClearEngine;
+        bool const harnessClearEngineSet =
+            (Leader::Dungeon::DungeonRuns::Instance().SetEngine(&harnessClearEngine), true);
     }
 
     bool TestHarnessMgr::TickTeleport(Party& party)
@@ -4342,11 +4391,10 @@ namespace TestHarness
         LOG_INFO("playerbots", "Test harness: {} finished: {} ({})", party.id, result, reason);
 
         // [guild60] the five's report for the global leader (before the release drops the run's counters)
-        GuildRunResult guildResult;
+        Leader::Dungeon::ClearResult guildResult;
         if (party.guild)
         {
-            guildResult.runId = party.id;
-            guildResult.contentKey = party.content ? party.content->key : "";
+            guildResult.engineRunId = party.id;
             guildResult.result = result;
             guildResult.reason = reason;
             guildResult.wipes = party.wipes;
@@ -4374,8 +4422,8 @@ namespace TestHarness
         else
             party.phase = Phase::Failed;
 
-        if (party.guild && _guildRunEnd)
-            _guildRunEnd(party.guildFiveId, guildResult);
+        if (party.guild)  // [guild70] the five-leader's run gets its clearing back
+            Leader::Dungeon::DungeonRuns::Instance().OnCleared(party.guildFiveId, guildResult);
     }
 
     void TestHarnessMgr::ReleaseParty(Party& party)

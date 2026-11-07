@@ -392,29 +392,14 @@ namespace TestHarness
 
         bool IsTestCharacter(ObjectGuid guid) const;
 
-        // [guild60] a guild coordinator's five in its dungeon; the run's end goes back to the coordinator (world
-        // thread) as this report
-        struct GuildRunResult
-        {
-            std::string runId;
-            std::string contentKey;
-            std::string result;  // done / partial / failed / stalled / stopped / timeout / void
-            std::string reason;
-            std::vector<std::string> bossesKilled;
-            uint32 bossesTotal = 0;
-            uint32 wipes = 0;
-            uint32 durationSec = 0;
-            std::vector<std::pair<std::string, uint32>> deaths;  // member name, its deaths in the run
-        };
-        using GuildRunEndHook = std::function<void(uint32 fiveId, GuildRunResult const& result)>;
-        void SetGuildRunEndHook(GuildRunEndHook hook) { _guildRunEnd = std::move(hook); }
-        // The five (logged in, standing at the dungeon's entrance) runs `contentKey` under the dungeon leader: the
-        // harness groups it, the members walk in through the portal themselves (their own "instance portal"), then
-        // the run goes on as a test run without any test setup. members: (guid, "tank" / "healer" / "dps"); `leader`
-        // decides. Returns the run id, or "" with `error`.
+        // [guild70] the clearing engine of the five-leader's own run (Ai/Leader/Dungeon/LeaderDungeonRun.h, the
+        // HarnessClearEngine in TestHarnessMgr.cpp): the five stands inside, grouped by its five-leader; the clearing
+        // runs as a party without any test setup, handouts or teleports (Party::guild), its end goes back to
+        // Leader::Dungeon::DungeonRuns::OnCleared. members: (guid, "tank" / "healer" / "dps"); `leader` decides.
+        // Returns the party's run id, or "" with `error`.
         std::string StartGuildRun(std::string const& contentKey,
                                   std::vector<std::pair<ObjectGuid, std::string>> const& members, ObjectGuid leader,
-                                  uint32 fiveId, std::string& error);
+                                  uint32 fiveId, std::string const& runId, std::string& error);
         // the five's run ends "stopped" (its five was disbanded); its phase name ("" when none runs)
         void StopGuildRun(uint32 fiveId, std::string const& reason);
         std::string GuildRunPhase(uint32 fiveId) const;
@@ -742,7 +727,6 @@ namespace TestHarness
         std::set<ObjectGuid> _inUse;
         SetupJob _setup;
         std::deque<Composition> _guildComps;  // [guild60] one per guild run (Party::comp points into it)
-        GuildRunEndHook _guildRunEnd;
         uint32 _setupTimer = 0;
         uint32 _queueTimer = 0;
     };
@@ -851,6 +835,8 @@ namespace TestHarness
         void BuffPassSetup(std::vector<Player*> const& players) override;
         bool MemberConsumables(Player* bot, uint32& flask, uint32& food) const override;
         std::string MemberBuffJson(Player* bot) override;
+        // [guild70] a test run's re-entries may teleport; a guild five's run (real play) walks out and in
+        bool TestTeleports() const override { return !_party.guild; }
         void SkipTarget(ObjectGuid guid, uint32 ms, std::string const& reason) override;
         void LogEvent(std::string const& type, JsonObject fields) override;
 

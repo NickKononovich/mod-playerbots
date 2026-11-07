@@ -681,6 +681,7 @@ public:
 
 void AddPlayerbotsSecureLoginScripts();
 void AddPlayerbotsSelfBotAfkScripts();
+void AddLeaderDungeonRunScripts();  // [guild70] Ai/Leader/Dungeon/LeaderDungeonRun.cpp
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -713,6 +714,7 @@ void AddPlayerbotsScripts()
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
     AddGuildCoordinatorScripts();  // [guild30]
+    AddLeaderDungeonRunScripts();  // [guild70] the five-leader's dungeon runs (world thread)
     AddPlayerbotsCommandscripts();
     AddPlayerbotsDeathRecorder();
     AddPlayerbotsInstanceResetCatchUp();
