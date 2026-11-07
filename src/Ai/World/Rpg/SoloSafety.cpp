@@ -704,8 +704,6 @@ namespace SoloSafety
         float const speed = bot->GetSpeed(MOVE_RUN);
         ObjectGuid const target = bot->GetTarget();
         uint8 const level = bot->GetLevel();
-        (void)from;
-        (void)to;
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -737,6 +735,10 @@ namespace SoloSafety
             penalty.z = centre.GetPositionZ();
             penalty.r = radius;
             penalty.cost = float(mob->GetHealth()) / dps * speed;
+            // a mob it must never fight, when no walk round it is complete: any detour up to the whole trip again is
+            // the better walk (b301: Thokhen L3 walked 4 times through the same L9 Nightstalkers on a 1943 yd walk)
+            if (never)
+                penalty.cost = std::max(penalty.cost, (to - from).length() + 2.0f * radius);
             penalties.push_back(penalty);
         }
     }

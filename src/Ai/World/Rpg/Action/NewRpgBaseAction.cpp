@@ -30,6 +30,7 @@
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "SoloSafety.h"  // [guild13]
+#include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
 #include "SpellMgr.h"     // [guild13]
 #include "Object.h"
@@ -96,6 +97,14 @@ bool NewRpgBaseAction::SoloSafetyStep()
     // the user's rule: after a death the bot does not go straight back - it goes to its hub, rests, plans again
     if (SoloSafety::TakeRecovery(bot))
     {
+        // risen at the graveyard's spirit healer (below the resurrection-sickness level): it is in town already
+        if (int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL))
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} RECOVER after a death: risen at the graveyard, rests to full, plans "
+                     "again", bot->GetName(), bot->GetLevel());
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        }
         WorldPosition const hub = NearestHub(bot);
         if (hub != WorldPosition())
         {
