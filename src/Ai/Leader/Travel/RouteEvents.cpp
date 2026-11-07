@@ -8,6 +8,7 @@
 #include "RouteEvents.h"
 #include "LeaderReports.h"
 #include "RoutePatrol.h"
+#include "RouteTargets.h"  // [guild70] DOOR_REARM_MAX, DOOR_REARM_GAP_MS
 
 #include "AggressiveTargetValue.h"
 #include "AiObjectContext.h"
@@ -2850,5 +2851,105 @@ namespace Leader::Travel
                     instance && instance->GetData(HoRIds::DATA_WAVE_NUMBER) != 0)
                     return false;
         return started && bossesOpen;
+    }
+
+    void ReopenKeyDoorInCombat(LeaderGroup& group, Player* leader)
+    {
+        GroupRouteState& route = group.Route();
+        Map* map = leader->GetMap();
+        if (!map || map->GetInstanceId() != group.InstanceId() || !leader->IsAlive() ||
+            leader->IsNonMeleeSpellCast(false))
+            return;
+        uint32 const now = getMSTime();
+        for (StarterTrack& starter : route.starters)
+        {
+            if (starter.def->kind != StarterKind::UseItem || starter.uses < starter.def->maxUses ||
+                starter.doorRearms >= DOOR_REARM_MAX || starter.combatRearms >= DOOR_REARM_COMBAT_MAX ||
+                !route.lastStarterUseMs || getMSTimeDiff(route.lastStarterUseMs, now) <= DOOR_REARM_GAP_MS ||
+                (starter.combatRearmMs && getMSTimeDiff(starter.combatRearmMs, now) < DOOR_REARM_COMBAT_GAP_MS) ||
+                !leader->getAttackers().empty() || !leader->HasItemCount(starter.def->itemId, 1))
+                continue;
+            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+            {
+                if (!go || !go->isSpawned() || go->GetGoType() != GAMEOBJECT_TYPE_DOOR ||
+                    go->GetGoState() != GO_STATE_READY || !go->IsWithinDistInMap(leader, INTERACTION_DISTANCE) ||
+                    std::find(starter.def->entries.begin(), starter.def->entries.end(), go->GetEntry()) ==
+                        starter.def->entries.end())
+                    continue;
+                std::vector<GameObject*> const door = {go};
+                Player* behind = nullptr;
+                for (ObjectGuid const& memberGuid : group.MemberGuids())
+                    if (Player* bot = ObjectAccessor::FindPlayer(memberGuid);
+                        bot && bot != leader && bot->IsAlive() && bot->GetMap() == map && !behind)
+                    {
+                        PathResult const way = RoutePath(bot, leader->GetPositionX(), leader->GetPositionY(),
+                                                         leader->GetPositionZ());
+                        if (way.reachable && RouteThroughClosedDoor(way.points, door, leader->GetPhaseMask()))
+                            behind = bot;
+                    }
+                if (!behind)
+                    continue;
+                ++starter.doorRearms;
+                ++starter.combatRearms;
+                starter.combatRearmMs = now ? now : 1;
+                starter.uses = 0;
+                starter.usedObjects.clear();
+                group.LogEvent("starter_rearmed", JsonObject().Str("note", starter.def->note)
+                                                      .Str("why", "the door closed again in a fight, " +
+                                                                      std::string(behind->GetName()) + " behind it")
+                                                      .Num("rearms", starter.doorRearms).Bool("inCombat", true));
+                UseStarter(group, leader, starter, go);
+                route.lastStarterUseMs = now;  // DOOR_REARM_GAP_MS throttles a refused or interrupted cast too
+                return;
+            }
+        }
+    }
+
+    void CheckExpectedDoors(LeaderGroup& group, Player* leader)
+    {
+        GroupRouteState& route = group.Route();
+        Map* map = leader ? leader->GetMap() : nullptr;
+        if (!map || map->GetInstanceId() != group.InstanceId())
+            return;
+        uint32 const now = getMSTime();
+        for (StarterTrack& starter : route.starters)
+        {
+            if (!starter.def->expectDoor || !starter.expectDoorCheckMs || int32(now - starter.expectDoorCheckMs) < 0)
+                continue;
+            starter.expectDoorCheckMs = 0;
+            GameObject* door = nullptr;
+            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                if (go && go->isSpawned() && go->GetEntry() == starter.def->expectDoor)
+                {
+                    door = go;
+                    break;
+                }
+            if (door && door->GetGoState() != GO_STATE_READY)
+            {
+                group.NoteProgress(now);
+                group.LogEvent("expect_door_ok", JsonObject().Str("note", starter.def->note)
+                                                     .Str("door", door->GetName()).Num("doorEntry", door->GetEntry())
+                                                     .Num("goState", uint32(door->GetGoState()))
+                                                     .Num("retries", starter.expectDoorFails));
+                continue;
+            }
+            ++starter.expectDoorFails;
+            bool const item = !starter.def->itemId || leader->HasItemCount(starter.def->itemId, 1);
+            bool const rearm = starter.expectDoorFails <= EXPECT_DOOR_MAX_RETRIES && item;
+            if (rearm)
+            {
+                starter.uses = 0;
+                starter.usedObjects.clear();
+                starter.failedUses.clear();
+                starter.steppedOut.clear();
+                starter.nextAllowedMs = now + STARTER_ITEM_RETRY_MS;
+            }
+            group.LogEvent(rearm ? "expect_door_retry" : "expect_door_gave_up",
+                           JsonObject().Str("note", starter.def->note).Num("doorEntry", starter.def->expectDoor)
+                               .Bool("doorFound", door != nullptr).Num("retries", starter.expectDoorFails)
+                               .Bool("itemInBags", item)
+                               .Real("leaderDistance", door ? leader->GetExactDist(door) : -1.0f)
+                               .Bool("leaderInCombat", leader->IsInCombat()));
+        }
     }
 }

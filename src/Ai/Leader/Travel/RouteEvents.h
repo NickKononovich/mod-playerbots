@@ -375,6 +375,22 @@ namespace Leader::Travel
 
     bool UseStarterItem(LeaderGroup& group, Player* leader, StarterTrack& starter, GameObject* go);
 
+    // [guild70] moved out of TestHarnessRunner.cpp unchanged (the leader's key doors, any group):
+    // In-combat re-keys (ReopenKeyDoorInCombat), within DOOR_REARM_MAX: strat-h wave 11 spent all 6 in 70 s of one
+    // fight. [b51_strat] no small budget and a short gap: the gate is shut again (GO_STATE_READY) before any re-key,
+    // and a key's 5 s Opening + 3 s open is the natural spacing; only while nothing hits the leader (a hit interrupts
+    // the Opening cast).
+    constexpr uint32 DOOR_REARM_COMBAT_MAX = 1000;
+    constexpr uint32 DOOR_REARM_COMBAT_GAP_MS = 6 * IN_MILLISECONDS;
+    // In a fight, a used key door that closed again with a member behind it (no walk to the leader but through it):
+    // the leader keys it again from its side.
+    void ReopenKeyDoorInCombat(LeaderGroup& group, Player* leader);
+    // [expect_door] EventStarterDef::expectDoor: EXPECT_DOOR_MS after a counted use the door must have left
+    // GO_STATE_READY (Deadmines: smart_scripts 1639800 id 1 sets the Iron Clad Door 16397 to state 2 500 ms after Fire
+    // Cannon 6250 hits the cannon). Still shut: the cast broke or was refused - the use is undone and the starter armed
+    // again, at most EXPECT_DOOR_MAX_RETRIES times (the Defias Gunpowder is consumed only by a completed cast).
+    void CheckExpectedDoors(LeaderGroup& group, Player* leader);
+
     // [brd_bar_buy] [brd_bar_turnin] A vendor or quest step at its creature, as the client does it: CMSG_BUY_ITEM's
     // Player::BuyItemFromVendorSlot (money, reputation, the vendor's stock and reach are checked by the core), or
     // CMSG_QUESTGIVER_ACCEPT_QUEST + CMSG_QUESTGIVER_CHOOSE_REWARD (the creature AI's sQuestReward runs from the reward

@@ -280,12 +280,6 @@ namespace TestHarness
         using Leader::Travel::KEY_DOOR_HELD_RANGE;  // [lead107] RouteTargets.h
         constexpr uint32 REARM_CHECK_LOG_MS = 15 * IN_MILLISECONDS;
         using Leader::Travel::KEY_DOOR_REACH;  // [lead107] RouteTargets.h
-        // In-combat re-keys (ReopenKeyDoorInCombat), within DOOR_REARM_MAX: strat-h wave 11 spent all 6 in 70 s of one
-        // fight. At most 3, 15 s apart, and only while nothing hits the leader (a hit interrupts the Opening cast).
-        // [b51_strat] no small budget and a short gap: the gate is shut again (GO_STATE_READY) before any re-key, and a
-        // key's 5 s Opening + 3 s open is the natural spacing
-        constexpr uint32 DOOR_REARM_COMBAT_MAX = 1000;
-        constexpr uint32 DOOR_REARM_COMBAT_GAP_MS = 6 * IN_MILLISECONDS;
         using Leader::Travel::DOOR_REARM_GAP_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::GAP_CROSS_MAX_DISTANCE;  // [lead107] RouteSteer.h
         using Leader::Travel::GAP_CROSS_TRIES;  // [lead107] RouteSteer.h
@@ -1685,107 +1679,16 @@ namespace TestHarness
     // run in combat. Same budget as that re-arm (DOOR_REARM_MAX, DOOR_REARM_GAP_MS between uses).
     void TestHarnessMgr::ReopenKeyDoorInCombat(Party& party, Player* leader)
     {
-        Map* map = leader->GetMap();
-        if (!map || map->GetInstanceId() != party.instanceId || !leader->IsAlive() ||
-            leader->IsNonMeleeSpellCast(false))
-            return;
-        uint32 const now = getMSTime();
-        for (StarterTrack& starter : party.starters)
-        {
-            if (starter.def->kind != StarterKind::UseItem || starter.uses < starter.def->maxUses ||
-                starter.doorRearms >= DOOR_REARM_MAX || starter.combatRearms >= DOOR_REARM_COMBAT_MAX ||
-                !party.lastStarterUseMs || getMSTimeDiff(party.lastStarterUseMs, now) <= DOOR_REARM_GAP_MS ||
-                (starter.combatRearmMs && getMSTimeDiff(starter.combatRearmMs, now) < DOOR_REARM_COMBAT_GAP_MS) ||
-                !leader->getAttackers().empty() || !leader->HasItemCount(starter.def->itemId, 1))
-                continue;
-            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
-            {
-                if (!go || !go->isSpawned() || go->GetGoType() != GAMEOBJECT_TYPE_DOOR ||
-                    go->GetGoState() != GO_STATE_READY || !go->IsWithinDistInMap(leader, INTERACTION_DISTANCE) ||
-                    std::find(starter.def->entries.begin(), starter.def->entries.end(), go->GetEntry()) ==
-                        starter.def->entries.end())
-                    continue;
-                std::vector<GameObject*> const door = {go};
-                Player* behind = nullptr;
-                for (Member const& member : party.members)
-                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                        bot && bot != leader && bot->IsAlive() && bot->GetMap() == map && !behind)
-                    {
-                        PathResult const way = RoutePath(bot, leader->GetPositionX(), leader->GetPositionY(),
-                                                         leader->GetPositionZ());
-                        if (way.reachable && RouteThroughClosedDoor(way.points, door, leader->GetPhaseMask()))
-                            behind = bot;
-                    }
-                if (!behind)
-                    continue;
-                ++starter.doorRearms;
-                ++starter.combatRearms;
-                starter.combatRearmMs = now ? now : 1;
-                starter.uses = 0;
-                starter.usedObjects.clear();
-                LogEvent(party, "starter_rearmed", JsonObject().Str("note", starter.def->note)
-                                                       .Str("why", "the door closed again in a fight, " +
-                                                                       std::string(behind->GetName()) + " behind it")
-                                                       .Num("rearms", starter.doorRearms).Bool("inCombat", true));
-                UseStarter(party, leader, starter, go);
-                party.lastStarterUseMs = now;  // DOOR_REARM_GAP_MS throttles a refused or interrupted cast too
-                return;
-            }
-        }
+        // [guild70] the leader's (RouteEvents.h)
+        PartyLeaderGroup group(*this, party);
+        Leader::Travel::ReopenKeyDoorInCombat(group, leader);
     }
 
-    // Out of combat, every tick: the leader stands at a closed key door its walk holds at (door_hold) - the whole
-    // group on the near side, or members behind it - and uses the key from there (strat-h builds 14 / 16: the
-    // Retarget re-arm never fired, 0 starter_rearmed, the leader held at the gate at 3.3 yd for minutes; four builds
-    // stuck at this gate). Every failed check near such a door logs "rearm_check" with its reason (REARM_CHECK_LOG_MS).
-    // [expect_door] EventStarterDef::expectDoor: EXPECT_DOOR_MS after a counted use the door must have left
-    // GO_STATE_READY (Deadmines: smart_scripts 1639800 id 1 sets the Iron Clad Door 16397 to state 2 500 ms after Fire
-    // Cannon 6250 hits the cannon). Still shut: the cast broke or was refused - the use is undone and the starter armed
-    // again, at most EXPECT_DOOR_MAX_RETRIES times (the Defias Gunpowder is consumed only by a completed cast).
     void TestHarnessMgr::CheckExpectedDoors(Party& party, Player* leader)
     {
-        Map* map = leader ? leader->GetMap() : nullptr;
-        if (!map || map->GetInstanceId() != party.instanceId)
-            return;
-        uint32 const now = getMSTime();
-        for (StarterTrack& starter : party.starters)
-        {
-            if (!starter.def->expectDoor || !starter.expectDoorCheckMs || int32(now - starter.expectDoorCheckMs) < 0)
-                continue;
-            starter.expectDoorCheckMs = 0;
-            GameObject* door = nullptr;
-            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
-                if (go && go->isSpawned() && go->GetEntry() == starter.def->expectDoor)
-                {
-                    door = go;
-                    break;
-                }
-            if (door && door->GetGoState() != GO_STATE_READY)
-            {
-                party.lastProgressMs = now;
-                LogEvent(party, "expect_door_ok", JsonObject().Str("note", starter.def->note)
-                                                      .Str("door", door->GetName()).Num("doorEntry", door->GetEntry())
-                                                      .Num("goState", uint32(door->GetGoState()))
-                                                      .Num("retries", starter.expectDoorFails));
-                continue;
-            }
-            ++starter.expectDoorFails;
-            bool const item = !starter.def->itemId || leader->HasItemCount(starter.def->itemId, 1);
-            bool const rearm = starter.expectDoorFails <= EXPECT_DOOR_MAX_RETRIES && item;
-            if (rearm)
-            {
-                starter.uses = 0;
-                starter.usedObjects.clear();
-                starter.failedUses.clear();
-                starter.steppedOut.clear();
-                starter.nextAllowedMs = now + STARTER_ITEM_RETRY_MS;
-            }
-            LogEvent(party, rearm ? "expect_door_retry" : "expect_door_gave_up",
-                     JsonObject().Str("note", starter.def->note).Num("doorEntry", starter.def->expectDoor)
-                         .Bool("doorFound", door != nullptr).Num("retries", starter.expectDoorFails)
-                         .Bool("itemInBags", item).Real("leaderDistance", door ? leader->GetExactDist(door) : -1.0f)
-                         .Bool("leaderInCombat", leader->IsInCombat()));
-        }
+        // [guild70] the leader's (RouteEvents.h)
+        PartyLeaderGroup group(*this, party);
+        Leader::Travel::CheckExpectedDoors(group, leader);
     }
 
     // [b33_strat_gate] The harness waypoints of an auto-closing gate (the pass through it, the step to it for a
