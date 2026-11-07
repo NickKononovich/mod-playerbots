@@ -90,9 +90,16 @@ namespace
         return skill == SKILL_COOKING || skill == SKILL_FIRST_AID || skill == SKILL_FISHING;
     }
 
-    // The skill step a spell teaches through SPELL_EFFECT_SKILL_STEP (Spell::EffectLearnSkill: max = step * 75).
+    // The skill step a spell teaches: SPELL_EFFECT_SKILL (the profession rank spells; SpellMgr's learn-skill node,
+    // max = step * 75) or SPELL_EFFECT_SKILL_STEP (Spell::EffectLearnSkill).
     bool SkillStepOf(uint32 spellId, uint32& skill, uint32& step)
     {
+        if (SpellLearnSkillNode const* node = sSpellMgr->GetSpellLearnSkill(spellId))
+        {
+            skill = node->skill;
+            step = std::max<uint32>(1, node->step);
+            return true;
+        }
         SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
         if (!info)
             return false;
@@ -183,8 +190,14 @@ namespace
                                 index.toolVendors[item->item].push_back(spawn);
                             }
             }
-            LOG_INFO("playerbots", "[guild20] profession index: {} tradeskill trainers, {} skills, {} tools sold",
-                     index.ranks.size(), index.trainers.size(), index.toolVendors.size());
+            std::ostringstream toolText;
+            for (auto const& [item, spawns] : index.toolVendors)
+                toolText << " " << item << "x" << spawns.size();
+            std::ostringstream skills;
+            for (auto const& [skill, spawns] : index.trainers)
+                skills << " " << skill << "x" << spawns.size();
+            LOG_INFO("playerbots", "[guild20] profession index: {} tradeskill trainers; trainer spawns by skill:{}; "
+                     "tool vendor spawns:{}", index.ranks.size(), skills.str(), toolText.str());
         });
         return index;
     }
@@ -436,7 +449,17 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
     {
         if (bot->GetExactDist(data->pos) > 10.0f)
         {
-            if (MoveFarTo(data->pos))
+            uint32 const npcEntry = data->npcEntry;
+            bool const moved = MoveFarTo(data->pos);
+            // the far move gave the destination up as unreachable: next time the next trainer / vendor
+            if (!std::holds_alternative<NewRpgInfo::DoProfession>(info.data))
+            {
+                LOG_INFO("playerbots", "[guild20] {} cannot reach npc {}: tries another one", bot->GetName(),
+                         npcEntry);
+                MarkFailed(bot, npcEntry, id);
+                return true;
+            }
+            if (moved)
                 return true;
             return MoveRandomNear(10.0f);
         }
@@ -470,14 +493,14 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
     if (data->kind == TASK_TRAIN)
     {
         uint16 const maxBefore = bot->HasSkill(data->skill) ? bot->GetPureMaxSkillValue(data->skill) : 0;
+        uint16 const valueBefore = bot->HasSkill(data->skill) ? bot->GetPureSkillValue(data->skill) : 0;
         if (Trainer::Trainer* trainer = sObjectMgr->GetTrainer(npc->GetEntry()))
             trainer->TeachSpell(npc, bot, data->spellId);  // the trainer window's path: checks, pays, learns
         uint16 const maxAfter = bot->HasSkill(data->skill) ? bot->GetPureMaxSkillValue(data->skill) : 0;
         bool const learned = maxAfter > maxBefore;
         LOG_INFO("playerbots", "[guild20] {} L{} {} {} at {}: {} rank {}, skill {}/{} -> {}/{}, paid {}c ({}c left)",
                  bot->GetName(), bot->GetLevel(), learned ? "learned" : "could not learn", SkillName(data->skill),
-                 npc->GetName(), data->spellId, maxAfter / 75,
-                 bot->HasSkill(data->skill) ? bot->GetPureSkillValue(data->skill) : 0, maxBefore,
+                 npc->GetName(), data->spellId, maxAfter / 75, valueBefore, maxBefore,
                  bot->HasSkill(data->skill) ? bot->GetPureSkillValue(data->skill) : 0, maxAfter,
                  moneyBefore - bot->GetMoney(), bot->GetMoney());
         if (!learned)

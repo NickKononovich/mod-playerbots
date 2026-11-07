@@ -8,6 +8,7 @@
 
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
+#include "Log.h"
 #include "LootObjectStack.h"
 #include "NewRpgInfo.h"
 #include "ObjectDefines.h"
@@ -20,6 +21,18 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
+
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace
+{
+    // [guild20] nodes the far move gave up on as unreachable (under water, no floor), per bot for this session: a
+    // new DO_GATHER starts with an empty visited set and would pick the same node again and again
+    std::mutex unreachableLock;
+    std::unordered_map<ObjectGuid::LowType, std::unordered_set<ObjectGuid::LowType>> unreachableNodes;
+}
 
 // Base-rank gather spells, the same ids OpenLootAction::DoLoot casts.
 enum GatherSpells
@@ -139,6 +152,12 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         // the node we once switched away from becomes fair game again.
         data.lastSwitchedFrom = 0;
 
+        {
+            std::lock_guard<std::mutex> guard(unreachableLock);
+            auto itr = unreachableNodes.find(bot->GetGUID().GetCounter());
+            if (itr != unreachableNodes.end())
+                data.visited.insert(itr->second.begin(), itr->second.end());
+        }
         // Prefer a node we can already see to be up over an unverified pick.
         GatherNodeSpawn const* node = sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
         if (!node)
@@ -158,7 +177,17 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // 10yd keeps the bot inside lootDistance (default 15) so the loot
     // pipeline's "loot available" trigger can fire on the node.
     if (bot->GetExactDist(data.nodePos) > 10.0f)
-        return MoveFarTo(data.nodePos);
+    {
+        ObjectGuid::LowType const spawnId = data.nodeSpawnId;
+        bool const moved = MoveFarTo(data.nodePos);
+        if (!std::holds_alternative<NewRpgInfo::DoGather>(info.data))
+        {
+            LOG_INFO("playerbots", "[guild20] {} gives up gather node {}: unreachable", bot->GetName(), spawnId);
+            std::lock_guard<std::mutex> guard(unreachableLock);
+            unreachableNodes[bot->GetGUID().GetCounter()].insert(spawnId);
+        }
+        return moved;
+    }
 
     if (!data.lastReach)
         data.lastReach = getMSTime();
