@@ -21,6 +21,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"  // [guild13] CONFIG_DEATH_SICKNESS_LEVEL
 
@@ -28,6 +29,9 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
@@ -174,6 +178,26 @@ bool ReviveFromCorpseAction::Execute(Event event)
     return true;
 }
 
+namespace
+{
+    // [guild15] b303-b308: six ghosts (Alnia, Arrengyl, Baridrol, Eraelor, Sycina, Thelengyl) stood at the Shadowglen
+    // graveyard 17 yd from its Spirit Healer for five runs without a line in the log: one line per bot and outcome
+    void LogGhost(Player* bot, std::string const& what)
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint32, std::string> last;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            std::string& previous = last[bot->GetGUID().GetCounter()];
+            if (previous == what)
+                return;
+            previous = what;
+        }
+        LOG_INFO("playerbots", "[ghost] {} L{} at ({:.1f},{:.1f},{:.1f}): {}", bot->GetName(), bot->GetLevel(),
+                 bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), what);
+    }
+}
+
 bool FindCorpseAction::Execute(Event /*event*/)
 {
     if (bot->InBattleground())
@@ -182,7 +206,15 @@ bool FindCorpseAction::Execute(Event /*event*/)
     Player* groupLeader = botAI->GetGroupLeader();
     Corpse* corpse = bot->GetCorpse();
     if (!corpse)
+    {
+        // [guild15] a ghost with no corpse on this map (logged in as a ghost, the corpse elsewhere): the spirit healer
+        if (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) && !bot->GetMap()->IsDungeon())
+        {
+            LogGhost(bot, "a ghost with no corpse on this map: to the spirit healer");
+            return botAI->DoSpecificAction("spirit healer", Event(), true);
+        }
         return false;
+    }
 
     // if (groupLeader)
     // {
@@ -360,7 +392,7 @@ bool FindCorpseAction::isUseful()
     if (bot->InBattleground())
         return false;
 
-    return bot->GetCorpse();
+    return bot->GetCorpse() || bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);  // [guild15]
 }
 
 GraveyardStruct const* SpiritHealerAction::GetGrave(bool startZone)
@@ -477,7 +509,10 @@ bool SpiritHealerAction::Execute(Event /*event*/)
         GetGrave(dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10);
 
     if (!ClosestGrave)
+    {
+        LogGhost(bot, "no graveyard");
         return false;
+    }
 
     if (bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance)
     {
@@ -489,7 +524,13 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                 continue;
 
             if (bot->GetDistance(unit) > INTERACTION_DISTANCE)
-                return MoveNear(unit, INTERACTION_DISTANCE - 1.0f);
+            {
+                bool const moving = MoveNear(unit, INTERACTION_DISTANCE - 1.0f);
+                LogGhost(bot, Acore::StringFormat("walks to the spirit healer {:.1f} yd off: {} (can move {}, rooted {})",
+                                                  bot->GetDistance(unit), moving ? "moving" : "the move failed",
+                                                  botAI->CanMove(), bot->IsRooted()));
+                return moving;
+            }
 
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
                       bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
@@ -499,7 +540,11 @@ bool SpiritHealerAction::Execute(Event /*event*/)
             packet << unit->GetGUID();
             bot->GetSession()->HandleSpiritHealerActivateOpcode(packet);
             if (!bot->IsAlive())
+            {
+                LogGhost(bot, Acore::StringFormat("the spirit healer {:.1f} yd off did not revive it",
+                                                  bot->GetDistance(unit)));
                 return false;
+            }
 
             context->GetValue<Unit*>("current target")->Set(nullptr);
             bot->SetTarget();
@@ -521,6 +566,11 @@ bool SpiritHealerAction::Execute(Event /*event*/)
 
     if (moved)
         return true;
+    LogGhost(bot, Acore::StringFormat("no spirit healer in sight, the walk to graveyard {} ({:.0f},{:.0f}) {:.0f} yd "
+                                      "off failed (can move {}, rooted {})",
+                                      ClosestGrave->ID, ClosestGrave->x, ClosestGrave->y,
+                                      bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y), botAI->CanMove(),
+                                      bot->IsRooted()));
 
     // A ghost that cannot walk there stays put: no teleport to the graveyard. A failed walk is no death: counted as one
     // it pushed every ghost past the "death count" 5 of FindCorpse / ReviveFromCorpse within a few ticks.

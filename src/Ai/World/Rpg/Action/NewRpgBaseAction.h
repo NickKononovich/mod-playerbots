@@ -63,6 +63,8 @@ public:
     static void RecordDeath(Player* bot, Creature* killer);
     // [guild13] a spot the bot keeps away from until it is above `level`: a pack its pull judge refused (SoloSafety)
     static void RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level);
+    // [guild15] the zones of the pulls its judge refused (not where it died) are judged again: after a repair
+    static void ForgetRefusals(Player* bot);
     // [guild13] the spot lies in one of the bot's remembered danger zones (a death or a refused pack): its creature
     static CreatureTemplate const* InDangerZone(Player* bot, float x, float y);
     // [guild13] a class quest whose purpose is a spell (its reward or its chain's: AutoLearnQuestSpells grants it):

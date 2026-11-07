@@ -306,6 +306,11 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         }
         return false;
     }
+    // [guild15] the next stretch of the walk passes an idle mob whose fight it wins only at full health and mana: it
+    // rests first, as a player tops up before walking on through a camp (b307/b308: 26 of 47 deaths were bots
+    // attacked on the way, half of them below full)
+    if (SoloSafety::RestBeforeWalk(bot, dest))
+        return true;
 
     // Don't start a ground move while the bot is on a taxi or in a load screen: the MovePoint issued below would
     // fight the active flight spline. Returning true consumes the tick instead of returning false, because the
@@ -1079,6 +1084,25 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         }
         return true;
     };
+    // [guild15] the ground under a straight leg (PlayerbotAI::HasGroundSupport, a yard apart, as the airborne
+    // spline guard samples it): b308 Dandolar L4 stood 2365 s at (10091,2243,1340) in Darnassus - the core's path
+    // from there began with a leg over open air, the guard refused it on every tick and the jump down was never tried
+    auto const carried = [&](G3D::Vector3 const& from, G3D::Vector3 const& to)
+    {
+        float const gap = (to - from).length();
+        for (float walked = 1.0f; walked < gap; walked += 1.0f)
+        {
+            G3D::Vector3 const at = from + (to - from) * (walked / gap);
+            if (!PlayerbotAI::HasGroundSupport(bot, at.x, at.y, at.z))
+                return false;
+        }
+        return true;
+    };
+    G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    auto const firstLegCarried = [&](Movement::PointsArray const& points)
+    {
+        return points.size() >= 2 && carried(here, points[0]) && carried(points[0], points[1]);
+    };
     auto const logged = [&](std::string const& how)
     {
         // one line per bot and way out (a failing one is tried again on every walk)
@@ -1104,8 +1128,8 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         PathType const coreType = core.GetPathType();
         if ((coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) &&
             !(coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH)) && points.size() >= 2 &&
-            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && SafeLeg(points) &&
-            WalkBotPoints(bot, points))
+            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && firstLegCarried(points) &&
+            SafeLeg(points) && WalkBotPoints(bot, points))
         {
             float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
                                            float(sPlayerbotAIConfig.MaxWaitForMove));
@@ -1121,7 +1145,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     if (back.type == PATHFIND_NORMAL && back.points.size() >= 2)
     {
         std::reverse(back.points.begin(), back.points.end());
-        if (SafeLeg(back.points) && WalkBotPoints(bot, back.points))
+        if (firstLegCarried(back.points) && SafeLeg(back.points) && WalkBotPoints(bot, back.points))
         {
             float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(back.length), 0.0f,
                                            float(sPlayerbotAIConfig.MaxWaitForMove));
@@ -1142,66 +1166,118 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     dtQueryFilter filter;
     filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER));
     filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
-    float const point[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
-    float nearest[3] = {0.0f, 0.0f, 0.0f};
-    dtPolyRef ref = 0;
-    for (float reach = 3.0f; reach <= sPlayerbotAIConfig.SightDistance && !ref; reach *= 2.0f)
+    // [guild15] the polygons round the bot: the core's search box (3 yd round, 50 yd tall) at the bot and at points
+    // all round it out to its sight (b308 Bierya L7 on a ridge over Shadowglen, z 1410: the one nearest polygon lay
+    // under a lethal fall while a lower ledge round it did not)
+    struct Way
     {
-        float const extents[3] = {reach, 50.0f, reach};
-        if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)))
-            ref = 0;
+        G3D::Vector3 to;
+        float gap;
+        float drop;
+        float damage;
+        bool carried;
+    };
+    std::vector<Way> ways;
+    {
+        // on a polygon already (the core's own box): nothing to step onto
+        float const point[3] = {here.y, here.z, here.x};
+        float const extents[3] = {3.0f, 50.0f, 3.0f};
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        dtPolyRef ref = 0;
+        if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref &&
+            (G3D::Vector3(nearest[2], nearest[0], nearest[1]) - here).length() < bot->GetCombatReach())
+            return false;
     }
-    if (!ref)
+    {
+        // one search per spot: a spot with no way off is not searched again until the bot has moved
+        static std::mutex lock;
+        static std::unordered_map<uint32, std::tuple<uint32, int32, int32, int32>> searched;
+        std::tuple<uint32, int32, int32, int32> const key{bot->GetMapId(), int32(here.x), int32(here.y),
+                                                          int32(here.z)};
+        std::lock_guard<std::mutex> guard(lock);
+        auto& last = searched[bot->GetGUID().GetCounter()];
+        if (last == key)
+            return false;
+        last = key;
+    }
+    auto const probe = [&](float x, float y, float reach)
+    {
+        float const point[3] = {y, here.z, x};
+        float const extents[3] = {reach, 50.0f, reach};
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        dtPolyRef ref = 0;
+        if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref)
+            return;
+        G3D::Vector3 const to(nearest[2], nearest[0], nearest[1]);
+        float const gap = (to - here).length();
+        if (gap < bot->GetCombatReach() || gap > sPlayerbotAIConfig.SightDistance)
+            return;
+        for (Way const& way : ways)
+            if ((way.to - to).length() < 1.0f)
+                return;
+        if (!bot->GetMap()->isInLineOfSight(here.x, here.y, here.z + bot->GetCollisionHeight(), to.x, to.y,
+                                            to.z + bot->GetCollisionHeight(), bot->GetPhaseMask(),
+                                            LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+            return;
+        float const drop = here.z - to.z;
+        ways.push_back({to, gap, drop, drop > 0.0f ? FallDamageShare(bot, drop) * float(bot->GetMaxHealth()) : 0.0f,
+                        carried(here, to)});
+    };
+    for (float reach = 3.0f; reach <= sPlayerbotAIConfig.SightDistance; reach *= 2.0f)
+    {
+        probe(here.x, here.y, reach);
+        if (reach == 3.0f)
+            continue;
+        // the ring at this reach: one probe per arc of the box's own width
+        uint32 const arcs = std::max<uint32>(8, uint32(std::ceil(2.0f * float(M_PI) * reach / (2.0f * 3.0f))));
+        for (uint32 i = 0; i < arcs; ++i)
+        {
+            float const angle = 2.0f * float(M_PI) * float(i) / float(arcs);
+            probe(here.x + std::cos(angle) * reach, here.y + std::sin(angle) * reach, 3.0f);
+        }
+        if (std::any_of(ways.begin(), ways.end(), [](Way const& way) { return way.carried; }))
+            break;
+    }
+    if (ways.empty())
     {
         logged("off the navmesh, no polygon in sight");
         return false;
     }
-    G3D::Vector3 const to(nearest[2], nearest[0], nearest[1]);
-    G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-    float const gap = (to - from).length();
-    if (gap < bot->GetCombatReach())
-        return false;  // on it already: nothing to step onto
-    if (!bot->GetMap()->isInLineOfSight(from.x, from.y, from.z + bot->GetCollisionHeight(), to.x, to.y,
-                                        to.z + bot->GetCollisionHeight(), bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
-                                        VMAP::ModelIgnoreFlags::Nothing))
+    // a step the ground carries, the nearest; else a jump down the bot survives, the least fall damage
+    Way const* best = nullptr;
+    for (Way const& way : ways)
+        if (way.carried && (!best || way.gap < best->gap))
+            best = &way;
+    if (best)
     {
-        logged(Acore::StringFormat("off the navmesh, the nearest polygon ({:.1f},{:.1f},{:.1f}) {:.0f} yd off is out "
-                                   "of sight",
-                                   to.x, to.y, to.z, gap));
-        return false;
-    }
-    // the ground under the straight step (PlayerbotAI::HasGroundSupport, as the airborne spline guard samples it)
-    bool carried = true;
-    for (float walked = 1.0f; walked < gap && carried; walked += 1.0f)
-    {
-        G3D::Vector3 const at = from + (to - from) * (walked / gap);
-        carried = PlayerbotAI::HasGroundSupport(bot, at.x, at.y, at.z);
-    }
-    if (carried)
-    {
-        bot->GetMotionMaster()->MovePoint(0, to.x, to.y, to.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
+        bot->GetMotionMaster()->MovePoint(0, best->to.x, best->to.y, best->to.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
+                                          false, true);
         return logged(Acore::StringFormat("off the navmesh: steps onto the nearest polygon ({:.1f},{:.1f},{:.1f}) "
                                           "{:.0f} yd off",
-                                          to.x, to.y, to.z, gap));
+                                          best->to.x, best->to.y, best->to.z, best->gap));
     }
-    float const drop = from.z - to.z;
-    float const damage = FallDamageShare(bot, drop) * float(bot->GetMaxHealth());
-    if (drop <= 0.0f || damage >= float(bot->GetHealth()))
+    for (Way const& way : ways)
+        if (way.drop > 0.0f && way.damage < float(bot->GetHealth()) &&
+            (!best || way.damage < best->damage || (way.damage == best->damage && way.gap < best->gap)))
+            best = &way;
+    if (!best)
     {
-        logged(Acore::StringFormat("off the navmesh: the nearest polygon ({:.1f},{:.1f},{:.1f}) lies {:.0f} yd {} over "
-                                   "open air, a fall of {:.0f} damage at {} health",
-                                   to.x, to.y, to.z, std::fabs(drop), drop > 0.0f ? "down" : "up", damage,
+        Way const& first = ways.front();
+        logged(Acore::StringFormat("off the navmesh: {} polygons in sight, none a step or a fall it survives (the "
+                                   "first {:.0f} yd {} over open air, {:.0f} damage at {} health)",
+                                   ways.size(), std::fabs(first.drop), first.drop > 0.0f ? "down" : "up", first.damage,
                                    bot->GetHealth()));
         return false;
     }
     // a player jumps down: the core's jump arc to the polygon, the fall damage the core's formula gives
     float const speedXY = bot->GetSpeed(MOVE_RUN);
-    bot->GetMotionMaster()->MoveJump(to.x, to.y, to.z, speedXY, speedXY);
-    if (uint32 const fallDamage = uint32(damage))
+    bot->GetMotionMaster()->MoveJump(best->to.x, best->to.y, best->to.z, speedXY, speedXY);
+    if (uint32 const fallDamage = uint32(best->damage))
         bot->EnvironmentalDamage(DAMAGE_FALL, fallDamage);
-    return logged(Acore::StringFormat("off the navmesh: jumps down {:.0f} yd onto the nearest polygon "
-                                      "({:.1f},{:.1f},{:.1f}), fall damage {}",
-                                      drop, to.x, to.y, to.z, uint32(damage)));
+    return logged(Acore::StringFormat("off the navmesh: jumps down {:.0f} yd onto a polygon ({:.1f},{:.1f},{:.1f}) "
+                                      "{:.0f} yd off, fall damage {}",
+                                      best->drop, best->to.x, best->to.y, best->to.z, best->gap,
+                                      uint32(best->damage)));
 }
 
 bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
@@ -2265,6 +2341,7 @@ namespace
         uint32 entry;
         uint8 level;
         float radius;
+        bool refused = false;  // [guild15] a refused pull's zone, not a death's
     };
     std::mutex deathZonesLock;
     std::unordered_map<uint32, std::vector<DeathZone>> deathZones;
@@ -2446,7 +2523,24 @@ void NewRpgBaseAction::RememberDanger(Player* bot, float x, float y, float radiu
         if (zone.mapId == bot->GetMapId() && zone.entry == entry &&
             SegmentDistSq(zone.killerX, zone.killerY, x, y, x, y) <= zone.radius * zone.radius)
             return;
-    list.push_back({bot->GetMapId(), x, y, x, y, entry, level, radius});
+    list.push_back({bot->GetMapId(), x, y, x, y, entry, level, radius, true});
+}
+
+void NewRpgBaseAction::ForgetRefusals(Player* bot)
+{
+    if (!bot)
+        return;
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto const found = deathZones.find(bot->GetGUID().GetCounter());
+    if (found == deathZones.end())
+        return;
+    auto& list = found->second;
+    size_t const before = list.size();
+    list.erase(std::remove_if(list.begin(), list.end(), [](DeathZone const& zone) { return zone.refused; }),
+               list.end());
+    if (before != list.size())
+        LOG_INFO("playerbots", "[solo] {} L{} repaired: {} refused pulls judged again", bot->GetName(),
+                 bot->GetLevel(), before - list.size());
 }
 
 CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, float y)

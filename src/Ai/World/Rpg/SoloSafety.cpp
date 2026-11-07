@@ -266,13 +266,9 @@ namespace
         return float(found->second.damage / found->second.sec);
     }
 
-    float BotDpsLocked(Player* bot, SoloBotState const& state)
+    // its weapon's white damage per second (melee, or the ranged weapon / wand: the better) and its pet's
+    float WhiteDps(Player* bot)
     {
-        if (state.fightSecSum > 0.0 && state.dealtSum > 0.0)
-            return float(state.dealtSum / state.fightSecSum);
-        // before its first measured fight: its weapon's white damage only (melee, or the ranged weapon / wand: the
-        // better), the spells' share comes with the measurement (b297: the model's every-cast spell damage put a
-        // level 5 mage at 19 damage taken for a fight it lost in 103 s at 1.9 dps)
         float dps = 0.0f;
         for (WeaponAttackType type : {BASE_ATTACK, RANGED_ATTACK})
         {
@@ -289,6 +285,16 @@ namespace
                 dps += (pet->GetFloatValue(UNIT_FIELD_MINDAMAGE) + pet->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f /
                        SwingSec(pet);
         return dps;
+    }
+
+    float BotDpsLocked(Player* bot, SoloBotState const& state)
+    {
+        if (state.fightSecSum > 0.0 && state.dealtSum > 0.0)
+            return float(state.dealtSum / state.fightSecSum);
+        // before its first measured fight: its weapon's white damage only, the spells' share comes with the
+        // measurement (b297: the model's every-cast spell damage put a level 5 mage at 19 damage taken for a fight it
+        // lost in 103 s at 1.9 dps)
+        return WhiteDps(bot);
     }
 
     // [guild14] its damage measured in fights at that level gap (b303: Rollothan L7 dealt 4.7 dps to Prowlers L9,
@@ -570,21 +576,15 @@ namespace SoloSafety
         verdict.mobs = mobs.size();
 
         SoloBotState snapshot;
-        std::string lostBefore;  // [guild14]
         float botDps = 0.0f;
         {
             std::lock_guard<std::mutex> guard(lock);
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
             CloseIfOver(bot, state);
             botDps = BotDpsAt(bot, state, int32(verdict.topLevel) - int32(bot->GetLevel()));  // [guild14]
-            // [guild14] a mob it lost to (died, disengaged) at this level gap or a smaller one
-            for (Mob const& mob : mobs)
-                if (Creature* creature = mob.unit->ToCreature())
-                    for (auto const& [entry, lostGap] : state.lostTo)
-                        if (entry == creature->GetEntry() &&
-                            int32(creature->GetLevel()) - int32(bot->GetLevel()) >= lostGap && lostBefore.empty())
-                            lostBefore = Acore::StringFormat("lost to {} L{} before", creature->GetName(),
-                                                             creature->GetLevel());
+            // [guild15] user 2026-11-07: a mob it lost to is no veto by itself (a player kills yellow +1 / +2 mobs
+            // solo all the time): the lost fight is in the numbers - the entry's measured damage, its damage at that
+            // level gap - and only the projection refuses
             BestHeal(bot, state);
             snapshot.heal = state.heal;
             snapshot.manaSum = state.manaSum;
@@ -598,49 +598,79 @@ namespace SoloSafety
         std::sort(mobs.begin() + 1, mobs.end(),
                   [](Mob const& a, Mob const& b)
                   { return a.dps / std::max(a.hp, 1.0f) > b.dps / std::max(b.hp, 1.0f); });
-        float seconds = 0.0f;
-        float damage = 0.0f;
-        for (Mob const& mob : mobs)
-        {
-            seconds += mob.hp / botDps;
-            damage += mob.dps * seconds;
-        }
-        verdict.damage = damage;
-        verdict.fightSec = seconds;
 
         float petHealth = 0.0f;
         if (Pet* pet = bot->GetPet())
             if (pet->IsAlive())
                 petHealth = float(pet->GetHealth());
+        // [guild15] its damage lasts as long as its mana: the mana it spends per fight second (measured over its
+        // fights) runs its spells, its weapon's white damage (and its pet's) is what is left when the mana is gone
+        // (b307/b308: priests pulled at 7-25 % mana judged on their full-mana damage and died - Orenem L10 three
+        // times, Guinudrond L9)
         float const manaPerSec =
             snapshot.fightSecSum > 0.0 ? float(snapshot.manaSum / snapshot.fightSecSum) : 0.0f;
+        float const whiteDps = std::clamp(WhiteDps(bot), 1.0f, botDps);
         // health + pet + what it heals itself per fight second, measured (its own heals on itself over its fights),
         // as far as its mana lasts: b298 Peny L8 took 4 Murlocs on a spell model of its heals and healed 24 in 50 s
         float const healRate =
             snapshot.fightSecSum > 0.0 ? float(snapshot.healedSum / snapshot.fightSecSum) : 0.0f;
-        (void)manaPerSec;
-        auto const effective = [&](float health, float mana, bool& wins) -> float
+        struct Projection
         {
-            float heals = healRate * seconds;
+            float seconds = 0.0f;
+            float damage = 0.0f;
+        };
+        auto const project = [&](float mana) -> Projection
+        {
+            float const spellSec = bot->GetMaxPower(POWER_MANA) && manaPerSec > 0.0f
+                                       ? mana / manaPerSec
+                                       : std::numeric_limits<float>::max();
+            Projection out;
+            for (Mob const& mob : mobs)
+            {
+                float hp = mob.hp;
+                if (out.seconds < spellSec)
+                {
+                    float const spellPart = (spellSec - out.seconds) * botDps;
+                    if (hp <= spellPart)
+                    {
+                        out.seconds += hp / botDps;
+                        hp = 0.0f;
+                    }
+                    else
+                    {
+                        out.seconds = spellSec;
+                        hp -= spellPart;
+                    }
+                }
+                out.seconds += hp / whiteDps;
+                out.damage += mob.dps * out.seconds;
+            }
+            return out;
+        };
+        Projection const now = project(float(bot->GetPower(POWER_MANA)));
+        Projection const atFull = project(float(bot->GetMaxPower(POWER_MANA)));
+        float const seconds = now.seconds;
+        float const damage = now.damage;
+        verdict.damage = damage;
+        verdict.fightSec = seconds;
+        auto const effective = [&](Projection const& fight, float health, float mana, bool& wins) -> float
+        {
+            float heals = healRate * fight.seconds;
             if (uint32 const maxMana = bot->GetMaxPower(POWER_MANA))
                 heals *= std::min(1.0f, mana / float(maxMana));
             float const ehp = health + petHealth + heals;
-            wins = damage < ehp;
+            wins = fight.damage < ehp;
             return ehp;
         };
         bool winNow = false;
         bool winFull = false;
-        verdict.ehpNow = effective(float(bot->GetHealth()), float(bot->GetPower(POWER_MANA)), winNow);
-        verdict.ehpFull = effective(float(bot->GetMaxHealth()), float(bot->GetMaxPower(POWER_MANA)), winFull);
+        verdict.ehpNow = effective(now, float(bot->GetHealth()), float(bot->GetPower(POWER_MANA)), winNow);
+        verdict.ehpFull =
+            effective(atFull, float(bot->GetMaxHealth()), float(bot->GetMaxPower(POWER_MANA)), winFull);
         bool const full = bot->GetHealth() >= bot->GetMaxHealth() &&
                           (!bot->GetMaxPower(POWER_MANA) || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA));
 
-        if (!lostBefore.empty())  // [guild14]
-        {
-            verdict.kind = Verdict::Kind::Refuse;
-            verdict.why = lostBefore;
-        }
-        else if (elite)
+        if (elite)
         {
             verdict.kind = Verdict::Kind::Refuse;
             verdict.why = "an elite in the pack";
@@ -663,8 +693,10 @@ namespace SoloSafety
             verdict.why = "loses even at full";
         }
         std::string const numbers = Acore::StringFormat(
-            "{} mobs ({} above), {:.0f} dmg expected over {:.0f} s at {:.1f} dps, ehp {:.0f} now / {:.0f} full",
-            verdict.mobs, verdict.above, damage, seconds, botDps, verdict.ehpNow, verdict.ehpFull);
+            "{} mobs ({} above), {:.0f} dmg expected over {:.0f} s at {:.1f} dps ({:.1f} without mana; full: {:.0f} "
+            "dmg over {:.0f} s), ehp {:.0f} now / {:.0f} full",
+            verdict.mobs, verdict.above, damage, seconds, botDps, whiteDps, atFull.damage, atFull.seconds,
+            verdict.ehpNow, verdict.ehpFull);
         verdict.why = verdict.why.empty() ? numbers : verdict.why + ": " + numbers;
 
         bool log = false;
@@ -758,6 +790,90 @@ namespace SoloSafety
         bool const eats = health && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
         bool const drinks = mana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
         return (health || mana) && !eats && !drinks;
+    }
+
+    bool RestBeforeWalk(Player* bot, Position const& dest)
+    {
+        if (!bot || bot->IsInCombat() || !bot->IsAlive() || !Applies(bot))
+            return false;
+        bool const full = bot->GetHealth() >= bot->GetMaxHealth() &&
+                          (!bot->GetMaxPower(POWER_MANA) || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA));
+        if (full)
+            return false;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            // a rest asked for (a pull, a death, this walk): no walk on until full - a step stands it up from its food
+            if (found != states.end() && found->second.rest)
+                return true;
+        }
+        // the stretch it sees of the walk
+        float const fromX = bot->GetPositionX();
+        float const fromY = bot->GetPositionY();
+        float const total = bot->GetExactDist2d(dest.GetPositionX(), dest.GetPositionY());
+        if (total <= 0.0f)
+            return false;
+        float const share = std::min(1.0f, sPlayerbotAIConfig.SightDistance / total);
+        float const toX = fromX + (dest.GetPositionX() - fromX) * share;
+        float const toY = fromY + (dest.GetPositionY() - fromY) * share;
+        float const dx = toX - fromX;
+        float const dy = toY - fromY;
+        float const lengthSq = dx * dx + dy * dy;
+        // the first idle mob on it whose reach (aggro range, its wander area) the stretch enters
+        Creature* first = nullptr;
+        float firstT = 2.0f;
+        for (ObjectGuid const& guid :
+             GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
+        {
+            Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                continue;
+            float reach = mob->GetAggroRange(bot) + bot->GetCombatReach();
+            Position centre = mob->GetPosition();
+            if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+            {
+                centre = mob->GetHomePosition();
+                reach += mob->GetWanderDistance();
+            }
+            float t = lengthSq > 0.0f
+                          ? ((centre.GetPositionX() - fromX) * dx + (centre.GetPositionY() - fromY) * dy) / lengthSq
+                          : 0.0f;
+            t = std::clamp(t, 0.0f, 1.0f);
+            float const ex = fromX + dx * t - centre.GetPositionX();
+            float const ey = fromY + dy * t - centre.GetPositionY();
+            if (ex * ex + ey * ey > reach * reach || t >= firstT)
+                continue;
+            first = mob;
+            firstT = t;
+        }
+        if (!first)
+            return false;
+        Verdict const verdict = Judge(bot, first);
+        if (verdict.kind != Verdict::Kind::RestFirst)
+            return false;
+        RequestRest(bot, std::string("before walking past ") + first->GetName() + ": " + verdict.why);
+        return true;
+    }
+
+    void OnRepaired(Player* bot)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end())
+            return;
+        SoloBotState& state = found->second;
+        // [guild15] its damage was measured with broken gear (b308: 12 of 50 bots wore broken weapons, hunters dealt
+        // 4-5 dps): measured again from here
+        state.dealtSum = 0.0;
+        state.fightSecSum = 0.0;
+        state.manaSum = 0.0;
+        state.healedSum = 0.0;
+        state.fights = 0;
+        state.gapDealt.clear();
+        state.lostTo.clear();
     }
 
     void OnDeath(Player* bot)

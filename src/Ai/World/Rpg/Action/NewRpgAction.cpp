@@ -41,6 +41,7 @@
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "WaypointMovementGenerator.h"
+#include "World.h"  // [guild15] durability rates
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
 #include <cfloat>
@@ -173,6 +174,15 @@ namespace
 bool NewRpgBaseAction::StartVendorRun()
 {
     NewRpgInfo& info = botAI->rpgInfo;
+    // [guild15] a vendor run another state took over (a death's recovery, a quest, a guild order) is over: it kept
+    // vendorRunEntry set and no run started again (b308: Farret L10 with 6 of 7 items broken logged "vendor: repair"
+    // 750 times without walking there; 12 of 50 bots ended the run with broken gear)
+    if (info.vendorRunEntry && info.GetStatus() != RPG_GO_CAMP && info.GetStatus() != RPG_WANDER_NPC)
+    {
+        LOG_INFO("playerbots", "[New RPG] {} vendor run ({}) dropped by another state: planned again",
+                 bot->GetName(), info.vendorRunReason);
+        info.vendorRunEntry = 0;
+    }
     if (info.vendorRunEntry || bot->IsInCombat() || !bot->IsAlive())
         return false;
 
@@ -190,10 +200,23 @@ bool NewRpgBaseAction::StartVendorRun()
     }
     // [guild13] a broken item (0 durability: a hunter's bow shoots no more) is repaired, as a player does - at a vendor
     // that repairs, paid from its own money; one try per money gain
+    // [guild15] ... and before the next death breaks it: an item with no more durability left than one death takes
+    // (the core's RATE_DURABILITY_LOSS_ON_DEATH, plus RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT for a bot that rises
+    // at the spirit healer) - b308: hunters fought on with broken bows at 4-5 dps and died to mobs below their level
+    float const deathLoss = (sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) +
+                             (int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL)
+                                  ? sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT)
+                                  : 0.0f)) /
+                            100.0f;
     bool repair = false;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END && !repair; ++slot)
         if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            repair = item->IsBroken();
+        {
+            uint32 const maxDurability = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+            repair = item->IsBroken() ||
+                     (maxDurability &&
+                      float(item->GetUInt32Value(ITEM_FIELD_DURABILITY)) <= deathLoss * float(maxDurability));
+        }
     repair = repair && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
     if (!sell && !ammoSubClass && !repair)
         return false;
@@ -836,7 +859,12 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 }
 
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
+                {
                     botAI->DoSpecificAction("repair", Event("repair"), true);
+                    // [guild15] its damage and the fights it refused were measured with the worn gear
+                    SoloSafety::OnRepaired(bot);
+                    NewRpgBaseAction::ForgetRefusals(bot);
+                }
             }
         }
 

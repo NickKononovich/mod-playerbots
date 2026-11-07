@@ -77,6 +77,11 @@ namespace SoloSafety
     // it wants to rest and has nothing to eat / drink for it: it sits and regenerates
     bool WaitsToRegen(Player* bot);
 
+    // [guild15] the walk's stretch in sight toward `dest` passes an idle mob whose fight the judge wins only at full:
+    // the bot rests to full first (true: the rest is asked for)
+    bool RestBeforeWalk(Player* bot, Position const& dest);
+    // [guild15] its gear was repaired: its damage is measured again
+    void OnRepaired(Player* bot);
     // the bot died: rest to full and the walk to its hub after the revive
     void OnDeath(Player* bot);
     // once after the revive: true and the hub to walk to
