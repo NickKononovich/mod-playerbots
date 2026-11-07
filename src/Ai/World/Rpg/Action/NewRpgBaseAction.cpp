@@ -7,6 +7,7 @@
 #include "NewRpgBaseAction.h"
 #include "BotPath.h"  // [lead109]
 #include "BroadcastHelper.h"
+#include "GuildCoordinator.h"  // [guild50] the quest reward pick
 #include "ChatHelper.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -1838,6 +1839,9 @@ uint32 NewRpgBaseAction::BestRewardIndex(Quest const* quest)
     ItemUsage bestUsage = ITEM_USAGE_NONE;
     if (quest->GetRewChoiceItemsCount() <= 1)
         return 0;
+    // [guild50] the global leader's pick for the guild (itself, a member through the bank, the wanted list, sale)
+    if (int32 const guild = sGuildCoordinator.RewardChoice(bot, quest); guild >= 0)
+        return uint32(guild);
     else
     {
         for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)

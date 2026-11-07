@@ -6,6 +6,7 @@
 
 #include "TalkToQuestGiverAction.h"
 #include "BroadcastHelper.h"
+#include "GuildCoordinator.h"  // [guild50] the quest reward pick
 #include "ChatHelper.h"
 #include "Event.h"
 #include "ItemUsageValue.h"
@@ -161,6 +162,14 @@ void TalkToQuestGiverAction::RewardMultipleItem(Quest const* quest, Object* ques
     std::set<uint32> bestIds;
 
     std::ostringstream outid;
+    // [guild50] the global leader's pick for the guild
+    if (int32 const guild = sGuildCoordinator.RewardChoice(bot, quest); guild >= 0)
+    {
+        ItemTemplate const* item = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[guild]);
+        bot->RewardQuest(quest, uint32(guild), questGiver, true);
+        out << "Rewarded " << ChatHelper::FormatItem(item);
+        return;
+    }
     if (!botAI->IsAltBot() || sPlayerbotAIConfig.AutoPickReward == "yes")
     {
         bestIds = BestRewards(quest);
