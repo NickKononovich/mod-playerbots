@@ -67,6 +67,12 @@ void NewRpgInfo::ChangeToDoGather()
     data = DoGather{};
 }
 
+void NewRpgInfo::ChangeToDoProfession(DoProfession const& task)
+{
+    startT = getMSTime();
+    data = task;
+}
+
 void NewRpgInfo::ChangeToRest()
 {
     startT = getMSTime();
@@ -114,6 +120,7 @@ NewRpgStatus NewRpgInfo::StatusFromString(std::string const& name)
     if (name == "travel flight")  return RPG_TRAVEL_FLIGHT;
     if (name == "outdoor pvp")    return RPG_OUTDOOR_PVP;
     if (name == "do gather")      return RPG_DO_GATHER;
+    if (name == "do profession")  return RPG_DO_PROFESSION;
     return RPG_STATUS_END;
 }
 
@@ -131,6 +138,7 @@ NewRpgStatus NewRpgInfo::GetStatus()
         if constexpr (std::is_same_v<T, TravelFlight>) return RPG_TRAVEL_FLIGHT;
         if constexpr (std::is_same_v<T, OutdoorPvP>) return RPG_OUTDOOR_PVP;
         if constexpr (std::is_same_v<T, DoGather>) return RPG_DO_GATHER;
+        if constexpr (std::is_same_v<T, DoProfession>) return RPG_DO_PROFESSION;
         return RPG_IDLE;
     }, data);
 }
@@ -211,6 +219,12 @@ std::string NewRpgInfo::ToString()
                 << arg.nodePos.GetPositionY() << " " << arg.nodePos.GetPositionZ();
             out << "\nvisited: " << arg.visited.size();
             out << "\nlastReach: " << (arg.lastReach ? GetMSTimeDiffToNow(arg.lastReach) : 0);
+        }
+        else if constexpr (std::is_same_v<T, DoProfession>)
+        {
+            out << "DO_PROFESSION";
+            out << "\n" << (arg.kind == 1 ? "train spell " : "buy item ") << (arg.kind == 1 ? arg.spellId : arg.itemId)
+                << " skill " << arg.skill << " at npc " << arg.npcEntry << " cost " << arg.cost;
         }
         else
             out << "UNKNOWN";

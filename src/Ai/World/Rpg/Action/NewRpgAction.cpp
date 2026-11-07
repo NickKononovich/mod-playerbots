@@ -19,6 +19,7 @@
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
+#include "NewRpgProfession.h"  // [guild20]
 #include "NewRpgStrategy.h"
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -394,7 +395,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     if (info.loggedStatus != uint8(status))
     {
         static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
-                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER"};
+                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
         info.loggedStatus = uint8(status);
         sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
         std::string detail;
@@ -458,7 +459,12 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 WorldPosition giverPos;
                 uint32 const questId = ChooseBestQuest(giverPos);
-                if (Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr)
+                Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+                // [guild20] after the hand-ins: the planned profession's trainer or tool vendor
+                if ((!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE) &&
+                    NewRpgProfession::StartTask(botAI, bot))
+                    return true;
+                if (quest)
                 {
                     QuestStatus const questStatus = bot->GetQuestStatus(questId);
                     std::string const reason =

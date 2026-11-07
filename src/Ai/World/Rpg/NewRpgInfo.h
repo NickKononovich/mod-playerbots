@@ -88,6 +88,18 @@ struct NewRpgInfo
         uint32 lastPassiveCheck{0};
         ObjectGuid::LowType lastSwitchedFrom{0};
     };
+    // RPG_DO_PROFESSION [guild20]: a walk to a profession trainer (learn a rank) or a vendor (buy a tool)
+    struct DoProfession
+    {
+        uint8 kind{0};  // 1 train, 2 buy
+        uint32 npcEntry{0};
+        WorldPosition pos{};
+        uint32 spellId{0};  // trainer spell (kind 1)
+        uint32 itemId{0};   // tool (kind 2)
+        uint32 skill{0};
+        uint32 cost{0};
+        ObjectGuid npc{};
+    };
     struct Idle
     {
     };
@@ -171,7 +183,8 @@ struct NewRpgInfo
         Rest,
         TravelFlight,
         OutdoorPvP,
-        DoGather
+        DoGather,
+        DoProfession
     >;
     RpgData data;
 
@@ -186,6 +199,7 @@ struct NewRpgInfo
     void ChangeToTravelFlight(uint32 flightMasterEntry, WorldPosition flightMasterPos, std::vector<uint32> path);
     void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
     void ChangeToDoGather();
+    void ChangeToDoProfession(DoProfession const& task);
     void ChangeToRest();
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);

@@ -355,6 +355,8 @@ namespace
                 return "OUTDOOR_PVP";
             case RPG_DO_GATHER:
                 return "DO_GATHER";
+            case RPG_DO_PROFESSION:
+                return "DO_PROFESSION";
             default:
                 return "?";
         }

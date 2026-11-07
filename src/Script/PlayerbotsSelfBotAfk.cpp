@@ -16,6 +16,7 @@
 #include "GameTime.h"
 #include "ObjectMgr.h"
 #include "PlayerbotsDatabase.h"
+#include "NewRpgProfession.h"
 #include "QuestDef.h"
 #include "Chat.h"
 #include "Group.h"
@@ -575,7 +576,7 @@ namespace
         if (bot->IsInFlight())
             return "TRAVEL_FLIGHT|";
         static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
-                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER"};
+                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
         NewRpgInfo& info = botAI->rpgInfo;
         NewRpgStatus const status = info.GetStatus();
         std::string text = status < RPG_STATUS_END ? names[status] : "?";
@@ -593,6 +594,13 @@ namespace
             text += std::to_string(uint32(bot->GetExactDist(grind->pos))) + " yd";
         else if (auto const* camp = std::get_if<NewRpgInfo::GoCamp>(&info.data))
             text += std::to_string(uint32(bot->GetExactDist(camp->pos))) + " yd";
+        else if (auto const* prof = std::get_if<NewRpgInfo::DoProfession>(&info.data))
+        {
+            SkillLineEntry const* line = sSkillLineStore.LookupEntry(prof->skill);
+            CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(prof->npcEntry);
+            text += std::string(prof->kind == 1 ? "learn " : "buy tool ") + (line ? line->name[0] : "?") + " @ " +
+                    (npc ? npc->Name : "?") + " " + std::to_string(uint32(bot->GetExactDist(prof->pos))) + " yd";
+        }
         return text;
     }
 }
@@ -672,7 +680,7 @@ namespace SelfBotControl
             }
 
             // G;num;name;class;level;grp;role;online(1 bot/p person/0);state;zoneId;zone;STATUS|detail;actMin;
-            //   stillMin;deaths1h;deathsAll;lastKiller;gold;bagsUsed;bagsTotal
+            //   stillMin;deaths1h;deathsAll;lastKiller;gold;bagsUsed;bagsTotal;skills ([guild20] skill:value/max,...)
             std::ostringstream out;
             out << "G;" << row.num << ";" << BoardField(cache ? cache->Name : row.name, 12) << ";"
                 << uint32(bot ? bot->getClass() : (cache ? cache->Class : 0)) << ";"
@@ -680,7 +688,7 @@ namespace SelfBotControl
                 << BoardField(row.role, 8) << ";";
             if (!bot || !bot->IsInWorld())
             {
-                out << "0;-;0;-;OFFLINE|;0;0;" << d1h << ";" << dAll << ";" << BoardField(killer, 24) << ";-;-;-";
+                out << "0;-;0;-;OFFLINE|;0;0;" << d1h << ";" << dAll << ";" << BoardField(killer, 24) << ";-;-;-;-";
                 SendAddonLine(player, out.str());
                 continue;
             }
@@ -719,7 +727,8 @@ namespace SelfBotControl
             out << (botAI ? "1" : "p") << ";" << state << ";" << bot->GetZoneId() << ";"
                 << BoardField(zone ? zone->area_name[0] : "?", 24) << ";" << BoardField(GuildActivity(bot, botAI), 64) << ";"
                 << actMin << ";" << (now - still.since) / MINUTE << ";" << d1h << ";" << dAll << ";"
-                << BoardField(killer, 24) << ";" << bot->GetMoney() / GOLD << ";" << used << ";" << total;
+                << BoardField(killer, 24) << ";" << bot->GetMoney() / GOLD << ";" << used << ";" << total << ";"
+                << BoardField(NewRpgProfession::PlannedSkills(bot), 60);
             SendAddonLine(player, out.str());
         }
         SendAddonLine(player, "GE;n=" + std::to_string(guildPlan.size()));
@@ -810,7 +819,11 @@ public:
         : WorldScript("PlayerbotsSelfBotControlWorldScript", { WORLDHOOK_ON_UPDATE, WORLDHOOK_ON_STARTUP }) {}
 
     void OnUpdate(uint32 diff) override { SelfBotControl::UpdateWorld(diff); }
-    void OnStartup() override { SelfBotControl::LoadGuildPlan(); }  // [live1]
+    void OnStartup() override
+    {
+        SelfBotControl::LoadGuildPlan();  // [live1]
+        NewRpgProfession::LoadPlan();     // [guild20]
+    }
 };
 
 void AddPlayerbotsSelfBotAfkScripts()
