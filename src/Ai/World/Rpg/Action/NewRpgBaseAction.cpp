@@ -283,6 +283,14 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     if (DestinationRefused(dest))  // [guild13]
     {
         NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+        // a quest whose spot (its objective or its ender: b302 Kianey's q45 hand-in at Rolf's corpse among seven
+        // Murlocs, re-chosen every look) lies there is postponed: the planner takes the next one
+        if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+        {
+            if (botAI->lowPriorityQuest.insert(quest->questId).second)
+                LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its spot lies among mobs it does not pull",
+                         bot->GetName(), bot->GetLevel(), quest->questId);
+        }
         if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND)
         {
             botAI->rpgInfo.ChangeToIdle();

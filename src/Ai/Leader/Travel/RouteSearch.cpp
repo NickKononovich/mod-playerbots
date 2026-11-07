@@ -54,17 +54,24 @@ namespace Leader::Travel
                                                 nextTile, nextPoly);
             if (!penalties)
                 return cost;
+            // [guild13] the step pa -> pb (Detour's portal midpoints, a polygon apart: outdoors 20-50 yd) enters the
+            // disc where its segment comes within the radius, not only where pb lies inside
+            float const sx = pb[2] - pa[2];
+            float const sy = pb[0] - pa[0];
+            float const lengthSq = sx * sx + sy * sy;
             for (RoutePenalty const& disc : *penalties)
             {
-                if (std::fabs(pb[1] - disc.z) > 10.0f)
-                    continue;
-                float const bx = pb[2] - disc.x;
-                float const by = pb[0] - disc.y;
-                if (bx * bx + by * by > disc.r * disc.r)
+                if (std::fabs(pb[1] - disc.z) > 10.0f && std::fabs(pa[1] - disc.z) > 10.0f)
                     continue;
                 float const ax = pa[2] - disc.x;
                 float const ay = pa[0] - disc.y;
-                if (ax * ax + ay * ay > disc.r * disc.r)
+                if (ax * ax + ay * ay <= disc.r * disc.r)
+                    continue;  // already inside: paid on the way in
+                float t = lengthSq > 0.0f ? -(ax * sx + ay * sy) / lengthSq : 0.0f;
+                t = std::clamp(t, 0.0f, 1.0f);
+                float const ex = ax + sx * t;
+                float const ey = ay + sy * t;
+                if (ex * ex + ey * ey <= disc.r * disc.r)
                     cost += disc.cost;
             }
             return cost;
@@ -84,10 +91,31 @@ namespace Leader::Travel
                 }
                 centre /= float(poly->vertCount);
                 for (G3D::Vector4 const& disc : *discs)
-                    if (std::fabs(centre.z - disc.z) <= 10.0f &&
-                        (centre.x - disc.x) * (centre.x - disc.x) + (centre.y - disc.y) * (centre.y - disc.y) <=
-                            disc.w * disc.w)
+                {
+                    if (std::fabs(centre.z - disc.z) > 10.0f)
+                        continue;
+                    if ((centre.x - disc.x) * (centre.x - disc.x) + (centre.y - disc.y) * (centre.y - disc.y) <=
+                        disc.w * disc.w)
                         return false;
+                    // [guild13] a large polygon that only overlaps the disc: one of its edges comes within the radius
+                    // (a solo bot's search, the one that carries penalties; the harness's discs keep the centre test)
+                    for (uint8 index = 0; penalties && index < poly->vertCount; ++index)
+                    {
+                        float const* va = &tile->verts[size_t(poly->verts[index]) * 3];
+                        float const* vb = &tile->verts[size_t(poly->verts[(index + 1) % poly->vertCount]) * 3];
+                        float const ax = va[2] - disc.x;
+                        float const ay = va[0] - disc.y;
+                        float const ex = vb[2] - va[2];
+                        float const ey = vb[0] - va[0];
+                        float const lengthSq = ex * ex + ey * ey;
+                        float t = lengthSq > 0.0f ? -(ax * ex + ay * ey) / lengthSq : 0.0f;
+                        t = std::clamp(t, 0.0f, 1.0f);
+                        float const dx = ax + ex * t;
+                        float const dy = ay + ey * t;
+                        if (dx * dx + dy * dy <= disc.w * disc.w)
+                            return false;
+                    }
+                }
             }
             if (!boxes || boxes->empty() || !tile || !poly || poly->vertCount == 0)
                 return true;
