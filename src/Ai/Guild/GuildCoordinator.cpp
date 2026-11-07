@@ -29,6 +29,7 @@
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
+#include "NewRpgBaseAction.h"  // [guild14] TripRefused
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -1132,7 +1133,11 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
             {
                 WorldPosition pos;
                 float dist = 0;
-                if (!GuildBankRun::NearestVault(bot, pos, dist))
+                // [guild14] a solo bot walks to the vault only on a safe walk (b303 Laaral L10 died twice on its bank
+                // run across Bloodmyst): else the order waits
+                if (!GuildBankRun::NearestVault(bot, pos, dist) ||
+                    NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
+                                                  "guild vault"))
                     continue;
                 st.run = true;
                 st.runType = order.type;

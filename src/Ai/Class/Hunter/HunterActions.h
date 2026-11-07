@@ -11,6 +11,7 @@
 #include "AiObject.h"
 #include "Event.h"
 #include "GenericSpellActions.h"
+#include "MovementActions.h"  // [guild14]
 #include "Unit.h"
 
 class Item;
@@ -571,6 +572,15 @@ public:
     {
         return ActionThreatType::Aoe;
     }
+};
+
+// [guild14] steps out of Auto Shot's dead zone to the spot HunterStepOutSpot finds, then shoots
+class HunterStepOutAction : public MovementAction
+{
+public:
+    HunterStepOutAction(PlayerbotAI* botAI) : MovementAction(botAI, "hunter step out") {}
+
+    bool Execute(Event event) override;
 };
 
 #endif

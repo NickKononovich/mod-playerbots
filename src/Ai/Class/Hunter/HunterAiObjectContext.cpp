@@ -87,6 +87,7 @@ public:
         creators["no ammo"] = &HunterTriggerFactoryInternal::no_ammo;
         creators["has ammo"] = &HunterTriggerFactoryInternal::has_ammo;
         creators["hunter needs melee"] = &HunterTriggerFactoryInternal::needs_melee;  // [guild2]
+        creators["hunter step out"] = &HunterTriggerFactoryInternal::step_out;  // [guild14]
         creators["misdirection on main tank"] = &HunterTriggerFactoryInternal::misdirection_on_main_tank;
         creators["tranquilizing shot enrage"] = &HunterTriggerFactoryInternal::remove_enrage;
         creators["tranquilizing shot magic"] = &HunterTriggerFactoryInternal::remove_magic;
@@ -129,6 +130,7 @@ private:
     static Trigger* no_ammo(PlayerbotAI* botAI) { return new HunterNoAmmoTrigger(botAI); }
     static Trigger* has_ammo(PlayerbotAI* botAI) { return new HunterHasAmmoTrigger(botAI); }
     static Trigger* needs_melee(PlayerbotAI* botAI) { return new HunterNeedsMeleeTrigger(botAI); }
+    static Trigger* step_out(PlayerbotAI* botAI) { return new HunterStepOutTrigger(botAI); }
     static Trigger* misdirection_on_main_tank(PlayerbotAI* botAI) { return new MisdirectionOnMainTankTrigger(botAI); }
     static Trigger* remove_enrage(PlayerbotAI* botAI) { return new TargetRemoveEnrageTrigger(botAI); }
     static Trigger* remove_magic(PlayerbotAI* botAI) { return new TargetRemoveMagicTrigger(botAI); }
@@ -184,6 +186,7 @@ public:
         creators["track humanoids"] = &HunterAiObjectContextInternal::track_humanoids;
         creators["feign death"] = &HunterAiObjectContextInternal::feign_death;
         creators["wing clip"] = &HunterAiObjectContextInternal::wing_clip;
+        creators["hunter step out"] = &HunterAiObjectContextInternal::step_out;  // [guild14]
         creators["raptor strike"] = &HunterAiObjectContextInternal::raptor_strike;
         creators["mongoose bite"] = &HunterAiObjectContextInternal::mongoose_bite;
         creators["feed pet"] = &HunterAiObjectContextInternal::feed_pet;
@@ -251,6 +254,7 @@ private:
     static Action* aspect_of_the_pack(PlayerbotAI* botAI) { return new CastAspectOfThePackAction(botAI); }
     static Action* aspect_of_the_cheetah(PlayerbotAI* botAI) { return new CastAspectOfTheCheetahAction(botAI); }
     static Action* wing_clip(PlayerbotAI* botAI) { return new CastWingClipAction(botAI); }
+    static Action* step_out(PlayerbotAI* botAI) { return new HunterStepOutAction(botAI); }
     static Action* raptor_strike(PlayerbotAI* botAI) { return new CastRaptorStrikeAction(botAI); }
     static Action* mongoose_bite(PlayerbotAI* botAI) { return new CastMongooseBiteAction(botAI); }
     static Action* tranquilizing_shot(PlayerbotAI* botAI) { return new CastTranquilizingShotAction(botAI); }

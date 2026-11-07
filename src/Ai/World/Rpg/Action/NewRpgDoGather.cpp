@@ -129,7 +129,9 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     {
         float distToTarget = bot->GetExactDist(data.nodePos);
         GatherNodeSpawn const* live = sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
-        if (live && live->spawnId != data.nodeSpawnId && live->spawnId != data.lastSwitchedFrom)
+        if (live && live->spawnId != data.nodeSpawnId && live->spawnId != data.lastSwitchedFrom &&
+            !NewRpgBaseAction::TripRefused(bot, live->pos.GetPositionX(), live->pos.GetPositionY(),
+                                           live->pos.GetPositionZ(), "gather node"))  // [guild14]
         {
             float distToLive = bot->GetExactDist(live->pos);
             bool muchCloser = distToLive + switchMinGain < distToTarget;
@@ -166,6 +168,14 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         {
             // nothing (left) to gather in this zone
             info.ChangeToIdle();
+            return true;
+        }
+        // [guild14] a node whose walk passes mobs of orange / red con (b303 Laaral L10 among the L15-16 mobs of
+        // Bloodmyst) is not walked to: the next one
+        if (NewRpgBaseAction::TripRefused(bot, node->pos.GetPositionX(), node->pos.GetPositionY(),
+                                          node->pos.GetPositionZ(), "gather node"))
+        {
+            data.visited.insert(node->spawnId);
             return true;
         }
         data.nodeSpawnId = node->spawnId;

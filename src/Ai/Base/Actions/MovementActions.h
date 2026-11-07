@@ -306,6 +306,18 @@ public:
     bool isUseful() override;
 };
 
+// [guild14] a solo bot whose fight turned lost runs: no attack, no cast, its pet follows; it walks the way to its hub
+// (NewRpgBaseAction::NearestHub, the nearest ender of a quest in its log or an inn) on the navmesh until the mobs
+// leash, else away from its attacker (the flee manager)
+class SoloDisengageAction : public MovementAction
+{
+public:
+    SoloDisengageAction(PlayerbotAI* botAI) : MovementAction(botAI, "solo disengage") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
 class FleeWithPetAction : public MovementAction
 {
 public:

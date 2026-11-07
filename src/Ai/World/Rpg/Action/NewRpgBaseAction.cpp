@@ -33,6 +33,11 @@
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
 #include "SpellMgr.h"     // [guild13]
+#include "LeaderOrders.h"  // [guild14] Leader::Route
+#include "DetourNavMeshQuery.h"  // [guild14] the nearest polygon
+#include "MapDefines.h"         // [guild14] NAV_* flags
+#include <map>
+#include <tuple>
 #include "Object.h"
 #include "ObjectAccessor.h"
 #include "ObjectDefines.h"
@@ -291,7 +296,10 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                 LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its spot lies among mobs it does not pull",
                          bot->GetName(), bot->GetLevel(), quest->questId);
         }
-        if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND)
+        // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
+        // takes the next one (b303 Gilduck, Gnetlibozz: DO_GATHER failed on a refused node every tick, STUCK)
+        if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND || status == RPG_DO_GATHER ||
+            status == RPG_DO_PROFESSION)
         {
             botAI->rpgInfo.ChangeToIdle();
             return true;
@@ -1035,6 +1043,146 @@ void NewRpgBaseAction::NoteWalkFailure(WorldPosition const& dest, std::string co
              dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), bot->GetExactDist(dest), why);
 }
 
+// [guild14] Player::HandleFall's fall damage (Player.cpp: FALL_DMG_EQU_SLOPE, FALL_DMG_EQU_INTERCEPT): the share of
+// the maximum health a fall of `height` yards takes, safe fall auras counted
+static float FallDamageShare(Player* bot, float height)
+{
+    float const safeFall = float(bot->GetTotalAuraModifier(SPELL_AURA_SAFE_FALL));
+    return std::max(0.0f, 0.018f * (height - safeFall) - 0.2426f) * sWorld->getRate(RATE_DAMAGE_FALL);
+}
+
+// [guild13] / [guild14] the bot's own search finds no way out from where it stands (a navmesh island: Aldrassil's
+// upper floor, the Exodar's halls, a ledge, a building's upper floor in Darnassus): the core's path (its start polygon
+// from the bot's small box, not the route's tall column, which can take the roof over a floor; never its straight
+// shortcut, which glides through the air), the route found from the destination back to the bot walked the other way,
+// and at last a step onto the nearest navmesh polygon in sight - walked when the ground carries it there, else a
+// jump down when the fall (the core's fall damage) leaves the bot alive. Each one logs WALK_FAIL with the position.
+bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
+{
+    auto const logged = [&](std::string const& how)
+    {
+        // one line per bot and way out (a failing one is tried again on every walk)
+        static std::mutex lock;
+        static std::unordered_map<uint32, std::string> last;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            std::string& previous = last[bot->GetGUID().GetCounter()];
+            if (previous == how)
+                return true;
+            previous = how;
+        }
+        LOG_INFO("playerbots", "[rpg] {} L{} WALK_FAIL at ({:.1f},{:.1f},{:.1f}) map {} to ({:.0f},{:.0f},{:.0f}): {}",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                 bot->GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), how);
+        return true;
+    };
+    {
+        PathGenerator core(bot);
+        core.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false);
+        Movement::PointsArray points = core.GetPath();
+        G3D::Vector3 const coreEnd = core.GetActualEndPosition();
+        PathType const coreType = core.GetPathType();
+        if ((coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) &&
+            !(coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH)) && points.size() >= 2 &&
+            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && WalkBotPoints(bot, points))
+        {
+            float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
+                                           float(sPlayerbotAIConfig.MaxWaitForMove));
+            AI_VALUE(LastMovement&, "last movement")
+                .Set(bot->GetMapId(), coreEnd.x, coreEnd.y, coreEnd.z, bot->GetOrientation(), delay,
+                     MovementPriority::MOVEMENT_NORMAL);
+            return logged(Acore::StringFormat("no route out from here: walks the core's path ({:.0f} yd)",
+                                              core.getPathLength()));
+        }
+    }
+    BotPath back = FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
+                               bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    if (back.type == PATHFIND_NORMAL && back.points.size() >= 2)
+    {
+        std::reverse(back.points.begin(), back.points.end());
+        if (WalkBotPoints(bot, back.points))
+        {
+            float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(back.length), 0.0f,
+                                           float(sPlayerbotAIConfig.MaxWaitForMove));
+            G3D::Vector3 const& end = back.points.back();
+            AI_VALUE(LastMovement&, "last movement")
+                .Set(bot->GetMapId(), end.x, end.y, end.z, bot->GetOrientation(), delay,
+                     MovementPriority::MOVEMENT_NORMAL);
+            return logged(Acore::StringFormat("no way out from here: walks the route found from the destination "
+                                              "back ({:.0f} yd)",
+                                              back.length));
+        }
+    }
+    // the nearest polygon: the core's search box (PathGenerator::GetPolyByLocation, 3 yd round, 50 yd tall), widened
+    // round the bot up to its sight
+    dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
+    if (!query || bot->IsInWater() || bot->IsFlying())
+        return false;
+    dtQueryFilter filter;
+    filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER));
+    filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
+    float const point[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+    float nearest[3] = {0.0f, 0.0f, 0.0f};
+    dtPolyRef ref = 0;
+    for (float reach = 3.0f; reach <= sPlayerbotAIConfig.SightDistance && !ref; reach *= 2.0f)
+    {
+        float const extents[3] = {reach, 50.0f, reach};
+        if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)))
+            ref = 0;
+    }
+    if (!ref)
+    {
+        logged("off the navmesh, no polygon in sight");
+        return false;
+    }
+    G3D::Vector3 const to(nearest[2], nearest[0], nearest[1]);
+    G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    float const gap = (to - from).length();
+    if (gap < bot->GetCombatReach())
+        return false;  // on it already: nothing to step onto
+    if (!bot->GetMap()->isInLineOfSight(from.x, from.y, from.z + bot->GetCollisionHeight(), to.x, to.y,
+                                        to.z + bot->GetCollisionHeight(), bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                        VMAP::ModelIgnoreFlags::Nothing))
+    {
+        logged(Acore::StringFormat("off the navmesh, the nearest polygon ({:.1f},{:.1f},{:.1f}) {:.0f} yd off is out "
+                                   "of sight",
+                                   to.x, to.y, to.z, gap));
+        return false;
+    }
+    // the ground under the straight step (PlayerbotAI::HasGroundSupport, as the airborne spline guard samples it)
+    bool carried = true;
+    for (float walked = 1.0f; walked < gap && carried; walked += 1.0f)
+    {
+        G3D::Vector3 const at = from + (to - from) * (walked / gap);
+        carried = PlayerbotAI::HasGroundSupport(bot, at.x, at.y, at.z);
+    }
+    if (carried)
+    {
+        bot->GetMotionMaster()->MovePoint(0, to.x, to.y, to.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
+        return logged(Acore::StringFormat("off the navmesh: steps onto the nearest polygon ({:.1f},{:.1f},{:.1f}) "
+                                          "{:.0f} yd off",
+                                          to.x, to.y, to.z, gap));
+    }
+    float const drop = from.z - to.z;
+    float const damage = FallDamageShare(bot, drop) * float(bot->GetMaxHealth());
+    if (drop <= 0.0f || damage >= float(bot->GetHealth()))
+    {
+        logged(Acore::StringFormat("off the navmesh: the nearest polygon ({:.1f},{:.1f},{:.1f}) lies {:.0f} yd {} over "
+                                   "open air, a fall of {:.0f} damage at {} health",
+                                   to.x, to.y, to.z, std::fabs(drop), drop > 0.0f ? "down" : "up", damage,
+                                   bot->GetHealth()));
+        return false;
+    }
+    // a player jumps down: the core's jump arc to the polygon, the fall damage the core's formula gives
+    float const speedXY = bot->GetSpeed(MOVE_RUN);
+    bot->GetMotionMaster()->MoveJump(to.x, to.y, to.z, speedXY, speedXY);
+    if (uint32 const fallDamage = uint32(damage))
+        bot->EnvironmentalDamage(DAMAGE_FALL, fallDamage);
+    return logged(Acore::StringFormat("off the navmesh: jumps down {:.0f} yd onto the nearest polygon "
+                                      "({:.1f},{:.1f},{:.1f}), fall damage {}",
+                                      drop, to.x, to.y, to.z, uint32(damage)));
+}
+
 bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
 {
     if (dest == WorldPosition())
@@ -1198,51 +1346,20 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // walked the other way
             // the core's own path search first (its start polygon from the bot's small box, not the route's tall
             // column, which can take the roof over a floor)
-            {
-                PathGenerator core(bot);
-                core.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false);
-                Movement::PointsArray points = core.GetPath();
-                G3D::Vector3 const coreEnd = core.GetActualEndPosition();
-                if ((core.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) &&
-                    !(core.GetPathType() & PATHFIND_NOPATH) && points.size() >= 2 &&
-                    dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && WalkBotPoints(bot, points))
-                {
-                    float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
-                                                   float(sPlayerbotAIConfig.MaxWaitForMove));
-                    AI_VALUE(LastMovement&, "last movement")
-                        .Set(bot->GetMapId(), coreEnd.x, coreEnd.y, coreEnd.z, bot->GetOrientation(), delay,
-                             MovementPriority::MOVEMENT_NORMAL);
-                    NoteWalkFailure(dest, Acore::StringFormat("no route out from here: walks the core's path "
-                                                              "({:.0f} yd)",
-                                                              core.getPathLength()));
-                    return true;
-                }
-            }
-            BotPath back = FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
-                                       bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-            if (back.type == PATHFIND_NORMAL && back.points.size() >= 2)
-            {
-                std::reverse(back.points.begin(), back.points.end());
-                if (WalkBotPoints(bot, back.points))
-                {
-                    float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(back.length), 0.0f,
-                                                   float(sPlayerbotAIConfig.MaxWaitForMove));
-                    G3D::Vector3 const& end = back.points.back();
-                    AI_VALUE(LastMovement&, "last movement")
-                        .Set(bot->GetMapId(), end.x, end.y, end.z, bot->GetOrientation(), delay,
-                             MovementPriority::MOVEMENT_NORMAL);
-                    NoteWalkFailure(dest, Acore::StringFormat("no way out from here: walks the route found from "
-                                                              "the destination back ({:.0f} yd)",
-                                                              back.length));
-                    return true;
-                }
-            }
+            if (WalkOffIsland(dest, disToDest))  // [guild14]
+                return true;
             NoteWalkFailure(dest, Acore::StringFormat("route {} ends {:.0f} yd short, no nearer than the bot",
                                                       type == PATHFIND_NORMAL ? "complete" : "partial",
                                                       endDistToDest));
         }
         else
+        {
             NoteWalkFailure(dest, Acore::StringFormat("no route (type {:#x})", uint32(type)));
+            // [guild14] the bot stands off the navmesh (PathGenerator's shortcut, NOT_USING_PATH: b303 Manue L7 on a
+            // ledge over Elwynn, 20 STUCK alerts): the same ways off the island
+            if (WalkOffIsland(dest, disToDest))
+                return true;
+        }
     }
 
     // Fallback: mmap couldn't route to the destination. Sample the
@@ -1637,6 +1754,10 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
 
     // Dungeon, raid, PvP and the other special quest types stay out.
     if (quest->GetType() != 0 && quest->GetType() != QUEST_TYPE_ELITE)
+        return false;
+
+    // [guild14] a quest ended only at a script-spawned object is not taken (the bot does not run the script)
+    if (EnderNeedsScript(quest->GetQuestId()))
         return false;
 
     // [guild12] a quest it failed once (timed, escort) is not taken again
@@ -2219,6 +2340,58 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
     return nullptr;
 }
 
+CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float y, float z)
+{
+    if (!bot || !SoloSafety::Applies(bot))
+        return nullptr;
+    if (CreatureTemplate const* zone = InDangerZone(bot, x, y))
+        return zone;
+    // the walk it would take: b303 Thokhen L3 died to a Root Thresher L8 on its 919 yd vendor walk, Laaral L10 to
+    // Mutated Constrictors L15 on gather and bank walks across Bloodmyst - mobs no quest check had looked at
+    Leader::RouteResult const route = Leader::Route(bot, Position(x, y, z));
+    float lastX = bot->GetPositionX();
+    float lastY = bot->GetPositionY();
+    if (route.found && route.points.size() >= 2)
+    {
+        for (size_t i = 1; i < route.points.size(); ++i)
+            if (CreatureTemplate const* danger = DangerOnWay(bot, route.points[i - 1].x, route.points[i - 1].y,
+                                                             route.points[i].x, route.points[i].y))
+                return danger;
+        if (route.complete)
+            return nullptr;
+        lastX = route.points.back().x;
+        lastY = route.points.back().y;
+    }
+    return DangerOnWay(bot, lastX, lastY, x, y);
+}
+
+bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::string const& what)
+{
+    if (!bot || !SoloSafety::Applies(bot))
+        return false;
+    if (InDangerZone(bot, x, y))
+        return true;
+    static std::mutex lock;
+    // bot -> destination (map, x, y) -> (the level it was judged at, refused)
+    static std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, std::pair<uint8, bool>>> judged;
+    std::tuple<uint32, int32, int32> const key{bot->GetMapId(), int32(x), int32(y)};
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto const& trips = judged[bot->GetGUID().GetCounter()];
+        auto const found = trips.find(key);
+        if (found != trips.end() && found->second.first == bot->GetLevel())
+            return found->second.second;
+    }
+    CreatureTemplate const* danger = TripDanger(bot, x, y, z);
+    if (danger)
+        LOG_INFO("playerbots", "[solo] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}) {:.0f} yd: its walk passes {} L{}-{}",
+                 bot->GetName(), bot->GetLevel(), what, x, y, bot->GetExactDist(x, y, z), danger->Name,
+                 danger->minlevel, danger->maxlevel);
+    std::lock_guard<std::mutex> guard(lock);
+    judged[bot->GetGUID().GetCounter()][key] = {bot->GetLevel(), danger != nullptr};
+    return danger != nullptr;
+}
+
 void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
 {
     if (!bot || !killer || !GET_PLAYERBOT_AI(bot))
@@ -2274,6 +2447,46 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
             return sObjectMgr->GetCreatureTemplate(zone.entry);
     }
     return nullptr;
+}
+
+bool NewRpgBaseAction::EnderNeedsScript(uint32 questId)
+{
+    // quest id -> its enders are all objects the world keeps despawned (gameobject.spawntimesecs < 0: a script
+    // spawns them - b303 q310 Bitter Rivals' Unguarded Thunder Ale Barrel appears only after Jarven Thunderbrew's
+    // gossip; 8 bots stood 5 min each at its empty spot), no creature ends it
+    static std::unordered_set<uint32> quests;
+    static std::once_flag built;
+    std::call_once(built, []()
+    {
+        std::unordered_map<uint32, bool> allHidden;  // quest -> every ender spawn script-spawned so far
+        std::unordered_map<uint32, bool> hiddenEntry;  // object entry -> all its spawns despawned
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+        {
+            auto const found = hiddenEntry.find(data.id);
+            bool const hidden = data.spawntimesecs < 0;
+            if (found == hiddenEntry.end())
+                hiddenEntry[data.id] = hidden;
+            else
+                found->second = found->second && hidden;
+        }
+        for (auto const& [entry, questId] : *sObjectMgr->GetGOQuestInvolvedRelationMap())
+        {
+            auto const found = hiddenEntry.find(entry);
+            bool const hidden = found != hiddenEntry.end() && found->second;
+            auto const quest = allHidden.find(questId);
+            if (quest == allHidden.end())
+                allHidden[questId] = hidden;
+            else
+                quest->second = quest->second && hidden;
+        }
+        for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
+            allHidden[questId] = false;
+        for (auto const& [questId, hidden] : allHidden)
+            if (hidden)
+                quests.insert(questId);
+        LOG_INFO("playerbots", "[guild14] {} quests end only at script-spawned objects: not taken", quests.size());
+    });
+    return quests.count(questId) > 0;
 }
 
 bool NewRpgBaseAction::IsSpellUnlockClassQuest(Quest const* quest)
@@ -2980,6 +3193,14 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             bot->RemoveActiveQuest(questId, false);
             continue;
         }
+        // [guild14] a quest ended only at a script-spawned object (no bot runs the script) leaves the log
+        if (EnderNeedsScript(questId))
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} ABANDON q{} {} reason: its ender is an object a script spawns",
+                     bot->GetName(), bot->GetLevel(), questId, quest->GetTitle());
+            bot->RemoveActiveQuest(questId, false);
+            continue;
+        }
 
         float distance = std::numeric_limits<float>::max();
         std::vector<POIInfo> poiInfo;
@@ -3403,4 +3624,5 @@ void NewRpgBaseAction::BuildQuestIndexes()
 {
     GetQuestSpawnIndex();
     GetQuestStartPoints();
+    EnderNeedsScript(0);  // [guild14]
 }

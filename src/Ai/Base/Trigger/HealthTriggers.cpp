@@ -3039,3 +3039,6 @@ bool RestHealthTrigger::IsActive()
 }
 
 bool RestedTrigger::IsActive() { return RestState::RestDone(bot); }
+
+// [guild14] the solo fight turned lost: the bot disengages (SoloSafety::ShouldDisengage logs it)
+bool SoloFightLostTrigger::IsActive() { return SoloSafety::ShouldDisengage(bot); }

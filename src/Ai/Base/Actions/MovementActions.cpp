@@ -23,6 +23,8 @@
 #include "LastMovementValue.h"
 #include "LeaderFightChecks.h"  // [lead1050] LeaderAggroAt
 #include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
+#include "NewRpgBaseAction.h"  // [guild14] NearestHub
+#include "SoloSafety.h"        // [guild14]
 #include "DungeonTactics.h"   // [lead231] IsKnownCleaver
 #include "LeaderKnowledge.h"  // [lead231] HasFrontalAttack
 #include "LootObjectStack.h"
@@ -5003,6 +5005,38 @@ bool FleeAction::isUseful()
     if (target && target->IsInWorld() && !bot->IsWithinMeleeRange(target))
         return false;
 
+    return true;
+}
+
+// [guild14]
+bool SoloDisengageAction::isUseful() { return SoloSafety::Disengaging(bot); }
+
+bool SoloDisengageAction::Execute(Event /*event*/)
+{
+    if (bot->GetVictim() || bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        bot->AttackStop();
+    if (bot->IsNonMeleeSpellCast(false))
+        bot->InterruptNonMeleeSpells(false);
+    context->GetValue<Unit*>("current target")->Set(nullptr);
+    bot->SetTarget(ObjectGuid::Empty);
+    if (bot->GetPet())
+        botAI->PetFollow();
+    if (bot->isMoving())
+        return true;
+    WorldPosition const hub = NewRpgBaseAction::NearestHub(bot);
+    if (hub != WorldPosition() && hub.GetMapId() == bot->GetMapId() &&
+        MoveTo(hub.GetMapId(), hub.GetPositionX(), hub.GetPositionY(), hub.GetPositionZ(), false, false, false, true))
+        return true;
+    Unit* attacker = nullptr;
+    for (Unit* unit : bot->getAttackers())
+        if (unit && unit->IsAlive())
+        {
+            attacker = unit;
+            break;
+        }
+    if (attacker && Flee(attacker))
+        return true;
+    // nowhere to go this tick: still no fight (the next tick tries again)
     return true;
 }
 

@@ -84,6 +84,19 @@ public:
     bool IsActive() override;
 };
 
+// [guild14] A hunter inside Auto Shot's dead zone steps out to shoot, as a player does, when the mob does not follow
+// it there: the mob is on its pet, rooted, or slower than the hunter. The spot: behind the mob's facing, Auto Shot's
+// minimum range plus both combat reaches and the core's nominal melee range out, in sight of the mob.
+bool HunterStepOutSpot(Player* bot, Unit* target, Position& spot);
+
+class HunterStepOutTrigger : public Trigger
+{
+public:
+    HunterStepOutTrigger(PlayerbotAI* botAI) : Trigger(botAI, "hunter step out") {}
+
+    bool IsActive() override;
+};
+
 class HunterHasAmmoTrigger : public AmmoCountTrigger
 {
 public:

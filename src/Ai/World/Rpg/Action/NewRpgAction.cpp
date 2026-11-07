@@ -15,6 +15,7 @@
 #include "DBCStores.h"
 #include "GossipDef.h"
 #include "IVMapMgr.h"
+#include "MapMgr.h"  // [guild14]
 #include "MotionMaster.h"
 #include "GuildCoordinator.h"  // [guild30]
 #include "MoveSpline.h"
@@ -44,6 +45,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
 #include <mutex>
 
 namespace
@@ -113,52 +115,55 @@ namespace
     }
 
     // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
-    VendorSpawn const* NearestVendor(Player* bot, uint32 ammoSubClass, float& dist)
+    // [guild14] repair: only those that repair (UNIT_NPC_FLAG_REPAIR); a solo bot's trip there must be safe
+    // (NewRpgBaseAction::TripRefused), else the next nearest
+    VendorSpawn const* NearestVendorOf(Player* bot, uint32 ammoSubClass, bool repair, float& dist)
     {
         FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
-        VendorSpawn const* best = nullptr;
-        dist = FLT_MAX;
+        std::vector<std::pair<float, VendorSpawn const*>> candidates;
         for (VendorSpawn const& spawn : VendorSpawns())
         {
             if (spawn.mapId != bot->GetMapId())
                 continue;
-            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
-            if (d >= dist)
-                continue;
             CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
-            FactionTemplateEntry const* faction = info ? sFactionTemplateStore.LookupEntry(info->faction) : nullptr;
-            if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
-                continue;
-            if (ammoSubClass && !AmmoPrice(bot, spawn.entry, ammoSubClass))
-                continue;
-            best = &spawn;
-            dist = d;
-        }
-        return best;
-    }
-
-    // [guild13] the nearest friendly vendor spawn on the bot's map that repairs (UNIT_NPC_FLAG_REPAIR)
-    VendorSpawn const* NearestRepairer(Player* bot, float& dist)
-    {
-        FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
-        VendorSpawn const* best = nullptr;
-        dist = FLT_MAX;
-        for (VendorSpawn const& spawn : VendorSpawns())
-        {
-            if (spawn.mapId != bot->GetMapId())
-                continue;
-            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
-            CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
-            if (d >= dist || !info || !(info->npcflag & UNIT_NPC_FLAG_REPAIR))
+            if (!info || (repair && !(info->npcflag & UNIT_NPC_FLAG_REPAIR)))
                 continue;
             FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(info->faction);
             if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
                 continue;
-            best = &spawn;
-            dist = d;
+            if (ammoSubClass && !AmmoPrice(bot, spawn.entry, ammoSubClass))
+                continue;
+            candidates.emplace_back(bot->GetExactDist(spawn.x, spawn.y, spawn.z), &spawn);
         }
-        return best;
+        std::sort(candidates.begin(), candidates.end(),
+                  [](auto const& a, auto const& b) { return a.first < b.first; });
+        bool refusedOne = false;
+        for (auto const& [d, spawn] : candidates)
+        {
+            // after a refused trip only the nearer vendors of the zone the bot stands in are looked at (each look
+            // searches a route): the first one outside it ends the search
+            if (refusedOne &&
+                sMapMgr->GetZoneId(PHASEMASK_NORMAL, spawn->mapId, spawn->x, spawn->y, spawn->z) != bot->GetZoneId())
+                break;
+            if (!NewRpgBaseAction::TripRefused(bot, spawn->x, spawn->y, spawn->z,
+                                               repair ? "vendor (repair)" : "vendor"))
+            {
+                dist = d;
+                return spawn;
+            }
+            refusedOne = true;
+        }
+        dist = FLT_MAX;
+        return nullptr;
     }
+
+    VendorSpawn const* NearestVendor(Player* bot, uint32 ammoSubClass, float& dist)
+    {
+        return NearestVendorOf(bot, ammoSubClass, false, dist);
+    }
+
+    // [guild13] the nearest friendly vendor spawn on the bot's map that repairs (UNIT_NPC_FLAG_REPAIR)
+    VendorSpawn const* NearestRepairer(Player* bot, float& dist) { return NearestVendorOf(bot, 0, true, dist); }
 
     // Low ammo by the hunters' "low ammo" line (100 rounds).
     constexpr uint32 VENDOR_LOW_AMMO = 100;

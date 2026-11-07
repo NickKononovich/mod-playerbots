@@ -126,6 +126,7 @@ public:
         creators["reach party member to heal"] = &ActionContext::reach_party_member_to_heal;
         creators["reach party member to resurrect"] = &ActionContext::reach_party_member_to_resurrect;
         creators["flee"] = &ActionContext::flee;
+        creators["solo disengage"] = &ActionContext::solo_disengage;  // [guild14]
         creators["flee with pet"] = &ActionContext::flee_with_pet;
         creators["avoid aoe"] = &ActionContext::avoid_aoe;
         creators["wake on combat start"] = &ActionContext::wake_on_combat_start;
@@ -397,6 +398,7 @@ private:
     static Action* reach_party_member_to_heal(PlayerbotAI* botAI) { return new ReachPartyMemberToHealAction(botAI); }
     static Action* reach_party_member_to_resurrect(PlayerbotAI* botAI) { return new ReachPartyMemberToResurrectAction(botAI); }
     static Action* flee(PlayerbotAI* botAI) { return new FleeAction(botAI); }
+    static Action* solo_disengage(PlayerbotAI* botAI) { return new SoloDisengageAction(botAI); }
     static Action* flee_with_pet(PlayerbotAI* botAI) { return new FleeWithPetAction(botAI); }
     static Action* avoid_aoe(PlayerbotAI* botAI) { return new AvoidAoeAction(botAI); }
     static Action* wake_on_combat_start(PlayerbotAI* botAI) { return new WakeOnCombatStartAction(botAI); }

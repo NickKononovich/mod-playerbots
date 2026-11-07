@@ -339,3 +339,17 @@ std::vector<NextAction> CastWingClipAction::getPrerequisites()
 {
     return {};
 }
+
+// [guild14]
+bool HunterStepOutAction::Execute(Event /*event*/)
+{
+    if (bot->isMoving())
+        return true;
+    Position spot;
+    if (!HunterStepOutSpot(bot, AI_VALUE(Unit*, "current target"), spot))
+        return false;
+    if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        bot->AttackStop();
+    return MoveTo(bot->GetMapId(), spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ(), false, false, false,
+                  true);
+}

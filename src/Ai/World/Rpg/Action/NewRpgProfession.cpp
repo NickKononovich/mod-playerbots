@@ -11,6 +11,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Creature.h"
@@ -247,12 +248,14 @@ namespace
     {
         NewRpgInfo::DoProfession task;
         float dist{FLT_MAX};
+        NpcSpawn const* spawn = nullptr;  // [guild14] the spawn chosen
     };
 
     // The next rank of `skill` at the nearest friendly trainer on the bot's map that can teach it now
     // (Trainer::CanTeachSpell: level, skill rank, free primary profession slot). sameZone: only trainers in the
     // zone the bot stands in. Sets `waiting` when such a rank exists but the bot cannot pay for it.
-    void TrainCandidate(Player* bot, uint32 skill, bool sameZone, Candidate& best, bool& waiting)
+    void TrainCandidate(Player* bot, uint32 skill, bool sameZone, Candidate& best, bool& waiting,
+                        std::unordered_set<NpcSpawn const*> const& skip)
     {
         uint32 const curMax = bot->HasSkill(skill) ? bot->GetPureMaxSkillValue(skill) : 0;
         uint32 const step = curMax / 75 + 1;
@@ -263,7 +266,7 @@ namespace
         uint32 const zone = bot->GetZoneId();
         for (NpcSpawn const& spawn : spawns->second)
         {
-            if (spawn.mapId != bot->GetMapId() || !Friendly(bot, spawn.entry))
+            if (spawn.mapId != bot->GetMapId() || !Friendly(bot, spawn.entry) || skip.count(&spawn))
                 continue;
             float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
             if (d >= best.dist)
@@ -290,6 +293,7 @@ namespace
                 }
                 best.dist = d;
                 best.task = NewRpgInfo::DoProfession{};
+                best.spawn = &spawn;
                 best.task.kind = TASK_TRAIN;
                 best.task.npcEntry = spawn.entry;
                 best.task.pos = WorldPosition(spawn.mapId, spawn.x, spawn.y, spawn.z);
@@ -302,7 +306,8 @@ namespace
     }
 
     // The tool of a learned skill the bot lacks, at the nearest friendly vendor on its map selling it.
-    void ToolCandidate(Player* bot, uint32 skill, bool sameZone, Candidate& best, bool& waiting)
+    void ToolCandidate(Player* bot, uint32 skill, bool sameZone, Candidate& best, bool& waiting,
+                       std::unordered_set<NpcSpawn const*> const& skip)
     {
         uint32 const itemId = ToolFor(skill);
         if (!itemId || !bot->HasSkill(skill) || HasTool(bot, itemId))
@@ -317,7 +322,7 @@ namespace
         uint32 const zone = bot->GetZoneId();
         for (NpcSpawn const& spawn : spawns->second)
         {
-            if (spawn.mapId != bot->GetMapId() || !Friendly(bot, spawn.entry))
+            if (spawn.mapId != bot->GetMapId() || !Friendly(bot, spawn.entry) || skip.count(&spawn))
                 continue;
             float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
             if (d >= best.dist)
@@ -333,6 +338,7 @@ namespace
             }
             best.dist = d;
             best.task = NewRpgInfo::DoProfession{};
+            best.spawn = &spawn;
             best.task.kind = TASK_BUY;
             best.task.npcEntry = spawn.entry;
             best.task.pos = WorldPosition(spawn.mapId, spawn.x, spawn.y, spawn.z);
@@ -375,28 +381,43 @@ namespace NewRpgProfession
         if (plan == plans.end() || !bot->IsAlive() || bot->IsInCombat())
             return false;
 
+        // [guild14] a solo bot's walk to the npc must be safe (NewRpgBaseAction::TripRefused: b303 Thokhen L3 and
+        // Laaral L10 walked their errands through mobs 5-6 levels above them): else the next nearest npc, none ->
+        // the errand waits for a level
         Candidate best;
         bool waiting = false;
-        for (uint32 skill : plan->second.primary)
-        {
-            TrainCandidate(bot, skill, false, best, waiting);
-            ToolCandidate(bot, skill, false, best, waiting);
-        }
         std::string kindText = "primary";
-        // Secondary skills are learned on the way: a trainer in this zone, and no primary rank or tool waiting for
-        // the money.
-        if (!best.task.kind && !waiting)
+        std::unordered_set<NpcSpawn const*> refused;
+        while (true)
         {
-            kindText = "secondary";
-            bool unused = false;
-            for (uint32 skill : plan->second.secondary)
+            best = Candidate();
+            waiting = false;
+            kindText = "primary";
+            for (uint32 skill : plan->second.primary)
             {
-                TrainCandidate(bot, skill, true, best, unused);
-                ToolCandidate(bot, skill, true, best, unused);
+                TrainCandidate(bot, skill, false, best, waiting, refused);
+                ToolCandidate(bot, skill, false, best, waiting, refused);
             }
+            // Secondary skills are learned on the way: a trainer in this zone, and no primary rank or tool waiting
+            // for the money.
+            if (!best.task.kind && !waiting)
+            {
+                kindText = "secondary";
+                bool unused = false;
+                for (uint32 skill : plan->second.secondary)
+                {
+                    TrainCandidate(bot, skill, true, best, unused, refused);
+                    ToolCandidate(bot, skill, true, best, unused, refused);
+                }
+            }
+            if (!best.task.kind || !best.spawn)
+                return false;
+            CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(best.task.npcEntry);
+            if (!NewRpgBaseAction::TripRefused(bot, best.spawn->x, best.spawn->y, best.spawn->z,
+                                               std::string("profession npc ") + (npc ? npc->Name : "?")))
+                break;
+            refused.insert(best.spawn);
         }
-        if (!best.task.kind)
-            return false;
 
         CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(best.task.npcEntry);
         LOG_INFO("playerbots", "[rpg] {} L{} PROFESSION reason: {} {} {} {} at {} ({:.0f} yd), cost {}c, money {}c",

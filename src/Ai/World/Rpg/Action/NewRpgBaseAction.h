@@ -46,6 +46,13 @@ public:
     // radius (core Creature::GetAggroRange: detection_range plus the level gap) covers the straight walk from -> to
     // on the bot's map; nullptr none
     static CreatureTemplate const* DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY);
+    // [guild14] a solo bot's trip (trainer, tool vendor, vendor, gather node, guild vault) to (x, y, z): the first
+    // mob of orange / red con whose aggro reaches the walk it would take (its route, else the straight line; the
+    // world's spawns, not only the mobs in sight) or the danger zone the trip ends in; nullptr: the trip is safe
+    static CreatureTemplate const* TripDanger(Player* bot, float x, float y, float z);
+    // [guild14] TripDanger once per bot, destination and bot level (the route is searched once; a danger zone is
+    // looked up every time); a refusal is logged once: [solo] <bot> TRIP_REFUSED <what>
+    static bool TripRefused(Player* bot, float x, float y, float z, std::string const& what);
     // [guild12] a quest the bot failed (timed, escort) is not taken again
     static bool HasFailedQuest(Player* bot, uint32 questId);
     // [guild12] builds the shared quest spawn / starter indexes (world DB reads) once at server startup, never on a
@@ -61,6 +68,8 @@ public:
     // [guild13] a class quest whose purpose is a spell (its reward or its chain's: AutoLearnQuestSpells grants it):
     // never taken, abandoned when in the log. Letters to the class trainer and the like stay.
     static bool IsSpellUnlockClassQuest(Quest const* quest);
+    // [guild14] every ender of the quest is an object the world keeps despawned until a script spawns it
+    static bool EnderNeedsScript(uint32 questId);
     // [guild13] where a bot goes after a death: the nearest ender of a quest in its log, else a travel hub (inn)
     static WorldPosition NearestHub(Player* bot);
     // [guild13] before any far walk: the revived bot's way to its hub, the regeneration sit of a bot that must rest
@@ -75,6 +84,8 @@ public:
     static bool NearestEnderSpot(Player* bot, uint32 questId, WorldPosition& out);
     // [guild13] a far walk that cannot start: one [rpg] WALK_FAIL line per destination (the route, the refusal)
     void NoteWalkFailure(WorldPosition const& dest, std::string const& why);
+    // [guild14] no way out from where the bot stands: the core path, the reverse route, the nearest polygon in sight
+    bool WalkOffIsland(WorldPosition const& dest, float disToDest);
     // [guild13] a hunter with Tame Beast and no pet tames the nearest tameable beast of its level
     bool TameFirstPet();
     // [guild13] the walk's end lies in a danger zone or among idle mobs whose pull the judge refuses (logged, the pack

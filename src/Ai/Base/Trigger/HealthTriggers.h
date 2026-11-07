@@ -132,6 +132,15 @@ public:
     }
 };
 
+// [guild14] a solo bot's fight is projected lost and running leaves it alive (SoloSafety::ShouldDisengage)
+class SoloFightLostTrigger : public Trigger
+{
+public:
+    SoloFightLostTrigger(PlayerbotAI* botAI) : Trigger(botAI, "solo fight lost") {}
+
+    bool IsActive() override;
+};
+
 // The heal target lost HealerFastHealthLossPct of its max health within two seconds: the fast heals go out before
 // it reaches the low-health band, which a non-tank under melee passes on its way to dying.
 class PartyMemberLosingHealthFastTrigger : public Trigger

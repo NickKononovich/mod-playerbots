@@ -261,7 +261,49 @@ bool HunterNeedsMeleeTrigger::IsActive()
     if (SpellInfo const* autoShot = sSpellMgr->GetSpellInfo(SPELL_AUTO_SHOT))
         minRange = autoShot->GetMinRange(false);
     bool const deadZone = inMelee || bot->GetDistance(target) < minRange;
-    return deadZone && !swinging;
+    // [guild14] ... unless it can step out of the dead zone and shoot (HunterStepOutSpot)
+    Position spot;
+    return deadZone && !swinging && !HunterStepOutSpot(bot, target, spot);
+}
+
+// [guild14]
+bool HunterStepOutSpot(Player* bot, Unit* target, Position& spot)
+{
+    constexpr uint32 SPELL_AUTO_SHOT = 75;
+    SpellInfo const* autoShot = sSpellMgr->GetSpellInfo(SPELL_AUTO_SHOT);
+    Item* const ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!autoShot || !target || !target->IsAlive() || !ranged || ranged->IsBroken() ||
+        !bot->HasSpell(SPELL_AUTO_SHOT) ||
+        bot->HasUnitState(UNIT_STATE_ROOT) || bot->IsNonMeleeSpellCast(false))
+        return false;
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || !botAI->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Get())
+        return false;
+    float const minRange = autoShot->GetMinRange(false);
+    if (!bot->IsWithinMeleeRange(target) && bot->GetDistance(target) >= minRange)
+        return false;  // not in the dead zone
+    // it does not follow: busy with the pet, held in place, or slower
+    bool const onPet = target->GetVictim() && target->GetVictim() != bot && target->GetVictim() == bot->GetPet();
+    bool const held = target->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED) || !target->CanFreeMove();
+    bool const slower = target->GetSpeed(MOVE_RUN) < bot->GetSpeed(MOVE_RUN);
+    if (!onPet && !held && !slower)
+        return false;
+    float const out = minRange + target->GetCombatReach() + bot->GetCombatReach() + NOMINAL_MELEE_RANGE;
+    float const angle = Position::NormalizeOrientation(target->GetOrientation() + float(M_PI));
+    float x = target->GetPositionX() + std::cos(angle) * out;
+    float y = target->GetPositionY() + std::sin(angle) * out;
+    float z = target->GetPositionZ();
+    bot->UpdateAllowedPositionZ(x, y, z);
+    if (!target->IsWithinLOS(x, y, z + bot->GetCollisionHeight()))
+        return false;
+    spot.Relocate(x, y, z);
+    return true;
+}
+
+bool HunterStepOutTrigger::IsActive()
+{
+    Position spot;
+    return HunterStepOutSpot(bot, AI_VALUE(Unit*, "current target"), spot);
 }
 
 bool HunterHasAmmoTrigger::IsActive()
