@@ -511,6 +511,21 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 if ((!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE) &&
                     NewRpgProfession::StartTask(botAI, bot))
                     return true;
+                // [guild14] a giver / ender whose walk passes mobs of orange / red con is postponed like any trip (b307
+                // Guinudrond L9: a q5545 pick-up 4049 yd off, Loch Modan -> Elwynn, walked through Searing Gorge's L45
+                // mobs, three deaths)
+                if (quest && giverPos != WorldPosition() && giverPos.GetMapId() == bot->GetMapId() &&
+                    TripRefused(bot, giverPos.GetPositionX(), giverPos.GetPositionY(), giverPos.GetPositionZ(),
+                                "quest giver / ender"))
+                {
+                    if (botAI->lowPriorityQuest.insert(questId).second)
+                    {
+                        LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: the walk to its giver / ender is "
+                                 "refused", bot->GetName(), bot->GetLevel(), questId);
+                        return true;  // the next pick
+                    }
+                    quest = nullptr;  // every pick postponed: the fallbacks below (gather, its safe hub)
+                }
                 if (quest)
                 {
                     QuestStatus const questStatus = bot->GetQuestStatus(questId);

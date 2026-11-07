@@ -1059,6 +1059,26 @@ static float FallDamageShare(Player* bot, float height)
 // jump down when the fall (the core's fall damage) leaves the bot alive. Each one logs WALK_FAIL with the position.
 bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
 {
+    // [guild14] a solo bot walks such a path only as far as it sees, and only when that stretch passes no mob of
+    // orange / red con (b307 Guinudrond L9: the core's 2887 yd path from Loch Modan to Elwynn crossed Searing Gorge)
+    auto const SafeLeg = [&](Movement::PointsArray& points)
+    {
+        if (!SoloSafety::Applies(bot) || points.size() < 2)
+            return true;
+        float walked = 0.0f;
+        for (size_t i = 1; i < points.size(); ++i)
+        {
+            if (DangerOnWay(bot, points[i - 1].x, points[i - 1].y, points[i].x, points[i].y))
+                return false;
+            walked += (points[i] - points[i - 1]).length();
+            if (walked >= sPlayerbotAIConfig.SightDistance)
+            {
+                points.resize(i + 1);
+                break;
+            }
+        }
+        return true;
+    };
     auto const logged = [&](std::string const& how)
     {
         // one line per bot and way out (a failing one is tried again on every walk)
@@ -1084,7 +1104,8 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         PathType const coreType = core.GetPathType();
         if ((coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) &&
             !(coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH)) && points.size() >= 2 &&
-            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && WalkBotPoints(bot, points))
+            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && SafeLeg(points) &&
+            WalkBotPoints(bot, points))
         {
             float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
                                            float(sPlayerbotAIConfig.MaxWaitForMove));
@@ -1100,7 +1121,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     if (back.type == PATHFIND_NORMAL && back.points.size() >= 2)
     {
         std::reverse(back.points.begin(), back.points.end());
-        if (WalkBotPoints(bot, back.points))
+        if (SafeLeg(back.points) && WalkBotPoints(bot, back.points))
         {
             float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(back.length), 0.0f,
                                            float(sPlayerbotAIConfig.MaxWaitForMove));
