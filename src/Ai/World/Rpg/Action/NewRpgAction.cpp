@@ -6,6 +6,7 @@
 
 #include "NewRpgAction.h"
 #include "BotPath.h"  // [guild12]
+#include "QuestStats.h"  // [guild90]
 #include "SoloSafety.h"  // [guild13]
 #include "AreaDefines.h"
 #include "Group.h"
@@ -465,6 +466,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgStatus status = info.GetStatus();
+    // [guild90] questing counters (yards walked, the active quest's progress) for tools/guild_stats.py
+    {
+        auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
+        QuestStats::OnRpgTick(bot, quest ? quest->questId : 0);
+    }
 
     // [guild7] one line per status change for the guild stats (tools/guild_stats.py "activity")
     if (info.loggedStatus != uint8(status))
@@ -548,8 +554,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                                                                  : "pick up, giver " +
                                                                        std::to_string(uint32(bot->GetExactDist(giverPos))) +
                                                                        " yd";
-                    LOG_INFO("playerbots", "[rpg] {} L{} QUEST q{} reason: {}", bot->GetName(), bot->GetLevel(),
-                             questId, reason);
+                    // [guild90] and why the planner took it (kept the active quest, or why it left it)
+                    std::string const note = QuestChoiceNote(bot);
+                    LOG_INFO("playerbots", "[rpg] {} L{} QUEST q{} reason: {}{}", bot->GetName(), bot->GetLevel(),
+                             questId, reason, note.empty() ? "" : " (" + note + ")");
                     info.ChangeToDoQuest(questId, quest, giverPos);
                     return true;
                 }
@@ -1015,10 +1023,13 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         }
         if (!reachable)
         {
-            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: no walk to any of its {} objective spots ({} "
-                     "spent: nothing to pull there)",
-                     bot->GetName(), bot->GetLevel(), questId, poiInfo.size(), spent);
-            ClearSpentSpots(bot, questId);  // [guild13] tried again when the planner comes back to it
+            // [guild90] the spots are every unspent camp of its objectives (spent ones stay skipped until their
+            // respawn): none of them has a walk - the quest waits for the next level
+            std::string const why = "no walk to any of its " + std::to_string(poiInfo.size()) +
+                                    " unspent objective spots";
+            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: {}", bot->GetName(), bot->GetLevel(), questId,
+                     why);
+            NotePostpone(bot, questId, why);
             botAI->lowPriorityQuest.insert(questId);
             botAI->rpgInfo.ChangeToIdle();
             return true;
@@ -1075,6 +1086,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             // may not be able to complete this quest, marked as abandoned
             /// @TODO: It may be better to make lowPriorityQuest a global set shared by all bots (or saved in db)
             botAI->lowPriorityQuest.insert(questId);
+            NotePostpone(bot, questId, "no progress at its spot");  // [guild90]
             botAI->RecordQuestAbandoned(questId, QuestAbandonReason::NoProgress);
             LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
             botAI->rpgInfo.ChangeToIdle();
@@ -1096,7 +1108,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     if (!bot->IsInCombat() && !AI_VALUE(Unit*, "grind target") && !FindNeededQuestObject(bot) &&
         !SoloSafety::WantsRest(bot, false) && !SoloSafety::WantsRest(bot, true) && !bot->IsSitState())
     {
-        NoteSpentSpot(bot, questId, data.pos);
+        NoteSpentSpot(bot, questId, WorldPosition(bot));  // [guild90] the circle it scanned from where it stands
         data.lastReachPOI = 0;
         data.pos = WorldPosition();
         data.objectiveIdx = 0;

@@ -138,17 +138,51 @@ bool NewRpgBaseAction::SoloSafetyStep()
 
 namespace
 {
+    // [guild90] a spent mark: the bot stood here and saw nothing of the quest within SPENT_RADIUS (no mob it
+    // pulls, no object). The spawns there come back at their respawn time (creature / gameobject spawntimesecs,
+    // the world's own clock): the mark holds until then. A mark with no spawn of the quest's sources near it (a
+    // POI blend) holds until the bot's next level.
+    struct SpentMark
+    {
+        float x, y;
+        time_t until;  // 0: until the next level
+        uint8 level;
+    };
+    constexpr float SPENT_RADIUS = 30.0f;
     std::mutex spentLock;
-    // bot guid counter -> quest -> the spent spots (x, y)
-    std::unordered_map<uint32, std::unordered_map<uint32, std::vector<std::pair<float, float>>>> spentSpots;
+    // bot guid counter -> quest -> the spent marks
+    std::unordered_map<uint32, std::unordered_map<uint32, std::vector<SpentMark>>> spentSpots;
+
+    // [guild90] the shortest respawn (seconds) of the quest's objective sources spawned within SPENT_RADIUS of
+    // (x, y) on the bot's map; 0: none there (defined with the spawn index below)
+    uint32 ObjectiveRespawnNear(Player* bot, uint32 questId, float x, float y);
+
+    void LogQuestObject(Player* bot, GameObject* go, std::string const& verdict);
+
+    bool MarkHolds(SpentMark const& mark, Player* bot, time_t now)
+    {
+        return mark.until ? now < mark.until : mark.level == bot->GetLevel();
+    }
 }
 
 void NewRpgBaseAction::NoteSpentSpot(Player* bot, uint32 questId, WorldPosition const& pos)
 {
-    LOG_INFO("playerbots", "[rpg] {} L{} spot of q{} spent at ({:.0f},{:.0f}): nothing to pull or loot there",
-             bot->GetName(), bot->GetLevel(), questId, pos.GetPositionX(), pos.GetPositionY());
+    uint32 const respawn = ObjectiveRespawnNear(bot, questId, pos.GetPositionX(), pos.GetPositionY());
+    time_t const now = time(nullptr);
+    if (respawn)
+        LOG_INFO("playerbots", "[rpg] {} L{} spot of q{} spent at ({:.0f},{:.0f}): nothing to pull or loot within {:.0f} "
+                 "yd, back at its respawn ({} s)", bot->GetName(), bot->GetLevel(), questId, pos.GetPositionX(),
+                 pos.GetPositionY(), SPENT_RADIUS, respawn);
+    else
+        LOG_INFO("playerbots", "[rpg] {} L{} spot of q{} spent at ({:.0f},{:.0f}): nothing to pull or loot within {:.0f} "
+                 "yd, no spawn of its sources there (held until the next level)", bot->GetName(), bot->GetLevel(),
+                 questId, pos.GetPositionX(), pos.GetPositionY(), SPENT_RADIUS);
     std::lock_guard<std::mutex> guard(spentLock);
-    spentSpots[bot->GetGUID().GetCounter()][questId].emplace_back(pos.GetPositionX(), pos.GetPositionY());
+    auto& marks = spentSpots[bot->GetGUID().GetCounter()][questId];
+    marks.erase(std::remove_if(marks.begin(), marks.end(),
+                               [bot, now](SpentMark const& m) { return !MarkHolds(m, bot, now); }),
+                marks.end());
+    marks.push_back({pos.GetPositionX(), pos.GetPositionY(), respawn ? now + time_t(respawn) : 0, bot->GetLevel()});
 }
 
 bool NewRpgBaseAction::IsSpentSpot(Player* bot, uint32 questId, float x, float y)
@@ -160,9 +194,11 @@ bool NewRpgBaseAction::IsSpentSpot(Player* bot, uint32 questId, float x, float y
     auto const spots = quests->second.find(questId);
     if (spots == quests->second.end())
         return false;
-    // the bot counts as at a spot within the 10 yd DoIncompleteQuest walks to
-    for (auto const& [sx, sy] : spots->second)
-        if ((sx - x) * (sx - x) + (sy - y) * (sy - y) <= 10.0f * 10.0f)
+    time_t const now = time(nullptr);
+    // [guild90] the whole scanned circle is spent, not the one point the bot walked to
+    for (SpentMark const& mark : spots->second)
+        if ((mark.x - x) * (mark.x - x) + (mark.y - y) * (mark.y - y) <= SPENT_RADIUS * SPENT_RADIUS &&
+            MarkHolds(mark, bot, now))
             return true;
     return false;
 }
@@ -294,8 +330,11 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
         {
             if (botAI->lowPriorityQuest.insert(quest->questId).second)
+            {
                 LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its spot lies among mobs it does not pull",
                          bot->GetName(), bot->GetLevel(), quest->questId);
+                NotePostpone(bot, quest->questId, "its spot lies among mobs it does not pull");
+            }
         }
         // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
         // takes the next one (b303 Gilduck, Gnetlibozz: DO_GATHER failed on a refused node every tick, STUCK)
@@ -1995,7 +2034,8 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         if (required >= 0 || itr->second.CreatureOrGOCount[i] >= quest->RequiredNpcOrGoCount[i])
             continue;
 
-        GameObject* go = bot->FindNearestGameObject(static_cast<uint32>(-required), QUEST_OBJECT_RANGE);
+        // [guild90] spawned ones only: a used (despawned) nearest one hid the rest
+        GameObject* go = bot->FindNearestGameObject(static_cast<uint32>(-required), QUEST_OBJECT_RANGE, true);
         if (go && go->isSpawned() && !go->HasGameObjectFlag(GO_FLAG_IN_USE) &&
             (!nearest || bot->GetDistance(go) < bot->GetDistance(nearest)))
             nearest = go;
@@ -2010,11 +2050,16 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
             return false;
         LootObject loot(bot, lootable->GetGUID());
         if (!loot.IsAtInteractDistance(bot))
-            return MoveWorldObjectTo(lootable->GetGUID(), 1.5f);
+        {
+            LogQuestObject(bot, lootable, "used: walks up to it");
+            if (MoveWorldObjectTo(lootable->GetGUID(), 1.5f))
+                return true;
+            LogQuestObject(bot, lootable, "skipped: the walk to it was not started (the last walk is not done)");
+            return false;
+        }
         if (bot->isMoving())
             bot->StopMoving();
-        LOG_DEBUG("playerbots", "[New RPG] {} loots quest object {} for quest {}", bot->GetName(),
-                  lootable->GetEntry(), questId);
+        LogQuestObject(bot, lootable, "used: loots it");
         return AI_VALUE(LootObjectStack*, "available loot")->Add(lootable->GetGUID());
     }
 
@@ -2031,8 +2076,7 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
     if (bot->isMoving())
         bot->StopMoving();
 
-    LOG_DEBUG("playerbots", "[New RPG] {} uses quest object {} for quest {}", bot->GetName(), nearest->GetEntry(),
-              questId);
+    LogQuestObject(bot, nearest, "used: q" + std::to_string(questId) + " objective");
     WorldPacket use(CMSG_GAMEOBJ_USE, 8);
     use << nearest->GetGUID();
     RelayInteractPacketToGroupBots(nearest->GetGUID());
@@ -2189,7 +2233,25 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
         ForceToWait(5000);
         return true;
     }
-    return MoveWorldObjectTo(npcOrGo);
+    if (MoveWorldObjectTo(npcOrGo))
+        return true;
+    // [guild90] the walk did not start: still walking the last one (the move is busy, the tick is taken), or no walk
+    // reaches the giver (b317 Eraelor at Tallonkai Swiftroot on Dolanaar's upper floor, Emdyl / Thamesh at Marleth
+    // Barleybrew: "attack anything" off for the giver and nothing else ran, STUCK until the one-minute give-up)
+    if (bot->isMoving())
+        return true;
+    BotPath const path = FindBotPath(bot, object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
+    float const shortBy = (path.type & PATHFIND_NOPATH)
+                              ? object->GetExactDist(bot)
+                              : object->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z);
+    if ((path.type & PATHFIND_NOPATH) || shortBy > INTERACTION_DISTANCE)
+    {
+        LOG_INFO("playerbots", "[rpg] {} L{} SKIP quest giver {} reason: no walk reaches it (route ends {:.0f} yd short)",
+                 bot->GetName(), bot->GetLevel(), object->GetName(), shortBy);
+        info.ignoredQuestGivers.insert(npcOrGo);
+        info.questGiver.Clear();
+    }
+    return false;
 }
 
 static std::vector<float> GenerateRandomWeights(int n)
@@ -2218,6 +2280,7 @@ namespace
     {
         uint32 mapId;
         float x, y, z;
+        uint32 respawn = 0;  // [guild90] the spawn's respawn time (spawntimesecs), 0 for enders and triggers
     };
 
     struct MobSpawn  // [guild12]
@@ -2254,9 +2317,10 @@ namespace
         std::call_once(built, []()
         {
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
-                index.creatures[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ});
+                index.creatures[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ, data.spawntimesecs});
             for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
-                index.objects[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ});
+                index.objects[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ,
+                                                  uint32(std::max<int32>(0, data.spawntimesecs))});
 
             for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
             {
@@ -2348,31 +2412,122 @@ namespace
         return index;
     }
 
-    // [guild12] the nearest spot of `spots` on the bot's map whose way is free of orange / red mobs, as a POI.
-    // 0: none on this map, 1: found, 2: every spot on this map has such a mob (`blocker`)
-    int NearestSafeSpot(Player* bot, std::vector<QuestSpot> const& spots, int32 objectiveIdx,
+    // [guild90] every spawn of the sources of one objective: the objective creature / object itself (kill, use) or
+    // the creatures and objects that drop its item (loot tables, gameobject_questitem). Pointers into the index.
+    void ObjectiveSources(Quest const* quest, uint32 objective, std::vector<QuestSpot const*>& out)
+    {
+        QuestSpawnIndex const& index = GetQuestSpawnIndex();
+        auto const addEntry = [&out](std::unordered_map<uint32, std::vector<QuestSpot>> const& spawns, uint32 entry)
+        {
+            auto const found = spawns.find(entry);
+            if (found != spawns.end())
+                for (QuestSpot const& spot : found->second)
+                    out.push_back(&spot);
+        };
+        if (objective < QUEST_OBJECTIVES_COUNT)
+        {
+            int32 const npcOrGo = quest->RequiredNpcOrGo[objective];
+            if (npcOrGo > 0)
+                addEntry(index.creatures, uint32(npcOrGo));
+            else if (npcOrGo < 0)
+                addEntry(index.objects, uint32(-npcOrGo));
+            return;
+        }
+        if (objective >= QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
+            return;
+        uint32 const item = quest->RequiredItemId[objective - QUEST_OBJECTIVES_COUNT];
+        if (!item)
+            return;
+        auto const objects = index.itemObjects.find(item);
+        if (objects != index.itemObjects.end())
+            for (uint32 const entry : objects->second)
+                addEntry(index.objects, entry);
+        auto const creatures = index.itemCreatures.find(item);
+        if (creatures != index.itemCreatures.end())
+            for (uint32 const entry : creatures->second)
+                addEntry(index.creatures, entry);
+    }
+
+    uint32 ObjectiveRespawnNear(Player* bot, uint32 questId, float x, float y)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
+            return 0;
+        uint32 best = 0;
+        std::vector<QuestSpot const*> spots;
+        for (uint32 objective = 0; objective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT; ++objective)
+            ObjectiveSources(quest, objective, spots);
+        for (QuestSpot const* spot : spots)
+            if (spot->mapId == bot->GetMapId() && spot->respawn &&
+                (spot->x - x) * (spot->x - x) + (spot->y - y) * (spot->y - y) <= SPENT_RADIUS * SPENT_RADIUS &&
+                (!best || spot->respawn < best))
+                best = spot->respawn;
+        return best;
+    }
+
+    // [guild90] up to this many objective spots per objective go to the walk check, nearest first
+    constexpr size_t MAX_SPOT_CANDIDATES = 4;
+    // [guild12] the spots of `spots` on the bot's map whose way is free of orange / red mobs, as POIs, nearest first;
+    // [guild90] the spent ones are skipped (IsSpentSpot: seen empty, until their respawn) and up to
+    // MAX_SPOT_CANDIDATES camps are taken (b317 Eraelor q919: 33 Timberling Sprout spawns, one spot, spent, POSTPONE).
+    // 0: none on this map, 1: found, 2: every unspent spot on this map has such a mob (`blocker`), 3: all spent
+    int NearestSafeSpot(Player* bot, uint32 questId, std::vector<QuestSpot const*> const& spots, int32 objectiveIdx,
                         std::vector<POIInfo>& poiInfo, CreatureTemplate const*& blocker)
     {
         std::vector<std::pair<float, QuestSpot const*>> onMap;
-        for (QuestSpot const& spot : spots)
-            if (spot.mapId == bot->GetMapId())
-                onMap.push_back({bot->GetDistance2d(spot.x, spot.y), &spot});
+        for (QuestSpot const* spot : spots)
+            if (spot->mapId == bot->GetMapId())
+                onMap.push_back({bot->GetDistance2d(spot->x, spot->y), spot});
         if (onMap.empty())
             return 0;
         std::sort(onMap.begin(), onMap.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        size_t const first = poiInfo.size();
+        size_t spent = 0;
+        bool blocked = false;
         for (auto const& [distance, spot] : onMap)
         {
+            if (NewRpgBaseAction::IsSpentSpot(bot, questId, spot->x, spot->y))
+            {
+                ++spent;
+                continue;
+            }
+            // a spawn next to a spot already taken adds nothing (one camp)
+            bool sameCamp = false;
+            for (size_t i = first; i < poiInfo.size() && !sameCamp; ++i)
+                sameCamp = std::hypot(poiInfo[i].pos.x - spot->x, poiInfo[i].pos.y - spot->y) < SPENT_RADIUS;
+            if (sameCamp)
+                continue;
             if (CreatureTemplate const* danger =
                     NewRpgBaseAction::DangerOnWay(bot, bot->GetPositionX(), bot->GetPositionY(), spot->x, spot->y))
             {
                 blocker = danger;
+                blocked = true;
                 continue;
             }
             poiInfo.push_back({{spot->x, spot->y}, objectiveIdx});
-            return 1;
+            if (poiInfo.size() - first >= MAX_SPOT_CANDIDATES)
+                break;
         }
-        return 2;
+        if (poiInfo.size() > first)
+            return 1;
+        return blocked || !spent ? 2 : 3;
     }
+
+    int NearestSafeSpot(Player* bot, uint32 questId, std::vector<QuestSpot> const& spots, int32 objectiveIdx,
+                        std::vector<POIInfo>& poiInfo, CreatureTemplate const*& blocker)
+    {
+        std::vector<QuestSpot const*> pointers;
+        pointers.reserve(spots.size());
+        for (QuestSpot const& spot : spots)
+            pointers.push_back(&spot);
+        return NearestSafeSpot(bot, questId, pointers, objectiveIdx, poiInfo, blocker);
+    }
+
+    // [guild90] why the bot last left or skipped a quest, and the quest it works on until it is done or postponed
+    std::mutex questNoteLock;
+    std::unordered_map<uint32, std::unordered_map<uint32, std::string>> postponeReasons;  // bot -> quest -> why
+    std::unordered_map<uint32, uint32> committedQuest;                                    // bot -> quest
+    std::unordered_map<uint32, std::string> choiceNotes;  // bot -> the last ChooseBestQuest's why
 
     // [guild12] one log line per bot, quest and level for a postponed quest
     void LogPostponed(Player* bot, Quest const* quest, std::string const& reason)
@@ -2386,6 +2541,16 @@ namespace
         }
         LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} {} reason: {}", bot->GetName(), bot->GetLevel(),
                  quest->GetQuestId(), quest->GetTitle(), reason);
+    }
+
+    // [guild90] a postponed quest holds until the next level (the planner's lowPriorityQuest, cleared on a level-up):
+    // b317 Eraelor L6 postponed q919 for Gnarlpine Augur L9 and took it again at L6 from another spot
+    void HoldPostponed(Player* bot, Quest const* quest, std::string const& reason)
+    {
+        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+            botAI->lowPriorityQuest.insert(quest->GetQuestId());
+        NewRpgBaseAction::NotePostpone(bot, quest->GetQuestId(), reason);
+        LogPostponed(bot, quest, reason);
     }
 
     // [guild12] where a bot died: the killer's spot and the death spot, the killer's level and aggro radius; the
@@ -2736,7 +2901,9 @@ WorldPosition NewRpgBaseAction::NearestHub(Player* bot)
     return best;
 }
 
-bool NewRpgBaseAction::TimedQuestFits(Quest const* quest)
+bool NewRpgBaseAction::TimedQuestFits(Quest const* quest) { return TimedQuestFits(bot, quest); }
+
+bool NewRpgBaseAction::TimedQuestFits(Player* bot, Quest const* quest)
 {
     QuestSpawnIndex const& spawnIndex = GetQuestSpawnIndex();
     auto const enders = spawnIndex.enders.find(quest->GetQuestId());
@@ -2784,16 +2951,38 @@ bool NewRpgBaseAction::AbandonFailedQuest(uint32 questId)
     return false;
 }
 
+namespace
+{
+    // [guild90] one [guild12] quest-object line per bot, object and verdict (the scan runs every tick)
+    std::mutex questObjectLogLock;
+    std::unordered_map<uint32, std::unordered_map<ObjectGuid::LowType, std::string>> questObjectLogged;
+
+    void LogQuestObject(Player* bot, GameObject* go, std::string const& verdict)
+    {
+        {
+            std::lock_guard<std::mutex> guard(questObjectLogLock);
+            auto& logged = questObjectLogged[bot->GetGUID().GetCounter()];
+            if (logged.size() > 256)
+                logged.clear();
+            auto& last = logged[go->GetGUID().GetCounter()];
+            if (last == verdict)
+                return;
+            last = verdict;
+        }
+        LOG_INFO("playerbots", "[guild12] {} L{} quest object {} ({:.0f} yd) {}", bot->GetName(), bot->GetLevel(),
+                 go->GetName(), bot->GetDistance(go), verdict);
+    }
+}
+
 GameObject* NewRpgBaseAction::FindNeededQuestObject(Player* bot)
 {
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return nullptr;
     QuestSpawnIndex const& index = GetQuestSpawnIndex();
-    LootObjectStack* lootStack = botAI->GetAiObjectContext()->GetValue<LootObjectStack*>("available loot")->Get();
 
-    GameObject* nearest = nullptr;
-    float nearestDist = std::numeric_limits<float>::max();
+    // the objects that drop an item a quest in the log still needs; none: no grid search at all
+    std::vector<uint32> entries;
     for (auto const& [questId, status] : bot->getQuestStatusMap())
     {
         if (status.Status != QUEST_STATUS_INCOMPLETE)
@@ -2807,28 +2996,57 @@ GameObject* NewRpgBaseAction::FindNeededQuestObject(Player* bot)
             if (!item || status.ItemCount[i] >= quest->RequiredItemCount[i])
                 continue;
             auto const sources = index.itemObjects.find(item);
-            if (sources == index.itemObjects.end())
-                continue;
-            for (uint32 const entry : sources->second)
-            {
-                GameObject* go = bot->FindNearestGameObject(entry, QUEST_OBJECT_RANGE);
-                if (!go || !go->isSpawned() || go->GetGoState() != GO_STATE_READY ||
-                    go->HasGameObjectFlag(GO_FLAG_IN_USE))
-                    continue;
-                float const d = bot->GetDistance(go);
-                if (d >= nearestDist || !bot->IsWithinLOSInMap(go))
-                    continue;
-                LootObject loot(bot, go->GetGUID());
-                if (loot.IsEmpty() || !loot.IsLootPossible(bot) ||
-                    (lootStack && !lootStack->CanAttemptLoot(go->GetGUID())))
-                    continue;
-                if (DangerOnWay(bot, bot->GetPositionX(), bot->GetPositionY(), go->GetPositionX(),
-                                go->GetPositionY()))
-                    continue;
-                nearest = go;
-                nearestDist = d;
-            }
+            if (sources != index.itemObjects.end())
+                entries.insert(entries.end(), sources->second.begin(), sources->second.end());
         }
+    }
+    if (entries.empty())
+        return nullptr;
+    std::sort(entries.begin(), entries.end());
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+
+    // [guild90] every object of those entries in range, not FindNearestGameObject's one nearest: the one just looted
+    // (despawned, still the nearest) hid all the others (b317 Eraelor stood among Timberling Sprouts, "spot spent")
+    std::list<GameObject*> objects;
+    bot->GetGameObjectListWithEntryInGrid(objects, entries, QUEST_OBJECT_RANGE);
+    LootObjectStack* lootStack = botAI->GetAiObjectContext()->GetValue<LootObjectStack*>("available loot")->Get();
+    GameObject* nearest = nullptr;
+    float nearestDist = std::numeric_limits<float>::max();
+    for (GameObject* go : objects)
+    {
+        if (!go->isSpawned() || go->GetGoState() != GO_STATE_READY || go->HasGameObjectFlag(GO_FLAG_IN_USE))
+            continue;
+        float const d = bot->GetDistance(go);
+        if (d >= nearestDist)
+            continue;
+        if (!bot->IsWithinLOSInMap(go))
+            continue;  // out of sight: the scan sees it from another step
+        LootObject loot(bot, go->GetGUID());
+        if (loot.IsEmpty())
+        {
+            LogQuestObject(bot, go, "skipped: nothing in it the log needs");
+            continue;
+        }
+        // [guild90] the height gap is judged by the walk, not here (IsLootPossible's 3.5 yd height rule is for the
+        // object in reach: on Teldrassil's slopes it hid every sprout more than a step up or down)
+        if (!loot.IsLootPossible(bot, false))
+        {
+            LogQuestObject(bot, go, "skipped: not lootable for it (lock, skill, flags)");
+            continue;
+        }
+        if (lootStack && !lootStack->CanAttemptLoot(go->GetGUID()))
+        {
+            LogQuestObject(bot, go, "skipped: its last loot try failed, retried after the loot retry delay");
+            continue;
+        }
+        if (CreatureTemplate const* danger =
+                DangerOnWay(bot, bot->GetPositionX(), bot->GetPositionY(), go->GetPositionX(), go->GetPositionY()))
+        {
+            LogQuestObject(bot, go, "skipped: " + danger->Name + " on the way");
+            continue;
+        }
+        nearest = go;
+        nearestDist = d;
     }
     return nearest;
 }
@@ -2953,38 +3171,27 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
     XPColorChar const questColor = Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min<int32>(questLevel, 255)));
     if (questColor == XP_RED || questColor == XP_ORANGE)
     {
-        LogPostponed(bot, quest,
-                     "quest L" + std::to_string(questLevel) + (questColor == XP_RED ? " (red)" : " (orange)"));
+        HoldPostponed(bot, quest,
+                      "quest L" + std::to_string(questLevel) + (questColor == XP_RED ? " (red)" : " (orange)"));
         return false;
     }
 
     // [guild12] item objectives go where their droppers stand (world DB loot tables): the nearest spot whose way
-    // is free of orange / red mobs; the POI blend only for an item nobody on this map drops
+    // is free of orange / red mobs; the POI blend only for an item nobody on this map drops.
+    // [guild90] kill / use objectives likewise by the spawns of their creature / object, and every unspent camp
+    // (up to MAX_SPOT_CANDIDATES per objective), not the single nearest spawn
     CreatureTemplate const* blocker = nullptr;
     std::set<int32> resolved;
+    size_t spentObjectives = 0;
     for (uint32 objective : incompleteObjectiveIdx)
     {
-        if (objective < QUEST_OBJECTIVES_COUNT)
-            continue;
-        uint32 const item = quest->RequiredItemId[objective - QUEST_OBJECTIVES_COUNT];
-        std::vector<QuestSpot> spots;
-        auto const addSpawns = [&spots, item](std::unordered_map<uint32, std::vector<uint32>> const& sources,
-                                              std::unordered_map<uint32, std::vector<QuestSpot>> const& spawns)
-        {
-            auto const entries = sources.find(item);
-            if (entries == sources.end())
-                return;
-            for (uint32 const entry : entries->second)
-            {
-                auto const found = spawns.find(entry);
-                if (found != spawns.end())
-                    spots.insert(spots.end(), found->second.begin(), found->second.end());
-            }
-        };
-        addSpawns(spawnIndex.itemObjects, spawnIndex.objects);
-        addSpawns(spawnIndex.itemCreatures, spawnIndex.creatures);
-        if (NearestSafeSpot(bot, spots, int32(objective), poiInfo, blocker))
+        std::vector<QuestSpot const*> spots;
+        ObjectiveSources(quest, objective, spots);
+        int const found = NearestSafeSpot(bot, questId, spots, int32(objective), poiInfo, blocker);
+        if (found)
             resolved.insert(int32(objective));
+        if (found == 3)
+            ++spentObjectives;
     }
 
     // Get POIs to go
@@ -3036,34 +3243,25 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
         poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
     }
 
-    // [guild10] no objective POI: the spawns of the objective creatures / objects, else the explore trigger
-    if (poiInfo.empty())
-    {
-        for (uint32 objective : incompleteObjectiveIdx)
-        {
-            if (objective >= QUEST_OBJECTIVES_COUNT)
-                continue;
-            int32 const npcOrGo = quest->RequiredNpcOrGo[objective];
-            auto const& source = npcOrGo > 0 ? spawnIndex.creatures : spawnIndex.objects;
-            auto const spawns = source.find(npcOrGo > 0 ? uint32(npcOrGo) : uint32(-npcOrGo));
-            if (spawns != source.end())
-                NearestSafeSpot(bot, spawns->second, int32(objective), poiInfo, blocker);
-        }
-    }
+    // [guild10] the explore trigger (the spawns of kill / use objectives are resolved above)
     if (poiInfo.empty() && quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
     {
         auto const triggers = spawnIndex.triggers.find(questId);
         if (triggers != spawnIndex.triggers.end())
-            NearestSafeSpot(bot, triggers->second, QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT, poiInfo,
-                            blocker);
+            NearestSafeSpot(bot, questId, triggers->second, QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT,
+                            poiInfo, blocker);
     }
 
     // [guild12] every objective spot among or behind orange / red mobs: the next quest instead
+    // [guild90] held until the next level; every camp seen empty is no postpone: the quest comes back with the
+    // respawn (the spent marks run out), the planner meanwhile takes another
     if (poiInfo.empty() && blocker)
-        LogPostponed(bot, quest,
-                     "objective among " + blocker->Name + " L" + std::to_string(blocker->maxlevel) +
-                         (Acore::XP::GetColorCode(bot->GetLevel(), blocker->maxlevel) == XP_RED ? " (red)"
-                                                                                                 : " (orange)"));
+        HoldPostponed(bot, quest,
+                      "objective among " + blocker->Name + " L" + std::to_string(blocker->maxlevel) +
+                          (Acore::XP::GetColorCode(bot->GetLevel(), blocker->maxlevel) == XP_RED ? " (red)"
+                                                                                                  : " (orange)"));
+    else if (poiInfo.empty() && spentObjectives)
+        NotePostpone(bot, questId, "every camp of its objectives seen empty (back at their respawn)");
 
     return !poiInfo.empty();
 }
@@ -3281,6 +3479,29 @@ namespace
 
 // Soft preferences on top of experience per second: kill quests while rested, the Northrend zone order, the
 // Dalaran attunement at 74.
+float NewRpgBaseAction::RemainingShare(Player* bot, Quest const* quest)
+{
+    auto const itr = bot->getQuestStatusMap().find(quest->GetQuestId());
+    if (itr == bot->getQuestStatusMap().end())
+        return 1.0f;
+    uint32 required = 0, left = 0;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i])
+        {
+            required += quest->RequiredNpcOrGoCount[i];
+            left += quest->RequiredNpcOrGoCount[i] - std::min<uint32>(itr->second.CreatureOrGOCount[i],
+                                                                      quest->RequiredNpcOrGoCount[i]);
+        }
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
+        {
+            required += quest->RequiredItemCount[i];
+            left += quest->RequiredItemCount[i] -
+                    std::min<uint32>(itr->second.ItemCount[i], quest->RequiredItemCount[i]);
+        }
+    return required ? float(left) / float(required) : 1.0f;
+}
+
 float NewRpgBaseAction::GetQuestWeight(Quest const* quest, bool rested)
 {
     uint8 const level = bot->GetLevel();
@@ -3328,6 +3549,19 @@ uint32 NewRpgBaseAction::GetQuestProgress(uint32 questId)
     return progress;
 }
 
+void NewRpgBaseAction::NotePostpone(Player* bot, uint32 questId, std::string const& reason)
+{
+    std::lock_guard<std::mutex> guard(questNoteLock);
+    postponeReasons[bot->GetGUID().GetCounter()][questId] = reason;
+}
+
+std::string NewRpgBaseAction::QuestChoiceNote(Player* bot)
+{
+    std::lock_guard<std::mutex> guard(questNoteLock);
+    auto const found = choiceNotes.find(bot->GetGUID().GetCounter());
+    return found == choiceNotes.end() ? std::string() : found->second;
+}
+
 // The bot knows every quest in the world and picks the one that gives the most experience per second of
 // travel and work: quests already in the log and quests it could still pick up, near or far.
 // giverPos is set when the winner still has to be picked up.
@@ -3340,6 +3574,32 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     uint32 bestCompleteQuest = 0;
     giverPos = WorldPosition();
     bool const rested = bot->GetRestBonus() > 0.0f;
+    // [guild90] the quest it works on stays its choice until it is done, postponed or has no spot left (finish the
+    // active quest before switching: b317 Eraelor flitted q919 <-> q487 on every IDLE); a hand-in nearer than that
+    // quest's spot is taken on the way
+    uint32 const counter = bot->GetGUID().GetCounter();
+    uint32 committed = 0;
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        auto const found = committedQuest.find(counter);
+        if (found != committedQuest.end())
+            committed = found->second;
+    }
+    float committedDistance = -1.0f;
+    float nearestHandIn = std::numeric_limits<float>::max();
+    uint32 nearestHandInQuest = 0;
+    std::string committedWhy;
+    if (committed && bot->GetQuestStatus(committed) != QUEST_STATUS_INCOMPLETE)
+        committedWhy = bot->GetQuestStatus(committed) == QUEST_STATUS_COMPLETE ? "done, hand it in"
+                       : bot->GetQuestStatus(committed) == QUEST_STATUS_REWARDED ? "handed in"
+                                                                                : "left the log";
+    else if (committed && botAI->lowPriorityQuest.count(committed))
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        auto const& reasons = postponeReasons[counter];
+        auto const why = reasons.find(committed);
+        committedWhy = "postponed: " + (why != reasons.end() ? why->second : std::string("no progress or no walk"));
+    }
 
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
@@ -3388,8 +3648,16 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
 
         bool const complete = bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
         float time = distance / QUEST_TRAVEL_SPEED;
+        // [guild90] the work left, not a whole objective's time for every quest: the quest nearest completion first
         if (!complete)
-            time += QUEST_OBJECTIVE_TIME + QUEST_UNKNOWN_DISTANCE / QUEST_TRAVEL_SPEED;
+            time += QUEST_OBJECTIVE_TIME * RemainingShare(bot, quest) + QUEST_UNKNOWN_DISTANCE / QUEST_TRAVEL_SPEED;
+        if (complete && distance < nearestHandIn)
+        {
+            nearestHandIn = distance;
+            nearestHandInQuest = questId;
+        }
+        if (questId == committed && !complete)
+            committedDistance = distance;
 
         float const rate = QUEST_IN_LOG_BONUS * GetQuestWeight(quest, rested) * quest->XPValue(level) /
                            std::max(time, 1.0f);
@@ -3408,12 +3676,55 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
         }
     }
 
+    auto const note = [&](uint32 chosen, std::string const& why)
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        choiceNotes[counter] = why;
+        if (chosen && bot->GetQuestStatus(chosen) == QUEST_STATUS_INCOMPLETE)
+            committedQuest[counter] = chosen;
+        else if (!chosen || (committed && committedDistance < 0.0f))
+            committedQuest.erase(counter);
+    };
+    auto const leaving = [&]() -> std::string
+    {
+        if (!committed)
+            return "";
+        if (!committedWhy.empty())
+            return "; left q" + std::to_string(committed) + ": " + committedWhy;
+        if (committedDistance < 0.0f)
+            return "; left q" + std::to_string(committed) + ": no unspent objective spot it can walk to";
+        return "";
+    };
+
+    // [guild90] the active quest first; a hand-in only when its ender is nearer than the active quest's spot
+    if (committedDistance >= 0.0f && !(nearestHandInQuest && nearestHandIn < committedDistance))
+    {
+        note(committed, "continues the active quest (" + std::to_string(uint32(committedDistance)) + " yd to its spot)");
+        return committed;
+    }
     if (bestCompleteQuest)
-        return bestCompleteQuest;
+    {
+        uint32 const handIn = committedDistance >= 0.0f ? nearestHandInQuest : bestCompleteQuest;
+        note(committedDistance >= 0.0f ? committed : 0,
+             committedDistance >= 0.0f
+                 ? "hand-in on the way (" + std::to_string(uint32(nearestHandIn)) + " yd), then back to q" +
+                       std::to_string(committed)
+                 : "hand-in first" + leaving());
+        if (committedDistance >= 0.0f)
+        {
+            std::lock_guard<std::mutex> guard(questNoteLock);
+            committedQuest[counter] = committed;
+        }
+        return handIn;
+    }
 
     // [guild10] a new quest only once nothing in the log is left to do; every bot levels by quests
     if (bestQuest)
+    {
+        note(bestQuest, "best xp per second of the log" + leaving());
         return bestQuest;
+    }
+    note(0, "nothing left in the log" + leaving());
 
     // From 68 the planner also looks at Northrend, priced by the boats and zeppelins that get there.
     std::vector<std::pair<WorldPosition, float>> northrendArrivals;

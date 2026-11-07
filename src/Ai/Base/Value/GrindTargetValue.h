@@ -23,6 +23,9 @@ private:
     uint32 GetTargetingPlayerCount(Unit* unit);
     Unit* FindTargetForGrinding(uint32 assistCount);
     bool needForQuest(Unit* target);
+    // [guild90] questing: a mob no quest needs lies in the bot's way (hostile, its aggro reaches the bot or the walk
+    // ahead to the quest spot)
+    bool OnQuestWay(Unit* unit);
 
     TargetReachability _reachability;
 };

@@ -144,6 +144,13 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                 continue;
         }
 
+        // [guild90] questing, a mob no quest needs is fought only when it is in the way: hostile and within its own
+        // aggro reach of the bot or of the walk ahead to the quest spot (it comes anyway). No detour to it (b317
+        // Eraelor L6 on q487, Gnarlpine Ambushers, pulled a Strigid Screecher L8 off the road and died).
+        if (botAI->rpgInfo.GetStatus() == RPG_DO_QUEST && unit->ToCreature() && !neededForQuest() &&
+            !OnQuestWay(unit))
+            continue;
+
         float unitDistance = -1.0f;
         if (group)
         {
@@ -210,6 +217,34 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                                          unit->GetEntry(), verdict.topLevel);
     }
     return nullptr;
+}
+
+bool GrindTargetValue::OnQuestWay(Unit* unit)
+{
+    if (!unit->IsHostileTo(bot))
+        return false;  // a neutral mob does not come by itself
+    float const aggro = unit->ToCreature()->GetAggroRange(bot);
+    if (bot->GetDistance(unit) <= aggro)
+        return true;
+    auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    if (!quest)
+        return false;
+    WorldPosition const dest = quest->pos != WorldPosition() ? quest->pos : quest->giverPos;
+    if (dest == WorldPosition() || dest.GetMapId() != bot->GetMapId())
+        return false;
+    // the walk's next stretch (sight range): the mob's aggro circle touches it ahead of the bot
+    float const fromX = bot->GetPositionX(), fromY = bot->GetPositionY();
+    float dx = dest.GetPositionX() - fromX, dy = dest.GetPositionY() - fromY;
+    float const length = std::hypot(dx, dy);
+    if (length < 1.0f)
+        return false;
+    dx /= length;
+    dy /= length;
+    float const along = (unit->GetPositionX() - fromX) * dx + (unit->GetPositionY() - fromY) * dy;
+    if (along <= 0.0f || along > std::min(length, sPlayerbotAIConfig.SightDistance))
+        return false;
+    float const across = std::fabs((unit->GetPositionX() - fromX) * dy - (unit->GetPositionY() - fromY) * dx);
+    return across <= aggro;
 }
 
 bool GrindTargetValue::needForQuest(Unit* target)

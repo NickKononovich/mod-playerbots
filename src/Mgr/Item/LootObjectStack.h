@@ -46,7 +46,8 @@ public:
     LootObject& operator=(LootObject const& other) = default;
 
     bool IsEmpty() { return !guid; }
-    bool IsLootPossible(Player* bot);
+    // [guild90] checkHeight false: judged from afar (the quest-object scan), the height gap is the walk's business
+    bool IsLootPossible(Player* bot, bool checkHeight = true);
     // True when the bot is within the server's interaction range for this target: the core
     // creature range for corpses, or the gameobject's own type/display/spell based range.
     bool IsAtInteractDistance(Player* bot);

@@ -314,7 +314,7 @@ bool LootObject::IsAtInteractDistance(Player* bot)
     return false;
 }
 
-bool LootObject::IsLootPossible(Player* bot)
+bool LootObject::IsLootPossible(Player* bot, bool checkHeight)
 {
     if (IsEmpty() || !bot)
         return false;
@@ -327,7 +327,7 @@ bool LootObject::IsLootPossible(Player* bot)
     if (!botAI)
         return false;
 
-    if (abs(worldObj->GetPositionZ() - bot->GetPositionZ()) > INTERACTION_DISTANCE - 2.0f)
+    if (checkHeight && abs(worldObj->GetPositionZ() - bot->GetPositionZ()) > INTERACTION_DISTANCE - 2.0f)
         return false;
 
     Creature* creature = botAI->GetCreature(guid);

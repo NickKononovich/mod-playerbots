@@ -82,6 +82,13 @@ public:
     static void NoteSpentSpot(Player* bot, uint32 questId, WorldPosition const& pos);
     static bool IsSpentSpot(Player* bot, uint32 questId, float x, float y);
     static void ClearSpentSpots(Player* bot, uint32 questId);
+    // [guild90] why the bot left or skipped a quest (shown on the planner's next QUEST line); the planner's last why
+    static void NotePostpone(Player* bot, uint32 questId, std::string const& reason);
+    static std::string QuestChoiceNote(Player* bot);
+    // [guild90] the share (0..1) of the quest's objective counts still to do
+    static float RemainingShare(Player* bot, Quest const* quest);
+    // [guild12] a timed quest: the walk to its nearest ender at the bot's run speed fits its time
+    static bool TimedQuestFits(Player* bot, Quest const* quest);
     // [guild13] the spawn (with its floor's height) of the quest's ender nearest the bot on its map
     static bool NearestEnderSpot(Player* bot, uint32 questId, WorldPosition& out);
     // [guild13] a far walk that cannot start: one [rpg] WALK_FAIL line per destination (the route, the refusal)
