@@ -111,6 +111,10 @@ namespace
         std::set<std::pair<uint32, int32>> lostTo;
         // [guild14] the open fight turned lost: it disengages until the fight ends
         bool fleeing = false;
+        // [guild15] per creature entry, against this bot: what the entry dealt it per second, and what it dealt that
+        // entry in fights with that one attacker (damage, seconds)
+        std::unordered_map<uint32, std::pair<double, double>> ownTaken;
+        std::unordered_map<uint32, std::pair<double, double>> ownDealt;
     };
 
     struct EntryDamage
@@ -118,6 +122,14 @@ namespace
         double damage = 0.0;
         double sec = 0.0;
     };
+
+    float Rate(std::unordered_map<uint32, std::pair<double, double>> const& rates, uint32 entry)
+    {
+        auto const found = rates.find(entry);
+        if (found == rates.end() || found->second.second <= 0.0)
+            return -1.0f;
+        return float(found->second.first / found->second.second);
+    }
 
     std::mutex lock;
     std::unordered_map<uint32, SoloBotState> states;
@@ -158,8 +170,21 @@ namespace
             if (!track.entry || !track.damage)
                 continue;
             EntryDamage& entry = entryDamage[track.entry];
+            double const trackSec =
+                double(getMSTimeDiff(track.firstMs, track.lastMs)) / IN_MILLISECONDS + track.swingSec;
             entry.damage += double(track.damage);
-            entry.sec += double(getMSTimeDiff(track.firstMs, track.lastMs)) / IN_MILLISECONDS + track.swingSec;
+            entry.sec += trackSec;
+            // [guild15] ... and on this bot (its armour, its level): b311 Ravelandy L7 died four times in 9 min to
+            // Prowlers / bears L9 judged won on what they dealt every bot
+            auto& own = state.ownTaken[track.entry];
+            own.first += double(track.damage);
+            own.second += trackSec;
+        }
+        if (state.attackers.size() == 1)
+        {
+            auto& own = state.ownDealt[state.attackers.begin()->second.entry];
+            own.first += double(state.dealt);
+            own.second += seconds;
         }
         std::string came;
         for (auto const& [guid, track] : state.attackers)
@@ -563,6 +588,8 @@ namespace SoloSafety
                 float dps = MobDps(unit, bot);  // [guild14] crits, SmartAI casts, the measurement
                 if (Creature* creature = unit->ToCreature())
                 {
+                    // [guild15] what it measured dealing this bot, when higher
+                    dps = std::max(dps, Rate(states[bot->GetGUID().GetCounter()].ownTaken, creature->GetEntry()));
                     elite = elite || IsElite(creature);
                     verdict.radius = std::max(verdict.radius,
                                               unit->GetExactDist2d(target) + creature->GetAggroRange(bot));
@@ -582,6 +609,14 @@ namespace SoloSafety
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
             CloseIfOver(bot, state);
             botDps = BotDpsAt(bot, state, int32(verdict.topLevel) - int32(bot->GetLevel()));  // [guild14]
+            // [guild15] its damage measured on the target's entry alone, when lower (b310 Ellosera L10 dealt nothing
+            // to a Bloodmyst Hatchling it pulled twice and died)
+            if (Creature* creature = target->ToCreature())
+            {
+                float const onEntry = Rate(state.ownDealt, creature->GetEntry());
+                if (onEntry >= 0.0f)
+                    botDps = std::min(botDps, onEntry);
+            }
             // [guild15] user 2026-11-07: a mob it lost to is no veto by itself (a player kills yellow +1 / +2 mobs
             // solo all the time): the lost fight is in the numbers - the entry's measured damage, its damage at that
             // level gap - and only the projection refuses
@@ -874,6 +909,8 @@ namespace SoloSafety
         state.fights = 0;
         state.gapDealt.clear();
         state.lostTo.clear();
+        state.ownTaken.clear();
+        state.ownDealt.clear();
     }
 
     void OnDeath(Player* bot)

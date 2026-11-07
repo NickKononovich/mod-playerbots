@@ -179,9 +179,14 @@ bool NewRpgBaseAction::StartVendorRun()
     // 750 times without walking there; 12 of 50 bots ended the run with broken gear)
     if (info.vendorRunEntry && info.GetStatus() != RPG_GO_CAMP && info.GetStatus() != RPG_WANDER_NPC)
     {
-        LOG_INFO("playerbots", "[New RPG] {} vendor run ({}) dropped by another state: planned again",
-                 bot->GetName(), info.vendorRunReason);
+        LOG_INFO("playerbots", "[New RPG] {} vendor run ({}) dropped by another state: planned again after its next "
+                 "loot or money gain", bot->GetName(), info.vendorRunReason);
         info.vendorRunEntry = 0;
+        // counted as a visit: tried again once the bags or the purse grow (b311: Hobliir's unreachable Exodar vendor
+        // 29 yd off was walked to, given up and chosen again every few seconds)
+        info.vendorVisited = true;
+        info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+        info.vendorVisitMoney = bot->GetMoney();
     }
     if (info.vendorRunEntry || bot->IsInCombat() || !bot->IsAlive())
         return false;

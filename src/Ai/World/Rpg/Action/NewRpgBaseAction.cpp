@@ -1250,13 +1250,17 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         if (!onPolygon && std::any_of(ways.begin(), ways.end(), [](Way const& way) { return way.carried; }))
             break;
     }
-    // the landing's own walk to the destination: a complete one (an island's own polygons have none); tried in the
-    // order the ways are taken below, a few at most (each is a path search)
+    // the landing's own walk to the destination: a complete one, or a partial one (a long walk is cut by the
+    // search's length) that ends nearer the destination than the bot by more than the step there - an island's own
+    // polygons have neither (b311 live: Dandolar, Bierya, Nelaeleas - the long walks were all partial)
     auto const leadsOn = [&](Way const& way)
     {
         BotPath const on = FindBotPath(bot, way.to.x, way.to.y, way.to.z, dest.GetPositionX(), dest.GetPositionY(),
                                        dest.GetPositionZ());
-        return on.type == PATHFIND_NORMAL;
+        if (on.type == PATHFIND_NORMAL)
+            return true;
+        return on.type == PATHFIND_INCOMPLETE && on.points.size() >= 2 &&
+               dest.GetExactDist(on.actualEnd.x, on.actualEnd.y, on.actualEnd.z) + way.gap < disToDest;
     };
     if (onPolygon)
     {
@@ -1268,11 +1272,13 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         std::sort(order.begin(), order.end(),
                   [](Way const* a, Way const* b)
                   {
+                      // an island is left by a drop: the falls first (least damage), then the steps (nearest); the
+                      // island's own polygons are steps
                       if (a->carried != b->carried)
-                          return a->carried;
+                          return !a->carried;
                       return a->carried ? a->gap < b->gap : a->damage < b->damage;
                   });
-        constexpr size_t PATH_TRIES = 8;  // search cost bound, not a behaviour rule
+        constexpr size_t PATH_TRIES = 16;  // search cost bound, not a behaviour rule
         for (size_t i = 0; i < order.size() && i < PATH_TRIES && kept.empty(); ++i)
             if (leadsOn(*order[i]))
                 kept.push_back(*order[i]);
