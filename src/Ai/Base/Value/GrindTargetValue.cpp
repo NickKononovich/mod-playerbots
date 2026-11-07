@@ -7,6 +7,7 @@
 #include "GrindTargetValue.h"
 #include "NewRpgBaseAction.h"  // [guild12]
 #include "Formulas.h"  // [guild12]
+#include "SoloSafety.h"  // [guild13]
 #include "NewRpgInfo.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
@@ -55,6 +56,8 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
 
     float distance = 0;
     Unit* result = nullptr;
+    bool const solo = SoloSafety::Applies(bot);  // [guild13]
+    std::vector<std::pair<float, Unit*>> candidates;
     std::unordered_map<uint32, bool> needForQuestMap;
     // [guild12] a needed quest object in reach comes before mobs the quest does not need (the loot of objects)
     bool const questObjectNear =
@@ -159,6 +162,14 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         else
             unitDistance = bot->GetDistance(unit);
 
+        // [guild13] a solo bot judges its candidates nearest first (SoloSafety::Judge) after the loop
+        if (solo)
+        {
+            if (unitDistance >= 0.0f)
+                candidates.emplace_back(unitDistance, unit);
+            continue;
+        }
+
         if (unitDistance < 0.0f || (result && unitDistance >= distance))
             continue;
 
@@ -170,7 +181,35 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         result = unit;
     }
 
-    return result;
+    if (!solo)
+        return result;
+
+    // [guild13] the nearest pull it wins: a mob in a remembered danger zone (a death, a refused pack) is skipped until
+    // the bot outlevels it; a pull it wins only at full rests it first; a pack it loses is remembered as a danger
+    // zone (its quest spots there are postponed) and the next candidate is judged
+    std::sort(candidates.begin(), candidates.end(),
+              [](auto const& a, auto const& b) { return a.first < b.first; });
+    for (auto const& [unitDistance, unit] : candidates)
+    {
+        if (NewRpgBaseAction::InDangerZone(bot, unit->GetPositionX(), unit->GetPositionY()))
+            continue;
+        if (!_reachability.IsReachable(bot, unit))
+            continue;
+        SoloSafety::Verdict const verdict = SoloSafety::Judge(bot, unit);
+        if (verdict.kind == SoloSafety::Verdict::Kind::Win)
+        {
+            SoloSafety::NoteEngage(bot, unit, verdict);
+            return unit;
+        }
+        if (verdict.kind == SoloSafety::Verdict::Kind::RestFirst)
+        {
+            SoloSafety::RequestRest(bot, std::string("to pull ") + unit->GetName() + ": " + verdict.why);
+            return nullptr;
+        }
+        NewRpgBaseAction::RememberDanger(bot, verdict.at.GetPositionX(), verdict.at.GetPositionY(), verdict.radius,
+                                         unit->GetEntry(), verdict.topLevel);
+    }
+    return nullptr;
 }
 
 bool GrindTargetValue::needForQuest(Unit* target)

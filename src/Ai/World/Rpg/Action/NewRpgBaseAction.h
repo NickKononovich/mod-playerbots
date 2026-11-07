@@ -54,6 +54,32 @@ public:
     // [guild12] a bot killed by a creature remembers the spot (killer's and its own) as dangerous until it outlevels
     // the killer: DangerOnWay reports it, so objectives and walks there are skipped
     static void RecordDeath(Player* bot, Creature* killer);
+    // [guild13] a spot the bot keeps away from until it is above `level`: a pack its pull judge refused (SoloSafety)
+    static void RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level);
+    // [guild13] the spot lies in one of the bot's remembered danger zones (a death or a refused pack): its creature
+    static CreatureTemplate const* InDangerZone(Player* bot, float x, float y);
+    // [guild13] a class quest whose purpose is a spell (its reward or its chain's: AutoLearnQuestSpells grants it):
+    // never taken, abandoned when in the log. Letters to the class trainer and the like stay.
+    static bool IsSpellUnlockClassQuest(Quest const* quest);
+    // [guild13] where a bot goes after a death: the nearest ender of a quest in its log, else a travel hub (inn)
+    static WorldPosition NearestHub(Player* bot);
+    // [guild13] before any far walk: the revived bot's way to its hub, the regeneration sit of a bot that must rest
+    // with nothing to eat, a hunter's tame of its first pet; true: the tick is taken
+    bool SoloSafetyStep();
+    // [guild13] objective spots of a quest the bot stood at with nothing to do (no mob it pulls, no object): skipped
+    // by the next POI pick until the quest is postponed
+    static void NoteSpentSpot(Player* bot, uint32 questId, WorldPosition const& pos);
+    static bool IsSpentSpot(Player* bot, uint32 questId, float x, float y);
+    static void ClearSpentSpots(Player* bot, uint32 questId);
+    // [guild13] the spawn (with its floor's height) of the quest's ender nearest the bot on its map
+    static bool NearestEnderSpot(Player* bot, uint32 questId, WorldPosition& out);
+    // [guild13] a far walk that cannot start: one [rpg] WALK_FAIL line per destination (the route, the refusal)
+    void NoteWalkFailure(WorldPosition const& dest, std::string const& why);
+    // [guild13] a hunter with Tame Beast and no pet tames the nearest tameable beast of its level
+    bool TameFirstPet();
+    // [guild13] the walk's end lies in a danger zone or among idle mobs whose pull the judge refuses (logged, the pack
+    // remembered as a danger zone): the walk is not made
+    bool DestinationRefused(WorldPosition const& dest);
 
 protected:
     // [guild3] full bags or low ammo: GO_CAMP to the nearest friendly vendor; true when the walk starts

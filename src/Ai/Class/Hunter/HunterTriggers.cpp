@@ -247,7 +247,10 @@ bool HunterNeedsMeleeTrigger::IsActive()
 
     bool const swinging = bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) && bot->GetVictim() == target;
     bool const inMelee = bot->IsWithinMeleeRange(target);
-    if (!AI_VALUE2(uint32, "item count", "ammo"))
+    // [guild13] a broken bow / gun shoots no more either (Spell::CheckCast SPELL_FAILED_EQUIPPED_ITEM: the guild
+    // hunters' starting bows were at 0 durability, Auto Shot "impossible", the hunters stood in combat doing nothing)
+    Item* const ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!AI_VALUE2(uint32, "item count", "ammo") || !ranged || ranged->IsBroken())
         return !inMelee || !swinging;
 
     // [guild12] inside Auto Shot's minimum range no shot goes off: the hunter melees its current target, grouped or

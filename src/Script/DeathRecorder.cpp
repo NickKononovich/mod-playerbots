@@ -5,6 +5,7 @@
  */
 
 #include "SpellPayoff.h"  // [lead1542]
+#include "SoloSafety.h"  // [guild13]
 #include "Creature.h"
 #include "DamageTaken.h"
 #include "EncounterValues.h"
@@ -716,6 +717,7 @@ public:
         Unit* realTarget = periodic ? target : healer;
         Unit* realHealer = periodic ? healer : target;
         Record(realTarget, realHealer, spellInfo ? spellInfo->Id : 0, heal, true);
+        SoloSafety::NoteHeal(realHealer, realTarget, heal);  // [guild13]
     }
 
     uint32 DealDamage(Unit* attacker, Unit* victim, uint32 damage, DamageEffectType damageType) override
@@ -729,6 +731,10 @@ public:
         // Falling, lava and drowning reach the player as self damage with no attacker of its own.
         bool const environment = damageType == SELF_DAMAGE && attacker == victim;
         Record(victim, environment ? nullptr : attacker, spellId, damage, false, environment);
+
+        // [guild13] a solo questing bot's fights out in the world: its dealt and taken damage (SoloSafety)
+        if (damage && attacker && victim && !environment && victim->GetMap() && !victim->GetMap()->Instanceable())
+            SoloSafety::NoteDamage(attacker, victim, damage);
 
         // [lifetime-calibrated] A group member's (or its pet's / totem's) damage on a dungeon creature, overkill cut
         // off: the group's measured dps (GroupDamage, EstimatedLifetimeValue.cpp).

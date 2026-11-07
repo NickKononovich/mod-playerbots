@@ -14921,3 +14921,18 @@ namespace PullPlanner
         return false;
     }
 }
+
+// [guild13] the careful pull's pack (CollectPack: the target, what its engage call and the fight at `spot` wake, the
+// assistance chain) for a solo questing bot's own pull judge (SoloSafety::Judge)
+namespace PullPlanner
+{
+    void SoloPack(Player* bot, Unit* target, Position const& spot, std::vector<Unit*>& pack)
+    {
+        pack.clear();
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI || !target)
+            return;
+        GuidVector const possible = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
+        PullPlanning::CollectPack(botAI, bot, target, spot, possible, pack, PullPlanning::FightHere(spot), true);
+    }
+}

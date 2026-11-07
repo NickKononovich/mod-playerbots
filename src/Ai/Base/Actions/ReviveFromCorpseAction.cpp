@@ -22,6 +22,7 @@
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
 #include "Timer.h"
+#include "World.h"  // [guild13] CONFIG_DEATH_SICKNESS_LEVEL
 
 #include <algorithm>
 #include <array>
@@ -76,6 +77,18 @@ namespace
         }
         return margin;
     }
+
+    // [guild13] user 2026-11-07: after a death a solo questing bot does not go straight back - it rises in town. Below
+    // the level of resurrection sickness (CONFIG_DEATH_SICKNESS_LEVEL) the spirit healer costs it nothing but the
+    // durability a corpse run costs too, so it takes the graveyard's healer (b300: Peny L8 rose 6 times at its corpse
+    // in the Stone Cairn Lake murlocs and died again within seconds); above it the corpse run stays (a safe spot)
+    bool RisesInTown(Player* bot)
+    {
+        Map* map = bot->GetMap();
+        return map && !map->Instanceable() && !bot->GetGroup() &&
+               int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL) &&
+               GET_PLAYERBOT_AI(bot) && GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT);
+    }
 }
 
 bool ReviveFromCorpseAction::Execute(Event event)
@@ -104,6 +117,9 @@ bool ReviveFromCorpseAction::Execute(Event event)
     }
 
     if (!corpse)
+        return false;
+
+    if (RisesInTown(bot))  // [guild13] the spirit healer, not the corpse
         return false;
 
     // if (corpse->GetGhostTime() + bot->GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP) >
@@ -182,7 +198,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // per death, death and release, and never resets for a bot that gains no XP: from the third death every ghost
     // that had walked back in stood at its corpse calling for a healer it could not reach).
     bool const inDungeon = bot->GetMap()->IsDungeon();
-    if (!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon)
+    if ((!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon) || RisesInTown(bot))  // [guild13]
         return botAI->DoSpecificAction("spirit healer", Event(), true);
 
     WorldPosition botPos(bot);

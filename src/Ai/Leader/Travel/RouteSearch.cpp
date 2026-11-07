@@ -10,6 +10,7 @@
 #include "DetourCommon.h"
 #include "DetourNavMesh.h"
 #include "LeaderOrders.h"
+#include "SoloSafety.h"  // [guild13]
 #include "Config.h"
 #include "Log.h"
 #include "Map.h"
@@ -42,6 +43,32 @@ namespace Leader::Travel
         // [b32_brs] discs (x, y, z, radius): a polygon whose centre lies within radius (2D, within 10 yd in
         // height) of one is refused - a hopeless pack's aggro reach (HopelessDetourLeg)
         std::vector<G3D::Vector4> const* discs = nullptr;
+        std::vector<RoutePenalty> const* penalties = nullptr;  // [guild13]
+
+        // [guild13] an edge from outside a penalty disc into it pays the disc's cost once (Detour: (y, z, x))
+        float getCost(float const* pa, float const* pb, dtPolyRef const prevRef, dtMeshTile const* prevTile,
+                      dtPoly const* prevPoly, dtPolyRef const curRef, dtMeshTile const* curTile, dtPoly const* curPoly,
+                      dtPolyRef const nextRef, dtMeshTile const* nextTile, dtPoly const* nextPoly) const override
+        {
+            float cost = dtQueryFilter::getCost(pa, pb, prevRef, prevTile, prevPoly, curRef, curTile, curPoly, nextRef,
+                                                nextTile, nextPoly);
+            if (!penalties)
+                return cost;
+            for (RoutePenalty const& disc : *penalties)
+            {
+                if (std::fabs(pb[1] - disc.z) > 10.0f)
+                    continue;
+                float const bx = pb[2] - disc.x;
+                float const by = pb[0] - disc.y;
+                if (bx * bx + by * by > disc.r * disc.r)
+                    continue;
+                float const ax = pa[2] - disc.x;
+                float const ay = pa[0] - disc.y;
+                if (ax * ax + ay * ay > disc.r * disc.r)
+                    cost += disc.cost;
+            }
+            return cost;
+        }
 
         bool passFilter(dtPolyRef const ref, dtMeshTile const* tile, dtPoly const* poly) const override
         {
@@ -128,7 +155,8 @@ namespace Leader::Travel
 
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes,
-                   std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep, Movement::PointsArray* samples)
+                   std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep, Movement::PointsArray* samples,
+                   std::vector<RoutePenalty> const* penalties)
     {
         complete = false;
         dtNavMesh const* navMesh = owner->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
@@ -153,6 +181,7 @@ namespace Leader::Travel
         DoorAvoidFilter filter;
         filter.boxes = avoidBoxes;
         filter.discs = avoidDiscs;  // [b32_brs]
+        filter.penalties = penalties && !penalties->empty() ? penalties : nullptr;  // [guild13]
         filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | (steep ? NAV_GROUND_STEEP : 0)));
         filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
 
@@ -424,23 +453,44 @@ namespace Leader
         }
         Movement::PointsArray corners;
         Movement::PointsArray surface;  // [lead147] the walk on the navmesh's detail height
-        for (bool const steep : {false, true})
+        // [guild13] a solo questing bot walks round the idle mobs: their reach costs the fight it would start
+        // (penalties), a mob it must not fight (orange / red, elite) is refused while a complete walk round exists
+        std::vector<G3D::Vector4> refuse;
+        std::vector<Travel::RoutePenalty> penalties;
+        SoloSafety::RouteCosts(walker, from, to, refuse, penalties);
+        auto const search = [&](std::vector<G3D::Vector4> const* refused,
+                                std::vector<Travel::RoutePenalty> const* priced)
         {
-            Movement::PointsArray tried;
-            Movement::PointsArray triedSurface;
-            bool complete = false;
-            if (!Travel::LongRoute(walker, from, to, steep, tried, complete, nullptr, nullptr, ROUTE_SAMPLE_YD,
-                                   &triedSurface) ||
-                tried.empty())
-                continue;
-            if (result.found && !complete)
-                continue;
-            corners = tried;
-            surface = triedSurface;
-            result.found = true;
-            result.complete = complete;
-            if (complete)
-                break;
+            for (bool const steep : {false, true})
+            {
+                Movement::PointsArray tried;
+                Movement::PointsArray triedSurface;
+                bool complete = false;
+                if (!Travel::LongRoute(walker, from, to, steep, tried, complete, nullptr, refused, ROUTE_SAMPLE_YD,
+                                       &triedSurface, priced) ||
+                    tried.empty())
+                    continue;
+                if (result.found && !complete)
+                    continue;
+                corners = tried;
+                surface = triedSurface;
+                result.found = true;
+                result.complete = complete;
+                if (complete)
+                    break;
+            }
+        };
+        if (!refuse.empty())
+            search(&refuse, &penalties);
+        if (!result.complete && !penalties.empty())
+        {
+            result.found = false;
+            search(nullptr, &penalties);
+        }
+        if (!result.complete)
+        {
+            result.found = false;
+            search(nullptr, nullptr);
         }
         if (!result.found)
             return result;

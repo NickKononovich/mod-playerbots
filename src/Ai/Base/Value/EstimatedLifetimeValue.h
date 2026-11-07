@@ -87,6 +87,8 @@ namespace GroupDamage
 // group's dps only stands in before that, cut to the share of the group on `target`. gd-h 20261026-024524-gd-h-5H-27:
 // the whole group's 7855 dps put a Snake Wrap, hit by one or two members, at "lives 0.1 s" with 13 % health, and the
 // mage held Fireball on it. `source` (optional) names the estimate for the log.
+// [guild13] a solo bot's own modelled damage per second (MemberModelDps, healers included)
+float SoloModelDps(Player* member);
 float ObservedLifetime(Unit* target);
 float ExpectedLifetime(PlayerbotAI* botAI, Unit* target, std::string* source = nullptr);
 // [rot341] The same by the rate over the target's whole observed health loss (since its track began: first seen,

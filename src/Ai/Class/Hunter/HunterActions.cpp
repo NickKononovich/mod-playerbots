@@ -289,6 +289,10 @@ bool CastAutoShotAction::isUseful()
     // [guild2] no arrows or bullets: the cast fails every tick; the hunter melees ("hunter needs melee")
     if (!AI_VALUE2(uint32, "item count", "ammo"))
         return false;
+    // [guild13] a broken ranged weapon (0 durability) shoots nothing: the hunter melees until it is repaired
+    Item* const ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!ranged || ranged->IsBroken())
+        return false;
 
     if (AI_VALUE(Unit*, "current target") && bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) &&
         bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL)->m_targets.GetUnitTargetGUID() ==

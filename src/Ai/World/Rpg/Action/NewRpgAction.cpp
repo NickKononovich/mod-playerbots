@@ -6,6 +6,7 @@
 
 #include "NewRpgAction.h"
 #include "BotPath.h"  // [guild12]
+#include "SoloSafety.h"  // [guild13]
 #include "AreaDefines.h"
 #include "Group.h"
 #include "NewRpgTriggers.h"
@@ -136,6 +137,29 @@ namespace
         return best;
     }
 
+    // [guild13] the nearest friendly vendor spawn on the bot's map that repairs (UNIT_NPC_FLAG_REPAIR)
+    VendorSpawn const* NearestRepairer(Player* bot, float& dist)
+    {
+        FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+        VendorSpawn const* best = nullptr;
+        dist = FLT_MAX;
+        for (VendorSpawn const& spawn : VendorSpawns())
+        {
+            if (spawn.mapId != bot->GetMapId())
+                continue;
+            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+            CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
+            if (d >= dist || !info || !(info->npcflag & UNIT_NPC_FLAG_REPAIR))
+                continue;
+            FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(info->faction);
+            if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
+                continue;
+            best = &spawn;
+            dist = d;
+        }
+        return best;
+    }
+
     // Low ammo by the hunters' "low ammo" line (100 rounds).
     constexpr uint32 VENDOR_LOW_AMMO = 100;
 }
@@ -158,11 +182,25 @@ bool NewRpgBaseAction::StartVendorRun()
             (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney))
             ammoSubClass = subClass;
     }
-    if (!sell && !ammoSubClass)
+    // [guild13] a broken item (0 durability: a hunter's bow shoots no more) is repaired, as a player does - at a vendor
+    // that repairs, paid from its own money; one try per money gain
+    bool repair = false;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END && !repair; ++slot)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            repair = item->IsBroken();
+    repair = repair && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+    if (!sell && !ammoSubClass && !repair)
         return false;
 
     float dist = 0.0f;
-    VendorSpawn const* vendor = NearestVendor(bot, ammoSubClass, dist);
+    VendorSpawn const* vendor = repair ? NearestRepairer(bot, dist) : NearestVendor(bot, ammoSubClass, dist);
+    if (repair && !vendor)
+    {
+        repair = false;
+        if (!sell && !ammoSubClass)
+            return false;
+        vendor = NearestVendor(bot, ammoSubClass, dist);
+    }
     if (ammoSubClass && (!vendor || bot->GetMoney() < AmmoPrice(bot, vendor->entry, ammoSubClass)))
     {
         ammoSubClass = 0;
@@ -174,8 +212,11 @@ bool NewRpgBaseAction::StartVendorRun()
         return false;
 
     std::string reason = sell ? "sell junk" : "";
+    if (repair)  // [guild13]
+        reason += std::string(reason.empty() ? "" : " + ") + "repair";
     if (ammoSubClass)
-        reason += std::string(sell ? " + " : "") + (ammoSubClass == ITEM_SUBCLASS_ARROW ? "buy arrows" : "buy bullets");
+        reason += std::string(!reason.empty() ? " + " : "") +
+                  (ammoSubClass == ITEM_SUBCLASS_ARROW ? "buy arrows" : "buy bullets");
     info.ChangeToGoCamp(WorldPosition(vendor->mapId, vendor->x, vendor->y, vendor->z));
     info.vendorRunEntry = vendor->entry;
     info.vendorRunReason = reason;
@@ -889,14 +930,22 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         float dx = 0.0f, dy = 0.0f, dz = INVALID_HEIGHT;
         int32 objectiveIdx = 0;
         bool reachable = false;
+        size_t spent = 0;
         for (POIInfo const& poi : poiInfo)
         {
+            if (IsSpentSpot(bot, questId, poi.pos.x, poi.pos.y))  // [guild13]
+            {
+                ++spent;
+                continue;
+            }
             dx = poi.pos.x;
             dy = poi.pos.y;
             // z = MAX_HEIGHT as we do not know accurate z
             dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
+            // [guild13] a grid not loaded yet has no height: the route search snaps the bot's own height to the
+            // navmesh column there (the spot is not skipped for it)
             if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-                continue;
+                dz = bot->GetPositionZ();
             if (FindBotPath(bot, dx, dy, dz).type & PATHFIND_NOPATH)
                 continue;
             objectiveIdx = poi.objectiveIdx;
@@ -905,8 +954,10 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         }
         if (!reachable)
         {
-            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: no walk to any of its {} objective spots",
-                     bot->GetName(), bot->GetLevel(), questId, poiInfo.size());
+            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: no walk to any of its {} objective spots ({} "
+                     "spent: nothing to pull there)",
+                     bot->GetName(), bot->GetLevel(), questId, poiInfo.size(), spent);
+            ClearSpentSpots(bot, questId);  // [guild13] tried again when the planner comes back to it
             botAI->lowPriorityQuest.insert(questId);
             botAI->rpgInfo.ChangeToIdle();
             return true;
@@ -979,6 +1030,18 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     if (UseQuestGameObject(questId))
         return true;
 
+    // [guild13] nothing to do at this spot (no mob it pulls, no quest object, no fight, no rest): the spot is spent,
+    // the next objective spot is planned - and with none left the quest is postponed (DO_QUEST is no black hole)
+    if (!bot->IsInCombat() && !AI_VALUE(Unit*, "grind target") && !FindNeededQuestObject(bot) &&
+        !SoloSafety::WantsRest(bot, false) && !SoloSafety::WantsRest(bot, true) && !bot->IsSitState())
+    {
+        NoteSpentSpot(bot, questId, data.pos);
+        data.lastReachPOI = 0;
+        data.pos = WorldPosition();
+        data.objectiveIdx = 0;
+        return true;
+    }
+
     // At the POI: keep the bot actively placed but avoid large
     // random 20yd hops that look like pacing back and forth. A small
     // ~8yd wander reads as the bot looking around while grind/loot
@@ -1009,11 +1072,18 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         // z = MAX_HEIGHT as we do not know accurate z
         float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
 
+        // [guild13] the ender's own spawn when it has one: its floor, not the top of the column (Dandolar L1 stood
+        // the whole night under Ayanna Everstride, who stands on an upper floor of Aldrassil: the height from
+        // MAX_HEIGHT was the tree's top), and no height lookup on a grid not loaded yet (b294-b297: 20 bots at the
+        // intro hand-ins q2160 / q2158, 500 yd off, failed the action every tick on GetHeight's INVALID_HEIGHT)
+        WorldPosition ender;
+        bool const hasEnder = NearestEnderSpot(bot, questId, ender);
+
         // double check for GetQuestPOIPosAndObjectiveIdx
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
+        if (!hasEnder && (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE))
             return false;
 
-        WorldPosition pos(bot->GetMapId(), dx, dy, dz);
+        WorldPosition pos = hasEnder ? ender : WorldPosition(bot->GetMapId(), dx, dy, dz);
         data.lastReachPOI = 0;
         data.pos = pos;
         data.objectiveIdx = -1;

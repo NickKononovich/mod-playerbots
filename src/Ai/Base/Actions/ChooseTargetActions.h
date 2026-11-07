@@ -205,6 +205,8 @@ namespace PullPlanner
 
     // The planner's thread-local shadow flag: no log line, no side effect while a shadow look runs.
     bool IsShadow();
+    // [guild13] the pack a solo bot's pull of `target` fought at `spot` brings (CollectPack with the assistance chain)
+    void SoloPack(Player* bot, Unit* target, Position const& spot, std::vector<Unit*>& pack);
 
     // Runs one look of the tank's planner instance (created on first use, rebuilt when the tank's AI changes) on
     // `snap`. false: no instance could run (no AI). `shadow`: the diff mode's look (no side effect, no log line).

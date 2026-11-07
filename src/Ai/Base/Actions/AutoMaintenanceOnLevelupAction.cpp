@@ -73,7 +73,10 @@ void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
     if (sPlayerbotAIConfig.AutoLearnTrainerSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
         LearnTrainerSpells(out);
 
-    if (sPlayerbotAIConfig.AutoLearnQuestSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
+    // [guild13] the guild project bots (not random, no client master) skip the spell-unlock class quests: their
+    // spells come here too (the hunter's Tame Beast / Call Pet at 10)
+    if (sPlayerbotAIConfig.AutoLearnQuestSpells &&
+        (sRandomPlayerbotMgr.IsRandomBot(bot) || !botAI->HasGameClientMaster()))
         LearnQuestSpells(out);
 }
 

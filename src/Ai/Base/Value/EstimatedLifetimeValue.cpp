@@ -67,9 +67,9 @@ namespace
 // power or weapon, at the fastest the spell comes again). A spell with a cast time takes the swings' time (the
 // better of the two counts), an instant one comes on top of them; a healer heals (0). Cached per member while its
 // spells and spell power stay the same (a lookup, no clock).
-float MemberModelDps(Player* member)
+float MemberModelDps(Player* member, bool healerToo = false)
 {
-    if (PlayerbotAI::IsHeal(member))
+    if (!healerToo && PlayerbotAI::IsHeal(member))
         return 0.0f;
 
     float weapon = 0.0f;
@@ -178,6 +178,9 @@ float MemberModelDps(Player* member)
     return cached.cast ? std::max(weapon, cached.dps) : weapon + cached.dps;
 }
 }  // namespace
+
+// [guild13] a solo bot's own modelled damage (a healer fights alone too)
+float SoloModelDps(Player* member) { return member ? MemberModelDps(member, true) : 0.0f; }
 
 float EstimatedGroupDpsValue::ModelDps()
 {

@@ -41,6 +41,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "Spell.h"     // [guild13] diag cast
+#include "SpellMgr.h"  // [guild13]
 
 using namespace Acore::ChatCommands;
 
@@ -212,6 +214,31 @@ public:
         Player* leader = group ? ObjectAccessor::FindPlayer(group->GetLeaderGUID()) : nullptr;
         handler->PSendSysMessage("  master {} group leader {} dist {:.1f}", master ? master->GetName() : "-",
                                  leader ? leader->GetName() : "-", leader ? bot->GetDistance(leader) : -1.0f);
+
+        // [guild13] "cast:<spell id>": Spell::CheckCast of that spell on the bot's current target (why a cast is
+        // impossible), plus the bot's ammo
+        if (rest.rfind("cast:", 0) == 0)
+        {
+            uint32 const spellId = uint32(std::strtoul(rest.c_str() + 5, nullptr, 10));
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+            if (!info || !target)
+            {
+                handler->PSendSysMessage("  cast {}: no spell or no current target", spellId);
+                return true;
+            }
+            Spell* spell = new Spell(bot, info, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+            spell->m_targets.SetUnitTarget(target);
+            SpellCastResult const result = spell->CheckCast(true);
+            delete spell;
+            handler->PSendSysMessage("  cast {} on {} ({:.1f} yd, los {}, hostile {}): result {}, CanCastSpell {}, "
+                                     "ammo id {} count {}",
+                                     spellId, target->GetName(), bot->GetDistance(target),
+                                     bot->IsWithinLOSInMap(target), bot->IsHostileTo(target), uint32(result),
+                                     botAI->CanCastSpell(spellId, target), bot->GetUInt32Value(PLAYER_AMMO_ID),
+                                     bot->GetItemCount(bot->GetUInt32Value(PLAYER_AMMO_ID)));
+            return true;
+        }
 
         std::string names = rest.empty() ? "follow,move to ranged position,dps assist,attack anything,stuck recovery"
                                          : rest;

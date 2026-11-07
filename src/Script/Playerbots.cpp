@@ -21,6 +21,7 @@
 #include "GatherNodeMgr.h"
 #include "GuildCoordinator.h"
 #include "NewRpgBaseAction.h"
+#include "SoloSafety.h"  // [guild13]
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
 #include "PlayerScript.h"
@@ -147,10 +148,10 @@ public:
         if (!killer || !killed)
             return;
         AreaTableEntry const* area = sAreaTableStore.LookupEntry(killed->GetAreaId());
-        LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {}",
+        LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {} | {}",
                  killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
-                 area ? area->area_name[0] : "?");
+                 area ? area->area_name[0] : "?", SoloSafety::DeathContext(killed));  // [guild13] its fight
         SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
         NewRpgBaseAction::RecordDeath(killed, killer);       // [guild12]
     }

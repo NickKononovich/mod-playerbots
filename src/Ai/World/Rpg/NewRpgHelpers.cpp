@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgHelpers.h"
+#include "NewRpgBaseAction.h"  // [guild13]
 #include "QuestLevelRules.h"
 #include "Creature.h"
 #include "GameObject.h"
@@ -153,6 +154,9 @@ bool IsQuestWorthDoing(Player* bot, Quest const* quest)
 
 bool IsQuestCapableDoing(Player* bot, Quest const* quest)
 {
+    if (NewRpgBaseAction::IsSpellUnlockClassQuest(quest))  // [guild13] its spell is granted
+        return false;
+
     bool highLevelQuest = bot->GetLevel() + QUEST_MAX_LEVELS_ABOVE_BOT < bot->GetQuestLevel(quest);
     if (highLevelQuest)
         return false;

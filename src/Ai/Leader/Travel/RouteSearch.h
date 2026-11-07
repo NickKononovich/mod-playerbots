@@ -34,6 +34,17 @@ namespace Leader::Travel
         void operator()(dtNavMeshQuery* query) const { dtFreeNavMeshQuery(query); }
     };
 
+    // [guild13] a route search penalty: an edge that enters the disc (x, y, z within 10 yd, radius r) costs `cost`
+    // yards more - an idle mob's aggro reach priced by the fight it starts (SoloSafety::RouteCosts)
+    struct RoutePenalty
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        float r = 0.0f;
+        float cost = 0.0f;
+    };
+
     // The long search: an own dtNavMeshQuery on the walker's map navmesh (per thread), the player filter flags
     // (+ NAV_GROUND_STEEP when steep), the corridor as corner points. False when start or end has no polygon;
     // complete: the corridor reaches the end polygon. `avoidBoxes` / `avoidDiscs`: polygons refused (closed passage
@@ -42,7 +53,7 @@ namespace Leader::Travel
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes = nullptr,
                    std::vector<G3D::Vector4> const* avoidDiscs = nullptr, float sampleStep = 0.0f,
-                   Movement::PointsArray* samples = nullptr);
+                   Movement::PointsArray* samples = nullptr, std::vector<RoutePenalty> const* penalties = nullptr);
 
     // [lead107] the point `walk` yd along `points` (its last point when the path is shorter)
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk);
