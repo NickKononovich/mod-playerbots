@@ -863,7 +863,10 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     }
                 }
 
-                if (creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(bool, "can repair"))
+                // [guild15] what its money pays for, weapons first (RepairAllAction), not all or nothing: "can repair"
+                // wants the whole bill within its budget (b311: Thokhen L5 with 283c kept 8 of 8 items broken)
+                if (creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(uint8, "durability") < 100 &&
+                    bot->GetMoney() > 0)
                 {
                     botAI->DoSpecificAction("repair", Event("repair"), true);
                     // [guild15] its damage and the fights it refused were measured with the worn gear
