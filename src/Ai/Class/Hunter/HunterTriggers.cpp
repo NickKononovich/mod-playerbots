@@ -285,11 +285,14 @@ bool HunterStepOutSpot(Player* bot, Unit* target, Position& spot)
     // it does not follow: busy with the pet, held in place, or slower
     bool const onPet = target->GetVictim() && target->GetVictim() != bot && target->GetVictim() == bot->GetPet();
     bool const held = target->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED) || !target->CanFreeMove();
-    bool const slower = target->GetSpeed(MOVE_RUN) < bot->GetSpeed(MOVE_RUN);
-    if (!onPet && !held && !slower)
+    // [guild15] a slower mob that follows is no reason: it closes the gap again before the shot (b314 Dandolar L4
+    // dealt 1.2 dps to two Gnarlpine Ambushers, stepping out and back with a Serpent Sting only, and died)
+    if (!onPet && !held)
         return false;
     float const out = minRange + target->GetCombatReach() + bot->GetCombatReach() + NOMINAL_MELEE_RANGE;
-    float const angle = Position::NormalizeOrientation(target->GetOrientation() + float(M_PI));
+    // [guild15] out on the bot's own side of the mob: "behind the target" (its back, the target facing the hunter)
+    // was a walk through it
+    float const angle = target->GetAbsoluteAngle(bot);
     float x = target->GetPositionX() + std::cos(angle) * out;
     float y = target->GetPositionY() + std::sin(angle) * out;
     float z = target->GetPositionZ();

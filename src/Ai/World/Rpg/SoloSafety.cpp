@@ -403,6 +403,40 @@ namespace
         return dps;
     }
 
+    // [guild15] the help a creature's SmartAI brings in the fight: SMART_ACTION_CALL_FOR_HELP (its radius: every idle
+    // mob that assists it) and SMART_ACTION_FLEE_FOR_ASSIST (Creature::DoFleeToGetAssistance: the nearest one that
+    // assists it within CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS). b314: murloc camps - Streamrunners flee for
+    // assist at 1-5 % health; judged 2, came 3-4, two deaths in 10 min
+    struct ScriptHelp
+    {
+        float callRadius = 0.0f;
+        bool flees = false;
+    };
+    ScriptHelp ScriptHelpOf(Creature* creature)
+    {
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, ScriptHelp> cache;
+        uint32 const entry = creature->GetEntry();
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            auto const found = cache.find(entry);
+            if (found != cache.end())
+                return found->second;
+        }
+        ScriptHelp help;
+        if (creature->GetAIName() == "SmartAI")
+            for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            {
+                if (holder.action.type == SMART_ACTION_CALL_FOR_HELP)
+                    help.callRadius = std::max(help.callRadius, float(holder.action.callHelp.range));
+                else if (holder.action.type == SMART_ACTION_FLEE_FOR_ASSIST)
+                    help.flees = true;
+            }
+        std::lock_guard<std::mutex> guard(cacheLock);
+        cache[entry] = help;
+        return help;
+    }
+
     char const* KindName(SoloSafety::Verdict::Kind kind)
     {
         switch (kind)
@@ -554,6 +588,24 @@ namespace SoloSafety
                                          mob->IsWithinDistInMap(member, assist) && mob->CanAssistTo(member, bot);
                     if (assists)
                         pack.push_back(mob);
+                }
+                // [guild15] the help its script calls: all in the call's radius, the nearest one it flees to
+                ScriptHelp const help = ScriptHelpOf(member);
+                if (help.callRadius > 0.0f)
+                    for (Creature* mob : idle)
+                        if (!inPack(mob) && mob->IsWithinDistInMap(member, help.callRadius) &&
+                            mob->CanAssistTo(member, bot))
+                            pack.push_back(mob);
+                if (help.flees)
+                {
+                    float const flee = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
+                    Creature* nearest = nullptr;
+                    for (Creature* mob : idle)
+                        if (!inPack(mob) && mob->IsWithinDistInMap(member, flee) && mob->CanAssistTo(member, bot) &&
+                            (!nearest || member->GetDistance(mob) < member->GetDistance(nearest)))
+                            nearest = mob;
+                    if (nearest)
+                        pack.push_back(nearest);
                 }
             }
             for (Creature* mob : idle)
