@@ -449,6 +449,10 @@ void GuildCoordinator::UpdateFounding()
             for (size_t i = 0; i < guildMasters_.size() && !founderLow; ++i)
                 for (auto const& [low, p] : pool)
                 {
+                    // [guild15] the founder is a raid A member (PLAYER account): a GUILDBOT random-account founder
+                    // makes the module treat the guild as a bot guild (its level-bracket rules for the members)
+                    if (PlanRow const* row = Row(low); !row || row->grp != 'A')
+                        continue;
                     if (FoundingFreeMoney(p) < charterCost)
                         continue;
                     float const cf = FoundingCost(p, guildMasters_[i]);

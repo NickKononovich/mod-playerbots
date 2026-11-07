@@ -31,6 +31,7 @@
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "SoloSafety.h"  // [guild13]
+#include "PerfMonitor.h"  // [guild15]
 #include "QuestStats.h"  // [guild90]
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
@@ -1390,7 +1391,19 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     {
         // clear stuck information if it's a new dest
         botAI->rpgInfo.SetMoveFarTo(dest);
+        // [guild15] b317 Eraelor "route complete (335 yd, ends 0 yd short), the walk refused: IsWaitingForLastMove":
+        // a new destination replaces the last walk; the old walk's clock no longer holds the new one (lead244)
+        LastMovement& last = AI_VALUE(LastMovement&, "last movement");
+        last.lastdelayTime = 0.0f;
+        last.msTime = 0;
     }
+    // [guild15] perf (b317 pmon: "new rpg do profession" 31 ms per call, max 1.4 s; "new rpg do quest" max 1.1 s):
+    // the route search that found no walk from this spot is not asked again from the same spot - only after the bot
+    // stands elsewhere (its random step, a fight, a fall) or the destination changes
+    if (botAI->rpgInfo.moveFarFailed &&
+        bot->GetExactDist(botAI->rpgInfo.failedFromX, botAI->rpgInfo.failedFromY, botAI->rpgInfo.failedFromZ) < 3.0f)
+        return false;
+    botAI->rpgInfo.moveFarFailed = false;
 
     // performance optimization
     if (!newDest && IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
@@ -1541,10 +1554,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             NoteWalkFailure(dest, Acore::StringFormat("route {} ends {:.0f} yd short, no nearer than the bot",
                                                       type == PATHFIND_NORMAL ? "complete" : "partial",
                                                       endDistToDest));
+            NoteFarSearchFailed();  // [guild15]
         }
         else
         {
             NoteWalkFailure(dest, Acore::StringFormat("no route (type {:#x})", uint32(type)));
+            NoteFarSearchFailed();  // [guild15]
             // [guild14] the bot stands off the navmesh (PathGenerator's shortcut, NOT_USING_PATH: b303 Manue L7 on a
             // ledge over Elwynn, 20 STUCK alerts): the same ways off the island
             if (WalkOffIsland(dest, disToDest))
@@ -2722,6 +2737,7 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
 
 CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float y, float z)
 {
+    PMON_SCOPE(tripScope, PERF_MON_VALUE, "solo trip danger");  // [guild15]
     if (!bot || !SoloSafety::Applies(bot))
         return nullptr;
     if (CreatureTemplate const* zone = InDangerZone(bot, x, y))

@@ -171,6 +171,10 @@ bool WeaponPoisonTrigger::IsActive()
     Item* const weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     if (!weapon)
         return false;
+    // [guild15] b317 LOOP Baridrol "use poison on main hand - FAILED" every tick: no poison in the bags (the guild
+    // bots buy poisons themselves, from L20) - nothing to put on
+    if (!RoguePoisons::ItemFor(botAI, slot))
+        return false;
 
     if (!weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
         return minTargetLifetime <= 0.0f ||

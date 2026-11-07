@@ -698,13 +698,18 @@ void GuildCoordinator::Update(uint32 diff)
     while (!aiTicks_.empty() && getMSTimeDiff(aiTicks_.front().first, ms) > MINUTE * IN_MILLISECONDS)
         aiTicks_.pop_front();
 
-    ProcessDeaths();
-    ProcessLoot();
+    PMON_SCOPE(coordScope, PERF_MON_TOTAL, "guild coordinator");  // [guild15] world-thread cost, pmon
+    {
+        PMON_SCOPE(lootScope, PERF_MON_VALUE, "guild deaths + loot");
+        ProcessDeaths();
+        ProcessLoot();
+    }
 
     wantedTimer_ += diff;
     if (wantedTimer_ >= 15 * IN_MILLISECONDS)
     {
         wantedTimer_ = 0;
+        PMON_SCOPE(wantedScope, PERF_MON_VALUE, "guild wanted list");
         UpdateWanted();
     }
     updateTimer_ += diff;
@@ -712,9 +717,15 @@ void GuildCoordinator::Update(uint32 diff)
     {
         updateTimer_ = 0;
         UpdateLeaders();
-        UpdateGear();  // [guild50]
+        {
+            PMON_SCOPE(gearScope, PERF_MON_VALUE, "guild gear plan");
+            UpdateGear();  // [guild50]
+        }
         UpdateFounding();  // [guild80] the bots' own guild: plan + charter / signatures / invites / bank tab
-        UpdateOrders();
+        {
+            PMON_SCOPE(ordersScope, PERF_MON_VALUE, "guild orders");
+            UpdateOrders();
+        }
         UpdateHealth();
         UpdateFives();  // [guild60]
     }

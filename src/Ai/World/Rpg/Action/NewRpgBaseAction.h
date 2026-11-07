@@ -101,6 +101,14 @@ public:
     static bool NearestEnderSpot(Player* bot, uint32 questId, WorldPosition& out);
     // [guild13] a far walk that cannot start: one [rpg] WALK_FAIL line per destination (the route, the refusal)
     void NoteWalkFailure(WorldPosition const& dest, std::string const& why);
+    // [guild15] perf: the far route search found no walk from where the bot stands (NewRpgInfo::moveFarFailed)
+    void NoteFarSearchFailed()
+    {
+        botAI->rpgInfo.moveFarFailed = true;
+        botAI->rpgInfo.failedFromX = bot->GetPositionX();
+        botAI->rpgInfo.failedFromY = bot->GetPositionY();
+        botAI->rpgInfo.failedFromZ = bot->GetPositionZ();
+    }
     // [guild14] no way out from where the bot stands: the core path, the reverse route, the nearest polygon in sight
     bool WalkOffIsland(WorldPosition const& dest, float disToDest);
     // [guild13] a hunter with Tame Beast and no pet tames the nearest tameable beast of its level

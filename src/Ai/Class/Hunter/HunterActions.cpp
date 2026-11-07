@@ -332,6 +332,11 @@ bool CastScareBeastCcAction::Execute(Event /*event*/)
 
 bool CastWingClipAction::isUseful()
 {
+    // [guild15] a mob on the hunter itself that follows it slowed is no step out (HunterStepOutSpot): the clip buys
+    // no shot there, only costs the mana of the next Arcane Shot - the bites and the swing are the melee phase
+    Unit* target = GetTarget();
+    if (target && target->GetVictim() == bot && !bot->GetGroup())
+        return false;
     return CastSpellAction::isUseful() && !botAI->HasAura(spell, GetTarget());
 }
 

@@ -112,4 +112,14 @@ private:
 
 #define sPerfMonitor PerfMonitor::instance()
 
+// [guild15] a named pmon scope around a hot helper (route searches, judges, the coordinator); free when pmon is off
+#define PMON_SCOPE(var, metric, label)                                                          \
+    PerformanceData* var##Data = nullptr;                                                       \
+    if (sPerfMonitor.IsEnabled())                                                               \
+    {                                                                                           \
+        static thread_local PerformanceData* var##Static = sPerfMonitor.acquire(metric, label); \
+        var##Data = var##Static;                                                                \
+    }                                                                                           \
+    PerfMonitorScope var(var##Data)
+
 #endif

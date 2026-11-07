@@ -303,6 +303,15 @@ bool HunterStepOutSpot(Player* bot, Unit* target, Position& spot)
     return true;
 }
 
+bool HunterMeleePhaseTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || !bot->IsWithinMeleeRange(target))
+        return false;
+    Position spot;
+    return !HunterStepOutSpot(bot, target, spot);
+}
+
 bool HunterStepOutTrigger::IsActive()
 {
     Position spot;

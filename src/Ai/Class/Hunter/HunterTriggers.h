@@ -97,6 +97,17 @@ public:
     bool IsActive() override;
 };
 
+// [guild15] the melee phase: the hunter stands in melee reach of its target and cannot step out to shoot (the mob
+// follows it): the melee bites go (Raptor Strike, Mongoose Bite after a dodge), every spec - b317 hunters L4-7 dealt
+// 3-5 dps standing in melee with only white swings (Marksmanship had no melee ability at all)
+class HunterMeleePhaseTrigger : public Trigger
+{
+public:
+    HunterMeleePhaseTrigger(PlayerbotAI* botAI) : Trigger(botAI, "hunter melee phase") {}
+
+    bool IsActive() override;
+};
+
 class HunterHasAmmoTrigger : public AmmoCountTrigger
 {
 public:

@@ -116,6 +116,13 @@ struct NewRpgInfo
     uint32 stuckTs{0};
     uint32 stuckAttempts{0};
     WorldPosition moveFarPos;
+    // [guild15] perf: the far walk's last route search to moveFarPos found no walk from failedFrom; the same search
+    // from the same spot gives the same answer, so it is asked again only once the bot stands elsewhere (game fact:
+    // its position) or the destination changes
+    bool moveFarFailed{false};
+    float failedFromX{0.0f};
+    float failedFromY{0.0f};
+    float failedFromZ{0.0f};
     // END MOVE_FAR
 
     // Boat, zeppelin or portal leg of a far move. It spans statuses: a new destination plans it again.

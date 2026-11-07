@@ -65,6 +65,8 @@ void GenericHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("hunter step out", {NextAction("hunter step out", 30.3f)}));
     triggers.push_back(new TriggerNode("hunter needs melee",
                                        { NextAction("reach melee", 30.2f), NextAction("melee", 30.1f) }));
+    // [guild15] in melee reach with no step out: the bites at once (the white swing starts first, 30.1)
+    triggers.push_back(new TriggerNode("hunter melee phase", {NextAction("mongoose bite", 30.05f)}));
     triggers.push_back(new TriggerNode("hunter's mark", { NextAction("hunter's mark", 29.5f) }));
     triggers.push_back(new TriggerNode("rapid fire", { NextAction("rapid fire", 29.0f) }));
     triggers.push_back(new TriggerNode("readiness", { NextAction("readiness", 29.0f) }));  // [rot160]

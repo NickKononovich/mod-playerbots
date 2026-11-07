@@ -14,6 +14,7 @@
 #include "Config.h"
 #include "Log.h"
 #include "Map.h"
+#include "PerfMonitor.h"  // [guild15]
 #include "MapDefines.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -464,6 +465,7 @@ namespace Leader
 
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to)
     {
+        PMON_SCOPE(routeScope, PERF_MON_VALUE, "leader route search");  // [guild15]
         constexpr float ROUTE_SAMPLE_YD = 4.0f;  // PathGenerator's smooth step: the checks keep their spacing
         RouteResult result;
         result.source = "long route";

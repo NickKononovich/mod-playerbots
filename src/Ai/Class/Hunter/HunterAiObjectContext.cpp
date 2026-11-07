@@ -88,6 +88,7 @@ public:
         creators["has ammo"] = &HunterTriggerFactoryInternal::has_ammo;
         creators["hunter needs melee"] = &HunterTriggerFactoryInternal::needs_melee;  // [guild2]
         creators["hunter step out"] = &HunterTriggerFactoryInternal::step_out;  // [guild14]
+        creators["hunter melee phase"] = &HunterTriggerFactoryInternal::melee_phase;  // [guild15]
         creators["misdirection on main tank"] = &HunterTriggerFactoryInternal::misdirection_on_main_tank;
         creators["tranquilizing shot enrage"] = &HunterTriggerFactoryInternal::remove_enrage;
         creators["tranquilizing shot magic"] = &HunterTriggerFactoryInternal::remove_magic;
@@ -131,6 +132,7 @@ private:
     static Trigger* has_ammo(PlayerbotAI* botAI) { return new HunterHasAmmoTrigger(botAI); }
     static Trigger* needs_melee(PlayerbotAI* botAI) { return new HunterNeedsMeleeTrigger(botAI); }
     static Trigger* step_out(PlayerbotAI* botAI) { return new HunterStepOutTrigger(botAI); }
+    static Trigger* melee_phase(PlayerbotAI* botAI) { return new HunterMeleePhaseTrigger(botAI); }
     static Trigger* misdirection_on_main_tank(PlayerbotAI* botAI) { return new MisdirectionOnMainTankTrigger(botAI); }
     static Trigger* remove_enrage(PlayerbotAI* botAI) { return new TargetRemoveEnrageTrigger(botAI); }
     static Trigger* remove_magic(PlayerbotAI* botAI) { return new TargetRemoveMagicTrigger(botAI); }

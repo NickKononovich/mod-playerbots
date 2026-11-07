@@ -166,7 +166,9 @@ public:
         // [lead111] b143 rfc-h Taragaman: Serpent Sting and Chimera Shot - Serpent dealt about half the sim's while
         // the formulas match (242 + 0.04 RAP a tick); the tick, the caster's ranged attack power and the aura's
         // ticks, once per caster every 10 s, for the check against the sim
-        if (spellInfo && attacker && attacker->IsPlayer() && spellInfo->SpellFamilyName == SPELLFAMILY_HUNTER &&
+        // [guild15] only inside instances (the sim checks): open-world levelling hunters spammed it (451 lines/32 min)
+        if (spellInfo && attacker && attacker->IsPlayer() && attacker->GetMap() && attacker->GetMap()->Instanceable() &&
+            spellInfo->SpellFamilyName == SPELLFAMILY_HUNTER &&
             (spellInfo->SpellFamilyFlags[0] & 0x4000))
         {
             thread_local std::unordered_map<ObjectGuid, uint32> logged;

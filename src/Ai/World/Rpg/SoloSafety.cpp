@@ -5,6 +5,7 @@
  */
 
 #include "SoloSafety.h"
+#include "PerfMonitor.h"  // [guild15]
 
 #include "BuyAction.h"
 #include "CellImpl.h"
@@ -87,6 +88,12 @@ namespace
         uint64 dealt = 0;
         uint64 taken = 0;
         uint64 healed = 0;  // its own heals on itself this fight
+        // [guild15] the melee phase (the bot within melee reach of the mob in the damage event): what it dealt
+        // there and how long it stood there (sampled at every damage event of the fight, either way)
+        uint64 dealtMelee = 0;
+        uint32 meleeMs = 0;
+        uint32 sampleMs = 0;
+        bool sampleMelee = false;
         uint32 manaAtOpen = 0;
         std::unordered_map<uint64, AttackerTrack> attackers;
         bool engaged = false;
@@ -192,11 +199,18 @@ namespace
         if (state.engaged)
             LOG_INFO("playerbots",
                      "[solo] {} L{} fight {}: {} judged {} mobs, {:.0f} dmg expected at hp {:.0f}; came {} ({}), took "
-                     "{} in {:.1f} s, dealt {} ({:.1f} dps)",
+                     "{} in {:.1f} s, dealt {} ({:.1f} dps); melee {:.1f} s dealt {} ({:.1f} dps), range {:.1f} s dealt "
+                     "{} ({:.1f} dps)",
                      bot->GetName(), bot->GetLevel(), died ? "LOST" : state.fleeing ? "DISENGAGED" : "won",
                      state.engage.targetName,
                      state.engage.mobs, state.engage.predicted, state.engage.health, state.attackers.size(), came,
-                     state.taken, seconds, state.dealt, float(state.dealt) / seconds);
+                     state.taken, seconds, state.dealt, float(state.dealt) / seconds,
+                     float(state.meleeMs) / 1000.0f, state.dealtMelee,
+                     state.meleeMs ? float(state.dealtMelee) * 1000.0f / float(state.meleeMs) : 0.0f,
+                     std::max(0.0f, seconds - float(state.meleeMs) / 1000.0f), state.dealt - state.dealtMelee,
+                     seconds * 1000.0f > float(state.meleeMs) + 1.0f
+                         ? float(state.dealt - state.dealtMelee) / (seconds - float(state.meleeMs) / 1000.0f)
+                         : 0.0f);
         // [guild14] its damage at the fight's level gap (its top attacker's), and what it lost (a death, a disengage):
         // the mobs it lost to are not pulled again at that gap (b303 Rollothan L7 died three times to a Prowler L9
         // judged won)
@@ -226,6 +240,19 @@ namespace
         state.dealt = 0;
         state.taken = 0;
         state.healed = 0;
+        state.dealtMelee = 0;
+        state.meleeMs = 0;
+        state.sampleMs = 0;
+        state.sampleMelee = false;
+    }
+
+    // [guild15] the melee-phase clock: the time since the last sample counts as melee when the bot stood in reach then
+    void SampleMelee(Player* bot, Unit* mob, SoloBotState& state, uint32 now)
+    {
+        if (state.sampleMs && state.sampleMelee)
+            state.meleeMs += getMSTimeDiff(state.sampleMs, now);
+        state.sampleMs = now;
+        state.sampleMelee = bot->IsWithinMeleeRange(mob);
     }
 
     void CloseIfOver(Player* bot, SoloBotState& state)
@@ -485,6 +512,7 @@ namespace SoloSafety
             state.lastMs = now;
             uint32 const taken = std::min(damage, bot->GetHealth());
             state.taken += taken;
+            SampleMelee(bot, mob, state, now);  // [guild15]
             AttackerTrack& track = state.attackers[mob->GetGUID().GetRawValue()];
             if (!track.entry)
             {
@@ -508,6 +536,9 @@ namespace SoloSafety
         OpenIfNeeded(bot, state, now);
         state.lastMs = now;
         state.dealt += std::min(damage, mob->GetHealth());
+        SampleMelee(bot, mob, state, now);  // [guild15]
+        if (state.sampleMelee)
+            state.dealtMelee += std::min(damage, mob->GetHealth());
     }
 
     void NoteHeal(Unit* healer, Unit* target, uint32 heal)
@@ -1139,6 +1170,7 @@ namespace SoloSafety
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties)
     {
+        PMON_SCOPE(costScope, PERF_MON_VALUE, "solo route costs");  // [guild15]
         Player* bot = walker ? walker->ToPlayer() : nullptr;
         if (!bot || bot->IsInCombat() || !bot->IsAlive() || !Applies(bot))
             return;
