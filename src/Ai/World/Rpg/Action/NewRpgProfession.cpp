@@ -430,6 +430,52 @@ namespace NewRpgProfession
         return true;
     }
 
+    void StartBuy(PlayerbotAI* botAI, Player* bot, uint32 itemId, uint32 npcEntry, WorldPosition const& pos,
+                  uint32 cost)
+    {
+        NewRpgInfo::DoProfession task;
+        task.kind = TASK_BUY;
+        task.npcEntry = npcEntry;
+        task.pos = pos;
+        task.itemId = itemId;
+        task.cost = cost;
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(npcEntry);
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        LOG_INFO("playerbots", "[rpg] {} L{} GUILD BUY reason: {} at {} ({:.0f} yd), cost {}c, money {}c",
+                 bot->GetName(), bot->GetLevel(), proto ? proto->Name1 : "?", tmpl ? tmpl->Name : "?",
+                 bot->GetExactDist(pos), cost, bot->GetMoney());
+        botAI->rpgInfo.ChangeToDoProfession(task);
+    }
+
+    bool BuyFailed(Player* bot, uint32 npcEntry, uint32 itemId) { return FailedBefore(bot, npcEntry, itemId); }
+
+    uint32 NextRankCost(Player* bot)
+    {
+        auto plan = plans.find(bot->GetGUID().GetCounter());
+        if (plan == plans.end())
+            return 0;
+        Index const& index = GetIndex();
+        uint32 total = 0;
+        for (uint32 skill : plan->second.primary)
+        {
+            uint32 const curMax = bot->HasSkill(skill) ? bot->GetPureMaxSkillValue(skill) : 0;
+            uint32 const step = curMax / 75 + 1;
+            uint32 best = 0;
+            for (auto const& [entry, ranks] : index.ranks)
+                for (RankSpell const& rank : ranks)
+                {
+                    if (rank.skill != skill || rank.step != step || (best && rank.cost >= best))
+                        continue;
+                    Trainer::Trainer* trainer = sObjectMgr->GetTrainer(entry);
+                    Trainer::Spell const* spell = trainer ? trainer->GetSpell(rank.spellId) : nullptr;
+                    if (spell && trainer->CanTeachSpell(bot, spell))
+                        best = rank.cost;
+                }
+            total += best;
+        }
+        return total;
+    }
+
     std::string PlannedSkills(Player* bot)
     {
         auto plan = plans.find(bot->GetGUID().GetCounter());

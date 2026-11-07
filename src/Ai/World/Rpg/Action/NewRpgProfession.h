@@ -29,6 +29,16 @@ namespace NewRpgProfession
 
     // "skill:value/max,..." of the bot's planned professions (guild board), empty when it has no plan.
     std::string PlannedSkills(Player* bot);
+
+    // [guild50] The global leader's BUY order: walk to this vendor spawn and buy the item with the bot's own money
+    // (the tool purchase path: Player::BuyItemFromVendorSlot).
+    void StartBuy(PlayerbotAI* botAI, Player* bot, uint32 itemId, uint32 npcEntry, WorldPosition const& pos,
+                  uint32 cost);
+    // [guild50] the buy failed at that vendor (gone, sold out, refused) while money and level stayed the same
+    bool BuyFailed(Player* bot, uint32 npcEntry, uint32 itemId);
+    // [guild50] the money the next rank of each planned primary profession costs at a trainer that can teach it now
+    // (Trainer::CanTeachSpell): kept back from gear purchases
+    uint32 NextRankCost(Player* bot);
 }
 
 class NewRpgDoProfessionAction : public NewRpgBaseAction
