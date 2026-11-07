@@ -91,6 +91,8 @@ public:
     void PrintStats(bool perTick = false, bool fullStack = false);
     void DumpJson(bool perTick = false);
     void Reset();
+    // [guild30] the n biggest total times (microseconds) over all metrics, for the guild health PERF alert
+    std::vector<std::pair<std::string, uint64_t>> TopTotals(size_t n);
 
 private:
     PerfMonitor() = default;

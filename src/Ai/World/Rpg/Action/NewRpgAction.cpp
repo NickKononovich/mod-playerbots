@@ -15,6 +15,7 @@
 #include "GossipDef.h"
 #include "IVMapMgr.h"
 #include "MotionMaster.h"
+#include "GuildCoordinator.h"  // [guild30]
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
@@ -395,6 +396,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
                                              "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER"};
         info.loggedStatus = uint8(status);
+        sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
         std::string detail;
         if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
             detail = " q" + std::to_string(quest->questId) + (quest->quest ? " " + quest->quest->GetTitle() : "");
@@ -426,6 +428,31 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 LogDungeonCandidates();  // [guild11] hook for the dungeon step, once per level
             }
 
+            // [guild30] an order of the guild coordinator first; QUEST (the default) = the choice below
+            {
+                GuildRunStep const step = sGuildCoordinator.NextStep(bot, botAI);
+                if (step.kind == GuildRunStep::BUSY)
+                    return true;
+                if (step.kind == GuildRunStep::WALK)
+                {
+                    LOG_INFO("playerbots", "[rpg] {} L{} GUILD reason: {}", bot->GetName(), bot->GetLevel(),
+                             step.reason);
+                    info.ChangeToGoCamp(step.pos);
+                    return true;
+                }
+                if (step.kind == GuildRunStep::GATHER)
+                {
+                    if (sPlayerbotAIConfig.RpgStatusProbWeight[RPG_DO_GATHER] &&
+                        CheckRpgStatusAvailable(RPG_DO_GATHER))
+                    {
+                        LOG_INFO("playerbots", "[rpg] {} L{} GATHER reason: {}", bot->GetName(),
+                                 bot->GetLevel(), step.reason);
+                        info.ChangeToDoGather();
+                        return true;
+                    }
+                    sGuildCoordinator.SetOrderStatus(bot, "нет узлов для навыка в этой зоне - квестует");
+                }
+            }
             // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
             // starter of its level - ChooseBestQuest keeps that order), else mobs of its level, else stay put.
             {
@@ -502,6 +529,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // GO_CAMP -> WANDER_NPC only to visit the vendor this walk came for; else the next purposeful target
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
+                // [guild30] a guild bank walk: deposit / withdraw at the vault
+                if (uint8 const bank = sGuildCoordinator.OnCampReached(bot))
+                {
+                    if (bank == 1)
+                        info.ChangeToIdle();
+                    return true;
+                }
                 if (!info.vendorRunEntry)
                 {
                     info.ChangeToIdle();
@@ -706,6 +740,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     uint8 const bagBefore = AI_VALUE(uint8, "bag space");
                     if (AI_VALUE(bool, "can sell"))
                         botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+                    sGuildCoordinator.SellMarked(botAI);  // [guild30] what the coordinator gave up
 
                     // Buying sorts the vendor list through the weight calculator; skip it for
                     // bots without money for cheap consumables, unless they came here for ammo.

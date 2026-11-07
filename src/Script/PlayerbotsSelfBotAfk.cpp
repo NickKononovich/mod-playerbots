@@ -5,6 +5,7 @@
  */
 
 #include "SelfBotControl.h"
+#include "GuildCoordinator.h"
 
 #include "Bag.h"
 #include "CharacterCache.h"
@@ -791,6 +792,8 @@ public:
             SelfBotControl::SendAddonStatus(player);
         else if (command == "guild")
             SelfBotControl::SendGuildBoard(player);  // [live1]
+        else if (command == "orders")
+            sGuildCoordinator.SendOrders(player);  // [guild30]
         else if (command.compare(0, 7, "quests ") == 0)
             SelfBotControl::SendGuildQuests(player, command.substr(7));  // [live1]
         else if (command == "self on" || command == "self off" || command == "self")

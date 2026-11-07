@@ -15,6 +15,7 @@
 #include "PerfMonitor.h"
 #include "JsonUtils.h"
 #include "Playerbots.h"
+#include <algorithm>
 #include <ctime>
 #include <sstream>
 
@@ -528,4 +529,21 @@ PerfMonitorScope::~PerfMonitorScope()
         return;
 
     RecordSample(data, (Now() - started).count());
+}
+
+// [guild30]
+std::vector<std::pair<std::string, uint64_t>> PerfMonitor::TopTotals(size_t n)
+{
+    std::vector<std::pair<std::string, uint64_t>> top;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        for (auto const& [metric, byName] : data)
+            for (auto const& [name, pd] : byName)
+                if (pd && metric != PERF_MON_TOTAL)
+                    top.emplace_back(name, pd->totalTime);
+    }
+    std::sort(top.begin(), top.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+    if (top.size() > n)
+        top.resize(n);
+    return top;
 }

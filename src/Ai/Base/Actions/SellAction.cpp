@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "ChatHelper.h"
+#include "GuildCoordinator.h"
 #include "Event.h"
 #include "ItemPackets.h"
 #include "ItemUsageValue.h"
@@ -175,6 +176,10 @@ uint32 SellAction::GetQuestItemRequirement(uint32 itemId)
 void SellAction::Sell(Item* item, bool force)
 {
     if (!item)
+        return;
+
+    // [guild30] held for the guild (an upgrade for a member, wanted-list material) or not decided yet
+    if (sGuildCoordinator.IsHeld(bot, item))
         return;
 
     std::ostringstream out;

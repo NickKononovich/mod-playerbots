@@ -19,6 +19,7 @@
 #include <mysqld_error.h>
 #include "AllMapScript.h"
 #include "GatherNodeMgr.h"
+#include "GuildCoordinator.h"
 #include "NewRpgBaseAction.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
@@ -294,7 +295,11 @@ public:
         // A SelfBot whose player just took control by input waits for its removal on the world thread.
         if (botAI != nullptr && !SelfBotControl::IsSuspended(player))
         {
+            auto const aiStart = std::chrono::steady_clock::now();  // [guild30] bot AI time per tick
             botAI->UpdateAI(diff);
+            sGuildCoordinator.AddAiTime(player, uint64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                    std::chrono::steady_clock::now() - aiStart)
+                                                    .count()));
         }
 
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
@@ -702,6 +707,7 @@ void AddPlayerbotsScripts()
     new PlayerBotsBGScript();
     AddPlayerbotsSecureLoginScripts();
     AddPlayerbotsSelfBotAfkScripts();
+    AddGuildCoordinatorScripts();  // [guild30]
     AddPlayerbotsCommandscripts();
     AddPlayerbotsDeathRecorder();
     AddPlayerbotsInstanceResetCatchUp();

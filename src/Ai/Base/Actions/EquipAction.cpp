@@ -5,6 +5,7 @@
  */
 
 #include "EquipAction.h"
+#include "GuildCoordinator.h"
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "ItemPackets.h"
@@ -349,6 +350,10 @@ ItemIds EquipAction::SelectInventoryItemsToEquip()
         //TODO Expand to Glyphs and Gems, that can be placed in equipment
         //Pre-filter non-equipable items
         if (itemTemplate->InventoryType == INVTYPE_NON_EQUIP)
+            continue;
+
+        // [guild30] a BoE the global leader gives another member (or has not decided yet)
+        if (sGuildCoordinator.IsHeld(bot, item))
             continue;
 
         int32 randomProperty = item->GetItemRandomPropertyId();
