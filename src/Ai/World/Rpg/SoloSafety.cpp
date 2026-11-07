@@ -1166,8 +1166,18 @@ namespace SoloSafety
             }
             // never walked through: orange / red con, an elite, a mob in a remembered danger zone (where it died, a
             // pack its pull judge refused)
-            bool const never = IsElite(mob) || Acore::XP::GetColorCode(level, mob->GetLevel()) <= XP_ORANGE ||
-                               NewRpgBaseAction::InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY());
+            bool never = IsElite(mob) || Acore::XP::GetColorCode(level, mob->GetLevel()) <= XP_ORANGE ||
+                         NewRpgBaseAction::InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY());
+            // [guild15] ... and a mob whose fight alone the bot loses now: its damage (the model, every bot's and this
+            // bot's measurement) over the time the bot's damage needs for its health, against the bot's health (b315:
+            // 12 of 14 deaths were bots attacked on their way, most through Gnarlpine / Wendigo / murloc camps)
+            if (!never)
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                float mobDps = MobDps(mob, bot);
+                mobDps = std::max(mobDps, Rate(states[bot->GetGUID().GetCounter()].ownTaken, mob->GetEntry()));
+                never = mobDps * float(mob->GetHealth()) / dps >= float(bot->GetHealth());
+            }
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
             // the fight it starts, in yards of walk: its health over the bot's damage, at the bot's run speed

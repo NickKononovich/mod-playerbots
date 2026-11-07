@@ -7,6 +7,7 @@
 #include "CastTimeStrategy.h"
 #include "EstimatedLifetimeValue.h"
 #include "GenericSpellActions.h"
+#include "Group.h"  // [guild15]
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "Timer.h"
@@ -78,7 +79,12 @@ float CastTimeMultiplier::GetValue(Action* action)
         // its flight, against the lifetime the group's actual damage shows (ExpectedLifetime), not the model alone.
         // Else the instants of the rotation (Fire Blast, Ice Lance, Arcane Barrage, procs, the wand) go first, and
         // the caster's target choice moves on to a fresh mob (CasterFindTargetSmartStrategy).
-        if (castTime > 0)
+        // [guild15] a bot that fights alone is the damage that would end the target: holding its cast for a lifetime
+        // its own damage gives holds that damage too (b315 Bierya L7 held Wrath on a Gnarlpine Defender at 15 %
+        // health, "the target lives 1.7 s", until two mobs killed it; Gilduck's Frostbolts the same)
+        Group const* group = bot->GetGroup();
+        bool const alone = !group || group->GetMembersCount() <= 1;
+        if (castTime > 0 && !alone)
         {
             float flight = 0.0f;
             if (spellInfo->Speed > 0.0f)
